@@ -84,7 +84,7 @@ on a sleep or a quiet channel.
 | `crates/datui-cli/` | Clap `Args` shared by the binary and `gen_docs`, which writes the generated docs and the manpages (`man/`, committed) |
 | `crates/datui-pyo3/`, `python/` | Python bindings and wheel. Not a workspace member; see `docs/for-developers/python-bindings.md` |
 | `fuzz/` | cargo-fuzz targets, own workspace; `docs/for-developers/fuzzing.md` |
-| `crates/datui-lib/src/help-strings/*.txt` | The text shown by `?` on each screen. Update it when keys change |
+| `crates/datui-cli/src/keys.rs` | The key registry: every screen's keys, by task. `?` shows them, and `keyboard-shortcuts.md` and `datui-keys(7)` are generated from it. Update it when keys change |
 | `docs/` | mdBook source. Pages generated from the code (`GENERATED` in `crates/datui-cli/src/docgen.rs`) are written by `gen_docs write`; do not edit them |
 | `release-notes/vX.Y.Z.md` | Optional per-release notes, copied verbatim into the GitHub release and winget |
 | `scripts/` | Python tooling: `bump_version.py`, `docs/`, `demos/`, `packaging/`, `dev/` |
@@ -216,14 +216,16 @@ work. The short version:
   something the tree already has.
 - American English everywhere: code, UI strings, docs, notes.
 - One word per concept: `docs/reference/glossary.md`. `tests/wording_test.rs`
-  fails on a retired word in UI strings, help strings, docs or the manpage.
+  fails on a retired word in UI strings, the key registry, docs or the manpage.
 - Docs: lead with the command or the key, then a table. No essays. Verify every
   claim against the code. Never link `plans/` or other unpublished paths.
 - Commit and PR text is terse. One idea per commit where practical.
 
 ## When you add or change a feature
 
-1. Update the help string for the screen in `help-strings/`.
+1. Update the screen's keys in the key registry (`crates/datui-cli/src/keys.rs`):
+   a one-line `line` for the help, `more` for the man page and docs. Anything
+   longer than a key line goes in the docs page.
 2. Update the page in `docs/user-guide/` or `docs/formats/`.
 3. Add a test. Integration tests in `tests/` build an `App` and pump events;
    look at `tests/common/` and the existing tests for the pattern.

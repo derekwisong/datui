@@ -5,12 +5,35 @@
 .SH NAME
 datui\-keys \- the keys of every datui screen
 .SH DESCRIPTION
-\fB?\fR or \fBF1\fR on any screen shows that screen's keys. This page is the same text, screen by screen. Ctrl+Q quits from anywhere and Ctrl+O goes to the home screen.
+\fB?\fR or \fBF1\fR on any screen shows that screen's keys, grouped by task: \fB/\fR narrows them to those whose text matches, and Enter closes the help and presses the key on the line. This page lists every screen's keys, with the longer descriptions.
 .SH KEYS
+.SS "Every screen"
+.TP
+\fB? / F1\fR
+This screen's keys. In a text field ? types, and F1 opens the help
+.TP
+\fBCtrl+O\fR
+The home screen; abandons a load
+.TP
+\fBCtrl+Q / Ctrl+C\fR
+Quit from anywhere; Ctrl+C quits from a text field too, where Alt+W copies
+.SS "Help"
+.TP
+\fB\(ua / \(da (j/k)\fR
+Move between the keys
+.TP
+\fBEnter\fR
+Close the help and press the key on the line, where help was opened
+.TP
+\fB/\fR
+Narrow to the keys whose text matches
+.TP
+\fBEsc\fR
+Clear the filter, then close
 .SS "Table"
 Where a dataset opens.
 .PP
-\fINavigation\fR
+\fIExplore\fR
 .TP
 \fB\(ua / \(da (j/k)\fR
 Move the row cursor
@@ -24,20 +47,20 @@ A page of columns left or right, the cursor on the page's first column (Shift+\(
 \fB{ / }\fR
 First column, last column
 .TP
-\fBg\fR
-Go to a column by name; the cursor goes with it
+\fBPgUp / PgDn\fR
+A page up or down (Ctrl+B / Ctrl+F too)
 .TP
-\fBPgUp/PgDn\fR
-Scroll pages (Ctrl+F down, Ctrl+B up)
+\fBCtrl+D / Ctrl+U\fR
+Half a page down or up
 .TP
-\fBHome/End\fR
-Go to first/last row (G = End)
-.TP
-\fBCtrl+D/Ctrl+U\fR
-Half page down/up
+\fBHome / End\fR
+First or last row (G = End)
 .TP
 \fB:\fR
-Go to row number (e.g. :0 Enter for top)
+Go to a row number (:0 Enter for the top)
+.TP
+\fBg\fR
+Go to a column by name
 .TP
 \fBf\fR
 Find text or a regex in the view; the cursor, column cursor and all, goes to the first match at or after its row
@@ -51,124 +74,111 @@ On a row of a by query or a SQL GROUP BY, drill down to its rows (Esc comes back
 \fBSpace\fR
 Inspect the row: every field, each value whole and exact (Esc or Space closes). The bar's first chip says what Enter does: Inspect, or Drill
 .PP
-\fIData operations\fR
+\fIShape\fR
 .TP
 \fB/\fR
 Query: SQL, Text or q
 .TP
-\fBc\fR
-Open charts
-.TP
 \fBs\fR
 Open the Sort & Filter sidebar (tabs: Columns, Filters), on the cursor's column
-.TP
-\fBF\fR
-Value counts of the cursor's column: each value's rows, percent and a bar, with a summary
 .TP
 \fB+ / \-\fR
 Filter on the cursor's cell: + keeps the rows with its value, \- drops them (a null cell: the nulls). Each adds a row to the Filters tab, joined with "and"; the value is the cell's exactly as stored
 .TP
-\fBa\fR
-Open Analysis. In a Data Quality evidence drill a is disabled; Esc returns to the observation
-.TP
-\fBp\fR
-Open Pivot & Melt
-.TP
-\fBe\fR
-Export data to file
-.TP
-\fBy\fR
-Copy to the clipboard (cell, row, view or table); a cell is the cursor's
-.TP
 \fBr\fR
 Reverse sort order (sorted columns carry a direction mark in the header); with no sort, reverse the row order
-.TP
-\fBR\fR
-Reset table: clear the query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view
-.TP
-\fBV\fR
-Apply the best-matching view (or open the list)
-.TP
-\fBv\fR
-Open the views list
-.PP
-\fIDisplay\fR
-.TP
-\fBi\fR
-Open Info panel (tabs: Schema, Resources, Partitions, Notes). H on its Schema tab reads a CSV's first row as data, or as column names
-.TP
-\fB#\fR
-Toggle row numbers
-.TP
-\fB< / >\fR
-The column cursor's column 4 cells narrower or wider
-.TP
-\fB= / w\fR
-Fit it to the rows on screen; back to automatic width
-.TP
-\fB,\fR
-Toggle number formatting (digit grouping)
-.TP
-\fBD\fR
-Toggle the type row under the column headers
-.TP
-\fBb\fR
-A binary file read through a format spec: read it again with another spec. Clears the query, filters and sort
 .TP
 \fBH / L\fR
 Move the cursor's column one place left or right, the cursor with it; a frozen column moves among the frozen ones. R puts the order back
 .TP
+\fBp\fR
+Pivot or melt
+.TP
+\fBR\fR
+Reset table: clear the query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view
+.PP
+\fIAnalyze\fR
+.TP
+\fBF\fR
+Value counts of the cursor's column: each value's rows, percent and a bar, with a summary
+.TP
+\fBa\fR
+Open Analysis. In a Data Quality evidence drill a is disabled; Esc returns to the observation
+.TP
+\fBc\fR
+Chart the view
+.TP
+\fBi\fR
+Open the Info panel (tabs: Schema, Resources, Partitions, Notes). H on its Schema tab reads a CSV's first row as data, or as column names
+.PP
+\fIOutput\fR
+.TP
+\fBe\fR
+Export the view to a file
+.TP
+\fBy\fR
+Copy to the clipboard (cell, row, view or table); a cell is the cursor's
+.TP
+\fBv\fR
+The saved views list
+.TP
+\fBV\fR
+Apply the best-matching view (or open the list)
+.PP
+\fIDisplay\fR
+.TP
+\fB#\fR
+Row numbers on or off
+.TP
+\fB,\fR
+Number formatting (digit grouping) on or off
+.TP
+\fBD\fR
+The type row under the headers on or off
+.TP
+\fB< / >\fR
+The cursor's column 4 cells narrower or wider
+.TP
+\fB= / w\fR
+Fit the cursor's column to the rows on screen; w puts it back to automatic width
+.TP
+\fBb\fR
+A binary file read through a format spec: read it again with another spec. Clears the query, filters and sort
+.TP
 \fBt\fR
 Follow the file as it grows (CSV, TSV, PSV, NDJSON). Reads it again, so the query, filters and sort are cleared; while following, t pauses and resumes, and Esc stops
-.TP
-\fB? / F1\fR
-Open this help (F1 works in text fields). Esc or ? to close.
 .PP
-\fIHelp navigation\fR
-.TP
-\fB\(ua\(da (j/k)\fR
-Scroll help content
-.TP
-\fBPageUp/PageDown\fR
-Scroll help pages
-.TP
-\fBHome/End\fR
-Jump to top/bottom
-.PP
-\fIExit\fR
-.TP
-\fBCtrl+O\fR
-Home screen (works during a load; abandons it)
-.TP
-\fBCtrl+Q\fR
-Quit from anywhere (Ctrl+C too)
+\fIGo\fR
 .TP
 \fBq\fR
 Back to the home screen when the dataset was opened from it; otherwise quit (the control bar says which)
 .TP
 \fBQ\fR
 Quit
+.TP
+\fBEsc\fR
+Leave a drill-down, stop a find or a follow
 .PP
 \fIMouse\fR
 .TP
 \fBClick\fR
-Put the cursor on the cell; on a header, its column
+The cursor to the cell; on a header, its column
 .TP
-Double-click
+\fBDouble\-click\fR
 Enter on the row
 .TP
 \fBWheel\fR
 \(ua / \(da, three rows a notch; the same in help, the inspector and the sidebars
 .TP
-Shift+wheel
+\fBShift+wheel\fR
 \(<- / \(->, the column cursor (a sideways wheel too)
 .TP
-Click a chip
+\fBClick a chip\fR
 Press its key
 .SS "Home screen"
 \fBdatui\fR with no path, or \fBCtrl\fR+\fBO\fR from anywhere.
 .PP
-\fINavigation\fR
+\fIExplore\fR
 .TP
 \fB\(ua / \(da\fR
 Move the selection (Ctrl+P / Ctrl+N too)
@@ -176,8 +186,8 @@ Move the selection (Ctrl+P / Ctrl+N too)
 \fBCtrl+\(ua / Ctrl+\(da\fR
 Previous or next section
 .TP
-\fBPgUp/PgDn\fR
-Move a screenful, stopping at the first and last
+\fBPgUp / PgDn\fR
+A screenful, stopping at the first and last
 .TP
 \fBHome / End\fR
 The first or last row
@@ -185,28 +195,24 @@ The first or last row
 \fB\(<- / \(->\fR
 Fold or unfold a section; \(-> on a directory or a file of tables goes inside it
 .TP
-\fBEnter\fR
-What the control bar says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A place a collection suggests, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them
-.TP
 \fBSpace\fR
 While the filter is empty: fold or unfold the section header under the cursor. With a filter typed, it types
+.TP
+\fBTab\fR
+Cycle the sort; the control bar names the order in effect when it has room
+.PP
+\fIGo\fR
+.TP
+\fBEnter\fR
+What the control bar says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A place a collection suggests, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them
 .TP
 \fBBackspace\fR
 Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a collection's remote dataset, back here)
 .TP
-\fBTab\fR
-Cycle the sort; the control bar names the order in effect when it has room
-.TP
 \fBEsc\fR
 Back out one layer: the path prompt, the filter, the directory (back to the row it was entered from), then to the open table, which the control bar's chip names
-.TP
-\fBClick\fR
-Select the row; double-click is Enter
-.TP
-\fBWheel\fR
-Move the selection three rows, stopping at the ends
 .PP
-\fIFinding\fR
+\fIFind\fR
 .TP
 \fB(type)\fR
 Narrow by name or column; fuzzy, so "sal" finds "sales". What you open often ranks first. Typing also searches below the directory you are inside and the listed bucket names; matches appear under "Found"
@@ -219,6 +225,8 @@ Clear the filter or path input
 .TP
 \fBCtrl+R\fR
 List again what is on screen
+.PP
+\fIManage\fR
 .TP
 \fBCtrl+A\fR
 Show or hide files datui cannot read; inside a SQLite database, its internal tables
@@ -235,20 +243,23 @@ Forget the highlighted recent entry, or a whole place after confirming, or a rem
 \fBShift+Delete\fR
 Forget every recent entry, after confirming
 .PP
-\fIHelp and leaving\fR
+\fIMouse\fR
 .TP
-\fB? / F1\fR
-This help (? before typing starts; F1 always)
+\fBClick\fR
+Select the row; double-click is Enter
 .TP
-\fBCtrl+Q / Ctrl+C\fR
-Quit
+\fBWheel\fR
+Move the selection three rows, stopping at the ends
 .SS "Query prompt"
 \fB/\fR at the table.
 .PP
-\fIKeys\fR
+\fIRun\fR
 .TP
 \fBEnter\fR
 Run the query (reopening / restores the last query, selected: typing replaces it, arrows edit it). On the tab bar, Enter returns to the input
+.TP
+\fBCtrl+J\fR
+Run, the same as Enter
 .TP
 \fBCtrl+T\fR
 Next mode: SQL, Text, q (from the input too)
@@ -256,37 +267,35 @@ Next mode: SQL, Text, q (from the input too)
 \fBShift+Tab\fR
 Input to the tab bar and back
 .TP
+\fB\(<- / \(-> (h/l)\fR
+On the tab bar: switch mode
+.TP
+\fBEsc\fR
+Close
+.PP
+\fIEdit\fR
+.TP
 \fBTab\fR
 SQL: complete a column name or df; again for the next match. Text, q: to the tab bar
 .TP
 \fBAlt+Enter\fR
 SQL: start a new line
 .TP
-\fB\(<- / \(-> (h/l)\fR
-On the tab bar: switch mode
-.TP
 \fB\(ua / \(da\fR
 Earlier and later queries from the history (Ctrl+P / Ctrl+N too; each mode keeps its own). In SQL over several lines, they move between lines first
 .TP
 \fBCtrl+U / Ctrl+K\fR
-Delete to the start / end of the line
+Delete to the start or end of the line
 .TP
 \fBCtrl+Z / Ctrl+R\fR
-Undo / redo
-.TP
-\fBCtrl+J\fR
-Run, the same as Enter
-.TP
-\fBF1\fR
-Show this help (works from the input)
-.TP
-\fBEsc\fR
-Close
+Undo, redo
 .SS "Find"
 \fBf\fR at the table.
+.PP
+\fIFind\fR
 .TP
-(text)
-What to find. Plain text, or a regex with Ctrl+R
+\fB(text)\fR
+What to find: text, or a regex with Ctrl+R
 .TP
 \fBEnter\fR
 Find: the cursor, column cursor and all, goes to the first match at or after its row. On an empty field, clear the find
@@ -297,14 +306,11 @@ Regex on or off
 \fBCtrl+L\fR
 Only the column cursor's column, or every column shown
 .TP
-\fB\(ua\(da\fR
+\fB\(ua / \(da\fR
 Earlier patterns (Ctrl+P / Ctrl+N too)
 .TP
 \fBEsc\fR
 Cancel
-.TP
-\fBF1\fR
-Show this help
 .PP
 \fIAt the table\fR
 .TP
@@ -318,8 +324,10 @@ Find again, the last pattern ready to edit
 Clear the find (or stop one still reading)
 .SS "Go to row"
 \fB:\fR at the table.
+.PP
+\fIGo\fR
 .TP
-(digits)
+\fB(digits)\fR
 The row to go to (:0 Enter is the top)
 .TP
 \fBEnter\fR
@@ -330,14 +338,13 @@ Delete a digit
 .TP
 \fBEsc\fR
 Cancel
-.TP
-\fBF1\fR
-Show this help
 .SS "Go to column"
 \fBg\fR at the table.
+.PP
+\fIGo\fR
 .TP
 \fB(type)\fR
-Narrow the list to the names that contain it
+Narrow to the names that contain it
 .TP
 \fB\(ua / \(da\fR
 Move
@@ -350,13 +357,10 @@ Delete a character (Ctrl+W a word, Ctrl+U all)
 .TP
 \fBEsc\fR
 Close without moving
-.TP
-\fBF1\fR
-Show this help
 .SS "Inspector"
 \fBSpace\fR at the table.
 .PP
-\fIThe fields\fR
+\fIFields\fR
 .TP
 \fB\(ua / \(da (j/k)\fR
 Move between fields
@@ -371,7 +375,7 @@ A page of fields
 Previous and next row; the table's cursor moves with it
 .TP
 \fBTab\fR
-Move into the value, to scroll and find in it
+Into the value, to scroll and find in it
 .TP
 \fBEnter\fR
 On a group's row, its rows, as at the table. Else open a struct, a list, or text holding a JSON object or array; or read a field the table's rows do not hold (hidden and binary columns)
@@ -379,20 +383,8 @@ On a group's row, its rows, as at the table. Else open a struct, a list, or text
 \fBr\fR
 On a group's row, read a field the rows do not hold
 .TP
-\fBy\fR
-Copy the focused value as its view shows it
-.TP
-\fBY\fR
-Copy the whole row as one JSON object
-.TP
-\fBe\fR
-The value's next view, where it has more than one
-.TP
-\fBw\fR
-Word wrap or hard wrap for long text
-.TP
-\fBo\fR
-Open the value in another program
+\fB/\fR
+Find a field by name, then by value: type to narrow, Enter or \(da keeps the list narrowed, Esc clears it
 .TP
 \fBf\fR
 Nulls: shown or hidden (null and empty fields); comparing, only the fields that differ
@@ -406,16 +398,27 @@ Compare: a column for the next row, or the pinned one
 \fBm\fR
 Pin this row to compare others with; again to unpin
 .TP
-\fB/\fR
-Find a field by name, then by value: type to narrow, Enter or \(da keeps the list narrowed, Esc clears it
-.TP
-\fB? / F1\fR
-Show this help (in a find line ? types; use F1)
-.TP
 \fBEsc / Space\fR
 Close; Esc clears a find first
 .PP
-\fIThe value, after Tab\fR
+\fIOutput\fR
+.TP
+\fBy\fR
+Copy the value as its view shows it
+.TP
+\fBY\fR
+Copy the whole row as one JSON object
+.TP
+\fBe\fR
+The value's next view, where it has more than one
+.TP
+\fBw\fR
+Word wrap or hard wrap for long text
+.TP
+\fBo\fR
+Open the value in another program
+.PP
+\fIValue\fR
 .TP
 \fB\(ua / \(da (j/k)\fR
 Scroll a line
@@ -432,16 +435,10 @@ Find in the value; n and N go to the next and last place
 \fBe, w, y, o\fR
 As in the fields
 .TP
-\fB\(<- / \(-> (h/l)\fR
-Previous and next row
-.TP
 \fBEsc / Tab\fR
 Back to the fields; Esc clears a find first
 .PP
-\fIInside a level\fR
-.TP
-\fB\(ua / \(da (j/k)\fR
-Move between items
+\fINested\fR
 .TP
 \fBEnter / \(-> (l)\fR
 Open the focused item
@@ -451,17 +448,16 @@ Up a level; at the row, Esc closes
 .TP
 \fBy\fR
 Copy the focused item: text as itself, a JSON object or array indented
-.TP
-\fBSpace\fR
-Close
 .SS "Info panel"
 \fBi\fR at the table.
-.TP
-\fBTab / Shift+Tab\fR
-On Schema tab: move focus (tab bar \[u2194] schema table). On other tabs: focus stays on tab bar.
+.PP
+\fIPanel\fR
 .TP
 \fB\(<- / \(-> (h/l)\fR
 Switch tabs. Afterward focus rests on the tab bar, so Tab returns to the body before \(ua/\(da scroll
+.TP
+\fBTab / Shift+Tab\fR
+On Schema tab: move focus (tab bar \[u2194] schema table). On other tabs: focus stays on tab bar
 .TP
 \fB\(ua / \(da (j/k)\fR
 Schema tab (when focused) or Notes tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list
@@ -478,21 +474,23 @@ Notes tab: take the offer on the note, where it has one
 \fBH\fR
 Schema tab, CSV, TSV, PSV: read the first row as data, under column_1, column_2, \[u2026]; again to read it as column names. Reads the file again, so the query, filters and sort are cleared, and the panel closes
 .TP
-\fB? / F1\fR
-Show this help
+\fBx\fR
+Show the file's bytes in the hex view
 .TP
 \fBEsc / i\fR
-Close info panel
+Close the panel
 .SS "Value counts"
 \fBF\fR at the table.
+.PP
+\fIExplore\fR
 .TP
 \fB\(ua / \(da (j/k)\fR
 Move
 .TP
-\fBPgUp/PgDn\fR
+\fBPgUp / PgDn\fR
 A page
 .TP
-\fBHome/End\fR
+\fBHome / End\fR
 First and last row
 .TP
 \fB\(<- / \(-> (h/l)\fR
@@ -507,45 +505,43 @@ Sort by count or by value
 \fBa\fR
 Count every row, when the counts are of a sample
 .TP
+\fBt\fR
+While following a file, count again with the rows that arrived since; the bar says how many
+.PP
+\fIOutput\fR
+.TP
 \fBy\fR
 Copy the counts as TSV: every value, its count, percent and cumulative percent
 .TP
 \fBe\fR
 Export the counts to a file
 .TP
-\fBt\fR
-While following a file, count again with the rows that arrived since; the bar says how many
-.TP
 \fBEsc\fR
 Back to the table; while every row is being counted, stop that and keep the sample
-.TP
-\fB? / F1\fR
-Show this help
 .SS "Sort and filter"
 \fBs\fR at the table.
+.PP
+\fISidebar\fR
 .TP
 \fBTab / Shift+Tab\fR
-Move focus between the tab bar and the body
+Between the tab bar and the body
 .TP
 \fB\(<- / \(->\fR
 Switch Columns / Filters (h/l on the tab bar)
 .TP
 \fBEnter\fR
-Apply everything staged and close (on the Filters tab, Enter adds or edits instead; see below)
+Apply everything staged and close (on the Filters tab, Enter adds or edits instead)
 .TP
 \fBa\fR
 On the Filters tab, outside the row editor: apply and close
 .TP
 \fBCtrl+J\fR
-Apply from anywhere, including mid-edit (the row in progress is saved). Ctrl+Enter does the same, on a terminal that tells it from Enter.
-.TP
-\fB? / F1\fR
-Show this help (F1 works in text fields)
+Apply from anywhere, including mid-edit (the row in progress is saved). Ctrl+Enter does the same, on a terminal that tells it from Enter
 .TP
 \fBEsc\fR
 Cancel and close; staged changes are discarded, and reopening shows what is applied
 .PP
-\fIColumns tab\fR
+\fIColumns\fR
 .TP
 \fB(type)\fR
 Narrow the column list, when the find field is focused
@@ -560,7 +556,7 @@ Put the column at that place in the sort order; 0 removes it (a digit past the e
 Remove the column from the sort
 .TP
 \fB[ / ]\fR
-Move the column earlier or later in the sort order
+Earlier or later in the sort order
 .TP
 \fB+ / \- (= / _)\fR
 Move the column's display position
@@ -583,10 +579,10 @@ Back to the automatic width
 \fBC\fR
 Clear the staged sort, order, locks, hidden columns and widths
 .PP
-\fIFilters tab\fR
+\fIFilters\fR
 .TP
 \fBEnter\fR
-Edit the row under the cursor, or add one on the last row. Editing walks three steps on the row: pick the column (type to narrow, Enter chooses), pick the operator the same way, then type the value and Enter saves the row. Tab, \(-> and Space also choose at the column and operator steps; Shift+Tab steps back. \(ua\(da (j/k) move in both lists, and \(da jumps from the find field into the list. Esc backs out of the edit and only the edit.
+Edit the row under the cursor, or add one on the last row. Editing walks three steps on the row: pick the column (type to narrow, Enter chooses), pick the operator the same way, then type the value and Enter saves the row. Tab, \(-> and Space also choose at the column and operator steps; Shift+Tab steps back. \(ua\(da (j/k) move in both lists, and \(da jumps from the find field into the list. Esc backs out of the edit and only the edit
 .TP
 \fBSpace\fR
 Toggle and/or on the row
@@ -596,23 +592,10 @@ Delete the row
 .TP
 \fBC\fR
 Clear every staged filter
-.TP
-Date
-2024-01-01
-.TP
-Date and time
-2024-01-01, 2024-01-01 05:30, 2024-01-01T05:30:00.25, a clock in the column's zone; +01:00 or Z names an instant
-.TP
-Time
-05:30, 05:30:00.25
-.TP
-Duration
-1d 2h 30m, 90s, 1500ms (d h m s ms us ns)
-.TP
-Decimal
-1.5, at the column's scale
 .SS "Pivot and melt"
 \fBp\fR at the table.
+.PP
+\fIForm\fR
 .TP
 \fBTab / Shift+Tab\fR
 Move between the rows (\(ua/\(da too); in a picker: choose and move to the next or previous row
@@ -620,25 +603,41 @@ Move between the rows (\(ua/\(da too); in a picker: choose and move to the next 
 \fB\(<- / \(->\fR
 Switch Pivot and Melt (h/l too, outside text fields); in a text field \(<-/\(-> move the cursor
 .TP
-\fBSpace or typing\fR
-Open the row's picker, narrowed by what you type
+\fBSpace\fR
+Open the row's picker, narrowed by what you type (typing opens it too)
 .TP
 \fBEnter\fR
 Apply the spec echoed above the footer
 .TP
 \fBEsc\fR
 Close without applying; while a pivot is computed, stop it and keep the form
+.PP
+\fIPicker\fR
 .TP
-\fB? / F1\fR
-Show this help (F1 works in text fields)
+\fB\(ua / \(da\fR
+Move; typing narrows
+.TP
+\fBEnter\fR
+Choose; on a several-choice row, done
+.TP
+\fBSpace\fR
+Choose; toggle a column on a several-choice row
+.TP
+\fBEsc\fR
+Back out of the picker, keeping toggles
 .SS "Chart"
 \fBc\fR at the table.
+.PP
+\fIOptions\fR
 .TP
 \fB1\-6\fR
-Switch chart type directly ([ / ] cycle)
+Switch chart type directly: XY, Histogram, Box Plot, KDE, Heatmap, Bar ([ / ] cycle)
+.TP
+\fB[ / ]\fR
+Previous or next chart type
 .TP
 \fBTab / Shift+Tab\fR
-Move between the option rows (\(ua/\(da too)
+Move between the option rows (\(ua / \(da too)
 .TP
 \fBEnter / Space\fR
 Open a column row's picker, toggle an option, or cycle the plot style, range or order
@@ -646,20 +645,16 @@ Open a column row's picker, toggle an option, or cycle the plot style, range or 
 \fB\(<- / \(-> (h/l)\fR
 Cycle the plot style, range or order; adjust bins, bandwidth, or Sample size (+ / \- too)
 .TP
-\fBPgUp/PgDn\fR
+\fBPgUp / PgDn\fR
 Adjust Sample size in bigger steps
-.TP
-Sample size
-Rows a chart reads. A larger table is sampled across all of it, and the chart says so below the plot
-.TP
-Range
-Histogram, Box Plot and KDE: all values, or p1-p99 (the 1st to 99th percentile); the chart counts the values left out
-.TP
-Bar
-One bar per category: a text, categorical, boolean or integer column. Count counts the rows per category, exactly, over the whole view; a numeric value takes one row per category (group first with a query). Order by value or label; bars that do not fit are counted
 .TP
 \fBg\fR
 Grid on or off at the labeled ticks: XY, Histogram, Box Plot and KDE. [analysis] chart_grid sets where it starts
+.TP
+\fBEsc\fR
+Back to the table
+.PP
+\fIPlot\fR
 .TP
 \fBx\fR
 XY: the plot takes the keys, and a crosshair reads out x and every series' value under the plot. \(<- / \(-> (h/l) step to the next point or column, Home/End go to the ends; x, Tab or Esc hand the keys back to the option rows. A click on the plot puts the crosshair there
@@ -669,50 +664,61 @@ Export the chart to PNG or EPS. Needs the chart's required columns picked first
 .TP
 \fBt\fR
 While following a file, draw again with the rows that arrived since; the bar says how many
+.PP
+\fIPicker\fR
 .TP
-\fB? / F1\fR
-Show this help (with a picker open ? types into the filter; F1 still opens help)
+\fB\(ua / \(da\fR
+Move; typing narrows
+.TP
+\fBEnter / Space\fR
+Choose; on the Y series row Space toggles a series in or out
+.TP
+\fBTab / Shift+Tab\fR
+Choose and move to the next or previous row
 .TP
 \fBEsc\fR
-Back to the table
+Back out of the picker alone
 .PP
 \fIExport dialog\fR
 .TP
 \fBTab / Shift+Tab\fR
-Cycle Format \(-> Path \(-> Title \(-> Width \(-> Height
+Format, Path, Title, Width, Height
 .TP
 \fB\(ua / \(da (j/k)\fR
 Change the format
 .TP
 \fBEnter\fR
-Export, from anywhere in the dialog
+Export, from anywhere in the dialog. An existing file asks Overwrite / No, starting on No; \(<-/\(-> (h/l) or Tab pick, Enter confirms, and declining returns to the filled dialog
 .TP
 \fBEsc\fR
 Back to the chart
 .SS "Analysis: Describe"
 \fBa\fR at the table.
 .PP
-\fINavigation\fR
+\fIExplore\fR
 .TP
 \fBTab\fR
-Switch focus between main area and sidebar
+Between the results and the sidebar
 .TP
-\fB\(ua\(da / j/k\fR
-Navigate rows (or sidebar tools if sidebar focused)
+\fB\(ua / \(da (j/k)\fR
+Rows, or the sidebar's tools
 .TP
-\fB\(<-\(-> / h/l\fR
+\fB\(<- / \(-> (h/l)\fR
 Scroll the statistics; the header counts those out of view
 .TP
-\fBHome/End\fR
-Jump to first/last row
+\fBHome / End\fR
+First or last row
 .TP
-\fBPgUp/PgDn\fR
-Navigate by page
+\fBPgUp / PgDn\fR
+A page
 .TP
 \fBEnter\fR
 Select tool from sidebar (when sidebar focused). The first run on a dataset starts in the Sample form, where Enter runs it; later tools reuse that sample
+.TP
+\fBEsc\fR
+Cancel a run in progress; otherwise close the analysis view
 .PP
-\fIActions\fR
+\fISample\fR
 .TP
 \fBs\fR
 Choose the sample every tool reads: which rows, how they are picked, how many, the seed
@@ -728,34 +734,33 @@ Read every row instead, after confirming
 .TP
 \fBt\fR
 While following a file, read again with the rows that arrived since the results were read
-.TP
-\fBEsc\fR
-Cancel a run in progress; otherwise close the analysis view or this help
 .SS "Analysis: Distribution"
 Distribution in the Analysis sidebar.
 .PP
-\fINavigation\fR
+\fIExplore\fR
 .TP
-\fB\(ua\(da / j/k\fR
-Navigate rows
+\fB\(ua / \(da (j/k)\fR
+Rows, or the sidebar's tools
 .TP
-\fB\(<-\(-> / h/l\fR
+\fB\(<- / \(-> (h/l)\fR
 Scroll the statistics; the header counts those out of view
 .TP
-\fBHome/End\fR
-Jump to first/last row
+\fBHome / End\fR
+First or last row
 .TP
-\fBPgUp/PgDn\fR
-Navigate by page
+\fBPgUp / PgDn\fR
+A page
 .TP
 \fBTab\fR
-Switch focus between main area and sidebar
+Between the results and the sidebar
 .TP
 \fBEnter\fR
 Open detail view for selected column (shows Q-Q plot and histogram); with the sidebar focused, select a tool
 .TP
 \fBEsc\fR
-Cancel a run in progress; otherwise close the analysis view or this help
+Cancel a run in progress; otherwise close the analysis view
+.PP
+\fISample\fR
 .TP
 \fBs\fR
 Choose the sample every tool reads: which rows, how they are picked, how many, the seed
@@ -773,33 +778,47 @@ Read every row instead, after confirming
 While following a file, read again with the rows that arrived since the results were read
 .SS "Analysis: Distribution detail"
 \fBEnter\fR on a column in Distribution.
+.PP
+\fIDetail\fR
+.TP
+\fB\(ua / \(da (j/k)\fR
+Compare the values with another family
+.TP
+\fBs\fR
+Histogram scale: linear or log
+.TP
+\fBEsc\fR
+Back to the distribution table
 .SS "Analysis: Correlation"
 Correlation Matrix in the Analysis sidebar.
 .PP
-\fINavigation\fR
+\fIExplore\fR
 .TP
 \fBTab\fR
-Switch focus between main area and sidebar
+Between the matrix and the sidebar
 .TP
-\fB\(ua\(da / j/k\fR
-Navigate matrix rows (or sidebar tools if sidebar focused)
+\fB\(ua / \(da (j/k)\fR
+Matrix rows, or the sidebar's tools
 .TP
-\fB\(<-\(-> / h/l\fR
-Navigate matrix columns
+\fB\(<- / \(-> (h/l)\fR
+Matrix columns
 .TP
-\fBHome/End\fR
+\fBHome / End\fR
 Jump to the first/last corner cell (the column resets too)
 .TP
-\fBPgUp/PgDn\fR
-Navigate by page
+\fBPgUp / PgDn\fR
+A page
 .TP
 \fBEnter\fR
 Open pair detail view (on a cell) or select tool (sidebar); does nothing on a diagonal cell
-.PP
-\fIActions\fR
 .TP
 \fBm\fR
-Method: Pearson or Spearman (both come from the one run)
+Method: Pearson r or Spearman \(*r, named in the title (both come from the one run, so it reads nothing)
+.TP
+\fBEsc\fR
+Cancel a run in progress; otherwise close the analysis view
+.PP
+\fISample\fR
 .TP
 \fBs\fR
 Choose the sample every tool reads: which rows, how they are picked, how many, the seed
@@ -815,38 +834,20 @@ Read every row instead, after confirming
 .TP
 \fBt\fR
 While following a file, read again with the rows that arrived since the results were read
-.TP
-\fBEsc\fR
-Cancel a run in progress; otherwise close the analysis view or this help
 .SS "Analysis: Correlation detail"
 \fBEnter\fR on a pair in the correlation matrix.
 .PP
-\fIKeys\fR
+\fIDetail\fR
 .TP
 \fBm\fR
-Method: Pearson or Spearman
-.TP
-\fB?\fR
-Toggle this help
+Pearson or Spearman
 .TP
 \fBEsc\fR
-Return to the correlation matrix
+Return to the correlation matrix. Resampling (r) works from the matrix, not from inside this detail
 .SS "Analysis: Data Quality"
 Data Quality in the Analysis sidebar.
 .PP
 \fISetup\fR
-.TP
-Rows & sample
-The sample every tool reads
-.TP
-Columns
-Text read as time, time roles, the intervals between them, and what each column must hold
-.TP
-Study
-Grain, expected windows, comparison, values, latency threshold, and the window intervals go in
-.TP
-Read
-What Run will read, before it reads
 .TP
 \fB\(ua / \(da, Tab\fR
 Move between rows
@@ -872,63 +873,24 @@ Run, from any row. A full read asks first; the report on screen or in the sessio
 \fBEsc\fR
 Discard every staged edit
 .PP
-\fITime roles\fR
+\fISetup lists\fR
 .TP
 \fB\(ua / \(da\fR
-Choose the role
+Time roles: choose the role. Intervals: choose the pair. Column intent: choose the column. Expected: Windows, From, Before (Tab too)
 .TP
 \fB\(<- / \(->\fR
-Choose its column
-.TP
-\fBEnter\fR
-Done
-.TP
-\fBEsc\fR
-Put back the roles as they were
-.PP
-\fIIntervals in Setup\fR
-.TP
-\fB\(ua / \(da\fR
-Choose the pair
+Time roles: choose the role's column. Expected: choose the windows. Intervals: measure the pair or not
 .TP
 \fBSpace\fR
-Measure it or not; \(<- / \(-> too
+Intervals: measure the pair or not. Column intent: declare the column's intent in a form
 .TP
 \fBEnter\fR
 Done
 .TP
 \fBEsc\fR
-Put back the pairs as they were
+Put the list back as it was
 .PP
-\fIColumn intent\fR
-.TP
-\fB\(ua / \(da\fR
-Choose the column
-.TP
-\fBSpace\fR
-Declare its intent in a form
-.TP
-\fBEnter\fR
-Done
-.TP
-\fBEsc\fR
-Put back the intent as it was
-.PP
-\fIExpected in Setup\fR
-.TP
-\fB\(ua / \(da, Tab\fR
-Windows, From, Before
-.TP
-\fB\(<- / \(->\fR
-Choose the windows
-.TP
-\fBEnter\fR
-Done
-.TP
-\fBEsc\fR
-Put back Expected as it was
-.PP
-\fIKeys on the report\fR
+\fIReport\fR
 .TP
 \fB\(<- / \(-> (h/l)\fR
 Previous or next page
@@ -936,13 +898,10 @@ Previous or next page
 \fB1 \- 5\fR
 Overview, Columns, Segments, Trends, Intervals
 .TP
-\fBe\fR
-Setup
-.TP
 \fB\(ua / \(da (j/k)\fR
 Move, or scroll a tall finding
 .TP
-\fBPgUp/PgDn\fR
+\fBPgUp / PgDn\fR
 Page; Home/End jump to either end
 .TP
 \fBEnter\fR
@@ -954,6 +913,9 @@ Overview: only one column's or one type's findings
 \fBo\fR
 Overview: ranked, by rows, by rate
 .TP
+\fBe\fR
+Setup
+.TP
 \fBs\fR
 Setup, with the Sample form open
 .TP
@@ -961,7 +923,7 @@ Setup, with the Sample form open
 View the sample's rows; Esc returns
 .TP
 \fBp\fR
-Show the access plan: what a run reads
+The access plan: what a run reads
 .TP
 \fBr\fR
 On a sample, run again with a new seed
@@ -970,13 +932,10 @@ On a sample, run again with a new seed
 Export the report to JSON or Markdown; nothing is read
 .TP
 \fBTab\fR
-Move between the result and the tools
+Between the result and the tools
 .TP
 \fBEsc\fR
 Back one level: all findings again, then close
-.TP
-\fB? / F1\fR
-Show this help
 .PP
 \fISegments\fR
 .TP
@@ -992,10 +951,7 @@ Compare with the highlighted segment
 \fITrends\fR
 .TP
 \fBEnter\fR
-A line's bars: span, segments, rows sampled of counted, rate, 95% interval, and the bar before
-.TP
-\fB\(ua / \(da\fR
-In the bars, the next bar
+A line's bars: span, segments, rows sampled of counted, rate, 95% interval, and the bar before. \(ua / \(da there: the next bar
 .TP
 \fBm\fR
 Next measure
@@ -1009,7 +965,7 @@ The expected windows with no rows: empty by exact count, not sampled, or out of 
 \fBEsc\fR
 Back to Trends
 .PP
-\fIIntervals page\fR
+\fIIntervals\fR
 .TP
 \fBEnter\fR
 An interval's detail: its ends, the rows with both, missing and unread ends, negative and zero durations, percentiles and breaches. Enter there shows the rows behind the count under the cursor: a sample's from the rows the run kept
@@ -1018,15 +974,17 @@ An interval's detail: its ends, the rows with both, missing and unread ends, neg
 Back to the list
 .SS "Export"
 \fBe\fR at the table.
+.PP
+\fIForm\fR
 .TP
 \fBTab / Shift+Tab\fR
-Move focus between fields
+Move between fields
 .TP
 \fB\(ua / \(da (j/k)\fR
-In the format list: change format On Compression: change compression In Path and Delimiter: nothing (no history there, and j/k are characters)
+In the format list: change format. On Compression: change compression. In Path and Delimiter: nothing (no history there, and j/k are characters)
 .TP
 \fB\(<- / \(-> (h/l)\fR
-Move the cursor in text fields On Compression: change compression On Include header and Source file: move focus
+Move the cursor in text fields. On Compression: change compression. On Include header and Source file: move focus
 .TP
 \fBSpace\fR
 Toggle a checkbox (Include header, Source file)
@@ -1034,38 +992,56 @@ Toggle a checkbox (Include header, Source file)
 \fBEnter\fR
 Export, from anywhere in the form. On a blank path the form says "Enter a file path." instead of exporting
 .TP
-\fB? / F1\fR
-Show this help (F1 works in text fields)
-.TP
 \fBEsc\fR
 Close without exporting
-.SS "Copy"
-\fBy\fR at the table.
+.PP
+\fIFile exists\fR
 .TP
-\fBTab / Shift+Tab\fR
-Move focus between rows; in an open picker: choose
-.TP
-\fB\(ua / \(da\fR
-Move focus; in an open picker: move the cursor (j/k narrow the picker; only \(ua/\(da move there)
-.TP
-\fBSpace\fR
-Open the focused row's picker; on Header: toggle In an open picker: choose
+\fB\(<- / \(-> (h/l)\fR
+Pick Overwrite or No (Tab too)
 .TP
 \fBEnter\fR
-Copy, from anywhere in the form In an open picker: choose On the Cell scope with no column picked, Enter re-accents the spec line instead of copying
+Confirm the one picked
 .TP
-\fBtype\fR
-In an open picker: narrow the list
+\fBEsc\fR
+Decline: back to the filled form
+.SS "Copy"
+\fBy\fR at the table.
+.PP
+\fIForm\fR
 .TP
-\fB? / F1\fR
-Show this help (F1 works in text fields; with a picker open ? narrows, so use F1)
+\fBTab / Shift+Tab\fR
+Move between rows
+.TP
+\fB\(ua / \(da\fR
+Move between rows
+.TP
+\fBSpace\fR
+Open the row's picker; on Header: toggle
+.TP
+\fBEnter\fR
+Copy, from anywhere in the form. On the Cell scope with no column picked, Enter re-accents the spec line instead of copying
 .TP
 \fBEsc\fR
 Close a picker, then the dialog, without copying
+.PP
+\fIPicker\fR
+.TP
+\fB(type)\fR
+Narrow the list
+.TP
+\fB\(ua / \(da\fR
+Move the cursor (j/k narrow the picker; only \(ua/\(da move there)
+.TP
+\fBEnter / Space\fR
+Choose
+.TP
+\fBTab / Shift+Tab\fR
+Choose and move on
 .SS "Views"
 \fBv\fR at the table.
 .PP
-\fIViews list\fR
+\fIList\fR
 .TP
 \fB\(ua / \(da (j/k)\fR
 Move in the list
@@ -1085,16 +1061,13 @@ Delete the selected view, after confirming
 \fBi\fR
 Show how the selected view's score was computed (Esc closes the score view)
 .TP
-\fB? / F1\fR
-Show this help (F1 works in text fields)
-.TP
 \fBEsc\fR
 Close
 .PP
-\fISave and edit form\fR
+\fISave and edit\fR
 .TP
 \fBTab / Shift+Tab\fR
-Move between rows (\(ua/\(da outside the description)
+Move between rows (\(ua / \(da outside the description)
 .TP
 \fBEnter\fR
 Save. In the description Enter types: Tab out of it, then Enter
@@ -1103,7 +1076,7 @@ Save. In the description Enter types: Tab out of it, then Enter
 Save from anywhere, the description included; so does Ctrl+Enter, on a terminal that tells it from Enter
 .TP
 \fBPgUp / PgDn\fR
-Move five lines in the description
+Five lines in the description
 .TP
 \fBSpace\fR
 Expand or collapse Matching; toggle schema match
@@ -1111,7 +1084,7 @@ Expand or collapse Matching; toggle schema match
 \fBEsc\fR
 Back to the list, discarding edits
 .PP
-\fIDelete confirmation\fR
+\fIDelete\fR
 .TP
 \fBEnter (d / D)\fR
 Delete
@@ -1120,9 +1093,11 @@ Delete
 Cancel
 .SS "Format picker"
 \fBb\fR at a table read through a format spec.
+.PP
+\fIPick\fR
 .TP
 \fB(type)\fR
-Narrow the list to the names that contain it
+Narrow to the names that contain it
 .TP
 \fB\(ua / \(da\fR
 Move
@@ -1135,13 +1110,10 @@ Delete a character (Ctrl+W a word, Ctrl+U all)
 .TP
 \fBEsc\fR
 Close and keep the format
-.TP
-\fBF1\fR
-Show this help
 .SS "Hex view"
 \fBdatui \-\-hex FILE\fR, \fBCtrl\fR+\fBX\fR on the home screen, or \fBx\fR in the Info panel.
 .PP
-\fIMoving\fR
+\fIExplore\fR
 .TP
 \fB\(<- / \(-> (h/l)\fR
 A byte
@@ -1158,13 +1130,13 @@ The start or end of the row
 \fBg / G\fR
 The start or end of the file (Home and End too)
 .TP
-\fBPgUp/PgDn\fR
+\fBPgUp / PgDn\fR
 A page (Ctrl+B/F too; Ctrl+U/D half a page)
 .TP
 \fB:\fR
 Go to an offset: 4096 or 0x1000; +16 or \-16 from the cursor; e-8 for the eighth byte from the end
 .PP
-\fIFinding\fR
+\fIFind\fR
 .TP
 \fBf\fR
 Find bytes. Text is found as its UTF-8 bytes (Ctrl+U in the prompt: as UTF-16 little-endian). 0x1acffc1d, or two or more hex pairs (de ad be ef), is a byte pattern, where ?? matches any byte. Text in double quotes is text, even when it looks like hex. A match may span rows
@@ -1172,26 +1144,27 @@ Find bytes. Text is found as its UTF-8 bytes (Ctrl+U in the prompt: as UTF-16 li
 \fBn / N\fR
 The next or previous match, round the end of the file
 .TP
+\fBR\fR
+When the matches after the one found are all the same distance apart, make that the bytes per row
+.TP
 \fBEsc\fR
 Stop a find that is reading
 .PP
-\fIRows\fR
+\fIDisplay\fR
 .TP
 \fBr\fR
 Bytes per row, so that records line up; empty goes back to as many as fit. \-\-hex-width N sets it on the command line
 .TP
 \fB#\fR
 Offsets in decimal or hex
-.PP
-\fIThe byte inspector\fR
 .TP
 \fBi / Enter\fR
-Show or hide it. Beside the bytes when there is room for it and 16 bytes a row, over them when there is not
+Show or hide the byte inspector. Beside the bytes when there is room for it and 16 bytes a row, over them when there is not
 .TP
 \fBv\fR
 Mark from the cursor; move to mark a range, and the status line counts it. v again, or Esc, unmarks
 .PP
-\fILeaving\fR
+\fIGo\fR
 .TP
 \fBB\fR
 Read the file with a format spec instead
@@ -1200,10 +1173,7 @@ Read the file with a format spec instead
 Back to the table, when opened from the Info panel; back home, when opened from there
 .TP
 \fBq\fR
-Home, when opened from there; otherwise quit
-.TP
-\fB? / F1\fR
-Show this help
+Home, when opened from there; else quit
 .SH EXAMPLES
 The keys of every screen, as a manual page.
 .PP

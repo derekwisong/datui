@@ -717,7 +717,7 @@ match = { glob = "*.l2", magic = "L2FD", where = { "header.version" = 3 } }
 .PP
 When two specs match the same way, the first on the search path reads the file. The bar shows \fB2 formats match\fR, and the Notes tab names the others. A file no spec matches opens as it does without specs; a local file no reader takes either opens in the hex view, where \fBB\fR reads it with a spec and \fBr\fR lines the bytes up in records while you write one.
 .PP
-\fBb\fR on the table picks another spec and reads the file again with it. The Notes tab of \fBi\fR says which spec read the file and why, the header's values, and any bytes left out.
+\fBb\fR on the table picks another spec and reads the file again with it, clearing the query, filters and sort. The list starts with the spec the file was read with, then the others that matched it the same way, then every other spec on the search path for a file (or for a directory of column files). The Notes tab of \fBi\fR says which spec read the file and why, the header's values, and any bytes left out.
 .SS "Delimited text"
 Loggers and instruments write a metadata line and a units line above a padded header. A spec of \fBkind = "delimited"\fR holds the CSV options for such a family of files, so they open with no flags: from the command line, from the home screen, compressed, or as a directory.
 .PP

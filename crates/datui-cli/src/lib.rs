@@ -200,6 +200,7 @@ pub fn examples_help() -> String {
         ));
     }
     out.push_str("\nDocs: https://derekwisong.github.io/datui/ and `datui man`\n");
+    out.push_str("Keys: datui man keys\n");
     out
 }
 

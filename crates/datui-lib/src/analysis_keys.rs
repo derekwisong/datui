@@ -660,9 +660,7 @@ impl App {
         }
         match event.code {
                 KeyCode::Esc => {
-                    if self.analysis_modal.show_help {
-                        self.analysis_modal.show_help = false;
-                    } else if self.analysis_modal.view != analysis_modal::AnalysisView::Main {
+                    if self.analysis_modal.view != analysis_modal::AnalysisView::Main {
                         // Close detail view
                         self.analysis_modal.close_detail();
                     } else {
@@ -670,7 +668,7 @@ impl App {
                     }
                 }
                 KeyCode::Char('?') => {
-                    self.analysis_modal.show_help = !self.analysis_modal.show_help;
+                    self.open_help_overlay();
                 }
                 // Both coefficients come from the one run, so switching reads nothing.
                 KeyCode::Char('m')

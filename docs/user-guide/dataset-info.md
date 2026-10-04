@@ -2,13 +2,19 @@
 
 <kbd>i</kbd> at the table opens the Info panel: the dataset's schema, what its
 format records, how it is stored and read, and what datui noticed about it.
-<kbd>i</kbd> or <kbd>Esc</kbd> closes it.
+<kbd>i</kbd> or <kbd>Esc</kbd> closes it. While the dataset has unread notes,
+<kbd>i</kbd> opens on the Notes tab; after that, on Model, Audio, MIDI or VCD
+for those files, and on Schema for anything else.
+
+The panel's footer names the keys that work now. When the schema is taller
+than the panel, the footer counts the columns out of view. The rail marks
+focus: beside the active tab, or on the schema's current row.
 
 ![Info Panel Demo](../demos/03-info.gif)
 
 | Tab | Shows |
 |---|---|
-| **Schema** | Row and column counts, column types, schema source, file coverage, and a Parquet file's per-column compression. A dataset a [collection](../reference/sources.md#documentation) documents adds what each column means (`About`), the selected column's note and codes below, and the documentation's link |
+| **Schema** | Row and column counts, column types, schema source, file coverage, and a Parquet file's per-column compression. A column's unit, when a delimited format spec read a unit row or the file names one (DataFlash, a DBC dictionary). A dataset a [collection](../reference/sources.md#documentation) documents adds what each column means (`About`), the selected column's note and codes below, and the documentation's link |
 | Format's own | What the file says besides its rows, named for its format; see [the table below](#tabs-by-format) |
 | **Metadata** | The metadata line a [delimited format spec](../formats/format-specs.md#delimited-text) names, as key and value; appears for files read through one |
 | **Resources** | File size, how the file is read, buffered memory, and loading measurements |
@@ -176,7 +182,16 @@ be reliably ordered, such as `part=2` and `part=10`.
 The displayed row count may include deleted rows and superseded versions.
 See [lake table directories](open-files.md#directories).
 
-<kbd>Enter</kbd> on a type-conflict note offers **read as text**; see
+Each note is one sentence and a line beneath it saying what it is based on,
+so `in 1 of 3 files` never stands for files datui has not looked at. The list
+shows whole notes only, never a claim without its basis; when it is taller
+than the panel, the corner counts the notes out of view.
+
+<kbd>Enter</kbd> on a type-conflict note offers **read as text**: the column
+is read from the files that disagree too, at the type each wrote, so the
+values the conflict hid show, and the marks and the note go. Nothing is listed
+or read from the footers again. A filter or sort on the column then compares
+text, and a note says so. See
 [files that disagree](open-files.md#files-that-disagree).
 
 Most notes describe the dataset as opened. Filter/sort exclusion notes follow
@@ -186,7 +201,8 @@ original level.
 
 Unread notes accent the <kbd>i</kbd> key and open on the Notes tab. Set
 `notes_accent = false` under `[display]` in the [config](configuration.md)
-to disable the accent.
+to disable the accent; the notes are still collected and the tab still
+appears.
 
 ## Measurements
 

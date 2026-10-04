@@ -39,27 +39,6 @@ pub fn app_layout(area: Rect, debug_enabled: bool) -> AppLayout {
     }
 }
 
-/// Centered rect within `r` with given percentage width and height.
-pub fn centered_rect(r: Rect, percent_x: u16, percent_y: u16) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
-}
-
 /// Centered rect with fixed width and height, clamped to fit inside `r`.
 /// Use for modals that must not shrink (e.g. delete confirm) so content stays visible.
 pub fn centered_rect_fixed(r: Rect, width: u16, height: u16) -> Rect {
@@ -101,38 +80,5 @@ mod tests {
         assert!(layout.debug.is_some());
         assert_eq!(layout.debug.unwrap().height, 1);
         assert_eq!(layout.debug.unwrap().y, 49);
-    }
-
-    #[test]
-    fn test_centered_rect_50_50() {
-        let area = Rect::new(0, 0, 100, 100);
-        let centered = centered_rect(area, 50, 50);
-
-        assert_eq!(centered.width, 50);
-        assert_eq!(centered.height, 50);
-        assert_eq!(centered.x, 25);
-        assert_eq!(centered.y, 25);
-    }
-
-    #[test]
-    fn test_centered_rect_full_coverage() {
-        let area = Rect::new(0, 0, 100, 100);
-        let centered = centered_rect(area, 100, 100);
-
-        assert_eq!(centered.width, 100);
-        assert_eq!(centered.height, 100);
-        assert_eq!(centered.x, 0);
-        assert_eq!(centered.y, 0);
-    }
-
-    #[test]
-    fn test_centered_rect_small_area() {
-        let area = Rect::new(10, 10, 20, 20);
-        let centered = centered_rect(area, 50, 50);
-
-        assert_eq!(centered.width, 10);
-        assert_eq!(centered.height, 10);
-        assert_eq!(centered.x, 15);
-        assert_eq!(centered.y, 15);
     }
 }

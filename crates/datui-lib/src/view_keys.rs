@@ -17,8 +17,6 @@ impl App {
                     self.view_modal.score_details = None;
                 } else if self.view_modal.delete_confirm {
                     self.view_modal.delete_confirm = false;
-                } else if self.view_modal.show_help {
-                    self.view_modal.show_help = false;
                 } else if form {
                     // Back to the list; the form's staged edits die with it.
                     self.view_modal.exit_form();

@@ -441,7 +441,6 @@ pub struct AnalysisModal {
     pub data_quality_results: Option<DataQualityResults>,
     /// When Some, show progress overlay (phase, current/total); in-progress data lives in App.
     pub computing: Option<AnalysisProgress>,
-    pub show_help: bool,
     pub view: AnalysisView,
     pub focus: AnalysisFocus,
     /// None = no tool selected yet (show instructions); Some(tool) = user chose a tool (may be computing or showing results).
@@ -902,7 +901,6 @@ impl AnalysisModal {
             && self.view == AnalysisView::Main
             && self.selected_tool.is_some()
             && self.computing.is_none()
-            && !self.show_help
             && self.data_quality_picker.is_none()
             && !matches!(
                 self.data_quality_page,

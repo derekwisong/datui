@@ -106,7 +106,7 @@ pub mod fuzzy;
 pub mod gcloud;
 pub mod glyphs;
 pub mod gps;
-pub(crate) mod help_strings;
+pub mod help;
 mod hex_keys;
 pub mod hex_view;
 pub mod hf_splits;
@@ -258,6 +258,10 @@ pub mod tests;
 
 pub enum AppEvent {
     Key(KeyEvent),
+    /// A key to take as if typed: what Enter on a help line presses. The event pump
+    /// offers it as the next typed key, through `classify`, so it is held, converted or
+    /// dropped as a typed key would be; outside the pump it is a `Key`.
+    Press(KeyEvent),
     /// Read from the terminal by [`terminal_input::TerminalInput`]: a key press or a
     /// resize. [`event_pump::EventPump`] takes it off the channel and decides what a
     /// key does while the app is busy; the app itself only ever sees `Key`/`Resize`.
@@ -1091,8 +1095,8 @@ pub struct App {
     pending_chart_export: Option<ChartExportRequest>,
     /// A Data Quality report export waiting on the overwrite confirmation.
     pending_quality_export: Option<(PathBuf, crate::quality_export::ReportFormat)>,
-    show_help: bool,
-    help_scroll: usize, // Scroll position for help content
+    /// The help overlay, over whatever screen it was opened at.
+    help: help::Help,
     /// What the mouse can land on in the last frame, and the last click.
     pointer: pointer::Pointing,
     cache: CacheManager,
@@ -3792,7 +3796,11 @@ impl App {
             && key.code == KeyCode::Esc;
         let cancel_view = key.code == KeyCode::Esc && self.view_applying();
         let cancel_find = key.code == KeyCode::Esc && self.finding();
+        // The help reads nothing, so it can always be closed, a load's screen included.
+        let close_help = self.help.is_open()
+            && matches!(key.code, KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('?'));
         quit || home
+            || close_help
             || cancel_analysis
             || cancel_pivot
             || cancel_view
@@ -3896,7 +3904,7 @@ impl App {
     /// (view, analysis) drawn over it.
     pub fn in_normal_table_view(&self) -> bool {
         self.input_mode == InputMode::Normal
-            && !self.show_help
+            && !self.help.is_open()
             && !self.view_modal.active
             && !self.analysis_modal.active
             && !self.error_modal.active
@@ -5503,8 +5511,7 @@ impl App {
             pending_export: None,
             pending_chart_export: None,
             pending_quality_export: None,
-            show_help: false,
-            help_scroll: 0,
+            help: help::Help::default(),
             pointer: pointer::Pointing::default(),
             cache,
             cache_writes: CacheWrites::default(),
@@ -10676,9 +10683,14 @@ impl App {
         })
     }
 
-    /// Whether the plain help overlay is on screen.
+    /// Whether the help overlay is on screen.
     pub fn help_visible(&self) -> bool {
-        self.show_help
+        self.help.is_open()
+    }
+
+    /// The screen the help overlay shows the keys of, while it is up.
+    pub fn help_context(&self) -> Option<datui_cli::keys::Context> {
+        self.help.context()
     }
 
     /// Open the views list for the dataset on screen, scored against it.
@@ -10999,20 +11011,73 @@ impl App {
         Some((format!("Score: {}", view.name), details))
     }
 
-    /// Set the appropriate help overlay visible (main, view, or analysis). No-op if already visible.
-    fn open_help_overlay(&mut self) {
-        let already = self.show_help
-            || (self.view_modal.active && self.view_modal.show_help)
-            || (self.analysis_modal.active && self.analysis_modal.show_help);
-        if already {
+    /// Open the help overlay on the keys of the screen it is opened at. No-op if it is
+    /// already up.
+    pub(crate) fn open_help_overlay(&mut self) {
+        // A question or an error under the help would take its keys unseen.
+        if self.help.is_open() || self.confirmation_modal.active || self.error_modal.active {
             return;
         }
+        let context = self.keys_context();
+        // The home filter types too once something is typed into it.
+        let typing = self.text_field_focused()
+            || (self.input_mode == InputMode::Home
+                && (!self.home.filter.is_empty() || self.home.path_input_active));
+        self.help.open(context, typing);
+    }
+
+    /// Close the help when the screen under it changed on its own (a query that
+    /// finished, a load that failed): its keys are for a screen that is gone, and
+    /// Enter would press one of them on another. A question or an error that arrived
+    /// under it takes the keys, so it closes for those too.
+    fn close_help_left_behind(&mut self) {
+        let left = self
+            .help
+            .context()
+            .is_some_and(|shown| shown != self.keys_context());
+        if left || self.confirmation_modal.active || self.error_modal.active {
+            self.help.close();
+        }
+    }
+
+    /// The screen the keys typed now go to, as the key registry names it.
+    pub fn keys_context(&self) -> datui_cli::keys::Context {
+        use crate::analysis_modal::{AnalysisTool, AnalysisView};
+        use datui_cli::keys::Context;
         if self.analysis_modal.active {
-            self.analysis_modal.show_help = true;
-        } else if self.view_modal.active {
-            self.view_modal.show_help = true;
-        } else {
-            self.show_help = true;
+            return match self.analysis_modal.view {
+                AnalysisView::DistributionDetail => Context::DistributionDetail,
+                AnalysisView::CorrelationDetail => Context::CorrelationDetail,
+                AnalysisView::Main => match self.analysis_modal.selected_tool {
+                    Some(AnalysisTool::DistributionAnalysis) => Context::Distribution,
+                    Some(AnalysisTool::CorrelationMatrix) => Context::Correlation,
+                    Some(AnalysisTool::DataQuality) => Context::DataQuality,
+                    Some(AnalysisTool::Describe) | None => Context::Describe,
+                },
+            };
+        }
+        if self.view_modal.active {
+            return Context::Views;
+        }
+        match self.input_mode {
+            InputMode::Normal => Context::Table,
+            InputMode::Editing => match self.input_type {
+                Some(InputType::Query) => Context::Query,
+                Some(InputType::Find) => Context::Find,
+                _ => Context::GoToRow,
+            },
+            InputMode::SortFilter => Context::SortFilter,
+            InputMode::PivotMelt => Context::PivotMelt,
+            InputMode::Export => Context::Export,
+            InputMode::Copy => Context::Copy,
+            InputMode::Inspect => Context::Inspector,
+            InputMode::GoToColumn => Context::GoToColumn,
+            InputMode::PickFormat => Context::FormatPicker,
+            InputMode::Info => Context::Info,
+            InputMode::Chart => Context::Chart,
+            InputMode::Home => Context::Home,
+            InputMode::Hex => Context::Hex,
+            InputMode::ValueCounts => Context::ValueCounts,
         }
     }
 
@@ -11068,9 +11133,14 @@ impl App {
             return None;
         }
 
-        // F1 opens help first so no other branch (e.g. Editing) can consume it.
+        // F1 opens help first so no other branch (e.g. Editing) can consume it; again,
+        // it closes it.
         if event.code == KeyCode::F(1) {
-            self.open_help_overlay();
+            if self.help.is_open() {
+                self.help.close();
+            } else {
+                self.open_help_overlay();
+            }
             return None;
         }
 
@@ -11081,7 +11151,7 @@ impl App {
         if self.input_mode == InputMode::Home
             && !self.confirmation_modal.active
             && !self.error_modal.active
-            && !self.show_help
+            && !self.help.is_open()
         {
             return self.home_key(event);
         }
@@ -11093,6 +11163,7 @@ impl App {
             && event.modifiers.contains(KeyModifiers::CONTROL)
             && (!self.confirmation_modal.active || self.awaiting_open_confirmation())
         {
+            self.help.close();
             self.enter_home();
             return None;
         }
@@ -11290,7 +11361,7 @@ impl App {
         // kind correctly. Exclude view/analysis modals so they can handle Left/Right
         // themselves.
         let in_main_table = !(self.input_mode != InputMode::Normal
-            || self.show_help
+            || self.help.is_open()
             || self.view_modal.active
             || self.analysis_modal.active);
         if in_main_table
@@ -11304,53 +11375,15 @@ impl App {
             return None;
         }
 
-        if self.show_help
-            || (self.view_modal.active && self.view_modal.show_help)
-            || (self.analysis_modal.active && self.analysis_modal.show_help)
-        {
-            match event.code {
-                KeyCode::Esc => {
-                    if self.analysis_modal.active && self.analysis_modal.show_help {
-                        self.analysis_modal.show_help = false;
-                    } else if self.view_modal.active && self.view_modal.show_help {
-                        self.view_modal.show_help = false;
-                    } else {
-                        self.show_help = false;
-                    }
-                    self.help_scroll = 0;
-                }
-                KeyCode::Char('?') => {
-                    if self.analysis_modal.active && self.analysis_modal.show_help {
-                        self.analysis_modal.show_help = false;
-                    } else if self.view_modal.active && self.view_modal.show_help {
-                        self.view_modal.show_help = false;
-                    } else {
-                        self.show_help = false;
-                    }
-                    self.help_scroll = 0;
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.help_scroll = self.help_scroll.saturating_add(1);
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.help_scroll = self.help_scroll.saturating_sub(1);
-                }
-                KeyCode::PageDown => {
-                    self.help_scroll = self.help_scroll.saturating_add(10);
-                }
-                KeyCode::PageUp => {
-                    self.help_scroll = self.help_scroll.saturating_sub(10);
-                }
-                KeyCode::Home => {
-                    self.help_scroll = 0;
-                }
-                KeyCode::End => {
-                    // The render clamps this to the last page and persists the result.
-                    self.help_scroll = usize::MAX;
-                }
-                _ => {}
-            }
-            return None;
+        // The help owns the keys while it is up. Enter on a line closes it and presses
+        // that line's key: handed back as this key's follow-up, it reaches the screen
+        // under the help the way a typed key does, held while the app is busy.
+        self.close_help_left_behind();
+        if self.help.is_open() {
+            return match self.help.key(event) {
+                help::HelpKey::Press(key) => Some(AppEvent::Press(key)),
+                help::HelpKey::Stay | help::HelpKey::Closed => None,
+            };
         }
 
         if event.code == KeyCode::Char('?') {
@@ -12012,6 +12045,10 @@ impl App {
     /// app is idle. The main loop ([`event_pump::EventPump`]) does exactly that;
     /// [`App::event`] is the same call for callers that have nowhere to hold a key.
     pub fn handle(&mut self, event: &AppEvent) -> EventOutcome {
+        // Without the pump to offer it as typed, a pressed key is a key.
+        if let AppEvent::Press(key) = event {
+            return self.handle(&AppEvent::Key(*key));
+        }
         if let AppEvent::Key(key) = event
             && self.is_busy()
             && !self.key_acts_while_busy(key)
@@ -17278,30 +17315,6 @@ impl App {
             && !self.row_count_pending())
         .then_some(state.num_rows())
     }
-
-    fn get_help_info(&self) -> (String, String) {
-        let (title, content) = match self.input_mode {
-            InputMode::Normal => ("Table Help", help_strings::main_view()),
-            InputMode::Editing => match self.input_type {
-                Some(InputType::Query) => ("Query Help", help_strings::query()),
-                Some(InputType::Find) => ("Find Help", help_strings::find()),
-                _ => ("Go to Row", help_strings::go_to_line()),
-            },
-            InputMode::SortFilter => ("Sort & Filter Help", help_strings::sort_filter()),
-            InputMode::PivotMelt => ("Pivot & Melt Help", help_strings::pivot_melt()),
-            InputMode::Export => ("Export Help", help_strings::export()),
-            InputMode::Copy => ("Copy Help", help_strings::copy()),
-            InputMode::Inspect => ("Inspector Help", help_strings::inspector()),
-            InputMode::GoToColumn => ("Go to Column", help_strings::go_to_column()),
-            InputMode::PickFormat => ("Format Help", help_strings::format_picker()),
-            InputMode::Info => ("Info Panel Help", help_strings::info_panel()),
-            InputMode::Chart => ("Chart Help", help_strings::chart()),
-            InputMode::Home => ("Home Help", help_strings::home()),
-            InputMode::Hex => ("Hex View Help", help_strings::hex_view()),
-            InputMode::ValueCounts => ("Value Counts Help", help_strings::value_counts()),
-        };
-        (title.to_string(), content.to_string())
-    }
 }
 
 impl Widget for &mut App {
@@ -17309,7 +17322,7 @@ impl Widget for &mut App {
         self.begin_frame();
         self.debug.num_frames += 1;
         if self.debug.enabled {
-            self.debug.show_help_at_render = self.show_help;
+            self.debug.show_help_at_render = self.help.is_open();
         }
 
         use crate::render::context::RenderContext;
@@ -17351,27 +17364,9 @@ impl Widget for &mut App {
         if self.error_modal.active {
             crate::render::overlays::render_error_modal(area, buf, &mut self.error_modal, &ctx);
         }
-        if self.show_help
-            || (self.view_modal.active && self.view_modal.show_help)
-            || (self.analysis_modal.active && self.analysis_modal.show_help)
-        {
-            let (title, text): (String, String) =
-                if self.analysis_modal.active && self.analysis_modal.show_help {
-                    crate::render::analysis_view::help_title_and_text(&self.analysis_modal)
-                } else if self.view_modal.active {
-                    ("Views Help".to_string(), help_strings::views().to_string())
-                } else {
-                    let (t, txt) = self.get_help_info();
-                    (t.to_string(), txt.to_string())
-                };
-            crate::render::overlays::render_help_overlay(
-                area,
-                buf,
-                &title,
-                &text,
-                &mut self.help_scroll,
-                &ctx,
-            );
+        self.close_help_left_behind();
+        if self.help.is_open() {
+            crate::render::help::render_help(area, buf, &mut self.help, &ctx);
         }
 
         let row_count = self.data_table_state.as_ref().map(|s| s.num_rows());

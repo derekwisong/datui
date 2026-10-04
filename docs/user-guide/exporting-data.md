@@ -144,8 +144,15 @@ trailing `.gz`/`.zst`/`.bz2`/`.xz` sets the compression (`out.csv.gz` selects
 CSV, gzipped); picking a format afterward rewrites the typed extension to
 match, so the file's name and its bytes agree.
 
-Overwrite confirmation defaults to **No**. Declining returns to the form
-with your path intact.
+Overwrite confirmation defaults to **No**: <kbd>←</kbd> <kbd>→</kbd> or
+<kbd>Tab</kbd> pick **Overwrite** or **No**, <kbd>Enter</kbd> confirms the one
+picked, and <kbd>Esc</kbd> declines. Declining returns to the form with your
+path intact. The chart's export dialog asks the same way.
+
+The CSV **Delimiter** starts as `--delimiter` when given, else a comma. Only
+its first ASCII character counts, and <kbd>Tab</kbd> moves focus, so a tab
+cannot be typed there: pick TSV. On a narrow terminal the dialog stacks into
+one column, format first; <kbd>↑</kbd> <kbd>↓</kbd> still change it.
 
 ## Overwriting
 

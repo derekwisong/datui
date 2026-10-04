@@ -27,10 +27,10 @@ cargo install cargo-aur
 ## Manpages and completions
 
 The manpages are rendered from the sources the docs are (clap's definitions, the
-option and environment registries, the format descriptors, the help strings,
+option, environment and key registries, the format descriptors,
 `examples.toml`, the query and format-spec references) by `gen_docs write`, and
 committed in `crates/datui-cli/man/`. Committed, they need no build step: a
-crates.io build cannot read the help strings or the docs, and every channel ships
+crates.io build cannot read the docs, and every channel ships
 the same files. `the_generated_docs_are_current` fails while one is stale;
 `crates/datui-cli/src/man/tests.rs` checks their sections and that every flag,
 command, key, setting, variable and exit status appears; CI's

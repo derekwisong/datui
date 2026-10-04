@@ -119,6 +119,8 @@ segment on `|`, so `,` has broader scope than `|`:
 | `A, B \| C` | `A AND (B OR C)` |
 | `A \| B, C \| D` | `(A OR B) AND (C OR D)` |
 
+The where clause takes conditions only: no `name: expression` assignment.
+
 For more complex logic, wrap OR subexpressions in `()` — parentheses keep `|`
 inside one AND term — and separate the groups with `,`.
 

@@ -98,8 +98,9 @@ fn matches(criteria: &MatchCriteria) -> String {
 
 /// What `datui man` prints, and its exit code: the page list (`list`), every page
 /// written under `dir`, or one page. On a terminal (`terminal`) a page is shown with
-/// `man`, as `git help` does; when `man` cannot show it, or for a pipe, the page's
-/// roff is printed, for `man -l -` or a file.
+/// `man`, as `git help` does; where there is no `man` (Windows, a minimal container),
+/// as plain text, through a pager ($PAGER, less, more). For a pipe the page's roff is
+/// printed, for `man -l -` or a file.
 pub fn man(
     page: Option<&str>,
     list: bool,
@@ -136,10 +137,68 @@ pub fn man(
             1,
         );
     };
-    if terminal && let Some(code) = show_with_man(page) {
-        return (String::new(), code);
+    if terminal {
+        if let Some(code) = show_with_man(page) {
+            return (String::new(), code);
+        }
+        let width = crossterm::terminal::size().map_or(80, |(cols, _)| usize::from(cols));
+        let text = page.plain(width.clamp(40, 100));
+        if show_with_pager(&text) {
+            return (String::new(), 0);
+        }
+        return (text, 0);
     }
     (page.roff(), 0)
+}
+
+/// Page `text` through the first pager that runs. False when none does.
+fn show_with_pager(text: &str) -> bool {
+    pagers()
+        .into_iter()
+        .any(|mut pager| page_through(&mut pager, text))
+}
+
+/// The pagers to try, in order: `$PAGER`, run by the shell as git runs it so quoted
+/// paths and arguments work, then `less` and `more`.
+fn pagers() -> Vec<std::process::Command> {
+    use std::process::Command;
+    let mut out = Vec::new();
+    if let Some(pager) = std::env::var("PAGER").ok().filter(|p| !p.trim().is_empty()) {
+        if cfg!(unix) {
+            let mut sh = Command::new("sh");
+            sh.arg("-c").arg(&pager);
+            out.push(sh);
+        } else {
+            let mut words = pager.split_whitespace();
+            if let Some(program) = words.next() {
+                let mut command = Command::new(program);
+                command.args(words);
+                out.push(command);
+            }
+        }
+    }
+    let mut less = Command::new("less");
+    // As git does: quit when the page fits, keep the screen, pass colors.
+    if std::env::var_os("LESS").is_none() {
+        less.env("LESS", "FRX");
+    }
+    out.push(less);
+    out.push(Command::new("more"));
+    out
+}
+
+/// Run `pager` with `text` on its input. False when it cannot be started.
+fn page_through(pager: &mut std::process::Command, text: &str) -> bool {
+    use std::io::Write;
+    let Ok(mut child) = pager.stdin(std::process::Stdio::piped()).spawn() else {
+        return false;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        // A pager quit before the end closes the pipe; that is not a failure.
+        let _ = stdin.write_all(text.as_bytes());
+    }
+    let _ = child.wait();
+    true
 }
 
 /// Show `page` with `man`, from a temporary file named as the page, so its title and
@@ -243,6 +302,10 @@ mod tests {
         let (page, code) = man(Some("keys"), false, None, false);
         assert_eq!(code, 0);
         assert!(page.contains(".TH DATUI\\-KEYS 7"), "{page}");
+        // Without man(1), the page reads as text.
+        let text = datui_cli::man::find("keys").unwrap().plain(80);
+        assert!(text.starts_with("DATUI-KEYS(7)"), "{text}");
+        assert!(text.contains("Ctrl+O"), "{text}");
         let (said, code) = man(Some("nope"), false, None, false);
         assert_eq!(code, 1);
         assert!(said.contains("datui man --list"), "{said}");

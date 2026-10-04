@@ -52,8 +52,8 @@ that fails on the data is not applied, and a dialog says why.
 
 ## List controls
 
-Views are listed by how well they fit the open file. A check mark marks the
-one currently applied, and the Match column says why a view fits:
+Views are listed by how well they fit the open file, and a score mark beside
+each says how well. A check mark marks the one currently applied, and the Match column says why a view fits:
 
 | Match | The view's rule that fits |
 |---|---|
@@ -72,7 +72,7 @@ one currently applied, and the Match column says why a view fits:
 
 ## Save a view
 
-The save form starts with the filename as its name, selected: typing
+The save form starts with the filename as its name, which is required, selected: typing
 replaces it, and an arrow key keeps it for editing. Add a description if
 needed, then expand **Matching** with <kbd>Space</kbd> to choose which files
 should match the view:
@@ -96,8 +96,10 @@ Data piped to standard input and frames passed from Python
 
 Schema matching is enabled by default. It records the columns as loaded,
 before the query, so a view whose query renames columns still matches the next
-file. Matching views rank above unrelated ones; exact schemas rank above
-schemas with extra columns. Other match rules, and how often and how recently a
+file. Matching views rank above unrelated ones, and matches combine: a view
+fitting by relative path and exact schema outranks one fitting by exact path
+alone. A file whose columns merely include the view's scores low, below a
+pattern match. Other match rules, and how often and how recently a
 view was used, also affect the score. Press <kbd>i</kbd> to inspect it.
 <kbd>V</kbd> and automatic application use only views with a matching rule.
 

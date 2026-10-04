@@ -96,7 +96,7 @@ Press <kbd>R</kbd> from the table to clear the reshape and other view changes.
 | <kbd>Space</kbd> or typing | Open the focused row's picker, narrowed by what you type |
 | <kbd>↑</kbd> <kbd>↓</kbd> in the picker | Move; <kbd>Space</kbd> chooses, or toggles where several can be chosen |
 | <kbd>Enter</kbd> | In the picker, choose; otherwise apply, from anywhere |
-| <kbd>Esc</kbd> | Stop a pivot being computed; close the picker; otherwise close without applying |
+| <kbd>Esc</kbd> | Stop a pivot being computed and keep the form; close the picker alone, keeping the toggles made in it; otherwise close without applying |
 | <kbd>?</kbd> | Help |
 
 ## Views

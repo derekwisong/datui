@@ -367,6 +367,22 @@ impl EventPump {
                     return Ok(Drained::NotFound(path));
                 }
                 // Offered once what arrived behind it is handled ([`Self::typed`]).
+                // A key the app pressed for the user (Enter on a help line): offered
+                // next, as typed, so `classify` holds, converts or drops it as it
+                // would the key itself.
+                Ok((AppEvent::Press(key), hold)) => {
+                    if hold.is_some() {
+                        drop(hold);
+                        self.app.let_waiting_errands_in();
+                    }
+                    if self.typed.is_empty() {
+                        self.since_key = 0;
+                    }
+                    self.typed.push_front(Input::Key(key));
+                    if self.early > 0 {
+                        self.early += 1;
+                    }
+                }
                 Ok((AppEvent::Terminal(Event::Key(key)), _)) => {
                     if self.typed.is_empty() {
                         self.since_key = 0;
@@ -1257,18 +1273,18 @@ mod tests {
     }
 
     /// A chip on the control bar presses its key, as typed: Help opens help, and
-    /// while the help is up the wheel scrolls it.
+    /// while the help is up the wheel moves its selection.
     #[test]
     fn a_chip_presses_its_key() {
         use crossterm::event::MouseEventKind;
         let (mut p, _dir) = loaded_pump();
         let help = on_screen(&mut p.app, "Help");
         assert!(p.terminal_mouse(click(help)).unwrap());
-        assert!(p.app.show_help, "the Help chip opened help");
+        assert!(p.app.help_visible(), "the Help chip opened help");
         rendered(&mut p.app);
         p.terminal_mouse(mouse(MouseEventKind::ScrollDown, (5, 5)))
             .unwrap();
-        assert_eq!(p.app.help_scroll, 3);
+        assert_eq!(p.app.help.selected, 3);
         // No table under the help: a click there moves nothing.
         p.terminal_mouse(click((5, 5))).unwrap();
         assert_eq!(cell(&p), (Some(0), Some("name".to_string())));
@@ -2486,13 +2502,13 @@ mod tests {
         let (mut p, _dir) = loaded_pump();
         p.app.busy = true;
         assert!(p.terminal_key(plain(KeyCode::F(1))).unwrap());
-        assert!(p.app.show_help, "F1 opened help immediately");
+        assert!(p.app.help_visible(), "F1 opened help immediately");
         assert!(held(&p).is_empty());
 
         let (mut p2, _d) = loaded_pump();
         p2.app.busy = true;
         assert!(p2.terminal_key(plain(KeyCode::Char('?'))).unwrap());
-        assert!(p2.app.show_help, "? opened help immediately");
+        assert!(p2.app.help_visible(), "? opened help immediately");
         assert!(held(&p2).is_empty());
     }
 
@@ -3150,5 +3166,347 @@ mod tests {
         let scanning = first_with("Scanning input").expect("the first phase is drawn");
         let rows = first_with("grace").expect("the rows are drawn");
         assert!(scanning < rows, "the phase is drawn before the rows");
+    }
+
+    /// A pump with a wide, long CSV loaded: columns past the screen and rows past a
+    /// page, so the keys that move have somewhere to go.
+    /// A pump with a wide, long CSV loaded: columns past the screen, rows past a page
+    /// and numbers that group, so the keys that move and format have somewhere to go.
+    fn long_wide_pump() -> (EventPump, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("wide.csv");
+        let mut file = std::fs::File::create(&path).expect("create csv");
+        let names: Vec<String> = (0..12).map(|c| format!("column_{c}")).collect();
+        writeln!(file, "name,{}", names.join(",")).unwrap();
+        for row in 0..300 {
+            let values: Vec<String> = (0..12)
+                .map(|c| (((row * 7 + c) % 23) * 1234).to_string())
+                .collect();
+            writeln!(file, "n{},{}", row % 17, values.join(",")).unwrap();
+        }
+        drop(file);
+        let mut pump = pump();
+        pump.app.app_config.query.default_mode = crate::QueryMode::Q;
+        pump.send(AppEvent::Open(vec![path], OpenOptions::default()))
+            .unwrap();
+        settle(&mut pump);
+        paint(&mut pump);
+        (pump, dir)
+    }
+
+    /// The whole frame, styles included: the column cursor is a tint.
+    fn frame(app: &mut App) -> Buffer {
+        let area = Rect::new(0, 0, 100, 20);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        buf
+    }
+
+    /// Draw a frame and read what it asks for, as `run()` does after each update, until
+    /// nothing more is asked: the rows a page down needs.
+    fn paint(pump: &mut EventPump) {
+        for _ in 0..200 {
+            frame(&mut pump.app);
+            pump.app.frame_painted();
+            pump.app.request_what_the_frame_needs();
+            let collect = pump
+                .app
+                .data_table_state
+                .as_mut()
+                .is_some_and(|s| std::mem::take(&mut s.needs_recollect));
+            if collect {
+                pump.app.spawn_async_collect(App::LOADING_BUFFER);
+            }
+            settle(pump);
+            if !collect {
+                return;
+            }
+        }
+    }
+
+    /// Every key the registry lists for a screen reached from the table, typed at that
+    /// screen, is taken: the frame changes, the screen changes, or the app ends. A key
+    /// listed where nothing handles it fails here. The groups checked are the ones the
+    /// screen opens on; a group of a state within it (a picker, a dialog) and the
+    /// listed exceptions need a state this test does not set up.
+    #[test]
+    fn every_registry_key_is_taken_where_it_is_listed() {
+        use datui_cli::keys::{self, Context};
+        let ch = |c: char| plain(KeyCode::Char(c));
+        let shift = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
+        let tab = plain(KeyCode::Tab);
+        // How each screen is reached from the table, and the groups it opens on.
+        let screens: Vec<(Context, Vec<KeyEvent>, &[&str])> = vec![
+            (
+                Context::Table,
+                vec![],
+                &["Explore", "Shape", "Analyze", "Output", "Display", "Go"],
+            ),
+            // Something typed, for the editing keys to edit.
+            (Context::Query, vec![ch('/'), ch('a')], &["Run", "Edit"]),
+            (Context::Find, vec![ch('f'), ch('7')], &["Find"]),
+            (Context::GoToRow, vec![ch(':'), ch('5')], &["Go"]),
+            (Context::GoToColumn, vec![ch('g'), ch('c')], &["Go"]),
+            (Context::Inspector, vec![ch(' ')], &["Fields", "Output"]),
+            (Context::Info, vec![ch('i')], &["Panel"]),
+            (
+                Context::ValueCounts,
+                vec![shift('F')],
+                &["Explore", "Output"],
+            ),
+            // The body, past the tab bar (and, for Sort & Filter, its find field).
+            (
+                Context::SortFilter,
+                vec![ch('s'), tab, tab],
+                &["Sidebar", "Columns"],
+            ),
+            (Context::PivotMelt, vec![ch('p'), tab], &["Form"]),
+            (Context::Chart, vec![ch('c')], &["Options", "Plot"]),
+            (Context::Export, vec![ch('e')], &["Form"]),
+            (Context::Copy, vec![ch('y')], &["Form"]),
+            (Context::Views, vec![ch('v')], &["List"]),
+            // Not the home screen: what it lists, and so what a key there changes, is
+            // the machine's (the working directory, the desktop's recent places).
+            // home_test covers its keys.
+        ];
+        // What needs a state the fixture does not have, or would leave the test.
+        let exempt: &[(Context, &str)] = &[
+            // Only on a file read through a format spec.
+            (Context::Table, "b"),
+            // Nothing to leave at the plain table.
+            (Context::Table, "Esc"),
+            // Every column fits already.
+            (Context::Table, "= / w"),
+            // Nothing to reset, or to take out of a sort.
+            (Context::Table, "R"),
+            (Context::SortFilter, "Del"),
+            (Context::SortFilter, "[ / ]"),
+            // The width is automatic already.
+            (Context::SortFilter, "w"),
+            // History: none in a fresh session.
+            (Context::Query, "↑ / ↓"),
+            (Context::Find, "↑ / ↓"),
+            // On a group's row, a struct or JSON, or a field the rows lack.
+            (Context::Inspector, "Enter"),
+            (Context::Inspector, "r"),
+            // Long text only; another program.
+            (Context::Inspector, "w"),
+            (Context::Inspector, "o"),
+            // The scrolling tabs: a CSV has none; Notes: none.
+            (Context::Info, "PgUp / PgDn"),
+            (Context::Info, "Home / End"),
+            (Context::Info, "Enter"),
+            // A sample, a followed file.
+            (Context::ValueCounts, "a"),
+            (Context::ValueCounts, "t"),
+            // The Filters tab.
+            (Context::SortFilter, "a"),
+            // A range: Enter in the help presses its first.
+            (Context::SortFilter, "1-9"),
+            (Context::Chart, "1-6"),
+            // The Sample size row; columns picked; a followed file.
+            (Context::Chart, "PgUp / PgDn"),
+            (Context::Chart, "x"),
+            (Context::Chart, "e"),
+            (Context::Chart, "t"),
+            // A saved view.
+            (Context::Views, "↑ / ↓ (j/k)"),
+            (Context::Views, "Enter"),
+            (Context::Views, "e"),
+            (Context::Views, "d"),
+            (Context::Views, "i"),
+        ];
+        let mut ignored = Vec::new();
+        for (context, open, groups) in &screens {
+            let screen = keys::screen(*context);
+            for group in screen.groups.iter().filter(|g| groups.contains(&g.name)) {
+                for key in group.keys {
+                    let Some(chord) = key.action() else {
+                        continue;
+                    };
+                    if exempt.contains(&(*context, key.keys)) {
+                        continue;
+                    }
+                    let (mut p, _dir) = long_wide_pump();
+                    for k in open {
+                        p.terminal_key(*k).unwrap();
+                        settle(&mut p);
+                        paint(&mut p);
+                    }
+                    assert_eq!(p.app.keys_context(), *context, "opened {}", screen.title);
+                    // The entry's keys in turn, the first at least: `← / →` at the
+                    // first column is taken by its →.
+                    let mut presses = keys::chords(key.keys);
+                    if !presses.contains(&chord) {
+                        presses.insert(0, chord);
+                    }
+                    let mut taken = false;
+                    for press in presses {
+                        let before = frame(&mut p.app);
+                        p.terminal_key(crate::help::key_event(press)).unwrap();
+                        if matches!(settle(&mut p), Drained::Exit) {
+                            taken = true;
+                            break;
+                        }
+                        paint(&mut p);
+                        if before != frame(&mut p.app) || p.app.keys_context() != *context {
+                            taken = true;
+                            break;
+                        }
+                    }
+                    if !taken {
+                        ignored.push(format!("{} · {} · {}", screen.title, group.name, key.keys));
+                    }
+                }
+            }
+        }
+        assert!(
+            ignored.is_empty(),
+            "keys nothing took:\n{}",
+            ignored.join("\n")
+        );
+    }
+
+    /// Enter on a help line closes the help and presses the line's key at the screen
+    /// under it, through the loop as a typed key goes.
+    #[test]
+    fn enter_in_the_help_runs_the_key() {
+        let (mut p, _dir) = long_wide_pump();
+        p.terminal_key(plain(KeyCode::Char('?'))).unwrap();
+        settle(&mut p);
+        assert!(p.app.help_visible());
+        for c in "/value counts".chars() {
+            p.terminal_key(plain(KeyCode::Char(c))).unwrap();
+        }
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        settle(&mut p);
+        assert!(!p.app.help_visible(), "Enter closed the help");
+        assert_eq!(
+            p.app.input_mode,
+            InputMode::ValueCounts,
+            "F ran at the table"
+        );
+    }
+
+    /// While the app is busy, the key Enter presses waits its turn like a typed one.
+    #[test]
+    fn the_key_enter_presses_waits_while_busy() {
+        let (mut p, _dir) = long_wide_pump();
+        p.terminal_key(plain(KeyCode::Char('?'))).unwrap();
+        for c in "/sort & filter sidebar".chars() {
+            p.terminal_key(plain(KeyCode::Char(c))).unwrap();
+        }
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        p.app.busy = true;
+        p.drain().unwrap();
+        assert!(!p.app.help_visible());
+        assert_eq!(p.app.input_mode, InputMode::Normal, "held while busy");
+        assert_eq!(held(&p), [KeyCode::Char('s')]);
+        p.app.busy = false;
+        settle(&mut p);
+        assert_eq!(
+            p.app.input_mode,
+            InputMode::SortFilter,
+            "replayed once idle"
+        );
+    }
+
+    /// Type `text` into the open help's filter, then press Enter.
+    fn run_from_help(p: &mut EventPump, filter: &str) {
+        p.terminal_key(plain(KeyCode::Char('/'))).unwrap();
+        for c in filter.chars() {
+            p.terminal_key(plain(KeyCode::Char(c))).unwrap();
+        }
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+    }
+
+    /// Over a text field, a help line whose key is a plain character does not run:
+    /// pressed, it would type. The help's own key presses F1, never `?`.
+    #[test]
+    fn enter_in_the_help_never_types_into_a_field() {
+        let (mut p, _dir) = long_wide_pump();
+        p.terminal_key(plain(KeyCode::Char('f'))).unwrap();
+        p.terminal_key(plain(KeyCode::F(1))).unwrap();
+        run_from_help(&mut p, "next or previous");
+        settle(&mut p);
+        assert!(
+            p.app.help_visible(),
+            "n / N does not run from the find prompt"
+        );
+        p.terminal_key(plain(KeyCode::Esc)).unwrap();
+        p.terminal_key(plain(KeyCode::Esc)).unwrap();
+        assert!(!p.app.help_visible());
+        assert_eq!(p.app.find.input.value(), "", "nothing was typed");
+
+        p.terminal_key(plain(KeyCode::Esc)).unwrap();
+        p.terminal_key(plain(KeyCode::Char('/'))).unwrap();
+        p.terminal_key(plain(KeyCode::F(1))).unwrap();
+        run_from_help(&mut p, "screen's keys");
+        settle(&mut p);
+        assert_eq!(p.app.query_input.value(), "", "? was not typed");
+        assert!(p.app.help_visible(), "F1 opened the help again");
+    }
+
+    /// A question that arrives under the help takes the keys, so the help goes: Enter
+    /// never answers it unseen. Nor does F1 open the help over one.
+    #[test]
+    fn a_question_under_the_help_closes_it() {
+        let (mut p, _dir) = long_wide_pump();
+        p.terminal_key(plain(KeyCode::Char('?'))).unwrap();
+        assert!(p.app.help_visible());
+        p.app.confirmation_modal.active = true;
+        rendered(&mut p.app);
+        assert!(!p.app.help_visible());
+        p.terminal_key(plain(KeyCode::F(1))).unwrap();
+        assert!(!p.app.help_visible(), "no help over the question");
+    }
+
+    /// While busy, the help still closes at once, at a load's screen too.
+    #[test]
+    fn the_help_closes_while_busy() {
+        for key in [KeyCode::Esc, KeyCode::F(1), KeyCode::Char('?')] {
+            let (mut p, _dir) = long_wide_pump();
+            p.terminal_key(plain(KeyCode::Char('?'))).unwrap();
+            p.app.busy = true;
+            assert!(p.terminal_key(plain(key)).unwrap(), "{key:?} acted");
+            assert!(!p.app.help_visible(), "{key:?} closed the help");
+            assert!(held(&p).is_empty());
+        }
+    }
+
+    /// The key Enter presses goes through `classify` as a typed one: a busy Enter
+    /// that would inspect waits as Space.
+    #[test]
+    fn the_pressed_key_is_classified_as_typed() {
+        let (mut p, _dir) = long_wide_pump();
+        p.terminal_key(plain(KeyCode::Char('?'))).unwrap();
+        run_from_help(&mut p, "or inspect");
+        p.app.busy = true;
+        p.drain().unwrap();
+        assert!(!p.app.help_visible());
+        assert_eq!(held(&p), [KeyCode::Char(' ')]);
+    }
+
+    /// A screen that changes under the help on its own takes the help with it: its
+    /// keys were for the screen that is gone.
+    #[test]
+    fn help_closes_when_its_screen_goes() {
+        let (mut p, _dir) = long_wide_pump();
+        p.terminal_key(plain(KeyCode::Char('?'))).unwrap();
+        assert!(p.app.help_visible());
+        // As a finished query or a failed load moves the app on.
+        p.app.input_mode = InputMode::Home;
+        rendered(&mut p.app);
+        assert!(!p.app.help_visible());
+    }
+
+    /// Help opened over the analysis view or the views list shows that screen's keys.
+    #[test]
+    fn help_shows_the_keys_of_the_screen_under_it() {
+        let (mut p, _dir) = long_wide_pump();
+        p.terminal_key(plain(KeyCode::Char('v'))).unwrap();
+        settle(&mut p);
+        p.terminal_key(plain(KeyCode::Char('?'))).unwrap();
+        assert_eq!(p.app.help_context(), Some(datui_cli::keys::Context::Views));
     }
 }

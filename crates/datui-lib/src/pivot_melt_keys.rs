@@ -20,7 +20,7 @@ impl App {
                 .is_text_row(self.pivot_melt_modal.focus);
         let ctrl_help = event.modifiers.contains(KeyModifiers::CONTROL);
         if event.code == KeyCode::Char('?') && (ctrl_help || (!text_focus && !picker_open)) {
-            self.show_help = true;
+            self.open_help_overlay();
             return None;
         }
 

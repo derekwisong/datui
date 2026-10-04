@@ -48,4 +48,4 @@ these terms and no others:
 A pane or status line is a `label  value` pair: the value is a term or a
 number, not a clause. The only free-standing line is a one-line callout behind
 `▲` (ASCII `!`) for something that will surprise, such as `▲ footer unreadable`.
-Why something is so belongs in the help (`?`) and these docs.
+Why something is so belongs in these docs.

@@ -171,8 +171,9 @@ which the envelope would download whole twice.
 
 In the picker: type part of a name to narrow, <kbd>↑</kbd> <kbd>↓</kbd> move,
 <kbd>Enter</kbd> or <kbd>Space</kbd> chooses (on the Y series row
-<kbd>Space</kbd> toggles a series in or out), and <kbd>Esc</kbd> backs out of
-the picker alone.
+<kbd>Space</kbd> toggles a series in or out), <kbd>Tab</kbd> or
+<kbd>Shift</kbd>+<kbd>Tab</kbd> chooses and moves to the next or previous row,
+and <kbd>Esc</kbd> backs out of the picker alone.
 
 ## Export
 

@@ -9,6 +9,29 @@ datui\-query \- the q syntax of the datui query prompt
 \fBselect\fR [\fIcolumns\fR] [\fBby\fR \fIgroups\fR] [\fBwhere\fR \fIconditions\fR]
 .fi
 .SH DESCRIPTION
+.SS In brief
+.TP
+select [cols] [by groups] [where conds]
+Each part optional
+.TP
+select a, b where a > 10, b < 5
+In where, , is and; | is or
+.TP
+select avg price, n:count id by region
+Aggregate by group
+.TP
+total:a+b  col["first name"]
+Name a column; a name with spaces
+.TP
+1/c+a is 1/(c+a)
+Right to left: 100 < (a+b)*2
+.TP
+date.year  2024.01.31  city.contains["York"]
+Accessors and dates
+.TP
+name in ["Ann", "Bo"]  item like "*ham*"
+Membership and patterns
+.PP
 The grammar of the q mode of the query prompt (\fB/\fR): a subset of the q language, evaluated right to left. Query data walks through it. Every example below runs on the public dataset its block names; open that dataset from \fBPublic datasets\fR on the home screen.
 .PP
 q and kdb+ are trademarks of KX Systems. datui is not affiliated with or endorsed by KX.
@@ -122,6 +145,8 @@ The where part is split on \fB,\fR first (respecting \fB()\fR and \fB[]\fR), the
 .TP
 \fBA | B, C | D\fR
 \fB(A OR B) AND (C OR D)\fR
+.PP
+The where clause takes conditions only: no \fBname: expression\fR assignment.
 .PP
 For more complex logic, wrap OR subexpressions in \fB()\fR \(em parentheses keep \fB|\fR inside one AND term \(em and separate the groups with \fB,\fR.
 .SH "OPERATORS AND LITERALS"

@@ -215,11 +215,14 @@ impl App {
         // format's extension.
         let format = match ChartExportFormat::from_extension(&path) {
             Some(format) => format,
+            // Any other ending is part of the name (`chart.v2`): the format's
+            // extension goes after it, so the file says what it is.
             None => {
                 let format = modal.format;
-                if path.extension().is_none() {
-                    path.set_extension(format.extension());
-                }
+                let mut name = path.into_os_string();
+                name.push(".");
+                name.push(format.extension());
+                path = name.into();
                 format
             }
         };
@@ -227,7 +230,7 @@ impl App {
         let options = crate::chart_export::ExportOptions {
             width,
             height,
-            dpi: modal.size.dpi(),
+            dpi: modal.dpi,
             palette: crate::chart_export::Palette::for_style(
                 modal.style,
                 &self.app_config.theme.colors,

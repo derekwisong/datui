@@ -267,11 +267,17 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
         }
     }
     if modal.takes_aggregate() {
-        let mut value = vec![plain(encoding.y.aggregate.label(), ctx)];
-        if encoding.y.cumulative != Cumulative::Off {
-            value.push(quiet(format!(" {} ", g.middot), ctx));
-            value.push(plain(encoding.y.cumulative.label(), ctx));
-        }
+        // With cumulative on the rows run as a total and the aggregate waits.
+        let value = match encoding.y.cumulative {
+            Cumulative::Off => vec![plain(encoding.y.aggregate.label(), ctx)],
+            _ if encoding.y.aggregate == Aggregate::Count => vec![plain("running count", ctx)],
+            how => vec![
+                quiet(encoding.y.aggregate.label(), ctx),
+                quiet(format!(" {} ", g.middot), ctx),
+                plain(how.label(), ctx),
+                quiet(" of rows", ctx),
+            ],
+        };
         lines.push(sub(value, Some(ChartFocus::Aggregate), false));
     }
     lines.push(PanelLine::Blank);
@@ -2171,6 +2177,7 @@ mod tests {
             value_dtype: polars::prelude::DataType::Float64,
             counted: None,
             groups: Vec::new(),
+            rows_note: None,
         }
     }
 

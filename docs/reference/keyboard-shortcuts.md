@@ -434,7 +434,7 @@ Where a dataset opens.
 | `Tab / Shift+Tab (↑ / ↓)` | Next or previous field: Path, Format, Style, Size, Width, Height, Legend, Title, Description, Notes, Source, Byline |
 | `← / →` | Step the format (PNG, SVG, PDF), the style (Light, Dark, Transparent), the size (Slide 16:9, Document, Square, Single column, Double column, Custom) or the legend (line ends, a corner, off). Typing a width or height makes the size Custom |
 | `Ctrl+P / Ctrl+N` | Earlier or later paths in the path field |
-| `Enter` | Export, from anywhere in the dialog. A path ending .png, .svg or .pdf takes that format. An existing file asks Overwrite / No, starting on No; ←/→ (h/l) or Tab pick, Enter confirms, and declining returns to the filled dialog |
+| `Enter` | Export, from anywhere in the dialog. A path ending .png, .svg or .pdf takes that format; any other gets the format's extension after it. An existing file asks Overwrite / No, starting on No; ←/→ (h/l) or Tab pick, Enter confirms, and declining returns to the filled dialog |
 | `Esc` | Back to the chart |
 
 ## Analysis: Describe

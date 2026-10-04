@@ -1197,6 +1197,22 @@ fn chart_export_dialog_presets_and_legend() {
     assert_eq!(&png[16..20], &1920u32.to_be_bytes());
     assert_eq!(&png[20..24], &1080u32.to_be_bytes());
 
+    // An ending that is no format is part of the name: the format's extension
+    // goes after it.
+    press(&mut app, KeyCode::Char('e'));
+    let v2 = dir.path().join("chart.v2");
+    app.chart_export_modal
+        .path_input
+        .set_value(v2.display().to_string());
+    let out = press(&mut app, KeyCode::Enter).expect("Enter exports");
+    run_to_idle(&mut app, &rx, &tx, out);
+    assert!(
+        std::fs::read(dir.path().join("chart.v2.png"))
+            .unwrap()
+            .starts_with(b"\x89PNG")
+    );
+    assert!(!v2.exists());
+
     // A path that names a format takes it.
     press(&mut app, KeyCode::Char('e'));
     let svg = dir.path().join("figure.svg");

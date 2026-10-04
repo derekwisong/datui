@@ -76,6 +76,9 @@ pub struct ChartExportModal {
     pub format: ChartExportFormat,
     pub style: ExportStyle,
     pub size: SizePreset,
+    /// Pixels per inch: the last preset's, which a custom size keeps, so typing a
+    /// width does not change the text's size on the page.
+    pub dpi: f32,
     pub legend: LegendPlace,
     pub path_input: TextInput,
     pub width_input: TextInput,
@@ -184,6 +187,7 @@ impl ChartExportModal {
         if let Some((w, h)) = self.size.size() {
             self.width_input.set_value(w.to_string());
             self.height_input.set_value(h.to_string());
+            self.dpi = self.size.dpi();
         }
     }
 
@@ -287,6 +291,7 @@ impl Default for ChartExportModal {
             format: ChartExportFormat::Png,
             style: ExportStyle::Light,
             size,
+            dpi: size.dpi(),
             legend: LegendPlace::LineEnds,
             path_input: TextInput::new(),
             width_input,
@@ -334,6 +339,7 @@ mod tests {
         modal.width_input.set_value("800");
         modal.size_typed();
         assert_eq!(modal.size, SizePreset::Custom);
+        assert_eq!(modal.dpi, 300.0, "the column's resolution stays");
         assert_eq!(modal.export_dimensions(), (800, 788));
     }
 

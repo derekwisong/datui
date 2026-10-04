@@ -1141,9 +1141,20 @@ impl ChartModal {
                 }
             }
             ChartFocus::Aggregate => {
+                let was = self.aggregate();
+                let bucketable = self.x_is_bucketable() && self.spec.mark.is_xy();
                 let encoding = &mut self.spec.encoding;
                 encoding.y.aggregate =
                     crate::form::step_value(&Aggregate::ALL, encoding.y.aggregate, delta);
+                // A date X with a group per raw value is close to a group per row:
+                // an aggregate starts by the day.
+                if was == Aggregate::None
+                    && bucketable
+                    && encoding.y.aggregate != Aggregate::None
+                    && encoding.x.time_unit == TimeUnit::None
+                {
+                    encoding.x.time_unit = TimeUnit::Day;
+                }
                 self.settle();
             }
             ChartFocus::Cumulative => {
@@ -1332,7 +1343,10 @@ impl ChartModal {
                     y
                 };
                 let mut how = String::new();
-                if !matches!(aggregate, Aggregate::None | Aggregate::Count) {
+                // Cumulative runs over the rows, not the aggregate.
+                if !matches!(aggregate, Aggregate::None | Aggregate::Count)
+                    && encoding.y.cumulative == Cumulative::Off
+                {
                     how.push_str(aggregate.label());
                     how.push(' ');
                 }
@@ -1647,7 +1661,7 @@ mod tests {
             modal.title(),
             (
                 "delay".to_string(),
-                "mean by month, cumulative, by carrier".to_string()
+                "by month, cumulative, by carrier".to_string()
             )
         );
     }
@@ -1742,6 +1756,23 @@ mod tests {
         );
         assert_eq!(modal.mark(), Mark::Line);
         assert!(!modal.row_order().contains(&ChartFocus::TimeUnit));
+    }
+
+    /// An aggregate over a date X starts by the day: a group per raw value would be
+    /// close to a group per row.
+    #[test]
+    fn an_aggregate_on_a_date_starts_by_the_day() {
+        let mut modal = open_on(Some(("date", &DataType::Date)));
+        assert_eq!(modal.spec.encoding.x.time_unit, TimeUnit::None);
+        modal.step(ChartFocus::Aggregate, 3);
+        assert_eq!(modal.aggregate(), Aggregate::Mean);
+        assert_eq!(modal.spec.encoding.x.time_unit, TimeUnit::Day);
+        modal.step(ChartFocus::TimeUnit, -1);
+        assert_eq!(
+            modal.spec.encoding.x.time_unit,
+            TimeUnit::None,
+            "still the user's call"
+        );
     }
 
     /// An integer histogram turned into a box: its column is the box's value, and

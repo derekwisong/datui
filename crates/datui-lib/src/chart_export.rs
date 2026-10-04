@@ -1811,6 +1811,7 @@ mod tests {
             value_dtype: polars::prelude::DataType::Float64,
             counted: None,
             groups: vec!["EWR".to_string(), "JFK".to_string()],
+            rows_note: None,
         };
         let histogram = HistogramData {
             column: "delay".to_string(),

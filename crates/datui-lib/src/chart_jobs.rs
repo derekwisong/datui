@@ -193,9 +193,11 @@ impl ChartRequest {
     /// Whether `other` is the same chart of the same columns, whatever its options.
     pub(crate) fn same_columns(&self, other: &Self) -> bool {
         let (a, b) = (&self.spec, &other.spec);
+        // The bucket, the aggregate and cumulative are what the numbers are: a chart
+        // under another of them would show old numbers under new labels.
         a.mark == b.mark
-            && a.encoding.x.field == b.encoding.x.field
-            && a.encoding.y.field == b.encoding.y.field
+            && a.encoding.x == b.encoding.x
+            && a.encoding.y == b.encoding.y
             && a.encoding.color.field == b.encoding.color.field
             && self.x_only == other.x_only
     }
@@ -338,20 +340,17 @@ impl ChartRequest {
                     series_log: None,
                     x_axis_kind: grouped.x_axis_kind,
                     rows: grouped.rows,
-                    aggregate: (aggregate != Aggregate::None).then_some(aggregate),
+                    rows_note: (aggregate != Aggregate::None).then(|| {
+                        rows_note(
+                            grouped.rows.total_rows,
+                            sampling.known_total == Some(grouped.rows.total_rows),
+                            split.is_some(),
+                        )
+                    }),
                 })
             }
-            Mark::Bar => ChartPrepared::Bar(if encoding.y.aggregate == Aggregate::None {
-                chart_data::prepare_bar_data(
-                    lf,
-                    x,
-                    first_y.unwrap_or_default(),
-                    self.order,
-                    chart_data::BAR_CAP,
-                    sampling,
-                )?
-            } else {
-                chart_data::prepare_bar_aggregate(
+            Mark::Bar if encoding.y.aggregate != Aggregate::None => {
+                let mut data = chart_data::prepare_bar_aggregate(
                     lf,
                     &chart_data::BarAggregate {
                         category: x,
@@ -362,8 +361,19 @@ impl ChartRequest {
                         cap: chart_data::BAR_CAP,
                     },
                     sampling,
-                )?
-            }),
+                )?;
+                // Every category is a bar, a null one too: uncolored, it is every row.
+                data.rows_note = Some(rows_note(data.rows.total_rows, true, split.is_some()));
+                ChartPrepared::Bar(data)
+            }
+            Mark::Bar => ChartPrepared::Bar(chart_data::prepare_bar_data(
+                lf,
+                x,
+                first_y.unwrap_or_default(),
+                self.order,
+                chart_data::BAR_CAP,
+                sampling,
+            )?),
             Mark::Histogram => ChartPrepared::Histogram(chart_data::prepare_histogram_by(
                 lf, x, self.bins, self.range, self.share, split, sampling,
             )?),
@@ -457,7 +467,9 @@ impl ChartPrepared {
         match self {
             Self::Bar(d) => {
                 let mut notes = chart_data::chart_notes(&d.rows, None);
-                if let Some(rows) = d.counted {
+                if let Some(note) = &d.rows_note {
+                    notes.push(note.clone());
+                } else if let Some(rows) = d.counted {
                     notes.push(format!("counts of {} rows", rows_of(rows)));
                 } else if d.rows.sample_size.is_none() && !d.value_column.is_empty() {
                     notes.push(format!(
@@ -478,12 +490,7 @@ impl ChartPrepared {
                 }
                 notes
             }
-            Self::XY(c) if c.aggregate.is_some() => {
-                vec![format!(
-                    "all {} rows",
-                    numfmt::group_chrome(c.rows.total_rows)
-                )]
-            }
+            Self::XY(c) if c.rows_note.is_some() => c.rows_note.iter().cloned().collect(),
             Self::XY(c) => chart_data::chart_notes(&c.rows, None),
             Self::XRange(c) => chart_data::chart_notes(&c.rows, None),
             Self::Histogram(d) => chart_data::chart_notes(&d.rows, d.clipped.as_ref()),
@@ -538,5 +545,20 @@ pub(crate) struct ChartCacheXY {
     pub(crate) x_axis_kind: chart_data::XAxisTemporalKind,
     pub(crate) rows: chart_data::RowsRead,
     /// How Y was made of the rows, when it was aggregated over all of them.
-    pub(crate) aggregate: Option<Aggregate>,
+    /// What an aggregate over every row read, said under the plot.
+    pub(crate) rows_note: Option<String>,
+}
+
+/// What an aggregate read, under the plot: every row of the view (`all 336,776
+/// rows`) when it counted them all, the rows of the groups a color drew, or the rows
+/// with an X.
+fn rows_note(counted: usize, whole: bool, grouped: bool) -> String {
+    let n = numfmt::group_chrome(counted);
+    if grouped {
+        format!("{n} rows in the groups shown")
+    } else if whole {
+        format!("all {n} rows")
+    } else {
+        format!("{n} rows")
+    }
 }

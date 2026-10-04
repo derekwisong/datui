@@ -59,17 +59,19 @@ dataset starts over.
 The line under **Y** is the aggregate: <kbd>←</kbd> <kbd>→</kbd> step through
 none, count, sum, mean, median, min and max. With one, the rows that share an
 X (and a color) are made one point, over every row of the view, in one
-group-by in the background; the chart says `all 336,776 rows` under the plot,
+group-by in the background; the chart says how many rows under the plot (`all
+336,776 rows`, or `rows in the groups shown` under a color),
 and the footer `Grouping 337k rows...` while it runs. Without one, a
 chart samples, and says so.
 
 | Option | What it does |
 |---|---|
 | Aggregate | **count** needs no Y column: the rows per X. The others make the Y column's values one |
-| Time bucket | Line and Scatter, under a date or datetime X: none, day, week (from Monday), month, quarter, year. A bucket with no aggregate takes **mean** |
-| **Cumulative** | Line and Scatter, with an aggregate: **off**, **running sum** (each point adds the ones before it), or **compound** (each value a rate: what 1 grew to, less 1) |
+| Time bucket | Line and Scatter, under a date or datetime X: none, day, week (from Monday), month, quarter, year. A bucket with no aggregate takes **mean**; an aggregate on a date X with no bucket starts by the day |
+| **Cumulative** | Line and Scatter, with an aggregate: **off**, **running sum**, or **compound**. The rows run as a total in X order, per series, and each point is the total at the end of its X or bucket: a running sum of Y, or Y's rates compounded over every row, `(1 + y1)(1 + y2)… − 1`. The aggregate is set aside meanwhile (a count runs as a count of rows); the line under **Y** says `mean · compound of rows` |
 
-More than 200,000 points is refused, with the advice to bucket X.
+An X of more than about 200,000 values is refused before any row is grouped,
+judged from a sample of X, with the advice to bucket it.
 
 On **NYC flights (2013)**, with no query: press <kbd>c</kbd> on `carrier`, pick
 `arr_delay` for **Y** and step the aggregate to **mean**. Sixteen bars, F9
@@ -90,7 +92,7 @@ the whole view.
 |---|---|
 | Line, Scatter | A line or set of points per value. Several Y columns are already one series each, so Color is dimmed |
 | Bar | A bar per value in each category's row, under a legend of the values. Needs an aggregate |
-| Histogram | Each value's bins as an outline over the others, which filled bars would hide. **Y** can be **share of group**, so groups of different sizes compare |
+| Histogram | Each value's bins as an outline over the others, which filled bars would hide. **Y** can be **share of group**: each bin's share of its group's rows inside the range, so groups of different sizes compare. The range (**p1-p99**) is the whole column's |
 | KDE | A curve per value |
 | Box | Dimmed: a category on **X** already makes a box per value, seven by rows |
 | Heatmap | Dimmed |
@@ -250,7 +252,8 @@ next or previous row, and <kbd>Esc</kbd> backs out of the picker alone.
 path and press <kbd>Enter</kbd>; the keys are those of every
 [dialog](../reference/dialogs.md), and <kbd>Ctrl</kbd>+<kbd>P</kbd> recalls a
 path exported to before. A path ending `.png`, `.svg` or `.pdf` takes that
-format; otherwise **Format**'s extension is added. You are asked before an
+format; any other path gets **Format**'s extension after it (`chart.v2` writes
+`chart.v2.png`). You are asked before an
 existing file is overwritten, and a failed export leaves it as it was
 ([Overwriting](exporting-data.md#overwriting)).
 
@@ -271,7 +274,7 @@ existing file is overwritten, and a failed export leaves it as it was
 | Square | 1200 × 1200 | 8 × 8 in |
 | Single column | 1050 × 788 | 3.5 × 2.6 in, 300 dpi |
 | Double column | 2100 × 1300 | 7 × 4.3 in, 300 dpi |
-| Custom | 16 to 8,192 a side | 96 dpi |
+| Custom | 16 to 8,192 a side | the last preset's resolution |
 
 Text is set in IBM Plex Sans, bundled with datui, so a chart comes out the same
 on every machine; a character it lacks falls back to a system font. Its size

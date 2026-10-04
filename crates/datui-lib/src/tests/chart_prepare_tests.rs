@@ -356,7 +356,7 @@ fn prepared_xy(x: &str) -> ChartPrepared {
         series_log: None,
         x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
         rows: chart_data::RowsRead::default(),
-        aggregate: None,
+        rows_note: None,
     })
 }
 

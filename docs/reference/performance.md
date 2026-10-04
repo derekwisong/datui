@@ -39,10 +39,6 @@ datui 0.4.0-dev, median of 5 runs (remote: 3). Terminal 120×30.
   question. The S3 row reads the footers and the first row group in place.
 - Remote rows depend on the network and the server.
 
-VisiData and tabiew were not installed on the machine, so they have no column.
-The script adds them when `vd` or `tw` is on the `PATH`, timed by the first row's
-cell appearing in the terminal output.
-
 ## Machine
 
 | | |

@@ -1,6 +1,79 @@
 # Python API
 
-`datui.view()` opens a file, a URL or a Polars frame in the terminal.
+`datui.view()` opens a file, a URL or a Polars frame in the terminal, and can
+hand the final view back. [Use datui from Python](../user-guide/python-module.md)
+is the guide.
+
+```python
+import polars as pl
+import datui
+
+df = pl.DataFrame({"city": ["Oslo", "Lima", "Pune"], "temp_c": [4.5, 19.0, 27.5]})
+result = datui.view(df, capture=True, row_numbers=True)
+if result is not None:
+    print(result.collect())
+```
+
+## datui.view
+
+The signature; `data` is the one argument it needs:
+
+```python,template
+datui.view(data, *, capture=False, options=None, **kwargs) -> polars.LazyFrame | None
+```
+
+| Parameter | Takes |
+|---|---|
+| `data` | A `polars.LazyFrame` or `polars.DataFrame`; a path or URL as `str` or `pathlib.Path`; or a list or tuple of them, read as one table as on the command line |
+| `capture` | `True` returns the final view on a normal quit |
+| `options` | A `datui.DatuiOptions` |
+| `**kwargs` | Any [option](#options) by name. With `options` too, a keyword wins over the same option there |
+
+A path or URL is read as the command line reads it (`s3://`, `gs://`,
+`abfss://`, `http(s)://`, globs), and the open's options apply. A frame is
+handed over as its serialized plan, and only display options apply to it.
+
+### Return value
+
+`None`, unless `capture=True` and a dataset was open at quit. Then a
+`polars.LazyFrame`: the applied query, filters, sort, drill-down, reshape and
+column order, over every matching row. It is a plan, not the rows datui
+showed: collecting it runs the plan again with Python's Polars, rereading
+files that must still exist.
+
+### Errors
+
+| Raised | When |
+|---|---|
+| `TypeError` | `data` is not a frame, path or list of paths; a keyword is not an option |
+| `ValueError` | An empty list of paths; an option value the flag or key would refuse (`format="cvs"`, `max_buffered="512"`, an unknown `config` key); a frame plan this wheel's Polars cannot read, naming the Polars release it is built for |
+| `FileNotFoundError` | A path that does not exist. A glob is not checked |
+| `PermissionError` | A path that cannot be read |
+| `RuntimeError` | No terminal (a notebook, piped output); the terminal UI failing; a captured view over a file datui downloaded or decompressed into a temporary file, which is removed at quit; a captured view your Polars cannot read |
+
+## datui.DatuiOptions
+
+The same options as keywords, made once and passed as `options=`. A value is
+checked when it is made, with the errors above.
+
+```python
+import datui
+
+with open("readings.csv", "w") as f:
+    f.write("# exported 2024-03-01\nsensor;value\na;1.5\nb;2.0\n")
+opts = datui.DatuiOptions(delimiter=";", comment="#")
+datui.view("readings.csv", options=opts)
+```
+
+| Name | What it is |
+|---|---|
+| `datui.OPTION_NAMES` | The option names, as a tuple: the table below |
+| `datui.PAIRED_POLARS` | The Python Polars release the wheel's plans are written for, such as `"1.43"` |
+| `datui.CompressionFormat` | `Gzip`, `Zstd`, `Bzip2`, `Xz`. The `compression` option takes their names as strings |
+
+A value is written as the flag or key takes it: `True` or `False`, a number, a
+string, a list of strings, or a `pathlib.Path`. `delimiter` also takes the
+character's code (`ord(";")`).
 
 ## Options
 

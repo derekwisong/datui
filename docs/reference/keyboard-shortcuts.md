@@ -28,7 +28,7 @@ Where a dataset opens.
 | `Enter` | On a row of a by query or a SQL GROUP BY, drill down to its rows (Esc comes back); elsewhere, inspect the row |
 | `Space` | Inspect the row: every field, each value whole and exact (Esc or Space closes). The bar's first chip says what Enter does: Inspect, or Drill |
 
-### Table · Data Operations
+### Table · Data operations
 
 | Key | Action |
 |---|---|
@@ -60,7 +60,7 @@ Where a dataset opens.
 | `t` | Follow the file as it grows (CSV, TSV, PSV, NDJSON). Reads it again, as H does; while following, t pauses and resumes, and Esc stops |
 | `? / F1` | Open this help (F1 works in text fields). Esc or ? to close. |
 
-### Table · Help Navigation
+### Table · Help navigation
 
 | Key | Action |
 |---|---|
@@ -720,8 +720,7 @@ or <kbd>Tab</kbd> keeps it. Editing a saved view opens its values unselected.
 
 ## Keys while busy
 
-The bar at the bottom of the screen shows the ones that matter
-most. A spinner in that bar means datui is busy. While it is, at the plain
+A spinner in the control bar means datui is busy. While it is, at the plain
 table <kbd>q</kbd>, <kbd>Q</kbd>, <kbd>←</kbd> <kbd>→</kbd> (<kbd>h</kbd>
 <kbd>l</kbd>), <kbd>[</kbd> <kbd>]</kbd>, <kbd>{</kbd> <kbd>}</kbd>,
 <kbd>#</kbd>, <kbd>,</kbd>, <kbd>D</kbd>, the width keys, <kbd>?</kbd> and <kbd>F1</kbd> act
@@ -756,13 +755,5 @@ Mouse input is never queued. While datui is busy, the sideways wheel and the
 busy bar's chips act as their keys would; the wheel down and a click on the
 table are dropped, as is a click behind keys already queued.
 
-While datui has the mouse, the terminal's own text selection needs its bypass
-modifier: <kbd>Shift</kbd>+drag in most terminals, <kbd>Option</kbd>+drag in
-iTerm2. `mouse = false` under `[display]`, or
-`--mouse=false`, leaves the mouse to the terminal.
-
-## Terminal notes
-
-If <kbd>F1</kbd> does nothing in Alacritty, it is bound in
-`~/.config/alacritty/alacritty.toml`; <kbd>?</kbd> still works outside text
-fields.
+To select text with the mouse while datui has it, see
+[Mouse and text selection](../user-guide/configuration.md#mouse-and-text-selection).

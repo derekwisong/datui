@@ -1,44 +1,39 @@
-# Cloud sources
+# Cloud connections
 
-For login commands, use [Connect to cloud storage](../user-guide/remote-data.md).
-This page lists settings for credentials, discovery and named connections. Named
-lists of datasets, the built-in public datasets among them, are
-[dataset collections](sources.md).
-
-## Defaults
+The `[cloud]` settings and the `[[cloud.connections]]` tables: which stores the
+home screen lists and how each logs in. Logging in is in
+[Connect to cloud storage](../user-guide/remote-data.md); named lists of datasets
+are [dataset collections](sources.md); every `[cloud]` key and its default is in
+[Settings](settings.md#cloud).
 
 ```toml
 [cloud]
-use_azure_account_keys = true   # read Azure with the account key after a sign-in is refused for want of a data role
-env_files = [".env"]            # read cloud variables from these files; off unless listed
-instance_identity = false       # use the EC2, GCE or Azure VM's own identity
-discover = true                 # logins found on this machine: true, false, or ["s3", "gcs", "azure"]
-list_on_start = false           # list every source's buckets at launch, not when entered
+env_files = [".env"]
+discover = ["s3", "gcs"]
+list_on_start = false
 ```
 
 An S3-compatible endpoint, its keys and region come from `AWS_*` variables or a
-named connection below, never from keys in this file. See
-[Loading Data](../user-guide/remote-data.md).
+connection below, never from keys in this file.
 
 ## Connections
 
-To keep a local folder on the home screen, see
-[Adding a directory](../user-guide/home-screen.md#adding-a-directory).
-
 Add one `[[cloud.connections]]` table per account or endpoint. Each is a row under
-`CLOUD`, and a dataset in a [collection](sources.md) can name one with `connection`:
+`CLOUD`, and a dataset in a [collection](sources.md) can name one with
+`connection`. Replace `<ENDPOINT>` with your server's URL and `<BUCKET>` with a
+bucket the keys can read; the keys come from the variables named:
 
-```toml
+```toml,template
 [[cloud.connections]]
 name = "onprem"
 label = "On-prem MinIO"
 kind = "s3"
-endpoint_url = "https://minio.corp.example:9000"
+endpoint_url = "<ENDPOINT>"
 region = "us-east-1"
 addressing = "path"
 access_key_id_env = "ONPREM_KEY"
 secret_access_key_env = "ONPREM_SECRET"
-buckets = ["sales", "logs"]
+buckets = ["<BUCKET>"]
 ```
 
 | Field | Kinds | Meaning |
@@ -62,20 +57,23 @@ buckets = ["sales", "logs"]
 ## Secrets from files and commands
 
 A password manager or vault can supply a secret without it touching the config or
-the environment:
+the environment. Replace `<ENDPOINT>` with your server, `<SECRET_COMMAND>` with
+the command that prints the secret (`pass show minio/onprem`,
+`op read op://vault/minio/secret`) and `<KEY_FILE>` with the path of a service
+account key:
 
-```toml
+```toml,template
 [[cloud.connections]]
 name = "onprem"
 kind = "s3"
-endpoint_url = "https://minio.corp.example:9000"
+endpoint_url = "<ENDPOINT>"
 access_key_id_env = "ONPREM_KEY"
-secret_command = "pass show minio/onprem"        # or: op read op://vault/minio/secret
+secret_command = "<SECRET_COMMAND>"
 
 [[cloud.connections]]
 name = "analytics"
 kind = "gcs"
-credentials_file = "~/keys/analytics-sa.json"   # a path, never the key itself
+credentials_file = "<KEY_FILE>"
 ```
 
 `secret_command` runs the program directly, split into arguments like a shell would
@@ -91,13 +89,12 @@ names `[[cloud.connections]]` point at with `*_env`. Anything else in the file, 
 database password for one, is ignored. A variable already set in the environment
 wins, and nothing is exported, so no program datui starts sees them. No `.env` file is read unless it is listed in `env_files`.
 
-See [The Home Screen](../user-guide/home-screen.md) for
-[`discover`](../user-guide/home-screen.md#which-sources-appear) and
-[`list_on_start`](../user-guide/home-screen.md#loading). `-c cloud.discover=none` overrides
+The [home screen](../user-guide/home-screen.md#which-sources-appear) says what
+`discover` and `list_on_start` change there. `-c cloud.discover=none` overrides
 `discover` for one run.
 
 `instance_identity = true` lets datui ask the cloud VM it runs on for credentials:
-an EC2 instance role, a GCE service account, an Azure VM's managed identity. This is off by default because metadata requests can time out outside those VMs. Cloud Run and Cloud Functions, and
+an EC2 instance role, a GCE service account, an Azure VM's managed identity. Off by default: outside those VMs the metadata request waits for a timeout. Cloud Run and Cloud Functions, and
 Azure App Service, Functions and Container Apps, set variables that say an identity
 is there (`K_SERVICE`, `IDENTITY_ENDPOINT`, `MSI_ENDPOINT`), and are used without
 the setting.
@@ -114,7 +111,7 @@ Listing a bucket does not guarantee permission to read every object inside it.
 
 | Source | ID | Appears when |
 |---|---|---|
-| Amazon S3, or the endpoint in `[cloud]` | `s3-default` | Keys in `[cloud]` or `AWS_ACCESS_KEY_ID`, an ECS or Fargate task role, an EKS web identity, `AWS_PROFILE`, or a `~/.aws` directory |
+| Amazon S3, or the `AWS_ENDPOINT_URL` endpoint | `s3-default` | `AWS_ACCESS_KEY_ID`, an ECS or Fargate task role, an EKS web identity, `AWS_PROFILE`, or a `~/.aws` directory |
 | Each other AWS profile that can log in | `aws-<profile>` | Keys, `credential_process`, SSO or a role in the profile |
 | Each MinIO client alias | `mc-<alias>` | An alias with keys in `mc`'s `config.json` (`~/.mc/`, `~/.mcli/`, or `MC_CONFIG_DIR`), or `MC_HOST_<alias>` in the environment, which wins |
 | s3cmd's server | `s3cfg` | Keys in the `[default]` section of `~/.s3cfg` (`%APPDATA%\s3cmd.ini` on Windows, or `S3CMD_CONFIG`) |
@@ -137,13 +134,12 @@ To show only some kinds of login found on the machine, or none:
 A source in the config with the same name as one of these replaces it. The same
 server with the same key found in several places is one row; its note lists
 every place. `mc`'s placeholder aliases and its public `play` server are left
-out. See [Loading Data](../user-guide/remote-data.md#several-stores-at-once) for
-`[[cloud.connections]]`.
+out. [Connect to cloud storage](../user-guide/remote-data.md#several-stores-at-once)
+has worked examples of `[[cloud.connections]]`.
 
 Google Cloud lists every project the login can find, the one named in the
 environment or the active `gcloud` configuration first — and alone when
 searching for projects is refused. A profile that needs the AWS CLI shows
 `needs the AWS CLI` when it is not installed, and an expired SSO login shows
-the CLI's message; see [Loading Data](../user-guide/remote-data.md#aws-profiles). A cloud
-VM's identity is not discovered unless `[cloud] instance_identity = true`; see
-[Configuration](cloud-sources.md).
+the CLI's message; see [AWS profiles](../user-guide/remote-data.md#aws-profiles). A cloud
+VM's identity is not discovered unless `[cloud] instance_identity = true`, above.

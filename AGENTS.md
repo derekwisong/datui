@@ -153,7 +153,7 @@ is still claimed. SIGTERM and SIGHUP end the binary's session as a quit does.
 
 **Keys typed while busy are queued.** While a job the user waits on runs, an
 errand is between phases, or an open is on its way to its dataset,
-`App::is_busy` is true and the control bar shows a spinner. `EventPump`
+`App::is_busy` is true and the footer shows a spinner. `EventPump`
 (`event_pump.rs`, owned by
 `run()`) holds the keys typed meanwhile and replays them in order, one per loop
 iteration, once the app is idle. Ctrl-Q, Ctrl-C outside a text field, Ctrl-O and
@@ -195,7 +195,9 @@ work. The short version:
 - The column cursor tints its cells (`table_column_cursor`), its header and the
   current cell (`table_cell_cursor`), through the theme's `column_cursor_style`
   and `cell_cursor_style` helpers.
-- Keys in the control bar are chips: key on the accent, label beside it.
+- The status footer (`render/footer.rs`): thin rule, no fill, status left in
+  pipeline order, position and the active mode's keys right, `? keys` at rest.
+  Keys in dialog footers are chips: key on the accent, label beside it.
   Section titles sit on a rule with a flat count chip.
 - Column names take their type's color; a second header row names the type.
   Nulls are `∅` in `dimmed`.

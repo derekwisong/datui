@@ -5615,6 +5615,15 @@ impl DataTableState {
         self.remote_window() && self.buffer_on_hand()
     }
 
+    /// The rows on hand and the view row the first of them is, when every row of
+    /// the buffered range is: what a find lights up as it is typed, without a read.
+    pub(crate) fn rows_on_hand(&self) -> Option<(&DataFrame, usize)> {
+        self.buffered_df
+            .as_ref()
+            .filter(|_| self.buffer_on_hand())
+            .map(|df| (df, self.buffered_start_row))
+    }
+
     /// True when every row of the buffered range is on hand.
     fn buffer_on_hand(&self) -> bool {
         self.buffered_end_row > self.buffered_start_row
@@ -9080,7 +9089,7 @@ impl DataTableState {
     fn typed_filters(&self) -> Vec<SidebarFilter> {
         self.filters
             .iter()
-            .map(|f| SidebarFilter::typed(f, self.schema.get(&f.column)))
+            .map(|f| SidebarFilter::typed_in(f, &self.schema, &self.column_order))
             .collect()
     }
 
@@ -9708,7 +9717,7 @@ impl DataTableState {
             .collect();
         if string_cols.is_empty() {
             self.error = Some(PolarsError::ComputeError(
-                "A Text query needs at least one text column".into(),
+                "A text match needs at least one text column".into(),
             ));
             return;
         }
@@ -9817,6 +9826,11 @@ pub struct DataTable {
     pub find_style: Style,
     /// The found cell's column, while the cursor is on its row: set at render.
     find_column: Option<String>,
+    /// The cells a find being typed matches, by view row and column, drawn as
+    /// found.
+    pub match_cells: Option<std::collections::HashSet<(usize, String)>>,
+    /// The view row the first row drawn is: set at render.
+    drawn_from: usize,
     /// Each column's unit from a delimited spec's unit row, for the type row: set at
     /// render.
     units: Vec<(String, String)>,
@@ -9857,6 +9871,8 @@ impl Default for DataTable {
             find_cell: None,
             find_style: Style::default(),
             find_column: None,
+            match_cells: None,
+            drawn_from: 0,
             units: Vec::new(),
         }
     }
@@ -10294,6 +10310,15 @@ impl DataTable {
 
     /// Mark the cell a find landed on, drawn in `style` in place of the current cell's
     /// style while the cursor is on it.
+    /// Draw these cells (view row, column) as found: a find's matches as it is typed.
+    pub fn with_match_cells(
+        mut self,
+        cells: Option<std::collections::HashSet<(usize, String)>>,
+    ) -> Self {
+        self.match_cells = cells;
+        self
+    }
+
     pub fn with_find_cell(mut self, cell: Option<(usize, String)>, style: Style) -> Self {
         self.find_cell = cell;
         self.find_style = style;
@@ -10675,7 +10700,13 @@ impl DataTable {
                         let span = match col.cells.get(row_index) {
                             Some(SliceCell::Null(glyph)) => Span::styled(fit(glyph, w), null_style),
                             Some(SliceCell::Value(text)) => {
-                                Span::styled(fit(text, w), col.cell_style.unwrap_or_default())
+                                let mut style = col.cell_style.unwrap_or_default();
+                                if self.match_cells.as_ref().is_some_and(|cells| {
+                                    cells.contains(&(self.drawn_from + row_index, col.name.clone()))
+                                }) {
+                                    style = style.patch(self.find_style);
+                                }
+                                Span::styled(fit(text, w), style)
                             }
                             None => return Cell::default(),
                         };
@@ -11095,6 +11126,7 @@ impl StatefulWidget for DataTable {
         // If suppress_error_display is true, continue rendering the table normally
 
         let start_row = state.start_to_draw();
+        self.drawn_from = start_row;
         state.on_screen = None;
         // Only on the cursor's row (and, when drawn, its column): the cursor is what a
         // find moves, and a mark left behind would read as a second match.

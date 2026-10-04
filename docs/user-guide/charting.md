@@ -93,7 +93,7 @@ With a numeric **Value**, the Bar tab charts a grouped result: one row per
 category. Group first with a [query](querying-data.md), then chart it. On
 **NYC flights (2013)**:
 
-1. Press <kbd>/</kbd> and run
+1. Press <kbd>:</kbd> and run
    `SELECT carrier, AVG(arr_delay) AS delay, COUNT(*) AS flights FROM df GROUP BY carrier ORDER BY delay DESC`.
 2. Press <kbd>c</kbd>, then <kbd>6</kbd> for **Bar**.
 3. Choose `carrier` for **Category** and `delay` for **Value**.

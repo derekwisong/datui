@@ -16,7 +16,18 @@ pub enum FilterOperator {
     NotContains,
     IsNull,
     IsNotNull,
+    /// A find's match kept as a filter: the text, in any case until a capital is
+    /// typed. With [`ANY_COLUMN`], in any column.
+    Has,
+    /// A find's regex kept as a filter.
+    HasRegex,
+    /// A find's letters in order kept as a filter: `smth` keeps `Smith`.
+    HasFuzzy,
 }
+
+/// The column of a filter kept from a find over every column: a row passes when any
+/// of its columns matches.
+pub const ANY_COLUMN: &str = "*";
 
 impl FilterOperator {
     pub fn as_str(&self) -> &'static str {
@@ -31,7 +42,19 @@ impl FilterOperator {
             FilterOperator::NotContains => "!contains",
             FilterOperator::IsNull => "is null",
             FilterOperator::IsNotNull => "not null",
+            FilterOperator::Has => "has",
+            FilterOperator::HasRegex => "has regex",
+            FilterOperator::HasFuzzy => "has letters",
         }
+    }
+
+    /// A find kept as a filter: its value is matched as the find matched it, as text
+    /// whatever the column's type.
+    pub fn is_find(&self) -> bool {
+        matches!(
+            self,
+            FilterOperator::Has | FilterOperator::HasRegex | FilterOperator::HasFuzzy
+        )
     }
 
     /// Whether the statement compares with a value; the null tests take none.
@@ -51,6 +74,9 @@ impl FilterOperator {
             FilterOperator::NotContains,
             FilterOperator::IsNull,
             FilterOperator::IsNotNull,
+            FilterOperator::Has,
+            FilterOperator::HasRegex,
+            FilterOperator::HasFuzzy,
         ]
         .iter()
         .copied()
@@ -90,6 +116,31 @@ pub struct FilterStatement {
     pub value: String,
     /// How this statement joins the one before it; meaningless on the first.
     pub logical_op: LogicalOperator,
+}
+
+impl FilterStatement {
+    /// How the statement reads in a line of text: `prcp > 0`, `name has "smith"`,
+    /// `has /^US/` for a find kept over every column.
+    pub fn describe(&self) -> String {
+        let value = match self.operator {
+            FilterOperator::IsNull | FilterOperator::IsNotNull => String::new(),
+            FilterOperator::HasRegex => format!(" /{}/", self.value),
+            FilterOperator::Has
+            | FilterOperator::HasFuzzy
+            | FilterOperator::Contains
+            | FilterOperator::NotContains => format!(" \"{}\"", self.value),
+            _ => format!(" {}", self.value),
+        };
+        let op = match self.operator {
+            FilterOperator::HasRegex => "has",
+            op => op.as_str(),
+        };
+        if self.column == ANY_COLUMN {
+            format!("{op}{value}")
+        } else {
+            format!("{} {op}{value}", self.column)
+        }
+    }
 }
 
 /// Where the inline editor stands: the three steps walk left to right on one row.

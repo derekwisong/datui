@@ -6,9 +6,11 @@ command line, the config file and Python.
 | Use | Not | Means |
 |---|---|---|
 | **view** (saved view) | template | A saved query, filters, sort, column layout and reshape, matched to files (`v`, `V`, `--view`, `[views]`) |
-| **query** | search | The `/` prompt. Its modes are **SQL**, **Text** (rows whose text columns hold every word) and **q** |
-| **find** | search, locate | Move to a match without changing the rows: `f`, `n`, `N`, find in the hex view and the inspector |
-| **filter** | narrow, search | Keep only the matching rows: Sort & Filter (`s`), a query |
+| **query** | search | SQL or **q** run on the command line |
+| **command line** | query prompt, query bar | `:` at the table: a row number (`row:`), or a query (`sql:`, `q:`) |
+| **footer** | control bar, bottom bar, status bar | The line under the thin rule at the bottom: what is in effect, the position, the mode's keys and `? keys` |
+| **find** | search, locate | Move to a match without changing the rows: `/` (or `f`), `n`, `N`, find in the hex view and the inspector |
+| **filter** | narrow, search | Keep only the matching rows: Sort & Filter (`s`), `+` `-` on a cell, a find kept with `Ctrl+G`, a query |
 | **narrow** | filter | Shrink a picker or a list by typing: pickers, the home screen's filter |
 | **search** | find | On the home screen only: look below the current directory for files |
 | **catalog** | collection, sources, remembered directory | A file of named datasets the home screen lists as a section: `catalog.toml` (yours; <kbd>Ctrl</kbd>+<kbd>D</kbd> adds to it), the files in `catalogs/` and those `catalogs` lists, and the bundled `public` |
@@ -28,7 +30,7 @@ command line, the config file and Python.
 | **Analysis** | statistics, Statistical Analysis | `a`: Describe, Distribution, Correlation, Data Quality |
 | **value counts** | count values, Value Count | `F`: how often each value of a column occurs |
 | **drill down** (verb), **drill-down** (noun) | drill into | Open the rows behind a group's row (`Enter`) |
-| **row** | line | A row of the table; `:` goes to a row. *Line* only for raw text, as in `--skip-lines` |
+| **row** | line | A row of the table; `:` and digits go to a row. *Line* only for raw text, as in `--skip-lines` |
 
 ## How a file is read
 

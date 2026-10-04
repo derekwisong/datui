@@ -720,8 +720,8 @@ fn a_bar_chart_draws_a_grouped_string_column() {
         ["AA 0.50", "AS -9.50", "F9 22.00", "UA 3.50"]
     );
 
-    // At 80 columns the control bar keeps the chart switch and what the focused
-    // row takes, beside Help and the way out.
+    // At 80 columns the footer keeps the chart switch and what the focused row
+    // takes, beside help.
     let bar = |app: &mut App| -> String {
         let area = ratatui::layout::Rect::new(0, 0, 80, 24);
         let mut buf = ratatui::buffer::Buffer::empty(area);
@@ -729,12 +729,12 @@ fn a_bar_chart_draws_a_grouped_string_column() {
         (0..80).map(|x| buf[(x, 23)].symbol()).collect()
     };
     let order = bar(&mut app);
-    for chip in ["1-6", "Chart", "Order", "Help", "Esc"] {
+    for chip in ["1-6", "Chart", "Order", "? keys"] {
         assert!(order.contains(chip), "{chip} in {order:?}");
     }
     key(&mut app, KeyCode::Up);
     let value = bar(&mut app);
-    for chip in ["1-6", "Chart", "Space", "Edit", "Help", "Esc"] {
+    for chip in ["1-6", "Chart", "Space", "Edit", "? keys"] {
         assert!(value.contains(chip), "{chip} in {value:?}");
     }
 }

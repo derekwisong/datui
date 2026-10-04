@@ -39,23 +39,23 @@ Where a dataset opens.
 |---|---|
 | `↑ / ↓ (j/k)` | Move the row cursor |
 | `← / → (h/l)` | Move the column cursor, frozen columns included; the columns scroll only when it would leave the screen |
-| `[ / ]` | A page of columns left or right, the cursor on the page's first column (Shift+←/→ too) |
+| `Shift+← / Shift+→` | A page of columns left or right, the cursor on the page's first column |
 | `{ / }` | First column, last column |
 | `PgUp / PgDn` | A page up or down (Ctrl+B / Ctrl+F too) |
 | `Ctrl+D / Ctrl+U` | Half a page down or up |
 | `Home / End` | First or last row (G = End) |
-| `:` | Go to a row number (:0 Enter for the top) |
+| `:` | The command line: digits go to that row (the prefix says row:), anything else runs as SQL or q, as the prefix says; Ctrl+T switches. With a query in effect it opens on the query's text |
 | `g` | Go to a column by name |
-| `f` | Find text or a regex in the view; the cursor, column cursor and all, goes to the first match at or after its row |
+| `/ (f)` | Find text, a regex, or letters in order in the view; matches on screen light up as you type, and Enter takes the cursor, column cursor and all, to the first at or after its row. f opens it too |
 | `n / N` | Next / previous match from the cursor's cell, wrapping round the view |
 | `Enter` | On a row of a by query or a SQL GROUP BY, drill down to its rows (Esc comes back); elsewhere, inspect the row |
-| `Space` | Inspect the row: every field, each value whole and exact (Esc or Space closes). The bar's first chip says what Enter does: Inspect, or Drill |
+| `Space` | Inspect the row: every field, each value whole and exact (Esc or Space closes) |
 
 ### Table · Shape
 
 | Key | Action |
 |---|---|
-| `/` | Query: SQL, Text or q |
+| `[ / ]` | Sort by the cursor's column, [ ascending and ] descending, replacing the sort in effect; the same key again on that column removes it. The s sidebar adds secondary sorts |
 | `s` | Open the Sort & Filter sidebar (tabs: Columns, Filters), on the cursor's column |
 | `+ / -` | Filter on the cursor's cell: + keeps the rows with its value, - drops them (a null cell: the nulls). Each adds a filter to the Sort & Filter sidebar, joined with "and"; the value is the cell's exactly as stored |
 | `r` | Reverse sort order (sorted columns carry a direction mark in the header); with no sort, reverse the row order |
@@ -97,7 +97,7 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `q` | Back to the home screen when the dataset was opened from it; otherwise quit (the control bar says which) |
+| `q` | Back to the home screen when the dataset was opened from it; otherwise quit |
 | `Q` | Quit |
 | `Esc` | Leave a drill-down, stop a find or a follow |
 
@@ -109,7 +109,7 @@ Where a dataset opens.
 | `Double-click` | Enter on the row |
 | `Wheel` | ↑ / ↓, three rows a notch; the same in help, the inspector and the sidebars |
 | `Shift+wheel` | ← / →, the column cursor (a sideways wheel too) |
-| `Click a chip` | Press its key |
+| `Click a key` | Press a key the footer shows |
 
 ## Home screen
 
@@ -122,18 +122,18 @@ Where a dataset opens.
 | `↑ / ↓` | Move the selection (Ctrl+P / Ctrl+N too) |
 | `Ctrl+↑ / Ctrl+↓` | Previous or next section |
 | `PgUp / PgDn` | A screenful, stopping at the first and last |
-| `Home / End` | The first or last row. The filter has no cursor to move: it is edited at its end |
+| `Home / End` | The first or last row |
 | `← / →` | Fold or unfold a section; → on a directory or a file of tables goes inside it |
 | `Space` | While the filter is empty: fold or unfold the section header under the cursor. With a filter typed, it types |
-| `Tab` | Cycle the sort; the control bar names the order in effect when it has room |
+| `Tab` | Cycle the sort; the footer names the order in effect when it has room |
 
 ### Home screen · Go
 
 | Key | Action |
 |---|---|
-| `Enter` | What the control bar says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them |
-| `Backspace` | Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a catalog's remote dataset, back here) |
-| `Esc` | Back out one layer: the path prompt, the filter, the directory (back to the row it was entered from), then to the open table, which the control bar's chip names |
+| `Enter` | What the footer says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A place a collection suggests, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them |
+| `Backspace` | Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a collection's remote dataset, back here) |
+| `Esc` | Back out one layer: the path prompt, the filter, the directory (back to the row it was entered from), then to the open table |
 
 ### Home screen · Find
 
@@ -150,9 +150,8 @@ Where a dataset opens.
 |---|---|
 | `Ctrl+A` | Show or hide files datui cannot read; inside a SQLite database, its internal tables |
 | `Ctrl+X` | Show the local file under the cursor as bytes, in the hex view, whatever datui would read it as |
-| `Ctrl+D` | Add the dataset or directory under the cursor to catalog.toml, listed under My datasets; on a row from catalog.toml, forget it. A heading stands for the directory it lists. Only catalog.toml is written; another catalog is hidden with home.hide |
-| `Ctrl+E` | Open the Documentation view of a catalog row, or of a place inside one: publisher, license, links, columns with units and value legends, bookmarks. ↑ / ↓ move, Enter opens a column's legend, y copies the line's link or value, Esc goes back. Ctrl+E here is not readline's end of line: the filter is edited at its end |
-| `Delete` | Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source |
+| `Ctrl+D` | Remember the directory under the cursor, so it stays listed; again to forget it. A file stands for the directory it is in, a heading for the one it lists |
+| `Delete` | Forget the highlighted recent entry, or a whole place after confirming, or a remembered place on its heading, or hide a cloud source |
 | `Shift+Delete` | Forget every recent entry, after confirming |
 
 ### Home screen · Mouse
@@ -162,42 +161,43 @@ Where a dataset opens.
 | `Click` | Select the row; double-click is Enter |
 | `Wheel` | Move the selection three rows, stopping at the ends |
 
-## Query prompt
+## Command line
 
-<kbd>/</kbd> at the table.
+<kbd>:</kbd> at the table.
 
-### Query prompt · Run
+### Command line · Run
 
 | Key | Action |
 |---|---|
-| `Enter` | Run the query (reopening / restores the last query, selected: typing replaces it, arrows edit it). On the tab bar, Enter returns to the input |
+| `(digits)` | Digits alone go to that row, and the prefix says row: (:0 Enter is the top) |
+| `Enter` | Go to the row, or run the query as the prefix says, sql: or q:. Reopened with a query in effect, the line holds its text, selected: typing replaces it, arrows edit it |
 | `Ctrl+J` | Run, the same as Enter |
-| `Ctrl+T` | Next mode: SQL, Text, q (from the input too) |
-| `Shift+Tab` | Input to the tab bar and back |
-| `← / → (h/l)` | On the tab bar: switch mode |
+| `Ctrl+T` | Switch between SQL and q, keeping what is typed; the choice is remembered. [query] default_mode sets the first |
 | `Esc` | Close |
 
-### Query prompt · Edit
+### Command line · Edit
 
 | Key | Action |
 |---|---|
-| `Tab` | SQL: complete a column name or df; again for the next match. Text, q: to the tab bar |
+| `Tab` | Complete a column name, or df in SQL; again for the next match. The line under the input lists the names that fit |
 | `Alt+Enter` | SQL: start a new line |
-| `↑ / ↓` | Earlier and later queries from the history (Ctrl+P / Ctrl+N too; each mode keeps its own). In SQL over several lines, they move between lines first |
+| `↑ / ↓` | Earlier and later queries from the history (Ctrl+P / Ctrl+N too; SQL and q keep their own). In SQL over several lines, they move between lines first |
 | `Ctrl+U / Ctrl+K` | Delete to the start or end of the line |
 | `Ctrl+Z / Ctrl+R` | Undo, redo |
 
 ## Find
 
-<kbd>f</kbd> at the table.
+<kbd>/</kbd> (or <kbd>f</kbd>) at the table.
 
 ### Find · Find
 
 | Key | Action |
 |---|---|
-| `(text)` | What to find: text, or a regex with Ctrl+R |
-| `Enter` | Find: the cursor, column cursor and all, goes to the first match at or after its row. On an empty field, clear the find |
+| `(text)` | What to find: text (any case until a capital is typed), a regex with Ctrl+R, or letters in order with Ctrl+T. Matches in the rows on screen light up as you type, and the line says how many are on screen |
+| `Enter` | Find: the cursor, column cursor and all, goes to the first match at or after its row, reading past the rows on hand when it must (the footer counts the rows read; Esc stops). On an empty field, clear the find |
+| `Ctrl+G` | Keep only the rows with a match, as a filter: the footer and the Sort & Filter sidebar show it, and removing it there (or R) brings the rows back |
 | `Ctrl+R` | Regex on or off |
+| `Ctrl+T` | Letters in order on or off: smth finds Smith |
 | `Ctrl+L` | Only the column cursor's column, or every column shown |
 | `↑ / ↓` | Earlier patterns (Ctrl+P / Ctrl+N too) |
 | `Esc` | Cancel |
@@ -206,22 +206,9 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `n / N` | Next / previous match from the cursor's cell. Past the last match the find comes round to the first, and the bar says so. Each one typed while a find reads runs in turn; Esc stops them all |
-| `f` | Find again, the last pattern ready to edit |
+| `n / N` | Next / previous match from the cursor's cell. Past the last match the find comes round to the first, and the footer says so. Each one typed while a find reads runs in turn; Esc stops them all |
+| `/` | Find again, the last pattern ready to edit |
 | `Esc` | Clear the find (or stop one still reading) |
-
-## Go to row
-
-<kbd>:</kbd> at the table.
-
-### Go to row · Go
-
-| Key | Action |
-|---|---|
-| `(digits)` | The row to go to (:0 Enter is the top) |
-| `Enter` | Go |
-| `Backspace` | Delete a digit |
-| `Esc` | Cancel |
 
 ## Go to column
 
@@ -297,11 +284,10 @@ Where a dataset opens.
 | Key | Action |
 |---|---|
 | `← / → (h/l)` | Previous or next tab, from anywhere in the panel; Shift+Tab and Tab do the same. The panel is a viewer, not a form: its body always has the keys |
-| `↑ / ↓ (j/k)` | Schema, Notes or Documentation tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list |
+| `↑ / ↓ (j/k)` | Schema or Notes tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list |
 | `PgUp / PgDn` | Model, Audio, MIDI, Metadata and format tabs: scroll the list a page |
 | `Home / End` | Model, Audio, MIDI, Metadata and format tabs: the top or the end of the list |
-| `Enter` | Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor |
-| `y` | Documentation tab: copy the link or value on the cursor's line, whole, however it is cut on screen |
+| `Enter` | Notes tab: take the offer on the note, where it has one |
 | `H` | Schema tab, CSV, TSV, PSV: read the first row as data, under column_1, column_2, …; again to read it as column names. Reads the file again, so the query, filters and sort are cleared, and the panel closes |
 | `x` | Show the file's bytes in the hex view |
 | `Esc / i` | Close the panel |
@@ -759,7 +745,7 @@ Data Quality in the Analysis sidebar.
 
 ## Text fields
 
-Every text field, from the query prompt to a file path, edits the same way,
+Every text field, from the command line to a file path, edits the same way,
 with two simpler exceptions: a picker's type-to-narrow filter takes
 characters and <kbd>Backspace</kbd>, plus <kbd>Ctrl</kbd>+<kbd>W</kbd> to
 drop a word and <kbd>Ctrl</kbd>+<kbd>U</kbd> to clear; and the home
@@ -782,7 +768,7 @@ or <kbd>Tab</kbd> keeps it. Editing a saved view opens its values unselected.
 | <kbd>Ctrl</kbd>+<kbd>U</kbd> <kbd>Ctrl</kbd>+<kbd>K</kbd> | Delete to the start or the end of the line |
 | <kbd>Ctrl</kbd>+<kbd>Y</kbd> | Paste the last deletion |
 | <kbd>Ctrl</kbd>+<kbd>Z</kbd> <kbd>Ctrl</kbd>+<kbd>R</kbd> | Undo, redo |
-| <kbd>Ctrl</kbd>+<kbd>J</kbd> | The same as <kbd>Ctrl</kbd>+<kbd>Enter</kbd>, on every terminal: saves a view from its description and applies Sort & Filter. In the query and go-to-row prompts it submits, like <kbd>Enter</kbd> |
+| <kbd>Ctrl</kbd>+<kbd>J</kbd> | The same as <kbd>Ctrl</kbd>+<kbd>Enter</kbd>, on every terminal: saves a view from its description and applies Sort & Filter. In the command line and the find prompt it submits, like <kbd>Enter</kbd> |
 | <kbd>Ctrl</kbd>+<kbd>C</kbd> | Copy the selection (does not quit while a text field is focused) |
 | <kbd>F1</kbd> | Help |
 
@@ -797,9 +783,9 @@ or <kbd>Tab</kbd> keeps it. Editing a saved view opens its values unselected.
 
 ## Keys while busy
 
-A spinner in the control bar means datui is busy. While it is, at the plain
+A spinner in the footer means datui is busy. While it is, at the plain
 table <kbd>q</kbd>, <kbd>Q</kbd>, <kbd>←</kbd> <kbd>→</kbd> (<kbd>h</kbd>
-<kbd>l</kbd>), <kbd>[</kbd> <kbd>]</kbd>, <kbd>{</kbd> <kbd>}</kbd>,
+<kbd>l</kbd>, <kbd>Shift</kbd> for a page), <kbd>{</kbd> <kbd>}</kbd>,
 <kbd>#</kbd>, <kbd>,</kbd>, <kbd>D</kbd>, the width keys, <kbd>?</kbd> and <kbd>F1</kbd> act
 at once, as do <kbd>↑</kbd> <kbd>↓</kbd> (<kbd>j</kbd> <kbd>k</kbd>) inside
 the rows already read while all that is awaited is more rows; and
@@ -824,12 +810,12 @@ The mouse is a shortcut to the keys: it never does what no key does.
 | Click a home row | Selects it |
 | Click a chart's plot | XY: the crosshair on the point nearest, as <kbd>x</kbd> and <kbd>←</kbd> <kbd>→</kbd> would |
 | Double-click | <kbd>Enter</kbd> on the row: inspect or drill at the table, open on the home screen |
-| Click a chip on the bottom bar | Presses its key |
+| Click a key in the footer | Presses it |
 
 In a text field the wheel does nothing, so it cannot recall history.
 
 Mouse input is never queued. While datui is busy, the sideways wheel and the
-busy bar's chips act as their keys would; the wheel down and a click on the
+footer's keys act as their keys would; the wheel down and a click on the
 table are dropped, as is a click behind keys already queued.
 
 To select text with the mouse while datui has it, see

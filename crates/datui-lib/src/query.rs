@@ -1010,11 +1010,7 @@ fn quoted_temporal(column: &Node, text: &Node, schema: &Schema) -> Option<String
     let (Node::Col(name), Node::Str(s)) = (column, text) else {
         return None;
     };
-    let shown = if is_plain_name(name) {
-        name.clone()
-    } else {
-        format!("col[\"{name}\"]")
-    };
+    let shown = q_name(name);
     let unquoted = tokenize(s).ok();
     let literal = |is_kind: fn(&Token) -> bool, example: &str| match unquoted.as_deref() {
         Some([token]) if is_kind(token) => s.trim().to_string(),
@@ -1050,6 +1046,15 @@ fn quoted_temporal(column: &Node, text: &Node, schema: &Schema) -> Option<String
     Some(format!(
         "{shown} is a {kind}; \"{s}\" is a string. {remedy}"
     ))
+}
+
+/// How q spells a column: bare when it can be, else `col["first name"]`.
+pub(crate) fn q_name(name: &str) -> String {
+    if is_plain_name(name) {
+        name.to_string()
+    } else {
+        format!("col[\"{name}\"]")
+    }
 }
 
 /// Whether `name` reads as a column when typed bare, rather than needing `col["…"]`.

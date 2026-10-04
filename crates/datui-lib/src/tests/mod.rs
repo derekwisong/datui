@@ -1379,7 +1379,7 @@ fn the_bar_says_question_mark_when_the_count_failed() {
     let live = app.data_table_state.as_ref().unwrap().len_generation();
 
     assert!(
-        !control_bar(&mut app).contains("? rows"),
+        !control_bar(&mut app).contains("/ ?"),
         "nothing has failed yet"
     );
 
@@ -1389,7 +1389,7 @@ fn the_bar_says_question_mark_when_the_count_failed() {
 
     let bar = control_bar(&mut app);
     assert!(
-        bar.contains("? rows"),
+        bar.contains("/ ?"),
         "the count failed, so the total is unknown: {bar:?}"
     );
 }
@@ -1414,7 +1414,7 @@ fn a_dead_frames_failed_count_leaves_this_frames_question_mark_alone() {
         len_generation: live,
     });
     assert!(
-        control_bar(&mut app).contains("? rows"),
+        control_bar(&mut app).contains("/ ?"),
         "this frame's count failed"
     );
 
@@ -1425,7 +1425,7 @@ fn a_dead_frames_failed_count_leaves_this_frames_question_mark_alone() {
 
     let bar = control_bar(&mut app);
     assert!(
-        bar.contains("? rows"),
+        bar.contains("/ ?"),
         "a stranger's failure says nothing about this frame: {bar:?}"
     );
 }
@@ -2785,10 +2785,7 @@ fn the_download_confirmation_is_not_busy() {
     assert!(app.awaiting_open_confirmation(), "the user is being asked");
     assert!(!app.is_busy(), "and nothing is running while they decide");
     let bar = control_bar(&mut app);
-    assert!(
-        bar.contains("Confirm") && bar.contains("Cancel"),
-        "the bar names the modal's keys: {bar}"
-    );
+    assert!(!bar.contains("..."), "nothing said to be running: {bar}");
     assert!(
         !bar.contains("Checking") && !bar.contains("Scanning"),
         "and no phase: {bar}"
@@ -3023,10 +3020,10 @@ fn a_local_directorys_footers_size_its_binary_columns() {
     assert!(matches!(next, Some(AppEvent::CopyTable { .. })));
 }
 
-/// A confirmation takes every key until it is answered, so the bar names its keys
-/// rather than the table's, which do nothing meanwhile.
+/// A confirmation names its keys in its own footer; the status footer adds no mode
+/// keys over it.
 #[test]
-fn a_confirmation_puts_its_keys_in_the_bar() {
+fn a_confirmation_keeps_its_keys_in_its_own_footer() {
     use crate::App;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -3036,7 +3033,11 @@ fn a_confirmation_puts_its_keys_in_the_bar() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx.clone(), crate::tests::test_runtime());
     chart_prepare_tests::open(&mut app, &rx, &tx, path);
-    assert!(control_bar(&mut app).contains("Query"), "the table's keys");
+    let _ = app.key(&KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+    assert!(
+        control_bar(&mut app).contains("+/- Filter"),
+        "the column's keys"
+    );
 
     app.data_table_state.as_mut().unwrap().invalidate_num_rows();
     uncapped_clipboard(&mut app);
@@ -3044,18 +3045,7 @@ fn a_confirmation_puts_its_keys_in_the_bar() {
     let _ = app.perform_copy();
     assert!(app.confirmation_modal.active, "an unknown size asks");
     let bar = control_bar(&mut app);
-    assert!(
-        bar.contains("Confirm") && bar.contains("Switch") && bar.contains("Cancel"),
-        "the bar names the modal's keys: {bar}"
-    );
-    assert!(!bar.contains("Query"), "not the table's: {bar}");
-
-    let _ = app.key(&KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(!app.confirmation_modal.active);
-    assert!(
-        control_bar(&mut app).contains("Query"),
-        "and back once answered"
-    );
+    assert!(!bar.contains("Filter"), "not the table's: {bar}");
 }
 
 /// A count landing while a load is in flight does not cancel the load.

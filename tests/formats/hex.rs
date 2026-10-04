@@ -214,7 +214,6 @@ fn a_find_spans_rows_takes_wildcards_and_guesses_the_stride() {
     assert_eq!(found.stride, Some(21), "every record has one");
     let s = screen(&mut app, 100, 24);
     assert!(s.contains("every 21 bytes"), "{s}");
-    assert!(s.contains("Use stride"), "{s}");
     press(&mut app, KeyCode::Char('R'));
     assert_eq!(app.hex.as_ref().unwrap().record_size, Some(21));
 

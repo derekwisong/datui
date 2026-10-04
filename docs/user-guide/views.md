@@ -37,7 +37,7 @@ description, <kbd>↑</kbd> <kbd>↓</kbd> move between its lines first.
 | <kbd>V</kbd> | Apply the best-matching view without opening the list; when none matches, the list opens instead |
 
 When <kbd>V</kbd> or [automatic application](#apply-on-open) applies a
-view, the bottom bar names it and says why it matched:
+view, the footer names it and says why it matched:
 `View "Central Park highs" applied: same columns`.
 
 Or from the command line, with `--view`: replace `<NAME>` with the view's
@@ -49,7 +49,7 @@ datui --view "<NAME>" <PATH>
 ```
 
 A view's pivot and first rows are read in the background, with a spinner in
-the bottom bar. <kbd>Esc</kbd> stops it and keeps the table as it was. A view
+the footer. <kbd>Esc</kbd> stops it and keeps the table as it was. A view
 that fails on the data is not applied, and a dialog says why.
 
 ## List controls

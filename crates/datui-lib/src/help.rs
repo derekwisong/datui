@@ -381,7 +381,7 @@ mod tests {
     #[test]
     fn arrows_walk_the_keys_and_stop_at_the_ends() {
         let mut help = Help::default();
-        help.open_for_test(Context::GoToRow);
+        help.open_for_test(Context::Query);
         let count = help.shown_keys().len();
         press(&mut help, KeyCode::Up);
         assert_eq!(help.selected, 0);
@@ -399,7 +399,7 @@ mod tests {
     #[test]
     fn enter_on_a_line_with_no_key_stays() {
         let mut help = Help::default();
-        help.open_for_test(Context::GoToRow);
+        help.open_for_test(Context::Query);
         assert_eq!(help.selected_key().map(|k| k.keys), Some("(digits)"));
         assert_eq!(press(&mut help, KeyCode::Enter), HelpKey::Stay);
         assert!(help.is_open());

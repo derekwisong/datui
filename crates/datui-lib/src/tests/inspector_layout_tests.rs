@@ -239,10 +239,6 @@ fn a_drill_titles_its_trail_and_tables_a_list_of_structs() {
             footer.contains("Esc") && footer.contains("Back"),
             "{width}x{height}:\n{text}"
         );
-        assert!(
-            rows[rows.len() - 1].contains("Back"),
-            "the control bar's Esc: {width}x{height}:\n{text}"
-        );
         // Esc climbs to the row, then closes.
         press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Esc);

@@ -145,7 +145,7 @@ lives, imports, the theme and troubleshooting.
 |---|---|---|---|---|
 | `query.history_limit` | integer | `1000` |  | Queries remembered. |
 | `query.history` | bool | `true` |  | Remember queries. |
-| `query.default_mode` | sql \| text \| q | `"sql"` |  | The mode / opens on when no query is active. |
+| `query.default_mode` | sql \| q | `"sql"` |  | The language : starts in, until Ctrl+T picks another. |
 
 ## Views
 
@@ -195,8 +195,8 @@ lives, imports, the theme and troubleshooting.
 
 | Key | Dark | Light | Description |
 |---|---|---|---|
-| `theme.colors.chip_key` | `#7dcfff` | `#2e7de9` | Keys named in dialogs, the breadcrumb and the correlation matrix. |
-| `theme.colors.chip_label` | `#a9b1d6` | `#3760bf` | Labels beside keys in the control bar. |
+| `theme.colors.chip_key` | `#7dcfff` | `#2e7de9` | Keys named in the footer, dialogs, the breadcrumb and the correlation matrix. |
+| `theme.colors.chip_label` | `#a9b1d6` | `#3760bf` | Labels beside keys in the footer, and the footer's status. |
 | `theme.colors.throbber` | `#7dcfff` | `#2e7de9` | The busy spinner. |
 | `theme.colors.success` | `#9ece6a` | `#587539` | Success. |
 | `theme.colors.error` | `#f7768e` | `#f52a65` | Errors. |
@@ -204,7 +204,7 @@ lives, imports, the theme and troubleshooting.
 | `theme.colors.dimmed` | `#565f89` | `#848cb5` | Dimmed text, nulls and axes. |
 | `theme.colors.background` | `default` | `default` | Main background. |
 | `theme.colors.surface` | `default` | `default` | Dialog background. |
-| `theme.colors.controls_bg` | `#262a3f` | `#d0d5e3` | Control bar and count chips. |
+| `theme.colors.controls_bg` | `#262a3f` | `#d0d5e3` | Count chips and dialogs' key chips. |
 | `theme.colors.text_primary` | `default` | `default` | Text. |
 | `theme.colors.text_secondary` | `#737aa2` | `#6172b0` | Secondary text. |
 | `theme.colors.text_inverse` | `#1a1b26` | `#e1e2e7` | Text on a key chip. |

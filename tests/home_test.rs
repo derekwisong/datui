@@ -5956,9 +5956,8 @@ mod coming_back {
         assert_eq!(app.home.status, None, "nor after the dialog is dismissed");
     }
 
-    /// The whole screen at 80×24 and 200×50: the bar teaches typing, `~` and `?` at
-    /// both, the order shows only where every key fits, and the count is on the rule
-    /// (#547 M2, D11).
+    /// The whole screen at 80×24 and 200×50: the footer offers help and names the
+    /// order, and the count is on the rule (#547 M2, D11).
     #[test]
     fn the_home_screen_at_80_by_24_and_200_by_50() {
         let tmp = TempDir::new().unwrap();
@@ -5971,11 +5970,9 @@ mod coming_back {
             let row =
                 |y: u16| -> String { (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect() };
             let bar = row(h - 1);
-            for chip in ["type  Filter", "~  Path", "?  Help", "^C  Quit"] {
-                assert!(bar.contains(chip), "{w}x{h}: {chip} in {bar:?}");
-            }
+            assert!(bar.contains("? keys"), "{w}x{h}: {bar:?}");
             assert!(!bar.contains("datasets"), "{w}x{h}: {bar:?}");
-            assert_eq!(bar.contains("by name"), w == 200, "{w}x{h}: {bar:?}");
+            assert!(bar.contains("by name"), "{w}x{h}: {bar:?}");
             let screen: Vec<String> = (0..h).map(row).collect();
             assert!(
                 screen.iter().any(|r| r.contains("  40   catalog.toml")),
@@ -7559,8 +7556,8 @@ mod first_rows {
             .unwrap_or_else(|| panic!("a strip: {screen:#?}"));
         assert!(screen[heading + 1].contains("id") && screen[heading + 1].contains("name"));
         assert!(screen[heading + 2].contains("person_000"), "{screen:#?}");
-        // Its last row sits on the line above the control bar.
-        assert!(screen[22].contains("person_"), "{screen:#?}");
+        // Its last row sits on the line above the footer's rule.
+        assert!(screen[21].contains("person_"), "{screen:#?}");
         // The list is above it, whole.
         assert!(screen[..heading].iter().any(|l| l.contains("people.csv")));
 
@@ -8014,7 +8011,7 @@ mod path_prompt {
             );
             let bar = &lines[h as usize - 1];
             assert!(
-                bar.contains("Tab  Complete") && bar.contains("Pick"),
+                bar.contains("Tab Complete") && bar.contains("Esc Cancel"),
                 "{bar}"
             );
         }

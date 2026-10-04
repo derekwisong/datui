@@ -9,7 +9,7 @@ datui
 ```
 
 <kbd>Ctrl</kbd>+<kbd>O</kbd> returns here from anywhere. Typing narrows the
-list; <kbd>Enter</kbd> does what the control bar names for the row. Every key is
+list; <kbd>Enter</kbd> does what the footer names for the row. Every key is
 in the [keyboard reference](../reference/keyboard-shortcuts.md#home-screen).
 
 ## Open a file or directory
@@ -32,10 +32,11 @@ shows the directory being typed, narrowed by the name after the last `/`.
 sources and prefixes, recents, the public catalog); nothing is asked of the
 store, so `s3://noaa` <kbd>Tab</kbd> gives `s3://noaa-ghcn-pds/`.
 
-The control bar leads with <kbd>Enter</kbd>, named for what it does on the
-selected row, then `type Filter`, `~ Path`, <kbd>Esc</kbd> (named for where it
-goes: `Clear`, `Up`, `Back`, or `Table` when a dataset is open), help and quit.
-Letters type into the filter, so <kbd>q</kbd> types `q`; <kbd>Ctrl</kbd>+<kbd>C</kbd> quits.
+The footer names where the list is, how many rows the filter matches and the
+order, and at the right <kbd>Enter</kbd>, named for what it does on the selected
+row (`Open`, `Open all`, `Inside`, `Look`), then `? keys` (`F1 keys` once a filter
+is typed, since <kbd>?</kbd> then types). Letters type into the filter, so
+<kbd>q</kbd> types `q`; <kbd>Ctrl</kbd>+<kbd>C</kbd> quits.
 
 ## Sections
 

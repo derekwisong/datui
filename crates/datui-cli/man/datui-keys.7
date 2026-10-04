@@ -41,8 +41,8 @@ Move the row cursor
 \fB\(<- / \(-> (h/l)\fR
 Move the column cursor, frozen columns included; the columns scroll only when it would leave the screen
 .TP
-\fB[ / ]\fR
-A page of columns left or right, the cursor on the page's first column (Shift+\(<-/\(-> too)
+\fBShift+\(<- / Shift+\(->\fR
+A page of columns left or right, the cursor on the page's first column
 .TP
 \fB{ / }\fR
 First column, last column
@@ -57,13 +57,13 @@ Half a page down or up
 First or last row (G = End)
 .TP
 \fB:\fR
-Go to a row number (:0 Enter for the top)
+The command line: digits go to that row (the prefix says row:), anything else runs as SQL or q, as the prefix says; Ctrl+T switches. With a query in effect it opens on the query's text
 .TP
 \fBg\fR
 Go to a column by name
 .TP
-\fBf\fR
-Find text or a regex in the view; the cursor, column cursor and all, goes to the first match at or after its row
+\fB/ (f)\fR
+Find text, a regex, or letters in order in the view; matches on screen light up as you type, and Enter takes the cursor, column cursor and all, to the first at or after its row. f opens it too
 .TP
 \fBn / N\fR
 Next / previous match from the cursor's cell, wrapping round the view
@@ -72,12 +72,12 @@ Next / previous match from the cursor's cell, wrapping round the view
 On a row of a by query or a SQL GROUP BY, drill down to its rows (Esc comes back); elsewhere, inspect the row
 .TP
 \fBSpace\fR
-Inspect the row: every field, each value whole and exact (Esc or Space closes). The bar's first chip says what Enter does: Inspect, or Drill
+Inspect the row: every field, each value whole and exact (Esc or Space closes)
 .PP
 \fIShape\fR
 .TP
-\fB/\fR
-Query: SQL, Text or q
+\fB[ / ]\fR
+Sort by the cursor's column, [ ascending and ] descending, replacing the sort in effect; the same key again on that column removes it. The s sidebar adds secondary sorts
 .TP
 \fBs\fR
 Open the Sort & Filter sidebar (tabs: Columns, Filters), on the cursor's column
@@ -151,7 +151,7 @@ Follow the file as it grows (CSV, TSV, PSV, NDJSON). Reads it again, so the quer
 \fIGo\fR
 .TP
 \fBq\fR
-Back to the home screen when the dataset was opened from it; otherwise quit (the control bar says which)
+Back to the home screen when the dataset was opened from it; otherwise quit
 .TP
 \fBQ\fR
 Quit
@@ -173,8 +173,8 @@ Enter on the row
 \fBShift+wheel\fR
 \(<- / \(->, the column cursor (a sideways wheel too)
 .TP
-\fBClick a chip\fR
-Press its key
+\fBClick a key\fR
+Press a key the footer shows
 .SS "Home screen"
 \fBdatui\fR with no path, or \fBCtrl\fR+\fBO\fR from anywhere.
 .PP
@@ -190,7 +190,7 @@ Previous or next section
 A screenful, stopping at the first and last
 .TP
 \fBHome / End\fR
-The first or last row. The filter has no cursor to move: it is edited at its end
+The first or last row
 .TP
 \fB\(<- / \(->\fR
 Fold or unfold a section; \(-> on a directory or a file of tables goes inside it
@@ -199,18 +199,18 @@ Fold or unfold a section; \(-> on a directory or a file of tables goes inside it
 While the filter is empty: fold or unfold the section header under the cursor. With a filter typed, it types
 .TP
 \fBTab\fR
-Cycle the sort; the control bar names the order in effect when it has room
+Cycle the sort; the footer names the order in effect when it has room
 .PP
 \fIGo\fR
 .TP
 \fBEnter\fR
-What the control bar says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them
+What the footer says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A place a collection suggests, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them
 .TP
 \fBBackspace\fR
-Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a catalog's remote dataset, back here)
+Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a collection's remote dataset, back here)
 .TP
 \fBEsc\fR
-Back out one layer: the path prompt, the filter, the directory (back to the row it was entered from), then to the open table, which the control bar's chip names
+Back out one layer: the path prompt, the filter, the directory (back to the row it was entered from), then to the open table
 .PP
 \fIFind\fR
 .TP
@@ -235,13 +235,10 @@ Show or hide files datui cannot read; inside a SQLite database, its internal tab
 Show the local file under the cursor as bytes, in the hex view, whatever datui would read it as
 .TP
 \fBCtrl+D\fR
-Add the dataset or directory under the cursor to catalog.toml, listed under My datasets; on a row from catalog.toml, forget it. A heading stands for the directory it lists. Only catalog.toml is written; another catalog is hidden with home.hide
-.TP
-\fBCtrl+E\fR
-Open the Documentation view of a catalog row, or of a place inside one: publisher, license, links, columns with units and value legends, bookmarks. \(ua / \(da move, Enter opens a column's legend, y copies the line's link or value, Esc goes back. Ctrl+E here is not readline's end of line: the filter is edited at its end
+Remember the directory under the cursor, so it stays listed; again to forget it. A file stands for the directory it is in, a heading for the one it lists
 .TP
 \fBDelete\fR
-Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source
+Forget the highlighted recent entry, or a whole place after confirming, or a remembered place on its heading, or hide a cloud source
 .TP
 \fBShift+Delete\fR
 Forget every recent entry, after confirming
@@ -253,25 +250,22 @@ Select the row; double-click is Enter
 .TP
 \fBWheel\fR
 Move the selection three rows, stopping at the ends
-.SS "Query prompt"
-\fB/\fR at the table.
+.SS "Command line"
+\fB:\fR at the table.
 .PP
 \fIRun\fR
 .TP
+\fB(digits)\fR
+Digits alone go to that row, and the prefix says row: (:0 Enter is the top)
+.TP
 \fBEnter\fR
-Run the query (reopening / restores the last query, selected: typing replaces it, arrows edit it). On the tab bar, Enter returns to the input
+Go to the row, or run the query as the prefix says, sql: or q:. Reopened with a query in effect, the line holds its text, selected: typing replaces it, arrows edit it
 .TP
 \fBCtrl+J\fR
 Run, the same as Enter
 .TP
 \fBCtrl+T\fR
-Next mode: SQL, Text, q (from the input too)
-.TP
-\fBShift+Tab\fR
-Input to the tab bar and back
-.TP
-\fB\(<- / \(-> (h/l)\fR
-On the tab bar: switch mode
+Switch between SQL and q, keeping what is typed; the choice is remembered. [query] default_mode sets the first
 .TP
 \fBEsc\fR
 Close
@@ -279,13 +273,13 @@ Close
 \fIEdit\fR
 .TP
 \fBTab\fR
-SQL: complete a column name or df; again for the next match. Text, q: to the tab bar
+Complete a column name, or df in SQL; again for the next match. The line under the input lists the names that fit
 .TP
 \fBAlt+Enter\fR
 SQL: start a new line
 .TP
 \fB\(ua / \(da\fR
-Earlier and later queries from the history (Ctrl+P / Ctrl+N too; each mode keeps its own). In SQL over several lines, they move between lines first
+Earlier and later queries from the history (Ctrl+P / Ctrl+N too; SQL and q keep their own). In SQL over several lines, they move between lines first
 .TP
 \fBCtrl+U / Ctrl+K\fR
 Delete to the start or end of the line
@@ -293,18 +287,24 @@ Delete to the start or end of the line
 \fBCtrl+Z / Ctrl+R\fR
 Undo, redo
 .SS "Find"
-\fBf\fR at the table.
+\fB/\fR (or \fBf\fR) at the table.
 .PP
 \fIFind\fR
 .TP
 \fB(text)\fR
-What to find: text, or a regex with Ctrl+R
+What to find: text (any case until a capital is typed), a regex with Ctrl+R, or letters in order with Ctrl+T. Matches in the rows on screen light up as you type, and the line says how many are on screen
 .TP
 \fBEnter\fR
-Find: the cursor, column cursor and all, goes to the first match at or after its row. On an empty field, clear the find
+Find: the cursor, column cursor and all, goes to the first match at or after its row, reading past the rows on hand when it must (the footer counts the rows read; Esc stops). On an empty field, clear the find
+.TP
+\fBCtrl+G\fR
+Keep only the rows with a match, as a filter: the footer and the Sort & Filter sidebar show it, and removing it there (or R) brings the rows back
 .TP
 \fBCtrl+R\fR
 Regex on or off
+.TP
+\fBCtrl+T\fR
+Letters in order on or off: smth finds Smith
 .TP
 \fBCtrl+L\fR
 Only the column cursor's column, or every column shown
@@ -318,29 +318,13 @@ Cancel
 \fIAt the table\fR
 .TP
 \fBn / N\fR
-Next / previous match from the cursor's cell. Past the last match the find comes round to the first, and the bar says so. Each one typed while a find reads runs in turn; Esc stops them all
+Next / previous match from the cursor's cell. Past the last match the find comes round to the first, and the footer says so. Each one typed while a find reads runs in turn; Esc stops them all
 .TP
-\fBf\fR
+\fB/\fR
 Find again, the last pattern ready to edit
 .TP
 \fBEsc\fR
 Clear the find (or stop one still reading)
-.SS "Go to row"
-\fB:\fR at the table.
-.PP
-\fIGo\fR
-.TP
-\fB(digits)\fR
-The row to go to (:0 Enter is the top)
-.TP
-\fBEnter\fR
-Go
-.TP
-\fBBackspace\fR
-Delete a digit
-.TP
-\fBEsc\fR
-Cancel
 .SS "Go to column"
 \fBg\fR at the table.
 .PP
@@ -460,7 +444,7 @@ Copy the focused item: text as itself, a JSON object or array indented
 Previous or next tab, from anywhere in the panel; Shift+Tab and Tab do the same. The panel is a viewer, not a form: its body always has the keys
 .TP
 \fB\(ua / \(da (j/k)\fR
-Schema, Notes or Documentation tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list
+Schema or Notes tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list
 .TP
 \fBPgUp / PgDn\fR
 Model, Audio, MIDI, Metadata and format tabs: scroll the list a page
@@ -469,10 +453,7 @@ Model, Audio, MIDI, Metadata and format tabs: scroll the list a page
 Model, Audio, MIDI, Metadata and format tabs: the top or the end of the list
 .TP
 \fBEnter\fR
-Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor
-.TP
-\fBy\fR
-Documentation tab: copy the link or value on the cursor's line, whole, however it is cut on screen
+Notes tab: take the offer on the note, where it has one
 .TP
 \fBH\fR
 Schema tab, CSV, TSV, PSV: read the first row as data, under column_1, column_2, \[u2026]; again to read it as column names. Reads the file again, so the query, filters and sort are cleared, and the panel closes

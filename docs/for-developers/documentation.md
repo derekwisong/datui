@@ -67,6 +67,8 @@ cargo run -p datui-cli --bin gen_docs -- write
 | `formats/index.md`, region `formats` | The format descriptors in `crates/datui-cli/src/formats.rs` |
 | Region `format-count` in `formats/index.md`, `introduction.md` and `README.md` | The same: how many formats, and their names |
 | `reference/python-api.md`, region `options` | The registry's Python keywords |
+| `reference/manual-pages.md`, region `pages` | The list of manpages, `PAGES` in `crates/datui-cli/src/man/mod.rs` |
+| `crates/datui-cli/man/*` (the manpages) | All of the above, plus `long_about.txt`, `query-syntax.md`, `formats/index.md` and the format-spec pages ([Build and publish packages](packaging.md#manpages-and-completions)) |
 
 `GENERATED` in `crates/datui-cli/src/docgen.rs` lists them. A region sits
 between two comments, which mdBook and GitHub hide; the text around it is
@@ -133,9 +135,12 @@ with `ctypes.LittleEndianStructure` (`_pack_ = 1`, `_layout_ = "ms"`), a field
 per field of the format. A `bash` or `toml` block never starts a line
 with a `# comment`; say it in the text, or at the end of a command.
 
-The examples `datui --help`, the manpage and the command-line reference show
+The examples `datui --help`, the manpages and the command-line reference show
 are `crates/datui-cli/examples.toml`: each entry's `command`, `description`,
-`test` (`run`, `network` or `interactive`) and an optional `expect`.
+`test` (`run`, `network` or `interactive`), an optional `expect`, and the
+`pages` whose EXAMPLES show it (`datui.1` when not given; `datui COMMAND --help`
+shows those of `datui-COMMAND.1`). Every command page needs one. Each runs with
+`HOME` set to its own directory, so an example may install into `~`.
 
 ### Run the checks
 
@@ -148,6 +153,7 @@ are `crates/datui-cli/examples.toml`: each entry's `command`, `description`,
 | `... -k quick-start` | Only the blocks whose `file:line` or text holds the word |
 | `scripts/dev/test.sh unit doc_queries` | Every `q` block parses; `sql` and `q` blocks on data that ships with the docs run |
 | `python3 scripts/docs/lint_docs.py` | H1s against `SUMMARY.md`, headings in sentence case, links, redirects |
+| `python3 scripts/docs/lint_manpages.py` | The manpages: no `mandoc -T lint` or `groff -ww` warning at 78 or 60 columns, and a NAME line `lexgrog` reads. Skips a tool that is missing; CI passes `--require` |
 | `./scripts/docs/check_doc_links.sh book/preview` | Every link in the built book, with [lychee](https://github.com/lycheeverse/lychee); `--online` adds external URLs |
 
 A shell block runs in an empty directory with its own `DATUI_CONFIG_DIR` and

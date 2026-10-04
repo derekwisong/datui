@@ -18,6 +18,7 @@ on:
       - 'docs/**'
       - 'book.toml'
       - 'demos/**'
+      - 'crates/datui-cli/man/**'
       - 'scripts/docs/**'
       - '.github/workflows/build-and-publish-docs.yml'
 
@@ -53,6 +54,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r scripts/requirements.txt
+
+      - name: Install mandoc
+        # Renders the manpages into each book's reference/man/.
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
+          sudo apt-get install -y mandoc
 
       - name: Install Rust (for mdbook when not cached)
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable

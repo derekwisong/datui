@@ -318,12 +318,6 @@ jobs:
       - name: Verify binary exists
         run: test -f target/debug/datui || (echo "Binary not found" && exit 1)
 
-      - name: Verify manpage was generated
-        run: |
-          if ! find target/debug/build -name "datui.1" -type f | head -1 >/dev/null; then
-            echo "Manpage not found" && exit 1
-          fi
-
       - name: Show disk space after build
         run: df -h
 
@@ -353,7 +347,8 @@ jobs:
         run: |
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config libfontconfig1-dev python3-dev
+          # mandoc and groff lint the manpages; man-db's lexgrog reads their NAME lines.
+          sudo apt-get install -y pkg-config libfontconfig1-dev python3-dev mandoc groff-base man-db
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -385,6 +380,11 @@ jobs:
         run: |
           .venv/bin/python scripts/docs/lint_docs.py
           .venv/bin/python scripts/docs/doc_examples.py --lint
+
+      # Zero mandoc and groff warnings, at 78 and 60 columns, and a NAME line whatis
+      # reads (#705). The pages' sections and completeness are datui-cli's tests.
+      - name: Lint the manpages
+        run: .venv/bin/python scripts/docs/lint_manpages.py --require
 
       - name: Build CLI
         run: cargo build -p datui --locked
@@ -644,12 +644,6 @@ jobs:
 
       - name: Verify binary exists
         run: test -f target/debug/datui || (echo "Binary not found" && exit 1)
-
-      - name: Verify manpage was generated
-        run: |
-          if ! find target/debug/build -name "datui.1" -type f | head -1 >/dev/null; then
-            echo "Manpage not found" && exit 1
-          fi
 
       - name: Bundle CLI for wheel
         run: |

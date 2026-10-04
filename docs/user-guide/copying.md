@@ -1,14 +1,16 @@
 # Copy to the clipboard
 
-Press <kbd>y</kbd> to copy from the current view to the system clipboard. The
-dialog picks a scope and a format; the last choices are kept, so repeating a
-copy is <kbd>y</kbd> <kbd>Enter</kbd>.
+<kbd>y</kbd> copies a cell, a row, the view, the table or a Python script
+that rebuilds it to the system clipboard.
+
+The dialog picks a scope and a format; the last choices are kept, so repeating
+a copy is <kbd>y</kbd> <kbd>Enter</kbd>.
 
 ## Copy a table into a note
 
 On **Food nutrition (fast food)**, summarize each chain:
 
-```sql
+```sql,dataset=food,network,rows=8
 SELECT restaurant, ROUND(AVG(calories), 0) AS avg_calories,
        ROUND(AVG(protein), 1) AS avg_protein, COUNT(*) AS items
 FROM df
@@ -88,7 +90,7 @@ Press <kbd>y</kbd>, choose **Python (Polars)** on **Scope** and press
 <kbd>Enter</kbd>. The clipboard gets a script that builds the view with
 [Polars](https://pola.rs):
 
-```python
+```python,output
 import polars as pl
 
 df = (

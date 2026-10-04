@@ -1,7 +1,8 @@
 # Save and apply views
 
-Press <kbd>v</kbd> to save or apply a view. A view stores the active query,
-filters, sort, column layout, frozen columns and reshape settings.
+A view saves the active query, filters, sort, column layout, frozen columns
+and reshape, and applies them to the next file of the same shape. <kbd>v</kbd>
+opens the views list.
 
 ## Save and reuse a query
 
@@ -33,14 +34,16 @@ to store. In the description field, <kbd>Enter</kbd> inserts a newline;
 | <kbd>v</kbd> | Open the views list |
 | <kbd>V</kbd> | Apply the best-matching view without opening the list; when none matches, the list opens instead |
 
-When <kbd>V</kbd> or [automatic application](#applying-on-open) applies a
+When <kbd>V</kbd> or [automatic application](#apply-on-open) applies a
 view, the bottom bar names it and says why it matched:
 `View "Central Park highs" applied: same columns`.
 
-Or from the command line:
+Or from the command line, with `--view`: replace `<NAME>` with the view's
+name and `<PATH>` with what to open, as in
+`datui --view "Central Park highs" s3://noaa-ghcn-pds/parquet/by_year/YEAR=2022/ELEMENT=TMAX/`:
 
-```bash
-datui --view "Central Park highs" s3://noaa-ghcn-pds/parquet/by_year/YEAR=2022/ELEMENT=TMAX/
+```bash,template
+datui --view "<NAME>" <PATH>
 ```
 
 A view's pivot and first rows are read in the background, with a spinner in
@@ -67,7 +70,7 @@ one currently applied, and the Match column says why a view fits:
 | <kbd>i</kbd> | Show how the selected view's score was computed |
 | <kbd>Esc</kbd> | Close |
 
-## Saving
+## Save a view
 
 The save form starts with the filename as its name, selected: typing
 replaces it, and an arrow key keeps it for editing. Add a description if
@@ -109,18 +112,23 @@ saved settings — and the columns its schema rule matches on — follow the
 table only while the view is the one applied, so renaming a view never
 overwrites what it carries.
 
-## Applying on open
+## Apply on open
+
+[`views.auto_apply`](../reference/settings.md#views) applies the best-matching
+view when a file opens:
 
 ```toml
 [views]
-auto_apply = true   # apply the best match when a file opens
+auto_apply = true
 ```
+
+## Manage views
 
 Views are JSON files in the `views/` directory beside your
 [config file](configuration.md).
 
-```bash
-datui views list         # name and the files each matches
-datui views rm NAME      # remove one
-datui views clear        # remove them all
-```
+| Command | Does |
+|---|---|
+| `datui views list` | List the saved views: name, what files they match, when last used |
+| `datui views rm <NAME>` | Remove one |
+| `datui views clear` | Remove them all |

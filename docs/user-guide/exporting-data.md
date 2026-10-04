@@ -1,7 +1,7 @@
 # Export data
 
-Press <kbd>e</kbd> to write the current view to a file: the rows and columns
-as queried, filtered and sorted.
+<kbd>e</kbd> writes the view to a file: every row and column as queried,
+filtered and sorted.
 
 ## Export a CSV
 

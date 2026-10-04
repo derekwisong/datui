@@ -1,14 +1,14 @@
 # Pivot and melt
 
-Press <kbd>p</kbd> to reshape the current query and filters.
-**Pivot** turns values into columns; **Melt** turns columns into rows.
+<kbd>p</kbd> reshapes the table: **Pivot** turns values into columns, **Melt**
+turns columns into rows. It reshapes the rows the query and filters leave.
 
 ## Pivot
 
 Open **US baby names (1880-2017)** from **Public datasets**: 1.9 million rows
 of `year`, `sex`, `name`, `n` and `prop`. Keep three girls' names:
 
-```sql
+```sql,dataset=names,network,rows=376
 SELECT year, name, n FROM df WHERE sex = 'F' AND name IN ('Emma', 'Jennifer', 'Olivia')
 ```
 

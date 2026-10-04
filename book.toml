@@ -63,6 +63,7 @@ heading-split-level = 3
 "/reference/performance.html#regression-check" = "../for-developers/benchmarks.html#regression-check"
 "/reference/performance.html#reproduce" = "../for-developers/benchmarks.html#reproduce"
 "/reference/performance.html#the-first-rows-hook" = "../for-developers/benchmarks.html#the-first-rows-hook"
+"/reference/sources.html" = "catalogs.html"
 "/user-guide/binary-formats.html" = "../formats/format-specs.html"
 "/user-guide/binary-formats.html#a-spec" = "../formats/format-specs.html#a-spec"
 "/user-guide/binary-formats.html#a-tree-of-files" = "../reference/format-specs.html#a-tree-of-files"

@@ -466,9 +466,7 @@ auto_apply = true
 backend = "osc52"
 
 [home]
-directories = ["/mnt/data"]
 desktop_recents = false
-builtin_catalog = false
 preview_max = 0
 
 [home.search]
@@ -493,9 +491,7 @@ cross_filesystems = true
     assert!(!kept.query.history);
     assert!(kept.views.auto_apply);
     assert_eq!(kept.clipboard.backend, "osc52");
-    assert_eq!(kept.home.directories, ["/mnt/data"]);
     assert!(!kept.home.desktop_recents);
-    assert!(!kept.home.builtin_catalog);
     assert_eq!(kept.home.preview_max, ByteSize(0));
     assert_eq!(kept.home.search.skip, ["only-this"]);
     assert!(kept.home.search.cross_filesystems);
@@ -529,9 +525,7 @@ auto_apply = false
 backend = "auto"
 
 [home]
-directories = []
 desktop_recents = true
-builtin_catalog = true
 preview_max = "64MiB"
 
 [home.search]
@@ -561,16 +555,10 @@ cross_filesystems = false
     assert!(restored.query.history);
     assert!(!restored.views.auto_apply);
     assert_eq!(restored.clipboard.backend, "auto");
-    assert!(
-        restored.home.directories.is_empty(),
-        "an empty list is a value"
-    );
     assert!(restored.home.desktop_recents);
-    assert!(restored.home.builtin_catalog);
     assert_eq!(restored.home.preview_max, defaults.home.preview_max);
     assert_eq!(restored.home.search.skip, defaults.home.search.skip);
     assert!(!restored.home.search.cross_filesystems);
-    assert_eq!(restored.collections().len(), 1, "the catalog is back");
 }
 
 #[test]
@@ -2098,9 +2086,12 @@ fn test_the_generated_default_config_is_valid_toml() {
         .expect("the generated default config must validate");
 
     assert!(generated.contains("# [display]"));
-    assert!(generated.contains("[[sources]]\nname = \"public\""));
+    assert!(
+        !generated.contains("[[sources]]"),
+        "datasets are in catalog.toml"
+    );
     assert!(parsed.cloud.connections.is_empty());
-    assert_eq!(parsed.sources, [datui::config::builtin_catalog()]);
+    assert!(parsed.read_catalogs.is_empty());
 }
 
 #[test]
@@ -2429,7 +2420,7 @@ fn a_connection_names_buckets_and_nothing_public() {
     let forgot = cloud_error(
         "[[cloud.connections]]\nname = \"p\"\nkind = \"s3\"\nbuckets = [\"s3://noaa-ghcn-pds/\"]\n",
     );
-    assert!(forgot.contains("[[sources.datasets]]"), "{forgot}");
+    assert!(forgot.contains("goes in a catalog"), "{forgot}");
     for key in ["public = true", "datasets = []"] {
         let old = cloud_error(&format!(
             "[[cloud.connections]]\nname = \"p\"\nkind = \"s3\"\n{key}\n"
@@ -2438,69 +2429,76 @@ fn a_connection_names_buckets_and_nothing_public() {
     }
 }
 
-/// One collection holding a local file, an anonymous S3 prefix, an HTTPS file and a
-/// private bucket read through a configured connection.
-const MIXED: &str = r#"
+const CONNECTION: &str = r#"
 [[cloud.connections]]
 name = "onprem"
 kind = "s3"
 endpoint_url = "https://minio.corp.example:9000"
 access_key_id_env = "ONPREM_KEY"
 secret_access_key_env = "ONPREM_SECRET"
+"#;
 
-[[sources]]
-name = "my-datasets"
+/// One catalog holding a local file, an anonymous S3 prefix, an HTTPS file and a
+/// private bucket read through a configured connection.
+const MIXED: &str = r#"
 label = "My datasets"
 
-[[sources.datasets]]
+[sales]
 name = "Sales"
 path = "~/datasets/sales.parquet"
 description = "Monthly sales"
 
-[[sources.datasets]]
+[weather]
 name = "Weather"
 url = "s3://noaa-ghcn-pds/parquet/"
 auth = "anonymous"
 description = "Daily weather observations"
 
-[[sources.datasets]]
+[penguins]
 name = "Penguins"
 url = "https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv"
 
-[[sources.datasets]]
+[orders]
 name = "Orders"
 url = "s3://orders/2024/"
 connection = "onprem"
 "#;
 
+/// `catalog` read as the listed catalog `id`, in a config of [`CONNECTION`].
+fn with_catalog(id: &str, catalog: &str) -> Result<AppConfig, String> {
+    let mut config = cloud_config(CONNECTION);
+    let parsed = datui::catalog::parse(catalog, id, datui::catalog::Origin::Listed, None)
+        .map_err(|e| e.in_file(&format!("{id}.toml")))?;
+    config.read_catalogs = vec![parsed];
+    config.sync_dataset_access();
+    config.validate().map_err(|e| e.to_string())?;
+    Ok(config)
+}
+
 #[test]
-fn a_collection_mixes_local_and_remote_datasets() {
-    let config = cloud_config(MIXED);
-    config.validate().expect("a valid mixed collection");
-    let collection = &config.sources[0];
-    assert_eq!(collection.label(), "My datasets");
-    let names: Vec<&str> = collection
-        .datasets
-        .iter()
-        .map(|d| d.name.as_str())
-        .collect();
+fn a_catalog_mixes_local_and_remote_datasets() {
+    let config = with_catalog("my-datasets", MIXED).expect("a valid mixed catalog");
+    let catalog = &config.read_catalogs[0];
+    assert_eq!(catalog.label, "My datasets");
+    let names: Vec<&str> = catalog.datasets.iter().map(|d| d.name.as_str()).collect();
     assert_eq!(names, ["Sales", "Weather", "Penguins", "Orders"]);
     assert_eq!(
-        collection.datasets[0].local_path(),
+        catalog.datasets[0].local_path(),
         Some(datui::config::expand_config_path("~").join("datasets/sales.parquet"))
     );
-    // Configured, the built-in catalog still follows it.
-    let ids: Vec<String> = config.collections().into_iter().map(|c| c.name).collect();
+    // The bundled catalog still follows it.
+    let ids: Vec<String> = config.catalogs().into_iter().map(|c| c.id).collect();
     assert_eq!(ids, ["my-datasets", "public"]);
 }
 
 #[test]
-fn collection_mistakes_are_named() {
-    let error = |body: &str| cloud_error(&format!("{MIXED}\n{body}"));
+fn catalog_mistakes_are_named_with_their_line() {
     let dataset = |fields: &str| {
-        error(&format!(
-            "[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"d\"\n{fields}\n"
-        ))
+        with_catalog(
+            "x",
+            &format!("label = \"X\"\n\n[d]\nname = \"d\"\n{fields}\n"),
+        )
+        .expect_err(fields)
     };
     for (fields, expected) in [
         ("", "path or url"),
@@ -2536,7 +2534,7 @@ fn collection_mistakes_are_named() {
         ("url = \"s3://onprem@b/\"", "rather than in the URL"),
         (
             "url = \"s3://b/\"\nconnection = \"nowhere\"",
-            "no [[cloud.connections]] entry is named \"nowhere\". Connections: onprem",
+            "no [[cloud.connections]] entry in the config is named \"nowhere\". Connections: onprem",
         ),
         (
             "url = \"gs://b/\"\nconnection = \"onprem\"",
@@ -2550,78 +2548,95 @@ fn collection_mistakes_are_named() {
             "url = \"s3://b/\"\nanonymous = true",
             "unknown key 'anonymous'",
         ),
+        ("url = \"s3://b/\"\ncolumns.ELEMENT = {}", "says nothing"),
+        (
+            "url = \"s3://b/\"\ncolumns.ELEMENT = { meaning = \"x\" }",
+            "unknown key 'meaning'",
+        ),
+        (
+            "url = \"s3://b/\"\nbookmarks.\"Up\" = \"../other/\"",
+            "stay inside it",
+        ),
+        (
+            "url = \"s3://b/\"\ndocumentation = \"ftp://example.com/readme.txt\"",
+            "https://",
+        ),
+        (
+            "url = \"https://example.com/a.csv\"\nbookmarks.\"x\" = \"b/\"",
+            "bookmarks apply only",
+        ),
+        (
+            "url = \"s3://b/\"\nsuggested = []",
+            "bookmarks.\"Name\" = \"path/\" now",
+        ),
     ] {
         let message = dataset(fields);
+        // The table's line, or the key's own when the key is the mistake.
+        assert!(message.starts_with("x.toml:"), "{fields:?}: {message}");
         assert!(message.contains(expected), "{fields:?}: {message}");
     }
     // The variable that names the home directory: Windows sets USERPROFILE, not HOME.
     let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     let home_twice = format!(
-        "[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"a\"\npath = \"~/a.csv\"\n[[sources.datasets]]\nname = \"b\"\npath = \"${home_var}/a.csv\"\n"
+        "[a]\nname = \"a\"\npath = \"~/a.csv\"\n[b]\nname = \"b\"\npath = \"${home_var}/a.csv\"\n"
     );
     for (body, expected) in [
         (
-            "[[sources]]\nname = \"My Data\"\n[[sources.datasets]]\nname = \"d\"\npath = \"/a\"\n",
-            "not a valid name",
+            "[\"My Data\"]\nname = \"d\"\npath = \"/a\"\n",
+            "lowercase letters",
         ),
-        ("[[sources]]\nname = \"x\"\n", "no datasets"),
+        ("label = \"x\"\nhidden = true\n", "not a catalog key"),
+        ("[d]\nname = \" \"\npath = \"/a\"\n", "give it a name"),
         (
-            "[[sources]]\nname = \"x\"\nlabel = \" \"\n[[sources.datasets]]\nname = \"d\"\npath = \"/a\"\n",
-            "label is blank",
-        ),
-        (
-            "[[sources]]\nname = \"x\"\nhidden = true\n[[sources.datasets]]\nname = \"d\"\npath = \"/a\"\n",
-            "unknown key 'hidden'",
+            "[d]\nname = \"d\"\npath = \"/a\"\n[e]\nname = \"d\"\npath = \"/b\"\n",
+            "name \"d\" is [d]'s too",
         ),
         (
-            "[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \" \"\npath = \"/a\"\n",
-            "nonempty name",
+            "[a]\nname = \"a\"\nurl = \"s3://b\"\n[b]\nname = \"b\"\nurl = \"s3://b/\"\n",
+            "\"s3://b/\" is listed as [a] already",
         ),
         (
-            "[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"d\"\npath = \"/a\"\n[[sources.datasets]]\nname = \"d\"\npath = \"/b\"\n",
-            "name \"d\" is used twice",
+            "[a]\nname = \"a\"\nurl = \"https://account.blob.core.windows.net/c/p/\"\n[b]\nname = \"b\"\nurl = \"abfss://c@account.dfs.core.windows.net/p\"\n",
+            "is listed as [a]",
         ),
+        (&*home_twice, "is listed as [a]"),
         (
-            "[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"a\"\nurl = \"s3://b\"\n[[sources.datasets]]\nname = \"b\"\nurl = \"s3://b/\"\n",
-            "\"s3://b/\" is listed twice",
+            "[a]\nname = \"a\"\npath = \"/d/a.csv\"\n[b]\nname = \"b\"\npath = \"/d//a.csv\"\n",
+            "is listed as [a]",
         ),
-        (
-            "[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"a\"\nurl = \"https://account.blob.core.windows.net/c/p/\"\n[[sources.datasets]]\nname = \"b\"\nurl = \"abfss://c@account.dfs.core.windows.net/p\"\n",
-            "is listed twice",
-        ),
-        (&*home_twice, "is listed twice"),
-        (
-            "[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"a\"\npath = \"/d/a.csv\"\n[[sources.datasets]]\nname = \"b\"\npath = \"/d//a.csv\"\n",
-            "is listed twice",
-        ),
-        (
-            "[[sources]]\nname = \"my-datasets\"\n[[sources.datasets]]\nname = \"d\"\npath = \"/a\"\n",
-            "\"my-datasets\" is used twice",
-        ),
-        ("[home]\nhide = [\"My datasets\"]\n", "Use the name, not"),
     ] {
-        let message = error(body);
+        let message = with_catalog("x", body).expect_err(body);
         assert!(message.contains(expected), "{body:?}: {message}");
     }
+    let hide = cloud_config("[home]\nhide = [\"My datasets\"]\n")
+        .validate()
+        .expect_err("a label is not an id")
+        .to_string();
+    assert!(hide.contains("Use the id"), "{hide}");
     // A connection names the account an Azure URL is in.
-    let azure = cloud_error(
-        "[[cloud.connections]]\nname = \"az\"\nkind = \"azure\"\naccount = \"one\"\n[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"d\"\nurl = \"abfss://c@two.dfs.core.windows.net/p/\"\nconnection = \"az\"\n",
-    );
+    let mut azure =
+        cloud_config("[[cloud.connections]]\nname = \"az\"\nkind = \"azure\"\naccount = \"one\"\n");
+    azure.read_catalogs = vec![
+        datui::catalog::parse(
+            "[d]\nname = \"d\"\nurl = \"abfss://c@two.dfs.core.windows.net/p/\"\nconnection = \"az\"\n",
+            "x",
+            datui::catalog::Origin::Listed,
+            None,
+        )
+        .unwrap(),
+    ];
+    let azure = azure.validate().expect_err("another account").to_string();
     assert!(azure.contains("account \"one\""), "{azure}");
 }
 
 #[test]
-fn collections_accept_web_files_but_not_web_directories_or_archives() {
+fn catalogs_accept_web_files_but_not_web_directories_or_archives() {
     for url in [
         "https://example.com/data.csv",
         "http://localhost:8080/data.parquet",
         "https://example.com/data.csv.gz",
     ] {
-        let text = format!(
-            "[[sources]]\nname = \"public\"\n[[sources.datasets]]\nname = \"Data\"\nurl = {url:?}\n"
-        );
-        cloud_config(&text)
-            .validate()
+        with_catalog("x", &format!("[d]\nname = \"Data\"\nurl = {url:?}\n"))
             .unwrap_or_else(|e| panic!("{url}: {e}"));
     }
     for url in [
@@ -2632,17 +2647,17 @@ fn collections_accept_web_files_but_not_web_directories_or_archives() {
         "https:///data.csv",
         "https://example.com/bad path.csv",
     ] {
-        let text = format!(
-            "[[sources]]\nname = \"public\"\n[[sources.datasets]]\nname = \"Data\"\nurl = {url:?}\n"
+        assert!(
+            with_catalog("x", &format!("[d]\nname = \"Data\"\nurl = {url:?}\n")).is_err(),
+            "{url}"
         );
-        assert!(cloud_config(&text).validate().is_err(), "{url}");
     }
     let bucket = cloud_error(
         "[[cloud.connections]]\nname = \"web\"\nkind = \"s3\"\nbuckets = [\"https://example.com/data.csv\"]\n",
     );
     assert!(
-        bucket.contains("[[sources.datasets]]"),
-        "web files belong in datasets: {bucket}"
+        bucket.contains("goes in a catalog"),
+        "web files belong in catalogs: {bucket}"
     );
 }
 
@@ -2673,37 +2688,14 @@ fn two_connections_of_one_name_in_one_file_are_refused() {
 }
 
 #[test]
-fn a_later_layer_replaces_a_collection_whole() {
-    let base = layered(&[
-        "[[sources]]\nname = \"team\"\n[[sources.datasets]]\nname = \"Old\"\nurl = \"s3://old/\"\n[[sources]]\nname = \"mine\"\n[[sources.datasets]]\nname = \"Mine\"\npath = \"/data/mine.csv\"\n",
-        "[[sources]]\nname = \"team\"\nlabel = \"Team\"\n[[sources.datasets]]\nname = \"New\"\nurl = \"gs://new/\"\ndescription = \"Replacement\"\n[[sources]]\nname = \"extra\"\n[[sources.datasets]]\nname = \"Extra\"\npath = \"/data/extra.csv\"\n",
-    ]);
-    let names: Vec<&str> = base.sources.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(
-        names,
-        ["team", "mine", "extra"],
-        "replaced in place, new ones after"
-    );
-    assert_eq!(base.sources[0].label(), "Team");
-    assert_eq!(
-        base.sources[0].datasets.len(),
-        1,
-        "datasets are never merged"
-    );
-    assert_eq!(base.sources[0].datasets[0].name, "New");
-}
-
-#[test]
-fn the_builtin_catalog_is_replaced_dropped_or_hidden() {
+fn the_bundled_catalog_is_replaced_or_hidden() {
     let names = |config: &AppConfig, shown: bool| -> Vec<(String, String)> {
         let list = if shown {
-            config.shown_collections()
+            config.shown_catalogs()
         } else {
-            config.collections()
+            config.catalogs()
         };
-        list.into_iter()
-            .map(|c| (c.name.clone(), c.label().to_string()))
-            .collect()
+        list.into_iter().map(|c| (c.id, c.label)).collect()
     };
     let default = AppConfig::default();
     assert_eq!(
@@ -2711,22 +2703,32 @@ fn the_builtin_catalog_is_replaced_dropped_or_hidden() {
         [("public".to_string(), "Public datasets".to_string())]
     );
 
-    // A collection named `public` replaces the whole catalog, where it is defined.
-    let replacing = "[[sources]]\nname = \"mine\"\n[[sources.datasets]]\nname = \"A\"\npath = \"/a.csv\"\n[[sources]]\nname = \"public\"\nlabel = \"Curated\"\n[[sources.datasets]]\nname = \"Weather\"\nurl = \"s3://weather/\"\nauth = \"anonymous\"\n";
-    let replaced = layered(&[replacing]);
-    replaced.validate().unwrap();
+    // A listed public.toml replaces the whole bundled catalog.
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("catalog.toml"),
+        "[a]\nname = \"A\"\npath = \"/a.csv\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join("public.toml"),
+        "label = \"Curated\"\n[weather]\nname = \"Weather\"\nurl = \"s3://weather/\"\nauth = \"anonymous\"\n",
+    )
+    .unwrap();
+    let config_path = dir.path().join("config.toml");
+    fs::write(&config_path, "catalogs = [\"public.toml\"]\n").unwrap();
+    let replaced = AppConfig::load_from_file(&config_path).expect("loads");
     assert_eq!(
         names(&replaced, true),
         [
-            ("mine".to_string(), "mine".to_string()),
+            ("mine".to_string(), "My datasets".to_string()),
             ("public".to_string(), "Curated".to_string())
         ]
     );
-    let catalog = &replaced.collections()[1];
     assert_eq!(
-        catalog.datasets.len(),
+        replaced.catalogs()[1].datasets.len(),
         1,
-        "nothing of the built-in is merged in"
+        "nothing of the bundled one is merged in"
     );
     assert_eq!(
         replaced
@@ -2739,24 +2741,13 @@ fn the_builtin_catalog_is_replaced_dropped_or_hidden() {
         "only the replacement's URLs are read anonymously"
     );
 
-    // Dropping the built-in leaves a configured `public` alone; hiding hides it.
-    let drop = "[home]\nbuiltin_catalog = false\n";
-    let dropped = layered(&[replacing, drop]);
-    assert_eq!(names(&dropped, true).len(), 2);
-    let off = layered(&[drop]);
-    assert!(off.collections().is_empty());
-    assert!(off.cloud.dataset_access.is_empty());
-    let back = layered(&[drop, "[home]\nbuiltin_catalog = true\n"]);
-    assert_eq!(back.collections().len(), 1, "a later file turns it back on");
-
     let hidden = layered(&[
-        replacing,
         "[home]\nhide = [\"public\"]\n",
         "[home]\nhide = [\"mine\"]\n",
     ]);
     assert_eq!(hidden.home.hide, ["public", "mine"], "hides add up");
     assert!(names(&hidden, true).is_empty());
-    assert_eq!(names(&hidden, false).len(), 2, "hidden, not gone");
+    assert_eq!(names(&hidden, false).len(), 1, "hidden, not gone");
 }
 
 #[test]
@@ -2766,77 +2757,88 @@ fn relative_paths_are_relative_to_the_file_that_names_them() {
     fs::create_dir_all(&team).unwrap();
     fs::write(
         team.join("shared.toml"),
-        "[[sources]]\nname = \"team\"\n[[sources.datasets]]\nname = \"Shared\"\npath = \"data/shared.csv\"\n[[sources.datasets]]\nname = \"Home\"\npath = \"~/home.csv\"\n",
+        "[shared]\nname = \"Shared\"\npath = \"data/shared.csv\"\n[home]\nname = \"Home\"\npath = \"~/home.csv\"\n",
     )
     .unwrap();
+    // The team's config lists its catalog, relative to itself.
+    fs::write(team.join("team.toml"), "catalogs = [\"shared.toml\"]\n").unwrap();
     let config_path = dir.path().join("config.toml");
+    fs::write(&config_path, "import = [\"team/team.toml\"]\n").unwrap();
     fs::write(
-        &config_path,
-        "import = [\"team/shared.toml\"]\n[[sources]]\nname = \"mine\"\n[[sources.datasets]]\nname = \"Mine\"\npath = \"mine.parquet\"\n",
+        dir.path().join("catalog.toml"),
+        "[mine]\nname = \"Mine\"\npath = \"mine.parquet\"\n",
     )
     .unwrap();
     let config = AppConfig::load_from_file(&config_path).expect("loads");
-    let path =
-        |source: usize, dataset: usize| config.sources[source].datasets[dataset].local_path();
-    assert_eq!(path(0, 0), Some(team.join("data/shared.csv")));
+    let path = |catalog: usize, dataset: usize| {
+        config.read_catalogs[catalog].datasets[dataset].local_path()
+    };
+    assert_eq!(config.read_catalogs[0].id, "mine");
+    assert_eq!(path(0, 0), Some(dir.path().join("mine.parquet")));
+    assert_eq!(config.read_catalogs[1].id, "shared");
+    assert_eq!(path(1, 0), Some(team.join("data/shared.csv")));
     assert_eq!(
-        path(0, 1),
+        path(1, 1),
         Some(datui::config::expand_config_path("~").join("home.csv")),
         "~ is not relative"
     );
-    assert_eq!(path(1, 0), Some(dir.path().join("mine.parquet")));
 }
 
 #[test]
-fn two_collections_of_one_name_in_one_file_are_refused() {
+fn two_catalogs_of_one_name_are_refused() {
     let dir = TempDir::new().unwrap();
+    for sub in ["a", "b"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+        fs::write(
+            dir.path().join(sub).join("team.toml"),
+            "[x]\nname = \"X\"\npath = \"/x\"\n",
+        )
+        .unwrap();
+    }
     let config_path = dir.path().join("config.toml");
     fs::write(
         &config_path,
-        "[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"A\"\npath = \"/a\"\n[[sources]]\nname = \"x\"\n[[sources.datasets]]\nname = \"B\"\npath = \"/b\"\n",
+        "catalogs = [\"a/team.toml\", \"b/team.toml\"]\n",
     )
     .unwrap();
     let error = AppConfig::load_from_file(&config_path)
         .expect_err("refused")
         .to_string();
-    assert!(error.contains("\"x\" is used twice"), "{error}");
+    assert!(error.contains("two files are named team.toml"), "{error}");
+    // `mine` is catalog.toml's id.
+    fs::rename(
+        dir.path().join("a/team.toml"),
+        dir.path().join("a/mine.toml"),
+    )
+    .unwrap();
+    fs::write(&config_path, "catalogs = [\"a/mine.toml\"]\n").unwrap();
+    let error = AppConfig::load_from_file(&config_path)
+        .expect_err("refused")
+        .to_string();
+    assert!(error.contains("cannot be a catalog's file name"), "{error}");
 }
 
 #[test]
-fn the_generated_config_materializes_the_builtin_catalog() {
-    let (_dir, manager) = setup_test_config_dir();
+fn config_init_writes_an_empty_catalog_and_never_replaces_one() {
+    let (dir, manager) = setup_test_config_dir();
     let text = manager.generate_default_config();
     let config: AppConfig = toml::from_str(&text).expect("generated config parses");
     config.validate().expect("generated config validates");
-    assert_eq!(config.sources, [datui::config::builtin_catalog()]);
-    let names: Vec<_> = config.sources[0]
-        .datasets
-        .iter()
-        .map(|dataset| dataset.name.as_str())
-        .collect();
-    assert_eq!(
-        names,
-        [
-            "NYC flights (2013)",
-            "Food nutrition (fast food)",
-            "US baby names (1880-2017)",
-            "NOAA daily weather (GHCN-D)",
-            "Premier League (2020-21)",
-            "NYC yellow taxis (January 2025)",
-            "Earthquakes (past month)",
-            "Space launches (1957-2018)",
-            "Palmer penguins",
-            "Aqueous solubility (SDF)",
-            "Bitcoin and Ethereum",
-            "Overture Maps"
-        ],
-        "generated configs should ship the curated catalog"
-    );
-    assert!(text.contains("snapshot"), "{text}");
-    assert!(text.contains("[[sources.datasets]]"), "{text}");
-    assert!(text.contains("# builtin_catalog = true"), "{text}");
+    assert!(text.contains("# catalogs = []"), "{text}");
     assert!(text.contains("# hide = []"), "{text}");
     assert!(!text.contains("\nhide ="), "{text}");
+    assert!(!text.contains("builtin_catalog"), "{text}");
+
+    manager.write_default_config(false).expect("writes");
+    let catalog = dir.path().join("catalog.toml");
+    let written = fs::read_to_string(&catalog).expect("catalog.toml written");
+    let parsed = datui::catalog::parse(&written, "mine", datui::catalog::Origin::Mine, None)
+        .expect("the empty catalog parses");
+    assert!(parsed.datasets.is_empty());
+    assert_eq!(parsed.label, "My datasets");
+    fs::write(&catalog, "# mine\n").unwrap();
+    manager.write_default_config(true).expect("writes again");
+    assert_eq!(fs::read_to_string(&catalog).unwrap(), "# mine\n", "kept");
 }
 
 #[test]

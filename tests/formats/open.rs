@@ -860,7 +860,7 @@ fn a_files_variants_are_listed_inside_it_and_open_alone() {
         formats: Arc::new(registry.clone()),
         ..datui::home::HomeState::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     let listed: Vec<datui::discover::Entry> = home
         .visible()
         .iter()

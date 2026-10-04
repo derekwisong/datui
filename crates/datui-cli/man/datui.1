@@ -137,6 +137,9 @@ List the format specs and dictionaries (FIX, DBC) on the search path: each one's
 \fBdatui config\fR
 Write the default config file, list the files read, or list every key. See datui-config(1).
 .TP
+\fBdatui catalog\fR
+Show the catalogs of named datasets on the home screen, or check a catalog file. See datui-catalog(1).
+.TP
 \fBdatui cache\fR
 Clear the cache: recents, history, schemas and copies. See datui-cache(1).
 .TP
@@ -255,6 +258,9 @@ The Azure CLI's directory, in place of \fB~/.azure\fR.
 .TP
 \fICONFIG\fR/config.toml
 The config file: see datui-config(5). \fBdatui config path\fR prints the files read.
+.TP
+\fICONFIG\fR/catalog.toml
+Your catalog, which Ctrl+D on the home screen adds to: see datui-catalog(1).
 .TP
 \fICONFIG\fR/views/
 Saved views: see datui-views(1).
@@ -385,8 +391,16 @@ The keys of every screen, as a manual page.
 datui man keys
 .EE
 .RE
+.PP
+Print the catalog datui ships, the worked example of the format.
+.PP
+.RS 4
+.EX
+datui catalog show public
+.EE
+.RE
 .SH "SEE ALSO"
-\fBdatui\-config\fR(1), \fBdatui\-cache\fR(1), \fBdatui\-views\fR(1), \fBdatui\-formats\fR(1), \fBdatui\-completions\fR(1), \fBdatui\-man\fR(1), \fBdatui\-config\fR(5), \fBdatui\-keys\fR(7), \fBdatui\-query\fR(7), \fBdatui\-formats\fR(7), \fBjq\fR(1), \fBless\fR(1), \fBjournalctl\fR(1), \fBvd\fR(1)
+\fBdatui\-config\fR(1), \fBdatui\-catalog\fR(1), \fBdatui\-cache\fR(1), \fBdatui\-views\fR(1), \fBdatui\-formats\fR(1), \fBdatui\-completions\fR(1), \fBdatui\-man\fR(1), \fBdatui\-config\fR(5), \fBdatui\-keys\fR(7), \fBdatui\-query\fR(7), \fBdatui\-formats\fR(7), \fBjq\fR(1), \fBless\fR(1), \fBjournalctl\fR(1), \fBvd\fR(1)
 .PP
 The datui documentation: <https:/\:/\:derekwisong.\:github.\:io/\:datui/\:>
 .SH BUGS

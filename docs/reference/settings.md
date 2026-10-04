@@ -26,7 +26,7 @@ lives, imports, the theme and troubleshooting.
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
 | `import` | list | `[]` |  | Config files merged in before this one, in order; this file's own values win. Paths may be relative to this file, or use ~ and $VAR. |
-| `sources` | tables | unset |  | Named collections of datasets on the home screen; see Dataset collections. |
+| `catalogs` | list | `[]` |  | Catalog files listed on the home screen after catalog.toml, each a section; see Catalogs. Paths may be relative to this file. Adds up across imports. |
 
 ## Read
 
@@ -102,11 +102,9 @@ lives, imports, the theme and troubleshooting.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `home.directories` | list | `[]` |  | Directories the home screen always lists. ~ and $VAR expand. |
 | `home.desktop_recents` | bool | `true` |  | Also list directories from the desktop's recently-used files; never the file names. |
 | `home.show_unreadable` | bool | `false` |  | List files datui cannot read, dimmed (Ctrl+A toggles). |
-| `home.builtin_catalog` | bool | `true` |  | Offer the built-in public collection of datasets. |
-| `home.hide` | list | `[]` |  | Collections not shown, by name. Adds up across imports. |
+| `home.hide` | list | `[]` |  | Catalogs not shown, by id: mine (catalog.toml), public, or a listed file's name. Adds up across imports. |
 | `home.preview_max` | size | `"64MiB"` |  | Largest local file whose first rows the home screen previews; 0 turns the preview off. |
 
 ## Home search

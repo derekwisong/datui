@@ -566,6 +566,12 @@ pub enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Show the catalogs of named datasets on the home screen, or check a catalog file
+    #[command(after_help = command_examples("catalog"))]
+    Catalog {
+        #[command(subcommand)]
+        action: CatalogAction,
+    },
     /// Clear the cache: recents, history, schemas and copies
     #[command(after_help = command_examples("cache"))]
     Cache {
@@ -587,7 +593,7 @@ pub enum Command {
     /// Show a manual page, list them, or write them all under a directory
     #[command(after_help = command_examples("man"))]
     Man {
-        /// The page: datui (the default), a command (config, cache, views, formats, completions, man), config.5, keys, query or formats.7
+        /// The page: datui (the default), a command (config, catalog, cache, views, formats, completions, man), config.5, keys, query or formats.7
         #[arg(value_name = "PAGE")]
         page: Option<String>,
         /// List the pages and what each covers
@@ -629,6 +635,23 @@ pub fn completions(shell: clap_complete::Shell) -> String {
     let mut out = Vec::new();
     clap_complete::generate(shell, &mut Args::command(), "datui", &mut out);
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// What `datui catalog` does.
+#[derive(Clone, Debug, Subcommand)]
+pub enum CatalogAction {
+    /// With NAME, print that catalog's file (public is the one datui ships); without, list the catalogs: id, label, datasets and file
+    Show {
+        /// The catalog's id: mine (catalog.toml), public, or a listed file's name
+        #[arg(value_name = "NAME")]
+        name: Option<String>,
+    },
+    /// Check a catalog file and list its datasets; a mistake is named by its line, with the fix, and exits non-zero
+    Check {
+        /// The catalog file
+        #[arg(value_name = "FILE")]
+        file: std::path::PathBuf,
+    },
 }
 
 /// What `datui cache` does.

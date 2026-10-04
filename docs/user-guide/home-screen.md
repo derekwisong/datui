@@ -1,7 +1,8 @@
 # Home screen
 
 `datui` with no path opens the home screen, where you find and open a dataset:
-recent files, directories, cloud storage and a catalog of public data.
+recent files, directories, cloud storage, your catalog and a catalog of public
+data.
 
 ```bash
 datui
@@ -43,15 +44,16 @@ Letters type into the filter, so <kbd>q</kbd> types `q`; <kbd>Ctrl</kbd>+<kbd>C<
 | `RECENT` | Datasets opened before, grouped by the directory or cloud place each lives in |
 | Current directory | Where datui was launched; an empty one says `nothing to open here · ~ types a path` |
 | `CLOUD` | [Cloud sources](#cloud-sources): stores found on this machine and configured ones |
-| Collections | Each [collection](#collections) under its label |
-| Configured directories | `[home] directories`, in order, then directories remembered with <kbd>Ctrl</kbd>+<kbd>D</kbd> |
-| `PUBLIC DATASETS` | The built-in [public datasets](#public-datasets) |
+| `MY DATASETS` | Your [catalog](#catalogs), `catalog.toml`: what <kbd>Ctrl</kbd>+<kbd>D</kbd> added and what you wrote |
+| Other catalogs | Each file `catalogs` lists, under its label |
+| `PUBLIC DATASETS` | The bundled [public datasets](#public-datasets) |
 | `ELSEWHERE` | Directories your desktop recorded (freedesktop `recently-used.xbel`); starts folded |
 | `Found` | [Search](#search-below-the-current-directory) results, while you type |
 
-Folds last between runs. A path section's heading says why it is listed and
-how it stands: `configured`, `nfs4`, `listing` (then `1,200 so far` as a slow
-share answers), `unavailable`, or `first 5,000` when a listing stops there.
+Folds last between runs. A heading says why its section is listed and how it
+stands: `catalog.toml`, `catalog` or `built in` for a catalog; `nfs4`, `listing`
+(then `1,200 so far` as a slow share answers), `unavailable`, or `first 5,000`
+when a listing stops there.
 
 ### Recent
 
@@ -62,24 +64,27 @@ entering it shows all its files, opened or not. The cursor starts on the
 dataset opened last, so <kbd>Enter</kbd> reopens it. Places fill up to a third
 of the list at first; `… more in … places` shows the rest.
 
-### Add a directory
+### Add to your catalog
 
 <a id="adding-a-directory"></a>
+<a id="add-a-directory"></a>
 
-Opening a dataset adds its directory to Recent. <kbd>Ctrl</kbd>+<kbd>D</kbd>
-remembers the selected directory in a section of its own, and again forgets
-it; these live in the cache. To keep directories whatever happens to the
-cache, list them in the config (`~` and `$VAR` expand; one that cannot be
-reached stays listed as `unavailable`):
+Opening a dataset adds its directory to Recent. To keep a dataset or a
+directory on the home screen, press <kbd>Ctrl</kbd>+<kbd>D</kbd> on its row: it
+goes into `catalog.toml`, listed under `MY DATASETS`. <kbd>Ctrl</kbd>+<kbd>D</kbd>
+again on that row forgets it. A directory there is a row to step into.
 
-```toml
-[home]
-directories = ["~/datasets", "/mnt/data"]
-desktop_recents = false
-```
+| Row | <kbd>Ctrl</kbd>+<kbd>D</kbd> adds |
+|---|---|
+| A file or directory | It, under the row's name |
+| A heading of a directory's section, or a Recent place | That directory |
+| A row of another catalog | A copy: location, login and description |
+| A row of `catalog.toml` | Nothing: it forgets the row |
 
-`desktop_recents = false` drops `ELSEWHERE`. datui never writes the desktop's
-file, and lists a place there only when you enter it.
+[Catalogs](../reference/catalogs.md) has the file's keys, team catalogs and
+`datui catalog check`. `[home] desktop_recents = false` drops `ELSEWHERE`;
+datui never writes the desktop's file, and lists a place there only when you
+enter it.
 
 ## Search below the current directory
 
@@ -195,19 +200,21 @@ and old versions may show. How files combine is in
 | `≈` | `@` | An object store or URL |
 | `◌` | `?` | Unknown |
 
-## Collections
+## Catalogs
 
-A collection is a list of datasets you name in the config, local and remote,
-shown as a section under its label; [Dataset collections](../reference/sources.md)
-has the `[[sources]]` keys.
+<a id="collections"></a>
+
+A catalog is a file of named datasets, local and remote, shown as a section
+under its label: `catalog.toml` (`MY DATASETS`), each file `catalogs` lists, and
+`PUBLIC DATASETS`. [Catalogs](../reference/catalogs.md) has the keys.
 
 ```text
-▾ MY DATASETS  5   configured  ────────────────────────────────────
+▾ MY DATASETS  5   catalog.toml  ─────────────────────────────────
   ▪ Sales                                          6.8 KB   now
   ▪ Archive/ 1 csv                                          now
   ◦ Gone missing
   ≈ Weather/ dataset
-  ≈ Penguins
+  ≈ Penguins                                      ~16.1 KB
 ```
 
 | Row | <kbd>Enter</kbd> | Label |
@@ -216,16 +223,42 @@ has the `[[sources]]` keys.
 | A local directory | Goes inside | What is inside |
 | A local path with nothing there | Says so | `missing` |
 | A directory in an object store | Goes inside; <kbd>Backspace</kbd> at its top comes back | `dataset` |
-| A remote file | Opens it | Its format, and its `size` when given |
+| A remote file | Opens it | Its format, and its size: `~16.1 KB`, the catalog's word for it, until a `HEAD` sent when the row is selected measures it |
 
-Nothing remote is asked for until you open or enter a dataset. Inside one, the
-title reads `My datasets › Weather › by_year`, and the pane gives its
+Nothing else remote is asked for until you open or enter a dataset. Inside one,
+the title reads `My datasets › Weather › by_year`, and the pane gives its
 description, publisher, license, homepage, URL and login.
+
+### Documentation view
+
+<kbd>Ctrl</kbd>+<kbd>E</kbd> on a catalog row, or on a place inside one, shows
+what the catalog says of it, full screen. The Info panel's Documentation tab
+shows the same page for the open dataset.
+
+| Line | Says |
+|---|---|
+| `catalog`, `publisher`, `license` | Where the entry is from, and the terms |
+| `format`, `path` or `url`, `login`, `size` | What it is, where, how it is read, and how big (`~` until measured) |
+| `LINKS` | `homepage` and `documentation`, a line each; a long one is cut with `…` |
+| `COLUMNS` | Each column, its meaning and unit; `▸ 30 values` when it has a legend |
+| `BOOKMARKS` | The places to start from, and their paths |
+
+| Key | Does |
+|---|---|
+| <kbd>↑</kbd> <kbd>↓</kbd>, <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Move between lines |
+| <kbd>Enter</kbd> | Open or close a column's value legend |
+| <kbd>y</kbd> | Copy the line's link or value, whole |
+| <kbd>Esc</kbd> | Back to the list |
+
+<kbd>Ctrl</kbd>+<kbd>E</kbd> takes the place of readline's end of line: the
+filter has no cursor, and is edited at its end.
 
 ### Public datasets
 
-`Public datasets` is the built-in collection: data its publishers host, read
-with no login, listed after your own. datui ships none of the data.
+`Public datasets` is the bundled catalog: data its publishers host, read with
+no login, listed after your own. datui ships none of the data;
+`datui catalog show public` prints the
+[catalog](../reference/catalogs.md#the-public-catalog).
 
 | Dataset | Data | License |
 |---|---|---|
@@ -242,7 +275,7 @@ with no login, listed after your own. datui ships none of the data.
 | Bitcoin and Ethereum | Blocks and transactions, partitioned by date | AWS sample-code license |
 | Overture Maps | Places, buildings, addresses, roads and boundaries, by release | ODbL; places CDLA Permissive 2.0 and Apache 2.0 |
 
-- A web file's row gives its format and size. One under 50 MB downloads
+- A web file's row gives its format and size, `~` until measured. One under 50 MB downloads
   without a question; if it passes 50 MB while downloading, it stops and
   asks once. A URL typed at <kbd>~</kbd> is always asked about.
 - Once opened, a dataset comes back under Recent by its catalog name.
@@ -250,15 +283,17 @@ with no login, listed after your own. datui ships none of the data.
   before you use the data.
 - NYC flights, NOAA daily weather, NYC yellow taxis and Earthquakes carry
   their publisher's documentation: the pane lists what the columns mean
-  under `DOCUMENTATION`, and the [Info panel](dataset-info.md) and the
-  [inspector](inspecting-rows.md) explain them once the data is open.
-- NOAA daily weather lists two places to start from under it, `Daily highs,
-  2024` and `Central Park, NY`. <kbd>Enter</kbd> opens one whole;
-  the dataset's own row still steps inside.
+  under `DOCUMENTATION`, <kbd>Ctrl</kbd>+<kbd>E</kbd> shows the whole
+  [Documentation view](#documentation-view), and the
+  [Info panel](dataset-info.md) and the [inspector](inspecting-rows.md)
+  explain them once the data is open.
+- NOAA daily weather lists two bookmarks under it, `Daily highs, 2024` and
+  `Central Park, NY`. <kbd>Enter</kbd> opens one whole; the dataset's own row
+  still steps inside.
 - A build without the `http` or `cloud` feature leaves out the rows it cannot
   open.
-- A collection named `public` replaces this one; `[home] builtin_catalog =
-  false` drops it and `[home] hide = ["public"]` hides it.
+- A listed catalog file named `public.toml` replaces this one;
+  `[home] hide = ["public"]` hides it.
 
 The guides use them:
 
@@ -348,7 +383,7 @@ hide = ["gcs-default"]
 datui adds the logins it finds and the connections you configure;
 [detected sources](../reference/cloud-sources.md#detected-sources) lists where
 each is found, its id and the `discover` setting. Listing a bucket does not
-mean its objects can be read. Collections, public or yours, have sections of
+mean its objects can be read. Catalogs, public or yours, have sections of
 their own.
 
 ### What a cloud row shows
@@ -369,13 +404,13 @@ does not answer reads `unavailable`; <kbd>Ctrl</kbd>+<kbd>R</kbd> tries again.
 
 The cache holds recent paths, how often and how lately each was opened, what
 was measured (counts, column names, size, modification time), query history,
-section folds, remembered directories, bucket listings and hidden cloud
-sources, never the data. Local facts are measured again when a file's size or time changes.
+section folds, bucket listings and hidden cloud sources, never the data. Your
+catalog is in the config directory, not the cache. Local facts are measured again when a file's size or time changes.
 
 | Command | Removes |
 |---|---|
 | `datui cache clear --recents` | Recent paths only |
-| `datui cache clear` | Everything cached: recents, measurements, remembered directories, query history |
+| `datui cache clear` | Everything cached: recents, measurements, query history |
 
 ```bash
 datui cache clear --recents

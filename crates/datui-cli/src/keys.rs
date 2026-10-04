@@ -479,7 +479,8 @@ pub const SCREENS: &[Screen] = &[
                     k("↑ / ↓", "Move", "Move the selection (Ctrl+P / Ctrl+N too)"),
                     k("Ctrl+↑ / Ctrl+↓", "Section", "Previous or next section"),
                     k("PgUp / PgDn", "Page", "A screenful, stopping at the first and last"),
-                    k("Home / End", "First, last", "The first or last row"),
+                    k("Home / End", "First, last", "The first or last row")
+                        .more("The first or last row. The filter has no cursor to move: it is edited at its end"),
                     k("← / →", "Fold", "Fold or unfold; → goes inside")
                         .more("Fold or unfold a section; → on a directory or a file of tables goes inside it"),
                     k("Space", "Fold", "Fold the section (types once filtering)")
@@ -492,9 +493,9 @@ pub const SCREENS: &[Screen] = &[
                 name: "Go",
                 keys: &[
                     k("Enter", "Open", "What the control bar names: Open, Inside, Look")
-                        .more("What the control bar says on this row: \"Open all\" reads a whole directory as one table, \"Inside\" steps into it, \"Open\" loads a file, \"Look\" finds out first. A place a collection suggests, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them"),
+                        .more("What the control bar says on this row: \"Open all\" reads a whole directory as one table, \"Inside\" steps into it, \"Open\" loads a file, \"Look\" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them"),
                     k("Backspace", "Up", "Delete a filter character, or up a level")
-                        .more("Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a collection's remote dataset, back here)"),
+                        .more("Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a catalog's remote dataset, back here)"),
                     k("Esc", "Back", "Path prompt, filter, directory, then the table")
                         .more("Back out one layer: the path prompt, the filter, the directory (back to the row it was entered from), then to the open table, which the control bar's chip names"),
                 ],
@@ -518,10 +519,12 @@ pub const SCREENS: &[Screen] = &[
                         .more("Show or hide files datui cannot read; inside a SQLite database, its internal tables"),
                     k("Ctrl+X", "Hex", "The file under the cursor as bytes")
                         .more("Show the local file under the cursor as bytes, in the hex view, whatever datui would read it as"),
-                    k("Ctrl+D", "Remember", "Remember the directory; again to forget")
-                        .more("Remember the directory under the cursor, so it stays listed; again to forget it. A file stands for the directory it is in, a heading for the one it lists"),
-                    k("Delete", "Forget", "Forget a recent or a place; hide a cloud source")
-                        .more("Forget the highlighted recent entry, or a whole place after confirming, or a remembered place on its heading, or hide a cloud source"),
+                    k("Ctrl+D", "Catalog", "Add the row to catalog.toml; on its rows, forget it")
+                        .more("Add the dataset or directory under the cursor to catalog.toml, listed under My datasets; on a row from catalog.toml, forget it. A heading stands for the directory it lists. Only catalog.toml is written; another catalog is hidden with home.hide"),
+                    k("Ctrl+E", "Documentation", "What the catalog says of the row, full screen")
+                        .more("Open the Documentation view of a catalog row, or of a place inside one: publisher, license, links, columns with units and value legends, bookmarks. ↑ / ↓ move, Enter opens a column's legend, y copies the line's link or value, Esc goes back. Ctrl+E here is not readline's end of line: the filter is edited at its end"),
+                    k("Delete", "Forget", "Forget a recent, a place, or a catalog.toml row")
+                        .more("Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source"),
                     k("Shift+Delete", "Forget all", "Forget every recent entry, after confirming"),
                 ],
             },

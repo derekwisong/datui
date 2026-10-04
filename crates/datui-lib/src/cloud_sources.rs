@@ -1108,9 +1108,9 @@ pub fn expand_azure_short_url(
     )))
 }
 
-/// How `[[sources]]` says to read `url`: the innermost dataset URL holding it, and of
-/// two that are the same place, the one in the collection listed first, so a configured
-/// collection outranks the built-in catalog. A URL naming its own source has said.
+/// How the catalogs say to read `url`: the innermost dataset URL holding it, and of two
+/// that are the same place, the one in the catalog listed first, so the user's catalogs
+/// outrank the bundled one. A URL naming its own source has said.
 fn configured_access<'a>(url: &str, config: &'a CloudConfig) -> Option<&'a DatasetAccess> {
     let (id, plain) = crate::source::split_source_id(url);
     if id.is_some() {
@@ -1137,7 +1137,7 @@ pub fn resolve_with(
     // asked for, so none can fail or be refused in its place.
     if let Some(DatasetAccess {
         auth: DatasetAuth::Anonymous,
-        collection,
+        catalog,
         ..
     }) = configured
     {
@@ -1145,7 +1145,7 @@ pub fn resolve_with(
             Some((account, container, path)) => Resolved {
                 url: crate::source::azure_url(&account, &container, &path),
                 kind: ProviderKind::Azure,
-                source_id: collection.clone(),
+                source_id: catalog.clone(),
                 s3: S3Settings::default(),
                 azure: Default::default(),
                 signing: Signing::Unsigned,
@@ -1160,7 +1160,7 @@ pub fn resolve_with(
                 Resolved {
                     url: url.to_string(),
                     kind,
-                    source_id: collection.clone(),
+                    source_id: catalog.clone(),
                     s3: S3Settings::default(),
                     azure: Default::default(),
                     signing: Signing::Unsigned,
@@ -1599,9 +1599,15 @@ mod tests {
         });
     }
 
-    /// The cloud settings of a config built from `toml`, with the machine's environment.
-    fn with_collections(toml: &str, env: &Environment<'_>) -> CloudConfig {
+    /// The cloud settings of a config built from `toml`, with `catalog` as a listed
+    /// catalog named `id`, and the machine's environment.
+    fn with_catalog(toml: &str, id: &str, catalog: &str, env: &Environment<'_>) -> CloudConfig {
         let mut app: crate::config::AppConfig = toml::from_str(toml).unwrap();
+        if !catalog.is_empty() {
+            app.read_catalogs = vec![
+                crate::catalog::parse(catalog, id, crate::catalog::Origin::Listed, None).unwrap(),
+            ];
+        }
         app.sync_dataset_access();
         app.validate().unwrap();
         let mut cloud = app.cloud.clone();
@@ -1619,8 +1625,8 @@ mod tests {
             &[],
         );
         with_machine(&machine, |env| {
-            let config = with_collections("", env);
-            let catalog = crate::config::builtin_catalog();
+            let config = with_catalog("", "", "", env);
+            let catalog = crate::catalog::bundled();
             assert!(catalog.datasets.len() >= 6);
             // Web files are fetched, not resolved against a store.
             for dataset in &catalog.datasets {
@@ -1630,7 +1636,7 @@ mod tests {
                 }
                 let resolved = resolve_with(url, &config, env).unwrap();
                 assert_eq!(resolved.signing, Signing::Unsigned, "{url}");
-                assert_eq!(resolved.source_id, crate::config::BUILTIN_CATALOG);
+                assert_eq!(resolved.source_id, crate::catalog::PUBLIC);
                 assert_eq!(resolved.s3.access_key_id, None);
             }
             let inside = resolve_with(
@@ -1644,10 +1650,16 @@ mod tests {
             let beside = resolve_with("s3://noaa-ghcn-pds/csv/", &config, env).unwrap();
             assert_eq!(beside.signing, Signing::Try);
 
-            let off = with_collections("[home]\nbuiltin_catalog = false\n", env);
+            // A public.toml listed replaces the bundled catalog.
+            let off = with_catalog(
+                "",
+                "public",
+                "[w]\nname = \"W\"\nurl = \"s3://other-bucket/w/\"\n",
+                env,
+            );
             let resolved = resolve_with("s3://noaa-ghcn-pds/parquet/", &off, env).unwrap();
             assert_eq!(resolved.signing, Signing::Try, "no catalog, no claim on it");
-            // No home-screen row stands for a collection: they are sections.
+            // No home-screen row stands for a catalog: they are sections.
             assert!(discover(&config, env).iter().all(|s| s.id != "public"));
         });
     }
@@ -1655,19 +1667,19 @@ mod tests {
     #[test]
     fn anonymous_datasets_on_any_provider_are_read_unsigned() {
         with_machine(&Machine::new(&[], &[]), |env| {
-            let config = with_collections(
+            let config = with_catalog(
+                "",
+                "open",
                 r#"
-[[sources]]
-name = "open"
-[[sources.datasets]]
+[gbif]
 name = "GBIF"
 url = "s3://gbif-open-data-us-east-1/occurrence/"
 auth = "anonymous"
-[[sources.datasets]]
+[taxis]
 name = "Taxis"
 url = "https://azureopendatastorage.blob.core.windows.net/nyctlc/"
 auth = "anonymous"
-[[sources.datasets]]
+[samples]
 name = "Samples"
 url = "gs://cloud-samples-data/bigquery/"
 "#,
@@ -1705,7 +1717,7 @@ url = "gs://cloud-samples-data/bigquery/"
             &[],
         );
         with_machine(&machine, |env| {
-            let config = with_collections(
+            let config = with_catalog(
                 r#"
 [[cloud.connections]]
 name = "lab"
@@ -1713,10 +1725,10 @@ kind = "s3"
 endpoint_url = "http://127.0.0.1:9000"
 access_key_id_env = "LAB_KEY"
 secret_access_key_env = "LAB_SECRET"
-
-[[sources]]
-name = "team"
-[[sources.datasets]]
+"#,
+                "team",
+                r#"
+[sales]
 name = "Sales"
 url = "s3://connection-sales/2024/"
 connection = "lab"

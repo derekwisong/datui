@@ -48,6 +48,7 @@ mod background;
 pub mod cache;
 pub mod candump;
 pub mod canonical;
+pub mod catalog;
 pub mod chart_data;
 pub mod chart_export;
 pub mod chart_export_modal;
@@ -343,6 +344,11 @@ pub enum AppEvent {
     HomeMeasured {
         measured: Vec<(PathBuf, crate::home::Measured)>,
         done: bool,
+    },
+    /// What a HEAD said an HTTP(S) file on home weighs: its row, measured.
+    HomeSized {
+        path: PathBuf,
+        measured: crate::home::Measured,
     },
     /// What the rows on screen turned out to be. The same payload as
     /// [`AppEvent::HomeMeasured`] and folded in the same way: a kind is one of the
@@ -653,8 +659,8 @@ impl App {
             Some(home::Row::Door { .. }) => return WhatEnter::OpensDirectory,
             Some(home::Row::Entry { entry, .. }) => *entry,
         };
-        // A suggested starting place opens whole.
-        if entry.kind != discover::EntryKind::File && self.home.suggestion(&entry.path).is_some() {
+        // A bookmark opens whole.
+        if entry.kind != discover::EntryKind::File && self.home.bookmark(&entry.path).is_some() {
             return WhatEnter::OpensDirectory;
         }
         match entry.kind {
@@ -985,8 +991,21 @@ pub struct App {
     /// worker ([`Job::FileFacts`], whose record says it is reading), and kept for the
     /// dataset however the read ended, so neither drawing nor reopening reads again.
     file_facts: Option<(u64, FileFacts)>,
-    /// What the dataset's columns mean, when a collection that lists it says.
+    /// What the dataset's columns mean, when a catalog that lists it says.
     pub codebook: Option<std::sync::Arc<codebook::Codebook>>,
+    /// The catalog entry the open dataset is, or is inside, and its catalog's label:
+    /// what Info's Documentation tab shows.
+    pub catalog_entry: Option<(String, std::sync::Arc<catalog::Dataset>)>,
+    /// The Documentation view, full screen over home (Ctrl+E).
+    pub documentation: widgets::documentation::DocState,
+    /// The same page for the open dataset, on Info's Documentation tab.
+    pub info_documentation: widgets::documentation::DocState,
+    /// The directories Ctrl+D kept in the cache before 0.4.0 have been moved into
+    /// `catalog.toml`, or there were none.
+    remembered_moved: bool,
+    /// Send a HEAD for the HTTP(S) file under the cursor on home, to show its size.
+    /// Off under `cargo test`, which never reaches the network unless a test asks.
+    pub head_web_rows: bool,
     // One input per query mode, each with its own history. The history ids
     // ("query", "sql", "fuzzy") name files already on disk; they stay as they
     // are so no history is lost or read as another mode's.
@@ -2523,6 +2542,12 @@ impl App {
     /// elsewhere push its entries out of the capped recents list.
     pub fn use_cache(&mut self, cache: CacheManager) {
         self.cache = cache;
+    }
+
+    /// Read `catalog.toml` from `dir`, and write it there, from now on. For a test whose
+    /// Ctrl+D must not write into the config directory every test in a process shares.
+    pub fn use_catalog_dir(&mut self, dir: &Path) -> Result<()> {
+        self.app_config.read_catalog_files(Some(dir))
     }
 
     /// Path of the dataset currently installed, if any. Exposed for tests that need to
@@ -4636,9 +4661,16 @@ impl App {
         }
         self.forget_the_rows_read();
         self.file_facts = None;
-        self.codebook = path
+        let shown = home::catalogs(&self.app_config);
+        self.codebook = path.as_deref().and_then(|p| home::codebook_for(&shown, p));
+        self.catalog_entry = path
             .as_deref()
-            .and_then(|p| home::codebook_for(&home::collections(&self.app_config), p));
+            .and_then(|p| home::catalog_entry_for(&shown, p));
+        self.info_documentation.close();
+        if let Some((label, entry)) = &self.catalog_entry {
+            self.info_documentation
+                .open(entry.clone(), label.clone(), None);
+        }
         // The footers it still has to read are counted on the open's counter, which is
         // the dataset's now; the last dataset's pass, if any is left, stops.
         self.footer_progress.cancel();
@@ -5410,6 +5442,11 @@ impl App {
             info_modal: InfoModal::new(),
             file_facts: None,
             codebook: None,
+            catalog_entry: None,
+            documentation: Default::default(),
+            info_documentation: Default::default(),
+            remembered_moved: false,
+            head_web_rows: !cache::running_as_a_cargo_test(),
             query_input: TextInput::new()
                 .with_history_limit(app_config.query.history_limit)
                 .with_theme(&theme)
@@ -6442,12 +6479,11 @@ impl App {
         self.home_generation = self.home_generation.wrapping_add(1);
         let generation = self.home_generation;
 
-        self.home.collections = home::collections(&self.app_config);
+        self.move_remembered_places();
+        self.home.catalogs = home::catalogs(&self.app_config);
         let mut request = home::ListingRequest {
-            config_dirs: self.app_config.home.resolved_directories(),
             // Filled in on the worker, from the cache and the desktop's recents: files
             // all the same, and the first frame does not wait on a file.
-            remembered_dirs: Vec::new(),
             recents: Vec::new(),
             desktop_dirs: Vec::new(),
             browsing: self.home.browsing.clone(),
@@ -6459,7 +6495,7 @@ impl App {
             probe_errors: self.home.probe_errors.clone(),
             network_check: self.home.network_check,
             cloud: self.home.cloud.clone(),
-            collections: self.home.collections.clone(),
+            catalogs: self.home.catalogs.clone(),
             known: Default::default(),
             formats: self.formats.clone(),
         };
@@ -6480,7 +6516,6 @@ impl App {
                 let (recents, visits) = cache.load_recents_with_visits();
                 let newest = recents.first().cloned();
                 request.recents = crate::cache::by_frecency(recents, &visits);
-                request.remembered_dirs = cache.load_remembered_places();
                 request.known = cache.load_dataset_facts();
                 if desktop {
                     request.desktop_dirs = home::desktop_recent_dirs();
@@ -6556,6 +6591,8 @@ impl App {
         if std::mem::take(&mut self.home.pending_enrich) {
             self.request_home_measurements();
         }
+        #[cfg(feature = "http")]
+        self.size_selected_web_file();
         if std::mem::take(&mut self.home.pending_classify) {
             self.request_home_classifications();
         }
@@ -6563,6 +6600,53 @@ impl App {
         if std::mem::take(&mut self.home.pending_peek) {
             self.peek_cloud_directories();
         }
+    }
+
+    /// Ask an HTTP(S) server what the file under the cursor weighs, once a session, when
+    /// nothing has measured it: its row shows a catalog's `~33 MB` until the answer
+    /// lands, and the answer is kept with what datui measured, for the next listing.
+    #[cfg(feature = "http")]
+    fn size_selected_web_file(&mut self) {
+        if !self.head_web_rows {
+            return;
+        }
+        let Some(entry) = self.home.selected_entry() else {
+            return;
+        };
+        if entry.size.is_some()
+            || !matches!(
+                source::input_source(&entry.path),
+                source::InputSource::Http(_)
+            )
+            || !self.home.sized.insert(entry.path.clone())
+        {
+            return;
+        }
+        let tx = self.events.clone();
+        let cache = self.cache.clone();
+        self.runtime.spawn_blocking(move || {
+            let Ok(Some(size)) = Self::fetch_remote_size_http(&entry.path.to_string_lossy()) else {
+                return;
+            };
+            let key = home::index_key(&entry.path);
+            let mut facts = cache.dataset_facts(&key).unwrap_or_default();
+            facts.size = size;
+            cache.record_dataset_facts(&[(key, facts)]);
+            let measured = home::Measured {
+                rows: entry.rows,
+                cols: entry.cols,
+                cols_sampled: entry.cols_sampled,
+                size: Some(size),
+                columns: entry.columns.clone(),
+                cost: entry.cost.clone(),
+                kind: None,
+                holds: entry.holds.clone(),
+            };
+            let _ = tx.send(AppEvent::HomeSized {
+                path: entry.path,
+                measured,
+            });
+        });
     }
 
     /// Ask a worker what the rows on screen are.
@@ -6761,31 +6845,12 @@ impl App {
             ));
             return;
         }
-        // The heading of a remembered place stands for the place. No question first:
-        // Ctrl+D puts it back. A row under it is a file on disk, as anywhere else.
-        if self.home.browsing.is_none()
-            && let Some(section) = self.home.selected_section().map(|i| &self.home.sections[i])
-            && let Some(root) = section.root.clone()
+        // A row of catalog.toml goes from the file, as Ctrl+D on it does.
+        if let Some((location, _)) = self.home_row_for_catalog()
+            && let Some((id, name)) = self.mine_entry_at(&location)
         {
-            let header = self.home.selection_is_header();
-            match section.origin {
-                Some(o) if o == home::RootOrigin::Remembered.note() => {
-                    if header {
-                        self.home_set_remembered(&root, false);
-                    } else {
-                        self.home.status = Some(format!(
-                            "Delete on the heading forgets {}",
-                            home::display_path(&root)
-                        ));
-                    }
-                    return;
-                }
-                Some(o) if o == home::RootOrigin::Configured.note() && header => {
-                    self.home.status = Some(Self::configured_place_note(&root));
-                    return;
-                }
-                _ => {}
-            }
+            self.home_forget_from_catalog(&id, &name);
+            return;
         }
         let section_title = self
             .home
@@ -6807,7 +6872,7 @@ impl App {
         }
         let in_recents = section_title == "Recent";
         if !in_recents {
-            self.home.status = Some("Only recents and remembered places can be forgotten".into());
+            self.home.status = Some("Only recents and catalog.toml rows can be forgotten".into());
             return;
         }
         let Some(entry) = self.home.selected_entry() else {
@@ -6819,81 +6884,254 @@ impl App {
         self.home_refresh();
     }
 
-    /// The directory the highlighted row stands for, as Ctrl+D sees it: a directory
-    /// row is itself, a file is the directory it is in, and a heading is the directory
-    /// its section lists.
-    fn home_place_under_cursor(&self) -> Option<PathBuf> {
+    /// The dataset or directory the highlighted row stands for, as Ctrl+D adds it: its
+    /// location, and the name its row shows. A heading stands for the directory its
+    /// section lists. A table inside a file, a cloud source and the rows that are not
+    /// places have none.
+    fn home_row_for_catalog(&self) -> Option<(PathBuf, String)> {
         match self.home.selected_row()? {
-            home::Row::Place { path, .. } => Some(path),
-            home::Row::Door { entry, .. } => Some(entry.path.clone()),
-            home::Row::Entry { entry, .. } => match entry.kind {
-                discover::EntryKind::File | discover::EntryKind::Other => {
-                    entry.path.parent().map(Path::to_path_buf)
-                }
-                _ => Some(entry.path.clone()),
-            },
-            home::Row::Header { section, .. } => self.home.sections.get(section)?.root.clone(),
+            home::Row::Place { path, .. } => {
+                let name = home::display_path(&path);
+                Some((path, name))
+            }
+            home::Row::Door { entry, .. } => {
+                let path: PathBuf = entry.path.components().collect();
+                Some((path.clone(), home::display_path(&path)))
+            }
+            home::Row::Entry { entry, .. } => (entry.table.is_none()
+                && !home::is_cloud_place(&entry.path)
+                && crate::members::split(&entry.path).is_none())
+            .then(|| (entry.path.clone(), entry.name.clone())),
+            home::Row::Header { section, .. } => {
+                let root = self.home.sections.get(section)?.root.clone()?;
+                let name = home::display_path(&root);
+                Some((root, name))
+            }
             home::Row::More { .. } | home::Row::Hidden { .. } => None,
         }
     }
 
-    /// How a place is compared and stored: resolved when it is local, as spelled when
-    /// it is remote, since resolving a path on a share that has stopped answering is
-    /// the stat that hangs. The door's trailing slash goes either way.
-    fn place_key(&self, path: &Path) -> PathBuf {
-        if (self.home.network_check)(path) {
-            path.components().collect()
-        } else {
-            canonical::canonicalize(path).unwrap_or_else(|_| path.components().collect())
+    /// `catalog.toml`'s path: beside the config file read, else in the config directory.
+    fn mine_catalog_file(&self) -> Option<PathBuf> {
+        let dir = match &self.app_config.catalog_dir {
+            Some(dir) => dir.clone(),
+            None => config::ConfigManager::new(APP_NAME)
+                .ok()?
+                .config_dir()
+                .to_path_buf(),
+        };
+        Some(dir.join(catalog::MINE_FILE))
+    }
+
+    /// The id and name of the `catalog.toml` entry at `location`, when there is one.
+    fn mine_entry_at(&self, location: &Path) -> Option<(String, String)> {
+        self.app_config
+            .read_catalogs
+            .iter()
+            .find(|c| c.origin == catalog::Origin::Mine)?
+            .dataset_at(location)
+            .map(|d| (d.id.clone(), d.name.clone()))
+    }
+
+    /// Read the catalogs again after `catalog.toml` changed, and list again.
+    fn reload_catalogs(&mut self) -> Result<(), String> {
+        let dir = self
+            .mine_catalog_file()
+            .and_then(|f| f.parent().map(Path::to_path_buf));
+        self.app_config
+            .read_catalog_files(dir.as_deref())
+            .map_err(|e| e.to_string())?;
+        self.home_refresh();
+        Ok(())
+    }
+
+    /// What Ctrl+D writes for a row at `location` named `name`: a copy of what another
+    /// catalog says of it, or the place as it is.
+    fn new_catalog_dataset(&self, location: &Path, name: &str) -> catalog::NewDataset {
+        if let Some((_, shown)) = self.home.catalog_dataset(location) {
+            let entry = &shown.entry;
+            return catalog::NewDataset {
+                name: entry.name.clone(),
+                path: entry.local_path().map(|p| home::display_path(&p)),
+                url: entry.url.clone(),
+                auth: entry.auth.clone(),
+                connection: entry.connection.clone(),
+                description: entry.description.clone(),
+                size: entry.size,
+            };
         }
+        let mut new = catalog::NewDataset {
+            name: name.to_string(),
+            ..Default::default()
+        };
+        if matches!(
+            source::input_source(location),
+            source::InputSource::Local(_)
+        ) {
+            let absolute = if location.is_relative() {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(location))
+                    .unwrap_or_else(|_| location.to_path_buf())
+            } else {
+                location.to_path_buf()
+            };
+            new.path = Some(home::display_path(&absolute));
+            return new;
+        }
+        // A store reached through a named source: the source becomes the connection
+        // when it is one of the config's, and the URL loses it.
+        let text = location.to_string_lossy();
+        let (id, plain) = source::split_source_id(&text);
+        new.url = Some(plain.into_owned());
+        if let Some(id) = id
+            && self
+                .app_config
+                .cloud
+                .connections
+                .iter()
+                .any(|c| c.name == id)
+        {
+            new.connection = Some(id.to_string());
+        }
+        new
     }
 
-    fn configured_place_note(path: &Path) -> String {
-        format!(
-            "{} is in [home] directories; edit the config to remove it",
-            home::display_path(path)
-        )
-    }
-
-    /// Ctrl+D: keep the place under the cursor on the home screen, or stop keeping it.
-    fn home_toggle_remembered(&mut self) {
-        let Some(path) = self.home_place_under_cursor() else {
-            self.home.status = Some("Move to a directory to remember it".into());
+    /// Ctrl+D: add the row under the cursor to `catalog.toml`, or forget it from there.
+    fn home_toggle_catalog(&mut self) {
+        let Some((location, name)) = self.home_row_for_catalog() else {
+            self.home.status = Some("Move to a dataset or directory to add it".into());
             return;
         };
-        // Roots are directories on a filesystem. A bucket already has its source's
-        // row, and an HTTP place has nothing to list.
-        if home::is_object_store_url(&path)
-            || home::is_cloud_place(&path)
-            || !matches!(source::input_source(&path), source::InputSource::Local(_))
-        {
-            self.home.status = Some("Only directories on a filesystem can be remembered".into());
+        if let Some((id, name)) = self.mine_entry_at(&location) {
+            self.home_forget_from_catalog(&id, &name);
             return;
         }
-        let key = self.place_key(&path);
-        let configured = self
+        let Some(file) = self.mine_catalog_file() else {
+            self.home.status = Some("No config directory to keep catalog.toml in".into());
+            return;
+        };
+        let new = self.new_catalog_dataset(&location, &name);
+        if let Err(why) = new.check() {
+            self.home.status = Some(format!("Not added: {why}"));
+            return;
+        }
+        let label = self
             .app_config
-            .home
-            .resolved_directories()
+            .read_catalogs
             .iter()
-            .any(|dir| self.place_key(dir) == key);
-        if configured {
-            self.home.status = Some(Self::configured_place_note(&key));
-            return;
+            .find(|c| c.origin == catalog::Origin::Mine)
+            .map(|c| c.label.clone())
+            .unwrap_or_else(|| catalog::MINE_LABEL.to_string());
+        match catalog::add(&file, &new) {
+            Ok(_) => match self.reload_catalogs() {
+                Ok(()) => self.flash_note(format!("Added {} to {label}", new.name)),
+                Err(e) => self.error_modal.show(e),
+            },
+            Err(e) => self.error_modal.show(e.to_string()),
         }
-        let remembered = self.cache.load_remembered_places().contains(&key);
-        self.home_set_remembered(&key, !remembered);
     }
 
-    fn home_set_remembered(&mut self, place: &Path, keep: bool) {
-        if keep {
-            self.cache.remember_place(place);
-        } else {
-            self.cache.forget_place(place);
+    /// Remove the entry `id` from `catalog.toml`.
+    fn home_forget_from_catalog(&mut self, id: &str, name: &str) {
+        let Some(file) = self.mine_catalog_file() else {
+            return;
+        };
+        match catalog::forget(&file, id) {
+            Ok(()) => match self.reload_catalogs() {
+                Ok(()) => self.flash_note(format!("Forgot {name}")),
+                Err(e) => self.error_modal.show(e),
+            },
+            Err(e) => self.error_modal.show(e.to_string()),
         }
-        let verb = if keep { "Remembered" } else { "Forgot" };
-        self.flash_note(format!("{verb} {}", home::display_path(place)));
-        self.home_refresh();
+    }
+
+    /// Before 0.4.0 Ctrl+D kept directories in the cache. Once, they move into
+    /// `catalog.toml`, where Ctrl+D keeps them now, and the cache's list goes.
+    fn move_remembered_places(&mut self) {
+        if std::mem::replace(&mut self.remembered_moved, true) {
+            return;
+        }
+        let places = self.cache.take_remembered_places();
+        if places.is_empty() {
+            return;
+        }
+        let Some(file) = self.mine_catalog_file() else {
+            return;
+        };
+        if let Err(e) = catalog::move_places(&file, &places) {
+            log::warn!(target: "datui", "moving remembered places into catalog.toml: {e:#}");
+        }
+        let dir = file.parent().map(Path::to_path_buf);
+        if let Err(e) = self.app_config.read_catalog_files(dir.as_deref()) {
+            log::warn!(target: "datui", "reading catalog.toml: {e:#}");
+        }
+    }
+
+    /// Ctrl+E: the Documentation view of the catalog row under the cursor, or of the
+    /// catalog dataset the row is inside.
+    fn home_open_documentation(&mut self) {
+        let path = match self.home.selected_row() {
+            Some(home::Row::Entry { entry, .. }) | Some(home::Row::Door { entry, .. }) => {
+                Some(entry.path.clone())
+            }
+            Some(home::Row::Place { path, .. }) => Some(path),
+            Some(home::Row::Header { section, .. }) => {
+                self.home.sections.get(section).and_then(|s| s.root.clone())
+            }
+            _ => None,
+        };
+        let found = path
+            .as_deref()
+            .and_then(|p| home::catalog_entry_for(&self.home.catalogs, p));
+        let Some((catalog, entry)) = found else {
+            self.home.status = Some("Ctrl+E shows a catalog row's documentation".into());
+            return;
+        };
+        let measured = path.as_deref().and_then(|p| {
+            self.home
+                .selected_entry()
+                .filter(|e| e.path == p && entry.location() == p)
+                .and_then(|e| e.size)
+        });
+        self.documentation.open(entry, catalog, measured);
+    }
+
+    /// A key while the Documentation view is open over home.
+    fn documentation_key(&mut self, event: &KeyEvent) {
+        let page = self.documentation.view_height.max(1) as isize;
+        match event.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Left => self.documentation.close(),
+            KeyCode::Up | KeyCode::Char('k') => self.documentation.move_cursor(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.documentation.move_cursor(1),
+            KeyCode::PageUp => self.documentation.move_cursor(-page),
+            KeyCode::PageDown => self.documentation.move_cursor(page),
+            KeyCode::Home | KeyCode::Char('g') => self.documentation.move_cursor(isize::MIN / 2),
+            KeyCode::End | KeyCode::Char('G') => self.documentation.move_cursor(isize::MAX / 2),
+            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Right => {
+                self.documentation.toggle_legend();
+            }
+            KeyCode::Char('y') => self.copy_documentation_line(),
+            _ => {}
+        }
+    }
+
+    /// `y` in the Documentation view: the line's link or value, whole.
+    fn copy_documentation_line(&mut self) {
+        match self.documentation.copy_text() {
+            Some(text) => self.copy_documentation_text(text),
+            None => self.flash_note("Nothing to copy on this line".to_string()),
+        }
+    }
+
+    /// Put a line of a Documentation page on the clipboard, whole.
+    pub(crate) fn copy_documentation_text(&mut self, text: String) {
+        let shown: String = text.chars().take(60).collect();
+        let said = if shown.len() < text.len() {
+            format!("Copied {shown}{}", glyphs::get().ellipsis)
+        } else {
+            format!("Copied {shown}")
+        };
+        self.finish_copy(clipboard::Payload::text(text), said);
     }
 
     /// Collapse or expand the section the cursor is in.
@@ -7300,7 +7538,7 @@ impl App {
         }
         // A place a collection suggests is a starting point: Enter opens it as one
         // table rather than stepping inside. → still goes in.
-        if entry.kind != discover::EntryKind::File && self.home.suggestion(&entry.path).is_some() {
+        if entry.kind != discover::EntryKind::File && self.home.bookmark(&entry.path).is_some() {
             #[cfg(feature = "cloud")]
             let reader = if home::is_object_store_url(&entry.path)
                 && !matches!(
@@ -7498,10 +7736,10 @@ impl App {
         // already said what it is and what it weighs. A URL the user typed still asks.
         let unasked = self
             .home
-            .collection_dataset(&path)
-            .filter(|(collection, _)| {
+            .catalog_dataset(&path)
+            .filter(|(catalog, _)| {
                 !jump
-                    && collection.builtin
+                    && catalog.origin == catalog::Origin::Bundled
                     && matches!(source::input_source(&path), source::InputSource::Http(_))
             })
             .map(|(_, dataset)| UnaskedDownload {
@@ -7807,6 +8045,11 @@ impl App {
         // stayed until the next time the listing changed.
         self.home.status = None;
 
+        if self.documentation.is_open() {
+            self.documentation_key(event);
+            return None;
+        }
+
         // The home screen puts every plain character into the filter — `q` has to
         // type a `q`, or you could never search for "quarterly". Quitting is Ctrl+C,
         // handled before this is reached, and Esc once there is no context left to
@@ -7989,8 +8232,9 @@ impl App {
                 self.narrow_cloud_listing();
             }
             KeyCode::Char('r') if ctrl => self.home_reload(),
-            // A browser's bookmark key: keep this place on the home screen, or stop.
-            KeyCode::Char('d') if ctrl => self.home_toggle_remembered(),
+            // A browser's bookmark key: add the row to catalog.toml, or forget it.
+            KeyCode::Char('d') if ctrl => self.home_toggle_catalog(),
+            KeyCode::Char('e') if ctrl => self.home_open_documentation(),
             // Any local file's bytes, whatever datui would read it as.
             KeyCode::Char('x') if ctrl => {
                 let local = |path: &Path| {
@@ -12296,6 +12540,11 @@ impl App {
                 }
                 None
             }
+            AppEvent::HomeSized { path, measured } => {
+                self.home.enriched.insert(path.clone(), measured.clone());
+                self.home.apply_measurements();
+                None
+            }
             AppEvent::HomeClassified { measured, done } => {
                 // Kept even when the listing has been rebuilt since it was asked for. A
                 // probe or a cloud peek landing rebuilds it, and a Recent section full of
@@ -14131,7 +14380,10 @@ impl App {
         let facts_tab = self.info_facts_tab();
         self.data_table_state
             .as_ref()
-            .map(|state| crate::widgets::info::TabsOffered::of(state, facts_tab))
+            .map(|state| crate::widgets::info::TabsOffered {
+                documentation: self.info_documentation.is_open(),
+                ..crate::widgets::info::TabsOffered::of(state, facts_tab)
+            })
             .unwrap_or_default()
     }
 

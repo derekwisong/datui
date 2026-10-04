@@ -95,6 +95,38 @@ test = "run"
 pages = ["datui.1", "datui-man.1", "datui-keys.7"]
 
 [[example]]
+command = "datui catalog show public"
+description = "Print the catalog datui ships, the worked example of the format"
+expect = "exit"
+test = "run"
+pages = ["datui.1", "datui-catalog.1"]
+
+[[example]]
+command = "datui catalog show"
+description = "List the catalogs: id, label, datasets and file"
+expect = "exit"
+test = "run"
+pages = ["datui-catalog.1"]
+
+[[example]]
+command = "datui catalog check team.toml"
+files = [
+  { name = "team.toml", text = """
+label = "Team data"
+
+[orders]
+name = "Orders"
+path = "data/orders.parquet"
+description = "Every order, one row each"
+columns.status = { description = "Where the order is", values = { P = "Placed", S = "Shipped" } }
+""" },
+]
+description = "Check a catalog file and list its datasets"
+expect = "exit"
+test = "run"
+pages = ["datui-catalog.1"]
+
+[[example]]
 command = "datui config path"
 description = "The config files read, lowest precedence first"
 test = "run"

@@ -13163,7 +13163,7 @@ fn test_right_goes_inside_a_local_multi_file_directory() {
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(tmp.path().to_path_buf());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
 
     let row = app
         .home
@@ -13248,7 +13248,7 @@ fn app_with_recents_in_two_places(
     let mut app = App::new(tx, common::test_runtime());
     app.use_cache(cache.clone());
     app.enter_home();
-    app.home.rebuild(&[], &recents);
+    app.home.rebuild(&recents);
     let row = app
         .home
         .visible()
@@ -13349,32 +13349,45 @@ fn ctrl(c: char) -> AppEvent {
     AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
 }
 
-/// Ctrl+D keeps the place under the cursor on the home screen, and pressed again stops
-/// keeping it. A file row stands for the directory it is in. What is checked is the
-/// store, which is what the next listing reads.
+/// Ctrl+D adds the row under the cursor to catalog.toml, and pressed on a row from
+/// catalog.toml forgets it there. A place row adds the directory. What is checked is
+/// the file, which is what the next listing reads.
 #[test]
-fn test_ctrl_d_remembers_and_forgets_the_place_under_the_cursor() {
+fn test_ctrl_d_adds_to_the_catalog_and_forgets() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let (mut app, recents, cache) = app_with_recents_in_two_places(&tmp, false);
+    let (mut app, recents, _cache) = app_with_recents_in_two_places(&tmp, false);
+    let config = tmp.path().join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    app.use_catalog_dir(&config).unwrap();
     let here = recents[0].parent().unwrap().to_path_buf();
-    let there = recents[2].parent().unwrap().to_path_buf();
-    let kept = |cache: &datui::CacheManager, path: &Path| {
-        cache.load_remembered_places().iter().any(|p| p == path)
+    let catalog = config.join("catalog.toml");
+    let listed = |path: &Path| {
+        datui::catalog::read(&catalog, "mine", datui::catalog::Origin::Mine)
+            .unwrap()
+            .is_some_and(|c| c.dataset_at(path).is_some())
     };
 
+    // The cursor is on the place row for `here`.
     app.event(&ctrl('d'));
-    assert!(kept(&cache, &here), "{:?}", cache.load_remembered_places());
+    assert!(listed(&here), "{:?}", std::fs::read_to_string(&catalog));
     assert!(
         app.flash_message()
-            .is_some_and(|s| s.starts_with("Remembered")),
+            .is_some_and(|s| s.starts_with("Added") && s.ends_with("My datasets")),
         "{:?}",
         app.flash_message()
     );
+    assert!(
+        std::fs::read_to_string(&catalog)
+            .unwrap()
+            .starts_with("# Your catalog"),
+        "a new catalog.toml says what it is"
+    );
 
     app.event(&ctrl('d'));
-    assert!(!kept(&cache, &here), "a second press forgets it");
+    assert!(!listed(&here), "a second press forgets it");
     assert!(app.flash_message().is_some_and(|s| s.starts_with("Forgot")));
 
+    // A file row adds the file.
     let row = app
         .home
         .visible()
@@ -13385,113 +13398,42 @@ fn test_ctrl_d_remembers_and_forgets_the_place_under_the_cursor() {
         .expect("the recent in the other place is listed");
     app.home.selected = row;
     app.event(&ctrl('d'));
-    assert!(kept(&cache, &there), "a file row remembers its directory");
+    assert!(listed(&recents[2]), "a file row adds the file");
 }
 
-/// A remembered directory is listed like a configured one, marked `remembered`, and
-/// `Delete` on its heading forgets it. One that is also configured is listed once,
-/// as configured, and Ctrl+D on it points at the config rather than doing nothing.
+/// The places Ctrl+D kept in the cache before catalogs move into catalog.toml the
+/// first time the home screen is listed, and the cache's list goes.
 #[test]
-fn test_a_remembered_place_is_listed_and_delete_on_its_heading_forgets_it() {
+fn test_remembered_places_move_into_catalog_toml() {
     common::isolate_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = datui::canonical::canonicalize(tmp.path()).unwrap();
     let kept = root.join("kept");
-    let configured = root.join("configured");
     std::fs::create_dir_all(&kept).unwrap();
-    std::fs::create_dir_all(&configured).unwrap();
-    std::fs::write(kept.join("a.parquet"), b"x").unwrap();
-    let cache = datui::CacheManager::new("datui").expect("cache");
-    cache.remember_place(&kept);
+    let cache = datui::CacheManager::with_dir(root.join("cache"));
+    cache
+        .save_remembered_places(std::slice::from_ref(&kept))
+        .unwrap();
+    let config = root.join("config");
+    std::fs::create_dir_all(&config).unwrap();
 
-    let mut config = datui::AppConfig::default();
-    config.home.directories = vec![configured.to_string_lossy().into_owned()];
     let (tx, _rx) = mpsc::channel();
-    let mut app = App::new_with_config(
-        tx,
-        common::test_runtime(),
-        datui::Theme {
-            colors: std::collections::HashMap::new(),
-        },
-        config,
-    );
+    let mut app = App::new(tx, common::test_runtime());
+    app.use_cache(cache.clone());
+    app.use_catalog_dir(&config).unwrap();
     app.enter_home();
-    app.home
-        .apply_listing(datui::home::build_listing(&datui::home::ListingRequest {
-            collections: Vec::new(),
-            config_dirs: vec![configured.clone()],
-            remembered_dirs: vec![kept.clone(), configured.clone()],
-            recents: Vec::new(),
-            desktop_dirs: Vec::new(),
-            browsing: None,
-            probed: Default::default(),
-            unreachable: Default::default(),
-            listing_so_far: Default::default(),
-            cut_short: Default::default(),
-            narrowed: None,
-            probe_errors: Default::default(),
-            network_check: app.home.network_check,
-            cloud: Vec::new(),
-            known: Default::default(),
-            formats: Default::default(),
-        }));
-
-    let heading = |app: &App, dir: &Path| {
-        app.home
-            .visible()
-            .iter()
-            .position(|r| {
-                matches!(r, datui::home::Row::Header { section, .. }
-                    if app.home.sections[*section].root.as_deref() == Some(dir))
-            })
-            .expect("the directory has a section")
-    };
-    let origin = |app: &App, dir: &Path| {
-        app.home
-            .sections
-            .iter()
-            .filter(|s| s.root.as_deref() == Some(dir))
-            .map(|s| s.origin)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(origin(&app, &kept), vec![Some("remembered")]);
-    assert_eq!(
-        origin(&app, &configured),
-        vec![Some("configured")],
-        "listed once, as configured"
-    );
-
-    app.home.selected = heading(&app, &configured);
-    app.event(&ctrl('d'));
+    let catalog = datui::catalog::read(
+        &config.join("catalog.toml"),
+        "mine",
+        datui::catalog::Origin::Mine,
+    )
+    .unwrap()
+    .expect("catalog.toml written");
+    assert!(catalog.dataset_at(&kept).is_some(), "{catalog:?}");
+    assert!(cache.take_remembered_places().is_empty(), "moved once");
     assert!(
-        app.home
-            .status
-            .as_deref()
-            .is_some_and(|s| s.contains("[home] directories")),
-        "{:?}",
-        app.home.status
-    );
-    assert!(!cache.load_remembered_places().contains(&configured));
-
-    // A file under the place is a file on disk: Delete points at the heading.
-    app.home.selected = heading(&app, &kept) + 1;
-    app.event(&key(KeyCode::Delete));
-    assert!(cache.load_remembered_places().contains(&kept));
-    assert!(
-        app.home
-            .status
-            .as_deref()
-            .is_some_and(|s| s.starts_with("Delete on the heading")),
-        "{:?}",
-        app.home.status
-    );
-
-    app.home.selected = heading(&app, &kept);
-    app.event(&key(KeyCode::Delete));
-    assert!(
-        !cache.load_remembered_places().contains(&kept),
-        "forgotten: {:?}",
-        cache.load_remembered_places()
+        app.home.catalogs.iter().any(|c| c.label == "My datasets"),
+        "listed at once"
     );
 }
 
@@ -13508,7 +13450,7 @@ fn test_enter_on_the_hidden_row_shows_the_files() {
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(tmp.path().to_path_buf());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
     app.home.select_first_entry();
 
     let area = Rect::new(0, 0, 120, 24);
@@ -13543,7 +13485,7 @@ fn test_the_place_of_an_http_recent_says_it_cannot_be_browsed() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
-    app.home.rebuild(&[], std::slice::from_ref(&url));
+    app.home.rebuild(std::slice::from_ref(&url));
     let place = PathBuf::from("https://example.com/data");
     let row = app
         .home
@@ -13599,7 +13541,7 @@ fn test_the_rule_counts_datasets_past_the_cap() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
-    app.home.rebuild(&[], &recents);
+    app.home.rebuild(&recents);
     for section in 1..app.home.sections.len() {
         app.home.set_collapsed(section, true);
     }
@@ -13655,11 +13597,28 @@ fn test_a_tall_list_spaces_its_sections_and_a_short_one_does_not() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
-    app.home
-        .rebuild(std::slice::from_ref(&configured), &recents);
+    let config = datui::AppConfig {
+        read_catalogs: vec![
+            datui::catalog::parse(
+                &format!(
+                    "[configured]\nname = \"Configured\"\npath = {:?}\n",
+                    configured.to_string_lossy()
+                ),
+                "mine",
+                datui::catalog::Origin::Mine,
+                None,
+            )
+            .unwrap(),
+        ],
+        ..Default::default()
+    };
+    app.home.catalogs = datui::home::catalogs(&config);
+    app.home.rebuild(&recents);
 
     let is_header = |line: &str| {
-        line.contains("RECENT") || line.contains("current directory") || line.contains("configured")
+        line.contains("RECENT")
+            || line.contains("current directory")
+            || line.contains("catalog.toml")
     };
     // Tall: the wordmark and prompt take the top rows; the list below has room.
     let area = Rect::new(0, 0, 100, 50);
@@ -13750,7 +13709,7 @@ fn test_enter_on_the_more_row_expands_recent() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
-    app.home.rebuild(&[], &recents);
+    app.home.rebuild(&recents);
     // A short screen, so the cap bites: one place, then the more row.
     let area = Rect::new(0, 0, 120, 14);
     let mut buf = Buffer::empty(area);
@@ -13796,7 +13755,7 @@ fn test_right_does_not_browse_from_an_ordinary_row() {
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(tmp.path().to_path_buf());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
 
     let row = app
         .home
@@ -13835,7 +13794,7 @@ fn test_right_does_not_browse_from_an_ordinary_row() {
 /// The note on the heading of the directory being browsed, once its listing is in:
 /// where entering a lake table says the table itself is not read.
 fn lake_heading(app: &mut App) -> String {
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
     app.home
         .sections
         .first()
@@ -13862,7 +13821,7 @@ fn test_a_delta_table_is_labelled_and_not_opened_as_one_table() {
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(tmp.path().to_path_buf());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
 
     let row = app
         .home
@@ -13980,7 +13939,7 @@ fn test_a_directory_of_lake_tables_does_not_say_there_is_nothing_here() {
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(tmp.path().to_path_buf());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
 
     let area = Rect::new(0, 0, 120, 24);
     let mut buf = Buffer::empty(area);
@@ -14021,7 +13980,7 @@ fn test_right_goes_inside_a_lake_table() {
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(tmp.path().to_path_buf());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
 
     let row = app
         .home
@@ -14076,7 +14035,7 @@ fn test_a_sampled_column_count_is_marked_on_screen() {
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(tmp.path().to_path_buf());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
 
     let row = app
         .home
@@ -14145,7 +14104,7 @@ fn test_an_unexamined_lake_root_is_classified_before_it_is_opened() {
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(tmp.path().to_path_buf());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
 
     let row = app
         .home
@@ -14197,7 +14156,7 @@ fn test_right_into_a_lake_table_says_why() {
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(tmp.path().to_path_buf());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
     let row = app
         .home
         .visible()
@@ -14246,7 +14205,7 @@ fn test_an_unexamined_remote_lake_root_is_classified_off_the_event_thread() {
     // A share, as the mount table would have it — and the table in Recent, which is how
     // a row on one comes to be listed without anything having looked at it.
     app.home.network_check = |_| true;
-    app.home.rebuild(&[], std::slice::from_ref(&table));
+    app.home.rebuild(std::slice::from_ref(&table));
 
     let row = app
         .home
@@ -14325,7 +14284,7 @@ fn test_a_probe_answering_does_not_cancel_an_open_in_flight() {
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.network_check = |_| true;
-    app.home.rebuild(&[], std::slice::from_ref(&table));
+    app.home.rebuild(std::slice::from_ref(&table));
     let row = app
         .home
         .visible()
@@ -14386,7 +14345,7 @@ fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(tmp.path().to_path_buf());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
     let row = app
         .home
         .visible()
@@ -14419,7 +14378,7 @@ fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
     app.enter_home();
     std::fs::write(tmp.path().join("one.parquet"), b"x").unwrap();
     app.home.browsing = Some(tmp.path().to_path_buf());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
     let row = app
         .home
         .visible()
@@ -14442,7 +14401,7 @@ fn test_a_hive_directory_from_home_still_opens_as_one_dataset() {
     // itself. `is_dir()` is false there, so a stat would call it a single file.
     app.enter_home();
     app.home.browsing = Some(tmp.path().to_path_buf());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
     let gone = PathBuf::from("/mnt/gone/sales");
     for section in app.home.sections.iter_mut() {
         for entry in section.rows.iter_mut().filter(|e| e.name == "sales") {
@@ -14658,7 +14617,7 @@ fn test_both_doors_are_open_on_a_directory_datui_cannot_name() {
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(tmp.path().to_path_buf());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
 
     let row = app
         .home
@@ -14693,7 +14652,7 @@ fn test_both_doors_are_open_on_a_directory_datui_cannot_name() {
 
     // And the first row in there is the other door. (The app rebuilds the listing on
     // the event this returns; here the same call does it on the spot.)
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
     let names: Vec<String> = app
         .home
         .visible()
@@ -14729,7 +14688,7 @@ fn test_enter_on_the_whole_directory_row_opens_rather_than_descending() {
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(tmp.path().to_path_buf());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
 
     let row = app
         .home
@@ -14808,7 +14767,7 @@ fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(events.clone());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
 
     let row = app
         .home
@@ -14854,7 +14813,7 @@ fn test_the_door_into_a_lake_table_says_its_files_are_not_the_table() {
     let mut up = App::new(tx, common::test_runtime());
     up.enter_home();
     up.home.browsing = Some(tmp.path().to_path_buf());
-    up.home.rebuild(&[], &[]);
+    up.home.rebuild(&[]);
     let row = up
         .home
         .visible()
@@ -14884,7 +14843,7 @@ fn test_the_door_opens_a_directory_by_the_directory_route() {
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(tmp.path().to_path_buf());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
 
     let row = app
         .home
@@ -14924,7 +14883,7 @@ fn test_right_goes_inside_a_row_nothing_has_looked_into() {
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(tmp.path().to_path_buf());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
 
     let row = app
         .home
@@ -14990,7 +14949,7 @@ fn test_the_door_reads_a_local_directory_with_the_local_rules() {
         let mut app = App::new(tx, common::test_runtime());
         app.enter_home();
         app.home.browsing = Some(dir.to_path_buf());
-        app.home.rebuild(&[], &[]);
+        app.home.rebuild(&[]);
         app.home
             .visible()
             .iter()
@@ -15055,7 +15014,7 @@ fn test_the_cloud_door_reads_a_prefix_with_the_reader_its_listing_calls_for() {
         app.home.network_check = |_| true;
         app.home.probe_ready(place.clone(), rows);
         app.home.browsing = Some(place);
-        app.home.rebuild(&[], &[]);
+        app.home.rebuild(&[]);
         let row = app
             .home
             .visible()
@@ -15165,7 +15124,7 @@ fn test_the_count_does_not_include_the_door() {
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(parts);
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
     app.home.classify_now(16);
 
     let area = Rect::new(0, 0, 200, 24);
@@ -15209,7 +15168,7 @@ fn test_a_directory_the_nesting_rule_turns_away_is_still_two_keys_from_one_table
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(tmp.path().to_path_buf());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
 
     let row = app
         .home
@@ -15229,7 +15188,7 @@ fn test_a_directory_the_nesting_rule_turns_away_is_still_two_keys_from_one_table
     // One key in.
     app.event(&key(KeyCode::Right));
     assert_eq!(app.home.browsing.as_deref(), Some(sales.as_path()));
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
 
     // The second key opens the union.
     let row = app
@@ -15492,7 +15451,7 @@ fn test_a_remote_name_datui_cannot_read_is_still_a_file_not_a_prefix() {
             network_check: |_| true,
             ..Default::default()
         };
-        home.rebuild(&[], &[PathBuf::from(url)]);
+        home.rebuild(&[PathBuf::from(url)]);
         home.sections
             .iter()
             .flat_map(|s| s.rows.iter())
@@ -15586,7 +15545,7 @@ fn test_a_directory_of_files_written_without_extensions_still_opens() {
     let mut home = App::new(tx, common::test_runtime());
     home.enter_home();
     home.home.browsing = Some(parts.clone());
-    home.home.rebuild(&[], &[]);
+    home.home.rebuild(&[]);
     let door = home
         .home
         .visible()
@@ -15782,10 +15741,10 @@ fn test_the_bar_says_what_enter_will_really_do() {
         let mut app = App::new(tx, common::test_runtime());
         app.enter_home();
         app.home.browsing = Some(tmp.path().to_path_buf());
-        app.home.rebuild(&[], &[]);
+        app.home.rebuild(&[]);
         app.home.measure_now(16);
         app.home.classify_now(16);
-        app.home.rebuild(&[], &[]);
+        app.home.rebuild(&[]);
 
         let row = app
             .home
@@ -15820,7 +15779,7 @@ fn test_the_bar_says_what_enter_will_really_do() {
     let mut other = App::new(tx, common::test_runtime());
     other.enter_home();
     other.home.browsing = Some(tmp.path().to_path_buf());
-    other.home.rebuild(&[], &[]);
+    other.home.rebuild(&[]);
     let at = |app: &mut App, want: fn(&datui::home::Row) -> bool| {
         app.home.visible().iter().position(want)
     };
@@ -15838,7 +15797,7 @@ fn test_the_bar_says_what_enter_will_really_do() {
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(apart.clone());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
     let door = app
         .home
         .visible()
@@ -15870,7 +15829,7 @@ fn test_a_place_row_says_inside_and_says_it_once() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
-    app.home.rebuild(&[], std::slice::from_ref(&file));
+    app.home.rebuild(std::slice::from_ref(&file));
 
     let row = app
         .home
@@ -15939,10 +15898,10 @@ fn test_the_pane_only_promises_a_door_that_exists() {
     let mut app = App::new(tx, common::test_runtime());
     app.enter_home();
     app.home.browsing = Some(tmp.path().to_path_buf());
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
     app.home.measure_now(16);
     app.home.classify_now(16);
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
 
     let shown = pane(&mut app, "full");
     assert!(
@@ -23112,7 +23071,7 @@ fn a_hugging_face_cache_lists_its_splits_on_home() {
         browsing: Some(cache.clone()),
         ..datui::home::HomeState::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     let names: Vec<String> = home
         .visible()
         .iter()

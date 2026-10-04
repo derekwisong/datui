@@ -1,3 +1,4 @@
+pub use crate::catalog::is_object_store_dataset;
 use crate::numfmt::{self, Glob, Grouping, NumberFormat, NumberFormatSettings};
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
@@ -79,8 +80,7 @@ impl ConfigManager {
 
     /// The commented file `datui config init` writes, from the option registry: every
     /// key with its doc line and its default, commented out so the defaults keep
-    /// applying. The built-in catalog is active: deleting one of its dataset tables
-    /// must remove that dataset.
+    /// applying. Datasets are not here: they are in `catalog.toml`.
     pub fn generate_default_config(&self) -> String {
         use datui_cli::settings::{DefaultValue, Kind, SECTIONS, in_section};
         let mut out = String::from(
@@ -119,19 +119,6 @@ impl ConfigManager {
                 }
             }
         }
-        out.push_str(
-            "\n# ============================================================================\n\
-             # Sources\n\
-             # ============================================================================\n\
-             # Named collections of datasets, local (path) or remote (url), each listed under\n\
-             # its label on the home screen. A collection named \"public\" replaces the\n\
-             # built-in catalog below; [home] builtin_catalog = false drops it, and\n\
-             # [home] hide hides any collection by name.\n\
-             #\n\
-             # This active catalog is a snapshot. Delete or edit a dataset table to curate it;\n\
-             # configs generated today do not automatically receive future catalog updates.\n",
-        );
-        out.push_str(&serialize_builtin_catalog());
         out
     }
 
@@ -153,6 +140,13 @@ impl ConfigManager {
         let template = self.generate_default_config();
         write_private(&config_path, &template)?;
 
+        // The catalog is the user's own data, so it is written only when there is none,
+        // --force or not.
+        let catalog = self.config_path(crate::catalog::MINE_FILE);
+        if !catalog.exists() {
+            std::fs::write(&catalog, crate::catalog::MINE_TEMPLATE)?;
+        }
+
         Ok(config_path)
     }
 }
@@ -163,9 +157,15 @@ impl ConfigManager {
 pub struct AppConfig {
     /// Additional config files merged in before this file's own values.
     pub import: Vec<String>,
-    /// Named collections of datasets, `[[sources]]`.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub sources: Vec<SourceConfig>,
+    /// Catalog files listed on the home screen besides `catalog.toml`.
+    pub catalogs: Vec<String>,
+    /// The catalogs read: `catalog.toml`, then each of `catalogs`. Not a key: read by
+    /// [`AppConfig::read_catalog_files`] once the layers are merged.
+    #[serde(skip)]
+    pub read_catalogs: Vec<crate::catalog::Catalog>,
+    /// The directory `catalog.toml` was looked for in: the config file's.
+    #[serde(skip)]
+    pub catalog_dir: Option<PathBuf>,
     pub read: ReadConfig,
     pub csv: CsvConfig,
     pub display: DisplayConfig,
@@ -216,8 +216,8 @@ pub struct CloudConfig {
     /// List every source's buckets when the home screen opens. Off: a source is listed
     /// when it is entered or on Ctrl+R, and its credential command runs only then.
     pub list_on_start: bool,
-    /// How the object-store datasets in `[[sources]]` are read. Not a key: derived from
-    /// the collections by [`AppConfig`], so resolving a URL needs only this section.
+    /// How the object-store datasets of the catalogs are read. Not a key: derived from
+    /// the catalogs by [`AppConfig`], so resolving a URL needs only this section.
     #[serde(skip)]
     pub dataset_access: Vec<DatasetAccess>,
 }
@@ -241,13 +241,13 @@ impl Default for CloudConfig {
     }
 }
 
-/// How a `[[sources.datasets]]` URL in an object store is read, when it says.
+/// How a catalog dataset's URL in an object store is read, when it says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatasetAccess {
     /// The dataset's URL: everything under it is read the same way.
     pub url: String,
-    /// The collection it is listed in.
-    pub collection: String,
+    /// The catalog it is listed in.
+    pub catalog: String,
     pub auth: DatasetAuth,
 }
 
@@ -633,7 +633,7 @@ impl CloudConnectionConfig {
             return Err(eyre!(
                 "cloud.connections \"{name}\": \"{bucket}\" is not a bucket name{}",
                 if bucket.contains("://") {
-                    ". A dataset URL goes in [[sources.datasets]]"
+                    ". A dataset URL goes in a catalog"
                 } else {
                     ""
                 }
@@ -641,468 +641,6 @@ impl CloudConnectionConfig {
         }
         Ok(())
     }
-}
-
-/// The ID of the built-in catalog. A configured collection with this name replaces it.
-pub const BUILTIN_CATALOG: &str = "public";
-
-/// Two collections of one name in one file.
-fn check_source_names(sources: &[SourceConfig]) -> Result<()> {
-    for (i, source) in sources.iter().enumerate() {
-        if sources[..i].iter().any(|s| s.name == source.name) {
-            return Err(eyre!("sources: the name \"{}\" is used twice", source.name));
-        }
-    }
-    Ok(())
-}
-
-/// One named collection in `[[sources]]`: datasets wherever they live, on this machine
-/// or remote, listed under one heading on the home screen. Only references: nothing is
-/// read until a dataset is opened.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-#[serde(default)]
-pub struct SourceConfig {
-    /// The collection's ID: what `[home] hide` names, and what a later file
-    /// uses to replace it.
-    pub name: String,
-    /// Shown instead of the name.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub datasets: Vec<DatasetConfig>,
-    /// Keys that are not recognized, kept so validation can name them.
-    #[serde(flatten)]
-    pub unknown: std::collections::BTreeMap<String, toml::Value>,
-}
-
-/// One dataset in a collection: a local `path` or a remote `url`, never both.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-#[serde(default)]
-pub struct DatasetConfig {
-    pub name: String,
-    /// A file or directory on this machine. `~` and `$VAR` expand, and a relative path
-    /// is relative to the config file that names it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    /// A file or directory in an object store, or a data file on an HTTP(S) server.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
-    /// How an object-store URL is read: `auto` (the default) or `anonymous`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub auth: Option<String>,
-    /// The `[[cloud.connections]]` entry whose login reads an object-store URL.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub connection: Option<String>,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub description: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub publisher: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub license: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub homepage: String,
-    /// About how many bytes an HTTP(S) file is, for its row before anything is
-    /// downloaded. What the server says replaces it once the file is opened.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub size: Option<u64>,
-    /// Where the publisher documents the columns: the source of `columns`.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub codebook: String,
-    /// What each column means, by its name as the data spells it.
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub columns: std::collections::BTreeMap<String, ColumnNote>,
-    /// Places inside a directory dataset worth starting from, listed under it.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub suggested: Vec<SuggestedPath>,
-    /// Keys that are not recognized, kept so validation can name them.
-    #[serde(flatten)]
-    pub unknown: std::collections::BTreeMap<String, toml::Value>,
-}
-
-/// A column's entry in a dataset's codebook: what it means, its unit, and what its
-/// codes stand for.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-#[serde(default)]
-pub struct ColumnNote {
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub description: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub unit: String,
-    /// Code to meaning. `""` is what a blank or null value means.
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub values: std::collections::BTreeMap<String, String>,
-    /// Keys that are not recognized, kept so validation can name them.
-    #[serde(flatten)]
-    pub unknown: std::collections::BTreeMap<String, toml::Value>,
-}
-
-/// A place inside a directory dataset to start from: a partition, a station.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-#[serde(default)]
-pub struct SuggestedPath {
-    pub name: String,
-    /// Relative to the dataset's `path` or `url`.
-    pub path: String,
-    /// Keys that are not recognized, kept so validation can name them.
-    #[serde(flatten)]
-    pub unknown: std::collections::BTreeMap<String, toml::Value>,
-}
-
-const SOURCE_KEYS: &str = "name, label, datasets";
-const DATASET_KEYS: &str = "name, path, url, auth, connection, description, publisher, license, \
-     homepage, size, codebook, columns, suggested";
-const COLUMN_KEYS: &str = "description, unit, values";
-const SUGGESTED_KEYS: &str = "name, path";
-const AUTH_VALUES: &str = "auto or anonymous";
-
-/// Where a dataset URL lives, as far as reading it is concerned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UrlPlace {
-    /// S3, Google Cloud or Azure, with its connection kind.
-    ObjectStore(&'static str),
-    Http,
-}
-
-impl SourceConfig {
-    /// The heading the home screen shows.
-    pub fn label(&self) -> &str {
-        self.label.as_deref().unwrap_or(&self.name)
-    }
-
-    fn validate(&self, connections: &[CloudConnectionConfig]) -> Result<()> {
-        let name = &self.name;
-        if name.is_empty() {
-            return Err(eyre!("sources: every collection needs a name"));
-        }
-        if !is_valid_source_id(name) {
-            return Err(eyre!(
-                "sources: \"{name}\" is not a valid name. Use lowercase letters, digits and \
-                 '-', up to 40 characters"
-            ));
-        }
-        if !self.unknown.is_empty() {
-            return Err(unknown_keys(
-                &format!("sources \"{name}\""),
-                &self.unknown,
-                SOURCE_KEYS,
-            ));
-        }
-        if self.label.as_deref().is_some_and(|l| l.trim().is_empty()) {
-            return Err(eyre!("sources \"{name}\": label is blank"));
-        }
-        if self.datasets.is_empty() {
-            return Err(eyre!(
-                "sources \"{name}\": no datasets. Add [[sources.datasets]] tables after it"
-            ));
-        }
-        let mut names = std::collections::HashSet::new();
-        let mut places = std::collections::HashSet::new();
-        for dataset in &self.datasets {
-            dataset.validate(name, connections)?;
-            if !names.insert(dataset.name.as_str()) {
-                return Err(eyre!(
-                    "sources \"{name}\": dataset name \"{}\" is used twice",
-                    dataset.name
-                ));
-            }
-            if !places.insert(dataset.place_key()) {
-                return Err(eyre!(
-                    "sources \"{name}\": \"{}\" is listed twice",
-                    dataset
-                        .path
-                        .as_deref()
-                        .or(dataset.url.as_deref())
-                        .unwrap_or("")
-                ));
-            }
-        }
-        Ok(())
-    }
-}
-
-impl DatasetConfig {
-    /// The local path with `~` and `$VAR` expanded, when this is a local dataset.
-    pub fn local_path(&self) -> Option<PathBuf> {
-        self.path.as_deref().map(expand_path)
-    }
-
-    /// What two entries naming the same data have in common.
-    fn place_key(&self) -> String {
-        match (&self.path, &self.url) {
-            (Some(path), _) => format!("path:{}", path_place(&expand_path(path)).display()),
-            (None, Some(url)) => format!("url:{}", crate::source::canonical_cloud_place(url)),
-            (None, None) => String::new(),
-        }
-    }
-
-    /// The codebook's columns and the suggested places: each says something, and a
-    /// suggestion stays inside a dataset that has places inside it.
-    fn validate_codebook(&self, what: &str) -> Result<()> {
-        if !self.codebook.is_empty() && !self.codebook.starts_with("https://") {
-            return Err(eyre!(
-                "{what}: codebook \"{}\" is not an https:// link",
-                self.codebook
-            ));
-        }
-        for (column, note) in &self.columns {
-            let what = format!("{what} column \"{column}\"");
-            if !note.unknown.is_empty() {
-                return Err(unknown_keys(&what, &note.unknown, COLUMN_KEYS));
-            }
-            if note.description.trim().is_empty()
-                && note.unit.trim().is_empty()
-                && note.values.is_empty()
-            {
-                return Err(eyre!(
-                    "{what}: says nothing. Give a description, unit or values"
-                ));
-            }
-            if let Some((code, _)) = note.values.iter().find(|(_, m)| m.trim().is_empty()) {
-                return Err(eyre!("{what}: value \"{code}\" has no meaning"));
-            }
-        }
-        if self.suggested.is_empty() {
-            return Ok(());
-        }
-        let has_places = self.path.is_some()
-            || self.url.as_deref().is_some_and(|url| {
-                matches!(dataset_url_place(url), Some(UrlPlace::ObjectStore(_)))
-            });
-        if !has_places {
-            return Err(eyre!(
-                "{what}: suggested applies only to a local path or an s3://, gs:// or Azure url"
-            ));
-        }
-        let mut names = std::collections::HashSet::new();
-        for suggestion in &self.suggested {
-            let name = suggestion.name.trim();
-            if name.is_empty() {
-                return Err(eyre!("{what}: every suggested place needs a name"));
-            }
-            let what = format!("{what} suggested \"{name}\"");
-            if !suggestion.unknown.is_empty() {
-                return Err(unknown_keys(&what, &suggestion.unknown, SUGGESTED_KEYS));
-            }
-            if !names.insert(name) {
-                return Err(eyre!("{what}: the name is used twice"));
-            }
-            let path = suggestion.path.trim();
-            if path.is_empty()
-                || path.starts_with('/')
-                || path.contains("://")
-                || path.contains('\\')
-                || path.split('/').any(|part| part == "..")
-            {
-                return Err(eyre!(
-                    "{what}: path \"{}\" must be relative to the dataset and stay inside it",
-                    suggestion.path
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    /// Where a suggested place is: its path under the dataset's.
-    pub fn suggested_location(&self, suggestion: &SuggestedPath) -> Option<PathBuf> {
-        let rel = suggestion.path.trim().trim_start_matches("./");
-        if let Some(path) = self.local_path() {
-            return Some(path.join(rel));
-        }
-        let url = self.url.as_deref()?;
-        Some(PathBuf::from(format!(
-            "{}/{rel}",
-            url.trim_end_matches('/')
-        )))
-    }
-
-    fn validate(&self, collection: &str, connections: &[CloudConnectionConfig]) -> Result<()> {
-        if self.name.trim().is_empty() {
-            return Err(eyre!(
-                "sources \"{collection}\": every dataset needs a nonempty name"
-            ));
-        }
-        let what = format!("sources \"{collection}\" dataset \"{}\"", self.name);
-        if !self.unknown.is_empty() {
-            return Err(unknown_keys(&what, &self.unknown, DATASET_KEYS));
-        }
-        self.validate_codebook(&what)?;
-        let url = match (&self.path, &self.url) {
-            (None, None) => return Err(eyre!("{what}: say where it is with path or url")),
-            (Some(_), Some(_)) => {
-                return Err(eyre!("{what}: path and url both say where it is. Use one"));
-            }
-            (Some(path), None) => {
-                if path.trim().is_empty() {
-                    return Err(eyre!("{what}: path is blank"));
-                }
-                if path.contains("://") {
-                    return Err(eyre!("{what}: \"{path}\" is a URL. Use url = \"{path}\""));
-                }
-                for (field, set) in [
-                    ("auth", self.auth.is_some()),
-                    ("connection", self.connection.is_some()),
-                ] {
-                    if set {
-                        return Err(eyre!(
-                            "{what}: {field} applies only to a url; a path is read as a file"
-                        ));
-                    }
-                }
-                return Ok(());
-            }
-            (None, Some(url)) => url,
-        };
-        let place = dataset_url_place(url).ok_or_else(|| {
-            if crate::source::split_source_id(url).0.is_some() {
-                eyre!(
-                    "{what}: name the connection with connection = \"...\" rather than in \
-                     the URL"
-                )
-            } else if url.starts_with("http://") || url.starts_with("https://") {
-                eyre!(
-                    "{what}: \"{url}\" is not a data file. An HTTP server has no listing, so \
-                     a web URL must name a file datui reads, such as .csv or .parquet"
-                )
-            } else {
-                eyre!("{what}: \"{url}\" is not an s3://, gs://, Azure or HTTP(S) URL")
-            }
-        })?;
-        if let Some(auth) = self.auth.as_deref()
-            && !matches!(auth, "auto" | "anonymous")
-        {
-            return Err(eyre!(
-                "{what}: auth \"{auth}\" is not valid. Expected {AUTH_VALUES}"
-            ));
-        }
-        let Some(connection) = self.connection.as_deref() else {
-            return Ok(());
-        };
-        let UrlPlace::ObjectStore(kind) = place else {
-            return Err(eyre!(
-                "{what}: connection applies only to s3://, gs:// and Azure URLs. A web URL is \
-                 read with no login"
-            ));
-        };
-        if self.auth.is_some() {
-            return Err(eyre!(
-                "{what}: auth and connection both say how to read it. Use one"
-            ));
-        }
-        let Some(configured) = connections.iter().find(|c| c.name == connection) else {
-            let names: Vec<&str> = connections.iter().map(|c| c.name.as_str()).collect();
-            return Err(eyre!(
-                "{what}: no [[cloud.connections]] entry is named \"{connection}\"{}",
-                if names.is_empty() {
-                    String::new()
-                } else {
-                    format!(". Connections: {}", names.join(", "))
-                }
-            ));
-        };
-        let connection_kind = configured.kind.as_deref().unwrap_or("");
-        if connection_kind != kind {
-            return Err(eyre!(
-                "{what}: connection \"{connection}\" is kind = \"{connection_kind}\", which \
-                 does not read {kind} URLs"
-            ));
-        }
-        if let (Some(account), Some((url_account, _, _))) = (
-            configured.account.as_deref(),
-            crate::source::azure_parts(url),
-        ) && !account.eq_ignore_ascii_case(&url_account)
-        {
-            return Err(eyre!(
-                "{what}: connection \"{connection}\" signs in to account \"{account}\", but \
-                 the URL is in \"{url_account}\""
-            ));
-        }
-        Ok(())
-    }
-}
-
-fn unknown_keys(
-    what: &str,
-    unknown: &std::collections::BTreeMap<String, toml::Value>,
-    expected: &str,
-) -> color_eyre::Report {
-    let keys: Vec<String> = unknown.keys().map(|k| format!("'{k}'")).collect();
-    eyre!(
-        "{what}: unknown key{} {}. Expected one of: {expected}",
-        if keys.len() > 1 { "s" } else { "" },
-        keys.join(", ")
-    )
-}
-
-/// Where a dataset URL is, when datui can read it: a place in S3, Google Cloud or Azure
-/// (a file or a directory), or a data file on a web server, which has no listing.
-fn dataset_url_place(url: &str) -> Option<UrlPlace> {
-    if url.chars().any(char::is_whitespace) {
-        return None;
-    }
-    match crate::source::input_source(Path::new(url)) {
-        crate::source::InputSource::Azure(_) => Some(UrlPlace::ObjectStore("azure")),
-        crate::source::InputSource::S3(rest) | crate::source::InputSource::Gcs(rest) => {
-            let host = rest.split('/').next().unwrap_or("");
-            let kind = if url.to_ascii_lowercase().starts_with("s3") {
-                "s3"
-            } else {
-                "gcs"
-            };
-            (!host.is_empty() && !host.contains('@')).then_some(UrlPlace::ObjectStore(kind))
-        }
-        crate::source::InputSource::Http(_) => {
-            let (_, rest) = url.split_once("://")?;
-            let (host, path) = rest.split_once('/')?;
-            let path = path.split(['?', '#']).next().unwrap_or("");
-            (!host.is_empty()
-                && !host.contains('@')
-                && crate::discover::is_data_file(Path::new(path)))
-            .then_some(UrlPlace::Http)
-        }
-        crate::source::InputSource::Local(_) => None,
-    }
-}
-
-/// Whether a dataset URL is in an object store, and so browsed as well as opened.
-pub fn is_object_store_dataset(url: &str) -> bool {
-    matches!(dataset_url_place(url), Some(UrlPlace::ObjectStore(_)))
-}
-
-/// The built-in catalog, in the shape a `[[sources]]` entry takes.
-pub fn builtin_catalog() -> SourceConfig {
-    static CATALOG: std::sync::OnceLock<SourceConfig> = std::sync::OnceLock::new();
-    CATALOG
-        .get_or_init(|| {
-            #[derive(Deserialize)]
-            struct Catalog {
-                sources: Vec<SourceConfig>,
-            }
-            let mut sources = toml::from_str::<Catalog>(include_str!("public_datasets.toml"))
-                .expect("built-in catalog must be valid TOML")
-                .sources;
-            assert_eq!(sources.len(), 1, "built-in catalog must be one collection");
-            let catalog = sources.remove(0);
-            assert_eq!(
-                catalog.name, BUILTIN_CATALOG,
-                "built-in catalog keeps its ID"
-            );
-            catalog
-                .validate(&[])
-                .expect("built-in catalog must validate");
-            catalog
-        })
-        .clone()
-}
-
-fn serialize_builtin_catalog() -> String {
-    #[derive(Serialize)]
-    struct Catalog {
-        sources: Vec<SourceConfig>,
-    }
-    toml::to_string_pretty(&Catalog {
-        sources: vec![builtin_catalog()],
-    })
-    .expect("built-in catalog must serialize")
 }
 
 /// Write `contents` to `path`, readable only by the owner.
@@ -1701,18 +1239,14 @@ fn detect_terminal_mode() -> ThemeMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HomeConfig {
-    /// Directories to offer as roots on the home screen, in order.
-    /// Supports `~` and `$VAR`.
-    pub directories: Vec<String>,
     /// Whether to also offer directories the desktop records you opening data from.
     /// Only the directories are used, never the file names.
     pub desktop_recents: bool,
     /// Whether the home screen lists files datui has no reader for, dimmed, from the
     /// start. `Ctrl+A` flips it for the session either way.
     pub show_unreadable: bool,
-    /// Whether the built-in `public` collection exists.
-    pub builtin_catalog: bool,
-    /// Collection names never shown on the home screen, built-in or configured.
+    /// Catalogs never shown on the home screen, by id: `mine`, `public`, or a listed
+    /// file's name.
     pub hide: Vec<String>,
     /// The largest local file whose first rows the home screen reads for its preview
     /// (Parquet: its average row group). Those rows are the open's first page, so
@@ -1813,25 +1347,14 @@ impl SearchConfig {
 impl Default for HomeConfig {
     fn default() -> Self {
         Self {
-            directories: Vec::new(),
             // On by default: it only ever contributes *places*, and it is the one
             // thing that gives a fresh install somewhere to point you.
             desktop_recents: true,
             show_unreadable: false,
-            builtin_catalog: true,
             hide: Vec::new(),
             preview_max: ByteSize::mib(64),
             search: SearchConfig::default(),
         }
-    }
-}
-
-impl HomeConfig {
-    /// Configured directories with `~`/`$VAR` expanded. Non-existent paths are kept:
-    /// the home screen shows an unavailable root rather than hiding it, because
-    /// "the mount is down" is information.
-    pub fn resolved_directories(&self) -> Vec<PathBuf> {
-        self.directories.iter().map(|d| expand_path(d)).collect()
     }
 }
 
@@ -2061,7 +1584,9 @@ impl Default for AppConfig {
     fn default() -> Self {
         let mut config = Self {
             import: Vec::new(),
-            sources: Vec::new(),
+            catalogs: Vec::new(),
+            read_catalogs: Vec::new(),
+            catalog_dir: None,
             read: ReadConfig::default(),
             csv: CsvConfig::default(),
             display: DisplayConfig::default(),
@@ -2332,7 +1857,7 @@ fn home_path(text: &str) -> Option<PathBuf> {
 /// and `$USERPROFILE/a.csv` to `C:\Users\me/a.csv`), with no `.` and a trailing
 /// separator dropped. A drive letter is one case and a UNC prefix takes backslashes.
 /// `..` stays: past a symlink it is not the parent the text names.
-fn path_place(path: &Path) -> PathBuf {
+pub(crate) fn path_place(path: &Path) -> PathBuf {
     use std::path::{Component, Prefix};
     let mut place = PathBuf::new();
     for component in path.components() {
@@ -2443,7 +1968,7 @@ enum Combine {
 /// Tables merge key by key; everything else not listed here is replaced whole.
 const COMBINED_KEYS: &[(&str, Combine)] = &[
     ("formats.path", Combine::Union),
-    ("sources", Combine::ByName),
+    ("catalogs", Combine::Union),
     ("cloud.connections", Combine::ByName),
     ("cloud.hide", Combine::Union),
     ("cloud.env_files", Combine::Union),
@@ -2519,8 +2044,8 @@ impl ConfigLayer {
         Ok(Some(layer))
     }
 
-    /// Resolve relative dataset `path`s against `dir`, the directory of the file that
-    /// named them, before a layer from another directory can be merged with them.
+    /// Resolve relative format and catalog paths against `dir`, the directory of the
+    /// file that named them, before a layer from another directory can be merged.
     fn anchor_paths(&mut self, dir: &Path) {
         if let Some(toml::Value::Array(entries)) = self
             .table
@@ -2536,20 +2061,14 @@ impl ConfigLayer {
                 }
             }
         }
-        let Some(toml::Value::Array(sources)) = self.table.get_mut("sources") else {
-            return;
-        };
-        let datasets = sources
-            .iter_mut()
-            .filter_map(|s| s.get_mut("datasets"))
-            .filter_map(toml::Value::as_array_mut)
-            .flatten();
-        for dataset in datasets {
-            if let Some(toml::Value::String(path)) = dataset.get_mut("path")
-                && !path.trim().is_empty()
-                && expand_path(path).is_relative()
-            {
-                *path = dir.join(expand_path(path)).to_string_lossy().into_owned();
+        if let Some(toml::Value::Array(files)) = self.table.get_mut("catalogs") {
+            for entry in files {
+                if let toml::Value::String(path) = entry
+                    && !path.trim().is_empty()
+                    && expand_path(path).is_relative()
+                {
+                    *path = dir.join(expand_path(path)).to_string_lossy().into_owned();
+                }
             }
         }
     }
@@ -2572,9 +2091,26 @@ impl ConfigLayer {
     }
 }
 
+/// Keys 0.4.0 retired, and where what they said goes now.
+const RETIRED_KEYS: &[(&str, &str)] = &[
+    (
+        "sources",
+        "a collection is a catalog file now; put its datasets in catalog.toml as [id] \
+         tables, or list the file in catalogs = [...] (datui catalog check FILE)",
+    ),
+    (
+        "home.directories",
+        "a directory is a catalog entry now; Ctrl+D on its row adds it to catalog.toml",
+    ),
+    (
+        "home.builtin_catalog",
+        "home.hide = [\"public\"] hides the public catalog",
+    ),
+];
+
 /// The keys `table` writes that the option registry does not know, each with the
 /// nearest known keys, sorted. A registered key's value is not looked into: a table
-/// such as `[display.number_format]` or `[[sources]]` is that key's business.
+/// such as `[display.number_format]` or `[[cloud.connections]]` is that key's business.
 fn unknown_keys_in(table: &toml::Table) -> Vec<String> {
     fn walk(table: &toml::Table, prefix: &str, out: &mut Vec<String>) {
         for (key, value) in table {
@@ -2584,6 +2120,10 @@ fn unknown_keys_in(table: &toml::Table) -> Vec<String> {
                 format!("{prefix}.{key}")
             };
             if datui_cli::settings::find(&path).is_some() {
+                continue;
+            }
+            if let Some((_, moved)) = RETIRED_KEYS.iter().find(|(key, _)| *key == path) {
+                out.push(format!("{path} is not read any more: {moved}"));
                 continue;
             }
             match value {
@@ -2789,6 +2329,8 @@ impl AppConfig {
             .map_err(|e| eyre!("Invalid configuration in {place}: {e}"))?;
         // `import` is a load-time directive, never merged; report what the root declared.
         config.import = imports;
+        // A catalog's mistake names its own file and line.
+        config.read_catalog_files(config_path.parent())?;
 
         config
             .validate()
@@ -2895,47 +2437,79 @@ impl AppConfig {
         Ok(config)
     }
 
-    /// Every collection: the configured ones in the order defined, imports first, then
-    /// the built-in catalog, unless a configured collection named `public` replaces it
-    /// or `[home] builtin_catalog = false` drops it. Hidden ones included.
-    pub fn collections(&self) -> Vec<SourceConfig> {
-        let mut all = self.sources.clone();
-        if self.home.builtin_catalog && !all.iter().any(|s| s.name == BUILTIN_CATALOG) {
-            all.push(builtin_catalog());
+    /// Every catalog, hidden ones included: `catalog.toml`, the listed files in order,
+    /// then the bundled `public` catalog, unless a listed file named `public.toml`
+    /// replaces it.
+    pub fn catalogs(&self) -> Vec<crate::catalog::Catalog> {
+        let mut all = self.read_catalogs.clone();
+        if !all.iter().any(|c| c.id == crate::catalog::PUBLIC) {
+            all.push(crate::catalog::bundled());
         }
         all
     }
 
-    /// The collections the home screen shows: [`Self::collections`] less
-    /// `[home] hide`.
-    pub fn shown_collections(&self) -> Vec<SourceConfig> {
-        self.collections()
+    /// The catalogs the home screen shows: [`Self::catalogs`] less `[home] hide`.
+    pub fn shown_catalogs(&self) -> Vec<crate::catalog::Catalog> {
+        self.catalogs()
             .into_iter()
-            .filter(|s| !self.home.hide.contains(&s.name))
+            .filter(|c| !self.home.hide.contains(&c.id))
             .collect()
     }
 
-    /// Derive `[cloud]`'s view of how collection URLs are read. Called by
-    /// `from_layers` and `default`; call it after changing `sources` or `home` by hand.
+    /// Read `catalog.toml` from `config_dir`, when there is one, and every file
+    /// `catalogs` lists. A listed file that is not there is skipped with a warning, as a
+    /// missing import is: it may be on a share that is not mounted.
+    pub fn read_catalog_files(&mut self, config_dir: Option<&Path>) -> Result<()> {
+        use crate::catalog::{self, Origin};
+        let mut read = Vec::new();
+        if let Some(dir) = config_dir
+            && let Some(mine) =
+                catalog::read(&dir.join(catalog::MINE_FILE), catalog::MINE, Origin::Mine)?
+        {
+            read.push(mine);
+        }
+        for file in &self.catalogs {
+            let path = expand_path(file);
+            let id = catalog::id_of_file(&path);
+            if !is_valid_source_id(&id) || id == catalog::MINE {
+                return Err(eyre!(
+                    "catalogs: \"{file}\" cannot be a catalog's file name. Its name without \
+                     .toml is the catalog's id: lowercase letters, digits and '-', and not \
+                     \"{}\"",
+                    catalog::MINE
+                ));
+            }
+            if read.iter().any(|c: &catalog::Catalog| c.id == id) {
+                return Err(eyre!(
+                    "catalogs: two files are named {id}.toml. Rename one: the name is its id"
+                ));
+            }
+            match catalog::read(&path, &id, Origin::Listed)? {
+                Some(listed) => read.push(listed),
+                None => eprintln!(
+                    "datui: warning: catalog not found, skipping: {}",
+                    path.display()
+                ),
+            }
+        }
+        self.read_catalogs = read;
+        self.catalog_dir = config_dir.map(Path::to_path_buf);
+        self.sync_dataset_access();
+        Ok(())
+    }
+
+    /// Derive `[cloud]`'s view of how catalog URLs are read. Called by `from_layers`,
+    /// `read_catalog_files` and `default`; call it after changing the catalogs by hand.
     pub fn sync_dataset_access(&mut self) {
         self.cloud.dataset_access = self
-            .collections()
+            .catalogs()
             .iter()
-            .flat_map(|collection| {
-                collection.datasets.iter().filter_map(|dataset| {
-                    let url = dataset.url.as_deref()?;
-                    if !is_object_store_dataset(url) {
-                        return None;
-                    }
-                    let auth = match (dataset.connection.as_deref(), dataset.auth.as_deref()) {
-                        (Some(connection), _) => DatasetAuth::Connection(connection.to_string()),
-                        (None, Some("anonymous")) => DatasetAuth::Anonymous,
-                        _ => DatasetAuth::Auto,
-                    };
+            .flat_map(|catalog| {
+                catalog.datasets.iter().filter_map(|dataset| {
                     Some(DatasetAccess {
-                        url: url.to_string(),
-                        collection: collection.name.clone(),
-                        auth,
+                        url: dataset.url.clone()?,
+                        catalog: catalog.id.clone(),
+                        auth: dataset.object_store_auth()?,
                     })
                 })
             })
@@ -2978,13 +2552,15 @@ impl AppConfig {
         }
 
         self.cloud.validate()?;
-        check_source_names(&self.sources)?;
-        for source in &self.sources {
-            source.validate(&self.cloud.connections)?;
+        for catalog in &self.read_catalogs {
+            catalog
+                .check_connections(&self.cloud.connections)
+                .map_err(|e| eyre!("{}", e.in_file(&catalog.file_name())))?;
         }
         if let Some(name) = self.home.hide.iter().find(|name| !is_valid_source_id(name)) {
             return Err(eyre!(
-                "home.hide: \"{name}\" is not a collection name. Use the name, not the label"
+                "home.hide: \"{name}\" is not a catalog id. Use the id (mine, public, or a \
+                 listed file's name), not the label"
             ));
         }
 
@@ -3552,9 +3128,21 @@ mod tests {
         let unknown = found(
             "[file_loading]\ncomment_char = \"#\"\n[display]\nmouse = false\nrow_numbr = true\n\
              number_format = { grouping = \"thousands\" }\n[glyphs]\nspinner = [\"a\"]\n\
-             [theme.colors]\naccent = \"red\"\n[[sources]]\nname = \"x\"\n",
+             [theme.colors]\naccent = \"red\"\n[[cloud.connections]]\nname = \"x\"\n\
+             [[sources]]\nname = \"x\"\n[home]\ndirectories = [\"/d\"]\n",
         );
-        assert_eq!(unknown.len(), 2, "{unknown:?}");
+        assert_eq!(unknown.len(), 4, "{unknown:?}");
+        // A retired key says where what it said goes now.
+        assert!(
+            unknown[2].starts_with("home.directories is not read any more")
+                && unknown[2].contains("Ctrl+D"),
+            "{unknown:?}"
+        );
+        assert!(
+            unknown[3].starts_with("sources is not read any more")
+                && unknown[3].contains("catalog.toml"),
+            "{unknown:?}"
+        );
         assert!(
             unknown[0].starts_with("display.row_numbr")
                 && unknown[0].contains("display.row_numbers")

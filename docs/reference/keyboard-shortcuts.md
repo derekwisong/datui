@@ -122,7 +122,7 @@ Where a dataset opens.
 | `↑ / ↓` | Move the selection (Ctrl+P / Ctrl+N too) |
 | `Ctrl+↑ / Ctrl+↓` | Previous or next section |
 | `PgUp / PgDn` | A screenful, stopping at the first and last |
-| `Home / End` | The first or last row |
+| `Home / End` | The first or last row. The filter has no cursor to move: it is edited at its end |
 | `← / →` | Fold or unfold a section; → on a directory or a file of tables goes inside it |
 | `Space` | While the filter is empty: fold or unfold the section header under the cursor. With a filter typed, it types |
 | `Tab` | Cycle the sort; the control bar names the order in effect when it has room |
@@ -131,8 +131,8 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `Enter` | What the control bar says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A place a collection suggests, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them |
-| `Backspace` | Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a collection's remote dataset, back here) |
+| `Enter` | What the control bar says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them |
+| `Backspace` | Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a catalog's remote dataset, back here) |
 | `Esc` | Back out one layer: the path prompt, the filter, the directory (back to the row it was entered from), then to the open table, which the control bar's chip names |
 
 ### Home screen · Find
@@ -150,8 +150,9 @@ Where a dataset opens.
 |---|---|
 | `Ctrl+A` | Show or hide files datui cannot read; inside a SQLite database, its internal tables |
 | `Ctrl+X` | Show the local file under the cursor as bytes, in the hex view, whatever datui would read it as |
-| `Ctrl+D` | Remember the directory under the cursor, so it stays listed; again to forget it. A file stands for the directory it is in, a heading for the one it lists |
-| `Delete` | Forget the highlighted recent entry, or a whole place after confirming, or a remembered place on its heading, or hide a cloud source |
+| `Ctrl+D` | Add the dataset or directory under the cursor to catalog.toml, listed under My datasets; on a row from catalog.toml, forget it. A heading stands for the directory it lists. Only catalog.toml is written; another catalog is hidden with home.hide |
+| `Ctrl+E` | Open the Documentation view of a catalog row, or of a place inside one: publisher, license, links, columns with units and value legends, bookmarks. ↑ / ↓ move, Enter opens a column's legend, y copies the line's link or value, Esc goes back. Ctrl+E here is not readline's end of line: the filter is edited at its end |
+| `Delete` | Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source |
 | `Shift+Delete` | Forget every recent entry, after confirming |
 
 ### Home screen · Mouse

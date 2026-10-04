@@ -84,6 +84,16 @@ pub const GENERATED: &[Generated] = &[
         render: |_| render_python_options_markdown(),
     },
     Generated {
+        file: "docs/reference/catalogs.md",
+        region: Some("public-catalog"),
+        render: |read| {
+            format!(
+                "```toml,output\n{}```",
+                read("crates/datui-lib/src/public_catalog.toml")
+            )
+        },
+    },
+    Generated {
         file: "docs/reference/manual-pages.md",
         region: Some("pages"),
         render: |_| crate::man::render_markdown_index(),

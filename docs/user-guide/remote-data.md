@@ -109,7 +109,7 @@ datui s3://lab@<BUCKET>/<KEY>
   s3cmd need no config: they are the sources `mc-<alias>` and `s3cfg`.
 - A connection of `kind = "s3"` without `endpoint_url` is a second AWS login;
   its URLs stay `s3://bucket/key`.
-- A [collection](../reference/sources.md) keeps a dataset of one of these
+- A [catalog](../reference/catalogs.md) keeps a dataset of one of these
   stores on the home screen with `connection = "onprem"`.
 - [Cloud connections](../reference/cloud-sources.md) has every field.
 
@@ -196,16 +196,14 @@ datui abfss://release@overturemapswestus2.dfs.core.windows.net/
 
 The home screen's [Public datasets](home-screen.md#public-datasets) lists
 public data with publishers and licenses. A
-[collection](../reference/sources.md) of your own reads its datasets with no
+[catalog](../reference/catalogs.md) of your own reads its datasets with no
 login, even on a machine that has one, with `auth = "anonymous"`. GBIF's
 occurrence snapshots are CC BY-NC 4.0 (<https://www.gbif.org/terms>):
 
-```toml
-[[sources]]
-name = "gbif"
+```toml,catalog
 label = "GBIF"
 
-[[sources.datasets]]
+[occurrences]
 name = "Occurrences"
 url = "s3://gbif-open-data-us-east-1/occurrence/"
 auth = "anonymous"
@@ -304,5 +302,5 @@ read the whole input ([Large datasets](large-datasets.md)).
 
 A build without the `cloud` and `http` features
 ([from source](../getting-started/installation.md#from-source)) refuses remote
-URLs with a message saying so, and a bucket in a collection reads
+URLs with a message saying so, and a bucket in a catalog reads
 `cloud support not in this build`.

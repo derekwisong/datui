@@ -33,6 +33,72 @@ fn door_of(home: &HomeState) -> Option<&discover::Entry> {
     home.sections.iter().find_map(|s| s.door.as_ref())
 }
 
+/// A catalog's text listing `datasets`, each a name and a path or URL.
+fn catalog_text(datasets: &[(&str, &std::path::Path)]) -> String {
+    let mut text = String::new();
+    for (i, (name, place)) in datasets.iter().enumerate() {
+        let place = place.to_string_lossy().replace('\\', "/");
+        let key = if place.contains("://") { "url" } else { "path" };
+        text.push_str(&format!(
+            "[d{i}]\nname = {name:?}\n{key} = {place:?}\ndescription = \"{name} data\"\n"
+        ));
+    }
+    text
+}
+
+/// A catalog of `datasets` as the home screen shows it.
+fn shown_catalog(
+    id: &str,
+    label: &str,
+    origin: datui::catalog::Origin,
+    datasets: &[(&str, &std::path::Path)],
+) -> datui::home::ShownCatalog {
+    let text = format!("label = {label:?}\n{}", catalog_text(datasets));
+    let catalog = datui::catalog::parse(&text, id, origin, None).expect("a test catalog");
+    datui::home::ShownCatalog::from_catalog(&catalog)
+}
+
+/// `catalog.toml` listing `datasets`, as the home screen shows it.
+fn mine(datasets: &[(&str, &std::path::Path)]) -> Vec<datui::home::ShownCatalog> {
+    vec![shown_catalog(
+        "mine",
+        "My datasets",
+        datui::catalog::Origin::Mine,
+        datasets,
+    )]
+}
+
+/// `catalog.toml` listing everything directly in `dir`, by name: what `[home]
+/// directories` listed before a directory became a catalog entry.
+fn dir_catalog(dir: &std::path::Path) -> datui::catalog::Catalog {
+    let mut children: Vec<std::path::PathBuf> = fs::read_dir(dir)
+        .expect("a directory")
+        .map(|e| e.unwrap().path())
+        .collect();
+    children.sort();
+    let names: Vec<String> = children
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    let datasets: Vec<(&str, &std::path::Path)> = names
+        .iter()
+        .map(String::as_str)
+        .zip(children.iter().map(|p| p.as_path()))
+        .collect();
+    datui::catalog::parse(
+        &catalog_text(&datasets),
+        "mine",
+        datui::catalog::Origin::Mine,
+        None,
+    )
+    .expect("a test catalog")
+}
+
+/// The rows of `dir`, each a dataset of `catalog.toml`.
+fn mine_of(dir: &std::path::Path) -> Vec<datui::home::ShownCatalog> {
+    vec![datui::home::ShownCatalog::from_catalog(&dir_catalog(dir))]
+}
+
 fn touch(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let path = dir.join(name);
     if let Some(parent) = path.parent() {
@@ -245,7 +311,7 @@ fn test_a_recent_dataset_puts_its_directory_under_recent_not_beside_it() {
     let dataset = touch(&mount, "sales.parquet");
 
     let mut home = HomeState::default();
-    home.rebuild(&[], std::slice::from_ref(&dataset));
+    home.rebuild(std::slice::from_ref(&dataset));
 
     let mount_title = datui::home::display_path(&mount);
     assert!(
@@ -267,25 +333,10 @@ fn test_a_recent_dataset_puts_its_directory_under_recent_not_beside_it() {
 }
 
 #[test]
-fn test_configured_directories_become_roots() {
-    let tmp = TempDir::new().unwrap();
-    let configured = tmp.path().join("datasets");
-    fs::create_dir_all(&configured).unwrap();
-
-    // The working directory is always root 0, so look the configured one up by path.
-    let roots = HomeState::roots(std::slice::from_ref(&configured), &[]);
-    let root = roots
-        .iter()
-        .find(|r| r.path == configured)
-        .expect("a configured directory should become a root");
-    assert_eq!(root.origin, RootOrigin::Configured);
-}
-
-#[test]
 fn test_unavailable_root_is_reported_not_hidden() {
     // "The mount is down" is information; silently dropping the row is not.
     let missing = std::path::PathBuf::from("/definitely/not/here");
-    let roots = HomeState::roots(std::slice::from_ref(&missing), &[]);
+    let roots = HomeState::roots(std::slice::from_ref(&missing));
     let root = roots.iter().find(|r| r.path == missing).expect("kept");
     assert!(!root.available);
 }
@@ -296,7 +347,7 @@ fn test_roots_are_deduplicated() {
     let dir = tmp.path().join("data");
     touch(&dir, "a.parquet");
 
-    let roots = HomeState::roots(&[dir.clone(), dir.clone()], std::slice::from_ref(&dir));
+    let roots = HomeState::roots(&[dir.clone(), dir.clone()]);
     let hits = roots.iter().filter(|r| r.path == dir).count();
     assert_eq!(hits, 1, "a directory named twice should appear once");
 }
@@ -334,7 +385,7 @@ fn test_filter_narrows_the_listing() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     // The two files, and the row that opens the directory holding them.
     assert_eq!(visible_names(&home).len(), 3);
 
@@ -356,7 +407,7 @@ fn test_files_datui_cannot_read_are_hidden_until_shown() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     assert!(!visible_names(&home).contains(&"README.md".to_string()));
     assert!(visible_names(&home).contains(&"sales.parquet".to_string()));
 
@@ -374,7 +425,7 @@ fn test_selection_wraps_and_stays_in_range() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
 
     // The list is [header, the row that opens the whole directory, a, b]; the cursor
     // starts on the first dataset, and moving walks headers too, since reaching one is
@@ -420,7 +471,7 @@ fn test_selection_clamps_when_filter_shrinks_the_list() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     home.selected = home.visible().len() - 1;
 
     home.filter = "aaa".to_string();
@@ -538,8 +589,11 @@ fn test_filtered_results_stay_grouped_by_where_they_came_from() {
     let tmp = TempDir::new().unwrap();
     let dataset = touch(tmp.path(), "sales.parquet");
 
-    let mut home = HomeState::default();
-    home.rebuild(&[tmp.path().to_path_buf()], std::slice::from_ref(&dataset));
+    let mut home = HomeState {
+        catalogs: mine_of(tmp.path()),
+        ..Default::default()
+    };
+    home.rebuild(std::slice::from_ref(&dataset));
     home.filter = "sales".to_string();
 
     // Grouped results keep provenance, so the same dataset can legitimately appear
@@ -634,15 +688,10 @@ fn test_desktop_recents_decode_percent_escapes() {
 fn test_desktop_roots_rank_below_everything_else() {
     // They are the weakest signal: useful only before datui has recents of its own.
     let tmp = TempDir::new().unwrap();
-    let configured = tmp.path().join("configured");
     let downloads = tmp.path().join("downloads");
-    fs::create_dir_all(&configured).unwrap();
     fs::create_dir_all(&downloads).unwrap();
 
-    let roots = HomeState::roots(
-        std::slice::from_ref(&configured),
-        std::slice::from_ref(&downloads),
-    );
+    let roots = HomeState::roots(std::slice::from_ref(&downloads));
     let origins: Vec<RootOrigin> = roots.iter().map(|r| r.origin).collect();
     let desktop_at = origins
         .iter()
@@ -713,7 +762,7 @@ fn test_desktop_places_are_listed_but_never_expanded() {
     touch(&downloads, "vault_export.csv");
 
     let mut home = HomeState::default();
-    home.rebuild_with(&[], &[], std::slice::from_ref(&downloads));
+    home.rebuild_with(&[], std::slice::from_ref(&downloads));
     // Elsewhere starts folded; open it so its rows are on screen.
     let elsewhere = home
         .sections
@@ -746,7 +795,7 @@ fn test_desktop_place_contents_appear_only_after_descending() {
         browsing: Some(downloads.clone()),
         ..Default::default()
     };
-    home.rebuild_with(&[], &[], std::slice::from_ref(&downloads));
+    home.rebuild_with(&[], std::slice::from_ref(&downloads));
 
     assert!(
         visible_names(&home).contains(&"vault_export.csv".to_string()),
@@ -763,21 +812,15 @@ fn test_desktop_place_already_covered_is_not_repeated() {
     touch(&shared, "a.parquet");
 
     let mut home = HomeState::default();
-    home.rebuild_with(
-        std::slice::from_ref(&shared),
-        &[],
-        std::slice::from_ref(&shared),
-    );
+    home.rebuild_with(&[], &[shared.clone(), shared.clone()]);
 
-    let places = home
+    let places: usize = home
         .sections
         .iter()
         .filter(|s| s.title == "Elsewhere")
-        .count();
-    assert_eq!(
-        places, 0,
-        "a configured root should not repeat as elsewhere"
-    );
+        .map(|s| s.rows.len())
+        .sum();
+    assert_eq!(places, 1, "a place the desktop names twice is listed once");
 }
 
 // ---------------------------------------------------------------------------
@@ -796,8 +839,27 @@ fn home_with_two_sections() -> (TempDir, HomeState) {
     touch(&a, "two.parquet");
     touch(&b, "three.parquet");
 
-    let mut home = HomeState::default();
-    home.rebuild(&[a, b], &[]);
+    let mut home = HomeState {
+        catalogs: vec![
+            shown_catalog(
+                "a",
+                "A",
+                datui::catalog::Origin::Listed,
+                &[
+                    ("one.parquet", &a.join("one.parquet")),
+                    ("two.parquet", &a.join("two.parquet")),
+                ],
+            ),
+            shown_catalog(
+                "b",
+                "B",
+                datui::catalog::Origin::Listed,
+                &[("three.parquet", &b.join("three.parquet"))],
+            ),
+        ],
+        ..Default::default()
+    };
+    home.rebuild(&[]);
     (tmp, home)
 }
 
@@ -859,7 +921,7 @@ fn test_collapse_state_survives_a_rebuild() {
     let title = home.sections[0].title.clone();
     home.set_collapsed(0, true);
 
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     let idx = home.sections.iter().position(|s| s.title == title);
     if let Some(idx) = idx {
         assert!(home.is_collapsed(idx), "collapse should survive a rebuild");
@@ -906,7 +968,7 @@ fn test_rebuild_does_not_measure_anything() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
 
     assert!(
         home.enriched.is_empty(),
@@ -930,7 +992,7 @@ fn test_enrichment_is_capped_per_pass_and_reports_more_work() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
 
     let more = home.measure_now(2);
     // The six files. The row that opens the directory holding them is not measured: its
@@ -962,7 +1024,7 @@ fn test_enrichment_only_touches_rows_that_are_on_screen() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
 
     // A short window measures a short list, however many datasets exist.
     home.measure_now(3);
@@ -982,8 +1044,11 @@ fn test_collapsed_sections_are_not_measured() {
         touch(&dir, &format!("f{i}.parquet"));
     }
 
-    let mut home = HomeState::default();
-    home.rebuild(std::slice::from_ref(&dir), &[]);
+    let mut home = HomeState {
+        catalogs: mine_of(&dir),
+        ..Default::default()
+    };
+    home.rebuild(&[]);
     let section = home
         .sections
         .iter()
@@ -1062,7 +1127,7 @@ fn test_a_vanished_recent_leaves_nothing_behind() {
     fs::remove_dir_all(tmp.path().join("mount")).unwrap();
 
     let mut home = HomeState::default();
-    home.rebuild(&[], std::slice::from_ref(&dataset));
+    home.rebuild(std::slice::from_ref(&dataset));
 
     assert!(
         !home.sections.iter().any(|s| s.unavailable),
@@ -1084,7 +1149,7 @@ fn test_a_directory_that_is_only_a_recents_parent_is_not_a_section() {
     let dataset = touch(&dir, "opened_once.parquet");
 
     let mut home = HomeState::default();
-    home.rebuild(&[], std::slice::from_ref(&dataset));
+    home.rebuild(std::slice::from_ref(&dataset));
 
     let title = datui::home::display_path(&dir);
     assert!(
@@ -1119,25 +1184,16 @@ fn test_a_remote_root_is_listed_without_being_read() {
     let mut home = HomeState {
         network_check: pretend_remote,
         cloud: Vec::new(),
+        browsing: Some(remote.clone()),
         ..Default::default()
     };
-    home.rebuild(std::slice::from_ref(&remote), &[]);
+    home.rebuild(&[]);
 
-    // The root appears...
-    let section = home
-        .sections
+    // The directory appears...
+    home.sections
         .iter()
         .find(|s| s.title.contains("PRETEND_REMOTE"))
-        .expect("a remote root should still be offered");
-    assert!(
-        section
-            .subtitle
-            .as_deref()
-            .unwrap_or("")
-            .contains("network"),
-        "it should be marked as network: {:?}",
-        section.subtitle
-    );
+        .expect("a remote directory should still be offered");
 
     // ...but its contents were not read, even though they exist on disk.
     assert!(
@@ -1200,14 +1256,15 @@ fn test_a_probe_result_fills_the_remote_root_in() {
     let mut home = HomeState {
         network_check: pretend_remote,
         cloud: Vec::new(),
+        browsing: Some(remote.clone()),
         ..Default::default()
     };
-    home.rebuild(std::slice::from_ref(&remote), &[]);
+    home.rebuild(&[]);
 
     // Whatever the probe thread found is what gets shown.
     let rows = discover::scan_dir(&remote);
     home.probe_ready(remote.clone(), rows);
-    home.rebuild(std::slice::from_ref(&remote), &[]);
+    home.rebuild(&[]);
 
     assert!(
         visible_names(&home).iter().any(|n| n == "sales.parquet"),
@@ -1227,11 +1284,12 @@ fn test_a_root_that_never_answers_is_marked_unreachable() {
     let mut home = HomeState {
         network_check: pretend_remote,
         cloud: Vec::new(),
+        browsing: Some(remote.clone()),
         ..Default::default()
     };
-    home.rebuild(std::slice::from_ref(&remote), &[]);
+    home.rebuild(&[]);
     home.probe_failed(remote.clone());
-    home.rebuild(std::slice::from_ref(&remote), &[]);
+    home.rebuild(&[]);
 
     let section = home
         .sections
@@ -1261,7 +1319,7 @@ fn test_remote_rows_are_left_to_their_root_probe() {
         browsing: Some(remote.clone()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     home.measure_now(100);
 
     assert!(
@@ -1281,7 +1339,7 @@ fn test_a_remote_recent_is_shown_without_stat() {
         cloud: Vec::new(),
         ..Default::default()
     };
-    home.rebuild(&[], std::slice::from_ref(&remote));
+    home.rebuild(std::slice::from_ref(&remote));
 
     assert!(
         visible_names(&home).iter().any(|n| n == "sales.parquet"),
@@ -1320,7 +1378,7 @@ fn test_a_recent_url_is_listed_without_being_reached_for() {
     let url = std::path::PathBuf::from("s3://bucket/warehouse/events.parquet");
 
     let mut home = HomeState::default();
-    home.rebuild(&[], std::slice::from_ref(&url));
+    home.rebuild(std::slice::from_ref(&url));
 
     let names = visible_names(&home);
     assert!(
@@ -1334,7 +1392,7 @@ fn test_a_url_is_classified_by_name_not_by_stat() {
     let mut home = HomeState::default();
     let file = std::path::PathBuf::from("s3://bucket/data/sales.parquet");
     let prefix = std::path::PathBuf::from("s3://bucket/data/warehouse");
-    home.rebuild(&[], &[file, prefix]);
+    home.rebuild(&[file, prefix]);
 
     let kinds: Vec<_> = home
         .visible()
@@ -1372,7 +1430,7 @@ fn test_a_recent_adopts_the_classification_its_root_probe_found() {
         cloud: Vec::new(),
         ..Default::default()
     };
-    home.rebuild(std::slice::from_ref(&root), std::slice::from_ref(&dataset));
+    home.rebuild(std::slice::from_ref(&dataset));
 
     // Before the probe: unlabelled rather than wrong.
     let kind_of = |h: &HomeState| {
@@ -1386,7 +1444,7 @@ fn test_a_recent_adopts_the_classification_its_root_probe_found() {
     // After it, and after something looks into the rows it returned: whatever that
     // found. A probe lists a remote directory; it does not read every subdirectory in it.
     home.probe_ready(root.clone(), discover::scan_dir(&root));
-    home.rebuild(std::slice::from_ref(&root), std::slice::from_ref(&dataset));
+    home.rebuild(std::slice::from_ref(&dataset));
     home.classify_now(10);
 
     let kinds: Vec<_> = home
@@ -1457,7 +1515,7 @@ fn test_measuring_a_directory_holding_a_fifo_completes() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     home.measure_now(100); // completes, rather than blocking on the pipe
 }
 
@@ -1474,7 +1532,7 @@ fn test_a_symlink_cycle_does_not_run_away() {
         browsing: Some(dir.clone()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     home.measure_now(100);
     // Reaching here at all is the assertion: depth and breadth caps hold.
     assert!(!home.visible().is_empty());
@@ -1491,12 +1549,10 @@ fn test_listing_can_be_built_away_from_the_state_it_updates() {
     touch(tmp.path(), "sales.parquet");
 
     let request = ListingRequest {
-        collections: Vec::new(),
-        config_dirs: vec![tmp.path().to_path_buf()],
-        remembered_dirs: Vec::new(),
+        catalogs: Vec::new(),
         recents: Vec::new(),
         desktop_dirs: Vec::new(),
-        browsing: None,
+        browsing: Some(tmp.path().to_path_buf()),
         probed: Default::default(),
         unreachable: Default::default(),
         listing_so_far: Default::default(),
@@ -1532,13 +1588,13 @@ fn test_applying_a_listing_keeps_the_cursor_where_it_was() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     home.move_selection(1);
     home.move_selection(1);
     let held = home.selected_entry().map(|e| e.path);
     assert!(held.is_some());
 
-    home.rebuild(&[], &[]); // as if a worker delivered a fresh listing
+    home.rebuild(&[]); // as if a worker delivered a fresh listing
     assert_eq!(
         home.selected_entry().map(|e| e.path),
         held,
@@ -1731,9 +1787,7 @@ fn test_a_recent_opened_from_a_bucket_shows_what_the_open_learned() {
     ]);
 
     let listing = build_listing(&ListingRequest {
-        collections: Vec::new(),
-        config_dirs: Vec::new(),
-        remembered_dirs: Vec::new(),
+        catalogs: Vec::new(),
         recents: vec![dataset.clone()],
         desktop_dirs: Vec::new(),
         browsing: None,
@@ -1826,9 +1880,7 @@ fn test_a_recent_typed_through_a_named_source_finds_the_record_its_open_wrote() 
         PathBuf::from("https://acct.blob.core.windows.net/c/p/"),
     ];
     let listing = build_listing(&ListingRequest {
-        collections: Vec::new(),
-        config_dirs: Vec::new(),
-        remembered_dirs: Vec::new(),
+        catalogs: Vec::new(),
         recents: typed.clone(),
         desktop_dirs: Vec::new(),
         browsing: None,
@@ -1898,9 +1950,7 @@ fn test_a_place_label_is_held_to_the_directories_mtime() {
     };
     let label_for = |cache: &CacheManager| -> Option<String> {
         let listing = build_listing(&ListingRequest {
-            collections: Vec::new(),
-            config_dirs: Vec::new(),
-            remembered_dirs: Vec::new(),
+            catalogs: Vec::new(),
             recents: vec![dataset.clone()],
             desktop_dirs: Vec::new(),
             browsing: None,
@@ -1958,9 +2008,7 @@ fn test_a_place_row_says_nothing_it_does_not_know() {
         },
     )]);
     let listing = build_listing(&ListingRequest {
-        collections: Vec::new(),
-        config_dirs: Vec::new(),
-        remembered_dirs: Vec::new(),
+        catalogs: Vec::new(),
         recents: vec![dataset],
         desktop_dirs: Vec::new(),
         browsing: None,
@@ -1989,33 +2037,25 @@ fn test_a_place_row_says_nothing_it_does_not_know() {
 #[test]
 fn test_origin_is_a_chip_and_the_note_is_state_only() {
     // Why a section exists sits by the title; how it is doing sits by the rule. A
-    // configured directory with nothing in it stays listed because of the former.
+    // catalog says which file it is.
     let tmp = TempDir::new().unwrap();
     let configured = tmp.path().join("configured");
     fs::create_dir_all(&configured).unwrap();
     let elsewhere = tmp.path().join("downloads");
     touch(&elsewhere, "x.parquet");
 
-    let mut home = HomeState::default();
-    home.rebuild_with(
-        std::slice::from_ref(&configured),
-        &[],
-        std::slice::from_ref(&elsewhere),
-    );
+    let mut home = HomeState {
+        catalogs: mine(&[("Configured", &configured)]),
+        ..Default::default()
+    };
+    home.rebuild_with(&[], std::slice::from_ref(&elsewhere));
     let section = home
         .sections
         .iter()
-        .find(|s| s.title == datui::home::display_path(&configured))
-        .expect("configured");
-    assert_eq!(section.origin, Some("configured"));
+        .find(|s| s.title == "My datasets")
+        .expect("the catalog");
+    assert_eq!(section.origin, Some("catalog.toml"));
     assert_eq!(section.subtitle, None, "nothing to say about a local disk");
-    assert!(
-        home.visible().iter().any(|r| matches!(
-            r,
-            Row::Header { section, .. } if home.sections[*section].origin == Some("configured")
-        )),
-        "an empty configured directory is still on screen"
-    );
     let elsewhere = home
         .sections
         .iter()
@@ -2060,9 +2100,7 @@ fn test_a_remote_row_uses_remembered_facts_without_a_stat() {
     )]);
 
     let listing = build_listing(&ListingRequest {
-        collections: Vec::new(),
-        config_dirs: Vec::new(),
-        remembered_dirs: Vec::new(),
+        catalogs: Vec::new(),
         recents: vec![dataset.clone()],
         desktop_dirs: Vec::new(),
         browsing: None,
@@ -2138,9 +2176,7 @@ fn test_a_changed_local_dataset_ignores_its_remembered_facts() {
     )]);
 
     let listing = build_listing(&ListingRequest {
-        collections: Vec::new(),
-        config_dirs: Vec::new(),
-        remembered_dirs: Vec::new(),
+        catalogs: Vec::new(),
         recents: Vec::new(),
         desktop_dirs: Vec::new(),
         browsing: Some(tmp.path().to_path_buf()),
@@ -2410,7 +2446,7 @@ fn test_every_surviving_recent_is_listed() {
         .collect();
 
     let mut home = HomeState::default();
-    home.rebuild(&[], &recents);
+    home.rebuild(&recents);
 
     let listed = home
         .visible()
@@ -2432,7 +2468,7 @@ fn test_a_recent_that_no_longer_exists_is_dropped() {
     let kept = touch(tmp.path(), "kept.parquet");
 
     let mut home = HomeState::default();
-    home.rebuild(&[], &[gone, kept]);
+    home.rebuild(&[gone, kept]);
 
     let names = visible_names(&home);
     assert!(names.iter().any(|n| n == "kept.parquet"));
@@ -2452,7 +2488,7 @@ fn test_cwd_datasets_are_listed_without_ever_having_been_opened() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
 
     assert!(
         visible_names(&home)
@@ -2474,7 +2510,7 @@ fn test_scattered_recents_cost_no_directory_listings() {
         .collect();
 
     let mut home = HomeState::default();
-    home.rebuild(&[], &recents);
+    home.rebuild(&recents);
 
     let titles: Vec<&str> = home.sections.iter().map(|s| s.title.as_str()).collect();
     assert!(
@@ -2497,7 +2533,7 @@ fn test_recents_in_one_directory_share_one_place_row() {
     let older = touch(&one, "part0.parquet");
 
     let mut home = HomeState::default();
-    home.rebuild(&[], &[newer.clone(), older.clone()]);
+    home.rebuild(&[newer.clone(), older.clone()]);
 
     let rows = home.visible();
     let places: Vec<&Row> = rows
@@ -2541,10 +2577,7 @@ fn test_places_are_ordered_by_their_newest_recent() {
     let a_old = touch(&a, "old.parquet");
 
     let mut home = HomeState::default();
-    home.rebuild(
-        &[],
-        &[a_new.clone(), b_1.clone(), b_2.clone(), a_old.clone()],
-    );
+    home.rebuild(&[a_new.clone(), b_1.clone(), b_2.clone(), a_old.clone()]);
 
     let shape: Vec<String> = home
         .visible()
@@ -2589,7 +2622,7 @@ fn test_a_sort_orders_within_each_place_and_never_flattens_recent() {
         ..Default::default()
     };
     // `a` is the newer place though `b` holds the biggest file.
-    home.rebuild(&[], &[a_small.clone(), b_huge.clone(), a_big.clone()]);
+    home.rebuild(&[a_small.clone(), b_huge.clone(), a_big.clone()]);
 
     let shape: Vec<std::path::PathBuf> = home
         .visible()
@@ -2626,7 +2659,7 @@ fn test_recent_shows_whole_places_up_to_a_third_of_the_screen() {
     let tmp = TempDir::new().unwrap();
     let recents = ten_places_of_three(&tmp);
     let mut home = HomeState::default();
-    home.rebuild(&[], &recents);
+    home.rebuild(&recents);
 
     // Thirty lines of list: ten for RECENT, which is two whole places (eight lines)
     // and not a third one (twelve).
@@ -2730,7 +2763,7 @@ fn test_a_recent_in_the_current_directory_is_not_listed_twice() {
     let _cwd = in_cwd(tmp.path());
 
     let mut home = HomeState::default();
-    home.rebuild(&[], &[here, away]);
+    home.rebuild(&[here, away]);
 
     let names = visible_names(&home);
     assert_eq!(
@@ -2769,7 +2802,7 @@ fn test_a_cwd_recent_the_directory_listing_does_not_show_stays_under_recent() {
     let _cwd = in_cwd(tmp.path());
 
     let mut home = HomeState::default();
-    home.rebuild(&[], &[hidden]);
+    home.rebuild(&[hidden]);
 
     let names = visible_names(&home);
     assert!(
@@ -2797,7 +2830,7 @@ fn test_the_recent_cap_counts_only_the_places_it_shows() {
     let _cwd = in_cwd(tmp.path());
 
     let mut home = HomeState::default();
-    home.rebuild(&[], &recents);
+    home.rebuild(&recents);
     home.view_height = 30;
 
     let rows: Vec<Row<'_>> = home
@@ -2839,7 +2872,7 @@ fn test_expanding_recent_shows_every_place_for_the_session() {
     let tmp = TempDir::new().unwrap();
     let recents = ten_places_of_three(&tmp);
     let mut home = HomeState::default();
-    home.rebuild(&[], &recents);
+    home.rebuild(&recents);
     home.view_height = 30;
     assert!(home.visible().iter().any(|r| matches!(r, Row::More { .. })));
 
@@ -2854,7 +2887,7 @@ fn test_expanding_recent_shows_every_place_for_the_session() {
     );
 
     // A rebuild — a probe answering, a measurement landing — does not fold it back.
-    home.rebuild(&[], &recents);
+    home.rebuild(&recents);
     assert!(
         !home.visible().iter().any(|r| matches!(r, Row::More { .. })),
         "expanded is for the session, not for one listing"
@@ -2866,7 +2899,7 @@ fn test_a_filter_reaches_past_the_cap() {
     let tmp = TempDir::new().unwrap();
     let recents = ten_places_of_three(&tmp);
     let mut home = HomeState::default();
-    home.rebuild(&[], &recents);
+    home.rebuild(&recents);
     home.view_height = 30;
 
     // The last recent is in the last place, well past what the cap shows.
@@ -2898,9 +2931,12 @@ fn test_a_shorter_terminal_keeps_the_cursor_on_its_row_or_in_range() {
     let tmp = TempDir::new().unwrap();
     let recents = ten_places_of_three(&tmp);
     let configured = tmp.path().join("configured");
-    touch(&configured, "c.parquet");
-    let mut home = HomeState::default();
-    home.rebuild(std::slice::from_ref(&configured), &recents);
+    let c = touch(&configured, "c.parquet");
+    let mut home = HomeState {
+        catalogs: mine(&[("c.parquet", &c)]),
+        ..Default::default()
+    };
+    home.rebuild(&recents);
     home.set_view_height(60);
     let shown_places = |home: &HomeState| {
         home.visible()
@@ -2914,9 +2950,9 @@ fn test_a_shorter_terminal_keeps_the_cursor_on_its_row_or_in_range() {
         "twenty of sixty rows: five places of four"
     );
 
-    // On the configured section's header, below RECENT. Shrinking the terminal takes
-    // places out of RECENT and the header moves up; the cursor must move with it.
-    let title = datui::home::display_path(&configured);
+    // On the catalog's header, below RECENT. Shrinking the terminal takes places out
+    // of RECENT and the header moves up; the cursor must move with it.
+    let title = "My datasets";
     let header = home
         .visible()
         .iter()
@@ -2961,7 +2997,7 @@ fn test_a_rebuild_keeps_the_cursor_on_a_place_row() {
     let tmp = TempDir::new().unwrap();
     let recents = ten_places_of_three(&tmp);
     let mut home = HomeState::default();
-    home.rebuild(&[], &recents);
+    home.rebuild(&recents);
     let place = tmp.path().join("place01");
     let at = home
         .visible()
@@ -2970,7 +3006,7 @@ fn test_a_rebuild_keeps_the_cursor_on_a_place_row() {
         .unwrap();
     home.selected = at;
 
-    home.rebuild(&[], &recents);
+    home.rebuild(&recents);
     assert!(
         matches!(home.selected_row(), Some(Row::Place { path, .. }) if path == place),
         "{:?}",
@@ -2983,7 +3019,7 @@ fn test_a_rebuild_keeps_the_cursor_on_a_place_row() {
     let behind = recents.last().unwrap().clone();
     assert!(home.reselect(Some(datui::home::RowKey::Entry(behind))));
     assert!(matches!(home.selected_row(), Some(Row::More { .. })));
-    home.rebuild(&[], &recents);
+    home.rebuild(&recents);
     assert!(
         matches!(home.selected_row(), Some(Row::More { .. })),
         "{:?}",
@@ -2997,7 +3033,7 @@ fn test_a_rebuild_keeps_the_cursor_on_a_place_row() {
         .position(|r| matches!(r, Row::More { .. }))
         .unwrap();
     home.selected = more;
-    home.rebuild(&[], &recents);
+    home.rebuild(&recents);
     assert!(matches!(home.selected_row(), Some(Row::More { .. })));
 }
 
@@ -3012,7 +3048,7 @@ fn test_folding_while_browsing_remembers_nothing() {
         browsing: Some(dir),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
 
     home.set_collapsed(0, true);
     home.toggle_collapsed(0);
@@ -3046,7 +3082,7 @@ fn test_a_remembered_fold_does_not_fold_the_listing_browsed_into() {
     let mut home = HomeState::default();
     home.folds.insert(title, true);
     home.browsing = Some(dir);
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
 
     assert!(
         visible_names(&home).iter().any(|n| n == "a.parquet"),
@@ -3062,7 +3098,7 @@ fn test_a_place_row_is_never_looked_into_or_measured() {
     let tmp = TempDir::new().unwrap();
     let recents = ten_places_of_three(&tmp);
     let mut home = HomeState::default();
-    home.rebuild(&[], &recents);
+    home.rebuild(&recents);
     home.view_height = 30;
 
     let places: Vec<std::path::PathBuf> = home
@@ -3432,7 +3468,7 @@ fn test_search_results_only_appear_once_there_is_a_filter() {
     let deep = touch(&tmp.path().join("a/b"), "buried.parquet");
 
     let mut home = HomeState::default();
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     home.search.root = Some(tmp.path().to_path_buf());
     home.search
         .set_results(vec![datui::discover::Entry::for_test(
@@ -3485,7 +3521,7 @@ fn test_search_results_survive_a_rebuild() {
     home.search.done = true;
     home.sync_search_section();
 
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
 
     assert!(
         home.sections
@@ -3506,7 +3542,7 @@ fn test_a_dataset_already_on_screen_is_not_listed_twice() {
         filter: "visible".into(),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     home.search.root = Some(tmp.path().to_path_buf());
     home.search
         .set_results(vec![datui::discover::Entry::for_test(
@@ -3837,7 +3873,7 @@ fn test_every_row_is_told_which_filesystem_it_is_on() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
 
     let rows: Vec<_> = home.sections.iter().flat_map(|s| s.rows.iter()).collect();
     assert!(!rows.is_empty(), "the directory should have been listed");
@@ -3919,7 +3955,7 @@ fn test_a_directory_row_is_labelled_by_what_the_pass_counted() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
 
     let unlooked = home
         .sections
@@ -3964,7 +4000,7 @@ fn test_applying_a_measurement_puts_the_layout_on_the_row() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     home.enriched.insert(
         path.clone(),
         datui::home::Measured {
@@ -4014,9 +4050,7 @@ fn test_sections_are_ordered_by_intent_and_elsewhere_starts_folded() {
     let recent = touch(&recent_dir, "c.parquet");
 
     let listing = build_listing(&ListingRequest {
-        collections: Vec::new(),
-        config_dirs: vec![configured.clone()],
-        remembered_dirs: Vec::new(),
+        catalogs: mine(&[("Configured", &configured)]),
         recents: vec![recent],
         desktop_dirs: vec![elsewhere_dir],
         browsing: None,
@@ -4046,15 +4080,15 @@ fn test_sections_are_ordered_by_intent_and_elsewhere_starts_folded() {
             .unwrap_or_else(|| panic!("{t} in {titles:?}"))
     };
     let derived = datui::home::display_path(&recent_dir);
-    let conf = datui::home::display_path(&configured);
+    let conf = "My datasets";
     assert_eq!(titles[0], "Recent");
     assert!(
-        pos("Cloud") < pos(&conf),
-        "cloud before configured: {titles:?}"
+        pos("Cloud") < pos(conf),
+        "cloud before the catalogs: {titles:?}"
     );
     assert!(
-        pos(&conf) < pos("Elsewhere"),
-        "configured before Elsewhere: {titles:?}"
+        pos(conf) < pos("Elsewhere"),
+        "the catalogs before Elsewhere: {titles:?}"
     );
     assert!(
         !titles.contains(&derived.as_str()),
@@ -4069,7 +4103,7 @@ fn test_sections_are_ordered_by_intent_and_elsewhere_starts_folded() {
     assert!(!by_title("Recent").folded_by_default);
     assert!(by_title("Recent").grouped_by_place);
     assert!(!by_title("Cloud").folded_by_default);
-    assert!(!by_title(&conf).folded_by_default);
+    assert!(!by_title(conf).folded_by_default);
     assert!(by_title("Elsewhere").folded_by_default);
 
     // The default is a default: opening one is remembered over it, and the listing
@@ -4162,7 +4196,7 @@ fn cloud_home() -> HomeState {
 #[test]
 fn test_cloud_sources_are_one_section_of_rows() {
     let mut home = cloud_home();
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     let cloud: Vec<&datui::home::Section> = home
         .sections
         .iter()
@@ -4191,7 +4225,7 @@ fn test_entering_a_source_lists_its_buckets_and_backspace_returns() {
     let mut home = cloud_home();
     home.browsing = Some(PathBuf::from("cloud://lab"));
     home.browse_start = home.browsing.clone();
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
 
     assert_eq!(home.sections.len(), 1);
     assert_eq!(home.sections[0].title, "Lab MinIO");
@@ -4244,12 +4278,12 @@ fn test_a_source_still_listing_waits_and_an_unknown_one_says_so() {
     use std::path::PathBuf;
     let mut home = cloud_home();
     home.browsing = Some(PathBuf::from("cloud://s3-default"));
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     assert!(home.sections[0].waiting);
     assert!(home.awaiting_listing().is_some());
 
     home.browsing = Some(PathBuf::from("cloud://gone"));
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     assert!(home.sections[0].unavailable);
     assert_eq!(
         home.sections[0].unavailable_note.as_deref(),
@@ -4260,7 +4294,7 @@ fn test_a_source_still_listing_waits_and_an_unknown_one_says_so() {
 #[test]
 fn test_typing_finds_bucket_names_from_every_source() {
     let mut home = cloud_home();
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     home.filter = "data".to_string();
     home.sync_search_section();
     let found = home
@@ -4308,14 +4342,14 @@ fn test_partitioned_cloud_directories_are_labelled_and_open_whole() {
     // Every directory on screen is to be peeked at, once. The picker reads the listing,
     // so the rows have to be on it.
     home.browsing = Some(btc.clone());
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     assert_eq!(home.cloud_directories_to_peek(48).len(), 2);
     home.cloud_kinds
         .insert(blocks.clone(), (EntryKind::Hive, Default::default()));
     home.apply_cloud_kinds(&btc);
     assert_eq!(home.probed[&btc][0].kind, EntryKind::Hive);
     assert_eq!(home.probed[&btc][1].kind, EntryKind::Directory);
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     assert_eq!(home.cloud_directories_to_peek(48).len(), 1);
     // A later listing of the same place keeps what was found.
     home.probe_ready(btc.clone(), vec![directory(&blocks, "blocks")]);
@@ -4326,7 +4360,7 @@ fn test_partitioned_cloud_directories_are_labelled_and_open_whole() {
         browsing: Some(Path::new("/local/dir").to_path_buf()),
         ..Default::default()
     };
-    local.rebuild(&[], &[]);
+    local.rebuild(&[]);
     assert!(local.cloud_directories_to_peek(48).is_empty());
 
     // Inside it, one row stands for every partition.
@@ -4344,7 +4378,7 @@ fn test_partitioned_cloud_directories_are_labelled_and_open_whole() {
         ],
     );
     home.browsing = Some(blocks.clone());
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     let first = door_of(&home).expect("the directory carries the door");
     assert_eq!(first.name, "blocks (hive table: date)");
     assert_eq!(first.kind, EntryKind::Hive);
@@ -4373,7 +4407,7 @@ fn test_partitioned_cloud_directories_are_labelled_and_open_whole() {
         ],
     );
     home.browsing = Some(parquet);
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     assert_eq!(home.sections[0].rows.len(), 2, "the door is not among them");
     assert_eq!(
         door_of(&home).map(|d| d.name.as_str()),
@@ -4444,8 +4478,7 @@ fn test_google_steps_through_project_bucket_and_prefix() {
 }
 
 #[test]
-fn test_collections_are_sections_of_named_datasets() {
-    use datui::home::{Collection, CollectionDataset};
+fn test_catalogs_are_sections_of_named_datasets() {
     use std::path::{Path, PathBuf};
     let dir = TempDir::new().unwrap();
     let sales = dir.path().join("sales.csv");
@@ -4457,39 +4490,32 @@ fn test_collections_are_sections_of_named_datasets() {
     let noaa = PathBuf::from("s3://noaa-ghcn-pds/parquet/");
     let penguins = PathBuf::from("https://example.com/penguins.csv");
     let overture = PathBuf::from("abfss://release@overturemapswestus2.dfs.core.windows.net/");
-    let dataset = |name: &str, location: &Path| CollectionDataset {
-        name: name.to_string(),
-        location: location.to_path_buf(),
-        details: vec![("about".to_string(), format!("{name} data"))],
-        size: None,
-        ..Default::default()
-    };
     let mut home = HomeState {
-        collections: vec![
-            Collection {
-                name: "mine".to_string(),
-                label: "My datasets".to_string(),
-                builtin: false,
-                datasets: vec![
-                    dataset("Sales", &sales),
-                    dataset("Archive", &archive),
-                    dataset("Gone", &gone),
-                    dataset("Weather", &noaa),
-                    dataset("Penguins", &penguins),
+        catalogs: vec![
+            shown_catalog(
+                "mine",
+                "My datasets",
+                datui::catalog::Origin::Mine,
+                &[
+                    ("Sales", &sales),
+                    ("Archive", &archive),
+                    ("Gone", &gone),
+                    ("Weather", &noaa),
+                    ("Penguins", &penguins),
                 ],
-            },
-            Collection {
-                name: "public".to_string(),
-                label: "Public datasets".to_string(),
-                builtin: true,
-                // The same place as `Weather`: the collection listed first names it.
-                datasets: vec![dataset("Overture Maps", &overture), dataset("NOAA", &noaa)],
-            },
+            ),
+            // The same place as `Weather`: the catalog listed first names it.
+            shown_catalog(
+                "public",
+                "Public datasets",
+                datui::catalog::Origin::Bundled,
+                &[("Overture Maps", &overture), ("NOAA", &noaa)],
+            ),
         ],
         network_check: |_| false,
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     let section = |title: &str| {
         home.sections
             .iter()
@@ -4497,7 +4523,7 @@ fn test_collections_are_sections_of_named_datasets() {
             .unwrap_or_else(|| panic!("no {title} section"))
     };
     let mine = section("My datasets");
-    assert_eq!(mine.origin, Some("configured"));
+    assert_eq!(mine.origin, Some("catalog.toml"));
     assert_eq!(section("Public datasets").origin, Some("built in"));
     let rows: Vec<(&str, EntryKind)> = mine
         .rows
@@ -4513,7 +4539,7 @@ fn test_collections_are_sections_of_named_datasets() {
             ("Weather", EntryKind::Directory),
             ("Penguins", EntryKind::File),
         ],
-        "named by the config, each kind found without reading anything remote"
+        "named by the catalog, each kind found without reading anything remote"
     );
     let titles: Vec<&str> = home.sections.iter().map(|s| s.title.as_str()).collect();
     let (mine_at, public_at) = (
@@ -4522,7 +4548,7 @@ fn test_collections_are_sections_of_named_datasets() {
     );
     assert!(
         mine_at < public_at,
-        "the built-in catalog comes last: {titles:?}"
+        "the bundled catalog comes last: {titles:?}"
     );
 
     // A missing local dataset stays, and says so.
@@ -4530,9 +4556,10 @@ fn test_collections_are_sections_of_named_datasets() {
     assert_eq!(home.place_kind(&gone), Some("missing"));
     assert_eq!(home.place_kind(&noaa), Some("dataset"));
     assert_eq!(home.place_kind(&sales), None);
-    assert_eq!(
-        home.place_details(&noaa).unwrap(),
-        [("about".to_string(), "Weather data".to_string())]
+    assert!(
+        home.place_details(&noaa)
+            .unwrap()
+            .contains(&("about".to_string(), "Weather data".to_string()))
     );
     // Nothing is asked of a remote dataset's store until it is entered.
     assert!(home.cloud_directories_to_peek(10).is_empty());
@@ -4561,7 +4588,7 @@ fn test_collections_are_sections_of_named_datasets() {
     // Inside, the dataset is titled by its name, not its URL.
     home.browsing = Some(noaa.clone());
     home.browse_start = Some(noaa.clone());
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     assert_eq!(home.sections[0].title, "Weather");
 }
 
@@ -4626,7 +4653,7 @@ fn test_azure_steps_through_account_container_and_directory() {
 
     // An account is a place to step into, listed by a probe like a remote directory.
     home.browsing = Some(account.to_path_buf());
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     assert_eq!(home.pending_probes(), vec![account.to_path_buf()]);
     assert_eq!(home.sections[0].title, "datalake001");
 }
@@ -4660,9 +4687,7 @@ fn test_a_directory_found_to_be_separate_tables_stays_a_plain_directory() {
 
     let listed = |known: Vec<(std::path::PathBuf, DatasetFacts)>| {
         let request = ListingRequest {
-            collections: Vec::new(),
-            config_dirs: Vec::new(),
-            remembered_dirs: Vec::new(),
+            catalogs: Vec::new(),
             recents: Vec::new(),
             desktop_dirs: Vec::new(),
             browsing: Some(tmp.path().to_path_buf()),
@@ -4753,7 +4778,7 @@ fn test_a_directory_of_separate_tables_still_offers_to_read_them_together() {
     home.browsing = Some(exports.clone());
 
     // With nothing known about the directory, the names alone still offer the union.
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     assert_eq!(
         door_of(&home).map(|d| d.name.as_str()),
         Some("exports (3 Parquet files, one schema)"),
@@ -4766,7 +4791,7 @@ fn test_a_directory_of_separate_tables_still_offers_to_read_them_together() {
     // half stands against the gate being put back where it was, not against the peek.
     home.cloud_kinds
         .insert(exports.clone(), (EntryKind::Directory, Default::default()));
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     assert_eq!(
         door_of(&home).map(|d| d.name.as_str()),
         Some("exports (3 Parquet files, one schema)"),
@@ -4807,7 +4832,7 @@ fn test_the_whole_directory_row_says_what_the_listing_holds() {
             .collect(),
     );
     home.browsing = Some(exports.clone());
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
 
     let row = door_of(&home).expect("the directory carries the door");
     assert_eq!(row.name, "exports (12 Parquet files, one schema)");
@@ -4848,7 +4873,7 @@ fn test_rows_that_cannot_be_measured_are_not_located_on_the_mount_table() {
     let _cwd = in_cwd(tmp.path());
 
     let mut home = HomeState::default();
-    home.rebuild(&[tmp.path().to_path_buf()], &[]);
+    home.rebuild(&[]);
 
     // Only the frame's own question is counted, not the rebuild's.
     home.network_check = counting;
@@ -4999,7 +5024,7 @@ fn test_the_whole_directory_row_is_a_door_not_a_search_result() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
 
     let first = |home: &HomeState| visible_names(home).first().cloned();
     assert!(
@@ -5047,7 +5072,7 @@ fn test_nothing_that_walks_the_rows_can_reach_the_door() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
 
     let door = door_of(&home).expect("the directory carries the door");
     // The collision itself, still there and still the reason for all of this.
@@ -5092,7 +5117,7 @@ fn test_a_directory_with_nothing_in_it_gets_no_door() {
         browsing: Some(empty),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     assert!(
         door_of(&home).is_none(),
         "a row promising to read nothing is worse than no row"
@@ -5104,7 +5129,7 @@ fn test_a_directory_with_nothing_in_it_gets_no_door() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     assert!(door_of(&home).is_some());
 }
 
@@ -5124,7 +5149,7 @@ fn test_an_azure_account_place_gets_no_door() {
             "abfss://raw@storageaccount.dfs.core.windows.net/",
         ))],
     );
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     assert!(
         door_of(&home).is_none(),
         "an account is not a directory: its children are containers and it has no URL"
@@ -5143,7 +5168,7 @@ fn test_the_door_is_named_after_the_directory_even_at_the_root() {
         browsing: Some(std::path::PathBuf::from("/")),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     let door = door_of(&home).expect("the root is a directory like any other");
     assert_eq!(door.name, "/ (all files, mixed)", "got {:?}", door.name);
 }
@@ -5182,7 +5207,7 @@ fn test_stepping_into_a_directory_and_back_does_not_erase_its_label() {
         ..Default::default()
     };
     // Inside the directory: the door is on screen and every pass runs over it.
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     assert!(door_of(&home).is_some());
     for _ in 0..4 {
         home.measure_now(16);
@@ -5195,7 +5220,7 @@ fn test_stepping_into_a_directory_and_back_does_not_erase_its_label() {
 
     // Back out. The directory's own row is classified and labelled as it would have been.
     home.browsing = Some(tmp.path().to_path_buf());
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     for _ in 0..4 {
         home.classify_now(16);
         home.measure_now(16);
@@ -5239,7 +5264,7 @@ fn test_the_door_on_a_share_is_built_from_the_probe_not_the_disk() {
     stale.kind = EntryKind::File;
     stale.size = Some(10);
     home.probe_ready(share, vec![stale]);
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
 
     let door = door_of(&home).expect("the directory carries the row");
     assert_eq!(
@@ -5272,7 +5297,7 @@ fn test_the_door_is_named_the_way_the_title_is() {
         object.kind = EntryKind::File;
         object.size = Some(10);
         home.probe_ready(place, vec![object]);
-        home.rebuild(&[], &[]);
+        home.rebuild(&[]);
         door_of(&home)
             .map(|r| r.name.clone())
             .expect("the place carries the row")
@@ -5310,7 +5335,7 @@ fn test_the_door_says_where_it_reads() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     let door = door_of(&home).expect("a door");
     let row = home.sections[0].rows.first().expect("a row");
     assert!(door.cost.source.is_some());
@@ -5328,7 +5353,7 @@ fn test_the_door_is_not_counted_among_what_a_directory_holds() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
 
     let header_count = |home: &HomeState| {
         home.visible()
@@ -5431,7 +5456,7 @@ fn test_inside_a_directory_of_notes_a_row_says_what_is_hidden() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
 
     let rows = home.visible();
     assert!(
@@ -5471,7 +5496,7 @@ fn test_an_extensionless_part_file_is_listed_by_its_bytes() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
 
     let rows = home.visible();
     let listed: Vec<&str> = rows
@@ -5502,7 +5527,7 @@ fn test_unidentified_extensionless_files_keep_the_door() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     assert!(home.visible().iter().any(|r| matches!(r, Row::Door { .. })));
 }
 
@@ -5522,7 +5547,7 @@ fn test_coming_back_waits_for_a_row_still_to_arrive() {
         browsing: Some(tmp.path().to_path_buf()),
         ..Default::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     home.filter = "deep".into();
     home.search.root = Some(tmp.path().to_path_buf());
     home.search.running = true;
@@ -5539,14 +5564,14 @@ fn test_coming_back_waits_for_a_row_still_to_arrive() {
     home.browsing = Some(deep.parent().unwrap().to_path_buf());
     home.filter.clear();
     home.search.reset();
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     home.browsing = Some(tmp.path().to_path_buf());
     home.come_back(Some(sub.clone()));
     assert_eq!(home.filter, "deep");
     assert_eq!(home.search.indexed, 0);
     home.search.root = Some(tmp.path().to_path_buf());
     home.search.running = true;
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     assert_ne!(
         home.selected_entry().map(|e| e.path),
         Some(deep.clone()),
@@ -5563,7 +5588,7 @@ fn test_coming_back_waits_for_a_row_still_to_arrive() {
     home.come_back(None);
     home.search.root = Some(tmp.path().to_path_buf());
     home.search.running = true;
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     assert!(home.returning.is_some());
     home.move_selection(1);
     let moved = home.selected;
@@ -5732,9 +5757,10 @@ mod coming_back {
     }
 
     fn local_config(dir: &Path) -> datui::config::AppConfig {
-        let mut config = datui::config::AppConfig::default();
-        config.home.directories = vec![dir.to_string_lossy().into_owned()];
-        config
+        datui::config::AppConfig {
+            read_catalogs: vec![crate::dir_catalog(dir)],
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -5823,23 +5849,25 @@ mod coming_back {
         let tmp = TempDir::new().unwrap();
         let file = touch(tmp.path(), "penguins.csv");
         std::fs::write(&file, "species,mass\nAdelie,3750\n").unwrap();
-        let mut config = datui::config::AppConfig::default();
-        config.sources = vec![datui::config::SourceConfig {
-            name: "lab".to_string(),
-            label: Some("Lab".to_string()),
-            datasets: vec![datui::config::DatasetConfig {
-                name: "Palmer penguins".to_string(),
-                path: Some(file.to_string_lossy().into_owned()),
-                description: "Size measurements for three penguin species observed on \
-                              three islands in the Palmer Archipelago, Antarctica"
-                    .to_string(),
-                publisher: "Palmer Station LTER".to_string(),
-                homepage: "https://allisonhorst.github.io/palmerpenguins/articles/intro.html"
-                    .to_string(),
-                ..Default::default()
-            }],
+        let config = datui::config::AppConfig {
+            read_catalogs: vec![
+                datui::catalog::parse(
+                    &format!(
+                        "label = \"Lab\"\n[penguins]\nname = \"Palmer penguins\"\npath = {:?}\n\
+                         description = \"Size measurements for three penguin species observed on \
+                         three islands in the Palmer Archipelago, Antarctica\"\n\
+                         publisher = \"Palmer Station LTER\"\n\
+                         homepage = \"https://allisonhorst.github.io/palmerpenguins/articles/intro.html\"\n",
+                        file.to_string_lossy().replace('\\', "/")
+                    ),
+                    "lab",
+                    datui::catalog::Origin::Listed,
+                    None,
+                )
+                .unwrap(),
+            ],
             ..Default::default()
-        }];
+        };
         let (mut app, _rx) = home_app(config);
         select(&mut app, &file);
         let area = Rect::new(0, 0, 120, 40);
@@ -5950,7 +5978,7 @@ mod coming_back {
             assert_eq!(bar.contains("by name"), w == 200, "{w}x{h}: {bar:?}");
             let screen: Vec<String> = (0..h).map(row).collect();
             assert!(
-                screen.iter().any(|r| r.contains("  40   configured")),
+                screen.iter().any(|r| r.contains("  40   catalog.toml")),
                 "{w}x{h}: the rule counts the rows: {screen:#?}"
             );
         }
@@ -5967,19 +5995,20 @@ mod coming_back {
         let listed = TempDir::new().unwrap();
         many_directories(listed.path());
         let mut config = local_config(listed.path());
-        config.sources = vec![datui::config::SourceConfig {
-            name: "lab".to_string(),
-            label: Some("Lab".to_string()),
-            datasets: ["d01", "d02", "d03"]
-                .iter()
-                .map(|name| datui::config::DatasetConfig {
-                    name: name.to_string(),
-                    path: Some(tmp.path().join(name).to_string_lossy().into_owned()),
-                    ..Default::default()
-                })
-                .collect(),
-            ..Default::default()
-        }];
+        let lab: Vec<(String, std::path::PathBuf)> = ["d01", "d02", "d03"]
+            .iter()
+            .map(|name| (name.to_string(), tmp.path().join(name)))
+            .collect();
+        let lab: Vec<(&str, &Path)> = lab.iter().map(|(n, p)| (n.as_str(), p.as_path())).collect();
+        config.read_catalogs.push(
+            datui::catalog::parse(
+                &format!("label = \"Lab\"\n{}", crate::catalog_text(&lab)),
+                "lab",
+                datui::catalog::Origin::Listed,
+                None,
+            )
+            .unwrap(),
+        );
         let (mut app, rx) = home_app(config);
         let d03 = tmp.path().join("d03");
 
@@ -6449,8 +6478,10 @@ fn home_at_80x24(
     for i in 0..files {
         touch(tmp.path(), &format!("f{i:02}.csv"));
     }
-    let mut config = datui::config::AppConfig::default();
-    config.home.directories = vec![tmp.path().to_string_lossy().into_owned()];
+    let mut config = datui::config::AppConfig {
+        read_catalogs: vec![crate::dir_catalog(tmp.path())],
+        ..Default::default()
+    };
     config.home.desktop_recents = false;
     config.cloud.hide = ["s3-default", "gcs-default", "az", "azure-env"]
         .map(String::from)
@@ -6835,8 +6866,10 @@ mod landing {
     /// The home screen over `root`, with every row on it measured, as it is by the time
     /// anyone has read the listing.
     fn home_over(root: &Path) -> (App, Receiver<AppEvent>) {
-        let mut config = datui::config::AppConfig::default();
-        config.home.directories = vec![root.to_string_lossy().into_owned()];
+        let mut config = datui::config::AppConfig {
+            read_catalogs: vec![crate::dir_catalog(root)],
+            ..Default::default()
+        };
         config.home.search.enabled = false;
         let (mut app, rx) = home_app(config);
         let measured = ["sales_hive", "same_schema", "diff_schema"].map(|d| root.join(d));
@@ -7075,7 +7108,7 @@ fn test_late_footers_move_a_landed_cursor_and_only_a_landed_one() {
             ],
         );
         home.browsing = Some(exports.clone());
-        home.rebuild(&[], &[]);
+        home.rebuild(&[]);
         assert!(
             home.selection_is_the_door(),
             "the names alone say one table"
@@ -7145,7 +7178,7 @@ fn test_a_mixed_prefix_says_it_reads_below() {
         ],
     );
     home.browsing = Some(place);
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     let door = door_of(&home).expect("the prefix carries the door").clone();
     assert_eq!(door.name, "mix (all files, mixed)");
     assert_eq!(
@@ -7231,8 +7264,10 @@ fn test_a_file_row_says_how_it_will_be_read() {
         touch(tmp.path(), name);
     }
     fs::write(tmp.path().join("file.arrow"), b"ARROW1\0\0").unwrap();
-    let mut config = datui::config::AppConfig::default();
-    config.home.directories = vec![tmp.path().to_string_lossy().into_owned()];
+    let mut config = datui::config::AppConfig {
+        read_catalogs: vec![crate::dir_catalog(tmp.path())],
+        ..Default::default()
+    };
     config.home.desktop_recents = false;
     config.cloud.hide = ["s3-default", "gcs-default", "az", "azure-env"]
         .map(String::from)
@@ -7367,9 +7402,10 @@ mod first_rows {
     }
 
     fn config(dir: &Path) -> datui::config::AppConfig {
-        let mut config = datui::config::AppConfig::default();
-        config.home.directories = vec![dir.to_string_lossy().into_owned()];
-        config
+        datui::config::AppConfig {
+            read_catalogs: vec![crate::dir_catalog(dir)],
+            ..Default::default()
+        }
     }
 
     fn render(app: &mut datui::App, w: u16, h: u16) -> Vec<String> {
@@ -7685,8 +7721,10 @@ mod catalog {
         }
         super::touch(tmp.path(), "events/year=2024/part-0.parquet");
         super::touch(tmp.path(), "events/year=2025/part-0.parquet");
-        let mut config = datui::config::AppConfig::default();
-        config.home.directories = vec![tmp.path().to_string_lossy().into_owned()];
+        let config = datui::config::AppConfig {
+            read_catalogs: vec![crate::dir_catalog(tmp.path())],
+            ..Default::default()
+        };
         let (mut app, rx, _cache) = app_with_catalog(config);
         let data = tmp.path().join("data");
         let events = tmp.path().join("events");
@@ -7720,28 +7758,20 @@ mod catalog {
         }
     }
 
-    /// A recent opened from a collection is named as the collection names it, with the
-    /// format its name no longer says (#547 D12).
+    /// A recent opened from a catalog is named as the catalog names it, with the format
+    /// its name no longer says (#547 D12).
     #[test]
-    fn a_recent_from_a_collection_keeps_its_name() {
-        use datui::home::{Collection, CollectionDataset, ListingRequest, build_listing};
+    fn a_recent_from_a_catalog_keeps_its_name() {
+        use datui::home::{ListingRequest, build_listing};
         let url = std::path::PathBuf::from("https://example.com/data/penguins.csv");
         let listing = build_listing(&ListingRequest {
             recents: vec![url.clone()],
-            collections: vec![Collection {
-                name: "public".to_string(),
-                label: "Public datasets".to_string(),
-                builtin: true,
-                datasets: vec![CollectionDataset {
-                    name: "Palmer penguins".to_string(),
-                    location: url.clone(),
-                    details: Vec::new(),
-                    size: Some(16_480),
-                    ..Default::default()
-                }],
-            }],
-            config_dirs: Vec::new(),
-            remembered_dirs: Vec::new(),
+            catalogs: vec![crate::shown_catalog(
+                "public",
+                "Public datasets",
+                datui::catalog::Origin::Bundled,
+                &[("Palmer penguins", &url)],
+            )],
             desktop_dirs: Vec::new(),
             browsing: None,
             probed: Default::default(),
@@ -7763,7 +7793,7 @@ mod catalog {
         let row = recent.rows.iter().find(|r| r.path == url).unwrap();
         assert_eq!(row.name, "Palmer penguins");
         assert_eq!(row.label(), "csv");
-        assert_eq!(row.size, Some(16_480));
+        assert_eq!(row.size, None, "a catalog's size is a hint, shown apart");
     }
 }
 
@@ -7779,7 +7809,7 @@ mod frecency {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    /// Two sales files in a configured directory, `often` opened three times and
+    /// Two sales files in a catalog, `often` opened three times and
     /// `last` once since, and the home screen over them with that history.
     fn opened(
         tmp: &TempDir,
@@ -7796,8 +7826,10 @@ mod frecency {
                 datui::cache::HistoryUpdate::Written
             );
         }
-        let mut config = datui::config::AppConfig::default();
-        config.home.directories = vec![dir.to_string_lossy().into_owned()];
+        let mut config = datui::config::AppConfig {
+            read_catalogs: vec![crate::dir_catalog(&dir)],
+            ..Default::default()
+        };
         config.home.desktop_recents = false;
         config.home.hide = vec!["public".to_string()];
         config.cloud.discover = Some(datui::config::CloudDiscover::None);
@@ -7845,7 +7877,7 @@ mod frecency {
     }
 
     /// Of two files `sales` matches equally, the one opened most is first, in a
-    /// directory's section too, where the name would otherwise put the other first.
+    /// catalog's section too, where the name would otherwise put the other first.
     #[test]
     fn a_match_opened_most_comes_first() {
         let tmp = TempDir::new().unwrap();
@@ -7856,14 +7888,13 @@ mod frecency {
                 KeyModifiers::NONE,
             )));
         }
-        let dir = often.parent().unwrap().to_path_buf();
         let in_dir: Vec<PathBuf> = app
             .home
             .visible()
             .iter()
             .filter_map(|row| match row {
                 Row::Entry { section, entry, .. }
-                    if app.home.sections[*section].root.as_deref() == Some(dir.as_path()) =>
+                    if app.home.sections[*section].title == "My datasets" =>
                 {
                     Some(entry.path.clone())
                 }

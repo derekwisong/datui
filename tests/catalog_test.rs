@@ -1,5 +1,6 @@
-//! `[[sources]]` collections on the home screen: local and remote datasets under one
-//! heading, opened and browsed the way the rest of the home screen opens and browses.
+//! Catalogs on the home screen: local and remote datasets under one heading, opened
+//! and browsed the way the rest of the home screen opens and browses; `catalog.toml`,
+//! which Ctrl+D writes; and the Documentation view.
 #![cfg(all(feature = "cloud", feature = "http"))]
 
 mod common;
@@ -16,6 +17,10 @@ use std::time::{Duration, Instant};
 
 fn key(code: KeyCode) -> AppEvent {
     AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+fn ctrl(c: char) -> AppEvent {
+    AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
 }
 
 fn drive(app: &mut App, event: AppEvent) {
@@ -53,20 +58,23 @@ fn pump(app: &mut App, rx: &Receiver<AppEvent>, done: impl Fn(&App) -> bool) {
     );
 }
 
-/// The defaults with `extra` merged over them, and no login found on this machine in
-/// the way.
-fn config_with(extra: &str) -> AppConfig {
+/// The defaults with `extra` merged over them, the catalog files in `dir` read, and no
+/// login found on this machine in the way.
+fn config_in(dir: &Path, extra: &str) -> AppConfig {
     common::isolate_cache();
-    let config = common::layered_config(&[
+    let mut config = common::layered_config(&[
         "[home]\ndesktop_recents = false\n[cloud]\ndiscover = false\n",
         extra,
     ]);
+    config
+        .read_catalog_files(Some(dir))
+        .expect("test catalogs read");
     config.validate().expect("test config validates");
     config
 }
 
-/// An app at the home screen with [`config_with`] `extra`.
-fn home_with(extra: &str) -> (App, Receiver<AppEvent>) {
+/// An app at the home screen with [`config_in`] `dir` and `extra`.
+fn home_in(dir: &Path, extra: &str) -> (App, Receiver<AppEvent>) {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new_with_config(
         tx,
@@ -74,10 +82,18 @@ fn home_with(extra: &str) -> (App, Receiver<AppEvent>) {
         datui::Theme {
             colors: std::collections::HashMap::new(),
         },
-        config_with(extra),
+        config_in(dir, extra),
     );
     app.enter_home();
     (app, rx)
+}
+
+/// An app whose `catalog.toml` is `mine`, in a directory of its own.
+fn home_with_mine(mine: &str) -> (App, Receiver<AppEvent>, tempfile::TempDir) {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("catalog.toml"), mine).unwrap();
+    let (app, rx) = home_in(dir.path(), "");
+    (app, rx, dir)
 }
 
 fn section_titles(app: &App) -> Vec<String> {
@@ -94,7 +110,22 @@ fn select(app: &mut App, name: &str) {
     app.home.selected = index;
 }
 
-/// Serve `body` as `name` over plain HTTP on a local port, and return its URL.
+fn screen(app: &mut App) -> String {
+    let area = ratatui::layout::Rect::new(0, 0, 140, 40);
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    ratatui::widgets::Widget::render(&mut *app, area, &mut buffer);
+    (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                + "\n"
+        })
+        .collect()
+}
+
+/// Serve `body` as `name` over plain HTTP on a local port, and return its URL. A HEAD
+/// gets the length and no body.
 fn serve(name: &str, body: &'static str) -> String {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/{name}", listener.local_addr().unwrap());
@@ -124,7 +155,7 @@ fn toml_path(path: &Path) -> String {
 }
 
 #[test]
-fn one_collection_holds_local_s3_and_web_datasets() {
+fn one_catalog_holds_local_s3_and_web_datasets() {
     let dir = tempfile::TempDir::new().unwrap();
     let sales = dir.path().join("sales.csv");
     std::fs::write(&sales, "month,total\njan,10\nfeb,12\n").unwrap();
@@ -136,51 +167,48 @@ fn one_collection_holds_local_s3_and_web_datasets() {
         "penguins.csv",
         "species,island\nAdelie,Torgersen\nGentoo,Biscoe\n",
     );
-    let config = format!(
-        r#"
+    let config = r#"
 [[cloud.connections]]
 name = "onprem"
 kind = "s3"
 endpoint_url = "http://127.0.0.1:9"
 access_key_id_env = "DATUI_TEST_UNSET_ONPREM_KEY"
 secret_access_key_env = "DATUI_TEST_UNSET_ONPREM_SECRET"
-
-[[sources]]
-name = "my-datasets"
-label = "My datasets"
-
-[[sources.datasets]]
+"#;
+    let mine = format!(
+        r#"
+[sales]
 name = "Sales"
 path = "{sales}"
 description = "Monthly sales"
 
-[[sources.datasets]]
+[archive]
 name = "Archive"
-path = "{archive}"
+path = "archive"
 
-[[sources.datasets]]
+[gone]
 name = "Gone"
 path = "{gone}"
 
-[[sources.datasets]]
+[weather]
 name = "Weather"
 url = "s3://noaa-ghcn-pds/parquet/"
 auth = "anonymous"
 
-[[sources.datasets]]
+[penguins]
 name = "Penguins"
 url = "{penguins}"
 
-[[sources.datasets]]
+[orders]
 name = "Orders"
 url = "s3://datui-test-orders/2024/"
 connection = "onprem"
 "#,
         sales = toml_path(&sales),
-        archive = toml_path(&archive),
         gone = toml_path(&gone),
     );
-    let (mut app, rx) = home_with(&config);
+    std::fs::write(dir.path().join("catalog.toml"), mine).unwrap();
+    let (mut app, rx) = home_in(dir.path(), config);
     pump(&mut app, &rx, |app| {
         app.home
             .sections
@@ -191,11 +219,18 @@ connection = "onprem"
     assert!(
         titles.iter().position(|t| t == "My datasets")
             < titles.iter().position(|t| t == "Public datasets"),
-        "the built-in catalog follows: {titles:?}"
+        "the bundled catalog follows: {titles:?}"
     );
-    assert!(app.home.cloud.is_empty(), "no collection is a cloud row");
+    assert!(app.home.cloud.is_empty(), "no catalog is a cloud row");
+    let section = app
+        .home
+        .sections
+        .iter()
+        .find(|s| s.title == "My datasets")
+        .unwrap();
+    assert_eq!(section.origin, Some("catalog.toml"));
 
-    // What each row is reading comes from the config, not from asking the store.
+    // What each row is reading comes from the catalog, not from asking the store.
     let details = |app: &App, path: &Path| app.home.place_details(path).unwrap().to_vec();
     assert!(details(&app, &sales).contains(&("about".to_string(), "Monthly sales".to_string())));
     let weather = PathBuf::from("s3://noaa-ghcn-pds/parquet/");
@@ -206,12 +241,12 @@ connection = "onprem"
     // Weather is read anonymously; Orders only through its connection, whose keys are
     // not set here, so it says whose they are rather than trying anyone else's.
     let env = datui::cloud_browse::Environment::current();
-    let cloud = &config_with(&config).cloud;
+    let cloud = &config_in(dir.path(), config).cloud;
     let read =
         datui::cloud_sources::resolve_with("s3://noaa-ghcn-pds/parquet/by_year/", cloud, &env)
             .unwrap();
     assert_eq!(read.signing, datui::cloud_sources::Signing::Unsigned);
-    assert_eq!(read.source_id, "my-datasets");
+    assert_eq!(read.source_id, "mine");
     let refused =
         datui::cloud_sources::resolve_with("s3://datui-test-orders/2024/q1.csv", cloud, &env)
             .expect_err("the connection has no keys");
@@ -230,7 +265,7 @@ connection = "onprem"
         app.home.status
     );
 
-    // A local directory is browsed, and Esc comes back.
+    // A directory, written relative to the catalog, is browsed, and Esc comes back.
     select(&mut app, "Archive");
     drive(&mut app, key(KeyCode::Enter));
     assert_eq!(app.home.browsing.as_deref(), Some(archive.as_path()));
@@ -257,10 +292,7 @@ connection = "onprem"
     );
 
     // A web file opens through the download the home screen always uses.
-    drive(
-        &mut app,
-        AppEvent::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)),
-    );
+    drive(&mut app, ctrl('o'));
     pump(&mut app, &rx, |app| {
         app.home.sections.iter().any(|s| s.title == "My datasets")
     });
@@ -286,12 +318,32 @@ connection = "onprem"
 }
 
 #[test]
-fn the_catalog_is_replaced_dropped_or_hidden() {
+fn catalogs_are_listed_replaced_or_hidden() {
     let dir = tempfile::TempDir::new().unwrap();
     let local = dir.path().join("mine.csv");
     std::fs::write(&local, "a\n1\n").unwrap();
+    let team = dir.path().join("team");
+    std::fs::create_dir_all(&team).unwrap();
+    std::fs::write(
+        team.join("acme.toml"),
+        format!(
+            "label = \"Acme\"\n[mine]\nname = \"Mine\"\npath = \"{}\"\n",
+            toml_path(&local)
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        team.join("public.toml"),
+        format!(
+            "label = \"Curated\"\n[mine]\nname = \"Mine\"\npath = \"{}\"\n",
+            toml_path(&local)
+        ),
+    )
+    .unwrap();
+    // A layer read from no file anchors nothing: the paths are whole here.
+    let at = |name: &str| toml_path(&team.join(name));
     let listed = |extra: &str| {
-        let (mut app, rx) = home_with(extra);
+        let (mut app, rx) = home_in(dir.path(), extra);
         pump(&mut app, &rx, |app| !app.home.sections.is_empty());
         section_titles(&app)
     };
@@ -301,40 +353,56 @@ fn the_catalog_is_replaced_dropped_or_hidden() {
         default.iter().any(|t| t == "Public datasets"),
         "{default:?}"
     );
+    assert!(
+        !default.iter().any(|t| t == "My datasets"),
+        "no catalog.toml"
+    );
 
-    let replaced = listed(&format!(
-        "[[sources]]\nname = \"public\"\nlabel = \"Curated\"\n[[sources.datasets]]\nname = \"Mine\"\npath = \"{}\"\n",
-        toml_path(&local)
-    ));
+    let teamed = listed(&format!("catalogs = [\"{}\"]\n", at("acme.toml")));
+    let acme = teamed.iter().position(|t| t == "Acme");
+    let public = teamed.iter().position(|t| t == "Public datasets");
+    assert!(acme.is_some() && acme < public, "{teamed:?}");
+
+    let replaced = listed(&format!("catalogs = [\"{}\"]\n", at("public.toml")));
     assert!(replaced.iter().any(|t| t == "Curated"), "{replaced:?}");
     assert!(
         !replaced.iter().any(|t| t == "Public datasets"),
         "replaced whole: {replaced:?}"
     );
 
-    let dropped = listed("[home]\nbuiltin_catalog = false\n");
-    assert!(
-        !dropped.iter().any(|t| t == "Public datasets"),
-        "{dropped:?}"
-    );
-
     let hidden = listed(&format!(
-        "[home]\nhide = [\"public\"]\n[[sources]]\nname = \"public\"\nlabel = \"Curated\"\n[[sources.datasets]]\nname = \"Mine\"\npath = \"{}\"\n",
-        toml_path(&local)
+        "catalogs = [\"{}\"]\n[home]\nhide = [\"public\", \"acme\"]\n",
+        at("acme.toml")
     ));
     assert!(
-        !hidden
-            .iter()
-            .any(|t| t == "Curated" || t == "Public datasets"),
-        "a hidden replacement is hidden too: {hidden:?}"
+        !hidden.iter().any(|t| t == "Acme" || t == "Public datasets"),
+        "{hidden:?}"
+    );
+
+    // A missing listed file is skipped; a broken one names its line.
+    let skipped = listed(&format!("catalogs = [\"{}\"]\n", at("nowhere.toml")));
+    assert!(
+        skipped.iter().any(|t| t == "Public datasets"),
+        "{skipped:?}"
+    );
+    std::fs::write(team.join("broken.toml"), "[a]\nname = \"A\"\n").unwrap();
+    let mut config =
+        common::layered_config(&[&format!("catalogs = [\"{}\"]\n", at("broken.toml"))]);
+    let error = config
+        .read_catalog_files(Some(dir.path()))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("broken.toml:1: [a]: say where it is"),
+        "{error}"
     );
 }
 
-/// A collection entry's codebook and suggested places (#734): the place is listed under
+/// A catalog entry's documentation and bookmarks (#734): the bookmark is listed under
 /// its dataset, Enter opens it whole, and the dataset opened knows what its columns
 /// mean.
 #[test]
-fn a_suggested_place_is_listed_under_its_dataset_and_opens_with_its_codebook() {
+fn a_bookmark_is_listed_under_its_dataset_and_opens_with_its_documentation() {
     use polars::prelude::*;
     let mut df = df!(
         "ID" => ["USW00094728", "USW00094728"],
@@ -368,30 +436,28 @@ region = "us-east-1"
 addressing = "path"
 access_key_id_env = "CARGO_PKG_NAME"
 secret_access_key_env = "CARGO_PKG_NAME"
-
-[[sources]]
-name = "mine"
-label = "Mine"
-
-[[sources.datasets]]
-name = "Weather"
-url = "s3://weather/ghcn/"
-connection = "lab"
-codebook = "https://example.com/readme.txt"
-
-[sources.datasets.columns.Q_FLAG]
-description = "Quality flag"
-
-[sources.datasets.columns.Q_FLAG.values]
-"" = "did not fail any quality assurance check"
-
-[[sources.datasets.suggested]]
-name = "Daily highs, 2024"
-path = "by_year/YEAR=2024/ELEMENT=TMAX/"
 "#,
         endpoint = s3.endpoint
     );
-    let (mut app, rx) = home_with(&config);
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("catalog.toml"),
+        r#"
+label = "Mine"
+
+[weather]
+name = "Weather"
+url = "s3://weather/ghcn/"
+connection = "lab"
+documentation = "https://example.com/readme.txt"
+
+columns.Q_FLAG = { description = "Quality flag", values = { "" = "did not fail any quality assurance check" } }
+
+bookmarks."Daily highs, 2024" = "by_year/YEAR=2024/ELEMENT=TMAX/"
+"#,
+    )
+    .unwrap();
+    let (mut app, rx) = home_in(dir.path(), &config);
     pump(&mut app, &rx, |app| {
         app.home.sections.iter().any(|s| s.title == "Mine")
     });
@@ -411,30 +477,31 @@ path = "by_year/YEAR=2024/ELEMENT=TMAX/"
     assert_eq!(
         rows[at + 1],
         ("Daily highs, 2024".to_string(), true),
-        "the place sits under its dataset: {rows:?}"
+        "the bookmark sits under its dataset: {rows:?}"
     );
 
     // The details pane says what the columns mean, and where that comes from.
     select(&mut app, "Weather");
-    let area = ratatui::layout::Rect::new(0, 0, 140, 40);
-    let mut buffer = ratatui::buffer::Buffer::empty(area);
-    ratatui::widgets::Widget::render(&mut app, area, &mut buffer);
-    let screen: String = (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buffer[(x, y)].symbol())
-                .collect::<String>()
-                + "\n"
-        })
-        .collect();
-    assert!(screen.contains("DOCUMENTATION"), "{screen}");
-    assert!(screen.contains("Quality flag"), "{screen}");
-    assert!(
-        screen.contains("https://example.com/readme.txt"),
-        "{screen}"
-    );
+    let shown = screen(&mut app);
+    assert!(shown.contains("DOCUMENTATION"), "{shown}");
+    assert!(shown.contains("Quality flag"), "{shown}");
+    assert!(shown.contains("https://example.com/readme.txt"), "{shown}");
 
-    // Enter opens the place whole, and the dataset carries the codebook.
+    // Ctrl+E opens the whole page, a bookmark's too, and Esc comes back.
+    select(&mut app, "Daily highs, 2024");
+    drive(&mut app, ctrl('e'));
+    assert!(app.documentation.is_open());
+    let page = screen(&mut app);
+    assert!(page.contains("Documentation"), "{page}");
+    assert!(page.contains("BOOKMARKS"), "{page}");
+    assert!(page.contains("Q_FLAG"), "{page}");
+    // Typing goes to the page, not the filter.
+    drive(&mut app, key(KeyCode::Char('j')));
+    assert!(app.home.filter.is_empty());
+    drive(&mut app, key(KeyCode::Esc));
+    assert!(!app.documentation.is_open());
+
+    // Enter opens the bookmark whole, and the dataset carries the notes.
     select(&mut app, "Daily highs, 2024");
     assert_eq!(app.what_enter_does(), datui::WhatEnter::OpensDirectory);
     drive(&mut app, key(KeyCode::Enter));
@@ -443,64 +510,113 @@ path = "by_year/YEAR=2024/ELEMENT=TMAX/"
     });
     let headers = app.data_table_state.as_ref().unwrap().headers();
     assert!(headers.iter().any(|h| h == "Q_FLAG"), "{headers:?}");
-    let book = app.codebook.as_ref().expect("the codebook came with it");
+    let book = app.codebook.as_ref().expect("the notes came with it");
     assert_eq!(
         book.column("Q_FLAG")
             .and_then(|c| c.legend_line(None))
             .as_deref(),
         Some("blank = did not fail any quality assurance check")
     );
+    // Info offers the same page on its Documentation tab.
+    let (label, entry) = app.catalog_entry.clone().expect("the entry came with it");
+    assert_eq!((label.as_str(), entry.name.as_str()), ("Mine", "Weather"));
+    assert!(app.info_documentation.is_open());
 }
 
-/// The keys a codebook adds are checked like the rest of a collection.
+/// Ctrl+D adds a row to catalog.toml, keeping what is written there, and on a row of
+/// catalog.toml forgets it.
 #[test]
-fn a_codebook_that_says_nothing_or_a_place_outside_is_refused() {
-    let refused = |extra: &str| {
-        let text = format!(
-            "[[sources]]\nname = \"mine\"\n\n[[sources.datasets]]\nname = \"W\"\n\
-             url = \"s3://weather/ghcn/\"\n{extra}"
-        );
-        let config: AppConfig = toml::from_str(&text).unwrap();
-        config.validate().expect_err(extra).to_string()
-    };
-    let error = refused("[sources.datasets.columns.ELEMENT]\n");
-    assert!(error.contains("says nothing"), "{error}");
-    let error = refused("[sources.datasets.columns.ELEMENT]\nmeaning = \"x\"\n");
-    assert!(error.contains("unknown key 'meaning'"), "{error}");
-    let error = refused("[[sources.datasets.suggested]]\nname = \"Up\"\npath = \"../other/\"\n");
-    assert!(error.contains("stay inside it"), "{error}");
-    let error = refused("codebook = \"ftp://example.com/readme.txt\"\n");
-    assert!(error.contains("https://"), "{error}");
-
-    // A web file has no places inside it.
-    let text = "[[sources]]\nname = \"mine\"\n\n[[sources.datasets]]\nname = \"W\"\n\
-                url = \"https://example.com/a.csv\"\n\n[[sources.datasets.suggested]]\n\
-                name = \"x\"\npath = \"b/\"\n";
-    let config: AppConfig = toml::from_str(text).unwrap();
-    let error = config.validate().unwrap_err().to_string();
-    assert!(error.contains("suggested applies only"), "{error}");
-
-    // The built-in catalog's codebooks parse, and GHCN's flags say blank is normal.
-    let catalog = datui::config::builtin_catalog();
-    let ghcn = catalog
-        .datasets
-        .iter()
-        .find(|d| d.url.as_deref() == Some("s3://noaa-ghcn-pds/parquet/"))
-        .expect("GHCN is in the catalog");
-    let book = datui::codebook::Codebook::of(ghcn).expect("GHCN has a codebook");
-    for flag in ["M_FLAG", "Q_FLAG"] {
-        assert!(
-            book.column(flag)
-                .is_some_and(|c| c.about().contains("normal")),
-            "{flag}"
-        );
-    }
-    assert_eq!(
-        book.column("S_FLAG")
-            .and_then(|c| c.legend_line(Some("T")))
-            .as_deref()
-            .map(|l| l.starts_with("T = SNOwpack TELemtry (SNOTEL)")),
-        Some(true)
+fn ctrl_d_adds_a_row_to_catalog_toml_and_forgets_it() {
+    let data = tempfile::TempDir::new().unwrap();
+    let lake = data.path().join("lake");
+    std::fs::create_dir_all(&lake).unwrap();
+    std::fs::write(lake.join("a.csv"), "x\n1\n").unwrap();
+    let dir = tempfile::TempDir::new().unwrap();
+    let team = dir.path().join("team.toml");
+    std::fs::write(
+        &team,
+        format!(
+            "label = \"Team\"\n[lake]\nname = \"Lake\"\npath = \"{}\"\n",
+            toml_path(&lake)
+        ),
+    )
+    .unwrap();
+    let mine = dir.path().join("catalog.toml");
+    std::fs::write(&mine, "# my notes\nlabel = \"Mine\"\n").unwrap();
+    let (mut app, rx) = home_in(
+        dir.path(),
+        &format!("catalogs = [\"{}\"]\n", toml_path(&team)),
     );
-    assert_eq!(ghcn.suggested.len(), 2);
+    pump(&mut app, &rx, |app| {
+        app.home.sections.iter().any(|s| s.title == "Team")
+    });
+
+    select(&mut app, "Lake");
+    drive(&mut app, ctrl('d'));
+    pump(&mut app, &rx, |app| {
+        app.home.sections.iter().any(|s| s.title == "Mine")
+    });
+    let text = std::fs::read_to_string(&mine).unwrap();
+    assert!(text.starts_with("# my notes\n"), "{text}");
+    assert!(text.contains("[lake]\nname = \"Lake\""), "{text}");
+    assert_eq!(
+        std::fs::read_to_string(&team)
+            .unwrap()
+            .matches("[lake]")
+            .count(),
+        1,
+        "only catalog.toml is written"
+    );
+
+    // The row under Mine is catalog.toml's: Ctrl+D there forgets it.
+    let mine_section = app
+        .home
+        .sections
+        .iter()
+        .position(|s| s.title == "Mine")
+        .unwrap();
+    app.home.selected = app
+        .home
+        .visible()
+        .iter()
+        .position(|row| {
+            matches!(row, datui::home::Row::Entry { section, entry, .. }
+                if *section == mine_section && entry.name == "Lake")
+        })
+        .unwrap();
+    drive(&mut app, ctrl('d'));
+    pump(&mut app, &rx, |app| {
+        !app.home.sections.iter().any(|s| s.title == "Mine")
+    });
+    let text = std::fs::read_to_string(&mine).unwrap();
+    assert_eq!(text, "# my notes\nlabel = \"Mine\"\n");
+
+    // A row of another catalog's is added again; the team file still has it.
+    select(&mut app, "Lake");
+    drive(&mut app, ctrl('d'));
+    pump(&mut app, &rx, |app| {
+        app.home.sections.iter().any(|s| s.title == "Mine")
+    });
+}
+
+/// A web file's row says what its catalog says it weighs until a HEAD measures it.
+#[test]
+fn a_web_files_size_is_a_hint_until_a_head_measures_it() {
+    let url = serve("small.csv", "a,b\n1,2\n");
+    let (mut app, rx, _dir) = home_with_mine(&format!(
+        "[small]\nname = \"Small\"\nurl = \"{url}\"\nsize = 4096\n"
+    ));
+    pump(&mut app, &rx, |app| {
+        app.home.sections.iter().any(|s| s.title == "My datasets")
+    });
+    select(&mut app, "Small");
+    assert!(screen(&mut app).contains("~4.0 KB"), "the hint, marked");
+    app.head_web_rows = true;
+    pump(&mut app, &rx, |app| {
+        app.home
+            .selected_entry()
+            .is_some_and(|e| e.name == "Small" && e.size == Some(8))
+    });
+    let shown = screen(&mut app);
+    assert!(!shown.contains("~4.0 KB"), "{shown}");
 }

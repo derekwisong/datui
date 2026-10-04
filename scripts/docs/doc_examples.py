@@ -24,6 +24,7 @@ Attributes after the language, comma-separated:
   continue        runs in the directory the page's previous block ran in
   expect=WHAT     what a datui command in it must do: rows, screen or exit
   spec            (toml) a format spec, checked with `datui formats check`
+  catalog         (toml) a catalog file, checked with `datui catalog check`
   dataset=NAME    (sql, q) the dataset it runs against, from doc_datasets.toml;
                   crates/datui-lib's doc_queries tests run it
   rows=N          (sql, q) the rows it returns
@@ -65,7 +66,7 @@ RUNNABLE = {"bash", "sh", "toml", "python", "sql", "q", "powershell"}
 OUTPUT = {"text", "console"}
 # Code that is shown, never run: contributor docs' excerpts.
 EXCERPT = {"rust", "yaml", "json", "html", "xml", "csv", "diff", "markdown"}
-ATTRS = {"template", "output", "network", "interactive", "continue", "spec", "repo", "install"}
+ATTRS = {"template", "output", "network", "interactive", "continue", "spec", "catalog", "repo", "install"}
 VALUED = {"expect", "dataset", "rows", "file"}
 PLACEHOLDER = re.compile(r"<[A-Z][A-Z0-9_]*>")
 FENCE = re.compile(r"^(\s*)(```+|~~~+)(.*)$")
@@ -369,6 +370,9 @@ def run_block(b: Block, work: Path, real: str | None, timeout: float) -> str | N
     elif b.lang == "toml" and "spec" in b.attrs:
         (work / "spec.toml").write_text(b.body, encoding="utf-8")
         cmd = [real, "formats", "check", "./spec.toml"]
+    elif b.lang == "toml" and "catalog" in b.attrs:
+        (work / "catalog.toml").write_text(b.body, encoding="utf-8")
+        cmd = [real, "catalog", "check", "./catalog.toml"]
     elif b.lang == "toml":
         config = work / ".config"
         config.mkdir(exist_ok=True)

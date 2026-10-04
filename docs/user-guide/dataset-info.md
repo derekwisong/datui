@@ -16,7 +16,8 @@ view.
 
 | Tab | Shows |
 |---|---|
-| **Schema** | Row and column counts, column types, schema source, file coverage, and a Parquet file's per-column compression. A column's unit, when a delimited format spec read a unit row or the file names one (DataFlash, a DBC dictionary). A dataset a [collection](../reference/sources.md#documentation) documents adds what each column means (`About`), the selected column's note and codes below, and the documentation's link |
+| **Schema** | Row and column counts, column types, schema source, file coverage, and a Parquet file's per-column compression. A column's unit, when a delimited format spec read a unit row or the file names one (DataFlash, a DBC dictionary). A dataset a [catalog](../reference/catalogs.md#columns) documents adds what each column means (`About`), the selected column's note and codes below, and the documentation's link |
+| **Documentation** | A dataset a [catalog](../reference/catalogs.md) lists, or one inside it: the page <kbd>Ctrl</kbd>+<kbd>E</kbd> shows on the home screen ([Documentation view](home-screen.md#documentation-view)). <kbd>↑</kbd> <kbd>↓</kbd> move, <kbd>Enter</kbd> opens a column's legend, <kbd>y</kbd> copies a line's link or value |
 | Format's own | What the file says besides its rows, named for its format; see [the table below](#tabs-by-format) |
 | **Metadata** | The metadata line a [delimited format spec](../formats/format-specs.md#delimited-text) names, as key and value; appears for files read through one |
 | **Resources** | File size, how the file is read, buffered memory, and loading measurements |

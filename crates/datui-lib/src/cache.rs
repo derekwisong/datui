@@ -1045,36 +1045,30 @@ impl CacheManager {
         .or_log("hide a cloud source");
     }
 
-    /// Directories kept on the home screen with Ctrl+D, in the order they were added.
-    ///
-    /// The one-keystroke twin of `[home] directories`. Kept here rather than written
-    /// into the config: that file is the user's, comments and all, and may be one of
-    /// several merged together.
-    pub fn load_remembered_places(&self) -> Vec<PathBuf> {
-        self.load_history_or_log("home_remembered")
+    /// The directories Ctrl+D kept here before 0.4.0, which keeps them in
+    /// `catalog.toml`, in the order they were added. The file goes with the reading, so
+    /// this is empty once taken.
+    pub fn take_remembered_places(&self) -> Vec<PathBuf> {
+        let file = self.cache_file(&format!("home_remembered{HISTORY_SUFFIX}"));
+        if !file.exists() {
+            return Vec::new();
+        }
+        let places = self
+            .load_history_or_log("home_remembered")
             .into_iter()
             .map(PathBuf::from)
-            .collect()
+            .collect();
+        let _ = std::fs::remove_file(&file);
+        places
     }
 
-    /// Keep a directory on the home screen until it is forgotten or the cache cleared.
-    pub fn remember_place(&self, path: &std::path::Path) {
-        let target = path.to_string_lossy().into_owned();
-        self.update_history_file("home_remembered", |places| {
-            if !places.contains(&target) {
-                places.push(target.clone());
-            }
-        })
-        .or_log("remember a place");
-    }
-
-    /// Stop keeping a directory on the home screen.
-    pub fn forget_place(&self, path: &std::path::Path) {
-        let target = path.to_string_lossy().into_owned();
-        self.update_history_file("home_remembered", |places| {
-            places.retain(|p| p != &target);
-        })
-        .or_log("forget a place");
+    /// Write `places` where Ctrl+D kept them before 0.4.0, for the migration's tests.
+    pub fn save_remembered_places(&self, places: &[PathBuf]) -> Result<()> {
+        let places: Vec<String> = places
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        self.save_history_file("home_remembered", &places)
     }
 }
 

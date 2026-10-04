@@ -1027,6 +1027,26 @@ fn the_builder_stacks_on_a_narrow_terminal() {
         wide.join("\n")
     );
     assert!(wide[row_of(&wide, "Index:")].contains("Result"));
+    // The status footer says where you are and names the builder's keys; the
+    // Values row is a column row, where Space opens its picker.
+    let last = wide.last().unwrap();
+    assert!(
+        last.contains("pivot_long") && last.contains("pivot & melt"),
+        "the status: {last:?}"
+    );
+    assert!(
+        last.contains("Apply") && last.contains("Open") && last.contains("? keys"),
+        "the builder's keys and help: {last:?}"
+    );
+    // In a picker, ? narrows: help is F1.
+    send_key(&mut app, KeyCode::Char(' '));
+    let picking = draw_app(&mut app, (140, 30));
+    let last = picking.last().unwrap();
+    assert!(
+        last.contains("Choose") && last.contains("F1 keys"),
+        "{last:?}"
+    );
+    send_key(&mut app, KeyCode::Esc);
 
     let narrow = draw_app(&mut app, (72, 34));
     assert!(narrow[0].contains("Pivot & Melt"), "{}", narrow.join("\n"));

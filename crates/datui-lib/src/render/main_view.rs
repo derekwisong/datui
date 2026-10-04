@@ -99,6 +99,10 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
             if app.pivot_computing() || app.finding() || app.view_applying() {
                 return vec![Hint::new("Esc", "Stop")];
             }
+            // The builder is a takeover with no footer of its own.
+            if app.input_mode == crate::InputMode::PivotMelt && app.pivot_melt_modal.active {
+                return crate::widgets::pivot_melt::hints(&app.pivot_melt_modal);
+            }
             if app.input_mode != crate::InputMode::Normal
                 || app.sort_filter_modal.active
                 || app.view_modal.active
@@ -220,7 +224,11 @@ pub fn help_key(app: &crate::App, content: MainViewContent) -> Option<&'static s
         return None;
     }
     let types = match content {
-        MainViewContent::Datatable => app.input_mode == crate::InputMode::Editing,
+        MainViewContent::Datatable => {
+            app.input_mode == crate::InputMode::Editing
+                || (app.input_mode == crate::InputMode::PivotMelt
+                    && crate::widgets::pivot_melt::question_types(&app.pivot_melt_modal))
+        }
         // The Documentation view takes every key but F1.
         MainViewContent::Home => {
             !app.home.filter.is_empty() || app.home.path_input_active || app.documentation.is_open()

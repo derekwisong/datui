@@ -10,8 +10,9 @@ use crate::pivot_melt_modal::{
     PreviewFrame, ReshapePreview,
 };
 use crate::render::context::RenderContext;
-use crate::widgets::ui::{FormRow, FormValue, HintBar, Picker, SectionRule, Surface};
-use datui_cli::keys::{Context, lookup};
+use crate::render::footer::{Hint, registry_hint_in};
+use crate::widgets::ui::{FormRow, FormValue, Picker, SectionRule, Surface};
+use datui_cli::keys::Context;
 use polars::prelude::{AnyValue, DataFrame};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -53,49 +54,42 @@ fn row_label(focus: PivotMeltFocus) -> &'static str {
     }
 }
 
-/// A hint's label, from the key registry's entry for `keys` on this screen.
-fn label(group: &str, keys: &str) -> &'static str {
-    lookup(Context::PivotMelt, Some(group), keys).map_or("", |k| k.label)
-}
-
-/// The footer: what the keys do right now, editing a row through the Picker or
-/// walking and applying the form. Labels come from the key registry.
-fn footer<'a>(modal: &PivotMeltModal, ctx: &RenderContext) -> HintBar<'a> {
-    let (form, picker) = (|keys| label("Form", keys), |keys| label("Picker", keys));
-    let bar = HintBar::from_ctx(ctx);
+/// The builder's keys for the status footer, the two or three that act right now:
+/// editing a row through the Picker, or walking and applying the form. Labels come
+/// from the key registry.
+pub fn hints(modal: &PivotMeltModal) -> Vec<Hint> {
+    let form = |keys| registry_hint_in(Context::PivotMelt, Some("Form"), keys);
+    let picker = |keys| registry_hint_in(Context::PivotMelt, Some("Picker"), keys);
     match &modal.picker {
-        Some(_) if modal.is_multi_row(modal.focus) => bar
-            .hint_weighted("Space", picker("Space"), 3)
-            .hint_weighted("Enter", picker("Enter"), 2)
-            .hint_weighted("type", picker("(type)"), 1)
-            .hint_weighted("Esc", picker("Esc"), 4),
-        Some(_) => bar
-            .hint_weighted("Enter", picker("Enter"), 3)
-            .hint_weighted("type", picker("(type)"), 1)
-            .hint_weighted("Esc", picker("Esc"), 4),
-        None if modal.is_picker_row(modal.focus) => bar
-            .hint_weighted("Enter", form("Enter"), 3)
-            .hint_weighted("Space", form("Space"), 2)
-            .hint_weighted("Tab", form("Tab / Shift+Tab (↑ / ↓)"), 1)
-            .hint_weighted("Esc", form("Esc"), 4),
-        None if modal.focus == PivotMeltFocus::TabBar || modal.is_choice_row(modal.focus) => bar
-            .hint_weighted("Enter", form("Enter"), 3)
-            .hint_weighted(crate::glyphs::get().updown_lr, form("← / →"), 2)
-            .hint_weighted("Tab", form("Tab / Shift+Tab (↑ / ↓)"), 1)
-            .hint_weighted("Esc", form("Esc"), 4),
-        None => bar
-            .hint_weighted("Enter", form("Enter"), 3)
-            .hint_weighted("Tab", form("Tab / Shift+Tab (↑ / ↓)"), 1)
-            .hint_weighted("Esc", form("Esc"), 4),
+        Some(_) if modal.is_multi_row(modal.focus) => {
+            vec![picker("Space"), picker("Enter"), picker("Esc")]
+        }
+        Some(_) => vec![picker("Enter"), picker("Esc")],
+        None if modal.is_picker_row(modal.focus) => {
+            vec![form("Enter"), form("Space"), form("Esc")]
+        }
+        None if modal.focus == PivotMeltFocus::TabBar || modal.is_choice_row(modal.focus) => {
+            let change = form("← / →");
+            vec![
+                form("Enter"),
+                Hint::new(crate::glyphs::get().updown_lr, change.label),
+                form("Esc"),
+            ]
+        }
+        None => vec![form("Enter"), form("Esc")],
     }
 }
 
-/// Draw the builder over `area`, the whole screen above the control bar.
+/// Whether `?` types in the builder right now (a picker narrows, a text field
+/// types), so help is F1.
+pub fn question_types(modal: &PivotMeltModal) -> bool {
+    modal.picker.is_some() || modal.is_text_row(modal.focus)
+}
+
+/// Draw the builder over `area`, the whole screen above the status footer, which
+/// carries its keys ([`hints`]).
 pub fn render(area: Rect, buf: &mut Buffer, modal: &mut PivotMeltModal, ctx: &RenderContext) {
-    let footer = footer(modal, ctx);
-    let content = Surface::new("Pivot & Melt")
-        .footer(&footer)
-        .render(area, buf, ctx);
+    let content = Surface::new("Pivot & Melt").render(area, buf, ctx);
     if content.height < 4 || content.width < 10 {
         return;
     }
@@ -740,7 +734,7 @@ mod tests {
             );
         }
         let spec = format!("dept {} job {} avg(salary)", g.times, g.arrow_right);
-        assert!(rows[20].contains(&spec), "the spec line: {:?}", rows[20]);
+        assert!(rows[22].contains(&spec), "the spec line: {:?}", rows[22]);
 
         // The preview starts past the form.
         let at = 2 + FORM_WIDTH as usize + GAP as usize;
@@ -756,11 +750,6 @@ mod tests {
         assert!(rows[7].contains("str") && rows[7].contains("f64"));
         assert!(rows[8].contains('a') && rows[8].contains("1.0") && rows[8].contains("2.0"));
         assert!(rows[9].contains('b') && rows[9].contains("3.0") && rows[9].contains("4.0"));
-        assert!(
-            rows[22].contains("Enter") && rows[22].contains("Apply"),
-            "the footer chips: {:?}",
-            rows[22]
-        );
     }
 
     /// Narrow: the form on top, the preview under it, nothing cut off the side.
@@ -840,9 +829,9 @@ mod tests {
         let rows = render_rows(&mut m, 120, 24);
         assert!(rows[3].contains("none"), "empty index: {:?}", rows[3]);
         assert!(
-            rows[20].contains("Select at least one index column."),
+            rows[22].contains("Select at least one index column."),
             "the gap is named: {:?}",
-            rows[20]
+            rows[22]
         );
         let result = rows[3].find("Result").expect("the result line");
         assert!(
@@ -870,10 +859,14 @@ mod tests {
             body.contains(&format!("{} region", g.checkbox_off)),
             "{body}"
         );
-        assert!(
-            rows[22].contains("Space") && rows[22].contains("Toggle"),
-            "the footer says Space toggles: {:?}",
-            rows[22]
+        let keys: Vec<(String, String)> = hints(&m)
+            .into_iter()
+            .map(|h| (h.key.into_owned(), h.label.into_owned()))
+            .collect();
+        assert_eq!(
+            keys[0],
+            ("Space".to_string(), "Toggle".to_string()),
+            "the footer says Space toggles: {keys:?}"
         );
     }
 
@@ -889,22 +882,34 @@ mod tests {
         assert!(rows[7].contains("Value name:") && rows[7].contains("value"));
     }
 
-    /// Every hint the footer shows has its label in the key registry.
+    /// Every hint the footer shows has its label in the key registry, at every
+    /// kind of field and in either picker; never more than three.
     #[test]
-    fn every_footer_label_is_in_the_registry() {
-        for (group, keys) in [
-            ("Form", "Enter"),
-            ("Form", "Space"),
-            ("Form", "Tab / Shift+Tab (↑ / ↓)"),
-            ("Form", "← / →"),
-            ("Form", "Esc"),
-            ("Picker", "Enter"),
-            ("Picker", "Space"),
-            ("Picker", "(type)"),
-            ("Picker", "Esc"),
+    fn every_footer_hint_has_a_registry_label() {
+        let mut m = modal_with_columns(&["id", "q1", "q2"]);
+        let check = |m: &PivotMeltModal| {
+            let keys = hints(m);
+            assert!((2..=3).contains(&keys.len()), "{:?}", m.focus);
+            for hint in keys {
+                assert!(!hint.label.is_empty(), "{:?} {}", m.focus, hint.key);
+            }
+        };
+        for focus in [
+            PivotMeltFocus::TabBar,
+            PivotMeltFocus::PivotIndex,
+            PivotMeltFocus::PivotColumn,
+            PivotMeltFocus::PivotAggregation,
         ] {
-            assert!(!label(group, keys).is_empty(), "{group} {keys}");
+            m.focus = focus;
+            check(&m);
+            m.open_picker();
+            check(&m);
+            m.picker = None;
         }
+        m.switch_tab();
+        m.focus = PivotMeltFocus::MeltVariable;
+        check(&m);
+        assert!(question_types(&m), "a text field types ?");
     }
 
     #[test]

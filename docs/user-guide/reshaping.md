@@ -53,11 +53,13 @@ columns:
 │                                                  1881  2034         ∅      51                    │
 │                                                  1882  2303         ∅      52                    │
 │                                                  1883  2367         ∅      46                    │
-│ year × name → last(n)                            1884  2587         ∅      54                    │
-│                                                                                                  │
-│  Enter  Apply   Space  Open   Tab  Next   Esc  Close                                             │
+│                                                  1884  2587         ∅      54                    │
+│ year × name → last(n)                            1885  2728         ∅      59                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
+
+The status footer under it reads `<dataset> › pivot & melt` and names the keys
+that act on the focused field, here `Enter Apply  Space Open  Esc Close`.
 
 Press <kbd>Enter</kbd> to apply.
 

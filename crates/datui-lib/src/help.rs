@@ -39,6 +39,9 @@ pub struct Help {
     pub(crate) selected: usize,
     /// The first line drawn; the render keeps the selection in view and writes it back.
     pub(crate) scroll: usize,
+    /// Whether a text field under the help takes typed characters: a plain character
+    /// pressed there would type, so those lines do not run.
+    typing: bool,
 }
 
 /// What a key typed at the help did.
@@ -62,11 +65,24 @@ impl Help {
         self.context
     }
 
-    pub fn open(&mut self, context: Context) {
+    /// Open on `context`'s keys; `typing` when a text field there takes characters.
+    pub fn open(&mut self, context: Context, typing: bool) {
         *self = Help {
             context: Some(context),
+            typing,
             ..Help::default()
         };
+    }
+
+    /// The key Enter presses for `key` here: none for a plain character while a text
+    /// field would type it.
+    pub fn runnable(&self, key: &Key) -> Option<KeyEvent> {
+        let event = key_event(key.action()?);
+        let plain_char = matches!(event.code, KeyCode::Char(_))
+            && !event
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        (!(self.typing && plain_char)).then_some(event)
     }
 
     pub fn close(&mut self) {
@@ -152,11 +168,11 @@ impl Help {
 
     /// Enter: close, and press the selected line's key if it has one.
     fn run(&mut self) -> HelpKey {
-        let Some(chord) = self.selected_key().and_then(Key::action) else {
+        let Some(event) = self.selected_key().and_then(|k| self.runnable(k)) else {
             return HelpKey::Stay;
         };
         self.close();
-        HelpKey::Press(key_event(chord))
+        HelpKey::Press(event)
     }
 
     /// A key typed while the help is open.
@@ -256,6 +272,35 @@ pub fn key_event(chord: Chord) -> KeyEvent {
 mod tests {
     use super::*;
 
+    impl Help {
+        fn open_for_test(&mut self, context: Context) {
+            self.open(context, false);
+        }
+    }
+
+    /// Under a text field, a plain character does not run: it would type. A chord
+    /// still does.
+    #[test]
+    fn a_text_field_keeps_its_characters() {
+        let mut help = Help::default();
+        help.open(Context::Find, true);
+        press(&mut help, KeyCode::Char('/'));
+        type_text(&mut help, "regex on");
+        assert_eq!(
+            press(&mut help, KeyCode::Enter),
+            HelpKey::Press(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL))
+        );
+        help.open(Context::Export, true);
+        let space = keys::screen(Context::Export).groups[0]
+            .keys
+            .iter()
+            .find(|k| k.keys == "Space")
+            .unwrap();
+        assert_eq!(help.runnable(space), None);
+        help.open(Context::Export, false);
+        assert!(help.runnable(space).is_some());
+    }
+
     fn press(help: &mut Help, code: KeyCode) -> HelpKey {
         help.key(&KeyEvent::new(code, KeyModifiers::NONE))
     }
@@ -270,7 +315,7 @@ mod tests {
     fn every_screen_ends_with_the_keys_of_every_screen() {
         for screen in keys::SCREENS {
             let mut help = Help::default();
-            help.open(screen.context);
+            help.open_for_test(screen.context);
             let blocks = help.blocks();
             assert_eq!(blocks.last().map(|b| b.name), Some(keys::GLOBAL.name));
             assert!(blocks.len() > 1, "{}", screen.title);
@@ -280,16 +325,16 @@ mod tests {
     #[test]
     fn the_query_screen_carries_the_q_summary() {
         let mut help = Help::default();
-        help.open(Context::Query);
+        help.open_for_test(Context::Query);
         assert!(help.blocks().iter().any(|b| b.name == "q syntax"));
-        help.open(Context::Table);
+        help.open_for_test(Context::Table);
         assert!(!help.blocks().iter().any(|b| b.name == "q syntax"));
     }
 
     #[test]
     fn slash_narrows_by_key_and_description() {
         let mut help = Help::default();
-        help.open(Context::Table);
+        help.open_for_test(Context::Table);
         let all = help.shown_keys().len();
         press(&mut help, KeyCode::Char('/'));
         type_text(&mut help, "value counts");
@@ -311,7 +356,7 @@ mod tests {
     #[test]
     fn a_filter_that_matches_nothing_shows_nothing() {
         let mut help = Help::default();
-        help.open(Context::Table);
+        help.open_for_test(Context::Table);
         press(&mut help, KeyCode::Char('/'));
         type_text(&mut help, "zzzzzz");
         assert!(help.blocks().is_empty());
@@ -322,7 +367,7 @@ mod tests {
     #[test]
     fn enter_closes_and_presses_the_selected_key() {
         let mut help = Help::default();
-        help.open(Context::Table);
+        help.open_for_test(Context::Table);
         press(&mut help, KeyCode::Char('/'));
         type_text(&mut help, "value counts");
         let pressed = press(&mut help, KeyCode::Enter);
@@ -336,7 +381,7 @@ mod tests {
     #[test]
     fn arrows_walk_the_keys_and_stop_at_the_ends() {
         let mut help = Help::default();
-        help.open(Context::GoToRow);
+        help.open_for_test(Context::GoToRow);
         let count = help.shown_keys().len();
         press(&mut help, KeyCode::Up);
         assert_eq!(help.selected, 0);
@@ -354,7 +399,7 @@ mod tests {
     #[test]
     fn enter_on_a_line_with_no_key_stays() {
         let mut help = Help::default();
-        help.open(Context::GoToRow);
+        help.open_for_test(Context::GoToRow);
         assert_eq!(help.selected_key().map(|k| k.keys), Some("(digits)"));
         assert_eq!(press(&mut help, KeyCode::Enter), HelpKey::Stay);
         assert!(help.is_open());

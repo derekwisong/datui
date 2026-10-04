@@ -32,6 +32,9 @@ enum Drawn {
         key: Option<String>,
         text: String,
         key_width: usize,
+        /// Whether Enter presses it here; a key that would type into a text field
+        /// is dimmed.
+        runs: bool,
     },
     Note(String, bool),
 }
@@ -58,8 +61,12 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
                 lines.push(std::mem::take(&mut line));
                 continue;
             }
-            // A word longer than the line: cut it.
-            let head = take_columns(&word, width).to_string();
+            // A word longer than the line: cut it, a character at least, so a wide
+            // character on a one-column line still moves on.
+            let mut head = take_columns(&word, width).to_string();
+            if head.is_empty() {
+                head = word.chars().next().map(String::from).unwrap_or_default();
+            }
             word = word[head.len()..].to_string();
             lines.push(head);
             if word.is_empty() {
@@ -75,7 +82,7 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 
 /// The lines of `blocks` in a column `width` wide; `first` is the index of the first
 /// key among those shown.
-fn lay_out(blocks: &[Block], width: usize, first: usize) -> Vec<Drawn> {
+fn lay_out(help: &Help, blocks: &[Block], width: usize, first: usize) -> Vec<Drawn> {
     let ascii = |s: &str| asciify_instructions(s).into_owned();
     let key_width = blocks
         .iter()
@@ -98,6 +105,7 @@ fn lay_out(blocks: &[Block], width: usize, first: usize) -> Vec<Drawn> {
             match line {
                 Line::Key(key) => {
                     let keys = ascii(key.keys);
+                    let runs = help.runnable(key).is_some();
                     // Past the rail, the key column and two spaces.
                     let room = width.saturating_sub(1 + key_width + 2);
                     let mut text = wrap(&ascii(key.line), room.max(8)).into_iter();
@@ -108,6 +116,7 @@ fn lay_out(blocks: &[Block], width: usize, first: usize) -> Vec<Drawn> {
                             key: Some(keys),
                             text: String::new(),
                             key_width,
+                            runs,
                         });
                     } else {
                         out.push(Drawn::Key {
@@ -115,6 +124,7 @@ fn lay_out(blocks: &[Block], width: usize, first: usize) -> Vec<Drawn> {
                             key: Some(keys),
                             text: text.next().unwrap_or_default(),
                             key_width,
+                            runs,
                         });
                     }
                     for rest in text {
@@ -123,6 +133,7 @@ fn lay_out(blocks: &[Block], width: usize, first: usize) -> Vec<Drawn> {
                             key: None,
                             text: rest,
                             key_width,
+                            runs,
                         });
                     }
                     index += 1;
@@ -163,14 +174,14 @@ fn key_count(blocks: &[Block]) -> usize {
 
 /// Split `blocks` into columns of `width`: two when `two`, as even as the order
 /// allows.
-fn columns(blocks: &[Block], width: usize, two: bool) -> Vec<Vec<Drawn>> {
+fn columns(help: &Help, blocks: &[Block], width: usize, two: bool) -> Vec<Vec<Drawn>> {
     if !two || blocks.len() < 2 {
-        return vec![lay_out(blocks, width, 0)];
+        return vec![lay_out(help, blocks, width, 0)];
     }
     let mut best: Option<(usize, Vec<Vec<Drawn>>)> = None;
     for split in 1..blocks.len() {
-        let left = lay_out(&blocks[..split], width, 0);
-        let right = lay_out(&blocks[split..], width, key_count(&blocks[..split]));
+        let left = lay_out(help, &blocks[..split], width, 0);
+        let right = lay_out(help, &blocks[split..], width, key_count(&blocks[..split]));
         let height = left.len().max(right.len());
         if best.as_ref().is_none_or(|(h, _)| height < *h) {
             best = Some((height, vec![left, right]));
@@ -220,7 +231,7 @@ pub fn render_help(area: Rect, buf: &mut Buffer, help: &mut Help, ctx: &RenderCo
     } else {
         inner_width
     };
-    let cols = columns(&blocks, column_width as usize, two);
+    let cols = columns(help, &blocks, column_width as usize, two);
     let filter_line = u16::from(help.filtering || !help.filter.is_empty());
     let body_height = cols.iter().map(Vec::len).max().unwrap_or(0) as u16;
     // The filter line, the body, a blank, and the reference.
@@ -383,6 +394,7 @@ fn draw(
             key,
             text,
             key_width,
+            runs,
         } => {
             let is_selected = *index == selected;
             let base = if is_selected {
@@ -400,7 +412,7 @@ fn draw(
                     x,
                     line.y,
                     take_columns(key, width.saturating_sub(1)),
-                    base.fg(ctx.accent),
+                    base.fg(if *runs { ctx.accent } else { ctx.dimmed }),
                 );
             }
             x += (*key_width + 2) as u16;
@@ -448,6 +460,8 @@ mod tests {
         assert_eq!(wrap("the quick brown fox", 9), ["the quick", "brown fox"]);
         assert_eq!(wrap("abcdefghij", 4), ["abcd", "efgh", "ij"]);
         assert_eq!(wrap("", 4), [""]);
+        // A wide character on a one-column line still moves on.
+        assert_eq!(wrap("世界", 1), ["世", "界"]);
     }
 
     /// On a wide terminal the table's keys sit in two columns and fit without
@@ -455,7 +469,7 @@ mod tests {
     #[test]
     fn the_table_help_fits_two_columns_at_160_by_50() {
         let mut help = Help::default();
-        help.open(Context::Table);
+        help.open(Context::Table, false);
         let rows = screen(&mut help, 160, 50);
         let text = rows.join("\n");
         assert!(text.contains("Table Help"), "{text}");
@@ -482,7 +496,7 @@ mod tests {
     #[test]
     fn at_80_by_24_the_selection_stays_in_view() {
         let mut help = Help::default();
-        help.open(Context::Table);
+        help.open(Context::Table, false);
         help.selected = help.shown_keys().len() - 1;
         let rows = screen(&mut help, 80, 24);
         let text = rows.join("\n");
@@ -496,7 +510,7 @@ mod tests {
     #[test]
     fn the_filter_is_shown() {
         let mut help = Help::default();
-        help.open(Context::Table);
+        help.open(Context::Table, false);
         help.filtering = true;
         help.filter = "zzz".into();
         let text = screen(&mut help, 100, 30).join("\n");
@@ -509,7 +523,7 @@ mod tests {
     fn every_screen_draws_small() {
         for s in datui_cli::keys::SCREENS {
             let mut help = Help::default();
-            help.open(s.context);
+            help.open(s.context, false);
             let text = screen(&mut help, 60, 20).join("\n");
             assert!(text.contains("Help"), "{}:\n{text}", s.title);
         }

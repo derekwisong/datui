@@ -277,7 +277,8 @@ pub const GLOBAL: Group = Group {
     name: "Everywhere",
     keys: &[
         k("? / F1", "Help", "This screen's keys (F1 in text fields)")
-            .more("This screen's keys. In a text field ? types, and F1 opens the help"),
+            .more("This screen's keys. In a text field ? types, and F1 opens the help")
+            .run("F1"),
         k("Ctrl+O", "Home", "The home screen; abandons a load"),
         k(
             "Ctrl+Q / Ctrl+C",
@@ -587,12 +588,13 @@ pub const SCREENS: &[Screen] = &[
                 ],
             },
             Group {
+                // Keys of the table, not the prompt: Enter here would type them.
                 name: "At the table",
                 keys: &[
                     k("n / N", "Next, previous", "Next or previous match")
-                        .more("Next / previous match from the cursor's cell. Past the last match the find comes round to the first, and the bar says so. Each one typed while a find reads runs in turn; Esc stops them all"),
-                    k("f", "Find again", "Find again, the last pattern ready to edit"),
-                    k("Esc", "Clear", "Clear the find (or stop one still reading)"),
+                        .more("Next / previous match from the cursor's cell. Past the last match the find comes round to the first, and the bar says so. Each one typed while a find reads runs in turn; Esc stops them all").no_run(),
+                    k("f", "Find again", "Find again, the last pattern ready to edit").no_run(),
+                    k("Esc", "Clear", "Clear the find (or stop one still reading)").no_run(),
                 ],
             },
         ],

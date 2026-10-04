@@ -367,6 +367,22 @@ impl EventPump {
                     return Ok(Drained::NotFound(path));
                 }
                 // Offered once what arrived behind it is handled ([`Self::typed`]).
+                // A key the app pressed for the user (Enter on a help line): offered
+                // next, as typed, so `classify` holds, converts or drops it as it
+                // would the key itself.
+                Ok((AppEvent::Press(key), hold)) => {
+                    if hold.is_some() {
+                        drop(hold);
+                        self.app.let_waiting_errands_in();
+                    }
+                    if self.typed.is_empty() {
+                        self.since_key = 0;
+                    }
+                    self.typed.push_front(Input::Key(key));
+                    if self.early > 0 {
+                        self.early += 1;
+                    }
+                }
                 Ok((AppEvent::Terminal(Event::Key(key)), _)) => {
                     if self.typed.is_empty() {
                         self.since_key = 0;
@@ -3187,7 +3203,7 @@ mod tests {
     }
 
     /// Draw a frame and read what it asks for, as `run()` does after each update, until
-    /// nothing more is asked: the rows a page down needs, the home screen's listing.
+    /// nothing more is asked: the rows a page down needs.
     fn paint(pump: &mut EventPump) {
         for _ in 0..200 {
             frame(&mut pump.app);
@@ -3202,14 +3218,8 @@ mod tests {
                 pump.app.spawn_async_collect(App::LOADING_BUFFER);
             }
             settle(pump);
-            let home = &pump.app.home;
-            let home_waits = pump.app.input_mode == InputMode::Home
-                && (home.listing_in_flight || home.sections_waiting());
-            if !collect && !home_waits {
+            if !collect {
                 return;
-            }
-            if home_waits {
-                std::thread::sleep(Duration::from_millis(20));
             }
         }
     }
@@ -3255,11 +3265,9 @@ mod tests {
             (Context::Export, vec![ch('e')], &["Form"]),
             (Context::Copy, vec![ch('y')], &["Form"]),
             (Context::Views, vec![ch('v')], &["List"]),
-            (
-                Context::Home,
-                vec![ctrl('o')],
-                &["Explore", "Go", "Find", "Manage"],
-            ),
+            // Not the home screen: what it lists, and so what a key there changes, is
+            // the machine's (the working directory, the desktop's recent places).
+            // home_test covers its keys.
         ];
         // What needs a state the fixture does not have, or would leave the test.
         let exempt: &[(Context, &str)] = &[
@@ -3401,6 +3409,82 @@ mod tests {
             InputMode::SortFilter,
             "replayed once idle"
         );
+    }
+
+    /// Type `text` into the open help's filter, then press Enter.
+    fn run_from_help(p: &mut EventPump, filter: &str) {
+        p.terminal_key(plain(KeyCode::Char('/'))).unwrap();
+        for c in filter.chars() {
+            p.terminal_key(plain(KeyCode::Char(c))).unwrap();
+        }
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+    }
+
+    /// Over a text field, a help line whose key is a plain character does not run:
+    /// pressed, it would type. The help's own key presses F1, never `?`.
+    #[test]
+    fn enter_in_the_help_never_types_into_a_field() {
+        let (mut p, _dir) = long_wide_pump();
+        p.terminal_key(plain(KeyCode::Char('f'))).unwrap();
+        p.terminal_key(plain(KeyCode::F(1))).unwrap();
+        run_from_help(&mut p, "next or previous");
+        settle(&mut p);
+        assert!(
+            p.app.help_visible(),
+            "n / N does not run from the find prompt"
+        );
+        p.terminal_key(plain(KeyCode::Esc)).unwrap();
+        p.terminal_key(plain(KeyCode::Esc)).unwrap();
+        assert!(!p.app.help_visible());
+        assert_eq!(p.app.find.input.value(), "", "nothing was typed");
+
+        p.terminal_key(plain(KeyCode::Esc)).unwrap();
+        p.terminal_key(plain(KeyCode::Char('/'))).unwrap();
+        p.terminal_key(plain(KeyCode::F(1))).unwrap();
+        run_from_help(&mut p, "screen's keys");
+        settle(&mut p);
+        assert_eq!(p.app.query_input.value(), "", "? was not typed");
+        assert!(p.app.help_visible(), "F1 opened the help again");
+    }
+
+    /// A question that arrives under the help takes the keys, so the help goes: Enter
+    /// never answers it unseen. Nor does F1 open the help over one.
+    #[test]
+    fn a_question_under_the_help_closes_it() {
+        let (mut p, _dir) = long_wide_pump();
+        p.terminal_key(plain(KeyCode::Char('?'))).unwrap();
+        assert!(p.app.help_visible());
+        p.app.confirmation_modal.active = true;
+        rendered(&mut p.app);
+        assert!(!p.app.help_visible());
+        p.terminal_key(plain(KeyCode::F(1))).unwrap();
+        assert!(!p.app.help_visible(), "no help over the question");
+    }
+
+    /// While busy, the help still closes at once, at a load's screen too.
+    #[test]
+    fn the_help_closes_while_busy() {
+        for key in [KeyCode::Esc, KeyCode::F(1), KeyCode::Char('?')] {
+            let (mut p, _dir) = long_wide_pump();
+            p.terminal_key(plain(KeyCode::Char('?'))).unwrap();
+            p.app.busy = true;
+            assert!(p.terminal_key(plain(key)).unwrap(), "{key:?} acted");
+            assert!(!p.app.help_visible(), "{key:?} closed the help");
+            assert!(held(&p).is_empty());
+        }
+    }
+
+    /// The key Enter presses goes through `classify` as a typed one: a busy Enter
+    /// that would inspect waits as Space.
+    #[test]
+    fn the_pressed_key_is_classified_as_typed() {
+        let (mut p, _dir) = long_wide_pump();
+        p.terminal_key(plain(KeyCode::Char('?'))).unwrap();
+        run_from_help(&mut p, "or inspect");
+        p.app.busy = true;
+        p.drain().unwrap();
+        assert!(!p.app.help_visible());
+        assert_eq!(held(&p), [KeyCode::Char(' ')]);
     }
 
     /// A screen that changes under the help on its own takes the help with it: its

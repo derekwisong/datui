@@ -99,7 +99,7 @@ fn matches(criteria: &MatchCriteria) -> String {
 /// What `datui man` prints, and its exit code: the page list (`list`), every page
 /// written under `dir`, or one page. On a terminal (`terminal`) a page is shown with
 /// `man`, as `git help` does; where there is no `man` (Windows, a minimal container),
-/// as plain text, through `$PAGER` when one is set. For a pipe the page's roff is
+/// as plain text, through a pager ($PAGER, less, more). For a pipe the page's roff is
 /// printed, for `man -l -` or a file.
 pub fn man(
     page: Option<&str>,
@@ -151,21 +151,46 @@ pub fn man(
     (page.roff(), 0)
 }
 
-/// Page `text` through `$PAGER`. False when none is set or it cannot be run.
+/// Page `text` through the first pager that runs. False when none does.
 fn show_with_pager(text: &str) -> bool {
+    pagers()
+        .into_iter()
+        .any(|mut pager| page_through(&mut pager, text))
+}
+
+/// The pagers to try, in order: `$PAGER`, run by the shell as git runs it so quoted
+/// paths and arguments work, then `less` and `more`.
+fn pagers() -> Vec<std::process::Command> {
+    use std::process::Command;
+    let mut out = Vec::new();
+    if let Some(pager) = std::env::var("PAGER").ok().filter(|p| !p.trim().is_empty()) {
+        if cfg!(unix) {
+            let mut sh = Command::new("sh");
+            sh.arg("-c").arg(&pager);
+            out.push(sh);
+        } else {
+            let mut words = pager.split_whitespace();
+            if let Some(program) = words.next() {
+                let mut command = Command::new(program);
+                command.args(words);
+                out.push(command);
+            }
+        }
+    }
+    let mut less = Command::new("less");
+    // As git does: quit when the page fits, keep the screen, pass colors.
+    if std::env::var_os("LESS").is_none() {
+        less.env("LESS", "FRX");
+    }
+    out.push(less);
+    out.push(Command::new("more"));
+    out
+}
+
+/// Run `pager` with `text` on its input. False when it cannot be started.
+fn page_through(pager: &mut std::process::Command, text: &str) -> bool {
     use std::io::Write;
-    let Some(pager) = std::env::var("PAGER").ok().filter(|p| !p.trim().is_empty()) else {
-        return false;
-    };
-    let mut words = pager.split_whitespace();
-    let Some(program) = words.next() else {
-        return false;
-    };
-    let Ok(mut child) = std::process::Command::new(program)
-        .args(words)
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    else {
+    let Ok(mut child) = pager.stdin(std::process::Stdio::piped()).spawn() else {
         return false;
     };
     if let Some(mut stdin) = child.stdin.take() {

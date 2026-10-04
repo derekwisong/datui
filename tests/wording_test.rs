@@ -402,6 +402,18 @@ fn texts() -> Vec<Text> {
         let name = format!("datui {} --help", sub.get_name());
         texts.push(generated(&name, &sub.render_long_help().to_string()));
     }
+    // The in-app help: every key's label and line, and the q summary.
+    let mut help = String::new();
+    for (_, group, key) in datui_cli::keys::entries() {
+        help.push_str(&format!("{}\n{}\n{}\n", group.name, key.label, key.line));
+    }
+    for key in datui_cli::keys::HELP.keys {
+        help.push_str(&format!("{}\n{}\n", key.label, key.line));
+    }
+    for (example, meaning) in datui_cli::keys::Q_SUMMARY {
+        help.push_str(&format!("{example}\n{meaning}\n"));
+    }
+    texts.push(generated("the in-app help", &help));
     for page in datui_cli::man::PAGES {
         texts.push(generated(&page.path(), &page.roff()));
     }

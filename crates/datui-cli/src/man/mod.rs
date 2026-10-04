@@ -618,7 +618,7 @@ fn render_command(page: &Page, read: Read, name: &str) -> String {
             "The script completes datui's options, commands and their values. Print it into the directory your shell loads completions from."
         }
         "man" => {
-            "With no option, prints the page, or shows it with man(1) when standard output is a terminal; where man(1) is missing, as plain text, through `$PAGER` when it is set. `--dir` writes every page, so `man datui` finds them; a package or the release archive installs them already. *PAGE* is a page's name with or without `datui-`, and `.5` or `.7` for the file and topic pages when a command shares the name."
+            "With no option, prints the page, or shows it with man(1) when standard output is a terminal; where man(1) is missing, as plain text through a pager: `$PAGER`, else less(1) or more(1). `--dir` writes every page, so `man datui` finds them; a package or the release archive installs them already. *PAGE* is a page's name with or without `datui-`, and `.5` or `.7` for the file and topic pages when a command shares the name."
         }
         _ => "",
     };

@@ -258,6 +258,10 @@ pub mod tests;
 
 pub enum AppEvent {
     Key(KeyEvent),
+    /// A key to take as if typed: what Enter on a help line presses. The event pump
+    /// offers it as the next typed key, through `classify`, so it is held, converted or
+    /// dropped as a typed key would be; outside the pump it is a `Key`.
+    Press(KeyEvent),
     /// Read from the terminal by [`terminal_input::TerminalInput`]: a key press or a
     /// resize. [`event_pump::EventPump`] takes it off the channel and decides what a
     /// key does while the app is busy; the app itself only ever sees `Key`/`Resize`.
@@ -3792,7 +3796,11 @@ impl App {
             && key.code == KeyCode::Esc;
         let cancel_view = key.code == KeyCode::Esc && self.view_applying();
         let cancel_find = key.code == KeyCode::Esc && self.finding();
+        // The help reads nothing, so it can always be closed, a load's screen included.
+        let close_help = self.help.is_open()
+            && matches!(key.code, KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('?'));
         quit || home
+            || close_help
             || cancel_analysis
             || cancel_pivot
             || cancel_view
@@ -11006,21 +11014,28 @@ impl App {
     /// Open the help overlay on the keys of the screen it is opened at. No-op if it is
     /// already up.
     pub(crate) fn open_help_overlay(&mut self) {
-        if !self.help.is_open() {
-            let context = self.keys_context();
-            self.help.open(context);
+        // A question or an error under the help would take its keys unseen.
+        if self.help.is_open() || self.confirmation_modal.active || self.error_modal.active {
+            return;
         }
+        let context = self.keys_context();
+        // The home filter types too once something is typed into it.
+        let typing = self.text_field_focused()
+            || (self.input_mode == InputMode::Home
+                && (!self.home.filter.is_empty() || self.home.path_input_active));
+        self.help.open(context, typing);
     }
 
     /// Close the help when the screen under it changed on its own (a query that
     /// finished, a load that failed): its keys are for a screen that is gone, and
-    /// Enter would press one of them on another.
+    /// Enter would press one of them on another. A question or an error that arrived
+    /// under it takes the keys, so it closes for those too.
     fn close_help_left_behind(&mut self) {
-        if self
+        let left = self
             .help
             .context()
-            .is_some_and(|shown| shown != self.keys_context())
-        {
+            .is_some_and(|shown| shown != self.keys_context());
+        if left || self.confirmation_modal.active || self.error_modal.active {
             self.help.close();
         }
     }
@@ -11366,7 +11381,7 @@ impl App {
         self.close_help_left_behind();
         if self.help.is_open() {
             return match self.help.key(event) {
-                help::HelpKey::Press(key) => Some(AppEvent::Key(key)),
+                help::HelpKey::Press(key) => Some(AppEvent::Press(key)),
                 help::HelpKey::Stay | help::HelpKey::Closed => None,
             };
         }
@@ -12030,6 +12045,10 @@ impl App {
     /// app is idle. The main loop ([`event_pump::EventPump`]) does exactly that;
     /// [`App::event`] is the same call for callers that have nowhere to hold a key.
     pub fn handle(&mut self, event: &AppEvent) -> EventOutcome {
+        // Without the pump to offer it as typed, a pressed key is a key.
+        if let AppEvent::Press(key) = event {
+            return self.handle(&AppEvent::Key(*key));
+        }
         if let AppEvent::Key(key) = event
             && self.is_busy()
             && !self.key_acts_while_busy(key)

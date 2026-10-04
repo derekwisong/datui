@@ -127,6 +127,10 @@ def lint() -> list[str]:
                     continue
                 path, _, frag = target.partition("#")
                 resolved = posixpath.normpath(posixpath.join(posixpath.dirname(rel), path))
+                if resolved.startswith("demos/"):
+                    continue  # the docs build copies demos/ into each book
+                if resolved == ".." and path.endswith("/"):
+                    continue  # the landing page, one level above every book
                 if resolved.startswith("..") or "plans/" in resolved:
                     problems.append(f"docs/{rel}:{n}: `{target}` is outside the book")
                     continue

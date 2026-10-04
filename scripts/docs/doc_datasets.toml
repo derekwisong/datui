@@ -23,3 +23,20 @@ url = "https://raw.githubusercontent.com/rfordatascience/tidytuesday/main/data/2
 
 [taxis]
 url = "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2025-01.parquet"
+
+# Opened where they are, as the docs open them: the doc_queries test opens the URL
+# itself, in the nightly job. Nothing is downloaded.
+
+[noaa2024]
+open = "s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/"
+
+[noaa2024tmax]
+open = "s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/"
+
+[btcblocks]
+open = "s3://aws-public-blockchain/v1.0/btc/blocks/"
+
+# Ships with the docs: the VCD dump signals-and-logs.md writes.
+
+[counter]
+path = "docs/examples/counter.vcd"

@@ -232,8 +232,12 @@ def lint(blocks: list[Block], problems: list[str]) -> None:
             problems.append(f"{b.where()}: a {b.lang} block names its dataset=NAME, or is a template")
         if "dataset" in b.values:
             names = tomllib.loads(DATASETS.read_text(encoding="utf-8"))
-            if b.values["dataset"] not in names:
+            entry = names.get(b.values["dataset"])
+            if entry is None:
                 problems.append(f"{b.where()}: dataset `{b.values['dataset']}` is not in {DATASETS.name}")
+            elif ("url" in entry or "open" in entry) != ("network" in b.attrs):
+                want = "needs `network`: its dataset is public data" if "path" not in entry else "is local data: drop `network`"
+                problems.append(f"{b.where()}: {want}")
         if b.lang == "toml" and b.kind == "runnable" and "spec" not in b.attrs:
             try:
                 tomllib.loads(b.body)
@@ -292,7 +296,7 @@ def run_block(b: Block, work: Path, real: str | None, timeout: float) -> str | N
         script = work / "block.py"
         script.write_text(b.body, encoding="utf-8")
         env["DATUI_DOC_BIN"] = sys.executable
-        cmd = [sys.executable, str(SHIM), "--command", str(script)]
+        cmd = [sys.executable, str(SHIM), "--command", sys.executable, str(script)]
     else:
         return None
     try:

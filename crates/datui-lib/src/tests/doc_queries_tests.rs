@@ -145,6 +145,10 @@ fn dataset(name: &str, data: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = entry.get("path").and_then(toml::Value::as_str) {
         return Some(root().join(path));
     }
+    // Public data opened where it is, as a URL on the command line is.
+    if let Some(url) = entry.get("open").and_then(toml::Value::as_str) {
+        return data.map(|_| PathBuf::from(url));
+    }
     let url = entry.get("url").and_then(toml::Value::as_str)?;
     let ext = Path::new(url).extension()?.to_str()?;
     Some(data?.join(format!("{name}.{ext}")))

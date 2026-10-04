@@ -49,7 +49,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | Command | Does |
 |---------|------|
 | `datui formats` | List the format specs and dictionaries (FIX, DBC) on the search path: each one's name, what it matches, its file, and the copies it overrides |
-| `datui formats check SPEC [FILE]` | Check a format spec, a QuickFIX dictionary or a DBC file, by name or by file; with FILE, print its first decoded rows, or for a dictionary what it names in the log. Exits non-zero on an error |
+| `datui formats check SPEC [FILE]` | Check a format spec or a dictionary (QuickFIX XML, DBC or TOML), by name or by file; with FILE, print its first decoded rows, or what a dictionary names in the log. Exits non-zero on an error |
 | `datui config` | Write the default config file, list the files read, or list every key |
 | `datui config init ` | Write the default config file, every key commented out at its default |
 | `datui config path ` | Print the config files read, lowest precedence first |

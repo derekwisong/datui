@@ -464,11 +464,20 @@ datui config path
 .EE
 .RE
 .PP
-A config file in the current directory, and the values it sets.
+The values a config file in the current directory sets.
+.PP
+\fBconfig.toml\fR
 .PP
 .RS 4
 .EX
-printf '[display]\enrow_numbers = true\en' > config.toml && DATUI_CONFIG_DIR=. datui config keys
+[display]
+row_numbers = true
+.EE
+.RE
+.PP
+.RS 4
+.EX
+DATUI_CONFIG_DIR=. datui config keys
 .EE
 .RE
 .SH "SEE ALSO"

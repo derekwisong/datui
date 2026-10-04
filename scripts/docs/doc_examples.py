@@ -204,7 +204,13 @@ def example_blocks() -> list[Block]:
         if example["test"] in ("network", "interactive"):
             attrs.add(example["test"])
         values = {"expect": example["expect"]} if "expect" in example else {}
-        out.append(Block(ROOT / "crates/datui-cli/examples.toml", line, "bash", attrs, values, example["command"] + "\n", example["description"]))
+        where = ROOT / "crates/datui-cli/examples.toml"
+        # Its files, written into its directory before it runs, as a page's file blocks are.
+        files = [
+            Block(where, line, Path(f["name"]).suffix.lstrip(".") or "text", set(), {"file": f["name"]}, f["text"])
+            for f in example.get("files", [])
+        ]
+        out.append(Block(where, line, "bash", attrs, values, example["command"] + "\n", example["description"], files))
     return out
 
 

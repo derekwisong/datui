@@ -384,6 +384,11 @@ fn examples(out: &mut String, page: &Page) {
     out.push_str(".SH EXAMPLES\n");
     for example in examples {
         para(out, &format!("{}.", example.description));
+        // Each file it reads under its name, then the command.
+        for file in &example.files {
+            out.push_str(&format!(".PP\n{}\n", line(bold(&file.name))));
+            example_block(out, &file.text);
+        }
         example_block(out, &example.command);
     }
 }

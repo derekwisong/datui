@@ -98,6 +98,15 @@ pub struct Example {
     pub expect: Option<String>,
     /// The manpages that show it, as `NAME.SECTION`: `datui.1`, `datui-config.5`.
     pub pages: Vec<String>,
+    /// Files the command reads, written before it runs and shown above it.
+    pub files: Vec<ExampleFile>,
+}
+
+/// A file an [`Example`] reads: its name and its text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExampleFile {
+    pub name: String,
+    pub text: String,
 }
 
 /// The entries of [`EXAMPLES_TOML`], in order. Panics on a malformed entry, which
@@ -116,7 +125,7 @@ pub fn examples() -> Vec<Example> {
                 assert!(
                     matches!(
                         key.as_str(),
-                        "command" | "description" | "test" | "expect" | "pages"
+                        "command" | "description" | "test" | "expect" | "pages" | "files"
                     ),
                     "examples.toml: unknown key {key}"
                 );
@@ -147,6 +156,27 @@ pub fn examples() -> Vec<Example> {
                         .map(|p| p.as_str().expect("a page is NAME.SECTION").to_string())
                         .collect(),
                 },
+                files: table
+                    .get("files")
+                    .and_then(toml::Value::as_array)
+                    .map(|files| {
+                        files
+                            .iter()
+                            .map(|f| {
+                                let text = |key: &str| {
+                                    f.get(key)
+                                        .and_then(toml::Value::as_str)
+                                        .unwrap_or_else(|| panic!("an example's file has a {key}"))
+                                        .to_string()
+                                };
+                                ExampleFile {
+                                    name: text("name"),
+                                    text: text("text"),
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             }
         })
         .collect()
@@ -180,6 +210,16 @@ fn command_examples(command: &str) -> String {
         out.push_str(&format!(
             "  {}\n      {}\n",
             example.command, example.description
+        ));
+    }
+    let files: Vec<String> = examples_of(&format!("datui-{command}.1"))
+        .into_iter()
+        .flat_map(|e| e.files.into_iter().map(|f| f.name))
+        .collect();
+    if !files.is_empty() {
+        out.push_str(&format!(
+            "\nThe files they read ({}) are in the manual.",
+            files.join(", ")
         ));
     }
     out.push_str(&format!("\nManual: datui man {command}\n"));
@@ -783,7 +823,7 @@ pub fn render_options_markdown() -> String {
     }
 
     out.push_str("\n## Examples\n\n| Command | Does |\n|---|---|\n");
-    for example in examples() {
+    for example in examples_of("datui.1") {
         out.push_str(&format!(
             "| `{}` | {} |\n",
             escape_table_cell(&example.command),

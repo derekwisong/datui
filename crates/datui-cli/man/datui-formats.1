@@ -69,11 +69,33 @@ datui formats
 .EE
 .RE
 .PP
-Write a format spec of two one-byte fields and a file of two records, then check the spec and print the rows it reads.
+Check a format spec of two one-byte fields against a file of two records, and print the rows it reads.
+.PP
+\fBpairs.toml\fR
 .PP
 .RS 4
 .EX
-printf 'name = "demo.pairs"\enmatch = { glob = ["*.pairs"] }\en[records]\enfields = [{ name = "a", type = "u1" }, { name = "b", type = "u1" }]\en' > pairs.toml && printf '\e001\e002\e003\e004' > t.pairs && datui formats check ./pairs.toml t.pairs
+name = "demo.pairs"
+match = { glob = ["*.pairs"] }
+
+[records]
+fields = [{ name = "a", type = "u1" }, { name = "b", type = "u1" }]
+.EE
+.RE
+.PP
+\fBmake_pairs.py\fR
+.PP
+.RS 4
+.EX
+# Two records of two one\-byte fields: (1, 2) and (3, 4).
+with open("t.pairs", "wb") as f:
+    f.write(bytes([1, 2, 3, 4]))
+.EE
+.RE
+.PP
+.RS 4
+.EX
+python3 make_pairs.py && datui formats check ./pairs.toml t.pairs
 .EE
 .RE
 .SH "SEE ALSO"

@@ -110,15 +110,3 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `datui config init` | Write the config file, every key commented out at its default |
 | `datui formats` | List the format specs and dictionaries datui finds |
 | `datui man keys` | The keys of every screen, as a manual page |
-| `datui config path` | The config files read, lowest precedence first |
-| `datui config keys -c display.row_numbers=true` | Every key: its type, default, the value in effect and what set it, here -c |
-| `printf '[display]\nrow_numbers = true\n' > config.toml && DATUI_CONFIG_DIR=. datui config keys` | A config file in the current directory, and the values it sets |
-| `datui cache clear --recents` | Forget the recent datasets and keep the rest of the cache |
-| `datui cache clear` | Clear the whole cache: recents, prompt history, schemas and copies |
-| `datui views list` | The saved views: name, the files each matches, when last used |
-| `printf 'name = "demo.pairs"\nmatch = { glob = ["*.pairs"] }\n[records]\nfields = [{ name = "a", type = "u1" }, { name = "b", type = "u1" }]\n' > pairs.toml && printf '\001\002\003\004' > t.pairs && datui formats check ./pairs.toml t.pairs` | Write a format spec of two one-byte fields and a file of two records, then check the spec and print the rows it reads |
-| `mkdir -p ~/.local/share/bash-completion/completions && datui completions bash > ~/.local/share/bash-completion/completions/datui` | Bash completion for your user; new shells load it through bash-completion |
-| `mkdir -p ~/.config/fish/completions && datui completions fish > ~/.config/fish/completions/datui.fish` | fish completion for your user |
-| `mkdir -p ~/.zfunc && datui completions zsh > ~/.zfunc/_datui` | zsh completion; add fpath+=~/.zfunc before compinit in ~/.zshrc |
-| `datui man --list` | The manual pages and what each covers |
-| `datui man --dir ~/.local/share/man` | Write every page where man finds them for your user, as after cargo install |

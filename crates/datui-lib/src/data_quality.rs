@@ -305,20 +305,18 @@ pub fn prepare_source_quality_scan(
 }
 
 /// The rows of one partition value, a list of them (`2019,2021`), or an inclusive
-/// range (`2020..2022`). A range compares in the column's own type, so years and
-/// dates order as numbers and dates, not as text; `∅` is the null partition.
+/// range (`2020..2022`). Each value is read as the column's own type, so years and
+/// dates compare as numbers and dates, `1.5` is a `Decimal(10, 2)` column's `1.50`,
+/// and the predicate stays one a file's statistics can answer; `∅` is the null
+/// partition. A value that does not read as the type says so.
 fn partition_predicate(column: &str, value: &str, schema: &Schema) -> Result<Expr> {
     let dtype = schema
         .get(column)
         .ok_or_else(|| color_eyre::eyre::eyre!("partition column {column:?} is unavailable"))?;
-    let one = |value: &str| {
-        if value == "∅" {
-            col(column).is_null()
-        } else {
-            col(column)
-                .cast(DataType::String)
-                .eq(lit(value.to_string()))
-        }
+    let read = |text: &str| {
+        crate::typed_value::parse(text, dtype)
+            .map(lit)
+            .map_err(|why| color_eyre::eyre::eyre!("{column}: {why}"))
     };
     if let Some((start, end)) = value.split_once("..") {
         let (start, end) = (start.trim(), end.trim());
@@ -327,18 +325,23 @@ fn partition_predicate(column: &str, value: &str, schema: &Schema) -> Result<Exp
                 "a partition range needs both ends, for example year=2020..2022"
             ));
         }
-        let bound = |text: &str| lit(text.to_string()).cast(dtype.clone());
         return Ok(col(column)
-            .gt_eq(bound(start))
-            .and(col(column).lt_eq(bound(end))));
+            .gt_eq(read(start)?)
+            .and(col(column).lt_eq(read(end)?)));
     }
     value
         .split(',')
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(one)
-        .reduce(Expr::or)
-        .ok_or_else(|| color_eyre::eyre::eyre!("name at least one partition value"))
+        .map(|value| {
+            Ok(if value == "∅" {
+                col(column).is_null()
+            } else {
+                col(column).eq(read(value)?)
+            })
+        })
+        .reduce(|all, one| Ok(all?.or(one?)))
+        .ok_or_else(|| color_eyre::eyre::eyre!("name at least one partition value"))?
 }
 
 pub fn apply_quality_scope(
@@ -6684,6 +6687,57 @@ mod tests {
             ),
             vec![2, 3]
         );
+    }
+
+    /// A partition value compares in the column's own type, whatever the type, one
+    /// value or a list of them; a value the type cannot read says so.
+    #[test]
+    fn partition_values_compare_in_the_columns_type() {
+        let frame = df!(
+            "id" => &[1i32, 2, 3, 4],
+            "year" => &[2019i64, 2020, 2021, 2020],
+            "share" => &[0.5f64, 0.25, 0.5, 1.0],
+            "price" => &["1.50", "2.00", "1.50", "3.25"],
+            "day" => &[19723i32, 19724, 19723, -800_000],
+            "at" => &[0i64, 3_600_000_000, 0, 7_200_000_000],
+        )
+        .unwrap()
+        .lazy()
+        .with_columns([
+            col("price").cast(DataType::Decimal(10, 2)),
+            col("day").cast(DataType::Date),
+            col("at").cast(DataType::Datetime(TimeUnit::Microseconds, None)),
+        ]);
+        let schema = frame.clone().collect_schema().unwrap();
+        let ids = |column: &str, value: &str| -> Vec<i32> {
+            let predicate = partition_predicate(column, value, &schema).unwrap();
+            let df = frame.clone().filter(predicate).collect().unwrap();
+            df.column("id")
+                .unwrap()
+                .i32()
+                .unwrap()
+                .into_no_null_iter()
+                .collect()
+        };
+        assert_eq!(ids("year", "2020"), [2, 4]);
+        assert_eq!(ids("year", "2019, 2021"), [1, 3]);
+        assert_eq!(ids("year", "2020..2021"), [2, 3, 4]);
+        assert_eq!(ids("share", "0.5"), [1, 3]);
+        assert_eq!(ids("price", "1.5"), [1, 3], "1.5 is the column's 1.50");
+        assert_eq!(ids("day", "2024-01-01"), [1, 3]);
+        // A date past the calendar, as its label writes it.
+        assert_eq!(ids("day", "-800000 days since 1970-01-01"), [4]);
+        assert_eq!(ids("at", "1970-01-01 01:00"), [2]);
+        assert_eq!(
+            ids("at", "1970-01-01T00:00:00, 1970-01-01 02:00"),
+            [1, 3, 4]
+        );
+        let error = partition_predicate("day", "2024-13-01", &schema).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "day: \"2024-13-01\" is not a date written YYYY-MM-DD"
+        );
+        assert!(partition_predicate("year", "2020..soon", &schema).is_err());
     }
 
     #[test]

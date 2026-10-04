@@ -66,6 +66,8 @@ pub struct Glyphs {
     pub dash: &'static str,
     /// The coefficient of determination, in the regression fit line.
     pub r_squared: &'static str,
+    /// Spearman's rank correlation, in the correlation matrix.
+    pub rho: &'static str,
     /// Spinner frames, cycled while something is loading. Every frame must be the
     /// same display width, or the text beside it jitters.
     pub spinner: &'static [&'static str],
@@ -330,6 +332,7 @@ const UNICODE: Glyphs = Glyphs {
     middot: "·",
     dash: "—",
     r_squared: "R²",
+    rho: "ρ",
     spinner: &["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"],
     // Plain Unicode from blocks the common coding fonts actually cover — checked
     // against JetBrainsMono Nerd Font, Liberation Mono and Noto Sans Mono per
@@ -419,6 +422,7 @@ const ASCII: Glyphs = Glyphs {
     middot: "-",
     dash: "-",
     r_squared: "R^2",
+    rho: "rho",
     spinner: &["|", "/", "-", "\\"],
     here: ".",
     in_memory: "*",
@@ -541,6 +545,7 @@ macro_rules! with_string_slots {
             middot,
             dash,
             r_squared,
+            rho,
             here,
             in_memory,
             over_network,

@@ -19,7 +19,7 @@ use crate::glyphs::PlotMarks;
 use crate::numfmt::{self, NumberFormatSettings};
 use crate::render::context::RenderContext;
 use crate::statistics::{
-    AnalysisContext, AnalysisResults, CategoricalStatistics, ColumnStatistics,
+    AnalysisContext, AnalysisResults, CategoricalStatistics, ColumnStatistics, CorrelationMethod,
     DistributionAnalysis, DistributionType, NumericStatistics, TemporalStatistics,
 };
 use crate::widgets::axes::{AxisSpec, PlotAxes};
@@ -34,6 +34,7 @@ pub struct AnalysisWidgetConfig<'a> {
     pub view: AnalysisView,
     pub selected_tool: Option<AnalysisTool>,
     pub selected_correlation: Option<(usize, usize)>,
+    pub correlation_method: CorrelationMethod,
     pub focus: AnalysisFocus,
     pub selected_theoretical_distribution: DistributionType,
     pub histogram_scale: HistogramScale,
@@ -57,6 +58,7 @@ pub struct AnalysisWidget<'a> {
     correlation_table_state: &'a mut TableState,
     sidebar_state: &'a mut TableState,
     selected_correlation: Option<(usize, usize)>,
+    correlation_method: CorrelationMethod,
     focus: AnalysisFocus,
     selected_theoretical_distribution: DistributionType,
     distribution_selector_state: &'a mut TableState,
@@ -91,6 +93,7 @@ impl<'a> AnalysisWidget<'a> {
             correlation_table_state,
             sidebar_state,
             selected_correlation: config.selected_correlation,
+            correlation_method: config.correlation_method,
             focus: config.focus,
             selected_theoretical_distribution: config.selected_theoretical_distribution,
             distribution_selector_state,
@@ -132,11 +135,16 @@ impl<'a> AnalysisWidget<'a> {
 
         // Breadcrumb: tool name when a tool is selected, or "Analysis" when none selected
         let tool_name = match self.selected_tool {
-            Some(AnalysisTool::Describe) => "Describe",
-            Some(AnalysisTool::DistributionAnalysis) => "Distribution Analysis",
-            Some(AnalysisTool::CorrelationMatrix) => "Correlation Matrix",
-            Some(AnalysisTool::DataQuality) => "Data Quality",
-            None => "Analysis",
+            Some(AnalysisTool::Describe) => "Describe".to_string(),
+            Some(AnalysisTool::DistributionAnalysis) => "Distribution Analysis".to_string(),
+            // The coefficient is part of the title: the cells do not say which it is.
+            Some(AnalysisTool::CorrelationMatrix) => format!(
+                "Correlation Matrix {} {}",
+                crate::glyphs::get().middot,
+                coefficient_name(self.correlation_method)
+            ),
+            Some(AnalysisTool::DataQuality) => "Data Quality".to_string(),
+            None => "Analysis".to_string(),
         };
 
         // What the numbers are of, stated rather than implied: a sample says how big,
@@ -149,7 +157,7 @@ impl<'a> AnalysisWidget<'a> {
                 self.sample
                     .outcome(results.total_rows, results.sample_size, results.per_value)
             ),
-            _ => tool_name.to_string(),
+            _ => tool_name,
         };
 
         let header_row_style = header_style(self.theme, "controls_bg", "table_header");
@@ -214,7 +222,10 @@ impl<'a> AnalysisWidget<'a> {
                         }
                         AnalysisTool::CorrelationMatrix => {
                             render_correlation_matrix(
-                                results,
+                                results.correlation_matrix.as_ref().map(|matrix| Shown {
+                                    matrix,
+                                    method: self.correlation_method,
+                                }),
                                 self.correlation_table_state,
                                 &self.selected_correlation,
                                 self.column_scroll,
@@ -448,7 +459,10 @@ impl<'a> AnalysisWidget<'a> {
 
         let total_rows = self.results.map(|r| r.total_rows).unwrap_or(0);
         render_correlation_pair_summary(
-            matrix,
+            Shown {
+                matrix,
+                method: self.correlation_method,
+            },
             (row, col),
             total_rows,
             layout[1],
@@ -456,6 +470,37 @@ impl<'a> AnalysisWidget<'a> {
             self.theme,
             self.number_format,
         );
+    }
+}
+
+/// The correlation matrix as the screen shows it: by the method chosen.
+#[derive(Clone, Copy)]
+struct Shown<'a> {
+    matrix: &'a crate::statistics::CorrelationMatrix,
+    method: CorrelationMethod,
+}
+
+/// Why a matrix has no Spearman: the rows read hold more values than it ranks.
+const SPEARMAN_TOO_MANY: &str = "Too many values to rank for Spearman; s chooses a smaller sample";
+
+/// The coefficient's name and symbol, as the matrix title and the pair detail
+/// give it.
+fn coefficient_name(method: CorrelationMethod) -> String {
+    match method {
+        CorrelationMethod::Pearson => "Pearson r".to_string(),
+        CorrelationMethod::Spearman => format!("Spearman {}", crate::glyphs::get().rho),
+    }
+}
+
+/// `r` at `decimals` places, where rounding never makes it ±1 unless it is: a
+/// near-perfect 0.9996 reads 0.999 at three places, not a perfect 1.000.
+fn format_coefficient(r: f64, decimals: usize) -> String {
+    let text = format!("{r:.decimals$}");
+    if r.abs() < 1.0 && text.trim_start_matches('-').starts_with('1') {
+        let sign = if r < 0.0 { "-" } else { "" };
+        format!("{sign}0.{}", "9".repeat(decimals))
+    } else {
+        text
     }
 }
 
@@ -488,7 +533,7 @@ fn describe_correlation(r: f64) -> &'static str {
 /// about the pair. Nothing is collected here — a scatter or per-column moments
 /// would need the pair's values, which the correlation results do not carry.
 fn render_correlation_pair_summary(
-    matrix: &crate::statistics::CorrelationMatrix,
+    Shown { matrix, method }: Shown,
     (row, col): (usize, usize),
     total_rows: usize,
     area: Rect,
@@ -496,16 +541,19 @@ fn render_correlation_pair_summary(
     theme: &Theme,
     number_format: &NumberFormatSettings,
 ) {
-    let r = matrix.correlations[row][col];
+    let r = matrix.coefficient(method, row, col);
     let pairs = matrix.sample_sizes[row][col];
-    let p_value = matrix.p_values.as_ref().map(|p| p[row][col]);
+    let p_value = matrix.p_value(method, row, col);
 
     let label_style = Style::default().fg(theme.get("text_secondary"));
     let value_style = Style::default().fg(theme.get("text_primary"));
 
     let mut lines: Vec<Line> = Vec::new();
     if r.is_nan() {
-        let why = if pairs < 3 {
+        let unranked = method == CorrelationMethod::Spearman && matrix.rank_correlations.is_none();
+        let why = if unranked {
+            SPEARMAN_TOO_MANY
+        } else if pairs < 3 {
             "Fewer than 3 overlapping pairs"
         } else {
             "A column holds one value"
@@ -513,16 +561,16 @@ fn render_correlation_pair_summary(
         lines.push(Line::from(vec![Span::styled(why, value_style)]));
     } else {
         lines.push(Line::from(vec![
-            Span::styled("Pearson r: ", label_style),
+            Span::styled(format!("{}: ", coefficient_name(method)), label_style),
             Span::styled(
-                format!("{:.3}", r),
+                format_coefficient(r, 4),
                 Style::default().fg(get_correlation_color(r, theme)),
             ),
             Span::styled(format!("  ({})", describe_correlation(r)), value_style),
         ]));
         lines.push(Line::from(vec![
             Span::styled(format!("{}: ", crate::glyphs::get().r_squared), label_style),
-            Span::styled(format!("{:.3}", r * r), value_style),
+            Span::styled(format_coefficient(r * r, 4), value_style),
         ]));
         if let Some(p) = p_value {
             lines.push(Line::from(vec![
@@ -1202,7 +1250,7 @@ fn draw_scroll_marks(
 }
 
 fn render_correlation_matrix(
-    results: &AnalysisResults,
+    shown: Option<Shown>,
     table_state: &mut TableState,
     selected_cell: &Option<(usize, usize)>,
     columns: &mut ColumnScroll,
@@ -1210,8 +1258,8 @@ fn render_correlation_matrix(
     buf: &mut Buffer,
     theme: &Theme,
 ) {
-    let correlation_matrix = match &results.correlation_matrix {
-        Some(cm) => cm,
+    let (correlation_matrix, method) = match shown {
+        Some(Shown { matrix, method }) => (matrix, method),
         None => {
             Paragraph::new("No correlation matrix available (need at least 2 numeric columns)")
                 .centered()
@@ -1219,6 +1267,13 @@ fn render_correlation_matrix(
             return;
         }
     };
+
+    if method == CorrelationMethod::Spearman && correlation_matrix.rank_correlations.is_none() {
+        Paragraph::new(SPEARMAN_TOO_MANY)
+            .centered()
+            .render(area, buf);
+        return;
+    }
 
     if correlation_matrix.columns.is_empty() {
         Paragraph::new("No numeric columns for correlation matrix")
@@ -1231,7 +1286,7 @@ fn render_correlation_matrix(
 
     // Calculate column widths - ensure they're wide enough for content
     let row_header_width = 20u16;
-    let cell_width = 12u16; // Wide enough for "-1.00" format
+    let cell_width = 12u16; // Wide enough for "-0.999" and most names
     let column_spacing = 1u16; // Table widget adds 1 space between columns
 
     let available_width = area
@@ -1290,15 +1345,15 @@ fn render_correlation_matrix(
         let mut cells = vec![Cell::from(col_name.as_str()).style(row_header_style)];
 
         for col_idx in start_col..end_col {
-            let correlation = correlation_matrix.correlations[i][col_idx];
+            let correlation = correlation_matrix.coefficient(method, i, col_idx);
             let text_color = get_correlation_color(correlation, theme);
 
             let cell_text = if i == col_idx {
-                "1.00".to_string()
+                "1.000".to_string()
             } else if correlation.is_nan() {
                 "-".to_string()
             } else {
-                format!("{:.2}", correlation)
+                format_coefficient(correlation, 3)
             };
 
             let is_selected_cell =
@@ -2665,6 +2720,8 @@ mod tests {
             correlations: vec![vec![1.0, r], vec![r, 1.0]],
             p_values: Some(vec![vec![0.0, 0.004], vec![0.004, 0.0]]),
             sample_sizes: vec![vec![0, pairs], vec![pairs, 0]],
+            rank_correlations: Some(vec![vec![1.0, 0.5], vec![0.5, 1.0]]),
+            rank_p_values: Some(vec![vec![0.0, 0.03], vec![0.03, 0.0]]),
         }
     }
 
@@ -2737,6 +2794,8 @@ mod tests {
             correlations: vec![vec![0.5; n]; n],
             p_values: None,
             sample_sizes: vec![vec![10; n]; n],
+            rank_correlations: Some(vec![vec![0.5; n]; n]),
+            rank_p_values: None,
         };
         let results = AnalysisResults {
             column_statistics: vec![],
@@ -2755,7 +2814,10 @@ mod tests {
             let mut buf = Buffer::empty(area);
             state.select(Some(selected.0));
             render_correlation_matrix(
-                &results,
+                results.correlation_matrix.as_ref().map(|matrix| Shown {
+                    matrix,
+                    method: CorrelationMethod::Pearson,
+                }),
                 &mut state,
                 &Some(selected),
                 columns,
@@ -2844,7 +2906,10 @@ mod tests {
         let area = Rect::new(0, 0, 60, 8);
         let mut buf = Buffer::empty(area);
         render_correlation_pair_summary(
-            &correlation_matrix(0.874, 42),
+            Shown {
+                matrix: &correlation_matrix(0.874, 42),
+                method: CorrelationMethod::Pearson,
+            },
             (0, 1),
             50,
             area,
@@ -2853,10 +2918,10 @@ mod tests {
             &settings("thousands", false),
         );
         let text = rendered_text(&buf);
-        assert!(text.contains("Pearson r: 0.874"), "{text}");
+        assert!(text.contains("Pearson r: 0.8740"), "{text}");
         assert!(text.contains("strong positive"), "{text}");
         let r_squared = crate::glyphs::get().r_squared;
-        assert!(text.contains(&format!("{r_squared}: 0.764")), "{text}");
+        assert!(text.contains(&format!("{r_squared}: 0.7639")), "{text}");
         assert!(text.contains("P-value: 0.004"), "{text}");
         assert!(text.contains("Pairs used: 42 of 50 rows"), "{text}");
     }
@@ -2869,7 +2934,10 @@ mod tests {
         let area = Rect::new(0, 0, 70, 8);
         let mut buf = Buffer::empty(area);
         render_correlation_pair_summary(
-            &correlation_matrix(f64::NAN, 2),
+            Shown {
+                matrix: &correlation_matrix(f64::NAN, 2),
+                method: CorrelationMethod::Pearson,
+            },
             (0, 1),
             50,
             area,
@@ -2880,6 +2948,82 @@ mod tests {
         let text = rendered_text(&buf);
         assert!(text.contains("Fewer than 3 overlapping pairs"), "{text}");
         assert!(!text.contains("Pearson r:"), "{text}");
+    }
+
+    /// A matrix too large to rank says so under Spearman, and still shows Pearson.
+    #[test]
+    fn a_matrix_without_ranks_says_why_under_spearman() {
+        let theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        let mut matrix = correlation_matrix(0.874, 42);
+        matrix.rank_correlations = None;
+        matrix.rank_p_values = None;
+        let area = Rect::new(0, 0, 90, 8);
+        let mut buf = Buffer::empty(area);
+        render_correlation_pair_summary(
+            Shown {
+                matrix: &matrix,
+                method: CorrelationMethod::Spearman,
+            },
+            (0, 1),
+            50,
+            area,
+            &mut buf,
+            &theme,
+            &settings("thousands", false),
+        );
+        assert!(rendered_text(&buf).contains(SPEARMAN_TOO_MANY));
+        let mut buf = Buffer::empty(area);
+        render_correlation_pair_summary(
+            Shown {
+                matrix: &matrix,
+                method: CorrelationMethod::Pearson,
+            },
+            (0, 1),
+            50,
+            area,
+            &mut buf,
+            &theme,
+            &settings("thousands", false),
+        );
+        assert!(rendered_text(&buf).contains("Pearson r: 0.8740"));
+    }
+
+    #[test]
+    fn correlation_detail_shows_the_chosen_method() {
+        let theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        let area = Rect::new(0, 0, 60, 8);
+        let mut buf = Buffer::empty(area);
+        render_correlation_pair_summary(
+            Shown {
+                matrix: &correlation_matrix(0.874, 42),
+                method: CorrelationMethod::Spearman,
+            },
+            (0, 1),
+            50,
+            area,
+            &mut buf,
+            &theme,
+            &settings("thousands", false),
+        );
+        let text = rendered_text(&buf);
+        let rho = crate::glyphs::get().rho;
+        assert!(text.contains(&format!("Spearman {rho}: 0.5000")), "{text}");
+        assert!(text.contains("P-value: 0.03"), "{text}");
+    }
+
+    /// Rounding never shows a perfect relation that is not one.
+    #[test]
+    fn a_coefficient_rounds_to_one_only_when_it_is_one() {
+        assert_eq!(format_coefficient(0.9996, 3), "0.999");
+        assert_eq!(format_coefficient(-0.9996, 3), "-0.999");
+        assert_eq!(format_coefficient(0.99996, 4), "0.9999");
+        assert_eq!(format_coefficient(0.9994, 3), "0.999");
+        assert_eq!(format_coefficient(1.0, 3), "1.000");
+        assert_eq!(format_coefficient(-1.0, 4), "-1.0000");
+        assert_eq!(format_coefficient(0.12345, 3), "0.123");
+        assert_eq!(format_coefficient(-0.5, 3), "-0.500");
     }
 
     #[test]

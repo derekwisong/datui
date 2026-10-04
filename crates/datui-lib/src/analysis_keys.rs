@@ -672,6 +672,16 @@ impl App {
                 KeyCode::Char('?') => {
                     self.analysis_modal.show_help = !self.analysis_modal.show_help;
                 }
+                // Both coefficients come from the one run, so switching reads nothing.
+                KeyCode::Char('m')
+                    if matches!(
+                        self.analysis_modal.selected_tool,
+                        Some(analysis_modal::AnalysisTool::CorrelationMatrix)
+                    ) =>
+                {
+                    self.analysis_modal.correlation_method =
+                        self.analysis_modal.correlation_method.toggled();
+                }
                 // Another sample, or every row. Both only where the results are a
                 // sample, and only on the main view: inside a detail an undocumented
                 // `r` cleared the results out from under it.

@@ -339,17 +339,48 @@ pub fn read_into<R: std::io::Read>(
 /// Read what `open` answers with into a new file in `dir`, as
 /// [`TempDownload::create`] names it, until `writer`'s open stops; see [`read_into`].
 /// Any failure, and a stop, removes the partial file before this returns.
+///
+/// With a `limit`, it is refused as a [`StreamError::Write`] of [`PastLimit`] once
+/// more than `limit` bytes have arrived: nothing past the limit is written, and the
+/// partial file is removed as for any other failure.
 #[cfg(feature = "http")]
 pub(crate) fn read_to_temp<R: std::io::Read>(
     dir: Option<&Path>,
     extension: Option<&str>,
     open: impl FnOnce() -> Opened<R> + Send + 'static,
     writer: &Writer,
+    limit: Option<u64>,
 ) -> std::result::Result<TempDownload, StreamError> {
+    let mut arrived = 0u64;
     fill_temp(dir, extension, writer, |write| {
-        read_into(open, || writer.stopped(), write)
+        read_into(
+            open,
+            || writer.stopped(),
+            |chunk| {
+                arrived += chunk.len() as u64;
+                if limit.is_some_and(|limit| arrived > limit) {
+                    return Err(color_eyre::Report::new(PastLimit));
+                }
+                write(chunk)
+            },
+        )
     })
 }
+
+/// A download stopped at its limit: the open asks before fetching more.
+#[cfg(any(feature = "http", feature = "cloud"))]
+#[derive(Debug)]
+pub(crate) struct PastLimit;
+
+#[cfg(any(feature = "http", feature = "cloud"))]
+impl std::fmt::Display for PastLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("The download passed the size it may fetch without asking.")
+    }
+}
+
+#[cfg(any(feature = "http", feature = "cloud"))]
+impl std::error::Error for PastLimit {}
 
 /// Read what `open` answers with into a new file in `dir` until it ends or `writer`'s
 /// open stops, adding each chunk's length to `read` as it lands; see [`read_into`].
@@ -864,6 +895,7 @@ mod read_tests {
             Some("csv"),
             move || Ok((reader, Some(len))),
             &Writer::default(),
+            None,
         )
         .unwrap();
         assert_eq!(std::fs::read(file.path()).unwrap(), whole);
@@ -875,11 +907,45 @@ mod read_tests {
             None,
             move || Ok((reader, Some(len + 1))),
             &Writer::default(),
+            None,
         )
         .unwrap_err();
         assert!(matches!(error, StreamError::Short { .. }), "{error:?}");
         drop(file);
         assert_eq!(files_in(dir.path()), 0);
+    }
+
+    /// A download with a limit stops once more than the limit has arrived, and leaves
+    /// no file; at or under the limit it lands whole.
+    #[test]
+    fn a_download_past_its_limit_stops_and_leaves_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let chunks = (0..8u8).map(|i| vec![i; 1000]).collect::<Vec<_>>();
+        let reader = source(chunks.clone(), None);
+        let error = read_to_temp(
+            Some(dir.path()),
+            None,
+            move || Ok((reader, None)),
+            &Writer::default(),
+            Some(7_999),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&error, StreamError::Write(report) if report.downcast_ref::<PastLimit>().is_some()),
+            "{error:?}"
+        );
+        assert_eq!(files_in(dir.path()), 0);
+
+        let reader = source(chunks, None);
+        let file = read_to_temp(
+            Some(dir.path()),
+            None,
+            move || Ok((reader, None)),
+            &Writer::default(),
+            Some(8_000),
+        )
+        .unwrap();
+        assert_eq!(std::fs::metadata(file.path()).unwrap().len(), 8_000);
     }
 
     /// A refused request and a read that fails each end in their error, with no file.
@@ -902,6 +968,7 @@ mod read_tests {
             None,
             || Err::<(Reset, _), _>("Server returned 404 Not Found.".to_string()),
             &Writer::default(),
+            None,
         )
         .unwrap_err();
         assert!(
@@ -913,6 +980,7 @@ mod read_tests {
             None,
             || Ok((Reset(false), None)),
             &Writer::default(),
+            None,
         )
         .unwrap_err();
         assert!(matches!(error, StreamError::Read(_)), "{error:?}");
@@ -983,6 +1051,7 @@ mod read_tests {
             None,
             move || Ok((reader, None)),
             &crate::unfinished::Unfinished::default().writer(stop),
+            None,
         )
         .unwrap_err();
         let (landed, stopped_at) = stopper.join().unwrap();

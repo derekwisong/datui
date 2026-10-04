@@ -66,16 +66,31 @@ as Describe does.
 
 Pairwise correlations between every numeric column, colored by strength.
 Move around with the arrow keys and press <kbd>Enter</kbd> on a cell for the
-pair: the Pearson coefficient with a plain reading of it, R², the p-value,
-and how many row pairs it was computed from. Correlation is undefined for a
-constant column.
+pair: the coefficient with a plain reading of it, R², the p-value, and how
+many row pairs it was computed from. Correlation is undefined for a constant
+column.
+
+| Key | Action |
+|---|---|
+| <kbd>m</kbd> | Method: Pearson r or Spearman ρ, named in the title |
+| <kbd>Enter</kbd> | The selected pair |
+
+Spearman is Pearson's r of the ranks: it reads any relation that only rises
+or only falls, where Pearson reads a straight line. Both use the rows where
+the two columns hold a value, and both come from the one run, so
+<kbd>m</kbd> reads nothing. Spearman ranks at most 64 Mi values (rows times
+numeric columns); past that, as when every row of a large table is read, the
+matrix has Pearson only and <kbd>s</kbd> chooses a smaller sample.
+
+Cells show three decimal places and the pair four. A value that would round
+to 1 but is not exactly 1 shows as 0.999 (0.9999 in the pair), so 1.000
+always means a perfect relation.
 
 On **Palmer penguins**, first hide `rownames`, the host's row number, so it is
 not treated as a measurement: <kbd>s</kbd>, <kbd>Tab</kbd>, <kbd>↓</kbd>,
 <kbd>v</kbd>, <kbd>Enter</kbd>. Then <kbd>a</kbd>, **Correlation Matrix**,
 <kbd>Enter</kbd> to read all 344 rows. `flipper_length_mm` against
-`body_mass_g` is r = 0.871, strong positive, with R² 0.759 from 342 of 344
-rows.
+`body_mass_g` is r = 0.871, strong positive, from 342 of 344 rows.
 
 ## Data quality
 

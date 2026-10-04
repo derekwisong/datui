@@ -218,8 +218,8 @@ Where a dataset opens.
 | `e` | The value's next view, where it has more than one |
 | `w` | Word wrap or hard wrap for long text |
 | `o` | Open the value in another program |
-| `f` | Only the fields with a value; comparing, only those that differ |
-| `s` | Order: the table's, A-Z, or filled first |
+| `f` | Nulls: shown or hidden (null and empty fields); comparing, only the fields that differ |
+| `s` | Order: the table's, A-Z, or nulls last |
 | `c` | Compare: a column for the next row, or the pinned one |
 | `m` | Pin this row to compare others with; again to unpin |
 | `/` | Find a field by name, then by value: type to narrow, Enter or ↓ keeps the list narrowed, Esc clears it |
@@ -441,6 +441,7 @@ Correlation Matrix in the Analysis sidebar.
 
 | Key | Action |
 |---|---|
+| `m` | Method: Pearson or Spearman (both come from the one run) |
 | `s` | Choose the sample every tool reads: which rows, how they are picked, how many, the seed |
 | `v` | View the sample's rows as a table; Esc comes back |
 | `r` | Draw another sample (when the result is a sample) |
@@ -456,6 +457,7 @@ Correlation Matrix in the Analysis sidebar.
 
 | Key | Action |
 |---|---|
+| `m` | Method: Pearson or Spearman |
 | `?` | Toggle this help |
 | `Esc` | Return to the correlation matrix |
 

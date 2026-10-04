@@ -759,7 +759,7 @@ fn differs_from(
     known
 }
 
-/// The fields listed, in the order listed: the order chosen, then Filled (or,
+/// The fields listed, in the order listed: the order chosen, then the nulls toggle (or,
 /// comparing, only the fields that differ), then the find text — names first,
 /// then values.
 pub fn visible_fields(modal: &InspectorModal, state: &DataTableState) -> Vec<usize> {
@@ -1418,7 +1418,7 @@ fn list_chip(
             if c.differ.is_some() {
                 "differ only"
             } else {
-                "filled"
+                "nulls hidden"
             }
             .to_string(),
         );
@@ -1557,7 +1557,12 @@ fn footer<'a>(
     if f.list_overflows {
         bar = bar.hint_weighted("PgUp/PgDn", "Page", 3);
     }
-    let filled = if f.comparing { "Differ" } else { "Filled" };
+    // The toggle names its state: what `f` hides is the nulls and empties.
+    let filled = match (f.comparing, modal.filled_only) {
+        (true, _) => "Differ",
+        (false, true) => "Nulls: hidden",
+        (false, false) => "Nulls: shown",
+    };
     bar = bar
         .hint_weighted("Y", "Row", 2)
         .hint_weighted("c", if f.comparing { "No compare" } else { "Compare" }, 2)
@@ -2903,7 +2908,7 @@ mod tests {
         assert!(l.cols * l.list.height as usize >= 130);
         let l = layout(content, 14, 1, Focus::List, list(14, 44));
         assert_eq!((l.cols, l.value.width), (1, 88), "{l:?}");
-        // Narrowing the list (a find, Filled) moves nothing: the pane is sized
+        // Narrowing the list (a find, hidden nulls) moves nothing: the pane is sized
         // from every field.
         let narrowed = layout(content, 3, 1, Focus::List, list(214, 44));
         assert_eq!(

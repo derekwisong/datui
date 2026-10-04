@@ -32,6 +32,36 @@ S = "failed spatial consistency check"
     codebook::Codebook::of(&dataset).unwrap()
 }
 
+/// The bundled NOAA entry keeps the readme's source flags under S_FLAG, where they
+/// belong, and only element codes under ELEMENT.
+#[test]
+fn the_noaa_source_flags_are_s_flags_not_elements() {
+    let catalog = config::builtin_catalog();
+    let noaa = catalog
+        .datasets
+        .iter()
+        .find(|d| d.url.as_deref() == Some("s3://noaa-ghcn-pds/parquet/"))
+        .expect("the NOAA entry");
+    let book = codebook::Codebook::of(noaa).unwrap();
+    let element = book.column("ELEMENT").unwrap();
+    assert!(
+        element.values.keys().all(|code| code.len() == 4),
+        "{:?}",
+        element.values.keys()
+    );
+    let source = book.column("S_FLAG").unwrap();
+    // The readme's thirty-five: blank, the digits, and the letters.
+    let codes = "0 1 2 6 7 A a B b C D d E F G H I K M f m N Q R r S s T U u W X Z z";
+    for code in std::iter::once("").chain(codes.split(' ')) {
+        assert!(source.values.contains_key(code), "S_FLAG lacks {code:?}");
+    }
+    assert_eq!(source.values.len(), 35);
+    assert_eq!(
+        source.legend_line(Some("C")).as_deref(),
+        Some("C = Environment Canada")
+    );
+}
+
 fn app() -> (App, std::sync::mpsc::Receiver<AppEvent>) {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());

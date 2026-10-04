@@ -62,7 +62,7 @@ for when the documentation lists it. In NOAA's weather data, `AWDR` under
 | <kbd>e</kbd> <kbd>w</kbd> | The value's next [view](#views); word or hard wrap |
 | <kbd>c</kbd> <kbd>m</kbd> | [Compare](#compare-two-rows) with the next row; pin this one |
 | <kbd>o</kbd> | [Open the value elsewhere](#open-a-value-elsewhere) |
-| <kbd>f</kbd> <kbd>s</kbd> <kbd>/</kbd> | Only filled fields; field order; find a field |
+| <kbd>f</kbd> <kbd>s</kbd> <kbd>/</kbd> | Nulls shown or hidden; field order; find a field |
 
 The [keyboard reference](../reference/keyboard-shortcuts.md#inspector) has
 every key.

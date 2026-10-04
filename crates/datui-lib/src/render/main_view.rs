@@ -229,7 +229,9 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
                 ("?", "Help"),
             ];
         }
-        AnalysisView::CorrelationDetail => return vec![("Esc", "Back"), ("?", "Help")],
+        AnalysisView::CorrelationDetail => {
+            return vec![("Esc", "Back"), ("m", "Method"), ("?", "Help")];
+        }
         AnalysisView::Main => {}
     }
     // The Sample form owns the keys over whichever tool; its footer names the rest.
@@ -295,6 +297,9 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
         };
         if detail {
             pairs.push(("Enter", "Detail"));
+        }
+        if matches!(tool, AnalysisTool::CorrelationMatrix) {
+            pairs.push(("m", "Method"));
         }
         rest.push((g.updown, "Rows"));
         // Describe and Distribution scroll only when the statistics do not all fit.
@@ -1030,6 +1035,7 @@ mod tests {
         assert!(!has(&app, "Enter"), "a column with itself has no detail");
         app.analysis_modal.selected_correlation = Some((1, 2));
         assert_eq!(label(&app, "Enter"), Some("Detail"));
+        assert_eq!(label(&app, "m"), Some("Method"));
     }
 
     /// Every combination of home-screen state the control bar can be drawn in.

@@ -1236,6 +1236,62 @@ fn test_esc_cancels_a_distribution_analysis_in_flight() {
     assert_eq!(app.analysis_modal.selected_tool, None);
 }
 
+/// `m` on the correlation matrix switches between Pearson and Spearman, named in the
+/// title, with nothing read again: y = x³ is a perfect rank relation but not a line.
+#[test]
+fn m_switches_the_correlation_matrix_between_pearson_and_spearman() {
+    use datui::analysis_modal::AnalysisTool;
+    use datui::statistics::CorrelationMethod;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cubes.csv");
+    let mut csv = "x,y\n".to_string();
+    for x in 1..=20i64 {
+        csv.push_str(&format!("{x},{}\n", x * x * x));
+    }
+    std::fs::write(&path, csv).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+
+    app.event(&key(KeyCode::Char('a')));
+    app.analysis_modal.sidebar_state.select(Some(2));
+    show_sample_form(&mut app);
+    let next = app.event(&key(KeyCode::Enter));
+    assert!(matches!(next, Some(AppEvent::AnalysisCorrelationCompute)));
+    app.event(&next.unwrap());
+    drain_events(&mut app, &rx);
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::CorrelationMatrix)
+    );
+
+    let screen = rows_at(&mut app, 120, 24).join("\n");
+    assert!(screen.contains("Correlation Matrix"), "{screen}");
+    assert!(screen.contains("Pearson r"), "{screen}");
+    assert_eq!(screen.matches("1.000").count(), 2, "the diagonal: {screen}");
+    assert!(screen.contains("0.9"), "three places: {screen}");
+
+    assert!(
+        app.event(&key(KeyCode::Char('m'))).is_none(),
+        "nothing to read"
+    );
+    assert_eq!(
+        app.analysis_modal.correlation_method,
+        CorrelationMethod::Spearman
+    );
+    let rho = datui::glyphs::get().rho;
+    let screen = rows_at(&mut app, 120, 24).join("\n");
+    assert!(screen.contains(&format!("Spearman {rho}")), "{screen}");
+    assert_eq!(screen.matches("1.000").count(), 4, "{screen}");
+
+    app.event(&key(KeyCode::Char('m')));
+    assert_eq!(
+        app.analysis_modal.correlation_method,
+        CorrelationMethod::Pearson
+    );
+}
+
 #[test]
 fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
@@ -16815,6 +16871,100 @@ fn serve_over_http_stalling(
     (url, fetched)
 }
 
+/// Serve `body` at `http://127.0.0.1:<port>/<name>` without saying how long it is, to
+/// HEAD or GET: the body runs until the connection closes. Returns the URL and a count
+/// of the GETs.
+#[cfg(feature = "http")]
+fn serve_over_http_unsized(
+    name: &str,
+    body: Vec<u8>,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/{name}", listener.local_addr().unwrap());
+    let fetched = Arc::new(AtomicUsize::new(0));
+    let counter = fetched.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                head.push(byte[0]);
+            }
+            let get = head.starts_with(b"GET");
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nConnection: close\r\n\r\n"
+            );
+            if get {
+                counter.fetch_add(1, Ordering::SeqCst);
+                let _ = stream.write_all(&body);
+            }
+        }
+    });
+    (url, fetched)
+}
+
+/// A catalog file downloaded without a question that runs past its limit stops and
+/// asks once; agreed to, it is fetched whole and opens, and nothing asks again.
+#[cfg(feature = "http")]
+#[test]
+fn an_unasked_download_past_its_limit_asks_once() {
+    use datui::UnaskedDownload;
+    use std::sync::atomic::Ordering;
+    common::isolate_cache();
+    let mut body = b"id,name\n".to_vec();
+    for i in 0..300 {
+        body.extend_from_slice(format!("{i},row\n").as_bytes());
+    }
+    let (url, fetched) = serve_over_http_unsized("growing.csv", body);
+    let dir = tempfile::tempdir().unwrap();
+    let options = OpenOptions {
+        temp_dir: Some(dir.path().to_path_buf()),
+        download_unasked: Some(UnaskedDownload {
+            limit: 1_000,
+            listed: Some(500),
+        }),
+        ..OpenOptions::default()
+    };
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    let mut asked = Vec::new();
+    let mut next = Some(AppEvent::Open(vec![PathBuf::from(&url)], options));
+    loop {
+        match next.take() {
+            Some(ev) => next = app.event(&ev),
+            None if app.awaiting_open_confirmation() => {
+                asked.push((
+                    app.confirmation_modal.message.clone(),
+                    fetched.load(Ordering::SeqCst),
+                ));
+                next = Some(key(KeyCode::Enter));
+            }
+            None => match next_event(&app, &rx) {
+                Some(ev) => next = Some(ev),
+                None => break,
+            },
+        }
+    }
+    assert_eq!(asked.len(), 1, "asked once: {asked:?}");
+    let (message, downloads) = &asked[0];
+    assert_eq!(*downloads, 1, "it started without asking");
+    assert!(message.contains("passed 50 MB"), "{message}");
+    assert!(message.contains("File size: unknown"), "{message}");
+    assert_eq!(
+        fetched.load(Ordering::SeqCst),
+        2,
+        "fetched whole once agreed"
+    );
+    assert_eq!(column_names(&app), ["id", "name"]);
+    assert_eq!(app.error_message(), None);
+}
+
 /// Ctrl+O while an HTTP server has gone quiet mid-body stops the download and
 /// removes its file, long before the server would have sent the rest.
 #[cfg(feature = "http")]
@@ -17669,7 +17819,8 @@ fn column_widths_from_the_sidebar() {
     draw(&mut app, 100, 24);
     assert_eq!(choice(&app, "description"), WidthChoice::Manual(url_width));
 
-    // w is automatic again; wider and narrower step from the width drawn.
+    // w is automatic again; wider and narrower step from the width on screen, the
+    // room the last column fills included.
     on_column(&mut app, "description");
     press(&mut app, KeyCode::Char('w'));
     apply(&mut app);
@@ -17679,7 +17830,7 @@ fn column_widths_from_the_sidebar() {
         .data_table_state
         .as_ref()
         .unwrap()
-        .shown_width("status")
+        .on_screen_width("status")
         .unwrap();
     on_column(&mut app, "status");
     press(&mut app, KeyCode::Char('>'));
@@ -20222,7 +20373,7 @@ fn test_inspector_compares_rows_and_lists_only_the_differences() {
         rows.join("\n")
     );
 
-    // Compare off: Filled lists only the fields with a value.
+    // Compare off: `f` hides the nulls and empties, and says so.
     press_key(&mut app, KeyCode::Char('c'), KeyModifiers::NONE);
     press_key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
     press_key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
@@ -20233,7 +20384,14 @@ fn test_inspector_compares_rows_and_lists_only_the_differences() {
         rows[1].contains("1 null") && rows[1].contains("1 empty"),
         "{text}"
     );
-    assert!(rows[1].contains("filled"), "{text}");
+    assert!(rows[1].contains("nulls hidden"), "{text}");
+    let wide = rows_at(&mut app, 200, 24).join("\n");
+    assert!(wide.contains("Nulls: hidden"), "{wide}");
+    press_key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
+    let wide = rows_at(&mut app, 200, 24).join("\n");
+    assert!(wide.contains("Nulls: shown"), "{wide}");
+    assert!(wide.contains(" email "), "{wide}");
+    press_key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
     assert!(!text.contains(" customer_name "), "{text}");
     assert!(!text.contains(" email "), "{text}");
     // `s` orders them by name.

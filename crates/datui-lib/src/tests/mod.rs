@@ -29,6 +29,8 @@ mod cloud_recent_facts {
             schema: Arc::new(schema),
             row_group_rows: rows.to_vec(),
             row_group_bytes: rows.iter().map(|r| r * 8).collect(),
+            file_bytes: 0,
+            column_bytes: Vec::new(),
         })
     }
 
@@ -131,12 +133,12 @@ mod cloud_recent_facts {
         let tmp = tempfile::tempdir().unwrap();
         let cache = crate::cache::CacheManager::with_dir(tmp.path().to_path_buf());
         let schema = Schema::from_iter([Field::new("id".into(), DataType::Int64)]);
-        let footer = crate::cloud_hive::ParquetFooter {
+        let footer = crate::cloud_hive::FileFooter {
             schema: Arc::new(schema),
             row_group_rows: vec![3, 4],
-            column_bytes_per_row: Vec::new(),
-            object_bytes: None,
-            object_etag: None,
+            row_group_bytes: Vec::new(),
+            file_bytes: 0,
+            column_bytes: Vec::new(),
         };
         crate::App::record_cloud_object_facts(Some(&cache), "s3://bucket/x.parquet", &footer);
         let known = cache.load_dataset_facts();
@@ -389,9 +391,9 @@ fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileSchema {
+        let footer = crate::schema_union::FileFooter {
             schema,
-            rows: 100,
+            row_group_rows: vec![100],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
@@ -621,9 +623,9 @@ fn end_pressed_at_one_dataset_does_not_move_the_next() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileSchema {
+        let footer = crate::schema_union::FileFooter {
             schema,
-            rows: 100,
+            row_group_rows: vec![100],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
@@ -712,9 +714,9 @@ fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileSchema {
+        let footer = crate::schema_union::FileFooter {
             schema,
-            rows: 100,
+            row_group_rows: vec![100],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
@@ -955,9 +957,9 @@ fn a_pass_that_brings_no_count_still_leaves_rows_on_screen() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileSchema {
+        let footer = crate::schema_union::FileFooter {
             schema,
-            rows: 100,
+            row_group_rows: vec![100],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
@@ -1112,9 +1114,9 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileSchema {
+        let footer = crate::schema_union::FileFooter {
             schema,
-            rows: 100,
+            row_group_rows: vec![100],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
@@ -3263,9 +3265,9 @@ fn a_pass_from_the_dataset_before_this_one_joins_nothing_to_it() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileSchema {
+        let footer = crate::schema_union::FileFooter {
             schema,
-            rows: 1,
+            row_group_rows: vec![1],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
@@ -3347,9 +3349,9 @@ fn a_pass_that_failed_waits_for_work_already_asked_for() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileSchema {
+        let footer = crate::schema_union::FileFooter {
             schema,
-            rows: 1,
+            row_group_rows: vec![1],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
@@ -3432,9 +3434,9 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileSchema {
+        let footer = crate::schema_union::FileFooter {
             schema,
-            rows: 1,
+            row_group_rows: vec![1],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
@@ -3545,9 +3547,9 @@ fn columns_held_for_one_dataset_are_not_given_to_the_next() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileSchema {
+        let footer = crate::schema_union::FileFooter {
             schema,
-            rows: 1,
+            row_group_rows: vec![1],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
@@ -3622,9 +3624,9 @@ fn a_late_event_from_an_old_pass_does_not_throw_away_the_live_answer() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileSchema {
+        let footer = crate::schema_union::FileFooter {
             schema,
-            rows: 1,
+            row_group_rows: vec![1],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
@@ -3692,9 +3694,9 @@ fn an_older_pass_finishing_late_does_not_displace_a_newer_one() {
     let found = |name: &str| {
         let mut lf = df!(name => &[1i64]).unwrap().lazy();
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileSchema {
+        let footer = crate::schema_union::FileFooter {
             schema,
-            rows: 1,
+            row_group_rows: vec![1],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
@@ -3764,9 +3766,9 @@ fn columns_arriving_under_a_query_wait_rather_than_break_it() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileSchema {
+        let footer = crate::schema_union::FileFooter {
             schema,
-            rows: 2,
+            row_group_rows: vec![2],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
@@ -3865,9 +3867,9 @@ fn a_staged_open_joins_what_its_footers_found() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileSchema {
+        let footer = crate::schema_union::FileFooter {
             schema,
-            rows: 2,
+            row_group_rows: vec![2],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),

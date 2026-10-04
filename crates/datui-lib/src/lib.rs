@@ -9296,7 +9296,7 @@ impl LocalHive {
     }
 
     /// Keep the directory's footers, if every one was read and parsed.
-    fn remember(&self, read: &[usize], footers: &[Option<crate::schema_union::FileSchema>]) {
+    fn remember(&self, read: &[usize], footers: &[Option<crate::schema_union::FileFooter>]) {
         remember_local_shape(
             self.remembered.as_ref(),
             &self.key(),
@@ -9313,7 +9313,7 @@ impl LocalHive {
     fn dataset(
         self: &Arc<Self>,
         read: &[usize],
-        footers: &[Option<crate::schema_union::FileSchema>],
+        footers: &[Option<crate::schema_union::FileFooter>],
     ) -> Option<LocalDataset> {
         let files = &self.files;
         let mut dataset = crate::schema_union::union_sampled(files.len(), read, footers);
@@ -9335,7 +9335,7 @@ impl LocalHive {
         let file_rows: Vec<usize> = if every_footer {
             footers
                 .iter()
-                .map(|f| f.as_ref().map(|f| f.rows))
+                .map(|f| f.as_ref().map(crate::schema_union::FileFooter::rows))
                 .collect::<Option<Vec<_>>>()
                 .unwrap_or_default()
         } else {
@@ -9343,7 +9343,11 @@ impl LocalHive {
         };
         // Over the readable files only, as the scan is: a file mid-write is in neither.
         let row_groups: Vec<Vec<usize>> = if every_footer {
-            footers.iter().flatten().map(|f| vec![f.rows]).collect()
+            footers
+                .iter()
+                .flatten()
+                .map(|f| f.row_group_rows.clone())
+                .collect()
         } else {
             Vec::new()
         };
@@ -9423,13 +9427,13 @@ impl LocalHive {
     /// rest, once, and keeps the shape when they are all in, so a reopen reads none.
     fn counter(
         self: &Arc<Self>,
-        count: crate::schema_union::FooterCount<crate::schema_union::FileSchema>,
+        count: crate::schema_union::FooterCount<crate::schema_union::FileFooter>,
     ) -> crate::widgets::datatable::FileCounter {
         let (hive, count) = (self.clone(), Arc::new(count));
         Arc::new(move || {
             let counted = count.count(
                 |missing| DataTableState::footers_for_count(&hive.files, missing, &hive.meter),
-                |footer| vec![footer.rows],
+                |footer| footer.row_group_rows.clone(),
             );
             if let Some(whole) = counted.whole.as_deref() {
                 let every: Vec<usize> = (0..hive.files.len()).collect();
@@ -9458,7 +9462,7 @@ fn remember_local_shape(
     fingerprint: Option<&str>,
     files: usize,
     read: &[usize],
-    footers: &[Option<crate::schema_union::FileSchema>],
+    footers: &[Option<crate::schema_union::FileFooter>],
 ) {
     let (Some(cache), Some(fingerprint)) = (cache, fingerprint) else {
         return;
@@ -9831,7 +9835,10 @@ impl App {
             // A damaged file can carry the right header and the wrong count; refuse it
             // rather than index past the listing.
             .filter(|shape| shape.files.len() == files.len())
-            .and_then(|shape| cloud_hive::footers_from_cache(&shape.files, &shape.schemas));
+            .and_then(|shape| {
+                let sizes: Vec<u64> = files.iter().map(|f| f.size).collect();
+                crate::schema_union::footers_from_cache(&shape.files, &shape.schemas, &sizes)
+            });
 
         let staged = remembered.is_none() && files.len() > cloud_hive::FOOTERS_AT_ONCE;
         let read = if remembered.is_some() {
@@ -10171,7 +10178,7 @@ impl App {
         if read.len() != files.len() || !footers.iter().all(Option::is_some) {
             return;
         }
-        let (cached, schemas) = cloud_hive::footers_to_cache(footers);
+        let (cached, schemas) = crate::schema_union::footers_to_cache(footers);
         cache.save_dataset_shape(
             full,
             crate::cache::DatasetShape {
@@ -10275,7 +10282,7 @@ impl App {
     fn record_cloud_object_facts(
         cache: Option<&crate::cache::CacheManager>,
         full: &str,
-        footer: &cloud_hive::ParquetFooter,
+        footer: &cloud_hive::FileFooter,
     ) {
         let Some(cache) = cache else {
             return;
@@ -10293,7 +10300,7 @@ impl App {
                     .map(|d| d.as_secs())
                     .unwrap_or_default(),
                 size: 0,
-                rows: Some(footer.row_group_rows.iter().sum()),
+                rows: Some(footer.rows()),
                 cols: Some(columns.len()),
                 cols_sampled: false,
                 columns,
@@ -10644,7 +10651,7 @@ impl App {
             return Err(color_eyre::eyre::eyre!("a bucket, not an object"));
         }
         let meter = report.meter.clone();
-        let footer = wait_on_runtime(runtime, async move {
+        let (footer, etag) = wait_on_runtime(runtime, async move {
             cloud_hive::footer_of_cloud_parquet(store, &key, &meter).await
         })
         .ok_or_else(|| color_eyre::eyre::eyre!("cancelled"))??;
@@ -10661,18 +10668,15 @@ impl App {
         // The commonest cloud open, and the one the dataset index never heard about:
         // the prefix route records what it read, and this one read a footer too.
         Self::record_cloud_object_facts(report.remembered.as_ref(), &full, &footer);
+        let column_bytes = crate::schema_union::column_bytes_per_row(&[Some(footer.clone())]);
         let facts = OpenFacts {
+            remote_objects: vec![crate::local_copy::RemoteObject {
+                url: full,
+                size: footer.file_bytes as u64,
+                etag,
+            }],
             row_groups: vec![footer.row_group_rows],
-            remote_objects: footer
-                .object_bytes
-                .map(|size| crate::local_copy::RemoteObject {
-                    url: full,
-                    size,
-                    etag: footer.object_etag,
-                })
-                .into_iter()
-                .collect(),
-            column_bytes: footer.column_bytes_per_row,
+            column_bytes,
             ..Default::default()
         };
         Ok((state, facts))

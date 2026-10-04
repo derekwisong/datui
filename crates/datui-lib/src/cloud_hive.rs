@@ -4,109 +4,54 @@
 use color_eyre::Result;
 use object_store::path::Path as OsPath;
 use object_store::{ObjectStore, ObjectStoreExt};
-use polars::prelude::{ParquetReader, Schema, SchemaExt, SerReader};
-use std::io::Cursor;
+use polars::prelude::Schema;
 use std::sync::Arc;
 
-use crate::schema_union::FileSchema;
+pub use crate::schema_union::FileFooter;
 pub use crate::schema_union::lenient_scan;
 use crate::schema_union::with_partition_columns;
 
 const PARQUET_FOOTER_TAIL_BYTES: usize = 256 * 1024;
 
-/// What one Parquet footer says about its object, short of the data.
-pub struct ParquetFooter {
-    pub schema: Arc<Schema>,
-    /// Rows in each row group, in file order.
-    pub row_group_rows: Vec<usize>,
-    /// Uncompressed bytes per row of each column, averaged over the file and summed
-    /// over a nested column's leaves. The schema gives a fixed-size column's width; a
-    /// string's or a nested column's is only known from here.
-    pub column_bytes_per_row: Vec<(String, usize)>,
-    /// The object's size, where the read asked for it.
-    pub object_bytes: Option<u64>,
-    /// The store's tag for the object read, where it gave one.
-    pub object_etag: Option<String>,
+/// Read a range, counting the request against `meter` and the bytes it returned.
+///
+/// The request is counted whether or not it succeeded — it was made either way, and a
+/// prefix that is slow because half its reads fail should say so — while only bytes
+/// that arrived are added. Written as a macro rather than a function because naming
+/// the store's byte buffer would mean taking a dependency on `bytes` for one signature.
+macro_rules! counted_range {
+    ($store:expr, $path:expr, $range:expr, $meter:expr) => {{
+        let got = $store.get_range($path, $range).await;
+        $meter.footer_request(got.as_ref().map(|b| b.len() as u64).unwrap_or(0));
+        got.map_err(|e| color_eyre::eyre::eyre!("Cloud read failed: {}", e))
+    }};
 }
 
-/// Read the Parquet footer at the end of `tail_bytes`. The slice must be the tail of the
-/// file.
-fn footer_from_parquet_tail(tail_bytes: &[u8]) -> Result<ParquetFooter> {
-    let mut cursor = Cursor::new(tail_bytes);
-    let mut reader = ParquetReader::new(&mut cursor);
-    let arrow_schema = reader
-        .schema()
-        .map_err(|e| color_eyre::eyre::eyre!("Parquet schema read failed: {}", e))?;
-    let metadata = reader
-        .get_metadata()
-        .map_err(|e| color_eyre::eyre::eyre!("Parquet row count read failed: {}", e))?;
-    let schema = Schema::from_arrow_schema(arrow_schema.as_ref());
-    let row_group_rows: Vec<usize> = metadata.row_groups.iter().map(|rg| rg.num_rows()).collect();
-    let rows: usize = row_group_rows.iter().sum();
-    let column_bytes_per_row = if rows > 0 {
-        crate::schema_union::parquet_column_bytes(&schema, metadata)
-            .into_iter()
-            .map(|(name, bytes)| (name, bytes / rows))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    Ok(ParquetFooter {
-        schema: Arc::new(schema),
-        row_group_rows,
-        column_bytes_per_row,
-        object_bytes: None,
-        object_etag: None,
-    })
-}
-
-/// One object's footer, from a single tail read. Does not fetch the data.
+/// One object's footer, with each column's width, and the store's tag for the object:
+/// a head for its size, then one tail read. Does not fetch the data.
+///
+/// Two requests, not one: this route does not know the object's size, so it asks before
+/// it reads. Both are counted against `meter`.
 pub async fn footer_of_cloud_parquet(
     store: Arc<dyn ObjectStore>,
     key: &str,
     meter: &crate::measurements::Meter,
-) -> Result<ParquetFooter> {
+) -> Result<(FileFooter, Option<String>)> {
     let began = std::time::Instant::now();
-    let footer = read_parquet_footer(&store, &crate::cloud_browse::object_path(key), meter).await;
+    let path = crate::cloud_browse::object_path(key);
+    let read = async {
+        let head = store.head(&path).await;
+        // A `head` returns no body, so it is a request that brought back nothing.
+        meter.footer_request(0);
+        let meta = head.map_err(|e| color_eyre::eyre::eyre!("Cloud head failed: {}", e))?;
+        let size = meta.size;
+        let start = size.saturating_sub(PARQUET_FOOTER_TAIL_BYTES as u64);
+        let tail = counted_range!(store, &path, start..size, meter)?;
+        FileFooter::from_tail(&tail, size as usize, true).map(|footer| (footer, meta.e_tag))
+    };
+    let footer = read.await;
     meter.read_footers(began.elapsed(), Some(1), true);
     footer
-}
-
-/// Fetch the tail of one object and read its footer, counted against `meter`.
-///
-/// Does not fetch the full file.
-///
-/// Two requests, not one: this route does not know the object's size, so it asks before
-/// it reads. Both are counted — unmetered, the routes that come through here would
-/// report footers read against no requests at all.
-async fn read_parquet_footer(
-    store: &Arc<dyn ObjectStore>,
-    path: &OsPath,
-    meter: &crate::measurements::Meter,
-) -> Result<ParquetFooter> {
-    let head = store.head(path).await;
-    // A `head` returns no body, so it is a request that brought back nothing.
-    meter.footer_request(0);
-    let meta = head.map_err(|e| color_eyre::eyre::eyre!("Cloud head failed: {}", e))?;
-    let size = meta.size;
-    let start = size.saturating_sub(PARQUET_FOOTER_TAIL_BYTES as u64);
-    let range = start..size;
-    let got = store.get_ranges(path, &[range]).await;
-    meter.footer_request(
-        got.as_ref()
-            .map(|r| r.iter().map(|b| b.len() as u64).sum())
-            .unwrap_or(0),
-    );
-    let ranges = got.map_err(|e| color_eyre::eyre::eyre!("Cloud get_ranges failed: {}", e))?;
-    let tail = ranges
-        .into_iter()
-        .next()
-        .ok_or_else(|| color_eyre::eyre::eyre!("Empty range response"))?;
-    footer_from_parquet_tail(&tail).map(|footer| ParquetFooter {
-        object_bytes: Some(size),
-        object_etag: meta.e_tag,
-        ..footer
-    })
 }
 
 /// One data file of a cloud dataset: its key in the store and its size.
@@ -710,24 +655,7 @@ pub fn dataset_schema_from_footers(
         [only] => (only, only),
         [first, .., last] => (first, last),
     };
-    // The footers come back in the order of `read`, which indexes `files`: that is
-    // where an object's size is, since a footer is a read of the tail and says nothing
-    // about how long the object is. With a sampled read those two orders are not the
-    // same list, so the index has to come from `read` and not from the position.
-    let per_file: Vec<Option<FileSchema>> = footers
-        .iter()
-        .zip(read)
-        .map(|(f, index)| {
-            f.as_ref().map(|f| FileSchema {
-                schema: f.schema.clone(),
-                rows: f.row_group_rows.iter().sum(),
-                file_bytes: files.get(*index).map(|f| f.size as usize).unwrap_or(0),
-                row_group_bytes: f.row_group_bytes.clone(),
-                column_bytes: Vec::new(),
-            })
-        })
-        .collect();
-    let mut union = crate::schema_union::union_sampled(files.len(), read, &per_file);
+    let mut union = crate::schema_union::union_sampled(files.len(), read, footers);
     if union.schema.is_empty() {
         return Err(color_eyre::eyre::eyre!(
             "No readable parquet footer in cloud prefix"
@@ -748,75 +676,6 @@ pub fn dataset_schema_from_footers(
 pub const FOOTERS_AT_ONCE: usize = crate::schema_union::FOOTERS_AT_ONCE;
 /// The first read of a footer. Most footers fit; a larger one costs a second request.
 const COUNT_TAIL_BYTES: u64 = 16 * 1024;
-
-/// What one file's footer says: the columns it has, and the rows in each row group.
-/// Both come from the same tail read, so knowing every file's columns costs the dataset
-/// nothing beyond the count it already pays for.
-#[derive(Debug, Clone)]
-pub struct FileFooter {
-    pub schema: Arc<Schema>,
-    pub row_group_rows: Vec<usize>,
-    /// Compressed bytes of each row group, in the same order.
-    pub row_group_bytes: Vec<usize>,
-}
-
-/// What a footer pass learned, in the form the cache keeps it.
-///
-/// The schemas are gathered into a table and referred to by index: a dataset of ten
-/// thousand files usually has one schema, and writing each file's columns out in full
-/// would make the cache larger than the footers it saves reading.
-pub fn footers_to_cache(
-    footers: &[Option<FileFooter>],
-) -> (
-    Vec<crate::cache::CachedFooter>,
-    Vec<Vec<(String, polars::prelude::DataType)>>,
-) {
-    let mut schemas: Vec<Vec<(String, polars::prelude::DataType)>> = Vec::new();
-    let cached = footers
-        .iter()
-        .map(|footer| match footer {
-            None => crate::cache::CachedFooter::default(),
-            Some(f) => crate::cache::CachedFooter {
-                schema: Some(crate::cache::DatasetShape::intern_schema(
-                    &mut schemas,
-                    &f.schema,
-                )),
-                row_group_rows: f.row_group_rows.clone(),
-                row_group_bytes: f.row_group_bytes.clone(),
-                column_bytes: Vec::new(),
-            },
-        })
-        .collect();
-    (cached, schemas)
-}
-
-/// The footers a cache kept, back in the form a fresh pass would have produced.
-///
-/// `None` for a file whose footer would not read, which is how the pass reports one and
-/// so how the cache has to give it back: a reopen that quietly read it again would be a
-/// different dataset from the one that was cached.
-///
-/// A schema index the table does not have means the cache is inconsistent with itself,
-/// and the whole entry is refused rather than half-used.
-pub fn footers_from_cache(
-    cached: &[crate::cache::CachedFooter],
-    schemas: &[Vec<(String, polars::prelude::DataType)>],
-) -> Option<Vec<Option<FileFooter>>> {
-    cached
-        .iter()
-        .map(|f| {
-            let Some(at) = f.schema else {
-                return Some(None);
-            };
-            let schema = crate::cache::DatasetShape::schema_at(schemas, at)?;
-            Some(Some(FileFooter {
-                schema: Arc::new(schema),
-                row_group_rows: f.row_group_rows.clone(),
-                row_group_bytes: f.row_group_bytes.clone(),
-            }))
-        })
-        .collect()
-}
 
 /// Every file's footer, in file order: a small ranged read at the end of each file,
 /// many at once. No data is read. A file whose footer cannot be read is `None` rather
@@ -979,20 +838,6 @@ impl FooterCount {
     }
 }
 
-/// Read a range, counting the request against `meter` and the bytes it returned.
-///
-/// The request is counted whether or not it succeeded — it was made either way, and a
-/// prefix that is slow because half its reads fail should say so — while only bytes
-/// that arrived are added. Written as a macro rather than a function because naming
-/// the store's byte buffer would mean taking a dependency on `bytes` for one signature.
-macro_rules! counted_range {
-    ($store:expr, $path:expr, $range:expr, $meter:expr) => {{
-        let got = $store.get_range($path, $range).await;
-        $meter.footer_request(got.as_ref().map(|b| b.len() as u64).unwrap_or(0));
-        got.map_err(|e| color_eyre::eyre::eyre!("Cloud read failed: {}", e))
-    }};
-}
-
 pub(crate) async fn footer_of_file(
     store: &Arc<dyn ObjectStore>,
     file: &DatasetFile,
@@ -1014,23 +859,7 @@ pub(crate) async fn footer_of_file(
             meter
         )?
     };
-    let mut cursor = Cursor::new(tail.as_ref());
-    let mut reader = ParquetReader::new(&mut cursor);
-    let arrow_schema = reader
-        .schema()
-        .map_err(|e| color_eyre::eyre::eyre!("Parquet schema read failed: {}", e))?;
-    let metadata = reader
-        .get_metadata()
-        .map_err(|e| color_eyre::eyre::eyre!("Parquet footer read failed: {}", e))?;
-    Ok(FileFooter {
-        schema: Arc::new(Schema::from_arrow_schema(arrow_schema.as_ref())),
-        row_group_rows: metadata.row_groups.iter().map(|rg| rg.num_rows()).collect(),
-        row_group_bytes: metadata
-            .row_groups
-            .iter()
-            .map(|rg| rg.compressed_size())
-            .collect(),
-    })
+    FileFooter::from_tail(&tail, file.size as usize, false)
 }
 
 /// The length of the footer metadata, from the last eight bytes of a Parquet file: a
@@ -1710,23 +1539,31 @@ mod tests {
                 schema: schema_of(&[("id", DataType::Int64), ("note", DataType::String)]),
                 row_group_rows: vec![100, 50],
                 row_group_bytes: vec![4_096, 2_048],
+                file_bytes: 10,
+                // A local read keeps each column's width; it comes back by name.
+                column_bytes: vec![("id".into(), 1_200), ("note".into(), 900)],
             }),
             // A second file with the same shape: the schema table must hold it once.
             Some(FileFooter {
                 schema: schema_of(&[("id", DataType::Int64), ("note", DataType::String)]),
                 row_group_rows: vec![7],
                 row_group_bytes: vec![512],
+                file_bytes: 20,
+                column_bytes: Vec::new(),
             }),
             // One that drifted, and one that would not read at all.
             Some(FileFooter {
                 schema: schema_of(&[("id", DataType::Int64), ("extra", DataType::Boolean)]),
                 row_group_rows: vec![3],
                 row_group_bytes: vec![128],
+                file_bytes: 30,
+                column_bytes: Vec::new(),
             }),
             None,
         ];
 
-        let (cached, schemas) = footers_to_cache(&original);
+        let (cached, schemas) = crate::schema_union::footers_to_cache(&original);
+        let sizes = [10, 20, 30, 0];
         assert_eq!(
             schemas.len(),
             2,
@@ -1734,7 +1571,8 @@ mod tests {
         );
         assert_eq!(cached[3].schema, None, "and the unreadable one says so");
 
-        let back = footers_from_cache(&cached, &schemas).expect("the table is consistent");
+        let back = crate::schema_union::footers_from_cache(&cached, &schemas, &sizes)
+            .expect("the table is consistent");
         assert_eq!(back.len(), original.len());
         for (before, after) in original.iter().zip(&back) {
             match (before, after) {
@@ -1743,6 +1581,8 @@ mod tests {
                     assert_eq!(a.schema, b.schema, "same columns, same types");
                     assert_eq!(a.row_group_rows, b.row_group_rows);
                     assert_eq!(a.row_group_bytes, b.row_group_bytes);
+                    assert_eq!(a.file_bytes, b.file_bytes, "the size, from the listing");
+                    assert_eq!(a.column_bytes, b.column_bytes);
                 }
                 _ => panic!("a footer changed whether it could be read"),
             }
@@ -1757,7 +1597,7 @@ mod tests {
             column_bytes: Vec::new(),
         }];
         assert!(
-            footers_from_cache(&broken, &schemas).is_none(),
+            crate::schema_union::footers_from_cache(&broken, &schemas, &[1]).is_none(),
             "an entry that points at a schema it does not have is refused whole"
         );
     }
@@ -3432,25 +3272,25 @@ mod tests {
     }
 
     #[test]
-    fn footer_from_parquet_tail_invalid_returns_err() {
+    fn a_footer_from_a_tail_invalid_returns_err() {
         let invalid = vec![0u8; 100];
-        let r = footer_from_parquet_tail(&invalid);
+        let r = FileFooter::from_tail(&invalid, invalid.len(), true);
         assert!(r.is_err());
     }
 
     #[test]
-    fn footer_from_parquet_tail_reads_schema_and_row_count() {
+    fn a_footer_from_a_tail_reads_schema_and_row_count() {
         use polars::prelude::{ParquetWriter, df};
         let mut df = df!("a" => &[1i32, 2, 3], "b" => &["x", "y", "z"]).unwrap();
         let mut bytes = Vec::new();
         ParquetWriter::new(&mut bytes).finish(&mut df).unwrap();
-        let footer = footer_from_parquet_tail(&bytes).unwrap();
+        let footer = FileFooter::from_tail(&bytes, bytes.len(), true).unwrap();
         assert_eq!(footer.row_group_rows, [3]);
         assert_eq!(footer.schema.len(), 2);
     }
 
     #[test]
-    fn footer_from_parquet_tail_reads_row_groups_and_column_widths() {
+    fn a_footer_from_a_tail_reads_row_groups_and_column_widths() {
         use polars::prelude::{ParquetWriter, df};
         let ids: Vec<i32> = (0..1000).collect();
         let notes: Vec<String> = ids.iter().map(|i| format!("note-{i:04}")).collect();
@@ -3464,16 +3304,16 @@ mod tests {
             .with_row_group_size(Some(400))
             .finish(&mut df)
             .unwrap();
-        let footer = footer_from_parquet_tail(&bytes).unwrap();
+        let footer = FileFooter::from_tail(&bytes, bytes.len(), true).unwrap();
         assert!(
             footer.row_group_rows.len() > 1,
             "{:?}",
             footer.row_group_rows
         );
         assert_eq!(footer.row_group_rows.iter().sum::<usize>(), 1000);
+        let widths = crate::schema_union::column_bytes_per_row(&[Some(footer.clone())]);
         let width = |column: &str| {
-            footer
-                .column_bytes_per_row
+            widths
                 .iter()
                 .find(|(n, _)| n == column)
                 .map(|(_, w)| *w)

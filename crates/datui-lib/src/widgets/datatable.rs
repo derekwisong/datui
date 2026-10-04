@@ -24,7 +24,7 @@ use crate::numfmt::{self, CellFormatter, NumberFormatSettings};
 use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec, ReshapeSource};
 use crate::python_script::{SidebarFilter, Step, py_str};
 use crate::query::{ParsedQuery, parse_query_over};
-use crate::schema_union::FileSchema;
+use crate::schema_union::FileFooter;
 use crate::statistics::collect_lazy;
 use crate::unfinished::{Claim, Writer};
 use crate::widgets::column_paging::{ColumnMove, CursorMove, OnScreen, Room};
@@ -3347,7 +3347,7 @@ impl DataTableState {
     /// opening. Metadata only — no data is read.
     pub fn footers_of_parquet_dir(
         dir: &Path,
-    ) -> (Vec<PathBuf>, Vec<usize>, Vec<Option<FileSchema>>) {
+    ) -> (Vec<PathBuf>, Vec<usize>, Vec<Option<FileFooter>>) {
         let (files, read, footers, _skipped) = Self::footers_of_parquet_dir_reporting(
             dir,
             &crate::schema_union::FooterProgress::default(),
@@ -3371,7 +3371,7 @@ impl DataTableState {
     ) -> (
         Vec<PathBuf>,
         Vec<usize>,
-        Vec<Option<FileSchema>>,
+        Vec<Option<FileFooter>>,
         crate::schema_union::SkippedFiles,
     ) {
         let (files, skipped) = Self::list_parquet_dir(dir, meter, Some(&progress.listing()));
@@ -3456,7 +3456,7 @@ impl DataTableState {
         read: &[usize],
         progress: &crate::schema_union::FooterProgress,
         meter: &crate::measurements::Meter,
-    ) -> Vec<Option<FileSchema>> {
+    ) -> Vec<Option<FileFooter>> {
         let footers_began = std::time::Instant::now();
         let pass = progress.pass(read.len());
         let footers = each_at_once(read.len(), |i| {
@@ -3485,7 +3485,7 @@ impl DataTableState {
         files: &[PathBuf],
         read: &[usize],
         meter: &crate::measurements::Meter,
-    ) -> Vec<Option<FileSchema>> {
+    ) -> Vec<Option<FileFooter>> {
         let began = std::time::Instant::now();
         let footers = Self::read_local_footers(
             files,
@@ -3502,7 +3502,7 @@ impl DataTableState {
     /// One local Parquet file's columns, row count, row-group sizes and column sizes,
     /// from its footer. The metadata is already read for the row count; the sizes come
     /// off the same object.
-    fn footer_of(path: &Path) -> Option<FileSchema> {
+    fn footer_of(path: &Path) -> Option<FileFooter> {
         crate::schema_union::before_local_footer_read(path);
         let file = File::open(path).ok()?;
         // Asked of the open handle, so it is the file the footer was read from and not
@@ -3511,18 +3511,12 @@ impl DataTableState {
         let mut reader = ParquetReader::new(file);
         let arrow_schema = reader.schema().ok()?;
         let metadata = reader.get_metadata().ok()?;
-        let schema = Schema::from_arrow_schema(arrow_schema.as_ref());
-        Some(FileSchema {
-            column_bytes: crate::schema_union::parquet_column_bytes(&schema, metadata),
-            schema: Arc::new(schema),
-            rows: metadata.num_rows,
+        Some(FileFooter::from_metadata(
+            Schema::from_arrow_schema(arrow_schema.as_ref()),
+            metadata,
             file_bytes,
-            row_group_bytes: metadata
-                .row_groups
-                .iter()
-                .map(|group| group.compressed_size())
-                .collect(),
-        })
+            true,
+        ))
     }
 
     /// Exact row count for a local Parquet hive directory, computed by summing per-file
@@ -12569,9 +12563,9 @@ mod tests {
         let dataset_of = |lf: LazyFrame| {
             let mut lf = lf;
             let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-            let footer = crate::schema_union::FileSchema {
+            let footer = crate::schema_union::FileFooter {
                 schema,
-                rows: 2,
+                row_group_rows: vec![2],
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
                 column_bytes: Vec::new(),
@@ -12635,9 +12629,9 @@ mod tests {
         let dataset_of = |lf: LazyFrame| {
             let mut lf = lf;
             let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-            let footer = crate::schema_union::FileSchema {
+            let footer = crate::schema_union::FileFooter {
                 schema,
-                rows: 2,
+                row_group_rows: vec![2],
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
                 column_bytes: Vec::new(),
@@ -12696,9 +12690,9 @@ mod tests {
         let dataset_of = |lf: LazyFrame| {
             let mut lf = lf;
             let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-            let footer = crate::schema_union::FileSchema {
+            let footer = crate::schema_union::FileFooter {
                 schema,
-                rows: 100,
+                row_group_rows: vec![100],
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
                 column_bytes: Vec::new(),
@@ -12775,9 +12769,9 @@ mod tests {
         let dataset_of = |lf: LazyFrame| {
             let mut lf = lf;
             let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-            let footer = crate::schema_union::FileSchema {
+            let footer = crate::schema_union::FileFooter {
                 schema,
-                rows: 1,
+                row_group_rows: vec![1],
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
                 column_bytes: Vec::new(),
@@ -12846,9 +12840,9 @@ mod tests {
         let found = || {
             let mut lf = wider();
             let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-            let footer = crate::schema_union::FileSchema {
+            let footer = crate::schema_union::FileFooter {
                 schema,
-                rows: 2,
+                row_group_rows: vec![2],
                 file_bytes: 0,
                 row_group_bytes: Vec::new(),
                 column_bytes: Vec::new(),
@@ -13015,14 +13009,14 @@ mod tests {
     fn file_schema(
         columns: &[(&str, polars::prelude::DataType)],
         rows: usize,
-    ) -> Option<crate::schema_union::FileSchema> {
+    ) -> Option<crate::schema_union::FileFooter> {
         let mut schema = polars::prelude::Schema::with_capacity(columns.len());
         for (name, dtype) in columns {
             schema.with_column((*name).into(), dtype.clone());
         }
-        Some(crate::schema_union::FileSchema {
+        Some(crate::schema_union::FileFooter {
             schema: Arc::new(schema),
-            rows,
+            row_group_rows: vec![rows],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),

@@ -42,10 +42,10 @@ A dictionary to decode with, over those on the format search path: QuickFIX XML 
 Follow the file as it grows, as tail \-f does: a local CSV, TSV, PSV or NDJSON file or Arrow IPC stream, or standard input (\-). t pauses and resumes; Esc stops.
 .TP
 \fB\-\-tee\fR \fIFILE\fR
-Record standard input to FILE while viewing it, byte for byte. A WAV file's sizes are filled in when the stream ends. With \-, pass it on to standard output, as tee does, and draw on the terminal.
+Record standard input to FILE while viewing it. With \-, pass it on to standard output, as tee does, and draw on the terminal.
 .TP
 \fB\-\-tee\-raw\fR
-With \-\-tee: leave FILE exactly as the bytes came, a WAV header's sizes included.
+With \-\-tee: keep FILE exactly as the bytes came. Otherwise a stream that left its header's sizes blank has them filled in when it ends.
 .TP
 \fB\-\-force\fR
 With \-\-tee: replace FILE if it is there.

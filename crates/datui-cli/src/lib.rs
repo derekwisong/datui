@@ -272,11 +272,11 @@ pub struct Args {
     #[arg(short = 'f', long = "follow", action, help_heading = "Open")]
     pub follow: bool,
 
-    /// Record standard input to FILE while viewing it, byte for byte. A WAV file's sizes are filled in when the stream ends. With -, pass it on to standard output, as tee does, and draw on the terminal
+    /// Record standard input to FILE while viewing it. With -, pass it on to standard output, as tee does, and draw on the terminal
     #[arg(long = "tee", value_name = "FILE", help_heading = "Open")]
     pub tee: Option<std::path::PathBuf>,
 
-    /// With --tee: leave FILE exactly as the bytes came, a WAV header's sizes included
+    /// With --tee: keep FILE exactly as the bytes came. Otherwise a stream that left its header's sizes blank has them filled in when it ends
     #[arg(long = "tee-raw", requires = "tee", action, help_heading = "Open")]
     pub tee_raw: bool,
 

@@ -72,7 +72,8 @@ files, and remote data, with a message.
 
 ## Recording standard input
 
-`--tee FILE` records standard input to FILE, byte for byte, while you view it.
+`--tee FILE` records standard input to FILE while you view it: the bytes as they
+came, except a WAV stream's sizes, filled in when it ends (below).
 The table reads FILE itself; there is no second copy.
 
 ```bash

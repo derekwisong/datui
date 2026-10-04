@@ -24,8 +24,8 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `--compression <C>` | Compression, when the extension does not say: gzip, zstd, bzip2 or xz |
 | `--dict <FILE>` | A dictionary to decode with, over those on the format search path: QuickFIX XML (.xml) for FIX logs, DBC (.dbc) for CAN logs, or TOML with kind = "fix" or "dbc". Repeatable |
 | `-f, --follow` | Follow the file as it grows, as tail -f does: a local CSV, TSV, PSV or NDJSON file or Arrow IPC stream, or standard input (-). t pauses and resumes; Esc stops |
-| `--tee <FILE>` | Record standard input to FILE while viewing it, byte for byte. A WAV file's sizes are filled in when the stream ends. With -, pass it on to standard output, as tee does, and draw on the terminal |
-| `--tee-raw` | With --tee: leave FILE exactly as the bytes came, a WAV header's sizes included |
+| `--tee <FILE>` | Record standard input to FILE while viewing it. With -, pass it on to standard output, as tee does, and draw on the terminal |
+| `--tee-raw` | With --tee: keep FILE exactly as the bytes came. Otherwise a stream that left its header's sizes blank has them filled in when it ends |
 | `--force` | With --tee: replace FILE if it is there |
 | `--hex` | Open in the hex view, whatever the file holds |
 | `--hex-width <N>` | Bytes a row of the hex view holds, so records line up (default: 8, 16, 32 or 64, as many as fit) |

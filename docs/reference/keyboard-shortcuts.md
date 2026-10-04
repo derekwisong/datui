@@ -252,8 +252,8 @@ Where a dataset opens.
 | `Enter` | On a group's row, its rows, as at the table. Else open a struct, a list, or text holding a JSON object or array; or read a field the table's rows do not hold (hidden and binary columns) |
 | `r` | On a group's row, read a field the rows do not hold |
 | `/` | Find a field by name, then by value: type to narrow, Enter or ↓ keeps the list narrowed, Esc clears it |
-| `f` | Only the fields with a value; comparing, only those that differ |
-| `s` | Order: the table's, A-Z, or filled first |
+| `f` | Nulls: shown or hidden (null and empty fields); comparing, only the fields that differ |
+| `s` | Order: the table's, A-Z, or nulls last |
 | `c` | Compare: a column for the next row, or the pinned one |
 | `m` | Pin this row to compare others with; again to unpin |
 | `Esc / Space` | Close; Esc clears a find first |
@@ -515,6 +515,7 @@ Correlation Matrix in the Analysis sidebar.
 | `Home / End` | Jump to the first/last corner cell (the column resets too) |
 | `PgUp / PgDn` | A page |
 | `Enter` | Open pair detail view (on a cell) or select tool (sidebar); does nothing on a diagonal cell |
+| `m` | Method: Pearson r or Spearman ρ, named in the title (both come from the one run, so it reads nothing) |
 | `Esc` | Cancel a run in progress; otherwise close the analysis view |
 
 ### Analysis: Correlation · Sample
@@ -535,6 +536,7 @@ Correlation Matrix in the Analysis sidebar.
 
 | Key | Action |
 |---|---|
+| `m` | Pearson or Spearman |
 | `Esc` | Return to the correlation matrix. Resampling (r) works from the matrix, not from inside this detail |
 
 ## Analysis: Data Quality

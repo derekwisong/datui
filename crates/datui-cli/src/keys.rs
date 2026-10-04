@@ -649,9 +649,9 @@ pub const SCREENS: &[Screen] = &[
                         .more("On a group's row, read a field the rows do not hold"),
                     k("/", "Find", "Find a field by name, then by value")
                         .more("Find a field by name, then by value: type to narrow, Enter or ↓ keeps the list narrowed, Esc clears it"),
-                    k("f", "Filled", "Only fields with a value (comparing: that differ)")
-                        .more("Only the fields with a value; comparing, only those that differ"),
-                    k("s", "Order", "Order: the table's, A-Z, or filled first"),
+                    k("f", "Nulls", "Nulls shown or hidden (comparing: only diffs)")
+                        .more("Nulls: shown or hidden (null and empty fields); comparing, only the fields that differ"),
+                    k("s", "Order", "Order: the table's, A-Z, or nulls last"),
                     k("c", "Compare", "Compare with the next row, or the pinned one")
                         .more("Compare: a column for the next row, or the pinned one"),
                     k("m", "Pin", "Pin this row to compare others with; again to unpin"),
@@ -977,6 +977,8 @@ pub const SCREENS: &[Screen] = &[
                     k("PgUp / PgDn", "Page", "A page"),
                     k("Enter", "Detail", "The pair's detail (not on the diagonal)")
                         .more("Open pair detail view (on a cell) or select tool (sidebar); does nothing on a diagonal cell"),
+                    k("m", "Method", "Pearson or Spearman, named in the title")
+                        .more("Method: Pearson r or Spearman ρ, named in the title (both come from the one run, so it reads nothing)"),
                     k("Esc", "Close", "Cancel a run; otherwise close")
                         .more("Cancel a run in progress; otherwise close the analysis view"),
                 ],
@@ -993,8 +995,11 @@ pub const SCREENS: &[Screen] = &[
         reached: "<kbd>Enter</kbd> on a pair in the correlation matrix.",
         groups: &[Group {
             name: "Detail",
-            keys: &[k("Esc", "Back", "Back to the correlation matrix")
-                .more("Return to the correlation matrix. Resampling (r) works from the matrix, not from inside this detail")],
+            keys: &[
+                k("m", "Method", "Pearson or Spearman"),
+                k("Esc", "Back", "Back to the correlation matrix")
+                    .more("Return to the correlation matrix. Resampling (r) works from the matrix, not from inside this detail"),
+            ],
         }],
     },
     Screen {

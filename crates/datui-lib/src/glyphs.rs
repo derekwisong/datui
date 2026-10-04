@@ -833,6 +833,7 @@ fn ascii_twin(c: char) -> Option<&'static str> {
         '∅' => Some("~"),
         '·' => Some("."),
         '≠' => Some("!"),
+        'ρ' => Some("rho"),
         '│' => Some("|"),
         '┆' => Some(":"),
         '¶' => Some("$"),

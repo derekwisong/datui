@@ -160,9 +160,17 @@ Tick marks and the grid are `PlotMarks` slots with ASCII twins. The grid is
 off until asked for, sits under the series in `chart_grid` (a shade under
 `dimmed`, and a color rather than a grey so 16 colors keep it off the
 background), and never takes a cell a series drew in; a legend names two or
-more series from the emptiest corner. The XY crosshair (`x`, or a click) takes
-the keys from the options: its line is in the accent, under the series, and
-its readout sits under the plot.
+more series from the emptiest corner. The line and scatter crosshair (`x`, or
+a click) takes the keys from the panel: its line is in the accent, under the
+series, and its readout sits under the plot.
+
+**Shelves** — the chart panel (`widgets/chart.rs`): the same rows for every
+chart type, `label  value` with the line under a shelf (bucket, aggregate,
+which values) indented to the value column, then an Options section rule. A
+shelf the type does not use stays where it is, dimmed with a word of why
+(`density`, `same as X`), and Tab skips it: nothing moves when the type
+changes. Column names take their type's color. A picker drops over the panel
+as a Surface under the row it edits.
 
 ## Shapes
 

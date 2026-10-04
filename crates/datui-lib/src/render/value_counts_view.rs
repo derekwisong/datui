@@ -20,6 +20,9 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderCo
     let g = crate::glyphs::get();
     let spinner = g.spinner[app.throbber_frame as usize % g.spinner.len()];
     draw(area, buf, &mut app.value_counts, ctx, spinner);
+    if app.value_counts.shows_histogram() {
+        draw_histogram(area, buf, app, ctx);
+    }
     if app.export_modal.active {
         // The same compact dialog the table's export opens.
         let width = (area.width * 3 / 4).min(66);
@@ -154,7 +157,8 @@ pub fn draw(
     if body.height as usize > strip_lines.len() + 3 {
         y += 1;
     }
-    if y >= bottom {
+    modal.body_top = y;
+    if y >= bottom || modal.shows_histogram() {
         return;
     }
 
@@ -298,6 +302,46 @@ pub fn draw(
         }
         y += 1;
     }
+}
+
+/// The histogram view: the counts in bins under the summary, where the listing
+/// would be, and what the bins left out under it.
+fn draw_histogram(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContext) {
+    let modal = &app.value_counts;
+    let Some(counts) = modal.current() else {
+        return;
+    };
+    let Some(histogram) = &counts.histogram else {
+        return;
+    };
+    let top = modal.body_top.max(area.y + 1);
+    if top >= area.bottom() {
+        return;
+    }
+    let mut plot = Rect {
+        x: area.x + 1,
+        y: top,
+        width: area.width.saturating_sub(2),
+        height: area.bottom() - top,
+    };
+    let notes = crate::chart_data::chart_notes(&Default::default(), histogram.clipped.as_ref());
+    if !notes.is_empty() && plot.height > 4 {
+        plot.height -= 1;
+        Paragraph::new(notes.join("  "))
+            .style(Style::default().fg(ctx.dimmed))
+            .right_aligned()
+            .render(
+                Rect {
+                    y: plot.bottom(),
+                    height: 1,
+                    ..plot
+                },
+                buf,
+            );
+    }
+    let schema = app.data_table_state.as_ref().map(|s| s.schema().as_ref());
+    let x = crate::chart_data::AxisNumbers::column(&ctx.number_format, schema, &counts.column);
+    crate::widgets::chart::render_histogram(plot, buf, &app.theme, ctx, histogram, x);
 }
 
 /// A value's line label and its style: the value as the table writes it, the null
@@ -490,6 +534,7 @@ mod tests {
             df!("pay" => [Some(1i64), Some(1), Some(2), None, Some(1)]).unwrap(),
             "pay",
         );
+        modal.view = Some(crate::value_counts_modal::CountsView::Listing);
         let rows = screen(&mut modal, 80, 12);
         let g = crate::glyphs::get();
         assert!(rows[0].starts_with("Value Counts"), "{rows:#?}");
@@ -513,6 +558,7 @@ mod tests {
             df!("amount" => [1.5f64, 2.25, 1.5, 1000.0]).unwrap(),
             "amount",
         );
+        modal.view = Some(crate::value_counts_modal::CountsView::Listing);
         let rows = screen(&mut modal, 40, 12);
         assert!(rows[1].contains("Rows 4"));
         assert!(rows.iter().any(|r| r.contains("Sum 1005.25")), "{rows:#?}");
@@ -566,6 +612,7 @@ mod tests {
     fn the_other_line_has_no_bar() {
         let ids: Vec<i64> = (0..crate::value_counts::TOP_N as i64 + 50).collect();
         let mut modal = counted(df!("id" => ids).unwrap(), "id");
+        modal.view = Some(crate::value_counts_modal::CountsView::Listing);
         modal.move_to_end();
         let rows = screen(&mut modal, 80, 8);
         let g = crate::glyphs::get();

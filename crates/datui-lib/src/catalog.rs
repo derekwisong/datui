@@ -578,6 +578,24 @@ fn check_unique(catalog: &Catalog) -> Result<(), CatalogError> {
 }
 
 impl Dataset {
+    /// What a chart export credits as its source: the entry's name, publisher and
+    /// license, as the catalog gives them (`NYC flights (2013), nycflights13 (CC0)`).
+    pub fn credit(&self) -> String {
+        let mut line = self.name.trim().to_string();
+        let publisher = self.publisher.trim();
+        if !publisher.is_empty() {
+            if !line.is_empty() {
+                line.push_str(", ");
+            }
+            line.push_str(publisher);
+        }
+        let license = self.license.trim();
+        if !license.is_empty() {
+            line.push_str(&format!(" ({license})"));
+        }
+        line.trim().to_string()
+    }
+
     /// The local path with `~` and `$VAR` expanded, anchored at the catalog's directory
     /// when it is relative.
     pub fn local_path(&self) -> Option<PathBuf> {
@@ -1206,6 +1224,23 @@ mod tests {
         parse(text, "t", Origin::Listed, None)
             .unwrap_err()
             .in_file("t.toml")
+    }
+
+    /// A chart export credits the entry: its name, publisher and license, as given.
+    #[test]
+    fn an_entry_credits_its_name_publisher_and_license() {
+        let entry = |publisher: &str, license: &str| Dataset {
+            name: "NYC flights (2013)".to_string(),
+            publisher: publisher.to_string(),
+            license: license.to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            entry("nycflights13", "CC0").credit(),
+            "NYC flights (2013), nycflights13 (CC0)"
+        );
+        assert_eq!(entry(" NOAA ", "").credit(), "NYC flights (2013), NOAA");
+        assert_eq!(entry("", "").credit(), "NYC flights (2013)");
     }
 
     #[test]

@@ -55,6 +55,7 @@ pub mod chart_export_modal;
 mod chart_jobs;
 mod chart_keys;
 pub mod chart_modal;
+mod chart_pdf;
 pub mod cli;
 pub mod clipboard;
 #[cfg(feature = "cloud")]
@@ -205,16 +206,13 @@ pub use config::{
 
 use analysis_modal::{AnalysisModal, AnalysisProgress};
 use background::{CacheWrites, InflightCollect, LenCount, OwedAnswer, OwedCount};
-use chart_export::{
-    BoxPlotExportBounds, ChartExportBounds, ChartExportFormat, ChartExportRequest,
-    ChartExportSeries,
-};
-use chart_export_modal::{ChartExportFocus, ChartExportModal};
+use chart_export::{ChartExportFormat, ChartExportRequest};
+use chart_export_modal::ChartExportModal;
 use chart_jobs::{
     ChartCache, ChartExportJob, ChartInflight, ChartPrepared, ChartRequest, ChartResultSlot,
     log_series,
 };
-use chart_modal::{ChartColumns, ChartKind, ChartModal, ChartType};
+use chart_modal::{ChartColumns, ChartModal};
 pub use error_display::{ErrorKindForPython, error_for_python};
 pub use export::{ExportOptions, ExportRequest};
 use export_modal::{ExportFocus, ExportFormat, ExportModal};
@@ -3929,13 +3927,9 @@ impl App {
             }
             InputMode::Chart => {
                 if self.chart_export_modal.active {
-                    matches!(
-                        self.chart_export_modal.focus,
-                        ChartExportFocus::PathInput
-                            | ChartExportFocus::TitleInput
-                            | ChartExportFocus::WidthInput
-                            | ChartExportFocus::HeightInput
-                    )
+                    self.chart_export_modal
+                        .input(self.chart_export_modal.focus)
+                        .is_some()
                 } else {
                     // The open column Picker narrows by typing, so it types.
                     self.chart_modal.picker.is_some()
@@ -12186,12 +12180,28 @@ impl App {
                         .filter(|(_, dtype)| chart_data::is_category_dtype(dtype))
                         .map(|(name, _)| name.to_string())
                         .collect();
+                    // Show Me: the chart starts from the cursor column's type.
+                    let cursor = state.current_column().and_then(|name| {
+                        let dtype = state.schema().get(name)?.clone();
+                        Some((name.to_string(), dtype))
+                    });
+                    // Dates and datetimes take a time bucket; a time of day does not.
+                    let bucketable_columns: Vec<String> = state
+                        .schema()
+                        .iter()
+                        .filter(|(_, dtype)| {
+                            matches!(dtype, DataType::Datetime(_, _) | DataType::Date)
+                        })
+                        .map(|(name, _)| name.to_string())
+                        .collect();
                     self.chart_modal.open(
                         ChartColumns {
                             numeric: &numeric_columns,
                             datetime: &datetime_columns,
+                            bucketable: &bucketable_columns,
                             category: &category_columns,
                         },
+                        cursor.as_ref().map(|(name, dtype)| (name.as_str(), dtype)),
                         Some(self.app_config.analysis.chart_rows),
                         self.app_config.analysis.chart_grid,
                         self.dataset_generation,
@@ -12379,6 +12389,39 @@ impl App {
         }
     }
 
+    /// What the chart being prepared is doing: an aggregate groups every row of the
+    /// view, and says how many where the table knows.
+    pub(crate) fn chart_status(&self) -> String {
+        let aggregating = self
+            .chart_inflight
+            .as_ref()
+            .filter(|i| !i.stale)
+            .map(|i| i.request.aggregates())
+            .or_else(|| ChartRequest::from_modal(&self.chart_modal).map(|r| r.aggregates()))
+            .unwrap_or(false);
+        if !aggregating {
+            return "Preparing chart...".to_string();
+        }
+        match self
+            .data_table_state
+            .as_ref()
+            .and_then(|s| s.num_rows_if_valid())
+        {
+            Some(rows) => format!("Grouping {} rows...", crate::discover::format_rows(rows)),
+            None => "Grouping every row...".to_string(),
+        }
+    }
+
+    /// The series of the line or scatter chart on screen, by name, once prepared:
+    /// its Y columns or its color groups.
+    pub fn chart_names(&self) -> Option<Vec<String>> {
+        let request = ChartRequest::from_modal(&self.chart_modal)?;
+        match self.chart_cache.prepared(&request)? {
+            ChartPrepared::XY(xy) => Some(xy.names.clone()),
+            _ => None,
+        }
+    }
+
     /// True when the chart cache holds the data for the modal's current selection.
     pub fn chart_data_ready(&self) -> bool {
         ChartRequest::from_modal(&self.chart_modal).is_some_and(|r| self.chart_cache.satisfies(&r))
@@ -12409,6 +12452,17 @@ impl App {
         };
         if self.chart_cache.get(&request).is_some() {
             self.chart_cache.touch(&request, self.chart_modal.log_scale);
+            // A cached chart's colors were counted with it.
+            if let Some(colors) = request
+                .spec
+                .encoding
+                .color
+                .field
+                .as_deref()
+                .and_then(|c| self.chart_cache.colors(c))
+            {
+                self.chart_modal.color_counts = Some(colors.clone());
+            }
             return;
         }
         if self.chart_inflight.is_some() {
@@ -12423,7 +12477,8 @@ impl App {
         let schema = state.schema().clone();
         let dataset = Some(state.len_generation());
         let sampling = chart_data::ChartSampling {
-            limit: self.chart_modal.row_limit,
+            // None for an aggregate: it reads every row.
+            limit: request.row_limit,
             known_total: state.num_rows_if_valid(),
             seed: self.analysis_modal.sample.seed,
             streaming: self.app_config.performance.streaming,
@@ -13677,6 +13732,13 @@ impl App {
                 if dataset != inflight.dataset {
                     return None;
                 }
+                let outcome = outcome.map(|(prepared, colors)| {
+                    if let Some(colors) = colors {
+                        self.chart_cache.hold_colors(colors.clone());
+                        self.chart_modal.color_counts = Some(colors);
+                    }
+                    prepared
+                });
                 self.chart_cache.insert(inflight.request, outcome);
                 // An export parked on chart data resumes against the *current*
                 // selection, whatever just landed: it is written if that selection is
@@ -13815,45 +13877,18 @@ impl App {
         chart_data::AxisNumbers::columns(&self.number_format, schema, columns)
     }
 
-    /// Build the export from the prepared chart for the current selection. `Ok(None)`
+    /// The figure to export from the prepared chart for the current spec. `Ok(None)`
     /// means that chart is still being prepared and the caller should wait for it.
-    /// Exports what is visible (effective x + y); a blank title means no title.
-    fn build_chart_export_job(&self, title: &str) -> Result<Option<ChartExportJob>> {
+    fn build_chart_figure(&self) -> Result<Option<chart_export::Figure>> {
+        use chart_export::{Axis, Figure, Plot, Series};
         if self.data_table_state.is_none() {
             return Err(color_eyre::eyre::eyre!("No data loaded"));
         }
-        let chart_title = Some(title.trim())
-            .filter(|t| !t.is_empty())
-            .map(str::to_string);
-
-        let request = match (
-            ChartRequest::from_modal(&self.chart_modal),
-            self.chart_modal.chart_kind,
-        ) {
-            (Some(ChartRequest::XRange { .. }), _) => {
-                return Err(color_eyre::eyre::eyre!("No Y axis columns selected"));
-            }
-            (None, ChartKind::XY) => {
-                return Err(color_eyre::eyre::eyre!("No X axis column selected"));
-            }
-            (None, ChartKind::Histogram) => {
-                return Err(color_eyre::eyre::eyre!("No histogram column selected"));
-            }
-            (None, ChartKind::BoxPlot) => {
-                return Err(color_eyre::eyre::eyre!("No box plot column selected"));
-            }
-            (None, ChartKind::Kde) => {
-                return Err(color_eyre::eyre::eyre!("No KDE column selected"));
-            }
-            (None, ChartKind::Heatmap) => {
-                return Err(color_eyre::eyre::eyre!("No heatmap columns selected"));
-            }
-            (None, ChartKind::Bar) => {
-                return Err(color_eyre::eyre::eyre!(
-                    "No bar category and value selected"
-                ));
-            }
-            (Some(request), _) => request,
+        let modal = &self.chart_modal;
+        let Some(request) = ChartRequest::from_modal(modal).filter(|r| !r.x_only) else {
+            return Err(color_eyre::eyre::eyre!(
+                "Pick the columns the chart needs first"
+            ));
         };
         let prepared = match self.chart_cache.get(&request) {
             Some(Ok(prepared)) => prepared,
@@ -13863,12 +13898,38 @@ impl App {
             None => return Ok(None),
         };
         let no_points = || color_eyre::eyre::eyre!("No valid data points to export");
-        let notes = prepared.notes();
-
-        let job = match prepared {
+        let spec = &request.spec;
+        let x_name = spec.encoding.x.field.clone().unwrap_or_default();
+        let ys = &spec.encoding.y.field;
+        let title = |column: &str| modal.axis_title(column);
+        let numbers_of = |column: &str| self.axis_numbers(column);
+        let y_axis = || {
+            use chart_modal::Aggregate;
+            let aggregate = spec.encoding.y.aggregate;
+            let numbers = match aggregate {
+                Aggregate::Count => chart_data::AxisNumbers::count(&self.number_format),
+                Aggregate::Mean | Aggregate::Median => self.axes_numbers(ys).fractional(),
+                _ => self.axes_numbers(ys),
+            };
+            let names = if aggregate == Aggregate::Count {
+                "count".to_string()
+            } else {
+                ys.iter().map(|y| title(y)).collect::<Vec<_>>().join(", ")
+            };
+            let title = match aggregate {
+                Aggregate::None | Aggregate::Count => names,
+                aggregate => format!("{} {names}", aggregate.label()),
+            };
+            Axis {
+                title,
+                numbers,
+                log: modal.log_scale,
+                ..Default::default()
+            }
+        };
+        let plot = match prepared {
             ChartPrepared::XY(cache) => {
-                let log_scale = self.chart_modal.log_scale;
-                let points = if log_scale {
+                let points = if modal.log_scale {
                     cache
                         .series_log
                         .clone()
@@ -13876,12 +13937,12 @@ impl App {
                 } else {
                     cache.series.clone()
                 };
-                let series: Vec<ChartExportSeries> = points
+                let series: Vec<Series> = points
                     .into_iter()
-                    .zip(cache.y_columns.iter())
-                    .zip(cache.breaks.iter())
+                    .zip(&cache.names)
+                    .zip(&cache.breaks)
                     .filter(|((points, _), _)| !points.is_empty())
-                    .map(|((points, name), breaks)| ChartExportSeries {
+                    .map(|((points, name), breaks)| Series {
                         name: name.clone(),
                         points,
                         breaks: breaks.clone(),
@@ -13890,218 +13951,122 @@ impl App {
                 if series.is_empty() {
                     return Err(no_points());
                 }
-
-                let mut all_x_min = f64::INFINITY;
-                let mut all_x_max = f64::NEG_INFINITY;
-                let mut all_y_min = f64::INFINITY;
-                let mut all_y_max = f64::NEG_INFINITY;
-                for s in &series {
-                    for &(x, y) in &s.points {
-                        all_x_min = all_x_min.min(x);
-                        all_x_max = all_x_max.max(x);
-                        all_y_min = all_y_min.min(y);
-                        all_y_max = all_y_max.max(y);
-                    }
-                }
-
-                let chart_type = self.chart_modal.chart_type;
-                let y_min_bounds = if chart_type == ChartType::Bar {
-                    0.0_f64.min(all_y_min)
-                } else if self.chart_modal.y_starts_at_zero {
-                    0.0
-                } else {
-                    all_y_min
-                };
-                let y_max_bounds = if all_y_max > y_min_bounds {
-                    all_y_max
-                } else {
-                    y_min_bounds + 1.0
-                };
-                let (x_min_bounds, x_max_bounds) = if all_x_max > all_x_min {
-                    (all_x_min, all_x_max)
-                } else {
-                    (all_x_min - 0.5, all_x_min + 0.5)
-                };
-
-                let bounds = ChartExportBounds {
-                    x_min: x_min_bounds,
-                    x_max: x_max_bounds,
-                    y_min: y_min_bounds,
-                    y_max: y_max_bounds,
-                    x_label: cache.x_column.clone(),
-                    y_label: cache.y_columns.join(", "),
-                    x_axis_kind: cache.x_axis_kind,
-                    log_scale,
-                    chart_title,
-                    notes,
-                    x_numbers: self.axis_numbers(&cache.x_column),
-                    y_numbers: self.axes_numbers(&cache.y_columns),
-                };
-                ChartExportJob::Series {
+                Plot::Lines {
                     series,
-                    chart_type,
-                    bounds,
+                    scatter: spec.mark == chart_modal::Mark::Scatter,
+                    x: Axis {
+                        title: title(&cache.x_column),
+                        numbers: numbers_of(&cache.x_column),
+                        kind: cache.x_axis_kind,
+                        log: false,
+                    },
+                    y: y_axis(),
+                    y_from_zero: modal.y_starts_at_zero,
                 }
             }
             ChartPrepared::Histogram(data) => {
                 if data.bins.is_empty() {
                     return Err(no_points());
                 }
-                let points: Vec<(f64, f64)> =
-                    data.bins.iter().map(|b| (b.center, b.count)).collect();
-                let series = vec![ChartExportSeries {
-                    name: data.column.clone(),
-                    points,
-                    breaks: Vec::new(),
-                }];
-                let x_max = if data.x_max > data.x_min {
-                    data.x_max
-                } else {
-                    data.x_min + 1.0
-                };
-                let y_max = if data.max_count > 0.0 {
-                    data.max_count
-                } else {
-                    1.0
-                };
-                let bounds = ChartExportBounds {
-                    x_min: data.x_min,
-                    x_max,
-                    y_min: 0.0,
-                    y_max,
-                    x_label: data.column.clone(),
-                    y_label: "Count".to_string(),
-                    x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
-                    log_scale: false,
-                    chart_title,
-                    notes,
-                    x_numbers: self.axis_numbers(&data.column),
-                    y_numbers: chart_data::AxisNumbers::count(&self.number_format),
-                };
-                ChartExportJob::Series {
-                    series,
-                    chart_type: ChartType::Bar,
-                    bounds,
+                Plot::Histogram {
+                    data: data.clone(),
+                    x: Axis {
+                        title: title(&data.column),
+                        numbers: numbers_of(&data.column),
+                        ..Default::default()
+                    },
+                    y: Axis {
+                        title: if data.share { "share" } else { "count" }.to_string(),
+                        numbers: if data.share {
+                            chart_data::AxisNumbers::measure(&self.number_format, "Share")
+                        } else {
+                            chart_data::AxisNumbers::count(&self.number_format)
+                        },
+                        ..Default::default()
+                    },
                 }
             }
             ChartPrepared::BoxPlot(data) => {
                 if data.stats.is_empty() {
                     return Err(no_points());
                 }
-                let bounds = BoxPlotExportBounds {
-                    y_min: data.y_min,
-                    y_max: data.y_max,
-                    x_labels: data.stats.iter().map(|s| s.name.clone()).collect(),
-                    x_label: "Columns".to_string(),
-                    y_label: "Value".to_string(),
-                    chart_title,
-                    notes,
-                    y_numbers: self.axes_numbers(
-                        &data
-                            .stats
-                            .iter()
-                            .map(|s| s.name.clone())
-                            .collect::<Vec<_>>(),
-                    ),
-                };
-                ChartExportJob::BoxPlot {
+                Plot::Box {
                     data: data.clone(),
-                    bounds,
+                    x_title: x_name.clone(),
+                    y: Axis {
+                        title: ys.first().map(|y| title(y)).unwrap_or_default(),
+                        numbers: self.axes_numbers(ys),
+                        ..Default::default()
+                    },
                 }
             }
             ChartPrepared::Kde(data) => {
                 if data.series.is_empty() {
                     return Err(no_points());
                 }
-                let series: Vec<ChartExportSeries> = data
-                    .series
-                    .iter()
-                    .map(|s| ChartExportSeries {
-                        name: s.name.clone(),
-                        points: s.points.clone(),
-                        breaks: Vec::new(),
-                    })
-                    .collect();
-                let bounds = ChartExportBounds {
-                    x_min: data.x_min,
-                    x_max: data.x_max,
-                    y_min: 0.0,
-                    y_max: data.y_max,
-                    x_label: series
-                        .iter()
-                        .map(|s| s.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    y_label: "Density".to_string(),
-                    x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
-                    log_scale: false,
-                    chart_title,
-                    notes,
-                    x_numbers: self
-                        .axes_numbers(
-                            &data
-                                .series
-                                .iter()
-                                .map(|s| s.name.clone())
-                                .collect::<Vec<_>>(),
-                        )
-                        .fractional(),
-                    y_numbers: chart_data::AxisNumbers::measure(&self.number_format, "Density"),
-                };
-                ChartExportJob::Series {
-                    series,
-                    chart_type: ChartType::Line,
-                    bounds,
+                Plot::Kde {
+                    data: data.clone(),
+                    x: Axis {
+                        title: title(&x_name),
+                        numbers: numbers_of(&x_name).fractional(),
+                        ..Default::default()
+                    },
+                    y: Axis {
+                        title: "density".to_string(),
+                        numbers: chart_data::AxisNumbers::measure(&self.number_format, "Density"),
+                        ..Default::default()
+                    },
                 }
             }
             ChartPrepared::Heatmap(data) => {
                 if data.counts.is_empty() || data.max_count <= 0.0 {
                     return Err(no_points());
                 }
-                let bounds = ChartExportBounds {
-                    x_min: data.x_min,
-                    x_max: data.x_max,
-                    y_min: data.y_min,
-                    y_max: data.y_max,
-                    x_label: data.x_column.clone(),
-                    y_label: data.y_column.clone(),
-                    x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
-                    log_scale: false,
-                    chart_title,
-                    notes,
-                    x_numbers: self.axis_numbers(&data.x_column),
-                    y_numbers: self.axis_numbers(&data.y_column),
-                };
-                ChartExportJob::Heatmap {
+                Plot::Heatmap {
                     data: data.clone(),
-                    bounds,
+                    x: Axis {
+                        title: title(&data.x_column),
+                        numbers: numbers_of(&data.x_column),
+                        ..Default::default()
+                    },
+                    y: Axis {
+                        title: title(&data.y_column),
+                        numbers: numbers_of(&data.y_column),
+                        ..Default::default()
+                    },
                 }
             }
             ChartPrepared::Bar(data) => {
                 if data.bars.is_empty() {
                     return Err(no_points());
                 }
-                ChartExportJob::Bar {
-                    format: data.value_format(&self.number_format),
+                Plot::Bars {
+                    value: Axis {
+                        title: data.value_column.clone(),
+                        numbers: chart_data::AxisNumbers {
+                            format: data.value_format(&self.number_format),
+                            whole: data.value_dtype.is_integer(),
+                        },
+                        ..Default::default()
+                    },
                     data: data.clone(),
-                    title: chart_title,
-                    notes,
                 }
             }
-            // Rejected above, since a single X column has nothing to export; never
-            // `Ok(None)`, which would park the export waiting for data that is here.
-            ChartPrepared::XRange(_) => {
-                return Err(color_eyre::eyre::eyre!("No Y axis columns selected"));
-            }
+            // Left out above: a single X column has nothing to export.
+            ChartPrepared::XRange(_) => return Err(no_points()),
         };
-        Ok(Some(job))
+        Ok(Some(Figure {
+            plot,
+            chart_notes: prepared.notes(),
+            grid: modal.grid,
+        }))
     }
 
     /// Write the chart from the prepared data off-thread, or park the export until that
     /// data is ready. `busy` was set by `ChartExport` and stays set until the export ends.
     fn start_chart_export(&mut self, request: ChartExportRequest) {
-        match self.build_chart_export_job(&request.title) {
-            Ok(Some(job)) => {
+        match self.build_chart_figure() {
+            Ok(Some(figure)) => {
                 self.chart_export_waiting = None;
                 let write = Job::ChartExport {
                     path: request.path.clone(),
@@ -14111,12 +14076,11 @@ impl App {
                     let ChartExportRequest {
                         path,
                         format,
-                        width,
-                        height,
+                        options,
                         overwrite,
-                        ..
                     } = request;
-                    job.write(&path, format, (width, height), overwrite)
+                    ChartExportJob { figure, options }
+                        .write(&path, format, overwrite)
                         .map_err(|e| Self::format_export_error(&e, &path))?;
                     Ok(Answer::ChartExported)
                 });
@@ -16061,6 +16025,8 @@ impl App {
             return None;
         }
         let page = self.value_counts_page() as isize;
+        // The histogram has no lines to move through or drill into.
+        let listing = !self.value_counts.shows_histogram();
         match event.code {
             // A count still reading stops; with nothing to show for the column, Esc
             // goes on back to the table.
@@ -16073,12 +16039,12 @@ impl App {
                     self.input_mode = InputMode::Normal;
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => self.value_counts.move_by(1),
-            KeyCode::Up | KeyCode::Char('k') => self.value_counts.move_by(-1),
-            KeyCode::PageDown => self.value_counts.move_by(page),
-            KeyCode::PageUp => self.value_counts.move_by(-page),
-            KeyCode::Home => self.value_counts.move_to_start(),
-            KeyCode::End | KeyCode::Char('G') => self.value_counts.move_to_end(),
+            KeyCode::Down | KeyCode::Char('j') if listing => self.value_counts.move_by(1),
+            KeyCode::Up | KeyCode::Char('k') if listing => self.value_counts.move_by(-1),
+            KeyCode::PageDown if listing => self.value_counts.move_by(page),
+            KeyCode::PageUp if listing => self.value_counts.move_by(-page),
+            KeyCode::Home if listing => self.value_counts.move_to_start(),
+            KeyCode::End | KeyCode::Char('G') if listing => self.value_counts.move_to_end(),
             KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') => {
                 let by = if matches!(event.code, KeyCode::Left | KeyCode::Char('h')) {
                     -1
@@ -16095,13 +16061,14 @@ impl App {
                     self.count_values(false);
                 }
             }
-            KeyCode::Char('s') => self.value_counts.toggle_order(),
+            KeyCode::Char('s') if listing => self.value_counts.toggle_order(),
+            KeyCode::Char('c') => self.value_counts.toggle_view(),
             KeyCode::Char('a') => {
                 if self.value_counts.current().is_some_and(|c| c.is_sample()) {
                     self.count_values(true);
                 }
             }
-            KeyCode::Enter => self.drill_into_counted_value(),
+            KeyCode::Enter if listing => self.drill_into_counted_value(),
             KeyCode::Char('y') => self.copy_value_counts(),
             KeyCode::Char('e') => self.export_value_counts(),
             // The counts keep the rows they were read of; `t` counts the new ones too.

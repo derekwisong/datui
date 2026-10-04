@@ -1,4 +1,4 @@
-//! Chart preparation off the UI thread: what a selection asks for, what the worker
+//! Chart preparation off the UI thread: what a spec asks for, what the worker
 //! prepared, the cache of both, and chart exports written from it.
 
 use std::path::Path;
@@ -7,21 +7,19 @@ use std::sync::{Arc, Mutex};
 use color_eyre::Result;
 use polars::prelude::{LazyFrame, Schema};
 
-use crate::chart_export::{
-    BoxPlotExportBounds, ChartExportBounds, ChartExportFormat, ChartExportSeries, write_bar_eps,
-    write_bar_png, write_box_plot_eps, write_box_plot_png, write_chart_eps, write_chart_png,
-    write_heatmap_eps, write_heatmap_png,
-};
-use crate::chart_modal::{ChartKind, ChartModal, ChartType};
+use crate::chart_data::{self, ColorSplit, ValueRange};
+use crate::chart_export::{ChartExportFormat, ExportOptions, Figure};
+use crate::chart_modal::{Aggregate, ChartModal, ChartSpec, ColorCounts, Mark};
 use crate::output_file::Overwrite;
-use crate::{chart_data, numfmt, output_file};
+use crate::{numfmt, output_file};
 
 /// Outcomes of chart preparation keyed by the request that produced them, least
 /// recently used first. A failure is remembered too, so a selection that cannot be
 /// charted is not retried after every event; the chart shows its message.
 /// Bounded so that toggling between a few selections does not collect again, without
-/// holding every series ever prepared: XY series are the only payload that grows with
-/// the row limit, so few of those are kept and only the current one has its log copy.
+/// holding every series ever prepared: line and scatter series are the only payload
+/// that grows with the row limit, so few of those are kept and only the current one
+/// has its log copy.
 #[derive(Default)]
 pub(crate) struct ChartCache {
     pub(crate) entries: Vec<(ChartRequest, Result<ChartPrepared, String>)>,
@@ -29,6 +27,9 @@ pub(crate) struct ChartCache {
     /// from, so another option re-draws from them rather than reading again.
     held: chart_data::HeldRows,
     held_view: Option<u64>,
+    /// The Color columns' values as counted for these entries, so going back to a
+    /// color whose chart is cached brings its value picker back too.
+    colors: Vec<ColorCounts>,
 }
 
 impl ChartCache {
@@ -41,6 +42,18 @@ impl ChartCache {
         self.entries.clear();
         self.held = chart_data::HeldRows::default();
         self.held_view = None;
+        self.colors.clear();
+    }
+
+    /// Keep a Color column's values, the last count of it.
+    pub(crate) fn hold_colors(&mut self, colors: ColorCounts) {
+        self.colors.retain(|c| c.column != colors.column);
+        self.colors.push(colors);
+    }
+
+    /// The values counted for Color column `column`.
+    pub(crate) fn colors(&self, column: &str) -> Option<&ColorCounts> {
+        self.colors.iter().find(|c| c.column == column)
     }
 
     /// The rows held for `view`, or a fresh holder when they belong to another.
@@ -111,7 +124,7 @@ impl ChartCache {
     }
 
     /// Note that `request` is the selection on screen: its entry moves to the back,
-    /// where eviction reaches it last, and it alone keeps a log-scale copy of its XY
+    /// where eviction reaches it last, and it alone keeps a log-scale copy of its
     /// series, built here when wanted. A pure in-memory map, cheap enough for the event
     /// thread; it never happens in render.
     pub(crate) fn touch(&mut self, request: &ChartRequest, log_scale: bool) {
@@ -144,273 +157,276 @@ pub(crate) fn log_series(series: &[Vec<(f64, f64)>]) -> Vec<Vec<(f64, f64)>> {
         .collect()
 }
 
-/// What the chart view needs prepared for the modal's current selection. Compared with
-/// the cache and with the computation in flight, so each selection is prepared once, off
-/// the UI thread, and a result for a selection the user has since moved past is stale.
+/// What the chart view needs prepared for the panel's spec. Compared with the cache
+/// and with the computation in flight, so each spec is prepared once, off the UI
+/// thread, and a result for a spec the user has since moved past is stale.
+///
+/// Only what the chart type reads takes part: another bin count on a line chart is
+/// the same request.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum ChartRequest {
-    XY {
-        x_column: String,
-        y_columns: Vec<String>,
-        row_limit: Option<usize>,
-        /// Draw each step's lowest and highest value: see
-        /// [`chart_data::prepare_chart_data`].
-        envelope: bool,
-    },
-    /// Only an x column is selected: its range gives the placeholder axis its bounds.
-    XRange {
-        x_column: String,
-        row_limit: Option<usize>,
-    },
-    Histogram {
-        column: String,
-        bins: usize,
-        range: chart_data::ValueRange,
-        row_limit: Option<usize>,
-    },
-    BoxPlot {
-        column: String,
-        range: chart_data::ValueRange,
-        row_limit: Option<usize>,
-    },
-    Kde {
-        column: String,
-        bandwidth_factor: f64,
-        range: chart_data::ValueRange,
-        row_limit: Option<usize>,
-    },
-    Heatmap {
-        x_column: String,
-        y_column: String,
-        bins: usize,
-        row_limit: Option<usize>,
-    },
-    Bar {
-        category: String,
-        value: chart_data::BarValue,
-        order: chart_data::BarOrder,
-        row_limit: Option<usize>,
-    },
+pub(crate) struct ChartRequest {
+    pub(crate) spec: ChartSpec,
+    pub(crate) bins: usize,
+    pub(crate) bandwidth: f64,
+    pub(crate) range: ValueRange,
+    pub(crate) order: chart_data::BarOrder,
+    pub(crate) share: bool,
+    /// Rows a chart that samples reads; `None` for one that aggregates every row.
+    pub(crate) row_limit: Option<usize>,
+    /// A line is drawn from each step's lowest and highest value rather than a
+    /// sample: see [`chart_data::prepare_chart_data`].
+    pub(crate) envelope: bool,
+    /// Only an X is picked: its range gives the empty axes their bounds.
+    pub(crate) x_only: bool,
 }
 
 impl ChartRequest {
-    /// Whether preparing `other` reads what this needs. A count is of the whole view,
-    /// so another order or sample size of the same category is the same pass.
+    /// Whether preparing `other` reads what this needs: another order of the same
+    /// bars is the same pass.
     pub(crate) fn reads_as(&self, other: &Self) -> bool {
-        match (self, other) {
-            (
-                Self::Bar {
-                    category: a,
-                    value: chart_data::BarValue::Count,
-                    ..
-                },
-                Self::Bar {
-                    category: b,
-                    value: chart_data::BarValue::Count,
-                    ..
-                },
-            ) => a == b,
-            _ => self == other,
-        }
+        Self {
+            order: other.order,
+            ..self.clone()
+        } == *other
     }
 
-    /// Whether `other` is the same kind of chart of the same columns, whatever its
-    /// options.
+    /// Whether `other` is the same chart of the same columns, whatever its options.
     pub(crate) fn same_columns(&self, other: &Self) -> bool {
-        match (self, other) {
-            (
-                Self::XY {
-                    x_column: a,
-                    y_columns: ay,
-                    ..
-                },
-                Self::XY {
-                    x_column: b,
-                    y_columns: by,
-                    ..
-                },
-            ) => a == b && ay == by,
-            (Self::XRange { x_column: a, .. }, Self::XRange { x_column: b, .. })
-            | (Self::Histogram { column: a, .. }, Self::Histogram { column: b, .. })
-            | (Self::BoxPlot { column: a, .. }, Self::BoxPlot { column: b, .. })
-            | (Self::Kde { column: a, .. }, Self::Kde { column: b, .. }) => a == b,
-            (
-                Self::Heatmap {
-                    x_column: a,
-                    y_column: ay,
-                    ..
-                },
-                Self::Heatmap {
-                    x_column: b,
-                    y_column: by,
-                    ..
-                },
-            ) => a == b && ay == by,
-            (
-                Self::Bar {
-                    category: a,
-                    value: av,
-                    ..
-                },
-                Self::Bar {
-                    category: b,
-                    value: bv,
-                    ..
-                },
-            ) => a == b && av == bv,
-            _ => false,
-        }
+        let (a, b) = (&self.spec, &other.spec);
+        // The bucket, the aggregate and cumulative are what the numbers are: a chart
+        // under another of them would show old numbers under new labels.
+        a.mark == b.mark
+            && a.encoding.x == b.encoding.x
+            && a.encoding.y == b.encoding.y
+            && a.encoding.color.field == b.encoding.color.field
+            && self.x_only == other.x_only
     }
 
+    /// The request for what the panel shows, or `None` while a shelf the chart needs
+    /// is empty.
     pub(crate) fn from_modal(modal: &ChartModal) -> Option<Self> {
-        let row_limit = modal.row_limit;
-        let range = modal.value_range;
-        match modal.chart_kind {
-            ChartKind::XY => {
-                let x_column = modal.effective_x_column()?.clone();
-                let y_columns = modal.effective_y_columns();
-                Some(if y_columns.is_empty() {
-                    Self::XRange {
-                        x_column,
-                        row_limit,
-                    }
-                } else {
-                    Self::XY {
-                        x_column,
-                        y_columns,
-                        row_limit,
-                        // A line is drawn from each step's lowest and highest value
-                        // rather than a sample; scatter and bar keep the sample.
-                        envelope: modal.chart_type == ChartType::Line,
-                    }
-                })
-            }
-            ChartKind::Histogram => Some(Self::Histogram {
-                column: modal.effective_hist_column()?,
-                bins: modal.hist_bins,
-                range,
-                row_limit,
-            }),
-            ChartKind::BoxPlot => Some(Self::BoxPlot {
-                column: modal.effective_box_column()?,
-                range,
-                row_limit,
-            }),
-            ChartKind::Kde => Some(Self::Kde {
-                column: modal.effective_kde_column()?,
-                bandwidth_factor: modal.kde_bandwidth_factor,
-                range,
-                row_limit,
-            }),
-            ChartKind::Heatmap => Some(Self::Heatmap {
-                x_column: modal.effective_heatmap_x_column()?,
-                y_column: modal.effective_heatmap_y_column()?,
-                bins: modal.heatmap_bins,
-                row_limit,
-            }),
-            ChartKind::Bar => Some(Self::Bar {
-                category: modal.effective_bar_category()?,
-                value: modal.effective_bar_value()?,
-                order: modal.bar_order,
-                row_limit,
-            }),
+        let mut spec = modal.effective_spec();
+        let mark = spec.mark;
+        let x_only = mark.is_xy()
+            && spec.encoding.x.field.is_some()
+            && spec.encoding.y.field.is_empty()
+            && spec.encoding.y.aggregate != Aggregate::Count;
+        if !x_only && !ChartModal::is_complete(&spec) {
+            return None;
         }
+        // Leave out what this chart does not read, so a change to it asks for nothing.
+        // Whether color splits the chart is read from the spec charted, a Y the
+        // picker previews included.
+        let colored = ChartModal::colored_in(&spec);
+        if !colored {
+            spec.encoding.color = Default::default();
+        }
+        if x_only {
+            spec.encoding.y = Default::default();
+            spec.encoding.color = Default::default();
+            spec.encoding.x.time_unit = Default::default();
+        }
+        let aggregates = modal.aggregates() && !x_only;
+        let bins = match mark {
+            Mark::Histogram => modal.hist_bins,
+            Mark::Heatmap => modal.heatmap_bins,
+            _ => 0,
+        };
+        Some(Self {
+            bins,
+            bandwidth: if mark == Mark::Kde {
+                modal.kde_bandwidth_factor
+            } else {
+                0.0
+            },
+            range: if matches!(mark, Mark::Histogram | Mark::Kde | Mark::Box) {
+                modal.value_range
+            } else {
+                ValueRange::All
+            },
+            order: if mark == Mark::Bar {
+                modal.bar_order
+            } else {
+                Default::default()
+            },
+            share: mark == Mark::Histogram && modal.share,
+            row_limit: if aggregates { None } else { modal.row_limit },
+            envelope: mark == Mark::Line && !aggregates && !colored,
+            x_only,
+            spec,
+        })
     }
 
-    /// The Polars work. Runs on a worker thread.
+    /// Whether this request groups every row of the view rather than sampling.
+    pub(crate) fn aggregates(&self) -> bool {
+        matches!(self.spec.mark, Mark::Line | Mark::Scatter | Mark::Bar)
+            && self.spec.encoding.y.aggregate != Aggregate::None
+            && !self.x_only
+    }
+
+    /// The Polars work. Runs on a worker thread. With a color, the color column's
+    /// values are counted first (and handed back for the value picker), and the
+    /// groups are the ones picked or the largest.
     pub(crate) fn prepare(
         &self,
         lf: &LazyFrame,
         schema: &Schema,
         sampling: &chart_data::ChartSampling,
-    ) -> Result<ChartPrepared> {
-        Ok(match self {
-            Self::XY {
-                x_column,
-                y_columns,
-                envelope,
-                ..
-            } => {
-                let r = chart_data::prepare_chart_data(
-                    lf, schema, x_column, y_columns, sampling, *envelope,
-                )?;
+    ) -> Result<(ChartPrepared, Option<ColorCounts>)> {
+        let encoding = &self.spec.encoding;
+        let counts = encoding
+            .color
+            .field
+            .as_deref()
+            .map(|c| chart_data::value_rows(lf, c, sampling).map(|rows| (c, rows)))
+            .transpose()?;
+        let groups = counts
+            .as_ref()
+            .map(|(_, rows)| chart_data::color_groups(rows, &encoding.color.values));
+        let split = counts
+            .as_ref()
+            .zip(groups.as_ref())
+            .map(|((column, _), groups)| ColorSplit { column, groups });
+        let picker = counts.as_ref().map(|(column, rows)| ColorCounts {
+            column: column.to_string(),
+            values: rows.values.clone(),
+        });
+        let x = encoding.x.field.as_deref().unwrap_or_default();
+        let first_y = encoding.y.field.first().map(String::as_str);
+        let prepared = match self.spec.mark {
+            Mark::Line | Mark::Scatter if self.x_only => {
+                ChartPrepared::XRange(chart_data::prepare_chart_x_range(lf, schema, x, sampling)?)
+            }
+            Mark::Line | Mark::Scatter => {
+                let aggregate = encoding.y.aggregate;
+                let grouped = if aggregate != Aggregate::None {
+                    chart_data::prepare_aggregate_xy(
+                        lf,
+                        schema,
+                        &chart_data::AggregateSpec {
+                            x,
+                            time_unit: encoding.x.time_unit,
+                            ys: &encoding.y.field,
+                            aggregate,
+                            cumulative: encoding.y.cumulative,
+                            color: split,
+                        },
+                        sampling,
+                    )?
+                } else if let (Some(split), Some(y)) = (split, first_y) {
+                    chart_data::prepare_xy_by(lf, schema, x, y, split, sampling)?
+                } else {
+                    let r = chart_data::prepare_chart_data(
+                        lf,
+                        schema,
+                        x,
+                        &encoding.y.field,
+                        sampling,
+                        self.envelope,
+                    )?;
+                    chart_data::GroupedSeries {
+                        names: encoding.y.field.clone(),
+                        series: r.series,
+                        breaks: r.breaks,
+                        x_axis_kind: r.x_axis_kind,
+                        rows: r.rows,
+                    }
+                };
                 ChartPrepared::XY(ChartCacheXY {
-                    x_column: x_column.clone(),
-                    y_columns: y_columns.clone(),
-                    series: r.series,
-                    breaks: r.breaks,
+                    x_column: x.to_string(),
+                    names: grouped.names,
+                    series: grouped.series,
+                    breaks: grouped.breaks,
                     series_log: None,
-                    x_axis_kind: r.x_axis_kind,
-                    rows: r.rows,
+                    x_axis_kind: grouped.x_axis_kind,
+                    rows: grouped.rows,
+                    rows_note: (aggregate != Aggregate::None).then(|| {
+                        rows_note(
+                            grouped.rows.total_rows,
+                            sampling.known_total == Some(grouped.rows.total_rows),
+                            split.is_some(),
+                        )
+                    }),
                 })
             }
-            Self::XRange { x_column, .. } => ChartPrepared::XRange(
-                chart_data::prepare_chart_x_range(lf, schema, x_column, sampling)?,
-            ),
-            Self::Histogram {
-                column,
-                bins,
-                range,
-                ..
-            } => ChartPrepared::Histogram(chart_data::prepare_histogram_data(
-                lf, column, *bins, *range, sampling,
-            )?),
-            Self::BoxPlot { column, range, .. } => {
-                ChartPrepared::BoxPlot(chart_data::prepare_box_plot_data(
+            Mark::Bar if encoding.y.aggregate != Aggregate::None => {
+                let mut data = chart_data::prepare_bar_aggregate(
                     lf,
-                    std::slice::from_ref(column),
-                    *range,
+                    &chart_data::BarAggregate {
+                        category: x,
+                        value: first_y,
+                        aggregate: encoding.y.aggregate,
+                        color: split,
+                        order: self.order,
+                        cap: chart_data::BAR_CAP,
+                    },
                     sampling,
-                )?)
+                )?;
+                // Every category is a bar, a null one too: uncolored, it is every row.
+                data.rows_note = Some(rows_note(data.rows.total_rows, true, split.is_some()));
+                ChartPrepared::Bar(data)
             }
-            Self::Kde {
-                column,
-                bandwidth_factor,
-                range,
-                ..
-            } => ChartPrepared::Kde(chart_data::prepare_kde_data(
+            Mark::Bar => ChartPrepared::Bar(chart_data::prepare_bar_data(
                 lf,
-                std::slice::from_ref(column),
-                *bandwidth_factor,
-                *range,
+                x,
+                first_y.unwrap_or_default(),
+                self.order,
+                chart_data::BAR_CAP,
                 sampling,
             )?),
-            Self::Heatmap {
-                x_column,
-                y_column,
-                bins,
-                ..
-            } => ChartPrepared::Heatmap(chart_data::prepare_heatmap_data(
-                lf, x_column, y_column, *bins, sampling,
+            Mark::Histogram => ChartPrepared::Histogram(chart_data::prepare_histogram_by(
+                lf, x, self.bins, self.range, self.share, split, sampling,
             )?),
-            Self::Bar {
-                category,
-                value,
-                order,
-                ..
-            } => ChartPrepared::Bar(match value {
-                chart_data::BarValue::Count => chart_data::prepare_bar_counts(
-                    lf,
-                    category,
-                    *order,
-                    chart_data::BAR_CAP,
-                    sampling,
-                )?,
-                chart_data::BarValue::Column(value) => chart_data::prepare_bar_data(
-                    lf,
-                    category,
-                    value,
-                    *order,
-                    chart_data::BAR_CAP,
-                    sampling,
-                )?,
+            Mark::Kde => ChartPrepared::Kde(match split {
+                Some(split) => {
+                    chart_data::prepare_kde_by(lf, x, self.bandwidth, self.range, split, sampling)?
+                }
+                None => {
+                    chart_data::prepare_kde_data(lf, &[x], self.bandwidth, self.range, sampling)?
+                }
             }),
-        })
+            Mark::Box => {
+                let y = first_y.unwrap_or_default();
+                ChartPrepared::BoxPlot(match encoding.x.field.as_deref() {
+                    // One box per category: the largest by rows.
+                    Some(by) => {
+                        let rows = chart_data::value_rows(lf, by, sampling)?;
+                        let groups = chart_data::color_groups(&rows, &[]);
+                        let mut data = chart_data::prepare_box_by(
+                            lf,
+                            y,
+                            ColorSplit {
+                                column: by,
+                                groups: &groups,
+                            },
+                            self.range,
+                            sampling,
+                        )?;
+                        // Counted only when some category was left without a box.
+                        if rows.values.len() > groups.len() {
+                            data.of = rows.values.len();
+                        }
+                        data
+                    }
+                    None => chart_data::prepare_box_plot_data(lf, &[y], self.range, sampling)?,
+                })
+            }
+            Mark::Heatmap => ChartPrepared::Heatmap(chart_data::prepare_heatmap_data(
+                lf,
+                x,
+                first_y.unwrap_or_default(),
+                self.bins,
+                sampling,
+            )?),
+        };
+        Ok((prepared, picker))
     }
 }
 
-/// The outcome handed from the chart worker to `BackgroundChartReady`.
-pub(crate) type ChartResultSlot = Arc<Mutex<Option<Result<ChartPrepared, String>>>>;
+/// The outcome handed from the chart worker to `BackgroundChartReady`, with the
+/// Color column's values when it counted them.
+pub(crate) type ChartResultSlot =
+    Arc<Mutex<Option<Result<(ChartPrepared, Option<ColorCounts>), String>>>>;
 
 /// The chart preparation currently running. There is at most one: a burst of selection
 /// changes must not fan out into a full collect per column, so the next request waits
@@ -426,8 +442,9 @@ pub(crate) struct ChartInflight {
     /// cancelled, so the record stays until its result lands and is discarded; the next
     /// request waits for it, which is what keeps the number of collects at one.
     pub(crate) stale: bool,
-    /// Set when the selection moves past the request or its view goes. A streamed count
-    /// stops at its next batch; every other read is bounded and runs to the end.
+    /// Set when the selection moves past the request or its view goes. A streamed
+    /// count or group-by stops at its next batch; a sampled read is bounded and runs
+    /// to the end.
     pub(crate) cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -446,63 +463,59 @@ pub(crate) enum ChartPrepared {
 impl ChartPrepared {
     /// What the chart says under the plot about the rows and values it drew.
     pub(crate) fn notes(&self) -> Vec<String> {
-        if let Self::Bar(d) = self {
-            let mut notes = chart_data::chart_notes(&d.rows, None);
-            if let Some(rows) = d.counted {
-                notes.push(format!(
-                    "counts of {} rows",
-                    crate::discover::format_rows(rows)
-                ));
+        let rows_of = |rows: usize| crate::discover::format_rows(rows);
+        match self {
+            Self::Bar(d) => {
+                let mut notes = chart_data::chart_notes(&d.rows, None);
+                if let Some(note) = &d.rows_note {
+                    notes.push(note.clone());
+                } else if let Some(rows) = d.counted {
+                    notes.push(format!("counts of {} rows", rows_of(rows)));
+                } else if d.rows.sample_size.is_none() && !d.value_column.is_empty() {
+                    notes.push(format!(
+                        "all {} rows",
+                        numfmt::group_chrome(d.rows.total_rows)
+                    ));
+                }
+                if d.no_value > 0 {
+                    let noun = if d.no_value == 1 {
+                        "category"
+                    } else {
+                        "categories"
+                    };
+                    notes.push(format!(
+                        "{} {noun} without a value",
+                        numfmt::group_chrome(d.no_value)
+                    ));
+                }
+                notes
             }
-            if d.no_value > 0 {
-                let noun = if d.no_value == 1 {
-                    "category"
-                } else {
-                    "categories"
-                };
-                notes.push(format!(
-                    "{} {noun} without a value",
-                    numfmt::group_chrome(d.no_value)
-                ));
+            Self::XY(c) if c.rows_note.is_some() => c.rows_note.iter().cloned().collect(),
+            Self::XY(c) => chart_data::chart_notes(&c.rows, None),
+            Self::XRange(c) => chart_data::chart_notes(&c.rows, None),
+            Self::Histogram(d) => chart_data::chart_notes(&d.rows, d.clipped.as_ref()),
+            Self::BoxPlot(d) => {
+                let mut notes = chart_data::chart_notes(&d.rows, d.clipped.as_ref());
+                if d.of > 0 {
+                    notes.push(format!(
+                        "the {} largest of {} categories",
+                        crate::chart_modal::COLOR_MAX,
+                        numfmt::group_chrome(d.of)
+                    ));
+                }
+                notes
             }
-            return notes;
+            Self::Kde(d) => chart_data::chart_notes(&d.rows, d.clipped.as_ref()),
+            Self::Heatmap(d) => chart_data::chart_notes(&d.rows, None),
         }
-        let (rows, clipped) = match self {
-            Self::XY(c) => (&c.rows, None),
-            Self::XRange(c) => (&c.rows, None),
-            Self::Histogram(d) => (&d.rows, d.clipped.as_ref()),
-            Self::BoxPlot(d) => (&d.rows, d.clipped.as_ref()),
-            Self::Kde(d) => (&d.rows, d.clipped.as_ref()),
-            Self::Heatmap(d) => (&d.rows, None),
-            Self::Bar(d) => (&d.rows, None),
-        };
-        chart_data::chart_notes(rows, clipped)
     }
 }
 
-/// A chart export with its data taken from the cache; `write` is the slow part and runs
-/// off the UI thread.
-pub(crate) enum ChartExportJob {
-    Series {
-        series: Vec<ChartExportSeries>,
-        chart_type: ChartType,
-        bounds: ChartExportBounds,
-    },
-    BoxPlot {
-        data: chart_data::BoxPlotData,
-        bounds: BoxPlotExportBounds,
-    },
-    Heatmap {
-        data: chart_data::HeatmapData,
-        bounds: ChartExportBounds,
-    },
-    Bar {
-        data: chart_data::BarData,
-        /// The value column's format in the table, for the values and the axis.
-        format: crate::numfmt::NumberFormat,
-        title: Option<String>,
-        notes: Vec<String>,
-    },
+/// A chart export with its figure built from the cache; `write` is the slow part and
+/// runs off the UI thread.
+pub(crate) struct ChartExportJob {
+    pub(crate) figure: Figure,
+    pub(crate) options: ExportOptions,
 }
 
 impl ChartExportJob {
@@ -511,76 +524,41 @@ impl ChartExportJob {
         &self,
         path: &Path,
         format: ChartExportFormat,
-        size: (u32, u32),
         overwrite: Overwrite,
     ) -> Result<()> {
+        let bytes = crate::chart_export::render(&self.figure, &self.options, format)?;
         let out = output_file::OutputFile::create(path, overwrite)?;
-        self.draw(out.path(), format, size)?;
+        std::fs::write(out.path(), bytes)?;
         out.commit()?;
         Ok(())
-    }
-
-    /// The writers open the path themselves: plotters picks PNG from its extension.
-    fn draw(&self, path: &Path, format: ChartExportFormat, size: (u32, u32)) -> Result<()> {
-        match (self, format) {
-            (
-                Self::Series {
-                    series,
-                    chart_type,
-                    bounds,
-                },
-                ChartExportFormat::Png,
-            ) => write_chart_png(path, series, *chart_type, bounds, size),
-            (
-                Self::Series {
-                    series,
-                    chart_type,
-                    bounds,
-                },
-                ChartExportFormat::Eps,
-            ) => write_chart_eps(path, series, *chart_type, bounds),
-            (Self::BoxPlot { data, bounds }, ChartExportFormat::Png) => {
-                write_box_plot_png(path, data, bounds, size)
-            }
-            (Self::BoxPlot { data, bounds }, ChartExportFormat::Eps) => {
-                write_box_plot_eps(path, data, bounds)
-            }
-            (Self::Heatmap { data, bounds }, ChartExportFormat::Png) => {
-                write_heatmap_png(path, data, bounds, size)
-            }
-            (Self::Heatmap { data, bounds }, ChartExportFormat::Eps) => {
-                write_heatmap_eps(path, data, bounds)
-            }
-            (
-                Self::Bar {
-                    data,
-                    format,
-                    title,
-                    notes,
-                },
-                ChartExportFormat::Png,
-            ) => write_bar_png(path, data, format, title.as_deref(), notes, size),
-            (
-                Self::Bar {
-                    data,
-                    format,
-                    title,
-                    notes,
-                },
-                ChartExportFormat::Eps,
-            ) => write_bar_eps(path, data, format, title.as_deref(), notes),
-        }
     }
 }
 
 pub(crate) struct ChartCacheXY {
-    /// Axis labels; one series per y column.
     pub(crate) x_column: String,
-    pub(crate) y_columns: Vec<String>,
+    /// One per series: its Y column, or its color group.
+    pub(crate) names: Vec<String>,
     pub(crate) series: Vec<Vec<(f64, f64)>>,
     /// Where each series' line starts again after a null (see `chart_data::segments`).
     pub(crate) breaks: Vec<Vec<usize>>,
     pub(crate) series_log: Option<Vec<Vec<(f64, f64)>>>,
     pub(crate) x_axis_kind: chart_data::XAxisTemporalKind,
     pub(crate) rows: chart_data::RowsRead,
+    /// How Y was made of the rows, when it was aggregated over all of them.
+    /// What an aggregate over every row read, said under the plot.
+    pub(crate) rows_note: Option<String>,
+}
+
+/// What an aggregate read, under the plot: every row of the view (`all 336,776
+/// rows`) when it counted them all, the rows of the groups a color drew, or the rows
+/// with an X.
+fn rows_note(counted: usize, whole: bool, grouped: bool) -> String {
+    let n = numfmt::group_chrome(counted);
+    if grouped {
+        format!("{n} rows in the groups shown")
+    } else if whole {
+        format!("all {n} rows")
+    } else {
+        format!("{n} rows")
+    }
 }

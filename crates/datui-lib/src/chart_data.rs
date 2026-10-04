@@ -16,8 +16,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Describes how x-axis numeric values map to temporal types for label formatting.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum XAxisTemporalKind {
+    #[default]
     Numeric,
     Date,       // x = days since Unix epoch (f64)
     DatetimeUs, // x = microseconds since epoch
@@ -731,17 +732,30 @@ pub fn segments<'a>(points: &'a [(f64, f64)], breaks: &[usize]) -> Vec<&'a [(f64
 }
 
 /// Histogram bin (center and count).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct HistogramBin {
     pub center: f64,
     pub count: f64,
 }
 
+/// One group's bins of a histogram split by a color: its count (or share) per bin,
+/// on the bins of the whole.
+#[derive(Clone, Debug)]
+pub struct HistogramGroup {
+    pub name: String,
+    pub counts: Vec<f64>,
+}
+
 /// Histogram data for a single column.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct HistogramData {
     pub column: String,
+    /// Every row's bins; with `share`, each bin's share of the rows.
     pub bins: Vec<HistogramBin>,
+    /// Per color group, on the same bins: drawn as outlines over one another.
+    pub groups: Vec<HistogramGroup>,
+    /// Each bin is a share of its group's rows (or of all rows), not a count.
+    pub share: bool,
     pub x_min: f64,
     pub x_max: f64,
     pub max_count: f64,
@@ -750,13 +764,13 @@ pub struct HistogramData {
 }
 
 /// KDE series and bounds.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct KdeSeries {
     pub name: String,
     pub points: Vec<(f64, f64)>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct KdeData {
     pub series: Vec<KdeSeries>,
     pub x_min: f64,
@@ -767,7 +781,7 @@ pub struct KdeData {
 }
 
 /// Box plot stats for a column.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BoxPlotStats {
     pub name: String,
     pub min: f64,
@@ -777,17 +791,20 @@ pub struct BoxPlotStats {
     pub max: f64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BoxPlotData {
     pub stats: Vec<BoxPlotStats>,
     pub y_min: f64,
     pub y_max: f64,
     pub rows: RowsRead,
     pub clipped: Option<Clipped>,
+    /// One box per category: how many categories there are, of which the largest
+    /// have a box. 0 for a box per column.
+    pub of: usize,
 }
 
 /// Heatmap data for two numeric columns.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct HeatmapData {
     pub x_column: String,
     pub y_column: String,
@@ -1121,53 +1138,116 @@ pub fn prepare_histogram_data(
     range: ValueRange,
     sampling: &ChartSampling,
 ) -> Result<HistogramData> {
-    let (columns_values, rows) = read_values(lf, &[column], sampling)?;
-    let mut values = columns_values.into_iter().next().unwrap_or_default();
-    let outside = sort_and_clip(&mut values, range);
+    prepare_histogram_by(lf, column, bins, range, false, None, sampling)
+}
+
+/// Prepare a histogram of `column`, split by `color` into groups on the same bins
+/// when given. With `share`, a bin is its share of its group's rows (of every row,
+/// unsplit), so groups of different sizes compare. The range is the whole
+/// column's, so every group is clipped alike.
+pub fn prepare_histogram_by(
+    lf: &LazyFrame,
+    column: &str,
+    bins: usize,
+    range: ValueRange,
+    share: bool,
+    color: Option<ColorSplit<'_>>,
+    sampling: &ChartSampling,
+) -> Result<HistogramData> {
+    let (values, rows) = read_split(lf, column, color, sampling)?;
+    let mut all: Vec<f64> = values.iter().map(|(v, _)| *v).collect();
+    let outside = sort_and_clip(&mut all, range);
     let clipped = clipped(range, outside);
-    let data = |bins: Vec<HistogramBin>, x_min, x_max, max_count| HistogramData {
+    let mut data = HistogramData {
         column: column.to_string(),
-        bins,
-        x_min,
-        x_max,
-        max_count,
+        bins: Vec::new(),
+        groups: Vec::new(),
+        share,
+        x_min: 0.0,
+        x_max: 1.0,
+        max_count: 0.0,
         rows,
         clipped,
     };
-    let (x_min, x_max) = match (values.first(), values.last()) {
-        (Some(a), Some(b)) => (*a, *b),
-        _ => return Ok(data(Vec::new(), 0.0, 1.0, 0.0)),
+    let (Some(&lo), Some(&hi)) = (all.first(), all.last()) else {
+        return Ok(data);
     };
-    let span = (x_max - x_min).abs();
-    let bin_count = bins.max(1);
-    if span <= f64::EPSILON {
-        let count = values.len() as f64;
-        return Ok(data(
-            vec![HistogramBin {
-                center: x_min,
-                count,
-            }],
-            x_min - 0.5,
-            x_max + 0.5,
-            count,
-        ));
+    let span = hi - lo;
+    let bin_count = if span <= f64::EPSILON { 1 } else { bins.max(1) };
+    let bin_width = if span <= f64::EPSILON {
+        1.0
+    } else {
+        span / bin_count as f64
+    };
+    (data.x_min, data.x_max) = if span <= f64::EPSILON {
+        (lo - 0.5, hi + 0.5)
+    } else {
+        (lo, hi)
+    };
+    let bin_of = |v: f64| {
+        if span <= f64::EPSILON {
+            0
+        } else {
+            (((v - lo) / bin_width).floor().max(0.0) as usize).min(bin_count - 1)
+        }
+    };
+    let groups = color.map_or(0, |c| c.groups.len());
+    let mut total = vec![0.0_f64; bin_count];
+    let mut by_group = vec![vec![0.0_f64; bin_count]; groups];
+    for (v, group) in values {
+        // The range is the whole view's; the bins count the groups drawn.
+        if !(lo..=hi).contains(&v) || (color.is_some() && group.is_none()) {
+            continue;
+        }
+        let bin = bin_of(v);
+        total[bin] += 1.0;
+        if let Some(g) = group {
+            by_group[g][bin] += 1.0;
+        }
     }
-    let bin_width = span / bin_count as f64;
-    let mut counts = vec![0.0_f64; bin_count];
-    for v in values {
-        let idx = (((v - x_min) / bin_width).floor().max(0.0) as usize).min(bin_count - 1);
-        counts[idx] += 1.0;
-    }
-    let bins: Vec<HistogramBin> = counts
+    let as_share = |counts: &mut Vec<f64>| {
+        let n: f64 = counts.iter().sum();
+        if share && n > 0.0 {
+            counts.iter_mut().for_each(|c| *c /= n);
+        }
+    };
+    as_share(&mut total);
+    by_group.iter_mut().for_each(as_share);
+    let center = |i: usize| {
+        if span <= f64::EPSILON {
+            lo
+        } else {
+            lo + (i as f64 + 0.5) * bin_width
+        }
+    };
+    data.bins = total
         .iter()
         .enumerate()
-        .map(|(i, count)| HistogramBin {
-            center: x_min + (i as f64 + 0.5) * bin_width,
-            count: *count,
+        .map(|(i, &count)| HistogramBin {
+            center: center(i),
+            count,
         })
         .collect();
-    let max_count = counts.iter().cloned().fold(0.0_f64, f64::max);
-    Ok(data(bins, x_min, x_max, max_count))
+    let max = |counts: &[f64]| counts.iter().copied().fold(0.0_f64, f64::max);
+    if let Some(color) = color {
+        data.groups = color
+            .groups
+            .iter()
+            .zip(by_group)
+            .map(|(name, counts)| HistogramGroup {
+                name: group_label(name),
+                counts,
+            })
+            .collect();
+        data.max_count = data
+            .groups
+            .iter()
+            .map(|g| max(&g.counts))
+            .fold(0.0, f64::max);
+    } else {
+        data.max_count = max(&total);
+    }
+    Ok(data)
 }
 
 fn quantile(sorted: &[f64], q: f64) -> f64 {
@@ -1191,6 +1271,41 @@ fn quantile(sorted: &[f64], q: f64) -> f64 {
     }
 }
 
+/// The five numbers of sorted `values`, or `None` when there are none.
+fn box_stats(name: String, values: &[f64]) -> Option<BoxPlotStats> {
+    let (min, max) = (*values.first()?, *values.last()?);
+    Some(BoxPlotStats {
+        name,
+        min,
+        q1: quantile(values, 0.25),
+        median: quantile(values, 0.5),
+        q3: quantile(values, 0.75),
+        max,
+    })
+}
+
+/// Box plot data from stats, its bounds taken from them.
+fn box_data(stats: Vec<BoxPlotStats>, rows: RowsRead, clipped: Option<Clipped>) -> BoxPlotData {
+    let mut y_min = stats.iter().map(|s| s.min).fold(f64::INFINITY, f64::min);
+    let mut y_max = stats
+        .iter()
+        .map(|s| s.max)
+        .fold(f64::NEG_INFINITY, f64::max);
+    if stats.is_empty() {
+        (y_min, y_max) = (0.0, 1.0);
+    } else if y_max <= y_min {
+        y_max = y_min + 1.0;
+    }
+    BoxPlotData {
+        stats,
+        y_min,
+        y_max,
+        rows,
+        clipped,
+        of: 0,
+    }
+}
+
 /// Prepare box plot stats for one or more numeric columns. Uses a single read for all columns.
 pub fn prepare_box_plot_data<T: AsRef<str>>(
     lf: &LazyFrame,
@@ -1206,37 +1321,36 @@ pub fn prepare_box_plot_data<T: AsRef<str>>(
     };
     let mut stats = Vec::new();
     let mut outside = 0;
-    let mut y_min = f64::INFINITY;
-    let mut y_max = f64::NEG_INFINITY;
     for (column, mut values) in col_refs.iter().zip(columns_values) {
         outside += sort_and_clip(&mut values, range);
-        let (min, max) = match (values.first(), values.last()) {
-            (Some(a), Some(b)) => (*a, *b),
-            _ => continue,
-        };
-        y_min = y_min.min(min);
-        y_max = y_max.max(max);
-        stats.push(BoxPlotStats {
-            name: (*column).to_string(),
-            min,
-            q1: quantile(&values, 0.25),
-            median: quantile(&values, 0.5),
-            q3: quantile(&values, 0.75),
-            max,
-        });
+        stats.extend(box_stats((*column).to_string(), &values));
     }
-    if stats.is_empty() {
-        (y_min, y_max) = (0.0, 1.0);
-    } else if y_max <= y_min {
-        y_max = y_min + 1.0;
+    Ok(box_data(stats, rows, clipped(range, outside)))
+}
+
+/// Prepare one box of `column` per group of `by`: a box per category. The range is
+/// each group's own, as each box describes its group.
+pub fn prepare_box_by(
+    lf: &LazyFrame,
+    column: &str,
+    by: ColorSplit<'_>,
+    range: ValueRange,
+    sampling: &ChartSampling,
+) -> Result<BoxPlotData> {
+    let (values, rows) = read_split(lf, column, Some(by), sampling)?;
+    let mut groups = vec![Vec::new(); by.groups.len()];
+    for (v, group) in values {
+        if let Some(g) = group {
+            groups[g].push(v);
+        }
     }
-    Ok(BoxPlotData {
-        stats,
-        y_min,
-        y_max,
-        rows,
-        clipped: clipped(range, outside),
-    })
+    let mut outside = 0;
+    let mut stats = Vec::new();
+    for (name, mut values) in by.groups.iter().zip(groups) {
+        outside += sort_and_clip(&mut values, range);
+        stats.extend(box_stats(group_label(name), &values));
+    }
+    Ok(box_data(stats, rows, clipped(range, outside)))
 }
 
 fn kde_bandwidth(values: &[f64]) -> f64 {
@@ -1251,6 +1365,57 @@ fn kde_bandwidth(values: &[f64]) -> f64 {
         return 1.0;
     }
     1.06 * std * n.powf(-0.2)
+}
+
+/// The density of sorted `values` at 200 points, from three bandwidths below the
+/// least to three above the greatest; `None` when there are none.
+fn kde_series(name: String, values: &[f64], bandwidth_factor: f64) -> Option<KdeSeries> {
+    let (min, max) = (*values.first()?, *values.last()?);
+    let bandwidth = (kde_bandwidth(values) * bandwidth_factor).max(f64::EPSILON);
+    let x_start = min - 3.0 * bandwidth;
+    let x_end = max + 3.0 * bandwidth;
+    let samples = 200_usize;
+    let step = (x_end - x_start) / (samples.saturating_sub(1).max(1) as f64);
+    let inv = 1.0 / ((values.len() as f64) * bandwidth * (2.0 * PI).sqrt());
+    let points = (0..samples)
+        .map(|i| {
+            let x = x_start + i as f64 * step;
+            let sum: f64 = values
+                .iter()
+                .map(|&v| {
+                    let u = (x - v) / bandwidth;
+                    (-0.5 * u * u).exp()
+                })
+                .sum();
+            (x, inv * sum)
+        })
+        .collect();
+    Some(KdeSeries { name, points })
+}
+
+/// KDE data from its series, its bounds taken from them.
+fn kde_data(series: Vec<KdeSeries>, rows: RowsRead, clipped: Option<Clipped>) -> KdeData {
+    let points = || series.iter().flat_map(|s| s.points.iter());
+    let mut x_min = points().map(|p| p.0).fold(f64::INFINITY, f64::min);
+    let mut x_max = points().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+    let mut y_max = points().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+    if series.is_empty() {
+        (x_min, x_max, y_max) = (0.0, 1.0, 1.0);
+    }
+    if x_max <= x_min {
+        x_max = x_min + 1.0;
+    }
+    if y_max <= 0.0 {
+        y_max = 1.0;
+    }
+    KdeData {
+        series,
+        x_min,
+        x_max,
+        y_max,
+        rows,
+        clipped,
+    }
 }
 
 /// Prepare KDE data for one or more numeric columns. Uses a single read for all columns.
@@ -1269,58 +1434,48 @@ pub fn prepare_kde_data<T: AsRef<str>>(
     };
     let mut series = Vec::new();
     let mut outside = 0;
-    let mut all_x_min = f64::INFINITY;
-    let mut all_x_max = f64::NEG_INFINITY;
-    let mut all_y_max = f64::NEG_INFINITY;
     for (column, mut values) in col_refs.iter().zip(columns_values) {
         outside += sort_and_clip(&mut values, range);
-        let (min, max) = match (values.first(), values.last()) {
-            (Some(a), Some(b)) => (*a, *b),
-            _ => continue,
-        };
-        let base_bw = kde_bandwidth(&values);
-        let bandwidth = (base_bw * bandwidth_factor).max(f64::EPSILON);
-        let x_start = min - 3.0 * bandwidth;
-        let x_end = max + 3.0 * bandwidth;
-        let samples = 200_usize;
-        let step = (x_end - x_start) / (samples.saturating_sub(1).max(1) as f64);
-        let inv = 1.0 / ((values.len() as f64) * bandwidth * (2.0 * PI).sqrt());
-        let mut points = Vec::with_capacity(samples);
-        for i in 0..samples {
-            let x = x_start + i as f64 * step;
-            let mut sum = 0.0;
-            for &v in &values {
-                let u = (x - v) / bandwidth;
-                sum += (-0.5 * u * u).exp();
-            }
-            let y = inv * sum;
-            all_y_max = all_y_max.max(y);
-            points.push((x, y));
+        series.extend(kde_series((*column).to_string(), &values, bandwidth_factor));
+    }
+    Ok(kde_data(series, rows, clipped(range, outside)))
+}
+
+/// Prepare one density curve of `column` per group of `color`. The range is the
+/// whole column's, so every curve is clipped alike.
+pub fn prepare_kde_by(
+    lf: &LazyFrame,
+    column: &str,
+    bandwidth_factor: f64,
+    range: ValueRange,
+    color: ColorSplit<'_>,
+    sampling: &ChartSampling,
+) -> Result<KdeData> {
+    let (values, rows) = read_split(lf, column, Some(color), sampling)?;
+    let mut all: Vec<f64> = values.iter().map(|(v, _)| *v).collect();
+    let outside = sort_and_clip(&mut all, range);
+    let (lo, hi) = match (all.first(), all.last()) {
+        (Some(&lo), Some(&hi)) => (lo, hi),
+        _ => (f64::INFINITY, f64::NEG_INFINITY),
+    };
+    let mut groups = vec![Vec::new(); color.groups.len()];
+    for (v, group) in values {
+        if let Some(g) = group
+            && (lo..=hi).contains(&v)
+        {
+            groups[g].push(v);
         }
-        all_x_min = all_x_min.min(x_start);
-        all_x_max = all_x_max.max(x_end);
-        series.push(KdeSeries {
-            name: (*column).to_string(),
-            points,
-        });
     }
-    if series.is_empty() {
-        (all_x_min, all_x_max, all_y_max) = (0.0, 1.0, 1.0);
-    }
-    if all_x_max <= all_x_min {
-        all_x_max = all_x_min + 1.0;
-    }
-    if all_y_max <= 0.0 {
-        all_y_max = 1.0;
-    }
-    Ok(KdeData {
-        series,
-        x_min: all_x_min,
-        x_max: all_x_max,
-        y_max: all_y_max,
-        rows,
-        clipped: clipped(range, outside),
-    })
+    let series = color
+        .groups
+        .iter()
+        .zip(groups)
+        .filter_map(|(name, mut values)| {
+            values.sort_by(f64::total_cmp);
+            kde_series(group_label(name), &values, bandwidth_factor)
+        })
+        .collect();
+    Ok(kde_data(series, rows, clipped(range, outside)))
 }
 
 /// Prepare heatmap data for two numeric columns. A row counts when both are present.
@@ -1455,11 +1610,14 @@ impl BarValue {
 /// not a category, and a count per value would hold as much as the table.
 pub const COUNT_CATEGORY_CAP: usize = 100_000;
 
-/// One bar: its category (`None` for a null category) and its value.
+/// One bar: its category (`None` for a null category) and its value. Split by a
+/// color, a bar is a row of bars, one per group (`None` where a group has no rows),
+/// and its value is their total.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bar {
     pub label: Option<String>,
     pub value: f64,
+    pub by_group: Vec<Option<f64>>,
 }
 
 /// A bar chart: one bar per category, in order, up to [`BAR_CAP`].
@@ -1478,6 +1636,10 @@ pub struct BarData {
     /// Rows counted, when a count read past the sample size: the counts are of every
     /// row of the view, and the note says so.
     pub counted: Option<usize>,
+    /// The color groups each bar is split into, in color order; empty when not split.
+    pub groups: Vec<String>,
+    /// What an aggregate read, said under the plot: `all 336,776 rows`.
+    pub rows_note: Option<String>,
 }
 
 impl BarData {
@@ -1598,6 +1760,8 @@ pub fn prepare_bar_data(
         rows,
         value_dtype: df.column(value)?.dtype().clone(),
         counted: None,
+        groups: Vec::new(),
+        rows_note: None,
     })
 }
 
@@ -1621,6 +1785,7 @@ fn order_bars(
             Some(value) => Some(Bar {
                 label: labels[i].map(str::to_string),
                 value,
+                by_group: Vec::new(),
             }),
             None => {
                 no_value += 1;
@@ -1721,6 +1886,8 @@ fn count_bars(
         },
         value_dtype: DataType::UInt64,
         counted: sampling.limit.is_some_and(|n| total > n).then_some(total),
+        groups: Vec::new(),
+        rows_note: None,
     };
     let Some(counts) = counts else {
         return Ok(data(Vec::new(), 0));
@@ -1944,6 +2111,668 @@ fn stream_counts(
         return Err(color_eyre::eyre::eyre!("count cancelled"));
     }
     Ok(tally.finish()?)
+}
+
+// ----- Color: one series per value -----
+
+/// A column a chart is split by, and the values given a group each, in color order.
+/// `None` is the rows with no value.
+#[derive(Clone, Copy, Debug)]
+pub struct ColorSplit<'a> {
+    pub column: &'a str,
+    pub groups: &'a [Option<String>],
+}
+
+/// A group's name as a legend writes it.
+pub fn group_label(value: &Option<String>) -> String {
+    value.clone().unwrap_or_else(|| "null".to_string())
+}
+
+/// Each row's group: its place among `split.groups`, or `None` for a value that has
+/// none. Values are compared as text, as the value picker lists them.
+fn row_groups(df: &DataFrame, split: ColorSplit<'_>) -> Result<Vec<Option<usize>>> {
+    let series = df.column(split.column)?.as_materialized_series();
+    let text = crate::past_calendar::cast_text(series, CastOptions::NonStrict)?;
+    let index: std::collections::HashMap<Option<&str>, usize> = split
+        .groups
+        .iter()
+        .enumerate()
+        .map(|(i, g)| (g.as_deref(), i))
+        .collect();
+    Ok(text.str()?.iter().map(|v| index.get(&v).copied()).collect())
+}
+
+/// Values with the group each is in, and what was read for them.
+type SplitValues = (Vec<(f64, Option<usize>)>, RowsRead);
+
+/// `column`'s finite values as read for a chart, each with its group when split
+/// (`None` for a row of a value no group has, which still counts toward a range).
+fn read_split(
+    lf: &LazyFrame,
+    column: &str,
+    split: Option<ColorSplit<'_>>,
+    sampling: &ChartSampling,
+) -> Result<SplitValues> {
+    let mut columns = vec![column];
+    if let Some(split) = split {
+        columns.push(split.column);
+    }
+    let (df, rows) = read_columns(lf, &columns, sampling)?;
+    let values = f64_values(&df, column)?;
+    let groups = split.map(|s| row_groups(&df, s)).transpose()?;
+    let out = values
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, v)| {
+            let v = v?;
+            Some((v, groups.as_ref().and_then(|groups| groups[i])))
+        })
+        .collect();
+    Ok((out, rows))
+}
+
+/// A column's values with the rows holding each, most rows first (equal counts in
+/// the column's order), counted over the whole view.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ValueRows {
+    pub values: Vec<(Option<String>, u64)>,
+    /// Rows counted.
+    pub rows: usize,
+}
+
+/// Count `column`'s values over the whole view, or take the count held for it: one
+/// streamed pass that keeps a count per value, the one a bar chart of counts makes.
+pub fn value_rows(lf: &LazyFrame, column: &str, sampling: &ChartSampling) -> Result<ValueRows> {
+    let counted = match held_counts(sampling, column, COUNT_CATEGORY_CAP)? {
+        Some(counted) => counted,
+        None => {
+            let counted = stream_counts(lf, column, COUNT_CATEGORY_CAP, &sampling.cancel)?;
+            hold_counts(sampling, column, &counted);
+            counted
+        }
+    };
+    let (counts, rows) = match counted {
+        Counted::All { counts, rows } => (counts, rows),
+        Counted::TooMany => {
+            return Err(color_eyre::eyre::eyre!(
+                "more than {} values of {column}: choose a column with fewer",
+                crate::numfmt::group_chrome(COUNT_CATEGORY_CAP)
+            ));
+        }
+    };
+    let Some(counts) = counts else {
+        return Ok(ValueRows {
+            values: Vec::new(),
+            rows,
+        });
+    };
+    let by_label: Vec<IdxSize> = label_order(counts.column(column)?.as_materialized_series())
+        .into_iter()
+        .map(|i| i as IdxSize)
+        .collect();
+    let counts = counts.take(&IdxCa::from_vec("order".into(), by_label))?;
+    let labels = crate::past_calendar::cast_text(
+        counts.column(column)?.as_materialized_series(),
+        CastOptions::NonStrict,
+    )?;
+    let mut values: Vec<(Option<String>, u64)> = labels
+        .str()?
+        .iter()
+        .zip(counts.column(COUNT_COLUMN)?.u64()?.iter())
+        .map(|(label, n)| (label.map(str::to_string), n.unwrap_or(0)))
+        .collect();
+    // Stable, so equal counts keep the column's order.
+    values.sort_by_key(|v| std::cmp::Reverse(v.1));
+    Ok(ValueRows { values, rows })
+}
+
+/// The groups a color makes: the values picked, in the order picked, or else the
+/// largest by rows, one per palette color.
+pub fn color_groups(rows: &ValueRows, picked: &[Option<String>]) -> Vec<Option<String>> {
+    if !picked.is_empty() {
+        return picked.to_vec();
+    }
+    rows.values
+        .iter()
+        .take(crate::chart_modal::COLOR_MAX)
+        .map(|(value, _)| value.clone())
+        .collect()
+}
+
+/// In a plan: each row's group as its place among `split.groups` (UInt32), null for
+/// a value that has none.
+fn group_expr(split: ColorSplit<'_>) -> Expr {
+    let text = crate::past_calendar::text_expr(col(split.column), CastOptions::NonStrict);
+    let mut out = lit(NULL).cast(DataType::UInt32);
+    for (i, group) in split.groups.iter().enumerate().rev() {
+        let matches = match group {
+            Some(value) => text.clone().eq(lit(value.clone())),
+            None => col(split.column).is_null(),
+        };
+        out = when(matches).then(lit(i as u32)).otherwise(out);
+    }
+    out
+}
+
+/// Series of a line or scatter chart, each named: a Y column's or a color group's.
+#[derive(Clone, Debug, Default)]
+pub struct GroupedSeries {
+    pub names: Vec<String>,
+    pub series: Vec<Vec<(f64, f64)>>,
+    /// Per series, where its line starts again after a gap.
+    pub breaks: Vec<Vec<usize>>,
+    pub x_axis_kind: XAxisTemporalKind,
+    pub rows: RowsRead,
+}
+
+/// A line or scatter chart of `y` split by `color`, from the rows a chart samples:
+/// one series per group, in X order, each breaking where its Y has no value.
+pub fn prepare_xy_by(
+    lf: &LazyFrame,
+    schema: &Schema,
+    x: &str,
+    y: &str,
+    color: ColorSplit<'_>,
+    sampling: &ChartSampling,
+) -> Result<GroupedSeries> {
+    let x_dtype = schema
+        .get(x)
+        .ok_or_else(|| color_eyre::eyre::eyre!("x column '{}' not in schema", x))?;
+    let (df, rows) = read_columns(lf, &[x, y, color.column], sampling)?;
+    let xs = x_values(&df, x, x_dtype)?;
+    let ys = f64_values(&df, y)?;
+    let groups = row_groups(&df, color)?;
+    let mut order: Vec<(f64, usize)> = xs
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, x)| x.map(|x| (x, i)))
+        .collect();
+    order.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let n = color.groups.len();
+    let mut series = vec![Vec::new(); n];
+    let mut breaks = vec![Vec::new(); n];
+    let mut gap = vec![false; n];
+    for (x, i) in order {
+        let Some(g) = groups[i] else { continue };
+        match ys[i] {
+            Some(y) => {
+                if gap[g] && !series[g].is_empty() {
+                    breaks[g].push(series[g].len());
+                }
+                gap[g] = false;
+                series[g].push((x, y));
+            }
+            None => gap[g] = true,
+        }
+    }
+    Ok(GroupedSeries {
+        names: color.groups.iter().map(group_label).collect(),
+        series,
+        breaks,
+        x_axis_kind: x_axis_temporal_kind(x_dtype),
+        rows,
+    })
+}
+
+/// Most points an aggregated chart keeps. Past this X is close to a value per row,
+/// and a time bucket is what it needs.
+pub const AGGREGATE_POINTS_MAX: usize = 200_000;
+
+/// What an aggregated line or scatter chart groups by and makes of the rows.
+#[derive(Clone, Copy, Debug)]
+pub struct AggregateSpec<'a> {
+    pub x: &'a str,
+    pub time_unit: crate::chart_modal::TimeUnit,
+    pub ys: &'a [String],
+    pub aggregate: crate::chart_modal::Aggregate,
+    pub cumulative: crate::chart_modal::Cumulative,
+    pub color: Option<ColorSplit<'a>>,
+}
+
+/// `values`' aggregate in a plan.
+fn aggregate_expr(values: Expr, aggregate: crate::chart_modal::Aggregate) -> Expr {
+    use crate::chart_modal::Aggregate;
+    match aggregate {
+        Aggregate::Sum => values.sum(),
+        Aggregate::Mean => values.mean(),
+        Aggregate::Median => values.median(),
+        Aggregate::Min => values.min(),
+        Aggregate::Max => values.max(),
+        Aggregate::None | Aggregate::Count => len().cast(DataType::Float64),
+    }
+}
+
+/// Collect an aggregate's plan, streamed whatever the setting: a group-by holds a
+/// row per group, and the streaming engine checks `cancel` between morsels. A plan
+/// the streaming engine cannot take runs in memory, where the check runs once and
+/// the pass goes to its end. A pass stopped by `cancel` is an error that says so.
+fn aggregate_pass(lf: LazyFrame, sampling: &ChartSampling) -> Result<DataFrame> {
+    crate::statistics::collect_lazy(lf, true).map_err(|e| {
+        if sampling.cancel.load(Ordering::Relaxed) {
+            color_eyre::eyre::eyre!(ENVELOPE_CANCELLED)
+        } else {
+            e.into()
+        }
+    })
+}
+
+/// Rows of X a sample reads to judge how many values it has.
+const GROUPS_SAMPLE: usize = 20_000;
+
+/// Refuse, before the group-by, an X with more values than a chart can draw: a
+/// group per value of a column of nearly as many values as rows would hold the
+/// table. Judged from a sample of X: its distinct share, times the rows.
+fn refuse_too_many_groups(
+    lf: &LazyFrame,
+    x: &str,
+    most: usize,
+    sampling: &ChartSampling,
+) -> Result<()> {
+    let read = crate::statistics::analysis_rows(
+        &lf.clone().select([col(x)]),
+        Some(GROUPS_SAMPLE),
+        sampling.known_total,
+        sampling.seed,
+        sampling.streaming,
+    )?;
+    let distinct = read.df.column(x)?.n_unique()?;
+    let read_rows = read.df.height().max(1);
+    let estimate = match read.sample_size {
+        Some(_) => distinct as f64 / read_rows as f64 * read.total_rows as f64,
+        None => distinct as f64,
+    };
+    if estimate > most as f64 {
+        return Err(color_eyre::eyre::eyre!(
+            "about {} values of {x}: more than a chart can draw. Bucket X by a time \
+             unit, or choose a column with fewer values",
+            crate::numfmt::group_chrome(estimate as usize)
+        ));
+    }
+    Ok(())
+}
+
+/// A line or scatter chart of Y aggregated per X (per time bucket of a temporal X),
+/// and per color group: one lazy group-by over every row of the view. A count needs
+/// no Y column; any other aggregate draws a series per Y column, or per color group
+/// of the first.
+///
+/// With cumulative on, each point is the running total of the rows up to the end
+/// of its X (its bucket), per series, in X order: a running sum of Y, or Y's rates
+/// compounded, `(1 + y1)(1 + y2)... - 1` over every row. Each bucket carries its
+/// rows' sum (or the sum of `ln(1 + y)`, which compounds the same), and the totals
+/// run across buckets; the aggregate is not used, but a count runs as a count of
+/// rows.
+pub fn prepare_aggregate_xy(
+    lf: &LazyFrame,
+    schema: &Schema,
+    spec: &AggregateSpec<'_>,
+    sampling: &ChartSampling,
+) -> Result<GroupedSeries> {
+    use crate::chart_modal::{Aggregate, Cumulative};
+    let x_dtype = schema
+        .get(spec.x)
+        .ok_or_else(|| color_eyre::eyre::eyre!("x column '{}' not in schema", spec.x))?;
+    let mut x = col(spec.x);
+    let bucketed = spec.time_unit.every().is_some()
+        && matches!(x_dtype, DataType::Date | DataType::Datetime(_, _));
+    if let Some(every) = spec.time_unit.every().filter(|_| bucketed) {
+        x = x.dt().truncate(lit(every));
+    }
+    if !bucketed {
+        refuse_too_many_groups(lf, spec.x, AGGREGATE_POINTS_MAX, sampling)?;
+    }
+    let x = until_cancelled(x, &sampling.cancel).alias("__x");
+    let count = spec.aggregate == Aggregate::Count;
+    let ys: &[String] = match (count, spec.color) {
+        (true, _) => &[],
+        (false, Some(_)) => &spec.ys[..spec.ys.len().min(1)],
+        (false, None) => spec.ys,
+    };
+    let mut select = vec![x];
+    let mut keys = vec![col("__x")];
+    for (i, y) in ys.iter().enumerate() {
+        select.push(
+            col(y.as_str())
+                .cast(DataType::Float64)
+                .alias(format!("__y{i}")),
+        );
+    }
+    let mut plan = lf.clone();
+    if let Some(color) = spec.color {
+        select.push(group_expr(color).alias("__g"));
+        keys.push(col("__g"));
+    }
+    plan = plan.select(select).filter(col("__x").is_not_null());
+    if spec.color.is_some() {
+        plan = plan.filter(col("__g").is_not_null());
+    }
+    let mut aggs = vec![len().alias("__n")];
+    for i in 0..ys.len() {
+        let y = col(format!("__y{i}"));
+        let made = match spec.cumulative {
+            Cumulative::Off => aggregate_expr(y.clone(), spec.aggregate),
+            Cumulative::Sum => y.clone().sum(),
+            Cumulative::Compound => (lit(1.0) + y.clone()).log(lit(std::f64::consts::E)).sum(),
+        };
+        aggs.push(made.alias(format!("__a{i}")));
+        // The values behind it: none is a gap, not the zero a sum of nothing is.
+        aggs.push(y.count().alias(format!("__c{i}")));
+    }
+    let df = aggregate_pass(
+        plan.group_by_stable(keys)
+            .agg(aggs)
+            .sort(["__x"], Default::default()),
+        sampling,
+    )?;
+    if df.height() > AGGREGATE_POINTS_MAX {
+        return Err(color_eyre::eyre::eyre!(
+            "{} points: more than a chart can draw. Bucket X by a time unit, or \
+             choose an X with fewer values",
+            crate::numfmt::group_chrome(df.height())
+        ));
+    }
+    let xs: Vec<Option<f64>> = x_values(&df, "__x", x_dtype)?;
+    let counts: Vec<u64> = df
+        .column("__n")?
+        .cast(&DataType::UInt64)?
+        .u64()?
+        .iter()
+        .map(|n| n.unwrap_or(0))
+        .collect();
+    let groups: Option<Vec<Option<u32>>> = match spec.color {
+        Some(_) => Some(df.column("__g")?.u32()?.iter().collect()),
+        None => None,
+    };
+    let values: Vec<Vec<Option<f64>>> = if count {
+        vec![counts.iter().map(|&n| Some(n as f64)).collect()]
+    } else {
+        (0..ys.len())
+            .map(|i| {
+                let made = df.column(&format!("__a{i}"))?.f64()?.clone();
+                let behind = df.column(&format!("__c{i}"))?.cast(&DataType::UInt64)?;
+                let behind = behind.u64()?;
+                Ok(made
+                    .iter()
+                    .zip(behind.iter())
+                    .map(|(v, n)| {
+                        let v = v.filter(|_| n.unwrap_or(0) > 0)?;
+                        // A bucket's compound return, from its log sum.
+                        Some(if spec.cumulative == Cumulative::Compound {
+                            v.exp_m1()
+                        } else {
+                            v
+                        })
+                    })
+                    .collect())
+            })
+            .collect::<Result<_>>()?
+    };
+    let names: Vec<String> = match spec.color {
+        Some(color) => color.groups.iter().map(group_label).collect(),
+        None if count => vec!["count".to_string()],
+        None => ys.to_vec(),
+    };
+    let n = names.len();
+    let mut series = vec![Vec::new(); n];
+    let mut breaks = vec![Vec::new(); n];
+    let mut gap = vec![false; n];
+    let mut push = |s: usize, x: f64, y: Option<f64>| match y.filter(|y| y.is_finite()) {
+        Some(y) => {
+            if gap[s] && !series[s].is_empty() {
+                breaks[s].push(series[s].len());
+            }
+            gap[s] = false;
+            series[s].push((x, y));
+        }
+        None => gap[s] = true,
+    };
+    for (row, x) in xs.iter().enumerate() {
+        let Some(x) = *x else { continue };
+        match &groups {
+            Some(groups) => {
+                if let Some(g) = groups[row] {
+                    push(g as usize, x, values[0][row]);
+                }
+            }
+            None => {
+                for (s, column) in values.iter().enumerate() {
+                    push(s, x, column[row]);
+                }
+            }
+        }
+    }
+    // A count of rows runs as a count, whichever way the totals were asked to run.
+    let how = match spec.cumulative {
+        Cumulative::Compound if count => Cumulative::Sum,
+        how => how,
+    };
+    for points in &mut series {
+        accumulate(points, how);
+    }
+    Ok(GroupedSeries {
+        names,
+        series,
+        breaks,
+        x_axis_kind: x_axis_temporal_kind(x_dtype),
+        rows: RowsRead {
+            total_rows: counts.iter().sum::<u64>() as usize,
+            sample_size: None,
+            envelope_steps: None,
+        },
+    })
+}
+
+/// Make `points` cumulative along X: a running sum, or returns compounded (each
+/// value a rate; the point is what 1 grew to, less 1).
+pub fn accumulate(points: &mut [(f64, f64)], how: crate::chart_modal::Cumulative) {
+    use crate::chart_modal::Cumulative;
+    let mut total = 0.0;
+    for (_, y) in points.iter_mut() {
+        total = match how {
+            Cumulative::Off => return,
+            Cumulative::Sum => total + *y,
+            Cumulative::Compound => (1.0 + total) * (1.0 + *y) - 1.0,
+        };
+        *y = total;
+    }
+}
+
+/// What an aggregated bar chart groups by and makes of the rows.
+#[derive(Clone, Copy, Debug)]
+pub struct BarAggregate<'a> {
+    pub category: &'a str,
+    /// The Y column; none for a count.
+    pub value: Option<&'a str>,
+    pub aggregate: crate::chart_modal::Aggregate,
+    pub color: Option<ColorSplit<'a>>,
+    pub order: BarOrder,
+    pub cap: usize,
+}
+
+/// A bar chart of `value` aggregated per category (and per color group): one lazy
+/// group-by over every row of the view. A count needs no value column; one without
+/// a color is the exact count a bar chart of counts draws.
+pub fn prepare_bar_aggregate(
+    lf: &LazyFrame,
+    spec: &BarAggregate<'_>,
+    sampling: &ChartSampling,
+) -> Result<BarData> {
+    use crate::chart_modal::Aggregate;
+    let BarAggregate {
+        category,
+        value,
+        aggregate,
+        color,
+        order,
+        cap,
+    } = *spec;
+    let count = aggregate == Aggregate::Count;
+    if count && color.is_none() {
+        return prepare_bar_counts(lf, category, order, cap, sampling);
+    }
+    let value = match value {
+        Some(value) if !count => Some(value),
+        None if !count => return Err(color_eyre::eyre::eyre!("Pick a Y column")),
+        _ => None,
+    };
+    let schema = lf.clone().collect_schema()?;
+    let value_dtype = match value {
+        Some(v) => schema
+            .get(v)
+            .cloned()
+            .ok_or_else(|| color_eyre::eyre::eyre!("no column {v}"))?,
+        None => DataType::UInt64,
+    };
+    let mut select = vec![until_cancelled(col(category), &sampling.cancel)];
+    let mut keys = vec![col(category)];
+    if let Some(value) = value {
+        select.push(col(value).cast(DataType::Float64).alias("__v"));
+    }
+    if let Some(color) = color {
+        select.push(group_expr(color).alias("__g"));
+        keys.push(col("__g"));
+    }
+    let mut plan = lf.clone().select(select);
+    if color.is_some() {
+        plan = plan.filter(col("__g").is_not_null());
+    }
+    let measure = match value {
+        Some(_) => aggregate_expr(col("__v"), aggregate),
+        None => len().cast(DataType::Float64),
+    };
+    // The values behind each bar: none is no bar, not the zero a sum of nothing is.
+    let behind = match value {
+        Some(_) => col("__v").count(),
+        None => len(),
+    };
+    refuse_too_many_groups(lf, category, COUNT_CATEGORY_CAP, sampling)?;
+    let df = aggregate_pass(
+        // Stable, so bars of equal value keep one order from run to run.
+        plan.group_by_stable(keys).agg([
+            len().alias("__n"),
+            measure.alias("__a"),
+            behind.alias("__c"),
+        ]),
+        sampling,
+    )?;
+    let rows: usize = df
+        .column("__n")?
+        .cast(&DataType::UInt64)?
+        .u64()?
+        .iter()
+        .map(|n| n.unwrap_or(0) as usize)
+        .sum();
+    // A sum, least or greatest of whole numbers is whole; a count always is.
+    let whole = count
+        || (value_dtype.is_integer()
+            && matches!(aggregate, Aggregate::Sum | Aggregate::Min | Aggregate::Max));
+    let categories = df.column(category)?.as_materialized_series().clone();
+    let labels_series = crate::past_calendar::cast_text(&categories, CastOptions::NonStrict)?;
+    let labels: Vec<Option<&str>> = labels_series.str()?.iter().collect();
+    let behind: Vec<u64> = df
+        .column("__c")?
+        .cast(&DataType::UInt64)?
+        .u64()?
+        .iter()
+        .map(|n| n.unwrap_or(0))
+        .collect();
+    // NaN and infinities draw nothing true: no bar.
+    let measures: Vec<Option<f64>> = df
+        .column("__a")?
+        .f64()?
+        .iter()
+        .zip(&behind)
+        .map(|(v, &n)| v.filter(|v| v.is_finite() && n > 0))
+        .collect();
+    let value_column = match value {
+        Some(value) => format!("{} {value}", aggregate.label()),
+        None => "count".to_string(),
+    };
+    let mut data = BarData {
+        category: category.to_string(),
+        value_column,
+        bars: Vec::new(),
+        more: 0,
+        no_value: 0,
+        rows: RowsRead {
+            total_rows: rows,
+            sample_size: None,
+            envelope_steps: None,
+        },
+        value_dtype: if whole {
+            DataType::Int64
+        } else {
+            DataType::Float64
+        },
+        counted: None,
+        groups: Vec::new(),
+        rows_note: None,
+    };
+    let too_many = || {
+        color_eyre::eyre::eyre!(
+            "more than {} categories of {category}: choose a column with fewer",
+            crate::numfmt::group_chrome(COUNT_CATEGORY_CAP)
+        )
+    };
+    let Some(color) = color else {
+        if df.height() > COUNT_CATEGORY_CAP {
+            return Err(too_many());
+        }
+        let (bars, more, no_value) = order_bars(&categories, &labels, &measures, order, cap);
+        (data.bars, data.more, data.no_value) = (bars, more, no_value);
+        return Ok(data);
+    };
+    // One bar row per category, a value per group: the category's first row stands
+    // for it when ordering by label.
+    let groups: Vec<Option<u32>> = df.column("__g")?.u32()?.iter().collect();
+    let mut at: std::collections::HashMap<Option<&str>, usize> = Default::default();
+    let mut firsts: Vec<IdxSize> = Vec::new();
+    let mut rows_of: Vec<Vec<Option<f64>>> = Vec::new();
+    for (row, label) in labels.iter().enumerate() {
+        let i = *at.entry(*label).or_insert_with(|| {
+            firsts.push(row as IdxSize);
+            rows_of.push(vec![None; color.groups.len()]);
+            rows_of.len() - 1
+        });
+        if let Some(g) = groups[row] {
+            rows_of[i][g as usize] = measures[row];
+        }
+    }
+    if rows_of.len() > COUNT_CATEGORY_CAP {
+        return Err(too_many());
+    }
+    let unique = categories.take(&IdxCa::from_vec("firsts".into(), firsts.clone()))?;
+    let unique_labels: Vec<Option<&str>> = firsts.iter().map(|&r| labels[r as usize]).collect();
+    // A count or a sum adds up across groups; any other measure orders by its
+    // largest group.
+    let totals: Vec<Option<f64>> = rows_of
+        .iter()
+        .map(|values| {
+            let present = values.iter().flatten();
+            if count || aggregate == Aggregate::Sum {
+                Some(present.sum())
+            } else {
+                present.copied().reduce(f64::max)
+            }
+        })
+        .collect();
+    let (mut bars, more, no_value) = order_bars(&unique, &unique_labels, &totals, order, cap);
+    // `order_bars` names each bar by its label; give each its groups back.
+    let by_label: std::collections::HashMap<Option<&str>, usize> = unique_labels
+        .iter()
+        .enumerate()
+        .map(|(i, l)| (*l, i))
+        .collect();
+    for bar in &mut bars {
+        if let Some(&i) = by_label.get(&bar.label.as_deref()) {
+            bar.by_group = rows_of[i].clone();
+        }
+    }
+    data.bars = bars;
+    data.more = more;
+    data.no_value = no_value;
+    data.groups = color.groups.iter().map(group_label).collect();
+    Ok(data)
 }
 
 #[cfg(test)]
@@ -3172,5 +4001,394 @@ mod tests {
         let holding = sampling.held.0.lock().unwrap();
         let held = holding.rows.as_ref().expect("the rows read are held");
         assert_eq!(held.df.column("carrier").unwrap().len(), 3);
+    }
+
+    // ----- Aggregates, buckets, cumulative, color -----
+
+    /// Daily rows of two symbols over three months, as a lazy frame: `date`,
+    /// `symbol`, `ret` (A gains 1 a day, B 2).
+    fn returns() -> LazyFrame {
+        let days: Vec<i32> = (0..90).collect();
+        let n = days.len();
+        let mut df = df!(
+            "date" => days.iter().chain(&days).map(|d| 19723 + d).collect::<Vec<i32>>(),
+            "symbol" => std::iter::repeat_n("A", n).chain(std::iter::repeat_n("B", n)).collect::<Vec<_>>(),
+            "ret" => std::iter::repeat_n(1.0, n).chain(std::iter::repeat_n(2.0, n)).collect::<Vec<f64>>()
+        )
+        .unwrap();
+        df.apply("date", |c| c.cast(&DataType::Date).unwrap())
+            .unwrap();
+        df.lazy()
+    }
+
+    fn aggregate(
+        lf: &LazyFrame,
+        unit: crate::chart_modal::TimeUnit,
+        aggregate: crate::chart_modal::Aggregate,
+        cumulative: crate::chart_modal::Cumulative,
+        color: Option<ColorSplit<'_>>,
+    ) -> GroupedSeries {
+        let schema = lf.clone().collect_schema().unwrap();
+        let ys = ["ret".to_string()];
+        prepare_aggregate_xy(
+            lf,
+            schema.as_ref(),
+            &AggregateSpec {
+                x: "date",
+                time_unit: unit,
+                ys: &ys,
+                aggregate,
+                cumulative,
+                color,
+            },
+            &all_rows(),
+        )
+        .unwrap()
+    }
+
+    /// A month bucket makes one point per month, the aggregate over every row in
+    /// it, per color group, at the month's first day.
+    #[test]
+    fn a_time_bucket_aggregates_every_row_per_month_and_color() {
+        use crate::chart_modal::{Aggregate, Cumulative, TimeUnit};
+        let lf = returns();
+        let groups = [Some("A".to_string()), Some("B".to_string())];
+        let split = ColorSplit {
+            column: "symbol",
+            groups: &groups,
+        };
+        let sum = aggregate(
+            &lf,
+            TimeUnit::Month,
+            Aggregate::Sum,
+            Cumulative::Off,
+            Some(split),
+        );
+        assert_eq!(sum.names, ["A", "B"]);
+        assert_eq!(sum.x_axis_kind, XAxisTemporalKind::Date);
+        assert_eq!(sum.rows.total_rows, 180, "every row, no sample");
+        // 2024-01-01 is day 19723: January, February (29 days in 2024), March.
+        let xs: Vec<f64> = sum.series[0].iter().map(|p| p.0).collect();
+        assert_eq!(xs, [19723.0, 19754.0, 19783.0]);
+        let a: Vec<f64> = sum.series[0].iter().map(|p| p.1).collect();
+        let b: Vec<f64> = sum.series[1].iter().map(|p| p.1).collect();
+        assert_eq!(a, [31.0, 29.0, 30.0]);
+        assert_eq!(b, [62.0, 58.0, 60.0]);
+
+        let mean = aggregate(
+            &lf,
+            TimeUnit::Month,
+            Aggregate::Mean,
+            Cumulative::Off,
+            Some(split),
+        );
+        assert!(mean.series[1].iter().all(|p| p.1 == 2.0));
+        let count = aggregate(
+            &lf,
+            TimeUnit::Quarter,
+            Aggregate::Count,
+            Cumulative::Off,
+            None,
+        );
+        assert_eq!(count.names, ["count"]);
+        assert_eq!(
+            count.series[0],
+            [(19723.0, 180.0)],
+            "one quarter, both symbols"
+        );
+        let weeks = aggregate(&lf, TimeUnit::Week, Aggregate::Max, Cumulative::Off, None);
+        // 2024-01-01 is a Monday: 90 days are 13 weeks less a day, in 13 buckets.
+        assert_eq!(weeks.series[0].len(), 13);
+        assert!(weeks.series[0].iter().all(|p| p.1 == 2.0));
+    }
+
+    /// Cumulative runs along X after the aggregate: a running sum, or returns
+    /// compounded.
+    #[test]
+    fn cumulative_sums_or_compounds_along_x() {
+        use crate::chart_modal::{Aggregate, Cumulative, TimeUnit};
+        let lf = returns();
+        let groups = [Some("A".to_string())];
+        let split = ColorSplit {
+            column: "symbol",
+            groups: &groups,
+        };
+        let running = aggregate(
+            &lf,
+            TimeUnit::Month,
+            Aggregate::Sum,
+            Cumulative::Sum,
+            Some(split),
+        );
+        let ys: Vec<f64> = running.series[0].iter().map(|p| p.1).collect();
+        assert_eq!(ys, [31.0, 60.0, 90.0]);
+        assert_eq!(running.names, ["A"], "only the groups picked");
+
+        let mut points = vec![(0.0, 0.1), (1.0, 0.1), (2.0, -0.5)];
+        accumulate(&mut points, Cumulative::Compound);
+        let ys: Vec<f64> = points.iter().map(|p| (p.1 * 1e6).round() / 1e6).collect();
+        assert_eq!(ys, [0.1, 0.21, -0.395]);
+        let mut points = vec![(0.0, 3.0), (1.0, 4.0)];
+        accumulate(&mut points, Cumulative::Off);
+        assert_eq!(points, [(0.0, 3.0), (1.0, 4.0)]);
+    }
+
+    /// Compound runs over every row, not over a bucket's mean: 1% a day for 90 days,
+    /// bucketed by month, is 1.01^31 - 1 at January's end, 1.01^60 - 1 at
+    /// February's (29 days in 2024), 1.01^90 - 1 at March's.
+    #[test]
+    fn compound_runs_over_the_rows_of_each_bucket() {
+        use crate::chart_modal::{Aggregate, Cumulative, TimeUnit};
+        let mut df = df!(
+            "date" => (0..90).map(|d| 19723 + d).collect::<Vec<i32>>(),
+            "ret" => vec![0.01; 90]
+        )
+        .unwrap();
+        df.apply("date", |c| c.cast(&DataType::Date).unwrap())
+            .unwrap();
+        let lf = df.lazy();
+        for how in [Aggregate::Mean, Aggregate::Sum, Aggregate::Max] {
+            let out = aggregate(&lf, TimeUnit::Month, how, Cumulative::Compound, None);
+            let ys: Vec<f64> = out.series[0].iter().map(|p| p.1).collect();
+            let want = [
+                1.01f64.powi(31) - 1.0,
+                1.01f64.powi(60) - 1.0,
+                1.01f64.powi(90) - 1.0,
+            ];
+            for (y, w) in ys.iter().zip(want) {
+                assert!((y - w).abs() < 1e-9, "{how:?}: {ys:?}");
+            }
+        }
+        let rows = aggregate(
+            &lf,
+            TimeUnit::Month,
+            Aggregate::Count,
+            Cumulative::Compound,
+            None,
+        );
+        let ys: Vec<f64> = rows.series[0].iter().map(|p| p.1).collect();
+        assert_eq!(ys, [31.0, 60.0, 90.0], "a count runs as a count");
+    }
+
+    /// A group with no values is a gap, not the zero a sum of nothing is.
+    #[test]
+    fn a_bucket_with_no_values_is_a_gap() {
+        use crate::chart_modal::{Aggregate, Cumulative, TimeUnit};
+        let lf = df!(
+            "date" => [0i32, 0, 1, 2],
+            "ret" => [Some(1.0), Some(2.0), None, Some(4.0)]
+        )
+        .unwrap()
+        .lazy()
+        .with_column(col("date").cast(DataType::Date));
+        let out = aggregate(&lf, TimeUnit::Day, Aggregate::Sum, Cumulative::Off, None);
+        assert_eq!(out.series[0], [(0.0, 3.0), (2.0, 4.0)]);
+        assert_eq!(out.breaks[0], [1], "the line breaks over day 1");
+    }
+
+    /// An X of nearly as many values as rows is refused before the group-by, which
+    /// would hold a group per row.
+    #[test]
+    fn an_x_of_too_many_values_is_refused_first() {
+        use crate::chart_modal::{Aggregate, Cumulative};
+        let n = AGGREGATE_POINTS_MAX as i64 + 10_000;
+        let lf = df!("x" => (0..n).collect::<Vec<i64>>(), "ret" => vec![1.0; n as usize])
+            .unwrap()
+            .lazy();
+        let schema = lf.clone().collect_schema().unwrap();
+        let ys = ["ret".to_string()];
+        let err = prepare_aggregate_xy(
+            &lf,
+            schema.as_ref(),
+            &AggregateSpec {
+                x: "x",
+                time_unit: crate::chart_modal::TimeUnit::None,
+                ys: &ys,
+                aggregate: Aggregate::Mean,
+                cumulative: Cumulative::Off,
+                color: None,
+            },
+            &all_rows(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("values of x"), "{err}");
+    }
+
+    /// Color takes the values with the most rows, one per palette color, equal
+    /// counts in the column's order; a pick takes its values, in the order picked.
+    #[test]
+    fn color_takes_the_largest_groups_or_the_ones_picked() {
+        let values: Vec<String> = (0..9)
+            .flat_map(|i| std::iter::repeat_n(format!("v{i}"), 10 + i))
+            .chain(std::iter::once("v0".to_string()))
+            .collect();
+        let lf = df!("c" => values).unwrap().lazy();
+        let rows = value_rows(&lf, "c", &all_rows()).unwrap();
+        assert_eq!(rows.values.len(), 9);
+        assert_eq!(rows.rows, 10 + 11 + 12 + 13 + 14 + 15 + 16 + 17 + 18 + 1);
+        assert_eq!(rows.values[0], (Some("v8".to_string()), 18));
+        let top = color_groups(&rows, &[]);
+        assert_eq!(
+            top,
+            ["v8", "v7", "v6", "v5", "v4", "v3", "v2"]
+                .map(|v| Some(v.to_string()))
+                .to_vec()
+        );
+        // v0 has 11 rows, as many as v1: the column's order breaks the tie.
+        assert_eq!(rows.values[7], (Some("v0".to_string()), 11));
+        let picked = [Some("v1".to_string()), None];
+        assert_eq!(color_groups(&rows, &picked), picked);
+    }
+
+    /// A line or scatter split by color without an aggregate: the sampled rows, a
+    /// series per group in X order, rows of no group left out.
+    #[test]
+    fn a_color_splits_the_sampled_points() {
+        let lf = df!(
+            "x" => [3i64, 1, 2, 1, 2],
+            "y" => [30.0, 10.0, 20.0, 1.0, 2.0],
+            "c" => ["a", "a", "a", "b", "z"]
+        )
+        .unwrap()
+        .lazy();
+        let schema = lf.clone().collect_schema().unwrap();
+        let groups = [Some("a".to_string()), Some("b".to_string())];
+        let split = ColorSplit {
+            column: "c",
+            groups: &groups,
+        };
+        let out = prepare_xy_by(&lf, schema.as_ref(), "x", "y", split, &all_rows()).unwrap();
+        assert_eq!(out.names, ["a", "b"]);
+        assert_eq!(out.series[0], [(1.0, 10.0), (2.0, 20.0), (3.0, 30.0)]);
+        assert_eq!(out.series[1], [(1.0, 1.0)]);
+    }
+
+    /// A bar of the mean per category, split by color: a value per group in each
+    /// bar, ordered by the largest group; a count needs no value column.
+    #[test]
+    fn bars_aggregate_per_category_and_color() {
+        use crate::chart_modal::Aggregate;
+        let lf = df!(
+            "carrier" => ["UA", "UA", "UA", "AA", "AA"],
+            "origin" => ["EWR", "EWR", "JFK", "EWR", "JFK"],
+            "delay" => [10.0, 20.0, 5.0, 1.0, 50.0]
+        )
+        .unwrap()
+        .lazy();
+        let groups = [Some("EWR".to_string()), Some("JFK".to_string())];
+        let split = ColorSplit {
+            column: "origin",
+            groups: &groups,
+        };
+        let spec = BarAggregate {
+            category: "carrier",
+            value: Some("delay"),
+            aggregate: Aggregate::Mean,
+            color: Some(split),
+            order: BarOrder::Value,
+            cap: BAR_CAP,
+        };
+        let data = prepare_bar_aggregate(&lf, &spec, &all_rows()).unwrap();
+        assert_eq!(data.groups, ["EWR", "JFK"]);
+        assert_eq!(data.value_column, "mean delay");
+        assert_eq!(data.rows.total_rows, 5);
+        let bars: Vec<(Option<&str>, Vec<Option<f64>>)> = data
+            .bars
+            .iter()
+            .map(|b| (b.label.as_deref(), b.by_group.clone()))
+            .collect();
+        assert_eq!(
+            bars,
+            [
+                (Some("AA"), vec![Some(1.0), Some(50.0)]),
+                (Some("UA"), vec![Some(15.0), Some(5.0)])
+            ],
+            "AA's largest group is larger"
+        );
+        let count = BarAggregate {
+            value: None,
+            aggregate: Aggregate::Count,
+            ..spec
+        };
+        let data = prepare_bar_aggregate(&lf, &count, &all_rows()).unwrap();
+        assert_eq!(data.bars[0].label.as_deref(), Some("UA"));
+        assert_eq!(data.bars[0].value, 3.0, "a count adds up across groups");
+        assert!(data.value_dtype.is_integer(), "counts print whole");
+        // A NaN draws nothing; a category whose values are all null has no bar.
+        let odd = df!(
+            "carrier" => ["UA", "AA", "DL"],
+            "delay" => [Some(f64::NAN), None, Some(1.0)]
+        )
+        .unwrap()
+        .lazy();
+        let mean = BarAggregate {
+            color: None,
+            ..spec
+        };
+        let data = prepare_bar_aggregate(&odd, &mean, &all_rows()).unwrap();
+        let labels: Vec<Option<&str>> = data.bars.iter().map(|b| b.label.as_deref()).collect();
+        assert_eq!(labels, [Some("DL")]);
+        assert_eq!(data.no_value, 2);
+        let sum = BarAggregate {
+            aggregate: Aggregate::Sum,
+            color: None,
+            ..spec
+        };
+        let data = prepare_bar_aggregate(&lf, &sum, &all_rows()).unwrap();
+        assert_eq!(
+            data.bars
+                .iter()
+                .map(|b| (b.label.as_deref(), b.value))
+                .collect::<Vec<_>>(),
+            [(Some("AA"), 51.0), (Some("UA"), 35.0)]
+        );
+    }
+
+    /// A histogram split by color: every group on the same bins, each a share of
+    /// its own rows when asked.
+    #[test]
+    fn a_histogram_splits_into_groups_on_shared_bins() {
+        let lf = df!(
+            "v" => [0.0, 1.0, 2.0, 3.0, 0.0, 0.0],
+            "g" => ["a", "a", "a", "a", "b", "b"]
+        )
+        .unwrap()
+        .lazy();
+        let groups = [Some("a".to_string()), Some("b".to_string())];
+        let split = ColorSplit {
+            column: "g",
+            groups: &groups,
+        };
+        let data =
+            prepare_histogram_by(&lf, "v", 3, ValueRange::All, true, Some(split), &all_rows())
+                .unwrap();
+        assert_eq!(data.bins.len(), 3);
+        assert_eq!(data.groups.len(), 2);
+        assert_eq!(data.groups[0].counts, [0.25, 0.25, 0.5]);
+        assert_eq!(data.groups[1].counts, [1.0, 0.0, 0.0]);
+        assert_eq!(data.max_count, 1.0);
+        let total: f64 = data.bins.iter().map(|b| b.count).sum();
+        assert!((total - 1.0).abs() < 1e-9, "the whole is a share too");
+    }
+
+    /// A box per category, the categories given.
+    #[test]
+    fn a_box_per_category() {
+        let lf = df!(
+            "v" => [1.0, 2.0, 3.0, 10.0, 20.0],
+            "k" => ["x", "x", "x", "y", "y"]
+        )
+        .unwrap()
+        .lazy();
+        let groups = [Some("y".to_string()), Some("x".to_string())];
+        let split = ColorSplit {
+            column: "k",
+            groups: &groups,
+        };
+        let data = prepare_box_by(&lf, "v", split, ValueRange::All, &all_rows()).unwrap();
+        let names: Vec<&str> = data.stats.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["y", "x"]);
+        assert_eq!(data.stats[1].median, 2.0);
+        assert_eq!((data.y_min, data.y_max), (1.0, 20.0));
     }
 }

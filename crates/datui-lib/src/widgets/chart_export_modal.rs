@@ -1,18 +1,16 @@
-//! Chart export modal rendering: one Surface, a Picker for the format,
-//! FormRows for path, title and size, actions in the footer.
+//! Chart export dialog rendering: one Surface, a FormRow per field, the actions in
+//! the footer.
 
-use crate::chart_export::ChartExportFormat;
-use crate::chart_export_modal::{ChartExportFocus, ChartExportModal};
+use crate::chart_export_modal::{ChartExportFocus, ChartExportModal, FIELDS};
 use crate::render::context::RenderContext;
-use crate::widgets::ui::{FormRow, FormValue, HintBar, Picker, SectionRule, Surface};
+use crate::widgets::ui::{FormRow, FormValue, HintBar, Surface};
 use ratatui::layout::Rect;
 
-/// The value column's offset inside the options half: past the longest label,
-/// "Height:", plus two cells of air.
-const LABEL_WIDTH: u16 = 9;
+/// The value column's offset: past the longest label, "Description:", plus air.
+const LABEL_WIDTH: u16 = 14;
 
-/// Columns the format list needs: rail plus the longest name plus air.
-const FORMAT_WIDTH: u16 = 8;
+/// Rows the dialog wants: the fields, the blank row and the footer, the border.
+pub const HEIGHT: u16 = FIELDS.len() as u16 + 4;
 
 pub fn render_chart_export_modal(
     area: Rect,
@@ -27,98 +25,50 @@ pub fn render_chart_export_modal(
     let content = Surface::new("Export Chart")
         .footer(&footer)
         .render(area, buf, ctx);
-    if content.height < 2 || content.width < 4 {
+    if content.height < 1 || content.width < 4 {
         return;
     }
-
-    // Left: the format picker under its section rule. Right: one FormRow per
-    // option, values on one column.
-    let format_focused = modal.focus == ChartExportFocus::FormatSelector;
-    SectionRule {
-        title: "Format",
-        chip: None,
-        focused: format_focused,
-    }
-    .render(
-        Rect {
-            width: FORMAT_WIDTH.min(content.width),
-            height: 1,
-            ..content
-        },
-        buf,
-        ctx,
-    );
-    let list_area = Rect {
-        y: content.y + 1,
-        width: FORMAT_WIDTH.min(content.width),
-        height: content.height - 1,
-        ..content
-    };
-    let names: Vec<&str> = ChartExportFormat::ALL.iter().map(|f| f.as_str()).collect();
-    let selected = ChartExportFormat::ALL
-        .iter()
-        .position(|f| *f == modal.selected_format);
-    Picker::new(names, selected, format_focused).render(list_area, buf, ctx);
-
-    modal
-        .path_input
-        .set_focused(modal.focus == ChartExportFocus::PathInput);
-    modal
-        .title_input
-        .set_focused(modal.focus == ChartExportFocus::TitleInput);
-    modal
-        .width_input
-        .set_focused(modal.focus == ChartExportFocus::WidthInput);
-    modal
-        .height_input
-        .set_focused(modal.focus == ChartExportFocus::HeightInput);
-
-    let rows: [(&str, FormValue, ChartExportFocus); 4] = [
-        (
-            "Path:",
-            FormValue::Input(&modal.path_input),
-            ChartExportFocus::PathInput,
-        ),
-        (
-            "Title:",
-            FormValue::Input(&modal.title_input),
-            ChartExportFocus::TitleInput,
-        ),
-        (
-            "Width:",
-            FormValue::Input(&modal.width_input),
-            ChartExportFocus::WidthInput,
-        ),
-        (
-            "Height:",
-            FormValue::Input(&modal.height_input),
-            ChartExportFocus::HeightInput,
-        ),
-    ];
-
-    let options_x = content.x + FORMAT_WIDTH + 2;
-    let options_width = (content.x + content.width).saturating_sub(options_x);
-    if options_width == 0 {
-        return;
-    }
-    for (i, (label, value, focus)) in rows.into_iter().enumerate() {
-        // Aligned with the format items, one row below the section rule.
-        let y = content.y + 1 + i as u16;
-        if y >= content.y + content.height {
-            break;
+    let focus = modal.focus;
+    for field in FIELDS {
+        let focused = field == focus;
+        match field {
+            ChartExportFocus::PathInput => modal.path_input.set_focused(focused),
+            ChartExportFocus::WidthInput => modal.width_input.set_focused(focused),
+            ChartExportFocus::HeightInput => modal.height_input.set_focused(focused),
+            ChartExportFocus::TitleInput => modal.title_input.set_focused(focused),
+            ChartExportFocus::DescriptionInput => modal.description_input.set_focused(focused),
+            ChartExportFocus::NotesInput => modal.notes_input.set_focused(focused),
+            ChartExportFocus::SourceInput => modal.source_input.set_focused(focused),
+            ChartExportFocus::BylineInput => modal.byline_input.set_focused(focused),
+            _ => {}
         }
+    }
+    // Overlays scroll inside a capped frame: keep the focused field on screen.
+    let rows = content.height as usize;
+    let at = FIELDS.iter().position(|f| *f == focus).unwrap_or(0);
+    let first = at.saturating_sub(rows.saturating_sub(1));
+    for (i, field) in FIELDS.iter().enumerate().skip(first).take(rows) {
+        let value = match field {
+            ChartExportFocus::Format => FormValue::Choice(modal.format.as_str()),
+            ChartExportFocus::Style => FormValue::Choice(modal.style.label()),
+            ChartExportFocus::Size => FormValue::Choice(modal.size.label()),
+            ChartExportFocus::Legend => FormValue::Choice(modal.legend.label()),
+            field => match modal.input(*field) {
+                Some(input) => FormValue::Input(input),
+                None => continue,
+            },
+        };
         FormRow {
-            label,
+            label: field.label(),
             value,
-            focused: modal.focus == focus,
+            focused: *field == focus,
             label_width: LABEL_WIDTH,
         }
         .render(
             Rect {
-                x: options_x,
-                y,
-                width: options_width,
+                y: content.y + (i - first) as u16,
                 height: 1,
+                ..content
             },
             buf,
             ctx,
@@ -129,6 +79,7 @@ pub fn render_chart_export_modal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chart_export_modal::ExportDefaults;
     use ratatui::buffer::Buffer;
 
     fn render_rows(width: u16, height: u16) -> Vec<String> {
@@ -136,7 +87,7 @@ mod tests {
         let config = crate::config::AppConfig::default();
         let theme = crate::config::Theme::from_config(&config.theme).unwrap();
         let mut modal = ChartExportModal::new();
-        modal.open(&theme, 1000);
+        modal.open(&theme, 1000, ExportDefaults::default());
         modal.path_input.set_value("out.png");
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
@@ -150,27 +101,44 @@ mod tests {
             .collect()
     }
 
-    /// One border, the format list beside one FormRow per option, and the
-    /// actions as footer chips — no bordered fields, no buttons.
+    /// One border, a FormRow per field, the actions as footer chips: no bordered
+    /// fields, no buttons.
     #[test]
-    fn one_surface_with_the_format_list_and_the_rows() {
-        let rows = render_rows(64, 10);
+    fn one_surface_with_a_row_per_field() {
+        let rows = render_rows(64, HEIGHT);
         assert!(rows[0].contains("Export Chart"), "title: {:?}", rows[0]);
-        for row in &rows[1..9] {
+        for row in &rows[1..rows.len() - 1] {
             assert!(
                 !row.contains('╭') && !row.contains('╰'),
                 "a second border inside the surface: {row:?}"
             );
         }
-        assert!(rows[1].contains("Format"));
-        assert!(rows[2].contains("PNG") && rows[2].contains("Path:"));
-        assert!(rows[3].contains("EPS") && rows[3].contains("Title:"));
-        assert!(rows[4].contains("Width:") && rows[4].contains("1024"));
-        assert!(rows[5].contains("Height:") && rows[5].contains("768"));
+        let text = rows.join("\n");
+        for label in [
+            "Path:",
+            "Format:",
+            "PNG",
+            "Style:",
+            "Light",
+            "Size:",
+            "Document",
+            "Width:",
+            "1600",
+            "Height:",
+            "1000",
+            "Legend:",
+            "Title:",
+            "Description:",
+            "Notes:",
+            "Source:",
+            "Byline:",
+        ] {
+            assert!(text.contains(label), "{label}:\n{text}");
+        }
+        let footer = &rows[rows.len() - 2];
         assert!(
-            rows[8].contains("Enter") && rows[8].contains("Export") && rows[8].contains("Esc"),
-            "footer chips: {:?}",
-            rows[8]
+            footer.contains("Enter") && footer.contains("Export") && footer.contains("Esc"),
+            "footer chips: {footer:?}"
         );
     }
 

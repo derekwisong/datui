@@ -349,11 +349,11 @@ fn test_chart_q_does_not_exit() {
     assert_eq!(app.input_mode, InputMode::Chart);
 }
 
-/// The chart type switches from anywhere: 1-6 name a tab in order, [ and ]
-/// cycle, with no focus dance through a tab bar.
+/// The chart type switches from anywhere: 1-7 name one in order, [ and ] step,
+/// and an open Picker takes digits as letters to narrow by.
 #[test]
 fn test_chart_type_switches_from_anywhere() {
-    use datui::chart_modal::{ChartFocus, ChartKind};
+    use datui::chart_modal::{ChartFocus, Mark};
     let (mut app, _rx, _tx) = open_chart_view("chart_direct_type_test.csv");
     let press = |app: &mut App, c: char| {
         app.event(&AppEvent::Key(KeyEvent::new(
@@ -362,48 +362,33 @@ fn test_chart_type_switches_from_anywhere() {
         )));
     };
 
-    press(&mut app, '4');
-    assert_eq!(app.chart_modal.chart_kind, ChartKind::Kde);
-    assert_eq!(
-        app.chart_modal.focus,
-        ChartFocus::Column,
-        "focus lands on the new form's first row"
-    );
-
-    // Deep in the KDE form, a number key still switches.
+    press(&mut app, '6');
+    assert_eq!(app.chart_modal.mark(), Mark::Kde);
+    // Deep in the panel, a number key still switches.
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Tab,
         KeyModifiers::NONE,
     )));
-    press(&mut app, '2');
-    assert_eq!(app.chart_modal.chart_kind, ChartKind::Histogram);
-
+    press(&mut app, '4');
+    assert_eq!(app.chart_modal.mark(), Mark::Histogram);
     press(&mut app, ']');
-    assert_eq!(app.chart_modal.chart_kind, ChartKind::BoxPlot);
+    assert_eq!(app.chart_modal.mark(), Mark::Box);
     press(&mut app, '[');
     press(&mut app, '[');
-    assert_eq!(app.chart_modal.chart_kind, ChartKind::XY);
     press(&mut app, '[');
-    assert_eq!(
-        app.chart_modal.chart_kind,
-        ChartKind::Bar,
-        "[ wraps to the last tab"
-    );
-    press(&mut app, '6');
-    assert_eq!(app.chart_modal.chart_kind, ChartKind::Bar);
-    assert_eq!(app.chart_modal.focus, ChartFocus::Category);
+    press(&mut app, '[');
+    assert_eq!(app.chart_modal.mark(), Mark::Line);
+    press(&mut app, '[');
+    assert_eq!(app.chart_modal.mark(), Mark::Heatmap, "[ wraps to the last");
     press(&mut app, ']');
-    assert_eq!(app.chart_modal.chart_kind, ChartKind::XY);
+    assert_eq!(app.chart_modal.mark(), Mark::Line);
 
     // While the column Picker is open, digits narrow instead of switching.
-    app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Tab,
-        KeyModifiers::NONE,
-    ))); // Style -> X axis
-    press(&mut app, ' '); // open the Picker
+    app.chart_modal.focus = ChartFocus::X;
+    press(&mut app, ' ');
     assert!(app.chart_modal.picker.is_some());
     press(&mut app, '3');
-    assert_eq!(app.chart_modal.chart_kind, ChartKind::XY);
+    assert_eq!(app.chart_modal.mark(), Mark::Line);
     assert_eq!(app.chart_modal.picker.as_ref().unwrap().filter, "3");
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
@@ -421,7 +406,7 @@ fn test_chart_type_switches_from_anywhere() {
 /// An open Picker takes `g` as a letter to narrow by.
 #[test]
 fn test_chart_g_toggles_the_grid() {
-    use datui::chart_modal::{ChartFocus, ChartKind};
+    use datui::chart_modal::{ChartFocus, Mark};
     let (mut app, _rx, _tx) = open_chart_view("chart_grid_key_test.csv");
     let press = |app: &mut App, code: KeyCode| {
         app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
@@ -429,28 +414,28 @@ fn test_chart_g_toggles_the_grid() {
     assert!(!app.chart_modal.grid, "off by default");
     press(&mut app, KeyCode::Char('g'));
     assert!(app.chart_modal.grid);
-    press(&mut app, KeyCode::Char('2'));
+    press(&mut app, KeyCode::Char('1'));
     press(&mut app, KeyCode::Char('g'));
-    assert!(!app.chart_modal.grid, "one setting across the kinds");
+    assert!(!app.chart_modal.grid, "one setting across the types");
 
     // The Grid row toggles it too.
     app.chart_modal.focus = ChartFocus::Grid;
     press(&mut app, KeyCode::Char(' '));
     assert!(app.chart_modal.grid);
 
-    press(&mut app, KeyCode::Char('5'));
-    assert_eq!(app.chart_modal.chart_kind, ChartKind::Heatmap);
+    press(&mut app, KeyCode::Char('7'));
+    assert_eq!(app.chart_modal.mark(), Mark::Heatmap);
     press(&mut app, KeyCode::Char('g'));
     assert!(app.chart_modal.grid, "the heatmap has no grid to toggle");
 
     press(&mut app, KeyCode::Char('1'));
-    press(&mut app, KeyCode::Tab); // Style -> X axis
+    app.chart_modal.focus = ChartFocus::X;
     press(&mut app, KeyCode::Char(' ')); // open the Picker
     press(&mut app, KeyCode::Char('g'));
     assert!(app.chart_modal.grid);
     assert_eq!(app.chart_modal.picker.as_ref().unwrap().filter, "g");
 
-    // Reopened on the same dataset, the chart keeps its grid.
+    // Reopened from the same column, the chart keeps its grid.
     press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.input_mode, InputMode::Normal);
@@ -458,17 +443,25 @@ fn test_chart_g_toggles_the_grid() {
     assert!(app.chart_modal.grid);
 }
 
+/// A line of y over x, on the chart view `open_chart_view` opened.
+fn select_line(app: &mut App) {
+    use datui::chart_modal::Mark;
+    app.chart_modal.set_mark(Mark::Line);
+    app.chart_modal.spec.encoding.x.field = Some("x".to_string());
+    app.chart_modal.spec.encoding.y.field = vec!["y".to_string()];
+}
+
 /// `x` gives the plot the keys: ←→ (h/l) step the crosshair from point to point,
 /// Home and End go to the ends, and the readout under the plot names each value.
-/// Tab, `x` or Esc hand the keys back to the option rows, where ←→ adjust the row
-/// again; the crosshair comes back where it was. A click on the plot puts it there.
+/// Tab, `x` or Esc hand the keys back to the panel, where ←→ change the row again;
+/// the crosshair comes back where it was. A click on the plot puts it there.
 #[test]
 fn test_chart_crosshair_keys_and_click() {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-    use datui::chart_modal::ChartType;
+    use datui::chart_modal::{ChartFocus, Mark};
     let (mut app, rx, tx) = open_chart_view("chart_crosshair_test.csv");
-    app.chart_modal.x_column = Some("x".to_string());
-    app.chart_modal.y_columns = vec!["y".to_string()];
+    select_line(&mut app);
+    app.chart_modal.focus = ChartFocus::Type;
     app.event(&AppEvent::Resize(80, 24));
     pump_until_chart_ready(&mut app, &rx, &tx);
     // Wide enough for the bar to name x beside the rest.
@@ -483,7 +476,8 @@ fn test_chart_crosshair_keys_and_click() {
     let press = |app: &mut App, code: KeyCode| {
         app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     };
-    draw(&mut app);
+    let screen = draw(&mut app);
+    assert!(screen.concat().contains("x Crosshair"), "{screen:#?}");
     assert!(!app.chart_modal.plot_focus);
 
     // In the middle of the plot, on x = 2 of 0..4.
@@ -507,19 +501,19 @@ fn test_chart_crosshair_keys_and_click() {
         press(&mut app, key);
         assert_eq!(app.chart_modal.cursor_x, Some(at), "{key:?}");
     }
-    // The arrows never reached the Style row.
-    assert_eq!(app.chart_modal.chart_type, ChartType::Line);
+    // The arrows never reached the Type row.
+    assert_eq!(app.chart_modal.mark(), Mark::Line);
     let screen = draw(&mut app);
     assert!(
         screen.iter().any(|row| row.contains("x: 3   y: 9")),
         "{screen:#?}"
     );
 
-    // Tab hands the keys back: → cycles the Style row again.
+    // Tab hands the keys back: → steps the Type row again.
     press(&mut app, KeyCode::Tab);
     assert!(!app.chart_modal.plot_focus);
     press(&mut app, KeyCode::Right);
-    assert_eq!(app.chart_modal.chart_type, ChartType::Scatter);
+    assert_eq!(app.chart_modal.mark(), Mark::Scatter);
     assert_eq!(app.chart_modal.cursor_x, Some(3.0));
     pump_until_chart_ready(&mut app, &rx, &tx);
     let screen = draw(&mut app);
@@ -556,60 +550,62 @@ fn test_chart_crosshair_keys_and_click() {
     assert_eq!(pump.app.input_mode, InputMode::Normal);
 }
 
-/// Columns are picked through the shared Picker: Space opens it on a column
-/// row, Enter chooses, and the choice is remembered on the row.
+/// Shelves take columns through the shared Picker: Space opens it on a shelf,
+/// Enter chooses, and the choice is echoed on the row.
 #[test]
 fn test_chart_columns_picked_through_the_picker() {
-    use datui::chart_modal::ChartFocus;
+    use datui::chart_modal::{ChartFocus, Mark};
     let (mut app, _rx, _tx) = open_chart_view("chart_picker_test.csv");
     let press = |app: &mut App, code: KeyCode| {
         app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     };
+    press(&mut app, KeyCode::Char('1'));
+    assert_eq!(app.chart_modal.mark(), Mark::Line);
+    // A line keeps the histogram's column, as Y.
+    assert_eq!(app.chart_modal.y(), ["x"]);
 
-    press(&mut app, KeyCode::Tab); // Style -> X axis
-    assert_eq!(app.chart_modal.focus, ChartFocus::XColumn);
+    press(&mut app, KeyCode::Tab); // Type -> X
+    assert_eq!(app.chart_modal.focus, ChartFocus::X);
     press(&mut app, KeyCode::Char(' '));
     press(&mut app, KeyCode::Enter); // choose "x", the cursor's item
-    assert_eq!(app.chart_modal.x_column.as_deref(), Some("x"));
+    assert_eq!(app.chart_modal.x().map(String::as_str), Some("x"));
+    assert!(app.chart_modal.y().is_empty(), "X is not also a series");
 
-    press(&mut app, KeyCode::Tab); // -> Y series
+    press(&mut app, KeyCode::Tab); // -> Y
     press(&mut app, KeyCode::Char(' ')); // open the Picker
-    press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Char(' ')); // toggle "y"
     press(&mut app, KeyCode::Enter); // done
-    assert_eq!(app.chart_modal.y_columns, vec!["y".to_string()]);
+    assert_eq!(app.chart_modal.y(), ["y"]);
     assert!(app.chart_modal.can_export());
 }
 
-/// Space on a pick-one row's open Picker chooses the highlighted column — it
+/// Space on a pick-one shelf's open Picker chooses the highlighted column — it
 /// must never type into the narrow filter, where a space matches nothing and
 /// the list blanks under the key that just opened it.
 #[test]
 fn test_space_chooses_in_a_pick_one_chart_picker() {
-    use datui::chart_modal::ChartFocus;
+    use datui::chart_modal::{ChartFocus, Mark};
     let (mut app, _rx, _tx) = open_chart_view("chart_space_chooses_test.csv");
     let press = |app: &mut App, code: KeyCode| {
         app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     };
-
-    press(&mut app, KeyCode::Tab); // Style -> X axis
+    assert_eq!(app.chart_modal.mark(), Mark::Histogram);
+    press(&mut app, KeyCode::Tab); // Type -> X
     press(&mut app, KeyCode::Char(' ')); // open the Picker
     press(&mut app, KeyCode::Down); // highlight "y"
     press(&mut app, KeyCode::Char(' ')); // chooses, like Enter
     assert!(app.chart_modal.picker.is_none());
-    assert_eq!(app.chart_modal.x_column.as_deref(), Some("y"));
+    assert_eq!(app.chart_modal.x().map(String::as_str), Some("y"));
     // The form has the keys back at once: the arrows walk the rows again.
     press(&mut app, KeyCode::Down);
-    assert_eq!(app.chart_modal.focus, ChartFocus::YColumns);
+    assert_eq!(app.chart_modal.focus, ChartFocus::Bins);
 }
 
-/// A typed export path expands `~` like every other typed path; unexpanded it
-/// reaches the PNG/EPS writer as a literal `~` directory and fails NotFound.
+/// A typed export path expands `~` like every other typed path.
 #[test]
 fn test_chart_export_path_expands_tilde() {
     let (mut app, _rx, _tx) = open_chart_view("chart_tilde_test.csv");
-    app.chart_modal.x_column = Some("x".to_string());
-    app.chart_modal.y_columns = vec!["y".to_string()];
+    select_line(&mut app);
 
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('e'),
@@ -633,7 +629,8 @@ fn test_chart_export_path_expands_tilde() {
     );
 }
 
-/// Opens a small x/y dataset in the chart view. Nothing is selected yet.
+/// Opens a small x/y dataset in the chart view, from the first column: `c` on a
+/// number suggests its histogram.
 fn open_chart_view(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
     let test_data_dir = common::fixture_dir();
     let csv_path = test_data_dir.join(name);
@@ -675,16 +672,14 @@ fn pump_until_chart_ready(
 #[test]
 fn test_chart_data_is_prepared_in_the_background() {
     let (mut app, rx, tx) = open_chart_view("chart_render_cache_test.csv");
+    pump_until_chart_ready(&mut app, &rx, &tx);
 
-    // Nothing selected: render draws the empty view and asks for nothing.
     let area = Rect::new(0, 0, 80, 24);
     let mut buf = Buffer::empty(area);
     Widget::render(&mut app, area, &mut buf);
-    assert!(!app.chart_preparing());
 
-    // Select x and y, then let any event go through so the selection is noticed.
-    app.chart_modal.x_column = Some("x".to_string());
-    app.chart_modal.y_columns = vec!["y".to_string()];
+    // Another chart, then let any event go through so the selection is noticed.
+    select_line(&mut app);
     app.event(&AppEvent::Resize(80, 24));
     assert!(
         app.chart_preparing(),
@@ -717,7 +712,7 @@ fn test_chart_data_is_prepared_in_the_background() {
 /// yet drawn, the plot gives way to the message.
 #[test]
 fn a_chart_being_computed_says_so() {
-    use datui::chart_modal::ChartKind;
+    use datui::chart_modal::Mark;
     let (mut app, rx, tx) = open_chart_view("chart_computing_test.csv");
     let area = Rect::new(0, 0, 100, 24);
     let screen = |app: &mut App| {
@@ -725,40 +720,40 @@ fn a_chart_being_computed_says_so() {
         Widget::render(app, area, &mut buf);
         rendered_text(&buf)
     };
-    for kind in [ChartKind::Histogram, ChartKind::BoxPlot, ChartKind::Kde] {
-        app.chart_modal.chart_kind = kind;
-        app.chart_modal.hist_column = Some("x".to_string());
-        app.chart_modal.box_column = Some("x".to_string());
-        app.chart_modal.kde_column = Some("x".to_string());
-        app.chart_modal.row_limit = Some(1_000);
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    for (i, mark) in [Mark::Histogram, Mark::Box, Mark::Kde]
+        .into_iter()
+        .enumerate()
+    {
+        app.chart_modal.set_mark(mark);
+        app.chart_modal.spec.encoding.x.field = (mark != Mark::Box).then(|| "x".to_string());
+        app.chart_modal.spec.encoding.y.field = vec!["y".to_string()];
+        app.chart_modal.row_limit = Some(1_000 + i);
         app.event(&AppEvent::Resize(area.width, area.height));
-        assert!(app.chart_preparing(), "{kind:?}");
+        assert!(app.chart_preparing(), "{mark:?}");
         let text = screen(&mut app);
-        assert!(text.contains("Computing chart..."), "{kind:?}: {text}");
-        assert!(!text.contains("Select a column"), "{kind:?}: {text}");
+        assert!(text.contains("Computing chart..."), "{mark:?}: {text}");
+        assert!(!text.contains("Pick a column"), "{mark:?}: {text}");
 
         pump_until_chart_ready(&mut app, &rx, &tx);
         let drawn = screen(&mut app);
-        assert!(!drawn.contains("Computing chart..."), "{kind:?}: {drawn}");
+        assert!(!drawn.contains("Computing chart..."), "{mark:?}: {drawn}");
 
         // Another sample size: the chart drawn stays, with the spinner over it.
-        app.chart_modal.row_limit = Some(2_000);
+        app.chart_modal.row_limit = Some(2_000 + i);
         app.event(&AppEvent::Resize(area.width, area.height));
-        assert!(app.chart_preparing(), "{kind:?}");
+        assert!(app.chart_preparing(), "{mark:?}");
         let text = screen(&mut app);
-        assert!(text.contains("Computing chart..."), "{kind:?}: {text}");
-        assert!(!text.contains("Select a column"), "{kind:?}: {text}");
-        let axis = match kind {
-            ChartKind::Histogram => "Count",
-            ChartKind::Kde => "Density",
-            _ => "x",
+        assert!(text.contains("Computing chart..."), "{mark:?}: {text}");
+        let axis = match mark {
+            Mark::Histogram => "Count",
+            Mark::Kde => "Density",
+            _ => "y",
         };
-        assert!(text.contains(axis), "{kind:?} keeps its chart: {text}");
+        assert!(text.contains(axis), "{mark:?} keeps its chart: {text}");
 
         pump_until_chart_ready(&mut app, &rx, &tx);
-        assert!(!screen(&mut app).contains("Computing chart..."), "{kind:?}");
-        // The next kind starts from a column it has not drawn.
-        app.chart_modal.row_limit = Some(3_000);
+        assert!(!screen(&mut app).contains("Computing chart..."), "{mark:?}");
     }
 }
 
@@ -766,10 +761,8 @@ fn a_chart_being_computed_says_so() {
 /// preparation runs at a time, and when it lands the newest selection is the one prepared.
 #[test]
 fn test_chart_prepares_one_selection_at_a_time() {
-    use datui::chart_modal::ChartKind;
     let (mut app, rx, tx) = open_chart_view("chart_one_at_a_time_test.csv");
-    app.chart_modal.chart_kind = ChartKind::Histogram;
-    app.chart_modal.hist_column = Some("x".to_string());
+    // `c` on x suggested its histogram, which is being prepared.
     app.event(&AppEvent::Resize(80, 24));
     assert!(app.chart_preparing());
 
@@ -806,14 +799,20 @@ fn test_chart_prepares_one_selection_at_a_time() {
     );
 }
 
-/// A 400x300 EPS chart export to `path`, where nothing is yet.
-fn eps_request(path: &Path) -> datui::chart_export::ChartExportRequest {
+/// A small chart export to `path`, where nothing is yet.
+fn chart_export_request(
+    path: &Path,
+    format: datui::chart_export::ChartExportFormat,
+) -> datui::chart_export::ChartExportRequest {
     datui::chart_export::ChartExportRequest {
         path: path.to_path_buf(),
-        format: datui::chart_export::ChartExportFormat::Eps,
-        title: String::new(),
-        width: 400,
-        height: 300,
+        format,
+        options: datui::chart_export::ExportOptions {
+            width: 400,
+            height: 300,
+            dpi: 96.0,
+            ..Default::default()
+        },
         overwrite: datui::output_file::Overwrite::Forbid,
     }
 }
@@ -822,20 +821,25 @@ fn eps_request(path: &Path) -> datui::chart_export::ChartExportRequest {
 /// with that selection's error: it waits for the current selection's data and completes.
 #[test]
 fn test_chart_export_waits_for_the_current_selection_not_a_failed_one() {
+    use datui::chart_export::ChartExportFormat;
     let (mut app, rx, tx) = open_chart_view("chart_export_after_failure_test.csv");
-    // x against x cannot be charted (duplicate column) and takes a moment to fail.
-    app.chart_modal.x_column = Some("x".to_string());
-    app.chart_modal.y_columns = vec!["x".to_string()];
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    // A column the view does not have cannot be charted, and takes a moment to fail.
+    select_line(&mut app);
+    app.chart_modal.spec.encoding.y.field = vec!["gone".to_string()];
     app.event(&AppEvent::Resize(80, 24));
     assert!(app.chart_preparing());
 
     // Move on to a valid selection while that one is still out, and ask for an export.
-    app.chart_modal.y_columns = vec!["y".to_string()];
+    app.chart_modal.spec.encoding.y.field = vec!["y".to_string()];
     app.event(&AppEvent::Resize(80, 24));
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("chart.eps");
+    let path = dir.path().join("chart.svg");
     let next = app
-        .event(&AppEvent::ChartExport(eps_request(&path)))
+        .event(&AppEvent::ChartExport(chart_export_request(
+            &path,
+            ChartExportFormat::Svg,
+        )))
         .expect("ChartExport defers to DoChartExport");
     app.event(&next);
 
@@ -855,17 +859,21 @@ fn test_chart_export_waits_for_the_current_selection_not_a_failed_one() {
 /// not ready yet the export waits for it rather than collecting on the UI thread.
 #[test]
 fn test_chart_export_waits_for_prepared_data_and_writes_in_background() {
+    use datui::chart_export::ChartExportFormat;
     let (mut app, rx, tx) = open_chart_view("chart_export_bg_test.csv");
-    app.chart_modal.x_column = Some("x".to_string());
-    app.chart_modal.y_columns = vec!["y".to_string()];
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    select_line(&mut app);
     app.event(&AppEvent::Resize(80, 24));
     assert!(app.chart_preparing());
 
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("chart.eps");
+    let path = dir.path().join("chart.pdf");
     // Asked for while the data is still being prepared.
     let next = app
-        .event(&AppEvent::ChartExport(eps_request(&path)))
+        .event(&AppEvent::ChartExport(chart_export_request(
+            &path,
+            ChartExportFormat::Pdf,
+        )))
         .expect("ChartExport defers to DoChartExport");
     app.event(&next);
     assert!(
@@ -875,7 +883,7 @@ fn test_chart_export_waits_for_prepared_data_and_writes_in_background() {
 
     pump_until_idle(&mut app, &rx, &tx);
     assert!(
-        path.exists(),
+        std::fs::read(&path).unwrap().starts_with(b"%PDF-"),
         "the export was written once its data arrived"
     );
     assert!(
@@ -884,30 +892,29 @@ fn test_chart_export_waits_for_prepared_data_and_writes_in_background() {
     );
 }
 
-/// A chart export lands whole or not at all, like a data export: PNG and EPS
-/// replace a file only where that was agreed to, and a file that appeared
-/// meanwhile is left alone with the error in the app.
+/// A chart export lands whole or not at all, like a data export: every format
+/// replaces a file only where that was agreed to, and a file that appeared
+/// meanwhile is left alone with the error in the app. What lands is what the
+/// format says: a PNG, an SVG, a PDF.
 #[test]
 fn test_chart_export_replaces_only_what_was_agreed() {
     use datui::chart_export::{ChartExportFormat, ChartExportRequest};
     use datui::output_file::Overwrite;
     let (mut app, rx, tx) = open_chart_view("chart_export_overwrite_test.csv");
-    app.chart_modal.x_column = Some("x".to_string());
-    app.chart_modal.y_columns = vec!["y".to_string()];
+    select_line(&mut app);
     app.event(&AppEvent::Resize(80, 24));
     pump_until_idle(&mut app, &rx, &tx);
+    pump_until_chart_ready(&mut app, &rx, &tx);
     let dir = tempfile::tempdir().unwrap();
 
     for (name, format) in [
         ("chart.png", ChartExportFormat::Png),
-        ("chart.eps", ChartExportFormat::Eps),
+        ("chart.svg", ChartExportFormat::Svg),
+        ("chart.pdf", ChartExportFormat::Pdf),
     ] {
         let path = dir.path().join(name);
         std::fs::write(&path, "theirs").unwrap();
-        let request = ChartExportRequest {
-            format,
-            ..eps_request(&path)
-        };
+        let request = chart_export_request(&path, format);
         run_to_idle(&mut app, &rx, &tx, AppEvent::ChartExport(request.clone()));
         assert!(
             app.error_message().is_some_and(|m| m.contains("appeared")),
@@ -924,13 +931,297 @@ fn test_chart_export_replaces_only_what_was_agreed() {
         run_to_idle(&mut app, &rx, &tx, AppEvent::ChartExport(replace));
         assert_eq!(app.error_message(), None, "{name}");
         let bytes = std::fs::read(&path).unwrap();
-        let magic: &[u8] = match format {
-            ChartExportFormat::Png => b"\x89PNG",
-            ChartExportFormat::Eps => b"%!PS",
-        };
-        assert!(bytes.starts_with(magic), "{name} was replaced");
+        match format {
+            ChartExportFormat::Png => assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n")),
+            ChartExportFormat::Pdf => assert!(bytes.starts_with(b"%PDF-")),
+            ChartExportFormat::Svg => {
+                let text = String::from_utf8(bytes).unwrap();
+                assert!(
+                    text.starts_with("<svg") && text.trim_end().ends_with("</svg>"),
+                    "{text}"
+                );
+                assert!(text.contains("viewBox=\"0 0 400 300\""), "{text}");
+            }
+        }
     }
-    assert!(leftovers(dir.path(), &["chart.png", "chart.eps"]).is_empty());
+    assert!(leftovers(dir.path(), &["chart.png", "chart.svg", "chart.pdf"]).is_empty());
+}
+
+/// Flights by carrier and origin, with a date and a delay: a category, a second
+/// category, a date and a number.
+fn open_flights(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    let path = common::fixture_dir().join(name);
+    let carriers = ["UA", "B6", "EV", "DL", "AA", "MQ", "US", "WN", "F9"];
+    let origins = ["EWR", "JFK", "LGA"];
+    let n = 900;
+    let mut df = df!(
+        "carrier" => (0..n).map(|i| carriers[i % carriers.len()]).collect::<Vec<_>>(),
+        "origin" => (0..n).map(|i| origins[i % origins.len()]).collect::<Vec<_>>(),
+        "day" => (0..n).map(|i| 19723 + (i as i32 / 10)).collect::<Vec<i32>>(),
+        "delay" => (0..n).map(|i| (i % carriers.len()) as f64 + (i % 2) as f64).collect::<Vec<f64>>()
+    )
+    .unwrap();
+    df.apply("day", |c| c.cast(&DataType::Date).unwrap())
+        .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    (app, rx, tx)
+}
+
+/// Show Me: `c` chooses the chart from the cursor column's type, and says so.
+#[test]
+fn quick_chart_picks_the_type_from_the_cursor_column() {
+    use datui::chart_modal::{Aggregate, Mark};
+    let (mut app, rx, tx) = open_flights("chart_quick_test.parquet");
+    // carrier, origin, day, delay: the cursor starts on carrier.
+    for (steps, mark, x, suggested) in [
+        (0, Mark::Bar, "carrier", "str"),
+        (2, Mark::Line, "day", "date"),
+        (3, Mark::Histogram, "delay", "f64"),
+    ] {
+        for _ in 0..steps {
+            table_key(&mut app, &rx, &tx, 'l');
+        }
+        press(&mut app, KeyCode::Char('c'));
+        assert_eq!(app.chart_modal.mark(), mark, "{x}");
+        assert_eq!(app.chart_modal.x().map(String::as_str), Some(x));
+        assert_eq!(app.chart_modal.suggested.as_deref(), Some(suggested));
+        match mark {
+            Mark::Bar => assert_eq!(app.chart_modal.aggregate(), Aggregate::Count),
+            Mark::Line => assert_eq!(app.chart_modal.y(), ["delay"], "the first number"),
+            _ => {}
+        }
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buf = Buffer::empty(area);
+        Widget::render(&mut app, area, &mut buf);
+        assert!(
+            rendered_text(&buf).contains(&format!("suggested for {suggested}")),
+            "{x}"
+        );
+        press(&mut app, KeyCode::Esc);
+        // Back to the first column.
+        for _ in 0..steps {
+            table_key(&mut app, &rx, &tx, 'h');
+        }
+    }
+}
+
+/// Every type shows the same shelves; one it does not use is dimmed, with why, and
+/// focus passes over it.
+#[test]
+fn shelves_dim_by_type() {
+    use datui::chart_modal::{ChartFocus, Mark};
+    let (mut app, rx, tx) = open_flights("chart_shelves_test.parquet");
+    press(&mut app, KeyCode::Char('c'));
+    let area = Rect::new(0, 0, 100, 30);
+    let screen = |app: &mut App| {
+        let mut buf = Buffer::empty(area);
+        Widget::render(&mut *app, area, &mut buf);
+        rendered_text(&buf)
+    };
+    for (key, mark, dimmed) in [
+        ('6', Mark::Kde, Some("density")),
+        ('5', Mark::Box, Some("same as X")),
+        ('7', Mark::Heatmap, Some("density")),
+        ('3', Mark::Bar, None),
+    ] {
+        press(&mut app, KeyCode::Char(key));
+        assert_eq!(app.chart_modal.mark(), mark);
+        let text = screen(&mut app);
+        for shelf in ["Type", "X", "Y", "Color"] {
+            assert!(text.contains(shelf), "{mark:?} shows {shelf}: {text}");
+        }
+        if let Some(why) = dimmed {
+            assert!(text.contains(why), "{mark:?}: {text}");
+        }
+        // Tab walks the rows the type uses, and never a dimmed shelf.
+        let mut seen = Vec::new();
+        for _ in 0..20 {
+            press(&mut app, KeyCode::Tab);
+            seen.push(app.chart_modal.focus);
+        }
+        match mark {
+            Mark::Kde => assert!(!seen.contains(&ChartFocus::Y)),
+            Mark::Box | Mark::Heatmap => assert!(!seen.contains(&ChartFocus::Color)),
+            _ => assert!(seen.contains(&ChartFocus::Color)),
+        }
+    }
+    pump_until(&mut app, &rx, &tx, |a| !a.chart_preparing());
+}
+
+/// Color splits a chart: one series per value, the largest by rows first; the value
+/// picker lists every value by rows, and picking some charts those.
+#[test]
+fn chart_color_splits_and_the_value_picker_lists_by_rows() {
+    use datui::chart_modal::{Aggregate, ChartFocus, Mark, TimeUnit};
+    let (mut app, rx, tx) = open_flights("chart_color_test.parquet");
+    // `c` on day: a line of delay over it.
+    table_key(&mut app, &rx, &tx, 'l');
+    table_key(&mut app, &rx, &tx, 'l');
+    press(&mut app, KeyCode::Char('c'));
+    assert_eq!(app.chart_modal.mark(), Mark::Line);
+    // By month, the mean, split by carrier.
+    app.chart_modal.focus = ChartFocus::TimeUnit;
+    for _ in 0..3 {
+        press(&mut app, KeyCode::Right);
+    }
+    assert_eq!(app.chart_modal.spec.encoding.x.time_unit, TimeUnit::Month);
+    assert_eq!(app.chart_modal.aggregate(), Aggregate::Mean);
+    app.chart_modal.focus = ChartFocus::Color;
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(
+        app.chart_modal.picker.as_ref().unwrap().items(),
+        ["none", "carrier", "origin"]
+    );
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.chart_modal.color().map(String::as_str), Some("carrier"));
+    pump_until_chart_ready(&mut app, &rx, &tx);
+
+    let names = |app: &App| {
+        let request = app.chart_names();
+        request.expect("a line chart is prepared")
+    };
+    // Nine carriers of 100 rows each: the first seven by rows (equal counts in
+    // the column's order).
+    assert_eq!(names(&app), ["AA", "B6", "DL", "EV", "F9", "MQ", "UA"]);
+
+    // The value picker: every value with its rows.
+    app.chart_modal.focus = ChartFocus::ColorValues;
+    press(&mut app, KeyCode::Char(' '));
+    let picker = app
+        .chart_modal
+        .picker
+        .as_ref()
+        .expect("the values are counted");
+    assert_eq!(picker.items().len(), 9);
+    assert_eq!(app.chart_modal.picker_details[0], "100");
+    // Narrow to WN and pick it, then US.
+    for c in "wn".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(
+        app.chart_modal.spec.encoding.color.values,
+        [Some("WN".to_string())]
+    );
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    assert_eq!(names(&app), ["WN"]);
+
+    // Over to origin and back: the carrier chart is cached, and so are its values.
+    app.chart_modal.focus = ChartFocus::Color;
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.chart_modal.color().map(String::as_str), Some("origin"));
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    press(&mut app, KeyCode::Left);
+    app.chart_modal.spec.encoding.color.values = vec![Some("WN".to_string())];
+    app.event(&AppEvent::Resize(80, 24));
+    assert!(app.chart_data_ready(), "cached");
+    assert!(
+        app.chart_modal.has_color_counts(),
+        "its values came back with it"
+    );
+}
+
+/// An aggregate reads every row as one group-by, whatever the sample size, and says
+/// so; a bar chart of the mean per category needs no query.
+#[test]
+fn aggregates_run_over_every_row() {
+    use datui::chart_modal::{Aggregate, ChartFocus, Mark};
+    let (mut app, rx, tx) = open_flights("chart_aggregate_test.parquet");
+    press(&mut app, KeyCode::Char('c'));
+    assert_eq!(app.chart_modal.mark(), Mark::Bar);
+    app.chart_modal.row_limit = Some(10);
+    app.chart_modal.focus = ChartFocus::Y;
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Enter); // delay
+    app.chart_modal.focus = ChartFocus::Aggregate;
+    press(&mut app, KeyCode::Right); // count -> sum
+    press(&mut app, KeyCode::Right); // -> mean
+    assert_eq!(app.chart_modal.aggregate(), Aggregate::Mean);
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let area = Rect::new(0, 0, 100, 30);
+    let mut buf = Buffer::empty(area);
+    Widget::render(&mut app, area, &mut buf);
+    let text = rendered_text(&buf);
+    assert!(text.contains("all 900 rows"), "{text}");
+    assert!(!text.contains("sample of"), "{text}");
+    // F9 is carrier 8 of 9: its delays are 8 and 9, half each, a mean of 8.5.
+    assert!(text.contains("F9") && text.contains("8.50"), "{text}");
+}
+
+/// The export dialog: the chart's legend setting carries over, a size preset sets
+/// the pixels, and the file written is the format and the size asked for.
+#[test]
+fn chart_export_dialog_presets_and_legend() {
+    use datui::chart_export::{LegendPlace, SizePreset};
+    use datui::chart_export_modal::ChartExportFocus;
+    use datui::chart_modal::ChartFocus;
+    let (mut app, rx, tx) = open_chart_view("chart_export_dialog_test.csv");
+    select_line(&mut app);
+    app.chart_modal.focus = ChartFocus::ShowLegend;
+    press(&mut app, KeyCode::Char(' '));
+    assert!(!app.chart_modal.show_legend);
+    app.event(&AppEvent::Resize(80, 24));
+    pump_until_chart_ready(&mut app, &rx, &tx);
+
+    press(&mut app, KeyCode::Char('e'));
+    assert!(app.chart_export_modal.active);
+    assert_eq!(
+        app.chart_export_modal.legend,
+        LegendPlace::Off,
+        "legend off carries"
+    );
+    assert_eq!(app.chart_export_modal.description_input.value(), "y");
+    // Size: Document -> Slide 16:9.
+    datui::form::Form::focus(&mut app.chart_export_modal, ChartExportFocus::Size);
+    press(&mut app, KeyCode::Left);
+    assert_eq!(app.chart_export_modal.size, SizePreset::Slide);
+    assert_eq!(app.chart_export_modal.export_dimensions(), (1920, 1080));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("slide.png");
+    app.chart_export_modal
+        .path_input
+        .set_value(path.display().to_string());
+    let out = press(&mut app, KeyCode::Enter).expect("Enter exports");
+    run_to_idle(&mut app, &rx, &tx, out);
+    assert_eq!(app.error_message(), None);
+    let png = std::fs::read(&path).unwrap();
+    assert!(png.starts_with(b"\x89PNG"));
+    assert_eq!(&png[16..20], &1920u32.to_be_bytes());
+    assert_eq!(&png[20..24], &1080u32.to_be_bytes());
+
+    // An ending that is no format is part of the name: the format's extension
+    // goes after it.
+    press(&mut app, KeyCode::Char('e'));
+    let v2 = dir.path().join("chart.v2");
+    app.chart_export_modal
+        .path_input
+        .set_value(v2.display().to_string());
+    let out = press(&mut app, KeyCode::Enter).expect("Enter exports");
+    run_to_idle(&mut app, &rx, &tx, out);
+    assert!(
+        std::fs::read(dir.path().join("chart.v2.png"))
+            .unwrap()
+            .starts_with(b"\x89PNG")
+    );
+    assert!(!v2.exists());
+
+    // A path that names a format takes it.
+    press(&mut app, KeyCode::Char('e'));
+    let svg = dir.path().join("figure.svg");
+    app.chart_export_modal
+        .path_input
+        .set_value(svg.display().to_string());
+    let out = press(&mut app, KeyCode::Enter).expect("Enter exports");
+    run_to_idle(&mut app, &rx, &tx, out);
+    assert!(std::fs::read_to_string(&svg).unwrap().starts_with("<svg"));
 }
 
 /// Wait for the outcome of a background scan.
@@ -21044,16 +21335,18 @@ fn out_of_range_dates_draw_on_every_screen() {
 
     // A chart over the datetimes: the axis falls back to the stored numbers.
     press_through(&mut app, KeyCode::Char('c'));
-    press_through(&mut app, KeyCode::Tab);
+    press_through(&mut app, KeyCode::Char('1'));
+    app.chart_modal.focus = datui::chart_modal::ChartFocus::X;
     press_through(&mut app, KeyCode::Char(' '));
     type_text(&mut app, "t_us");
     press_through(&mut app, KeyCode::Enter);
-    press_through(&mut app, KeyCode::Tab);
+    app.chart_modal.focus = datui::chart_modal::ChartFocus::Y;
     press_through(&mut app, KeyCode::Char(' '));
     type_text(&mut app, "id");
     press_through(&mut app, KeyCode::Char(' '));
     press_through(&mut app, KeyCode::Enter);
-    assert_eq!(app.chart_modal.x_column.as_deref(), Some("t_us"));
+    assert_eq!(app.chart_modal.x().map(String::as_str), Some("t_us"));
+    assert_eq!(app.chart_modal.y(), ["id"]);
     pump_until_chart_ready(&mut app, &rx, &tx);
     draw_wide(&mut app, "chart");
     press_through(&mut app, KeyCode::Esc);
@@ -22091,6 +22384,39 @@ fn counts_screen(app: &mut App, width: u16, height: u16) -> String {
 
 /// F counts the column cursor's column: by count, nulls on their own line, the summary
 /// over them; ← → step columns, s sorts by value, Esc goes back.
+/// `F` on a number opens its histogram, binned from the counts; `c` turns to the
+/// listing and back, and the bar names the other view.
+#[test]
+fn test_value_counts_histogram_toggle() {
+    let (mut app, rx, tx) = open_csv_with(
+        "value_counts_histogram.csv",
+        COUNTS_CSV,
+        OpenOptions::default(),
+    );
+    counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
+    assert!(
+        !app.value_counts.shows_histogram(),
+        "text has only the listing"
+    );
+    counts_key(&mut app, &rx, &tx, KeyCode::Right);
+    assert_eq!(app.value_counts.column(), Some("amount"));
+    assert!(app.value_counts.shows_histogram());
+    let full = datui::glyphs::get().bar_eighths[7];
+    let screen = counts_screen(&mut app, 80, 24);
+    assert!(
+        screen.contains("Count") && screen.contains(full),
+        "{screen}"
+    );
+    assert!(!screen.contains("Cum %"), "{screen}");
+    assert!(screen.contains("c Counts"), "{screen}");
+    press_and_send(&mut app, &tx, KeyCode::Char('c'));
+    let screen = counts_screen(&mut app, 80, 24);
+    assert!(screen.contains("Cum %"), "{screen}");
+    assert!(screen.contains("c Histogram"), "{screen}");
+    press_and_send(&mut app, &tx, KeyCode::Char('c'));
+    assert!(app.value_counts.shows_histogram());
+}
+
 #[test]
 fn test_value_counts_count_the_column_and_step_columns() {
     let (mut app, rx, tx) =
@@ -22129,6 +22455,10 @@ fn test_value_counts_count_the_column_and_step_columns() {
 
     counts_key(&mut app, &rx, &tx, KeyCode::Right);
     assert_eq!(app.value_counts.column(), Some("amount"));
+    // A number opens as its histogram; `c` turns to the listing.
+    assert!(app.value_counts.shows_histogram());
+    counts_key(&mut app, &rx, &tx, KeyCode::Char('c'));
+    assert!(!app.value_counts.shows_histogram());
     let summary = &app.value_counts.current().unwrap().summary;
     assert_eq!(summary.sum, Some(datui::value_counts::Number::Int(60)));
     assert_eq!(summary.mean, Some(6.0));
@@ -22250,6 +22580,7 @@ fn test_value_counts_top_values_then_other() {
     csv.push_str("0\n0\n1\n");
     let (mut app, rx, tx) = open_csv_with("value_counts_other.csv", &csv, OpenOptions::default());
     counts_key(&mut app, &rx, &tx, KeyCode::Char('F'));
+    counts_key(&mut app, &rx, &tx, KeyCode::Char('c'));
     let lines = counted_lines(&app);
     assert_eq!(lines.len(), top + 1);
     assert_eq!(lines[0], ("0".to_string(), 3));

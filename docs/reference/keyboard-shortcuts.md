@@ -308,6 +308,7 @@ Where a dataset opens.
 | `← / → (h/l)` | The previous or next column; the table's column cursor moves with it |
 | `Enter` | The rows holding the value, as a drill-down; Esc there comes back here |
 | `s` | Sort by count or by value |
+| `c` | Between a number column's histogram, binned from the counts, and the listing of its values. A number opens as its histogram |
 | `a` | Count every row, when the counts are of a sample |
 | `t` | While following a file, count again with the rows that arrived since; the bar says how many |
 
@@ -393,27 +394,28 @@ Where a dataset opens.
 
 ## Chart
 
-<kbd>c</kbd> at the table.
+<kbd>c</kbd> at the table: a chart chosen from the cursor column's type.
 
-### Chart · Options
+### Chart · Shelves
 
 | Key | Action |
 |---|---|
-| `1-6` | Switch chart type directly: XY, Histogram, Box Plot, KDE, Heatmap, Bar ([ / ] cycle) |
+| `1-7` | Switch the chart type directly: Line, Scatter, Bar, Histogram, Box, KDE, Heatmap ([ / ] step). The shelves keep what the new type takes |
 | `[ / ]` | Previous or next chart type |
-| `Tab / Shift+Tab (↑ / ↓)` | Next or previous option row, wrapping (j/k too) |
-| `Space / Enter` | Open a column row's picker, toggle an option, or take the next plot style, range, order or number. The options apply as they change, so Enter acts as Space does |
-| `← / → (h/l)` | Step the plot style, range or order; adjust bins, bandwidth, or Sample size (+ / - too); on a single column row, the previous or next column; flip a toggle |
-| `PgUp / PgDn` | Adjust Sample size in bigger steps |
-| `g` | Grid on or off at the labeled ticks: XY, Histogram, Box Plot and KDE. [analysis] chart_grid sets where it starts |
+| `Tab / Shift+Tab (↑ / ↓)` | Next or previous row of the panel, wrapping (j/k too). A shelf the type does not use is dimmed and skipped |
+| `Space / Enter` | On X, Y or Color: open its picker. On the line under Color: pick the values that get a series, by rows. On an option: toggle it or take its next value. The panel applies as it changes, so Enter acts as Space does |
+| `← / → (h/l)` | Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, sum, mean, median, min, max), cumulative, bins, range, order or sample size; on a shelf that takes one column, the previous or next column; flip a toggle |
+| `+ / -` | Bins, bandwidth or sample size |
+| `PgUp / PgDn` | Adjust the sample size in bigger steps |
+| `g` | Grid on or off at the labeled ticks: Line, Scatter, Histogram, Box and KDE. [analysis] chart_grid sets where it starts |
 | `Esc` | Back to the table |
 
 ### Chart · Plot
 
 | Key | Action |
 |---|---|
-| `x` | XY: the plot takes the keys, and a crosshair reads out x and every series' value under the plot. ← / → (h/l) step to the next point or column, Home/End go to the ends; x, Tab or Esc hand the keys back to the option rows. A click on the plot puts the crosshair there |
-| `e` | Export the chart to PNG or EPS. Needs the chart's required columns picked first |
+| `x` | Line and Scatter: the plot takes the keys, and a crosshair reads out x and every series' value under the plot. ← / → (h/l) step to the next point or column, Home/End go to the ends; x, Tab or Esc hand the keys back to the panel. A click on the plot puts the crosshair there |
+| `e` | Export the chart to PNG, SVG or PDF, with a title, notes and source. Needs the chart's shelves filled first |
 | `t` | While following a file, draw again with the rows that arrived since; the bar says how many |
 
 ### Chart · Picker
@@ -421,7 +423,7 @@ Where a dataset opens.
 | Key | Action |
 |---|---|
 | `↑ / ↓` | Move; typing narrows |
-| `Enter / Space` | Choose; on the Y series row Space toggles a series in or out |
+| `Enter / Space` | Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 7) |
 | `Tab / Shift+Tab` | Choose and move to the next or previous row |
 | `Esc` | Back out of the picker alone |
 
@@ -429,10 +431,10 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `Tab / Shift+Tab (↑ / ↓)` | Format, Path, Title, Width, Height |
-| `← / →` | Change the format, on its row |
+| `Tab / Shift+Tab (↑ / ↓)` | Next or previous field: Path, Format, Style, Size, Width, Height, Legend, Title, Description, Notes, Source, Byline |
+| `← / →` | Step the format (PNG, SVG, PDF), the style (Light, Dark, Transparent), the size (Slide 16:9, Document, Square, Single column, Double column, Custom) or the legend (line ends, a corner, off). Typing a width or height makes the size Custom |
 | `Ctrl+P / Ctrl+N` | Earlier or later paths in the path field |
-| `Enter` | Export, from anywhere in the dialog. An existing file asks Overwrite / No, starting on No; ←/→ (h/l) or Tab pick, Enter confirms, and declining returns to the filled dialog |
+| `Enter` | Export, from anywhere in the dialog. A path ending .png, .svg or .pdf takes that format; any other gets the format's extension after it. An existing file asks Overwrite / No, starting on No; ←/→ (h/l) or Tab pick, Enter confirms, and declining returns to the filled dialog |
 | `Esc` | Back to the chart |
 
 ## Analysis: Describe

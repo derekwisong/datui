@@ -48,13 +48,6 @@ ignore = [
 
     # --- Unmaintained, no known vulnerability ---
 
-    # ttf-parser, via plotters, used to lay out text when exporting a chart to
-    # an image. It parses font files from the system, not from the dataset, so
-    # it is not on the untrusted-data path. No safe upgrade exists: plotters
-    # would have to move to skrifa.
-    # Clears when: plotters releases a version off ttf-parser.
-    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; via plotters, parses system fonts only, no upgrade available" },
-
     # bincode 2, via polars-utils. Unmaintained, no advisory against the code.
     # Note that datui-pyo3 also uses bincode directly to decode LazyFrame plans;
     # that is tracked as a trust-boundary question, not as this advisory.

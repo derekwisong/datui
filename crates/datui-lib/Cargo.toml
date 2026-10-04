@@ -46,7 +46,11 @@ bzip2 = "0.6"
 xz2 = "0.1"
 flate2 = "1.0"
 zstd = "0.14"
-plotters = "0.3"
+# Chart export: the chart is drawn once as SVG and read with the bundled font
+# (usvg, which sets text with harfrust and skrifa), then written out as SVG,
+# rasterized for PNG (resvg), or written as PDF from the same outlines
+# (chart_pdf.rs). Pure Rust, so no system font library is needed at run time.
+resvg = { version = "0.48.1", default-features = false, features = ["text", "system-fonts"] }
 calamine = { version = "0.36", features = ["chrono"] }
 orc-rust = "0.9"
 arrow = "59"

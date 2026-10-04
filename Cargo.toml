@@ -71,7 +71,6 @@ maintainer = "Derek Wisong"
 extended-description = "datui reads 27 formats: Parquet, CSV, TSV, PSV, JSON, NDJSON, Arrow IPC, Avro, ORC, Excel, SafeTensors, GGUF, NMEA, GPX, WAV/AIFF audio, MIDI, SQLite, VCD, FIX, SDF, NumPy, ELF, ULog, DataFlash, candump, plain text, systemd journal, and binary formats you describe in a format spec. Query with SQL or q, sort and filter, chart, analyze and export."
 # end generated: deb-description
 license-file = ["LICENSE", "0"]
-depends = ["libfontconfig1"]
 # The manpages and completions are staged in target/dist by
 # scripts/packaging/build_package.py (`gen_docs dist`, then gzip).
 assets = [
@@ -135,11 +134,7 @@ dest = "/usr/share/licenses/datui/LICENSE"
 mode = "0644"
 doc = true
 
-[package.metadata.generate-rpm.requires]
-fontconfig = "*"
-
 [package.metadata.aur]
-depends = ["fontconfig"]
 # Do not add LICENSE to files: cargo-aur already includes it when license is MIT
 # (must_copy_license). Adding it here too made tar store it twice (second as hardlink),
 # which caused "Can't create 'LICENSE'" when bsdtar extracted on the AUR.

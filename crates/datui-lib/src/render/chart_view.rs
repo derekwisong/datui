@@ -6,7 +6,7 @@
 //! place of a plot when there is neither. A selection that failed to prepare shows why.
 
 use crate::chart_data;
-use crate::chart_modal::ChartKind;
+use crate::chart_modal::Mark;
 use crate::render::context::RenderContext;
 use crate::widgets::{
     self,
@@ -44,6 +44,7 @@ pub fn render(
         _ => outcome.and_then(|o| o.as_ref().ok()),
     };
     let notes = prepared.map(ChartPrepared::notes).unwrap_or_default();
+    let aggregating = request.as_ref().is_some_and(ChartRequest::aggregates);
 
     // Axis numbers print as the table prints their columns; whole ones tick whole.
     let schema = app
@@ -54,38 +55,49 @@ pub fn render(
     let columns =
         |names: &[String]| chart_data::AxisNumbers::columns(&ctx.number_format, schema, names);
     let modal = &app.chart_modal;
-    let xy_numbers = || PlotNumbers {
-        x: modal
-            .effective_x_column()
-            .map(|x| column(x))
-            .unwrap_or_default(),
-        y: columns(&modal.effective_y_columns()),
+    let spec = modal.effective_spec();
+    let x_name = spec.encoding.x.field.clone();
+    let y_numbers = || {
+        use crate::chart_modal::Aggregate;
+        match spec.encoding.y.aggregate {
+            Aggregate::Count => chart_data::AxisNumbers::count(&ctx.number_format),
+            // A mean or median of whole numbers is not whole.
+            Aggregate::Mean | Aggregate::Median => columns(&spec.encoding.y.field).fractional(),
+            _ => columns(&spec.encoding.y.field),
+        }
     };
+    let xy_numbers = || PlotNumbers {
+        x: x_name.as_deref().map(column).unwrap_or_default(),
+        y: y_numbers(),
+    };
+    const NO_NAMES: &[String] = &[];
 
-    let render_data = match (app.chart_modal.chart_kind, prepared) {
-        (ChartKind::XY, Some(ChartPrepared::XY(c))) => ChartRenderData::XY {
-            series: if app.chart_modal.log_scale {
+    let render_data = match (modal.mark(), prepared) {
+        (Mark::Line | Mark::Scatter, Some(ChartPrepared::XY(c))) => ChartRenderData::XY {
+            series: if modal.log_scale {
                 c.series_log.as_ref().or(Some(&c.series))
             } else {
                 Some(&c.series)
             },
             breaks: Some(&c.breaks),
             values: Some(&c.series),
+            names: &c.names,
             x_axis_kind: c.x_axis_kind,
             x_bounds: None,
             numbers: xy_numbers(),
         },
-        (ChartKind::XY, Some(ChartPrepared::XRange(c))) => ChartRenderData::XY {
+        (Mark::Line | Mark::Scatter, Some(ChartPrepared::XRange(c))) => ChartRenderData::XY {
             series: None,
             breaks: None,
             values: None,
+            names: NO_NAMES,
             x_axis_kind: c.x_axis_kind,
             x_bounds: Some((c.x_min, c.x_max)),
             numbers: xy_numbers(),
         },
         // Still on its way: empty axes, typed from the schema so the labels are right.
-        (ChartKind::XY, _) => {
-            let x_axis_kind = match (modal.effective_x_column(), schema) {
+        (Mark::Line | Mark::Scatter, _) => {
+            let x_axis_kind = match (x_name.as_deref(), schema) {
                 (Some(x), Some(schema)) => chart_data::x_axis_temporal_kind_for_column(schema, x),
                 _ => chart_data::XAxisTemporalKind::Numeric,
             };
@@ -93,12 +105,13 @@ pub fn render(
                 series: None,
                 breaks: None,
                 values: None,
+                names: NO_NAMES,
                 x_axis_kind,
                 x_bounds: None,
                 numbers: xy_numbers(),
             }
         }
-        (ChartKind::Histogram, prepared) => {
+        (Mark::Histogram, prepared) => {
             let data = match prepared {
                 Some(ChartPrepared::Histogram(d)) => Some(d),
                 _ => None,
@@ -108,33 +121,27 @@ pub fn render(
                 x: data.map(|d| column(&d.column)).unwrap_or_default(),
             }
         }
-        (ChartKind::BoxPlot, prepared) => {
+        (Mark::Box, prepared) => {
             let data = match prepared {
                 Some(ChartPrepared::BoxPlot(d)) => Some(d),
                 _ => None,
             };
-            let names: Vec<String> = data
-                .map(|d| d.stats.iter().map(|s| s.name.clone()).collect())
-                .unwrap_or_default();
             ChartRenderData::BoxPlot {
                 data,
-                y: columns(&names),
+                y: columns(&spec.encoding.y.field),
             }
         }
-        (ChartKind::Kde, prepared) => {
+        (Mark::Kde, prepared) => {
             let data = match prepared {
                 Some(ChartPrepared::Kde(d)) => Some(d),
                 _ => None,
             };
-            let names: Vec<String> = data
-                .map(|d| d.series.iter().map(|s| s.name.clone()).collect())
-                .unwrap_or_default();
             ChartRenderData::Kde {
                 data,
-                x: columns(&names),
+                x: x_name.as_deref().map(column).unwrap_or_default(),
             }
         }
-        (ChartKind::Heatmap, prepared) => {
+        (Mark::Heatmap, prepared) => {
             let data = match prepared {
                 Some(ChartPrepared::Heatmap(d)) => Some(d),
                 _ => None,
@@ -147,7 +154,7 @@ pub fn render(
                 },
             }
         }
-        (ChartKind::Bar, prepared) => ChartRenderData::Bar {
+        (Mark::Bar, prepared) => ChartRenderData::Bar {
             data: match prepared {
                 Some(ChartPrepared::Bar(d)) => Some(d),
                 _ => None,
@@ -155,6 +162,14 @@ pub fn render(
         },
     };
 
+    // An aggregate reads every row: say how many, where the table knows.
+    let grouping;
+    let working_text = if aggregating {
+        grouping = app.chart_status();
+        grouping.as_str()
+    } else {
+        "Computing chart..."
+    };
     widgets::chart::render_chart_view(
         chart_area,
         buf,
@@ -166,17 +181,18 @@ pub fn render(
             notes,
             error,
             working: computing.then_some(Working {
-                text: "Computing chart...",
+                text: working_text,
                 frame: app.throbber_frame as usize,
             }),
+            schema,
         },
     );
 
     if app.chart_export_modal.active {
-        // A commitment, so a compact centered dialog: the format list plus a
-        // row per option, never scaling with the terminal.
+        // A commitment, so a compact centered dialog, never scaling with the
+        // terminal; it scrolls inside its frame on a short one.
         let modal_width = (chart_area.width * 3 / 4).min(66);
-        let modal_height = 9.min(chart_area.height);
+        let modal_height = widgets::chart_export_modal::HEIGHT.min(chart_area.height);
         let modal_x = chart_area.x + chart_area.width.saturating_sub(modal_width) / 2;
         let modal_y = chart_area.y + chart_area.height.saturating_sub(modal_height) / 2;
         let modal_area = Rect {

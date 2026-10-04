@@ -2664,7 +2664,7 @@ const DOOR_OF_A_LAKE_TABLE: &str = "all files, log ignored";
 const DOOR_OF_FILES_THAT_DIFFER: &str = "files stacked, columns matched by name";
 
 /// The same, where only part of the directory is read: the `reads` line says which.
-const DOOR_OF_A_MIX: &str = "the reads files as one table";
+const DOOR_OF_A_MIX: &str = "matching files as one table";
 
 /// Every value the pane offers as guidance, for the test that reads them.
 #[cfg(test)]

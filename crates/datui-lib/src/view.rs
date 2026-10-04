@@ -180,8 +180,9 @@ pub struct BrokenView {
     pub error: String,
 }
 
-/// How long a read or a write of the views waits for another instance's write.
-const VIEWS_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long a read or a write of the views waits for another instance. Long enough
+/// for a busy machine; it bounds the wait on a wedged peer, it is not meant to be met.
+const VIEWS_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 pub struct ViewManager {
     config: ConfigManager,
@@ -332,9 +333,13 @@ impl ViewManager {
         // view, and a listing taken meanwhile on btrfs can miss the view entirely: the
         // new name takes a later directory slot than the listing reaches. A directory
         // that will not take the lock file (read-only) is listed without it.
+        let queue = crate::cache::lock_file(&self.views_queue(), VIEWS_LOCK_TIMEOUT)
+            .ok()
+            .flatten();
         let _lock = crate::cache::lock_file_shared(&self.views_lock(), VIEWS_LOCK_TIMEOUT)
             .ok()
             .flatten();
+        drop(queue);
         let entries = fs::read_dir(&self.views_dir)?;
         for entry in entries {
             let entry = entry?;
@@ -371,6 +376,12 @@ impl ViewManager {
         self.views_dir.join("views.lock")
     }
 
+    /// Taken briefly before the views' lock, and held by a writer while it waits for
+    /// it: readers that keep listing cannot starve a writer of the lock.
+    fn views_queue(&self) -> PathBuf {
+        self.views_dir.join("views.queue")
+    }
+
     fn view_path(&self, id: &str) -> PathBuf {
         self.views_dir.join(format!("view_{id}.json"))
     }
@@ -380,8 +391,12 @@ impl ViewManager {
     fn locked<T>(&self, work: impl FnOnce() -> Result<T>) -> Result<T> {
         self.config.ensure_config_dir()?;
         fs::create_dir_all(&self.views_dir)?;
-        let lock = crate::cache::lock_file(&self.views_lock(), VIEWS_LOCK_TIMEOUT)?
-            .ok_or_else(|| color_eyre::eyre::eyre!("another datui is saving views; try again"))?;
+        let busy = || color_eyre::eyre::eyre!("another datui is saving views; try again");
+        let queue =
+            crate::cache::lock_file(&self.views_queue(), VIEWS_LOCK_TIMEOUT)?.ok_or_else(busy)?;
+        let lock =
+            crate::cache::lock_file(&self.views_lock(), VIEWS_LOCK_TIMEOUT)?.ok_or_else(busy)?;
+        drop(queue);
         let result = work();
         drop(lock);
         result

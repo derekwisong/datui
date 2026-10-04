@@ -478,6 +478,39 @@ fn a_reader_never_sees_a_broken_view() {
     assert_eq!(stored(dir.path())[0].usage_count, 200);
 }
 
+/// A save waits while another instance holds the views, rather than failing at once,
+/// and lands when it lets go.
+#[test]
+fn a_save_waits_for_another_instance_to_let_go() {
+    use fs2::FileExt;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut a, _b, id) = two_instances(dir.path());
+    let held = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.path().join("views").join("views.lock"))
+        .unwrap();
+    held.lock_exclusive().unwrap();
+    let (started, began) = std::sync::mpsc::channel();
+    let saver = std::thread::spawn(move || {
+        let mut t = a.get_view_by_id(&id).cloned().unwrap();
+        t.description = Some("waited".into());
+        started.send(()).unwrap();
+        a.update_view(&t)
+    });
+    began.recv().unwrap();
+    // The other instance keeps the views a moment, as a slow save would.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(
+        !saver.is_finished(),
+        "the save went ahead under another's lock"
+    );
+    FileExt::unlock(&held).unwrap();
+    saver.join().unwrap().unwrap();
+    assert_eq!(stored(dir.path())[0].description.as_deref(), Some("waited"));
+}
+
 /// A write killed before its rename leaves its temp file and the view as it was;
 /// neither is listed as broken.
 #[test]

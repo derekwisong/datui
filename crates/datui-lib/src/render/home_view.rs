@@ -1169,7 +1169,12 @@ fn section_header<'a>(
     } else {
         width / 2
     };
-    let note = truncate_start(&note, note_room);
+    // A callout reads from its mark and its file; the end of its message gives way.
+    let note = if note.starts_with(g.warning) {
+        glyphs::fit_cells(&note, note_room, g.ellipsis).into_owned()
+    } else {
+        truncate_start(&note, note_room)
+    };
     // A title that names a place keeps its case; only the word-like headings —
     // "RECENT", "ELSEWHERE" — are shouted. A URL is a place, and uppercasing one turns
     // `s3://datui-sales` into `S3://DATUI-SALES`, which is not the bucket's name and in

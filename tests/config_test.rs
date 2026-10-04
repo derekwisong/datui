@@ -18,6 +18,16 @@ fn layered(layers: &[&str]) -> AppConfig {
     .expect("layers resolve")
 }
 
+/// What the catalog files left out of `config` say is wrong with them, one per line.
+fn left_out(config: &AppConfig) -> String {
+    config
+        .broken_catalogs
+        .iter()
+        .map(|b| b.full())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 // Helper to create a temporary config directory for testing
 fn setup_test_config_dir() -> (TempDir, ConfigManager) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -2838,11 +2848,28 @@ fn every_toml_in_the_catalogs_directory_is_a_catalog() {
     )
     .unwrap();
     fs::write(&config_path, "catalogs = [\"elsewhere/acme.toml\"]\n").unwrap();
-    let error = AppConfig::load_from_file(&config_path)
-        .expect_err("refused")
-        .to_string();
+    let config = AppConfig::load_from_file(&config_path).expect("starts all the same");
+    let error = left_out(&config);
     assert!(error.contains("are both the catalog \"acme\""), "{error}");
     assert!(error.contains("catalogs"), "{error}");
+    assert!(
+        config.catalogs().iter().any(|c| c.label == "Acme"),
+        "the first stays"
+    );
+
+    // A file with a mistake is left out and said; the others still load.
+    fs::write(&config_path, "").unwrap();
+    fs::write(folder.join("broken.toml"), "[a]\nname = \"A\"\n").unwrap();
+    let config = AppConfig::load_from_file(&config_path).expect("starts all the same");
+    let labels: Vec<String> = config.catalogs().into_iter().map(|c| c.label).collect();
+    assert_eq!(labels, ["Acme", "Curated", "Zeta"]);
+    let error = left_out(&config);
+    assert!(
+        error.contains("broken.toml:1: [a]: say where it is"),
+        "{error}"
+    );
+    assert_eq!(config.broken_catalogs[0].id, "broken");
+    assert!(config.unknown_hidden().is_empty());
 }
 
 #[test]
@@ -2900,17 +2927,19 @@ fn a_listed_catalog_can_be_given_an_id_and_a_label() {
         "an id that is not public leaves the bundled catalog"
     );
 
-    // Each rule says what is wrong.
+    // Each rule says what is wrong: the config's own shape stops the load, a catalog's
+    // id leaves that file out.
     let error = |text: &str| load(text).expect_err(text).to_string();
     let e = error("catalogs = [{ path = \"shared/public.toml\", name = \"x\" }]\n");
     assert!(e.contains("unknown key 'name'"), "{e}");
     let e = error("catalogs = [{ id = \"x\" }]\n");
     assert!(e.contains("needs path"), "{e}");
-    let e = error("catalogs = [{ path = \"shared/public.toml\", id = \"Bad Id\" }]\n");
+    let out = |text: &str| left_out(&load(text).expect(text));
+    let e = out("catalogs = [{ path = \"shared/public.toml\", id = \"Bad Id\" }]\n");
     assert!(e.contains("cannot be a catalog's id"), "{e}");
-    let e = error("catalogs = [{ path = \"shared/public.toml\", id = \"mine\" }]\n");
+    let e = out("catalogs = [{ path = \"shared/public.toml\", id = \"mine\" }]\n");
     assert!(e.contains("catalog.toml's"), "{e}");
-    let e = error(
+    let e = out(
         "catalogs = [{ path = \"shared/public.toml\", id = \"acme\" }, { path = \"shared/catalog.toml\", id = \"acme\" }]\n",
     );
     assert!(e.contains("are both the catalog \"acme\""), "{e}");
@@ -2933,9 +2962,7 @@ fn two_catalogs_of_one_name_are_refused() {
         "catalogs = [\"a/team.toml\", \"b/team.toml\"]\n",
     )
     .unwrap();
-    let error = AppConfig::load_from_file(&config_path)
-        .expect_err("refused")
-        .to_string();
+    let error = left_out(&AppConfig::load_from_file(&config_path).expect("starts"));
     assert!(error.contains("are both the catalog \"team\""), "{error}");
     // `mine` is catalog.toml's id.
     fs::rename(
@@ -2944,9 +2971,7 @@ fn two_catalogs_of_one_name_are_refused() {
     )
     .unwrap();
     fs::write(&config_path, "catalogs = [\"a/mine.toml\"]\n").unwrap();
-    let error = AppConfig::load_from_file(&config_path)
-        .expect_err("refused")
-        .to_string();
+    let error = left_out(&AppConfig::load_from_file(&config_path).expect("starts"));
     assert!(error.contains("cannot be a catalog's id"), "{error}");
 }
 

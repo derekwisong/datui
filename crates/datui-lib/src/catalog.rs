@@ -748,6 +748,63 @@ pub fn bundled_text() -> &'static str {
     BUNDLED
 }
 
+/// A catalog file left out because it has a mistake: shown as its section's callout, so
+/// one broken team file never keeps datui from starting.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Broken {
+    /// The id the file would have had: what `home.hide` names.
+    pub id: String,
+    pub origin: Origin,
+    pub file: PathBuf,
+    pub line: Option<usize>,
+    pub message: String,
+}
+
+impl Broken {
+    /// `path:line: message`, for stderr and the log.
+    pub fn full(&self) -> String {
+        CatalogError {
+            line: self.line,
+            message: self.message.clone(),
+        }
+        .in_file(&self.file.display().to_string())
+    }
+
+    /// `▲ name.toml:3 message`, for the section's one line.
+    pub fn callout(&self) -> String {
+        let name = self
+            .file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let place = match self.line {
+            Some(line) => format!("{name}:{line}"),
+            None => name,
+        };
+        format!("{} {place} {}", crate::glyphs::get().warning, self.message)
+    }
+}
+
+/// Read the catalog in `file`, or say what is wrong with it. `Ok(None)` when there is
+/// no such file.
+pub fn load(file: &Path, id: &str, origin: Origin) -> Result<Option<Catalog>, Broken> {
+    let broken = |line, message| Broken {
+        id: id.to_string(),
+        origin,
+        file: file.to_path_buf(),
+        line,
+        message,
+    };
+    let text = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(broken(None, format!("cannot be read: {e}"))),
+    };
+    parse(&text, id, origin, Some(file))
+        .map(Some)
+        .map_err(|e| broken(e.line, e.message))
+}
+
 /// Read the catalog in `file`. `None` when there is no such file.
 pub fn read(file: &Path, id: &str, origin: Origin) -> color_eyre::Result<Option<Catalog>> {
     let text = match std::fs::read_to_string(file) {
@@ -954,6 +1011,9 @@ pub fn add(file: &Path, dataset: &NewDataset) -> color_eyre::Result<String> {
 /// it, and nothing else.
 pub fn forget(file: &Path, id: &str) -> color_eyre::Result<()> {
     let text = std::fs::read_to_string(file)?;
+    // A file that does not read is never written: the user's text is in it.
+    parse(&text, MINE, Origin::Mine, Some(file))
+        .map_err(|e| color_eyre::eyre::eyre!("{}", e.in_file(&file.display().to_string())))?;
     let mut doc: toml_edit::DocumentMut = text.parse()?;
     if doc.remove(id).is_none() {
         return Err(color_eyre::eyre::eyre!("{} has no [{id}]", file.display()));
@@ -1055,6 +1115,15 @@ pub fn command(
                             .as_deref()
                             .map(|f| f.display().to_string())
                             .unwrap_or_else(|| "-".to_string()),
+                    ]);
+                }
+                for broken in &config.broken_catalogs {
+                    rows.push(vec![
+                        broken.id.clone(),
+                        format!("{} not read", crate::glyphs::get().warning),
+                        "-".to_string(),
+                        "-".to_string(),
+                        broken.full(),
                     ]);
                 }
                 return (table(&rows), SUCCESS);

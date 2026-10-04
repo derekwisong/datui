@@ -192,9 +192,15 @@ catalogs = [{ path = "<CATALOG_FILE>", id = "acme", label = "ACME" }]
 | `id` | The catalog's id, in place of the file's name: what `[home] hide` names, and what decides a `public` catalog |
 | `label` | The section's title, in place of the file's own `label` |
 
-A catalog file's name, without `.toml`, is its id: two files of one name,
-wherever they are, or one named `mine.toml`, are an error naming both. A listed
-file that is not there is skipped with a warning, as a missing import is.
+A catalog file's name, without `.toml`, is its id. A listed file that is not
+there is skipped with a warning, as a missing import is.
+
+A catalog file with a mistake, `catalog.toml` included, is left out rather than
+stopping datui: its `file:line: message` goes to standard error and the log, and
+its section on the home screen reads `▲ acme.toml:3 ...` in place of its rows.
+Two files of one id, wherever they are, or one named `mine.toml`, are such a
+mistake, naming both. <kbd>Ctrl</kbd>+<kbd>D</kbd> never writes a `catalog.toml`
+it cannot read; `datui catalog check` names the mistake and exits non-zero.
 `catalogs` adds up across
 [imported files](../user-guide/configuration.md#importing-other-config-files),
 imports first. The sections follow `My datasets`: `catalogs/` in file-name

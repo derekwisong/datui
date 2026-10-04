@@ -249,6 +249,9 @@ pub struct AppConfig {
     /// The directory `catalog.toml` was looked for in: the config file's.
     #[serde(skip)]
     pub catalog_dir: Option<PathBuf>,
+    /// Catalog files left out for a mistake, each with what is wrong.
+    #[serde(skip)]
+    pub broken_catalogs: Vec<crate::catalog::Broken>,
     pub read: ReadConfig,
     pub csv: CsvConfig,
     pub display: DisplayConfig,
@@ -1670,6 +1673,7 @@ impl Default for AppConfig {
             catalogs: Vec::new(),
             read_catalogs: Vec::new(),
             catalog_dir: None,
+            broken_catalogs: Vec::new(),
             read: ReadConfig::default(),
             csv: CsvConfig::default(),
             display: DisplayConfig::default(),
@@ -2419,6 +2423,10 @@ impl AppConfig {
         config.import = imports;
         // A catalog's mistake names its own file and line.
         config.read_catalog_files(config_path.parent())?;
+        for broken in &config.broken_catalogs {
+            eprintln!("datui: warning: catalog left out: {}", broken.full());
+            log::warn!(target: "datui", "catalog left out: {}", broken.full());
+        }
         // A name that hides nothing is likely a typo, but not worth refusing to start.
         for name in config.unknown_hidden() {
             eprintln!("datui: warning: home.hide: no catalog or entry is named {name}");
@@ -2565,7 +2573,11 @@ impl AppConfig {
         let mut out: Vec<String> = Vec::new();
         for name in &self.home.hide {
             let known = match name.split_once('/') {
-                None => catalogs.iter().any(|c| c.id == *name),
+                None => {
+                    catalogs.iter().any(|c| c.id == *name)
+                        || self.broken_catalogs.iter().any(|b| b.id == *name)
+                }
+                Some((catalog, _)) if self.broken_catalogs.iter().any(|b| b.id == catalog) => true,
                 Some((catalog, id)) => catalogs
                     .iter()
                     .any(|c| c.id == catalog && c.datasets.iter().any(|d| d.id == id)),
@@ -2584,14 +2596,46 @@ impl AppConfig {
     pub fn read_catalog_files(&mut self, config_dir: Option<&Path>) -> Result<()> {
         use crate::catalog::{self, Origin};
         let mut read: Vec<catalog::Catalog> = Vec::new();
+        let mut broken: Vec<catalog::Broken> = Vec::new();
+        let connections = self.cloud.connections.clone();
+        // A file with a mistake is left out and said: one broken team file must not keep
+        // datui from starting.
+        let take = |found: std::result::Result<Option<catalog::Catalog>, catalog::Broken>,
+                    read: &mut Vec<catalog::Catalog>,
+                    broken: &mut Vec<catalog::Broken>|
+         -> bool {
+            match found {
+                Ok(Some(c)) => match c.check_connections(&connections) {
+                    Ok(()) => {
+                        read.push(c);
+                        true
+                    }
+                    Err(e) => {
+                        broken.push(catalog::Broken {
+                            id: c.id.clone(),
+                            origin: c.origin,
+                            file: c.file.clone().unwrap_or_default(),
+                            line: e.line,
+                            message: e.message,
+                        });
+                        true
+                    }
+                },
+                Ok(None) => false,
+                Err(b) => {
+                    broken.push(b);
+                    true
+                }
+            }
+        };
         // Each file, where it was found, and the id and label a `catalogs` table gives it.
         let mut files: Vec<(PathBuf, Origin, Option<String>, Option<String>)> = Vec::new();
         if let Some(dir) = config_dir {
-            if let Some(mine) =
-                catalog::read(&dir.join(catalog::MINE_FILE), catalog::MINE, Origin::Mine)?
-            {
-                read.push(mine);
-            }
+            take(
+                catalog::load(&dir.join(catalog::MINE_FILE), catalog::MINE, Origin::Mine),
+                &mut read,
+                &mut broken,
+            );
             let folder = dir.join(catalog::FOLDER);
             let mut found: Vec<PathBuf> = match std::fs::read_dir(&folder) {
                 Ok(entries) => entries
@@ -2618,41 +2662,51 @@ impl AppConfig {
             let id = given_id
                 .clone()
                 .unwrap_or_else(|| catalog::id_of_file(&path));
+            let refuse = |message: String| catalog::Broken {
+                id: id.clone(),
+                origin,
+                file: path.clone(),
+                line: None,
+                message,
+            };
             if !is_valid_source_id(&id) || id == catalog::MINE {
-                return Err(eyre!(
-                    "catalogs: {}: \"{id}\" cannot be a catalog's id: lowercase letters, \
-                     digits and '-', and not \"{}\", which is catalog.toml's. {}",
-                    path.display(),
+                broken.push(refuse(format!(
+                    "\"{id}\" cannot be a catalog's id: lowercase letters, digits and '-', \
+                     and not \"{}\", which is catalog.toml's. {}",
                     catalog::MINE,
                     if given_id.is_some() {
                         "Give another id = \"...\""
                     } else {
                         "Rename the file, or list it as { path = \"...\", id = \"...\" }"
                     }
-                ));
+                )));
+                continue;
             }
             if let Some(first) = read.iter().find(|c| c.id == id) {
-                return Err(eyre!(
-                    "catalogs: {} and {} are both the catalog \"{id}\". Rename one, or list \
-                     one as {{ path = \"...\", id = \"...\" }}",
-                    first.file_name(),
-                    path.display()
-                ));
+                let first = first.file_name();
+                broken.push(refuse(format!(
+                    "{first} and this file are both the catalog \"{id}\". Rename one, or \
+                     list one as {{ path = \"...\", id = \"...\" }}"
+                )));
+                continue;
             }
-            match catalog::read(&path, &id, origin)? {
-                Some(mut listed) => {
-                    if let Some(label) = label {
-                        listed.label = label;
+            let found = catalog::load(&path, &id, origin).map(|found| {
+                found.map(|mut listed| {
+                    if let Some(label) = &label {
+                        listed.label = label.clone();
                     }
-                    read.push(listed);
-                }
-                None => eprintln!(
+                    listed
+                })
+            });
+            if !take(found, &mut read, &mut broken) {
+                eprintln!(
                     "datui: warning: catalog not found, skipping: {}",
                     path.display()
-                ),
+                );
             }
         }
         self.read_catalogs = read;
+        self.broken_catalogs = broken;
         self.catalog_dir = config_dir.map(Path::to_path_buf);
         self.sync_dataset_access();
         Ok(())

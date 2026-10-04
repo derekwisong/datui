@@ -859,6 +859,8 @@ pub struct ShownCatalog {
     /// `catalog.toml`, a listed file, or the bundled catalog.
     pub origin: crate::catalog::Origin,
     pub datasets: Vec<ShownDataset>,
+    /// Left out for a mistake: the one line its section says instead of rows.
+    pub broken: Option<String>,
 }
 
 /// One dataset of a [`ShownCatalog`].
@@ -925,6 +927,18 @@ impl ShownCatalog {
                     }
                 })
                 .collect(),
+            broken: None,
+        }
+    }
+
+    /// A catalog file left out for a mistake, as a section that says what is wrong.
+    pub fn from_broken(broken: &crate::catalog::Broken) -> Self {
+        Self {
+            id: broken.id.clone(),
+            label: broken.id.clone(),
+            origin: broken.origin,
+            datasets: Vec::new(),
+            broken: Some(broken.callout()),
         }
     }
 
@@ -963,7 +977,7 @@ pub fn login_of(dataset: &crate::catalog::Dataset) -> String {
 /// catalog of the user's is shown whole; they named those, and opening one says why it
 /// cannot be read. An empty catalog has no section.
 pub fn catalogs(config: &crate::config::AppConfig) -> Vec<ShownCatalog> {
-    config
+    let mut out: Vec<ShownCatalog> = config
         .shown_catalogs()
         .iter()
         .filter_map(|catalog| {
@@ -975,7 +989,20 @@ pub fn catalogs(config: &crate::config::AppConfig) -> Vec<ShownCatalog> {
             }
             (!shown.datasets.is_empty()).then_some(shown)
         })
-        .collect()
+        .collect();
+    // A broken file's section says so, before the bundled catalog, unless it is hidden.
+    let at = out
+        .iter()
+        .position(|c| c.origin == crate::catalog::Origin::Bundled)
+        .unwrap_or(out.len());
+    let broken: Vec<ShownCatalog> = config
+        .broken_catalogs
+        .iter()
+        .filter(|b| !config.home.hide.contains(&b.id))
+        .map(ShownCatalog::from_broken)
+        .collect();
+    out.splice(at..at, broken);
+    out
 }
 
 /// The row for one dataset of a catalog. Nothing is read to make it but a local path's
@@ -1072,6 +1099,8 @@ fn catalog_section(
         subtitle: None,
         origin: Some(catalog.origin_note()),
         root: None,
+        unavailable: catalog.broken.is_some(),
+        unavailable_note: catalog.broken.clone(),
         // Each dataset, and under it its bookmarks.
         rows: catalog
             .datasets
@@ -1085,8 +1114,6 @@ fn catalog_section(
                 )
             })
             .collect(),
-        unavailable: false,
-        unavailable_note: None,
         folded_by_default: false,
         remote_root: None,
         waiting: false,

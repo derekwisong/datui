@@ -388,14 +388,80 @@ fn catalogs_are_listed_replaced_or_hidden() {
     std::fs::write(team.join("broken.toml"), "[a]\nname = \"A\"\n").unwrap();
     let mut config =
         common::layered_config(&[&format!("catalogs = [\"{}\"]\n", at("broken.toml"))]);
-    let error = config
+    config
         .read_catalog_files(Some(dir.path()))
-        .unwrap_err()
-        .to_string();
+        .expect("a broken file is left out");
+    let error = config.broken_catalogs[0].full();
     assert!(
         error.contains("broken.toml:1: [a]: say where it is"),
         "{error}"
     );
+
+    // On the home screen its section says so, in one line.
+    let (mut app, rx) = home_in(
+        dir.path(),
+        &format!("catalogs = [\"{}\"]\n", at("broken.toml")),
+    );
+    pump(&mut app, &rx, |app| {
+        app.home.sections.iter().any(|s| s.title == "broken")
+    });
+    let section = app
+        .home
+        .sections
+        .iter()
+        .find(|s| s.title == "broken")
+        .unwrap();
+    assert!(section.unavailable);
+    let note = section.unavailable_note.clone().unwrap_or_default();
+    assert!(
+        note.contains("broken.toml:1 [a]: say where it is"),
+        "{note}"
+    );
+    let shown = screen(&mut app);
+    assert!(shown.contains("BROKEN"), "{shown}");
+    assert!(shown.contains("broken.toml:1"), "{shown}");
+}
+
+/// A catalog.toml with a mistake is left out, and Ctrl+D refuses to write over it.
+#[test]
+fn ctrl_d_never_writes_over_a_broken_catalog_toml() {
+    let data = tempfile::TempDir::new().unwrap();
+    let file = data.path().join("sales.csv");
+    std::fs::write(&file, "a\n1\n").unwrap();
+    let dir = tempfile::TempDir::new().unwrap();
+    let mine = dir.path().join("catalog.toml");
+    let broken = "# keep me\n[sales]\nname = \"Sales\"\n";
+    std::fs::write(&mine, broken).unwrap();
+    let team = dir.path().join("team.toml");
+    std::fs::write(
+        &team,
+        format!(
+            "[sales]\nname = \"Sales\"\npath = \"{}\"\n",
+            toml_path(&file)
+        ),
+    )
+    .unwrap();
+    let (mut app, rx) = home_in(
+        dir.path(),
+        &format!("catalogs = [\"{}\"]\n", toml_path(&team)),
+    );
+    pump(&mut app, &rx, |app| {
+        app.home
+            .sections
+            .iter()
+            .any(|s| s.title == "TEAM" || s.title == "team")
+    });
+    assert!(
+        app.home
+            .sections
+            .iter()
+            .any(|s| s.unavailable && s.origin == Some("catalog.toml")),
+        "catalog.toml's section says it is broken"
+    );
+    select(&mut app, "Sales");
+    drive(&mut app, ctrl('d'));
+    assert!(app.error_message().is_some(), "refused out loud");
+    assert_eq!(std::fs::read_to_string(&mine).unwrap(), broken, "untouched");
 }
 
 /// A catalog entry's documentation and bookmarks (#734): the bookmark is listed under

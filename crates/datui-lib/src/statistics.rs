@@ -263,20 +263,26 @@ pub struct CorrelationMatrix {
     pub correlations: Vec<Vec<f64>>,     // Square matrix of Pearson correlations
     pub p_values: Option<Vec<Vec<f64>>>, // Statistical significance (optional)
     pub sample_sizes: Vec<Vec<usize>>,   // Sample size for each pair
-    /// Spearman's ρ for each pair, over the same pairs as Pearson's r.
-    pub rank_correlations: Vec<Vec<f64>>,
+    /// Spearman's ρ for each pair, over the same pairs as Pearson's r; `None` when
+    /// the rows read hold more values than [`RANK_VALUES`].
+    pub rank_correlations: Option<Vec<Vec<f64>>>,
     pub rank_p_values: Option<Vec<Vec<f64>>>,
 }
+
+/// The most values Spearman's ρ ranks: eight bytes each, so 512 MiB beside the rows
+/// read. A sample's 100,000 rows rank up to 671 columns; a read of every row of a
+/// large table can be past it, and the matrix then has Pearson's r only.
+pub const RANK_VALUES: usize = 64 * 1024 * 1024;
 
 impl CorrelationMatrix {
     /// The pair's coefficient by `method`; NaN where there is none.
     pub fn coefficient(&self, method: CorrelationMethod, row: usize, col: usize) -> f64 {
         let matrix = match method {
-            CorrelationMethod::Pearson => &self.correlations,
-            CorrelationMethod::Spearman => &self.rank_correlations,
+            CorrelationMethod::Pearson => Some(&self.correlations),
+            CorrelationMethod::Spearman => self.rank_correlations.as_ref(),
         };
         matrix
-            .get(row)
+            .and_then(|m| m.get(row))
             .and_then(|r| r.get(col))
             .copied()
             .unwrap_or(f64::NAN)
@@ -2605,14 +2611,16 @@ fn correlation_matrix_in_bands(df: &DataFrame, band: usize) -> Result<Correlatio
         }
     }
 
-    let (rank_correlations, rank_p_values) = rank_correlation_matrix(&series, &sample_sizes);
+    let ranked = (rows.saturating_mul(n) <= RANK_VALUES)
+        .then(|| rank_correlation_matrix(&series, &sample_sizes));
+    let (rank_correlations, rank_p_values) = ranked.unzip();
     Ok(CorrelationMatrix {
         columns: numeric_cols,
         correlations,
         p_values: Some(p_values),
         sample_sizes,
         rank_correlations,
-        rank_p_values: Some(rank_p_values),
+        rank_p_values,
     })
 }
 
@@ -2670,17 +2678,19 @@ impl Ranked {
     }
 
     /// `out` becomes this column's doubled ranks among the rows where `other` also
-    /// has a value, NaN elsewhere; the number of those rows is returned. Walking the
-    /// rows in order of value, a run of equal global ranks is a run of equal values.
-    fn ranks_beside(&self, other: &Ranked, out: &mut Vec<f64>) -> usize {
+    /// has a value, [`NO_RANK`] elsewhere; the number of those rows is returned.
+    /// Walking the rows in order of value, a run of equal global ranks is a run of
+    /// equal values. `kept` is scratch, reused from pair to pair.
+    fn ranks_beside(&self, other: &Ranked, out: &mut Vec<u32>, kept: &mut Vec<u32>) -> usize {
         out.clear();
-        out.resize(self.ranks.len(), f64::NAN);
-        let kept: Vec<u32> = self
-            .order
-            .iter()
-            .copied()
-            .filter(|&row| other.ranks[row as usize] != NO_RANK)
-            .collect();
+        out.resize(self.ranks.len(), NO_RANK);
+        kept.clear();
+        kept.extend(
+            self.order
+                .iter()
+                .copied()
+                .filter(|&row| other.ranks[row as usize] != NO_RANK),
+        );
         let mut start = 0;
         while start < kept.len() {
             let tie = self.ranks[kept[start] as usize];
@@ -2689,7 +2699,7 @@ impl Ranked {
                     .iter()
                     .take_while(|&&row| self.ranks[row as usize] == tie)
                     .count();
-            let doubled = (start + 1 + end) as f64;
+            let doubled = (start + 1 + end) as u32;
             for &row in &kept[start..end] {
                 out[row as usize] = doubled;
             }
@@ -2717,7 +2727,9 @@ fn rank_correlation_matrix(
     let mut rows: Vec<Vec<f64>> = (0..n).map(|i| vec![f64::NAN; n - i - 1]).collect();
     let ranked = &ranked;
     across_threads(rows.iter_mut().enumerate().collect(), |(i, row)| {
-        let (mut a, mut b) = (Vec::new(), Vec::new());
+        // Ranks as doubled u32s, half the size of floats, held once per row of the
+        // matrix rather than once per pair.
+        let (mut a, mut b, mut kept) = (Vec::new(), Vec::new(), Vec::new());
         for (k, rho) in row.iter_mut().enumerate() {
             let (Some(x), Some(y)) = (&ranked[i], &ranked[i + 1 + k]) else {
                 continue;
@@ -2730,12 +2742,12 @@ fn rank_correlation_matrix(
                     sums.add(rx as f64 - mean, ry as f64 - mean);
                 }
             } else {
-                let pairs = x.ranks_beside(y, &mut a);
-                y.ranks_beside(x, &mut b);
+                let pairs = x.ranks_beside(y, &mut a, &mut kept);
+                y.ranks_beside(x, &mut b, &mut kept);
                 let mean = (pairs + 1) as f64;
                 for (&rx, &ry) in a.iter().zip(&b) {
-                    if !rx.is_nan() {
-                        sums.add(rx - mean, ry - mean);
+                    if rx != NO_RANK {
+                        sums.add(rx as f64 - mean, ry as f64 - mean);
                     }
                 }
             }

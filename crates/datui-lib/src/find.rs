@@ -1883,7 +1883,7 @@ mod app_tests {
             .data_table_state
             .as_ref()
             .unwrap()
-            .shown_width(&name)
+            .on_screen_width(&name)
             .unwrap_or(UNSEEN_WIDTH);
         key(&mut app, KeyCode::Char('>'));
         assert_eq!(width(&app), WidthChoice::Manual(start + WIDTH_STEP));

@@ -78,7 +78,9 @@ column.
 Spearman is Pearson's r of the ranks: it reads any relation that only rises
 or only falls, where Pearson reads a straight line. Both use the rows where
 the two columns hold a value, and both come from the one run, so
-<kbd>m</kbd> reads nothing.
+<kbd>m</kbd> reads nothing. Spearman ranks at most 64 Mi values (rows times
+numeric columns); past that, as when every row of a large table is read, the
+matrix has Pearson only and <kbd>s</kbd> chooses a smaller sample.
 
 Cells show three decimal places and the pair four. A value that would round
 to 1 but is not exactly 1 shows as 0.999 (0.9999 in the pair), so 1.000

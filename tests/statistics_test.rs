@@ -400,9 +400,10 @@ unsafe impl std::alloc::GlobalAlloc for RowSizedCount {
 static ALLOCATOR: RowSizedCount = RowSizedCount;
 
 /// Every pair of a correlation matrix is one pass over two columns converted once:
-/// a column's floats are allocated once, never once per pair, and no cast is the
-/// size of a column. 24 columns are 276 pairs; a filtered copy of each pair's rows,
-/// as the matrix once made, would be hundreds of allocations the size of a column.
+/// a column's floats are allocated once for Pearson and once for Spearman's ranks,
+/// never once per pair, and no cast is the size of a column. 24 columns are 276
+/// pairs; a filtered copy of each pair's rows, as the matrix once made, would be
+/// hundreds of allocations the size of a column.
 #[test]
 fn correlation_allocates_per_column_not_per_pair() -> Result<()> {
     let rows = 200_003;
@@ -430,7 +431,7 @@ fn correlation_allocates_per_column_not_per_pair() -> Result<()> {
     });
     let matrix = matrix.unwrap()?;
     assert_eq!(matrix.columns.len(), 24);
-    assert!(allocated <= 24, "{allocated} column-sized allocations");
+    assert!(allocated <= 2 * 24, "{allocated} column-sized allocations");
 
     // A pair reads its two columns where they are, cast a piece at a time.
     let mut pair = None;

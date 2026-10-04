@@ -203,9 +203,14 @@ impl ColumnWidths {
             .map_or(WidthChoice::Auto, |e| e.choice)
     }
 
-    /// The width the column was last drawn at, if it has been, the room it filled
-    /// at the right edge included.
+    /// The width the column was last drawn at, if it has been.
     pub fn shown(&self, name: &str, dtype: &DataType) -> Option<u16> {
+        self.entry(name, dtype).and_then(|e| e.shown)
+    }
+
+    /// [`Self::shown`], with the room the column filled at the right edge: what a
+    /// step narrower or wider starts from, so a wider column never draws narrower.
+    pub fn on_screen(&self, name: &str, dtype: &DataType) -> Option<u16> {
         self.entry(name, dtype).and_then(|e| e.filled.or(e.shown))
     }
 

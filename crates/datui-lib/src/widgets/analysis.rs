@@ -480,6 +480,9 @@ struct Shown<'a> {
     method: CorrelationMethod,
 }
 
+/// Why a matrix has no Spearman: the rows read hold more values than it ranks.
+const SPEARMAN_TOO_MANY: &str = "Too many values to rank for Spearman; s chooses a smaller sample";
+
 /// The coefficient's name and symbol, as the matrix title and the pair detail
 /// give it.
 fn coefficient_name(method: CorrelationMethod) -> String {
@@ -547,7 +550,10 @@ fn render_correlation_pair_summary(
 
     let mut lines: Vec<Line> = Vec::new();
     if r.is_nan() {
-        let why = if pairs < 3 {
+        let unranked = method == CorrelationMethod::Spearman && matrix.rank_correlations.is_none();
+        let why = if unranked {
+            SPEARMAN_TOO_MANY
+        } else if pairs < 3 {
             "Fewer than 3 overlapping pairs"
         } else {
             "A column holds one value"
@@ -1261,6 +1267,13 @@ fn render_correlation_matrix(
             return;
         }
     };
+
+    if method == CorrelationMethod::Spearman && correlation_matrix.rank_correlations.is_none() {
+        Paragraph::new(SPEARMAN_TOO_MANY)
+            .centered()
+            .render(area, buf);
+        return;
+    }
 
     if correlation_matrix.columns.is_empty() {
         Paragraph::new("No numeric columns for correlation matrix")
@@ -2707,7 +2720,7 @@ mod tests {
             correlations: vec![vec![1.0, r], vec![r, 1.0]],
             p_values: Some(vec![vec![0.0, 0.004], vec![0.004, 0.0]]),
             sample_sizes: vec![vec![0, pairs], vec![pairs, 0]],
-            rank_correlations: vec![vec![1.0, 0.5], vec![0.5, 1.0]],
+            rank_correlations: Some(vec![vec![1.0, 0.5], vec![0.5, 1.0]]),
             rank_p_values: Some(vec![vec![0.0, 0.03], vec![0.03, 0.0]]),
         }
     }
@@ -2781,7 +2794,7 @@ mod tests {
             correlations: vec![vec![0.5; n]; n],
             p_values: None,
             sample_sizes: vec![vec![10; n]; n],
-            rank_correlations: vec![vec![0.5; n]; n],
+            rank_correlations: Some(vec![vec![0.5; n]; n]),
             rank_p_values: None,
         };
         let results = AnalysisResults {
@@ -2935,6 +2948,45 @@ mod tests {
         let text = rendered_text(&buf);
         assert!(text.contains("Fewer than 3 overlapping pairs"), "{text}");
         assert!(!text.contains("Pearson r:"), "{text}");
+    }
+
+    /// A matrix too large to rank says so under Spearman, and still shows Pearson.
+    #[test]
+    fn a_matrix_without_ranks_says_why_under_spearman() {
+        let theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        let mut matrix = correlation_matrix(0.874, 42);
+        matrix.rank_correlations = None;
+        matrix.rank_p_values = None;
+        let area = Rect::new(0, 0, 90, 8);
+        let mut buf = Buffer::empty(area);
+        render_correlation_pair_summary(
+            Shown {
+                matrix: &matrix,
+                method: CorrelationMethod::Spearman,
+            },
+            (0, 1),
+            50,
+            area,
+            &mut buf,
+            &theme,
+            &settings("thousands", false),
+        );
+        assert!(rendered_text(&buf).contains(SPEARMAN_TOO_MANY));
+        let mut buf = Buffer::empty(area);
+        render_correlation_pair_summary(
+            Shown {
+                matrix: &matrix,
+                method: CorrelationMethod::Pearson,
+            },
+            (0, 1),
+            50,
+            area,
+            &mut buf,
+            &theme,
+            &settings("thousands", false),
+        );
+        assert!(rendered_text(&buf).contains("Pearson r: 0.8740"));
     }
 
     #[test]

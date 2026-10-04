@@ -17819,7 +17819,8 @@ fn column_widths_from_the_sidebar() {
     draw(&mut app, 100, 24);
     assert_eq!(choice(&app, "description"), WidthChoice::Manual(url_width));
 
-    // w is automatic again; wider and narrower step from the width drawn.
+    // w is automatic again; wider and narrower step from the width on screen, the
+    // room the last column fills included.
     on_column(&mut app, "description");
     press(&mut app, KeyCode::Char('w'));
     apply(&mut app);
@@ -17829,7 +17830,7 @@ fn column_widths_from_the_sidebar() {
         .data_table_state
         .as_ref()
         .unwrap()
-        .shown_width("status")
+        .on_screen_width("status")
         .unwrap();
     on_column(&mut app, "status");
     press(&mut app, KeyCode::Char('>'));

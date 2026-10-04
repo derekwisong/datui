@@ -7645,6 +7645,12 @@ impl DataTableState {
         self.widths.shown(name, &self.width_dtype(name))
     }
 
+    /// The width the column takes on screen, the room it filled at the right edge
+    /// included.
+    pub fn on_screen_width(&self, name: &str) -> Option<u16> {
+        self.widths.on_screen(name, &self.width_dtype(name))
+    }
+
     /// The width a column draws at in this view, if it has been drawn since the
     /// widths were last relearned. What a sideways page is planned with.
     fn drawn_width(&self, name: &str) -> Option<u16> {
@@ -18313,7 +18319,8 @@ mod tests {
         let value = rows[1].trim_end();
         assert!(value.ends_with(ellipsis), "{rows:#?}");
         assert_eq!(crate::glyphs::cell_width(value), 120, "{rows:#?}");
-        assert!(state.shown_width("text").unwrap() > 48, "past the cap");
+        assert_eq!(state.shown_width("text"), Some(48), "learned at the cap");
+        assert!(state.on_screen_width("text").unwrap() > 48, "drawn past it");
 
         state.set_width_choices([("text".to_string(), WidthChoice::Manual(20))]);
         let rows = draw(DataTable::default(), &mut state, 120, 2);

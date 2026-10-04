@@ -8813,8 +8813,13 @@ impl App {
                         #[cfg(feature = "http")]
                         loading::PendingDownload::Http { .. } => {
                             let ext = source::download_suffix(url);
-                            // A download nobody was asked about stops at its limit.
-                            let limit = options.download_unasked.map(|unasked| unasked.limit);
+                            // A download nobody was asked about stops at its limit, when
+                            // the server did not say its size: a size it said bounds the
+                            // transfer, and the bytes counted here are decompressed.
+                            let limit = options
+                                .download_unasked
+                                .filter(|_| pending.parts().1.is_none())
+                                .map(|unasked| unasked.limit);
                             Self::download_http_to_temp(
                                 url,
                                 options.temp_dir.as_deref(),
@@ -11470,7 +11475,9 @@ impl App {
                 if let Some(state) = self.data_table_state.as_mut()
                     && let Some(name) = state.current_column().map(str::to_string)
                 {
-                    let (choice, shown) = (state.width_choice(&name), state.shown_width(&name));
+                    // From the width on screen: `>` on a column filling the right edge
+                    // widens what is seen.
+                    let (choice, shown) = (state.width_choice(&name), state.on_screen_width(&name));
                     let width = match event.code {
                         KeyCode::Char('<') => choice.narrower(shown),
                         KeyCode::Char('>') => choice.wider(shown),
@@ -14062,7 +14069,7 @@ impl App {
                     is_to_be_locked: false,
                     is_visible: shown.contains(name.as_str()),
                     width: state.width_choice(name),
-                    shown_width: state.shown_width(name),
+                    shown_width: state.on_screen_width(name),
                 }
             })
             .collect();

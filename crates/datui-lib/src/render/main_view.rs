@@ -163,22 +163,21 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
                     Hint::new("Esc", "Cancel"),
                 ];
             }
-            // Fixed slots, so the keys beside them hold still as the selection moves.
-            let mut keys = Vec::new();
-            let label = enter_label(app.what_enter_does());
-            if !label.is_empty() {
-                keys.push(Hint::new(
-                    "Enter",
-                    format!("{label:<width$}", width = ENTER_SLOT),
-                ));
-            }
-            if let Some(action) = app.home_catalog_action() {
-                keys.push(Hint::new("^D", format!("{action:<6}")));
-            }
-            if app.home_documented_row().is_some() {
-                keys.push(registry_hint(Context::Home, "Ctrl+E"));
-            }
-            keys
+            // Fixed slots, each its full width whether or not the row offers it, so
+            // moving the selection never moves the footer.
+            let enter = Some(enter_label(app.what_enter_does())).filter(|l| !l.is_empty());
+            let docs = registry_hint(Context::Home, "Ctrl+E");
+            vec![
+                slot("Enter", enter, ENTER_SLOT),
+                slot("^D", app.home_catalog_action(), CATALOG_SLOT),
+                slot(
+                    "^E",
+                    app.home_documented_row()
+                        .is_some()
+                        .then_some(docs.label.as_ref()),
+                    docs.label.len(),
+                ),
+            ]
         }
     }
 }
@@ -234,6 +233,17 @@ pub fn help_key(app: &crate::App, content: MainViewContent) -> Option<&'static s
 
 /// Columns the home screen's Enter label is given, whatever it says.
 const ENTER_SLOT: usize = 8;
+/// Columns Ctrl+D's label is given: `Add` or `Forget`.
+const CATALOG_SLOT: usize = 6;
+
+/// A hint in a slot of fixed width: `key label`, the label padded to `width`, or as
+/// many blanks where the row does not offer the key.
+fn slot(key: &'static str, label: Option<&str>, width: usize) -> Hint {
+    match label {
+        Some(label) => Hint::new(key, format!("{label:<width$}")),
+        None => Hint::new(" ".repeat(key.len()), " ".repeat(width)),
+    }
+}
 
 /// What Enter does on the home screen's row, as the footer names it.
 ///

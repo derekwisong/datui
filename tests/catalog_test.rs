@@ -636,6 +636,34 @@ fn ctrl_d_adds_a_row_to_catalog_toml_and_forgets_it() {
         app.home.sections.iter().any(|s| s.title == "Team")
     });
 
+    // Moving the selection never moves the footer: each slot keeps its place on
+    // every row, offered or not, and so does help.
+    let column = |line: &str, text: &str| line.find(text).map(|at| line[..at].chars().count());
+    let mut seen: [std::collections::BTreeSet<usize>; 4] = Default::default();
+    let mut offered = [0; 3];
+    let rows = app.home.visible().len();
+    for row in 0..rows {
+        app.home.selected = row;
+        let line = footer(&mut app);
+        for (i, text) in ["Enter", "^D", "^E", "? keys"].iter().enumerate() {
+            if let Some(at) = column(&line, text) {
+                seen[i].insert(at);
+                if i < 3 {
+                    offered[i] += 1;
+                }
+            }
+        }
+    }
+    for (i, at) in seen.iter().enumerate() {
+        assert!(at.len() <= 1, "slot {i} moved between rows: {at:?}");
+    }
+    assert_eq!(seen[3].len(), 1, "help is on every row");
+    assert!(offered[1] > 0 && offered[2] > 0, "{offered:?}");
+    assert!(
+        offered[1] < rows || offered[2] < rows,
+        "some row lacks a slot, so the check means something: {offered:?}"
+    );
+
     select(&mut app, "Lake");
     let line = footer(&mut app);
     assert!(

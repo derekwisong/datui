@@ -611,7 +611,10 @@ impl Footer {
                 label
             };
             right.push(Span::styled(hint.label.to_string(), style));
-            keys.push((at, hint.width(), hint.key.to_string()));
+            // A blank slot holds its place and is nothing to click.
+            if !hint.key.trim().is_empty() {
+                keys.push((at, hint.width(), hint.key.to_string()));
+            }
         }
         if fit.help
             && let Some(key) = self.help

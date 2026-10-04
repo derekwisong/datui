@@ -23933,8 +23933,8 @@ fn copy_as_python_reads_a_directory_named_like_a_glob() {
     assert!(!script.contains("glob=False"), "{script}");
 }
 
-/// While a query's first rows are read, the table area says a query is running in
-/// place of the rows it replaces; once they are in, they show.
+/// While a query's first rows are read, the table area says what the control bar
+/// does, in place of the rows it replaces; once they are in, they show.
 #[test]
 fn a_running_query_says_so_in_the_table() {
     let (mut app, rx, tx) = open_query_filter_fixture("running_query_in_place.csv");
@@ -23949,11 +23949,13 @@ fn a_running_query_says_so_in_the_table() {
     // Its rows are not in until their job's end is handled.
     assert!(app.is_busy(), "the query is running");
     let screen = screen_text(&mut app);
-    assert!(screen.contains("Running query..."), "{screen}");
-    assert!(!screen.contains("alpha_0"), "{screen}");
+    // Above the control bar's row, which says it too.
+    let table: String = screen.chars().take(120 * 29).collect();
+    assert!(table.contains("Applying SQL query..."), "{screen}");
+    assert!(!table.contains("alpha_0"), "{screen}");
 
     pump_until_idle(&mut app, &rx, &tx);
     let screen = screen_text(&mut app);
-    assert!(!screen.contains("Running query..."), "{screen}");
+    assert!(!screen.contains("Applying SQL query..."), "{screen}");
     assert!(screen.contains("beta_1"), "{screen}");
 }

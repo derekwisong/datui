@@ -863,6 +863,16 @@ impl Jobs {
             .is_some_and(|r| r.keys.is_some())
     }
 
+    /// What the control bar says for the newest job `which` picks that the user waits
+    /// on, running or owed.
+    pub(crate) fn waiting_status(&self, which: impl Fn(&Job) -> bool) -> Option<&str> {
+        self.records
+            .iter()
+            .rev()
+            .filter(|r| r.superseded.is_none() && which(&r.job))
+            .find_map(|r| r.keys.as_deref())
+    }
+
     /// The user waits on the running job `which` picks from now on, with `status` on
     /// the control bar: a load-ahead a scroll has caught up with. Whether there was
     /// one.

@@ -14142,17 +14142,17 @@ impl App {
         pivot || rows
     }
 
-    /// Whether a query's first rows are being read over the frame on screen. The rows
-    /// drawn meanwhile are the view it replaces, under columns it may have changed.
-    pub(crate) fn query_reading(&self) -> bool {
-        self.is_busy()
-            && self.query_running.as_ref().is_some_and(|run| {
-                matches!(run.origin, RunOrigin::Query(_))
-                    && self
-                        .data_table_state
-                        .as_ref()
-                        .is_some_and(|state| state.len_generation() == run.frame)
-            })
+    /// What the control bar says while a query's first rows are read over the frame on
+    /// screen, from the read's job record. The rows drawn meanwhile are the view it
+    /// replaces, under columns it may have changed.
+    pub(crate) fn query_reading(&self) -> Option<&str> {
+        let run = self.query_running.as_ref()?;
+        let frame = self.data_table_state.as_ref()?.len_generation();
+        if !matches!(run.origin, RunOrigin::Query(_)) || run.frame != frame {
+            return None;
+        }
+        self.jobs
+            .waiting_status(|job| Self::reading_rows(job) || Self::owed_rows(job))
     }
 
     /// Stop applying a view and keep the one before it. As with a pivot, a worker runs

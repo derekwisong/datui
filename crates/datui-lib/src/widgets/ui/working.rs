@@ -89,12 +89,12 @@ mod tests {
         let mut buf = Buffer::empty(area);
         Paragraph::new(vec![Line::from("old"); 5]).render(area, &mut buf);
         Working {
-            text: "Running query...",
+            text: "Applying SQL query...",
             frame: 0,
         }
         .render_centered(area, &mut buf, &ctx);
         let rows = text(&buf);
-        assert!(rows[1].contains("Running query..."), "{rows:#?}");
+        assert!(rows[1].contains("Applying SQL query..."), "{rows:#?}");
         assert!(rows.iter().all(|row| !row.contains("old")), "{rows:#?}");
     }
 

@@ -61,7 +61,9 @@ Polars take one file's schema; the partition-key check is skipped too.
 
 The schema of a remote dataset, or of a local directory of more than 64
 files, is cached by its URL or path. Opening it again lists the files; when no
-name, size, time or etag changed, no footer is read. The cache keeps 128 MiB
+name, size, time or etag changed, no footer is read. The home screen uses the
+same cache to show a local directory's full row count without reading a
+footer. The cache keeps 128 MiB
 of schemas and drops the dataset opened longest ago first.
 `datui cache clear` clears it with the rest of the
 [cache](home-screen.md#what-datui-remembers).

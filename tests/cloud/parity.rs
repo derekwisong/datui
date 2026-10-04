@@ -214,7 +214,7 @@ fn a_dataset_past_one_wave_opens_the_same_from_a_disk_or_a_bucket() {
     objects.push(("region=1/part-empty.parquet".into(), Vec::new()));
     let outcome = same("wave", &objects);
     assert!(
-        outcome.notes.iter().any(|n| n.contains("1 file is empty")),
+        outcome.notes.iter().any(|n| n.contains("1 empty file")),
         "{:?}",
         outcome.notes
     );
@@ -254,12 +254,12 @@ fn a_dataset_with_a_broken_file_opens_the_same_from_a_disk_or_a_bucket() {
         outcome
             .notes
             .iter()
-            .any(|n| n.contains("1 file could not be read")),
+            .any(|n| n.contains("1 file unreadable")),
         "{:?}",
         outcome.notes
     );
     assert!(
-        outcome.notes.iter().any(|n| n.contains("1 file is empty")),
+        outcome.notes.iter().any(|n| n.contains("1 empty file")),
         "{:?}",
         outcome.notes
     );

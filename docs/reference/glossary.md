@@ -11,7 +11,7 @@ command line, the config file and Python.
 | **filter** | narrow, search | Keep only the matching rows: Sort & Filter (`s`), a query |
 | **narrow** | filter | Shrink a picker or a list by typing: pickers, the home screen's filter |
 | **search** | find | On the home screen only: look below the current directory for files |
-| **codebook** | data dictionary, column notes | What a collection says its dataset's columns mean: `codebook`, `columns` and `suggested` in `[[sources.datasets]]` |
+| **documentation** | codebook, data dictionary, column notes | What a collection says its dataset's columns mean: `codebook`, `columns` and `suggested` in `[[sources.datasets]]`; the `DOCUMENTATION` heading on the home screen |
 | **Info** (the Info panel) | Dataset Info | `i`: facts about the dataset |
 | **inspector** | row inspector, detail | One row's values (`Space`) |
 | **byte inspector** | inspector | The hex view's decoder of the bytes at the cursor |
@@ -27,3 +27,25 @@ command line, the config file and Python.
 | **value counts** | count values, Value Count | `F`: how often each value of a column occurs |
 | **drill down** (verb), **drill-down** (noun) | drill into | Open the rows behind a group's row (`Enter`) |
 | **row** | line | A row of the table; `:` goes to a row. *Line* only for raw text, as in `--skip-lines` |
+
+## How a file is read
+
+The details pane, the Info panel's Resources tab and the
+[formats table](../formats/index.md#how-each-format-is-read) name a read with
+these terms and no others:
+
+| Term | Not | Means |
+|---|---|---|
+| **lazy scan** | lazy, streamed | Scanned where it is; only the rows shown, and what a query needs, are read |
+| **decompressed copy** | converted once, unpacked | Decompressed whole to a temporary file of the same format, then scanned; removed on quit |
+| **converted to Arrow** | converted once, cached | Read whole into a temporary Arrow IPC file, then scanned; removed on quit, not kept between sessions |
+| **in memory** | loaded, eager | Read whole into memory before the table appears |
+| **download →** | downloaded, then | A remote file copied to the temp directory first, then read as the term after the arrow says |
+| **schema** | columns (for what a file declares) | The columns and their types. `on open` when only opening the file reads them, `not read` when nothing has looked yet |
+
+## Pane wording
+
+A pane or status line is a `label  value` pair: the value is a term or a
+number, not a clause. The only free-standing line is a one-line callout behind
+`▲` (ASCII `!`) for something that will surprise, such as `▲ footer unreadable`.
+Why something is so belongs in the help (`?`) and these docs.

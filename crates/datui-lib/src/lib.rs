@@ -3035,7 +3035,8 @@ impl App {
                     && !plan.reads_as_time(column, schema) =>
             {
                 Some(format!(
-                    "{column} is text: choose its format under Text as time"
+                    "{column}: text, no format {} set Text as time",
+                    crate::glyphs::get().middot
                 ))
             }
             _ => None,

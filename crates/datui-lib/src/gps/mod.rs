@@ -593,8 +593,8 @@ fn nmea_notes(stats: &nmea::Stats, of: Option<usize>, undated: usize) -> Vec<Not
     if stats.skipped > 0 {
         notes.push(note(
             format!(
-                "{} not NMEA and left out",
-                count(stats.skipped, "line is", "lines are")
+                "{} left out: not NMEA",
+                count(stats.skipped, "line", "lines")
             ),
             of_lines.clone(),
         ));
@@ -602,18 +602,22 @@ fn nmea_notes(stats: &nmea::Stats, of: Option<usize>, undated: usize) -> Vec<Not
     if stats.bad_checksums > 0 {
         notes.push(note(
             format!(
-                "{} its checksum; checksum_ok is false on its rows",
-                count(stats.bad_checksums, "sentence fails", "sentences fail")
+                "checksum failed: {} {} checksum_ok false",
+                count(stats.bad_checksums, "sentence", "sentences"),
+                crate::glyphs::get().middot
             ),
             format!("of {}", count(stats.sentences, "sentence", "sentences")),
         ));
     }
     if undated > 0 {
         let summary = match of {
-            None => "No RMC or ZDA sentence gives the date, so time is empty".to_string(),
+            None => format!(
+                "no RMC or ZDA date {} time empty",
+                crate::glyphs::get().middot
+            ),
             Some(n) => format!(
-                "{undated} of {n} logs {} no RMC or ZDA sentence to give the date, so their time is empty",
-                if undated == 1 { "has" } else { "have" }
+                "{undated} of {n} logs without an RMC or ZDA date {} time empty",
+                crate::glyphs::get().middot
             ),
         };
         notes.push(note(summary, of_lines.clone()));
@@ -661,10 +665,13 @@ fn gpx_notes(stats: &gpx::Stats, of: Option<usize>, truncated: usize) -> Vec<Not
     };
     if truncated > 0 {
         let summary = match of {
-            None => "The file ends inside an element; the points before it are shown".to_string(),
+            None => format!(
+                "file cut short inside an element {} points before it shown",
+                crate::glyphs::get().middot
+            ),
             Some(n) => format!(
-                "{truncated} of {n} files {} inside an element; the points before it are shown",
-                if truncated == 1 { "ends" } else { "end" }
+                "{truncated} of {n} files cut short inside an element {} points before it shown",
+                crate::glyphs::get().middot
             ),
         };
         notes.push(note(summary, of_points.clone()));
@@ -672,8 +679,8 @@ fn gpx_notes(stats: &gpx::Stats, of: Option<usize>, truncated: usize) -> Vec<Not
     if stats.bad_times > 0 {
         notes.push(note(
             format!(
-                "{} not ISO 8601 and left empty",
-                count(stats.bad_times, "time is", "times are")
+                "{} left empty: not ISO 8601",
+                count(stats.bad_times, "time", "times")
             ),
             of_points.clone(),
         ));
@@ -681,8 +688,8 @@ fn gpx_notes(stats: &gpx::Stats, of: Option<usize>, truncated: usize) -> Vec<Not
     if stats.fields_dropped > 0 {
         notes.push(note(
             format!(
-                "{} past the {} columns kept, or named too long, and left out",
-                count(stats.fields_dropped, "field value is", "field values are"),
+                "{} left out: past {} columns, or name too long",
+                count(stats.fields_dropped, "field value", "field values"),
                 gpx::MAX_FIELDS
             ),
             of_points,
@@ -851,7 +858,7 @@ mod tests {
         );
         let summaries: Vec<_> = converted.notes.iter().map(|n| n.summary.as_str()).collect();
         assert!(
-            summaries[0].starts_with("1 line is not NMEA"),
+            summaries[0].starts_with("1 line left out: not NMEA"),
             "{summaries:?}"
         );
         assert_eq!(summaries.len(), 1, "{summaries:?}");
@@ -957,10 +964,7 @@ mod tests {
             .collect();
         assert_eq!(
             notes,
-            [(
-                "1 time is not ISO 8601 and left empty",
-                "of 3 points in 2 files"
-            )]
+            [("1 time left empty: not ISO 8601", "of 3 points in 2 files")]
         );
         assert!(converted.files.len() >= 2);
         drop(converted);
@@ -999,7 +1003,10 @@ mod tests {
         let summaries: Vec<_> = converted.notes.iter().map(|n| n.summary.as_str()).collect();
         assert_eq!(
             summaries,
-            ["1 of 2 logs has no RMC or ZDA sentence to give the date, so their time is empty"]
+            [format!(
+                "1 of 2 logs without an RMC or ZDA date {} time empty",
+                crate::glyphs::get().middot
+            )]
         );
         assert_eq!(
             converted.other_tables,

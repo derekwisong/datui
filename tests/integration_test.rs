@@ -1464,7 +1464,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         // The extra reads a full scan makes for the values a type conflict hides are
         // promised before anything runs, like every other read on this page.
         ("access", "Conflict values"),
-        ("confirm", "remote writes are 0 B."),
+        ("confirm", "Source writes"),
     ] {
         app.analysis_modal.data_quality_show_access = popup == "access";
         app.analysis_modal.data_quality_confirm_run = popup == "confirm";
@@ -2221,7 +2221,7 @@ fn data_quality_reads_as_a_report() {
     );
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    assert!(rendered_text(&buffer).contains("Edited: Enter runs it, Esc discards"));
+    assert!(rendered_text(&buffer).contains("Enter runs, Esc discards"));
     // Esc discards the staged edit and goes back to the report.
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
@@ -2477,7 +2477,7 @@ fn a_sampled_finding_opens_its_sampled_rows() {
     app.render(area, &mut buffer);
     let screen = rendered_text(&buffer);
     assert!(
-        screen.contains(&format!("Enter shows the {expected} sampled rows.")),
+        screen.contains(&format!("Enter: the {expected} sampled rows")),
         "the popup says which rows open"
     );
     assert!(screen.contains("Show Rows"));
@@ -2825,7 +2825,10 @@ fn full_scan_evidence_is_read_only_on_confirm() {
         rendered_text(&buffer)
     };
     let screen = render(&mut app, 80, 24);
-    assert!(screen.contains("A full scan keeps no rows"), "{screen}");
+    assert!(
+        screen.contains("full scan keeps none, asks first"),
+        "{screen}"
+    );
     assert!(screen.contains("Read Rows"), "{screen}");
 
     // Enter stages the read and shows it; nothing reads yet.
@@ -3484,7 +3487,7 @@ fn data_quality_reads_nothing_until_setup_runs() {
     let area = Rect::new(0, 0, 100, 30);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    assert!(rendered_text(&buffer).contains("Run shows it, no read"));
+    assert!(rendered_text(&buffer).contains("Report on screen: this setup"));
     assert!(press(&mut app, KeyCode::Enter).is_none());
     assert!(!app.is_busy());
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
@@ -3595,7 +3598,7 @@ fn data_quality_edits_read_only_what_they_must() {
         plan.dataset_rows = 300;
         plan.grain = window("1d");
     }
-    assert!(setup(&mut app).contains("Counts every row by at in that pass"));
+    assert!(setup(&mut app).contains("counted by at in that pass"));
     assert_eq!(
         run_quality_reads(&mut app, &rx),
         [QualityStage::ReadingSample],
@@ -3622,8 +3625,8 @@ fn data_quality_edits_read_only_what_they_must() {
         ]
     });
     let text = setup(&mut app);
-    assert!(text.contains("Uses the rows a run already read"), "{text}");
-    assert!(text.contains("Segment totals from a count already read"));
+    assert!(text.contains("Rows: from an earlier run"), "{text}");
+    assert!(text.contains("Segment totals: from an earlier count"));
     assert!(run_quality_reads(&mut app, &rx).is_empty(), "a role edit");
     assert!(
         !app.analysis_modal
@@ -3634,7 +3637,7 @@ fn data_quality_edits_read_only_what_they_must() {
             .is_empty()
     );
     edit(&mut app, &|plan| plan.grain = window("1w"));
-    assert!(setup(&mut app).contains("summed from the daily counts already read"));
+    assert!(setup(&mut app).contains("summed from earlier daily counts"));
     assert!(
         run_quality_reads(&mut app, &rx).is_empty(),
         "weeks from days"
@@ -3644,7 +3647,7 @@ fn data_quality_edits_read_only_what_they_must() {
     edit(&mut app, &|plan| {
         plan.grain = QualityGrain::Partition("region".into())
     });
-    assert!(setup(&mut app).contains("Plus one count of region"));
+    assert!(setup(&mut app).contains("+1 count of region"));
     assert_eq!(
         run_quality_reads(&mut app, &rx),
         [QualityStage::CountingSegments],
@@ -3661,13 +3664,10 @@ fn data_quality_edits_read_only_what_they_must() {
         edit(&mut app, change);
         let text = setup(&mut app);
         assert!(
-            text.contains("One pass that streams every eligible row"),
+            text.contains("1 streaming pass over every eligible row"),
             "{text}"
         );
-        assert!(
-            text.contains("Counts every row by region in that pass"),
-            "{text}"
-        );
+        assert!(text.contains("counted by region in that pass"), "{text}");
         assert_eq!(
             run_quality_reads(&mut app, &rx),
             [QualityStage::ReadingSample]
@@ -3682,11 +3682,8 @@ fn data_quality_edits_read_only_what_they_must() {
         plan.grain = window("1mo");
     });
     let text = setup(&mut app);
-    assert!(text.contains("Uses the rows a run already read"), "{text}");
-    assert!(
-        text.contains("summed from the daily counts already read"),
-        "{text}"
-    );
+    assert!(text.contains("Rows: from an earlier run"), "{text}");
+    assert!(text.contains("summed from earlier daily counts"), "{text}");
     assert!(
         run_quality_reads(&mut app, &rx).is_empty(),
         "an earlier seed"
@@ -3778,7 +3775,7 @@ fn data_quality_setup_names_every_count_pass_on_one_parquet_file() {
         let reads = run_quality_reads(&mut app, &rx);
         if blocks {
             assert!(
-                text.contains("Seeded runs of the file") && text.contains("Plus one count of at"),
+                text.contains("Seeded runs of the file") && text.contains("+1 count of at"),
                 "{name} {scope:?}: Setup said\n{text}"
             );
             assert_eq!(
@@ -3788,8 +3785,7 @@ fn data_quality_setup_names_every_count_pass_on_one_parquet_file() {
             );
         } else {
             assert!(
-                text.contains("One pass that streams")
-                    && text.contains("Counts every row by at in that pass"),
+                text.contains("1 streaming pass") && text.contains("counted by at in that pass"),
                 "{name} {scope:?}: Setup said\n{text}"
             );
             assert_eq!(reads, [QualityStage::ReadingSample], "{name} {scope:?}");
@@ -3976,10 +3972,7 @@ fn text_read_as_time_in_setup_gives_windows_and_intervals() {
         rendered_text(&buffer)
     };
     let screen = render(&mut app);
-    assert!(
-        screen.contains("created is text: choose its format under Text as time"),
-        "{screen}"
-    );
+    assert!(screen.contains("created: text, no format"), "{screen}");
 
     // Text as time: the column, then the format that reads what is on screen.
     for column in ["created", "sent"] {
@@ -4107,7 +4100,7 @@ fn intervals_are_chosen_in_setup_and_inspected_without_a_read() {
     );
     let screen = render(&mut app, 100, 30);
     assert!(
-        screen.contains("In no interval: created, processed."),
+        screen.contains("In no interval: created, processed"),
         "Setup names the roles that measure nothing: {screen}"
     );
 
@@ -4400,10 +4393,10 @@ fn trends_and_gaps_are_inspected_without_a_read() {
     );
     let staged = render(&mut app, 100, 40);
     assert!(
-        staged.contains("summed from the daily counts already read"),
+        staged.contains("summed from earlier daily counts"),
         "{staged}"
     );
-    assert!(staged.contains("Edited: Enter runs it"), "{staged}");
+    assert!(staged.contains("Enter runs, Esc discards"), "{staged}");
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.analysis_modal.data_quality_plan.grain, daily);
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Trends);
@@ -4445,7 +4438,7 @@ fn trends_and_gaps_are_inspected_without_a_read() {
     assert!(expected.weekdays);
     assert_eq!(expected.before.as_deref(), Some("2024-03-04"));
     let setup = render(&mut app, 100, 40);
-    assert!(setup.contains("Only Expected changed"), "{setup}");
+    assert!(setup.contains("Changed: Expected"), "{setup}");
 
     // Run checks them against the report on screen: no read, no run.
     assert!(press(&mut app, KeyCode::Enter).is_none());
@@ -4662,7 +4655,7 @@ fn kept_rows_are_released_from_setup() {
     let text = screen(&mut app);
     assert!(text.contains("500 rows kept"), "{text}");
     assert!(text.contains("Release Rows"), "{text}");
-    assert!(text.contains("Uses the rows a run already read"), "{text}");
+    assert!(text.contains("Rows: from an earlier run"), "{text}");
 
     assert!(press(&mut app, KeyCode::Char('d')).is_none());
     assert!(!app.is_busy(), "releasing reads nothing");
@@ -4679,7 +4672,7 @@ fn kept_rows_are_released_from_setup() {
     let text = screen(&mut app);
     assert!(!text.contains("rows kept"), "{text}");
     assert!(!text.contains("Release Rows"), "{text}");
-    assert!(text.contains("Read before and released since"), "{text}");
+    assert!(text.contains("Released since last read"), "{text}");
     press(&mut app, KeyCode::Char('d'));
     assert_eq!(app.flash_message(), Some("Nothing kept to release"));
 
@@ -6336,12 +6329,9 @@ fn test_a_sort_leaves_out_the_rows_its_column_is_not_read_from() {
     let notes = state.notes();
     let left_out = notes
         .iter()
-        .find(|note| note.summary.contains("is not read from"))
+        .find(|note| note.summary.contains("left out of the"))
         .unwrap_or_else(|| panic!("no note about the rows that went: {notes:#?}"));
-    assert_eq!(
-        left_out.summary,
-        "n is not read from 1 file, so the 2 rows there are left out of the sort"
-    );
+    assert_eq!(left_out.summary, "n: 2 rows in 1 file left out of the sort");
     assert_eq!(left_out.scope, "in all 3 footers");
     assert!(
         state.notes_unseen(),
@@ -6401,11 +6391,11 @@ fn test_a_filter_leaves_out_the_rows_its_column_is_not_read_from() {
     let notes = state.notes();
     let left_out = notes
         .iter()
-        .find(|note| note.summary.contains("is not read from"))
+        .find(|note| note.summary.contains("left out of the"))
         .unwrap_or_else(|| panic!("no note about the rows that went: {notes:#?}"));
     assert_eq!(
         left_out.summary,
-        "n is not read from 1 file, so the 2 rows there are left out of the filter"
+        "n: 2 rows in 1 file left out of the filter"
     );
 
     // Sorting by the same column too: one note, naming both.
@@ -6413,12 +6403,12 @@ fn test_a_filter_leaves_out_the_rows_its_column_is_not_read_from() {
     let notes = state.notes();
     let both: Vec<&str> = notes
         .iter()
-        .filter(|note| note.summary.contains("is not read from"))
+        .filter(|note| note.summary.contains("left out of the"))
         .map(|note| note.summary.as_str())
         .collect();
     assert_eq!(
         both,
-        ["n is not read from 1 file, so the 2 rows there are left out of the filter and sort"],
+        ["n: 2 rows in 1 file left out of the filter and sort"],
         "one note for the column, not one for each of the two things naming it"
     );
 }
@@ -6513,7 +6503,7 @@ fn test_files_that_are_not_parquet_are_counted_rather_than_dropped_in_silence() 
         .unwrap_or_else(|| panic!("no note about the files that were not read: {notes:#?}"));
     assert_eq!(
         skipped.summary,
-        "in the directory, 2 files are not Parquet, 1 file a writer left behind"
+        "skipped: 2 files not Parquet, 1 writer bookkeeping file"
     );
     assert_eq!(skipped.scope, "in this directory's listing");
 }
@@ -6547,7 +6537,7 @@ fn test_a_mixed_parquet_directory_says_what_it_left_out_once() {
     assert_eq!(
         about,
         [concat!(
-            "the directory holds more than one format and was read as the commonest; ",
+            "mixed formats, read as the commonest: ",
             "1 csv not read"
         )],
         "one fact, said once"
@@ -6657,10 +6647,7 @@ fn test_a_write_that_stopped_is_said_to_have_stopped() {
     let said: Vec<&str> = note.iter().map(|n| n.summary.as_str()).collect();
     assert_eq!(
         said,
-        [
-            "in the directory, 1 file is empty and was not read, 1 file is not Parquet, \
-          2 files a writer left behind"
-        ],
+        ["skipped: 1 empty file, 1 file not Parquet, 2 writer bookkeeping files"],
         "the stopped write first, then the mistake, then the tidy-up"
     );
 }
@@ -6689,10 +6676,10 @@ fn test_a_local_directory_with_no_data_in_it_is_nobodys_table() {
     let notes = state.notes();
     let about = notes
         .iter()
-        .find(|note| note.summary.starts_with("in the directory"))
+        .find(|note| note.summary.starts_with("skipped:"))
         .unwrap_or_else(|| panic!("no note about what was not read: {notes:#?}"));
     assert_eq!(
-        about.summary, "in the directory, 1 file is not Parquet, 3 files a writer left behind",
+        about.summary, "skipped: 1 file not Parquet, 3 writer bookkeeping files",
         "the csv in the partition that has no data of its own, and Iceberg's three"
     );
 }
@@ -6991,9 +6978,9 @@ fn test_reading_a_filtered_column_as_text_says_the_comparison_changed() {
     let state = app.data_table_state.as_ref().unwrap();
     let notes = state.notes();
     assert!(
-        notes.iter().any(
-            |note| note.summary == "n is read as text, so a filter or sort on it compares text"
-        ),
+        notes
+            .iter()
+            .any(|note| note.summary == "n read as text: filter and sort compare text"),
         "the filter means something else now, and the panel says so: {notes:#?}"
     );
     assert!(
@@ -7227,11 +7214,11 @@ fn test_a_directory_whose_partition_key_changed_says_the_directories_differ() {
     let notes = state.notes();
     let layout = notes
         .iter()
-        .find(|note| note.summary.contains("partition by the same keys"))
+        .find(|note| note.summary.contains("mixed partition keys"))
         .unwrap_or_else(|| panic!("nothing said about the changed key: {notes:#?}"));
     assert_eq!(
         layout.summary,
-        "the directories do not all partition by the same keys: 3 files by date, 1 file by dt"
+        "mixed partition keys: 3 files by date, 1 file by dt"
     );
     assert_eq!(layout.scope, "in the names of 4 files");
 }
@@ -7281,11 +7268,10 @@ fn test_directories_that_differ_may_still_open_and_the_note_claims_only_the_shap
     let notes = state.notes();
     let layout = notes
         .iter()
-        .find(|note| note.summary.contains("partition by the same keys"))
+        .find(|note| note.summary.contains("mixed partition keys"))
         .unwrap_or_else(|| panic!("the directories still differ: {notes:#?}"));
     assert_eq!(
-        layout.summary,
-        "the directories do not all partition by the same keys: 3 files by date, 1 file by dt",
+        layout.summary, "mixed partition keys: 3 files by date, 1 file by dt",
         "said of a dataset that opened, which is why it says nothing about cost"
     );
     assert_eq!(
@@ -7316,7 +7302,7 @@ fn test_a_directory_partitioned_the_one_way_says_nothing_about_its_keys() {
         !state
             .notes()
             .iter()
-            .any(|note| note.summary.contains("partition by the same keys")),
+            .any(|note| note.summary.contains("mixed partition keys")),
         "{:#?}",
         state.notes()
     );
@@ -7765,17 +7751,17 @@ fn test_the_rows_left_out_are_the_conflicting_files_own_wherever_they_sit() {
     let notes = state.notes();
     let left_out = notes
         .iter()
-        .find(|note| note.summary.contains("is not read from"))
+        .find(|note| note.summary.contains("left out of the"))
         .unwrap_or_else(|| panic!("no note about the rows that went: {notes:#?}"));
     assert_eq!(
         left_out.summary,
-        "n is not read from 3 files, so the 4 rows there are left out of the sort"
+        "n: 4 rows in 3 files left out of the sort"
     );
     // Copy as Python cannot leave them out, so it says so and stops there.
     let script = app.python_script(app.data_table_state.as_ref().unwrap());
     assert!(
         script.contains(
-            "    # n is not read from 3 files, so the 4 rows there are left out of the sort\n    \
+            "    # n: 4 rows in 3 files left out of the sort\n    \
              # .sort("
         ),
         "{script}"
@@ -7814,7 +7800,7 @@ fn test_only_the_conflicting_column_costs_rows_and_only_while_it_is_sorted() {
         !state
             .notes()
             .iter()
-            .any(|n| n.summary.contains("is not read from")),
+            .any(|n| n.summary.contains("left out of the")),
         "and says nothing about rows going"
     );
 
@@ -7833,7 +7819,7 @@ fn test_only_the_conflicting_column_costs_rows_and_only_while_it_is_sorted() {
         !state
             .notes()
             .iter()
-            .any(|n| n.summary.contains("is not read from")),
+            .any(|n| n.summary.contains("left out of the")),
         "with nothing left saying they went: {:#?}",
         state.notes()
     );
@@ -8230,7 +8216,7 @@ fn test_csv_export_writes_a_by_result_lists_as_json() {
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
     assert!(
-        rendered_text(&buffer).contains("Lists and structs are written as JSON."),
+        rendered_text(&buffer).contains("Lists and structs written as JSON"),
         "{}",
         rendered_text(&buffer)
     );
@@ -9141,7 +9127,7 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
     app.render(area, &mut buf);
     let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
     assert!(
-        screen.contains("6 notes; no room for this one"),
+        screen.contains("selected: no room"),
         "too short for a whole note says so, got:\n{screen}"
     );
 }
@@ -13535,7 +13521,7 @@ fn test_the_place_of_an_http_recent_says_it_cannot_be_browsed() {
     assert!(!bar.contains("Inside"), "{bar:?}");
     // And the details pane says why, before Enter is pressed.
     let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
-    assert!(screen.contains("No listing over HTTP"), "{screen}");
+    assert!(screen.contains("none over HTTP"), "{screen}");
 
     app.event(&key(KeyCode::Enter));
     assert_eq!(app.home.browsing, None);
@@ -15435,7 +15421,7 @@ fn test_a_mixed_directory_reads_as_the_commonest_format_and_says_what_it_left_ou
     let notes = state.notes();
     let said = notes
         .iter()
-        .find(|n| n.summary.contains("more than one format"))
+        .find(|n| n.summary.contains("mixed formats"))
         .unwrap_or_else(|| panic!("the read says what it left out, got {notes:?}"));
     assert!(
         said.summary.contains("1 json"),
@@ -15918,11 +15904,11 @@ fn test_the_pane_only_promises_a_door_that_exists() {
 
     let shown = pane(&mut app, "full");
     assert!(
-        shown.contains("first row inside"),
+        shown.contains("first row opens all"),
         "a directory with something in it has the door to point at: {shown}"
     );
     assert!(
-        !pane(&mut app, "empty").contains("first row inside"),
+        !pane(&mut app, "empty").contains("first row opens all"),
         "an empty directory has none, so nothing points at one"
     );
 }
@@ -15958,7 +15944,7 @@ fn test_widening_a_column_is_never_silent() {
     assert!(
         notes
             .iter()
-            .any(|n| n.summary.contains("more than one type")),
+            .any(|n| n.summary.contains("type differs across files")),
         "the widening is reported: {notes:?}"
     );
     assert!(
@@ -16417,7 +16403,7 @@ fn test_delimiter_flag_splits_the_columns() {
         argv.extend_from_slice(extra);
         options_as_the_binary_does(&argv, "")
     };
-    use datui::ReadMode::{Converted, InMemory, Lazy};
+    use datui::ReadMode::{Decompressed, InMemory, Lazy};
     for (what, paths, opts, read) in [
         ("one file", vec![one.clone()], with_flag(&[]), Lazy),
         (
@@ -16426,7 +16412,12 @@ fn test_delimiter_flag_splits_the_columns() {
             with_flag(&[]),
             Lazy,
         ),
-        ("gzip, lazily", vec![gz.clone()], with_flag(&[]), Converted),
+        (
+            "gzip, lazily",
+            vec![gz.clone()],
+            with_flag(&[]),
+            Decompressed,
+        ),
         (
             "gzip, in memory",
             vec![gz.clone()],
@@ -16713,7 +16704,7 @@ fn h_turns_a_csv_header_off_and_on() {
     assert_eq!(column_names(&app), ["39", "77516"]);
     let notes = app.data_table_state.as_ref().unwrap().notes();
     assert!(
-        notes.iter().any(|n| n.summary.contains("press H")),
+        notes.iter().any(|n| n.summary.contains("H on Schema")),
         "{notes:?}"
     );
 
@@ -16726,7 +16717,7 @@ fn h_turns_a_csv_header_off_and_on() {
     assert_eq!(column_names(&app), ["column_1", "column_2"]);
     let notes = app.data_table_state.as_ref().unwrap().notes();
     assert!(
-        !notes.iter().any(|n| n.summary.contains("press H")),
+        !notes.iter().any(|n| n.summary.contains("H on Schema")),
         "read as data, there is nothing to say: {notes:?}"
     );
 

@@ -58,7 +58,7 @@ fn notes(app: &App) -> Vec<String> {
 }
 
 fn read_as_lines(app: &App) -> bool {
-    notes(app).iter().any(|n| n.starts_with("Read as lines"))
+    notes(app).iter().any(|n| n.starts_with("read as lines"))
 }
 
 const LOG: &[u8] = b"started\r\n\r\nwarn: disk, 91% full\n\n\nstopped\n";

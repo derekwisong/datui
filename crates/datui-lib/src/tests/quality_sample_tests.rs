@@ -173,10 +173,7 @@ fn a_cancelled_run_says_so_until_its_worker_exits() {
     );
     assert!(app.flash_message().is_none(), "state, not a flash");
     let text = screen(&mut app);
-    assert!(
-        text.contains("Cancellation requested; source read finishing"),
-        "{text}"
-    );
+    assert!(text.contains("Cancelling: source read finishing"), "{text}");
 
     // A stage the stopped worker still sends changes nothing.
     app.event(&AppEvent::JobProgress {
@@ -207,7 +204,7 @@ fn a_cancelled_run_says_so_until_its_worker_exits() {
     }
     assert!(app.cancelled_analysis_running().is_none());
     let text = screen(&mut app);
-    assert!(!text.contains("Cancellation requested"), "{text}");
+    assert!(!text.contains("Cancelling"), "{text}");
     assert!(!text.contains("Run waits"), "{text}");
     key(&mut app, KeyCode::Char('e'));
     assert!(matches!(
@@ -255,7 +252,7 @@ fn a_run_that_stops_at_its_next_batch_is_not_called_a_finishing_read() {
     );
     assert!(app.cancelled_run_shown().is_none());
     let text = screen(&mut app);
-    assert!(!text.contains("Cancellation requested"), "{text}");
+    assert!(!text.contains("Cancelling"), "{text}");
 
     // Run waits for the worker all the same, and says why.
     assert!(key(&mut app, KeyCode::Enter).is_none());
@@ -269,10 +266,7 @@ fn a_run_that_stops_at_its_next_batch_is_not_called_a_finishing_read() {
     // Past its batch and still going: now the screen says so.
     app.jobs.backdate_supersessions(CANCEL_GRACE);
     let text = screen(&mut app);
-    assert!(
-        text.contains("Cancellation requested; run stopping"),
-        "{text}"
-    );
+    assert!(text.contains("Cancelling: run stopping"), "{text}");
     assert!(!text.contains("source read finishing"), "{text}");
 
     drop(worker);

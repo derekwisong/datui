@@ -1431,24 +1431,26 @@ pub fn detail(audio: &AudioSource) -> crate::text_formats::Detail {
     let mut warnings = Vec::new();
     if let Some((declared, held)) = audio.cut_short() {
         warnings.push(format!(
-            "The header says {} of samples; the file holds {}",
+            "header says {} of samples{sep}file holds {}",
             format_bytes(declared),
             format_bytes(held)
         ));
     } else if h.data_declared.is_none() && audio.frames() > 0 {
-        lines.push("No data size in the header; frames are counted from the file's size".into());
+        lines.push(format!(
+            "no data size in header{sep}frames counted from file size"
+        ));
     }
     let past = audio.frames_past_limit();
     if past > 0 {
         warnings.push(format!(
-            "The last {} frames are past the most a table holds and are not shown",
+            "last {} frames not shown: past the table limit",
             group_u64(past)
         ));
     }
     let trailing = audio.trailing_bytes();
     if trailing > 0 {
         warnings.push(format!(
-            "{trailing} bytes after the last whole frame are not shown"
+            "{trailing} bytes after the last whole frame not shown"
         ));
     }
     let mut metadata: crate::model_files::Metadata = h

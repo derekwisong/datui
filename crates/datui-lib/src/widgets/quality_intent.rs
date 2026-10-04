@@ -4,7 +4,9 @@
 use crate::glyphs;
 use crate::intent_modal::{IntentField, IntentForm};
 use crate::numfmt;
-use crate::widgets::data_quality::{DataQualityWidgetConfig, centered_rect, fit, rule_line};
+use crate::widgets::data_quality::{
+    DataQualityWidgetConfig, centered_rect, dotted, fit, rule_line,
+};
 use crate::widgets::ui::{FormRow, FormValue, Surface};
 use polars::prelude::DataType;
 use ratatui::buffer::Buffer;
@@ -195,15 +197,15 @@ pub fn render_form(
         Some(error) => (error.clone(), true),
         None => (
             match form.field {
-                IntentField::Key => "Part of the key: its values together name one row".to_string(),
+                IntentField::Key => "Key column: together the key names one row".to_string(),
                 IntentField::Required => "Every row has a value".to_string(),
                 IntentField::ReadAs if form.time.is_some() => {
-                    "Text as time reads it; change that in Setup".to_string()
+                    "Read by Text as time · change in Setup".to_string()
                 }
                 IntentField::ReadAs => "Text that does not read is counted".to_string(),
-                IntentField::Allowed => "Separated by commas; \"a, b\" holds a comma".to_string(),
+                IntentField::Allowed => "Comma-separated · \"a, b\" holds a comma".to_string(),
                 IntentField::Minimum | IntentField::Maximum => format!(
-                    "{}; empty for no bound",
+                    "{} · empty for no bound",
                     upper_first(form.value_kind().bound_hint())
                 ),
             },
@@ -211,7 +213,7 @@ pub fn render_form(
         ),
     };
     Paragraph::new(Line::styled(
-        fit(&status, content.width as usize),
+        fit(&dotted(&status), content.width as usize),
         Style::default().fg(if warn { ctx.warning } else { ctx.dimmed }),
     ))
     .render(line(content.height - 1), buf);
@@ -434,7 +436,7 @@ mod tests {
                 "Minimum:",
                 "Maximum:",
                 "100",
-                "A number; empty for no bound",
+                "A number · empty for no bound",
             ] {
                 assert!(text.contains(expected), "{expected} at {size:?}:\n{text}");
             }
@@ -466,11 +468,11 @@ mod tests {
         }
         let text = screen.draw(QualityPage::Setup, field, Over::default(), (120, 50));
         assert!(
-            text.contains("Column intent: checked on the rows read, no extra read"),
+            text.contains("Column intent: on the rows read · no extra read"),
             "{text}"
         );
         assert!(
-            text.contains("Key: finds repeats among the 500 sampled rows only"),
+            text.contains("Key: repeats among the 500 sampled rows only"),
             "{text}"
         );
         let over = Over {
@@ -483,10 +485,7 @@ mod tests {
 
         let full = Screen::new(QualityCompute::Full);
         let text = full.draw(QualityPage::Setup, field, Over::default(), (120, 50));
-        assert!(
-            text.contains("the key adds one pass over its columns"),
-            "{text}"
-        );
+        assert!(text.contains("key adds 1 pass"), "{text}");
     }
 
     /// The report lists the declared rules' violations as problems, and the export

@@ -1960,7 +1960,7 @@ mod tests {
         assert!(call.starts_with("pl.read_database("), "{call}");
         assert!(
             notes.contains(
-                &"Read: lazy in datui; pl.read_database reads the file whole into memory."
+                &"Read: lazy scan in datui; pl.read_database reads the file whole into memory."
                     .to_string()
             ),
             "{notes:?}"

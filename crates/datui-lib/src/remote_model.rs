@@ -372,8 +372,9 @@ fn read_cloud(
     let notes = cut_short
         .then(|| crate::notes::Note {
             summary: format!(
-                "The listing stopped at {} objects; model files after them are not read",
-                crate::numfmt::group_chrome(MAX_LISTED)
+                "listing stopped at {} objects {} later model files not read",
+                crate::numfmt::group_chrome(MAX_LISTED),
+                crate::glyphs::get().middot
             ),
             scope: format!("of {full}"),
             read_as_text: None,

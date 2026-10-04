@@ -61,7 +61,7 @@ offset h  00 01 02 03  04 05 06 07   08 09 0a 0b  0c 0d 0e 0f   10 11 12 13  14 
 00000000  53 59 4e 43  00 00 00 00   00 00 00 00  00 00 00 00   00 00 00 00  00 00 00 00   00  SYNC·····················
 00000019  53 59 4e 43  01 00 00 00   00 00 00 00  03 00 00 00   ff ff 01 00  00 00 00 00   01  SYNC·····················
 00000032  53 59 4e 43  02 00 00 00   00 00 00 00  06 00 00 00   fe ff 02 00  00 00 00 00   02  SYNC·····················
-0x19 of 0x30d4 · 0.2% · found SYNC · every 25 bytes · No reader matched this file
+0x19 of 0x30d4 · 0.2% · found SYNC · every 25 bytes · format unknown
 ```
 
 Bytes 4 to 11 count up in each record: a little-endian `u8` field, in a

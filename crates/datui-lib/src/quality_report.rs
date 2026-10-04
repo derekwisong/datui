@@ -107,12 +107,12 @@ impl Finding {
             }
             Some(ObservationKind::DuplicateRows) => Ok(EvidenceRows::Duplicates),
             Some(ObservationKind::ParseableText) if self.failures(results) == Some(0) => {
-                Err("No rows to show: every value parses, so nothing stops a cast".to_string())
+                Err("No rows: every value parses".to_string())
             }
             _ => self
                 .evidence_predicate(results)
                 .map(EvidenceRows::Matching)
-                .ok_or_else(|| "No rows: this finding names no rows to filter on".to_string()),
+                .ok_or_else(|| "No rows: nothing to filter on".to_string()),
         }
     }
 
@@ -1911,7 +1911,7 @@ pub fn verdict(report: &QualityReport) -> String {
     // metadata run can find problems; it cannot call a column clean.
     if report.metadata_only {
         return match report.problems {
-            0 => "Values not read: only file metadata was checked".to_string(),
+            0 => "Values not read: file metadata only".to_string(),
             1 => "1 problem in file metadata; values not read".to_string(),
             count => format!(
                 "{} problems in file metadata; values not read",
@@ -1922,7 +1922,7 @@ pub fn verdict(report: &QualityReport) -> String {
     // No rows is no evidence: nothing passed, and nothing is clean.
     if report.no_rows {
         return match report.problems {
-            0 => "No rows to check: nothing is known about the values".to_string(),
+            0 => "No rows to check".to_string(),
             1 => "1 problem in file metadata; no rows to check".to_string(),
             count => format!(
                 "{} problems in file metadata; no rows to check",

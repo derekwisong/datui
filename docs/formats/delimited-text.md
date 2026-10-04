@@ -14,7 +14,7 @@ datui --delimiter ';' sales.csv
 |---|---|---|---|
 | Extensions | `.csv` | `.tsv` | `.psv` |
 | Delimiter | `,` | tab | `\|` |
-| Read | [lazy](index.md#how-each-format-is-read); compressed, converted once | the same | the same |
+| Read | [lazy scan](index.md#how-each-format-is-read); compressed, decompressed copy | the same | the same |
 | A bucket prefix | read in place, as one table | one object at a time | one object at a time |
 | `--follow` | yes | yes | yes |
 | Info tab | none | none | none |

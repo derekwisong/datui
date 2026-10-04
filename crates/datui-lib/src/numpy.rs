@@ -999,16 +999,18 @@ pub fn open_in(
     let mut notes = Vec::new();
     if on_hand < plan.bytes {
         notes.push(format!(
-            "The file holds {} of the {} bytes its shape {} says; the rows past the end are left out.",
+            "file cut short: {} of {} bytes for shape {} {} rows past the end left out",
             crate::numfmt::group_chrome(on_hand as usize),
             crate::numfmt::group_chrome(usize::try_from(plan.bytes).unwrap_or(usize::MAX)),
-            shape_text(&header.shape)
+            shape_text(&header.shape),
+            crate::glyphs::get().middot
         ));
     }
     if plan.rows > crate::row_index::MAX_ROWS {
         notes.push(format!(
-            "The array has {} rows; the first {} are shown.",
+            "{} rows {} first {} shown",
             crate::numfmt::group_chrome(plan.rows),
+            crate::glyphs::get().middot,
             crate::numfmt::group_chrome(crate::row_index::MAX_ROWS)
         ));
     }

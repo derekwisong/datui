@@ -440,8 +440,9 @@ pub fn parse(text: &str, name: &str, path: Option<&Path>) -> Result<Dbc, SpecErr
     }
     if extended_mux {
         dbc.notes.push(format!(
-            "{}: extended multiplexing (SG_MUL_VAL_) is not read; such signals follow their message's one multiplexer",
-            dbc.name
+            "{}: extended multiplexing (SG_MUL_VAL_) not read {} signals follow the message's one multiplexer",
+            dbc.name,
+            crate::glyphs::get().middot
         ));
     }
     Ok(dbc)

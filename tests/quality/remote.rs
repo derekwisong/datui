@@ -313,7 +313,7 @@ fn a_full_scan_is_compared_again_without_a_request() {
     press(&mut app, KeyCode::Char('e'));
     app.analysis_modal.data_quality_plan.comparison = QualityComparison::Previous;
     let text = screen(&mut app);
-    assert!(text.contains("Only Compare changed"), "{text}");
+    assert!(text.contains("Changed: Compare"), "{text}");
     assert!(press(&mut app, KeyCode::Enter).is_none(), "nothing to run");
     assert!(
         !app.analysis_modal.data_quality_confirm_run,
@@ -448,7 +448,7 @@ fn a_full_scan_fetches_each_object_once_and_reuses_the_copy() {
     full_scan(&mut app.analysis_modal.data_quality_plan);
     let text = screen(&mut app);
     assert!(
-        text.contains("One fetch of 4 objects") && text.contains("into a local copy"),
+        text.contains("1 fetch of 4 objects") && text.contains("to a local copy"),
         "{text}"
     );
     let (reads, wire) = edit_and_run(&mut app, &rx, &s3, full_scan);
@@ -529,7 +529,7 @@ fn a_copy_is_released_by_d_and_by_opening_again() {
     );
     app.analysis_modal.data_quality_plan.temporal_roles = roles();
     let text = screen(&mut app);
-    assert!(text.contains("released, so fetched again"), "{text}");
+    assert!(text.contains("Released since last copy"), "{text}");
     let before = s3.wire.count();
     let reads = run_staged(&mut app, &rx);
     assert_eq!(reads, [QualityStage::CopyingSource]);
@@ -621,7 +621,7 @@ fn above_the_budget_a_full_scan_reads_the_source_in_passes() {
     full(&mut app.analysis_modal.data_quality_plan);
     let text = screen(&mut app);
     assert!(text.contains("passes over the source"), "{text}");
-    assert!(text.contains("Too large to keep a local copy"), "{text}");
+    assert!(text.contains("No local copy:"), "{text}");
     let (reads, wire) = edit_and_run(&mut app, &rx, &s3, full);
     assert!(!reads.contains(&QualityStage::CopyingSource), "{reads:?}");
     assert!(reads.contains(&QualityStage::ProfilingColumns), "{reads:?}");

@@ -450,22 +450,24 @@ pub(crate) fn opened(lines: &Arc<Lines>, options: &crate::OpenOptions) -> crate:
         1 => "the file".to_string(),
         n => format!("the {n} files"),
     };
-    let mut notes = vec!["Read as lines: a row per line, blank lines included.".to_string()];
+    let middot = crate::glyphs::get().middot;
+    let mut notes = vec![format!(
+        "read as lines {middot} a row per line, blank lines included"
+    )];
     if options.format_guessed {
-        notes.push(
-            "Nothing in its first lines says CSV or another format; --format csv reads it as CSV."
-                .to_string(),
-        );
+        notes.push(format!(
+            "no format detected {middot} --format csv reads it as CSV"
+        ));
     }
     if invalid > 0 {
         notes.push(format!(
-            "{} not valid UTF-8; the bytes that are not are shown as \u{fffd}.",
-            crate::text_formats::count(invalid as u64, "line is", "lines are")
+            "{} with invalid UTF-8 {middot} shown as \u{fffd}",
+            crate::text_formats::count(invalid as u64, "line", "lines")
         ));
     }
     if past_limit > 0 {
         notes.push(format!(
-            "{} past the first {} are left out.",
+            "{} left out: past the first {}",
             crate::text_formats::count(past_limit as u64, "line", "lines"),
             crate::numfmt::group_chrome(crate::indexed::MAX_RECORDS)
         ));

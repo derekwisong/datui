@@ -719,7 +719,7 @@ fn a_failed_view_does_not_make_the_views_note_permanent() {
             .unwrap()
             .notes()
             .iter()
-            .filter(|note| note.summary.contains("is not read from"))
+            .filter(|note| note.summary.contains("left out of the"))
             .count()
     };
 
@@ -838,7 +838,7 @@ fn a_native_list_column_does_not_drill_and_keeps_the_views_note() {
     let left_out = |s: &crate::widgets::datatable::DataTableState| {
         s.notes()
             .iter()
-            .filter(|note| note.summary.contains("is not read from"))
+            .filter(|note| note.summary.contains("left out of the"))
             .count()
     };
 
@@ -945,7 +945,7 @@ fn a_rollback_that_fails_early_still_puts_all_of_the_view_back() {
         state
             .notes()
             .iter()
-            .filter(|note| note.summary.contains("is not read from"))
+            .filter(|note| note.summary.contains("left out of the"))
             .count(),
         0,
         "so nothing says rows went: {:#?}",

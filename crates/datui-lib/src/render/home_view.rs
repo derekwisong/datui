@@ -1881,7 +1881,7 @@ fn read_marker(how: discover::HowRead) -> Option<&'static str> {
 fn read_words(how: discover::HowRead) -> String {
     let mode = how.mode.label();
     if how.download {
-        format!("downloaded, then {mode}")
+        format!("download {} {mode}", glyphs::get().arrow_right)
     } else {
         mode.to_string()
     }
@@ -1920,7 +1920,7 @@ fn codebook_block(
     room: usize,
     ctx: &RenderContext,
 ) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(""), pane_heading("CODEBOOK", width, ctx)];
+    let mut lines = vec![Line::from(""), pane_heading("DOCUMENTATION", width, ctx)];
     let key_w = key_column(book.columns.keys().map(String::as_str)).min(22);
     let style = Style::default().fg(ctx.text_secondary);
     let wrapped: Vec<Line<'static>> = book
@@ -2130,7 +2130,7 @@ fn kind_words(
             // Named nothing, and found by its bytes to be data.
             None => "data file".to_string(),
         },
-        EntryKind::Other => "binary file: no reader, shown as bytes".to_string(),
+        EntryKind::Other => String::new(),
         EntryKind::Hive => "hive table".to_string(),
         EntryKind::MultiFile => "multi-file table".to_string(),
         k if k.is_lake_table() => {
@@ -2139,7 +2139,7 @@ fn kind_words(
         EntryKind::Directory => match place_kind {
             Some(curated) => curated.to_string(),
             None if looking == Some(crate::home::CloudLook::Failed) => {
-                "? (could not look inside; Ctrl+R tries again)".to_string()
+                format!("? {} listing failed, Ctrl+R retries", glyphs::get().middot)
             }
             // Nothing to say yet; the row's spinner says it is being found out.
             None if looking.is_some() => String::new(),
@@ -2148,9 +2148,7 @@ fn kind_words(
                 .to_string(),
         },
         // A local dataset of a collection that is not there.
-        EntryKind::Unknown if place_kind == Some("missing") => {
-            "missing: nothing at this path".to_string()
-        }
+        EntryKind::Unknown if place_kind == Some("missing") => "missing".to_string(),
         _ => String::new(),
     }
 }
@@ -2470,14 +2468,12 @@ fn render_preview(
         key_w,
         ctx,
     );
-    // Why the row that reads a bucket directory whole cannot, before Enter is pressed:
-    // what it holds is on the row already, and nothing here has a reader.
+    // That the row that reads a bucket directory whole cannot, before Enter is pressed:
+    // what it holds is on the row already, and Enter says why at length.
     #[cfg(feature = "cloud")]
-    if entry.opens_whole_directory
-        && let Some(why) = crate::App::why_a_door_reads_nothing(&entry)
-    {
+    if entry.opens_whole_directory && crate::App::why_a_door_reads_nothing(&entry).is_some() {
         lines.push(Line::from(Span::styled(
-            why,
+            format!("{} prefix opens Parquet only", g.warning),
             Style::default().fg(ctx.warning),
         )));
     }
@@ -2566,73 +2562,77 @@ fn render_preview(
                 && entry.rows.is_none()
                 && discover::is_parquet_path(&entry.path)
                 && app.home.enriched.contains_key(&entry.path);
-            let variants_note = format!(
-                "Enter opens every record; {} lists its tables.",
-                glyphs::get().arrow_right
-            );
             // A file of tables that opens one of them, as its format's descriptor says.
-            let format = discover::data_format(&entry.path);
-            let opens_note = format
+            let opens = discover::data_format(&entry.path)
                 .and_then(|f| f.descriptor().tables.as_ref())
-                .and_then(|t| t.opens)
-                .map_or_else(String::new, |opens| {
-                    format!(
-                        "Enter opens {opens}; {} lists its tables.",
-                        glyphs::get().arrow_right
-                    )
-                });
-            let lists_note = "Enter lists its tables.".to_string();
-            let note = match entry.kind {
+                .and_then(|t| t.opens);
+            let tables = (g.arrow_right, "its tables".to_string());
+            let step_in = |then: &str| format!("step in {} {then}", g.middot);
+            let notes: Vec<(&str, String)> = match entry.kind {
                 // The door itself. It is the row the other notes point at, so it says
                 // what it does rather than where to find it.
-                _ if entry.opens_whole_directory => match crate::home::door_kind(&entry) {
-                    crate::home::DoorKind::Lake => DOOR_OF_A_LAKE_TABLE,
-                    crate::home::DoorKind::Hive => DOOR_OF_A_HIVE_TABLE,
-                    crate::home::DoorKind::SchemasDiffer => DOOR_OF_FILES_THAT_DIFFER,
-                    crate::home::DoorKind::Mixed | crate::home::DoorKind::Single => DOOR_OF_A_MIX,
-                    crate::home::DoorKind::OneSchema | crate::home::DoorKind::Unknown => THE_DOOR,
-                },
+                _ if entry.opens_whole_directory => {
+                    let does = match crate::home::door_kind(&entry) {
+                        crate::home::DoorKind::Lake => DOOR_OF_A_LAKE_TABLE,
+                        crate::home::DoorKind::Hive => DOOR_OF_A_HIVE_TABLE,
+                        crate::home::DoorKind::SchemasDiffer => DOOR_OF_FILES_THAT_DIFFER,
+                        crate::home::DoorKind::Mixed | crate::home::DoorKind::Single => {
+                            DOOR_OF_A_MIX
+                        }
+                        crate::home::DoorKind::OneSchema | crate::home::DoorKind::Unknown => {
+                            THE_DOOR
+                        }
+                    };
+                    vec![("Enter", does.to_string())]
+                }
                 // Where the other door is. A directory datui will not read as one table
                 // is the row a new user is most likely to be stuck on — the label says
                 // what is in there, Enter steps into it, and nothing until now said that
                 // the way to read the whole of it is one row further in.
-                EntryKind::Directory if door_in_there => INSIDE_AND_THE_DOOR,
-                EntryKind::Directory => "",
-                // A collection's local dataset that is not there: the kind line says so.
-                EntryKind::Unknown if app.home.missing.contains(&entry.path) => "",
-                EntryKind::Unknown => "Not read yet.",
-                EntryKind::Other => "No reader or spec takes it; Enter shows its bytes.",
-                EntryKind::File if entry.enter_lists_tables() => &lists_note,
-                EntryKind::File
-                    if entry.cost.opens_one
-                        && entry.cost.tables.is_some_and(|n| n > 1)
-                        && !opens_note.is_empty() =>
-                {
-                    &opens_note
+                EntryKind::Directory if door_in_there => {
+                    vec![("Enter", step_in(INSIDE_AND_THE_DOOR))]
                 }
-                EntryKind::File if entry.cost.tables.is_some_and(|n| n > 1) => &variants_note,
+                EntryKind::Directory => Vec::new(),
+                // A collection's local dataset that is not there: the kind line says so.
+                EntryKind::Unknown if app.home.missing.contains(&entry.path) => Vec::new(),
+                EntryKind::Unknown => vec![("schema", "not read".to_string())],
+                EntryKind::Other => {
+                    vec![("format", format!("unknown {} Enter shows hex", g.middot))]
+                }
+                EntryKind::File if entry.enter_lists_tables() => {
+                    vec![("Enter", "its tables".to_string())]
+                }
+                EntryKind::File if entry.cost.tables.is_some_and(|n| n > 1) => {
+                    let opens = opens.filter(|_| entry.cost.opens_one);
+                    vec![
+                        ("Enter", opens.unwrap_or("every record").to_string()),
+                        tables,
+                    ]
+                }
                 // The log says which files are live, and datui does not read it.
-                k if k.is_lake_table() && door_in_there => INSIDE_A_LAKE_TABLE,
-                k if k.is_lake_table() => "Enter goes inside. The table itself is not read yet.",
+                k if k.is_lake_table() && door_in_there => {
+                    vec![("Enter", step_in(INSIDE_A_LAKE_TABLE))]
+                }
+                k if k.is_lake_table() => vec![("Enter", step_in("log not read"))],
                 // Measured, and its footer said nothing: the open will most likely fail
                 // the same way, and saying so before Enter beats a pane promising columns
-                // (#547 D8).
-                EntryKind::File if footer_unreadable => FOOTER_UNREADABLE,
-                _ if reading => "Reading...",
+                // (#547 D8). A callout rather than a fact: it is the surprise.
+                EntryKind::File if footer_unreadable => {
+                    lines.push(Line::from(Span::styled(
+                        format!("{} {FOOTER_UNREADABLE}", g.warning),
+                        Style::default().fg(ctx.warning),
+                    )));
+                    Vec::new()
+                }
+                _ if reading => vec![("schema", "reading...".to_string())],
                 // Only Parquet says its columns without being read; everything else is
                 // read when it is opened, which is nothing to warn about.
-                _ => "Columns are read when opened.",
+                _ => vec![("schema", "on open".to_string())],
             };
-            if !note.is_empty() {
-                let color = if note == FOOTER_UNREADABLE {
-                    ctx.warning
-                } else {
-                    ctx.dimmed
-                };
-                lines.push(Line::from(Span::styled(
-                    note.to_string(),
-                    Style::default().fg(color),
-                )));
+            let note_w = key_column(notes.iter().map(|(k, _)| *k)).max(key_w);
+            let style = Style::default().fg(ctx.text_secondary);
+            for (key, value) in notes {
+                lines.extend(fact_lines(key, value, note_w, width, style, ctx));
             }
         }
     }
@@ -2642,36 +2642,31 @@ fn render_preview(
         .render(area, buf);
 }
 
-/// What the pane says on a Parquet file whose footer could not be read.
-const FOOTER_UNREADABLE: &str = "Its footer could not be read; it may not open.";
+/// The callout on a Parquet file whose footer could not be read, after the warning glyph.
+const FOOTER_UNREADABLE: &str = "footer unreadable";
 
-/// What the pane says on a directory `Enter` steps into rather than opens.
-///
-/// Written with `concat!` rather than a `\` continuation: `cargo fmt` joins a
-/// continued literal back onto one line and keeps the indentation with it, which once
-/// put twenty spaces into the middle of this sentence. See
-/// `the_pane_s_guidance_has_no_holes_in_it`.
-const INSIDE_AND_THE_DOOR: &str = "Enter steps in; the first row inside opens all of it.";
+/// What `Enter` does on a directory it steps into rather than opens, after `step in`.
+const INSIDE_AND_THE_DOOR: &str = "first row opens all";
 
 /// The same, for a lake table, whose files are not its rows.
-const INSIDE_A_LAKE_TABLE: &str = "Enter steps in; the first row reads its files, not the table.";
+const INSIDE_A_LAKE_TABLE: &str = "first row reads files, log ignored";
 
-/// What the pane says on the `(all files)` row itself.
-const THE_DOOR: &str = "Enter reads every file here as one table.";
+/// What `Enter` does on the `(all files)` row itself.
+const THE_DOOR: &str = "all files as one table";
 
 /// The same, in a hive directory.
-const DOOR_OF_A_HIVE_TABLE: &str = "Enter reads every partition as one table.";
+const DOOR_OF_A_HIVE_TABLE: &str = "all partitions as one table";
 
 /// The same, in a lake table, whose log decides which files are live.
-const DOOR_OF_A_LAKE_TABLE: &str = "Enter reads the files, ignoring the table's log.";
+const DOOR_OF_A_LAKE_TABLE: &str = "all files, log ignored";
 
 /// The same, where the files' columns disagree.
-const DOOR_OF_FILES_THAT_DIFFER: &str = "Enter stacks the files, matching columns by name.";
+const DOOR_OF_FILES_THAT_DIFFER: &str = "files stacked, columns matched by name";
 
 /// The same, where only part of the directory is read: the `reads` line says which.
-const DOOR_OF_A_MIX: &str = "Enter reads the files on the reads line as one table.";
+const DOOR_OF_A_MIX: &str = "the reads files as one table";
 
-/// Every sentence the pane offers as guidance, for the test that reads them.
+/// Every value the pane offers as guidance, for the test that reads them.
 #[cfg(test)]
 fn guidance_notes() -> [&'static str; 8] {
     [
@@ -2697,19 +2692,10 @@ fn hidden_details(
 ) -> Vec<Line<'static>> {
     let g = glyphs::get();
     let (title, what) = match (tables, count) {
-        (true, 1) => (
-            "Hidden tables",
-            "1 table SQLite keeps for itself".to_string(),
-        ),
-        (true, _) => (
-            "Hidden tables",
-            format!("{count} tables SQLite keeps for itself"),
-        ),
-        (false, 1) => ("Hidden files", "1 file datui has no reader for".to_string()),
-        (false, _) => (
-            "Hidden files",
-            format!("{count} files datui has no reader for"),
-        ),
+        (true, 1) => ("Hidden tables", "1 internal SQLite table".to_string()),
+        (true, _) => ("Hidden tables", format!("{count} internal SQLite tables")),
+        (false, 1) => ("Hidden files", "1 file with no reader".to_string()),
+        (false, _) => ("Hidden files", format!("{count} files with no reader")),
     };
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
@@ -2783,17 +2769,13 @@ fn place_details(
         facts.push(("storage", source.label().to_string(), style));
     }
     facts.push(("opened here", held.to_string(), plain));
+    // Said before Enter is pressed rather than after: Enter does nothing here.
+    if !crate::home::place_is_browsable(path) {
+        facts.push(("listing", "none over HTTP".to_string(), plain));
+    }
     let key_w = key_column(facts.iter().map(|(k, _, _)| *k));
     for (key, value, style) in facts {
         lines.extend(fact_lines(key, value, key_w, width, style, ctx));
-    }
-    // Said before Enter is pressed rather than after: Enter does nothing here.
-    if !crate::home::place_is_browsable(path) {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "No listing over HTTP. Open a file under it.",
-            Style::default().fg(ctx.dimmed),
-        )));
     }
     lines
 }
@@ -2858,23 +2840,23 @@ mod tests {
         rows(ctx, width, true, "")
     }
 
-    /// The pane's guidance reads as one sentence, with no gap left by a wrapped literal.
-    ///
-    /// These lines are long enough to want writing across two lines of source, and a
-    /// `\` continuation inside one is a trap: `cargo fmt` may join the literal back up
-    /// and keep the indentation with it, which puts twenty spaces into the middle of a
-    /// sentence nobody re-reads before shipping. It did exactly that once. `concat!` is
-    /// what they use instead, and this is what notices if that changes.
+    /// The pane's guidance is a value, not a sentence: short, lower case, unpunctuated,
+    /// with no gap left by a wrapped literal (`cargo fmt` once joined a `\` continuation
+    /// back up and kept the indentation with it).
     #[test]
-    fn the_pane_s_guidance_has_no_holes_in_it() {
+    fn the_pane_s_guidance_is_a_value_not_a_sentence() {
         for note in guidance_notes() {
             assert!(
                 !note.contains("  "),
                 "a run of spaces in the middle of {note:?}"
             );
             assert!(
-                note.ends_with('.') && !note.contains('\n'),
-                "one sentence, punctuated: {note:?}"
+                !note.ends_with('.') && !note.contains('\n') && !note.contains(';'),
+                "a value, not a sentence: {note:?}"
+            );
+            assert!(
+                note.chars().count() <= 40,
+                "short enough for the pane: {note:?}"
             );
         }
     }
@@ -3235,7 +3217,7 @@ mod tests {
         assert_eq!(kind_line(&pane(&directory, Some(CloudLook::Waiting))), None);
         assert_eq!(kind_line(&pane(&directory, Some(CloudLook::Looking))), None);
         let failed = kind_line(&pane(&directory, Some(CloudLook::Failed))).expect("a kind");
-        assert!(failed.contains("could not look inside"), "{failed}");
+        assert!(failed.contains("listing failed"), "{failed}");
         let looked = kind_line(&pane(&directory, None)).expect("a kind");
         assert!(looked.trim_end().ends_with("directory"), "{looked}");
 

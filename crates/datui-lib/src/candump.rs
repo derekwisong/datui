@@ -918,13 +918,13 @@ pub fn open(path: &Path, wanted: Option<&str>, layers: Layers) -> Result<Open> {
     let mut notes: Vec<String> = Vec::new();
     if index.skipped > 0 {
         notes.push(format!(
-            "{} lines that are not frames were passed over.",
+            "{} non-frame lines skipped",
             crate::numfmt::group_chrome(index.skipped)
         ));
     }
     if index.past_limit > 0 {
         notes.push(format!(
-            "{} frames past the first {} are left out.",
+            "{} frames left out: past the first {}",
             crate::numfmt::group_chrome(index.past_limit),
             crate::numfmt::group_chrome(crate::indexed::MAX_RECORDS)
         ));
@@ -1009,8 +1009,9 @@ fn long_table(
     if left_out > 0 {
         opened.notes.push(crate::text_formats::note(
             format!(
-                "{} signals past the first {MAX_LONG_PARTS} are left out of this table; each message's own table has them.",
-                crate::numfmt::group_chrome(left_out)
+                "{} signals left out: past the first {MAX_LONG_PARTS} {} each message's table has them",
+                crate::numfmt::group_chrome(left_out),
+                crate::glyphs::get().middot
             ),
             "the dictionaries".to_string(),
         ));

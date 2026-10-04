@@ -44,6 +44,9 @@ const RETIRED: &[(&str, &str)] = &[
     ("fuzzy search", "Text query"),
     ("locate", "find"),
     ("go to line", "go to row"),
+    // How a file is read: name what happens, not how often.
+    ("converted once", "converted to Arrow, or decompressed copy"),
+    ("downloaded, then", "download →"),
     // #687: never claim datui opens everything.
     ("opens anything", "the formats it reads"),
     ("open anything", "the formats it reads"),

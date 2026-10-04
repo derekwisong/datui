@@ -55,8 +55,8 @@ connection = "<CONNECTION>"
 | `connection` | Object-store `url` only: the [`[[cloud.connections]]`](cloud-sources.md#connections) entry whose login reads it |
 | `description`, `publisher`, `license`, `homepage` | Shown in the details pane |
 | `size` | HTTP(S) `url` only: about how many bytes the file is, shown on its row before anything is downloaded |
-| `codebook`, `columns` | What the columns mean; see [Codebooks](#codebooks) |
-| `suggested` | Places inside a directory to start from; see [Codebooks](#codebooks) |
+| `codebook`, `columns` | What the columns mean; see [Documentation](#documentation) |
+| `suggested` | Places inside a directory to start from; see [Documentation](#documentation) |
 
 A dataset has exactly one of `path` and `url`. No two datasets in a collection
 share a name or a location.
@@ -107,7 +107,9 @@ Collections are apart from `[home] directories`, remembered directories and
 `RECENT`. A directory there is a place to look through, and whatever you open goes
 into `RECENT` whether or not a collection names it.
 
-## Codebooks
+<a id="codebooks"></a>
+
+## Documentation
 
 A dataset can say what its columns mean and where to start reading it. The
 home screen's details pane lists the columns; once the data is open, the
@@ -155,4 +157,4 @@ path = "by_year/YEAR=2024/ELEMENT=TMAX/"
 
 A suggested place is listed under its dataset. <kbd>Enter</kbd> on it opens the
 place whole, as one table; <kbd>→</kbd> steps inside. The built-in catalog's
-codebooks quote each publisher's documentation, which its `codebook` links.
+documentation quotes each publisher's, which its `codebook` links.

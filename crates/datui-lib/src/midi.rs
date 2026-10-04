@@ -1028,14 +1028,14 @@ pub fn notes(summary: &MidiSummary) -> Vec<crate::notes::Note> {
         let n = summary.unended;
         out.push(crate::notes::Note {
             summary: format!(
-                "{} {} never {} — a note_on with no note_off after it; its length is null",
+                "{} {} {} length null",
                 crate::widgets::info::group_u64(n as u64),
                 if n == 1 {
-                    "note starts and"
+                    "note never ends"
                 } else {
-                    "notes start and"
+                    "notes never end"
                 },
-                if n == 1 { "ends" } else { "end" }
+                crate::glyphs::get().middot
             ),
             scope: "from every event".to_string(),
             read_as_text: None,
@@ -1047,13 +1047,12 @@ pub fn notes(summary: &MidiSummary) -> Vec<crate::notes::Note> {
         let (name, why) = &summary.unreadable[0];
         out.push(crate::notes::Note {
             summary: format!(
-                "{} could not be read and {} left out — {name}: {why}",
+                "{} unreadable, left out: {name}: {why}",
                 if n == 1 {
                     "1 file".to_string()
                 } else {
                     format!("{} files", crate::widgets::info::group_u64(n as u64))
                 },
-                if n == 1 { "is" } else { "are" },
             ),
             scope: "from every file".to_string(),
             read_as_text: None,

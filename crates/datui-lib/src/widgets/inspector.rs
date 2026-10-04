@@ -493,8 +493,8 @@ pub fn pane(dtype: &DataType, shown: &Shown, ask: &PaneAsk) -> Pane {
         Shown::Unread => {
             reader::wrap_lines(
                 &format!(
-                    "Not read with the table's rows; {} reads this row's hidden and binary fields",
-                    ask.read_key
+                    "Not read {} {} reads hidden and binary fields",
+                    g.middot, ask.read_key
                 ),
                 width,
                 Tone::Dim,
@@ -513,15 +513,11 @@ pub fn pane(dtype: &DataType, shown: &Shown, ask: &PaneAsk) -> Pane {
         Shown::Null(null) => {
             let (glyph, word, why) = match null {
                 NullKind::Null => (g.null, "null", None),
-                NullKind::Absent => (
-                    g.absent,
-                    "absent",
-                    Some("this row's file has no such column"),
-                ),
+                NullKind::Absent => (g.absent, "absent", Some("not in this row's file")),
                 NullKind::Conflict => (
                     g.conflict,
                     "conflicting",
-                    Some("this row's file holds the column in another type, so it was not read"),
+                    Some("another type in this row's file, not read"),
                 ),
             };
             let text = match why {

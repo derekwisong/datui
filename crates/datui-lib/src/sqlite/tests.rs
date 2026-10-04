@@ -254,9 +254,7 @@ fn columns_take_their_declared_type_and_mixed_ones_are_read_as_text() {
     let notes = opened.pushdown.notes();
     assert_eq!(notes.len(), 1);
     assert!(
-        notes[0]
-            .summary
-            .starts_with("mixed holds values of several types"),
+        notes[0].summary.starts_with("mixed: mixed types"),
         "{}",
         notes[0].summary
     );
@@ -310,7 +308,7 @@ fn a_value_the_first_rows_did_not_show_is_noted() {
     assert_eq!(
         notes,
         [
-            "s holds values of several types and is read as text",
+            "s: mixed types, read as text",
             "v: 2 values not whole numbers, read as null",
             "b: 1 value not blobs, read as their bytes",
         ]

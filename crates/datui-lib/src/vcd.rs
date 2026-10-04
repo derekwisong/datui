@@ -672,8 +672,8 @@ fn notes(reader: &VcdReader) -> Vec<Note> {
     if stats.unreadable > 0 {
         notes.push(note(
             format!(
-                "{} not VCD and passed over",
-                count(stats.unreadable, "token is", "tokens are")
+                "{} skipped: not VCD",
+                count(stats.unreadable, "token", "tokens")
             ),
             "in the whole file".to_string(),
         ));
@@ -681,8 +681,8 @@ fn notes(reader: &VcdReader) -> Vec<Note> {
     if stats.undeclared > 0 {
         notes.push(note(
             format!(
-                "{} an identifier no $var declares and left out",
-                count(stats.undeclared, "value change names", "value changes name")
+                "{} left out: identifier not declared by a $var",
+                count(stats.undeclared, "value change", "value changes")
             ),
             of_rows.clone(),
         ));
@@ -690,7 +690,7 @@ fn notes(reader: &VcdReader) -> Vec<Note> {
     if stats.vars_dropped > 0 {
         notes.push(note(
             format!(
-                "{} past datui's limits ({} signals, {} scopes deep, {} bytes a name) left out",
+                "{} left out: past limits ({} signals, {} scopes deep, {} bytes a name)",
                 count(stats.vars_dropped, "declaration", "declarations"),
                 group_u64(MAX_VARS as u64),
                 MAX_DEPTH,
@@ -702,8 +702,9 @@ fn notes(reader: &VcdReader) -> Vec<Note> {
     if stats.overflowed > 0 {
         notes.push(note(
             format!(
-                "{} too late for a Duration; time is null on their rows",
-                count(stats.overflowed, "value change is", "value changes are")
+                "{} past the Duration range {} time null",
+                count(stats.overflowed, "value change", "value changes"),
+                crate::glyphs::get().middot
             ),
             of_rows.clone(),
         ));
@@ -712,18 +713,24 @@ fn notes(reader: &VcdReader) -> Vec<Note> {
         notes.push(note(
             format!(
                 "{} earlier than the one before",
-                count(stats.backwards, "#time is", "#times are")
+                count(stats.backwards, "#time", "#times")
             ),
             format!("of {}", count(stats.times, "#time", "#times")),
         ));
     }
     match reader.scale() {
         Some(Scale::Count { unit: "ticks", .. }) => notes.push(note(
-            "No $timescale: time counts the file's ticks".to_string(),
+            format!(
+                "no $timescale {} time in ticks",
+                crate::glyphs::get().middot
+            ),
             "in the header".to_string(),
         )),
         Some(Scale::Count { unit, .. }) => notes.push(note(
-            format!("The timescale is finer than a Duration holds: time counts {unit}"),
+            format!(
+                "timescale finer than a Duration {} time in {unit}",
+                crate::glyphs::get().middot
+            ),
             format!(
                 "from $timescale {}",
                 reader.header().timescale.as_deref().unwrap_or_default()
@@ -998,7 +1005,7 @@ b11111111 \"
         assert!(
             notes(&reader)
                 .iter()
-                .any(|n| n.summary.contains("counts ps"))
+                .any(|n| n.summary.contains("time in ps"))
         );
     }
 

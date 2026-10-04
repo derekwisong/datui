@@ -1946,7 +1946,7 @@ impl FramedRecords {
         records_read.build_index(named, ring, count, &mut found)?;
         if found.skipped > 0 {
             found.notes.push(format!(
-                "{} {} between records skipped while looking for the sync marker",
+                "{} {} skipped between records, to the next sync marker",
                 found.skipped,
                 if found.skipped == 1 { "byte" } else { "bytes" }
             ));
@@ -2017,7 +2017,8 @@ impl FramedRecords {
                     rows = count as usize;
                 } else if count > rows as u64 {
                     found.notes.push(format!(
-                        "the header says {count} records; the file holds {rows} whole ones, which are shown"
+                        "header says {count} records {} {rows} whole ones shown",
+                        crate::glyphs::get().middot
                     ));
                 }
             } else {
@@ -2034,7 +2035,8 @@ impl FramedRecords {
                 Some(r) if rows > 0 => {
                     if r >= rows as u64 {
                         found.notes.push(format!(
-                            "the ring's oldest record is {r}, past the {rows} records; read from the first"
+                            "ring's oldest record {r} past the {rows} records {} read from the first",
+                            crate::glyphs::get().middot
                         ));
                         0
                     } else {
@@ -2136,7 +2138,8 @@ impl FramedRecords {
                         align(&mut cursor, plan.align);
                         if cursor.pos <= before {
                             found.notes.push(format!(
-                                "a record at byte {before} takes no bytes; the rest is left out"
+                                "zero-length record at byte {before} {} rest left out",
+                                crate::glyphs::get().middot
                             ));
                             break 'chunks;
                         }
@@ -2168,7 +2171,8 @@ impl FramedRecords {
                             }
                             Stop::Said(said) => {
                                 found.notes.push(format!(
-                                    "{said}; the {} bytes from there are left out",
+                                    "{said} {} {} bytes from there left out",
+                                    crate::glyphs::get().middot,
                                     cursor.end - before
                                 ));
                             }
@@ -2189,7 +2193,7 @@ impl FramedRecords {
                 && self.chunks[ci].records.is_some()
             {
                 found.notes.push(format!(
-                    "block {ci} says it holds {l} records and holds {}",
+                    "block {ci}: {l} records declared, {} found",
                     cursor.taken
                 ));
             }
@@ -2198,7 +2202,8 @@ impl FramedRecords {
             && rows < l
         {
             found.notes.push(format!(
-                "the header says {l} records; the file holds {rows}, which are shown"
+                "header says {l} records {} {rows} shown",
+                crate::glyphs::get().middot
             ));
         }
         found.skipped += walker.skipped;
@@ -2913,7 +2918,8 @@ fn list_blocks(
                     Some(next) if next > pos => pos = next,
                     Some(_) => {
                         notes.push(format!(
-                            "a block at byte {pos} takes no bytes; the rest is left out"
+                            "zero-length block at byte {pos} {} rest left out",
+                            crate::glyphs::get().middot
                         ));
                         break;
                     }

@@ -111,7 +111,7 @@ fn a_journal_has_time_level_and_readable_messages_first() {
     assert!(
         notes
             .iter()
-            .any(|n| n.starts_with("1 message came as bytes")),
+            .any(|n| n.starts_with("1 message stored as bytes")),
         "{notes:?}"
     );
 }

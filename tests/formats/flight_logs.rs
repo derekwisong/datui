@@ -181,7 +181,7 @@ fn a_ulog_topic_by_table() {
         detail.list
     );
     let notes: Vec<String> = state.notes().iter().map(|n| n.summary.clone()).collect();
-    assert!(notes.iter().any(|n| n.contains("passed over")), "{notes:?}");
+    assert!(notes.iter().any(|n| n.contains("skipped")), "{notes:?}");
     assert!(notes.iter().any(|n| n.contains("cut short")), "{notes:?}");
 
     let (app, _rx) = open_with(flight().join("flight.ulg"), table("vehicle_status"));
@@ -237,7 +237,7 @@ fn a_dataflash_log_by_its_first_bytes() {
     assert_eq!(roll.get(0), Some(1.5));
     let state = app.data_table_state.as_ref().unwrap();
     let notes: Vec<String> = state.notes().iter().map(|n| n.summary.clone()).collect();
-    assert!(notes.iter().any(|n| n.contains("passed over")), "{notes:?}");
+    assert!(notes.iter().any(|n| n.contains("skipped")), "{notes:?}");
 }
 
 /// The list comes from the pass the open made: a table chosen from it reads the same

@@ -253,12 +253,12 @@ that would have used them reads its sample again.
 
 A full scan of a remote dataset (S3, GCS, Azure) reads its scope once per check.
 When the whole dataset fits `[analysis] quality_local_copy` (2GiB by default) and the
-free disk, Read says `One fetch of 8 objects (16.5 MiB) into a local copy, then
-up to 7 passes over it`: each object is fetched once into the cache directory,
+free disk, Read says `1 fetch of 8 objects (16.5 MiB) to a local copy · up to
+7 passes over it`: each object is fetched once into the cache directory,
 and every pass, and every later full scan of the dataset, reads the copy. The
 Read rule then adds `local copy · 16.5 MiB`, and <kbd>d</kbd> releases it with
 the rows. Otherwise Read says the passes go to the source, and why, such as
-`Too large to keep a local copy`. See
+`No local copy: 3.0 GiB over the 2.0 GiB limit`. See
 [Local copy of a remote source](../reference/data-quality.md#local-copy-of-a-remote-source).
 <kbd>p</kbd> shows the access plan in full. Reading every row asks for
 confirmation first; <kbd>Esc</kbd> there leaves the sample and the report as

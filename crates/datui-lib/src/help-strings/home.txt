@@ -102,8 +102,9 @@ Reading a row:
   A directory lists its first 5,000 entries and says "first 5,000". In
   a bucket, typing past them asks it for the names the filter starts.
   A file row that is not read lazily says how opening it reads it, dim
-  beside its name: "converts" (read once into a temporary file), "in
-  memory" (read whole), or "downloads" (a remote file copied first).
+  beside its name: "decompresses" (into a temporary copy), "converts"
+  (into a temporary Arrow file), "in memory" (read whole), or
+  "downloads" (a remote file copied first).
   The details pane shows a local file's first rows under ROWS, read when
   the row is selected; Enter opens the file on those same rows, so they
   are read once. Without the pane, they take the free lines at the bottom

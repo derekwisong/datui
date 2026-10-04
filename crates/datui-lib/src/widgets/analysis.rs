@@ -178,7 +178,7 @@ impl<'a> AnalysisWidget<'a> {
                         Constraint::Min(0),
                     ])
                     .split(main_layout[0]);
-                Paragraph::new("Select an analysis tool from the sidebar.")
+                Paragraph::new("Pick a tool in the sidebar")
                     .centered()
                     .style(Style::default().fg(self.theme.get("text_primary")))
                     .render(inner[1], buf);
@@ -506,9 +506,9 @@ fn render_correlation_pair_summary(
     let mut lines: Vec<Line> = Vec::new();
     if r.is_nan() {
         let why = if pairs < 3 {
-            "Not enough overlapping values to correlate (needs 3 pairs)."
+            "Fewer than 3 overlapping pairs"
         } else {
-            "One of the columns has a single value, so there is nothing to correlate."
+            "A column holds one value"
         };
         lines.push(Line::from(vec![Span::styled(why, value_style)]));
     } else {
@@ -2878,7 +2878,7 @@ mod tests {
             &settings("thousands", false),
         );
         let text = rendered_text(&buf);
-        assert!(text.contains("Not enough overlapping values"), "{text}");
+        assert!(text.contains("Fewer than 3 overlapping pairs"), "{text}");
         assert!(!text.contains("Pearson r:"), "{text}");
     }
 

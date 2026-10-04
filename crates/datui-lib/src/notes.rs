@@ -159,13 +159,8 @@ pub fn from_dataset(dataset: &DatasetSchema) -> Vec<Note> {
     if !dataset.unreadable.is_empty() {
         notes.push(Note {
             summary: format!(
-                "{} could not be read and {} left out; the rows are not shown",
-                how_many(dataset, dataset.unreadable.len()),
-                if dataset.unreadable.len() == 1 {
-                    "was"
-                } else {
-                    "were"
-                }
+                "{} unreadable, left out",
+                how_many(dataset, dataset.unreadable.len())
             ),
             scope: scope.clone(),
             read_as_text: None,
@@ -205,14 +200,14 @@ pub fn left_out_note(
         // Called only for a column the view names, so it names it one way or the other.
         _ => "sort",
     };
-    let (there, verb) = if rows == 1 {
-        ("1 row".to_string(), "is")
+    let there = if rows == 1 {
+        "1 row".to_string()
     } else {
-        (format!("{} rows", group_chrome(rows)), "are")
+        format!("{} rows", group_chrome(rows))
     };
     Note {
         summary: format!(
-            "{} is not read from {}, so the {there} there {verb} left out of the {what}",
+            "{}: {there} in {} left out of the {what}",
             column.name,
             how_many(dataset, column.conflicting_files)
         ),
@@ -294,7 +289,7 @@ fn row_group_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
     }
     Some(Note {
         summary: format!(
-            "the middle row group is {}, and rows are read a row group at a time",
+            "median row group {}, each read whole",
             crate::widgets::info::format_bytes(median as u64)
         ),
         scope: scope.to_string(),
@@ -345,13 +340,13 @@ fn small_files_note(dataset: &DatasetSchema, scope: &str) -> Option<Note> {
     // hold, so only the count leads to it. Joining the two with "so" would make the
     // size look like half the reason.
     let footers = if read == files {
-        "each was opened for its footer".to_string()
+        "every footer".to_string()
     } else {
-        format!("{} were opened for their footers", group_chrome(read))
+        format!("{} footers", group_chrome(read))
     };
     Some(Note {
         summary: format!(
-            "there are {} files and the middle one is {}; {footers} before a row was",
+            "{} files, median {}; {footers} read before any row",
             group_chrome(files),
             crate::widgets::info::format_bytes(median as u64)
         ),
@@ -409,10 +404,7 @@ fn partition_layout_note(dataset: &DatasetSchema) -> Option<Note> {
         ));
     }
     Some(Note {
-        summary: format!(
-            "the directories do not all partition by the same keys: {}",
-            clauses.join(", ")
-        ),
+        summary: format!("mixed partition keys: {}", clauses.join(", ")),
         scope: format!(
             "in the names of {} files",
             group_chrome(dataset.listed_files)
@@ -440,7 +432,7 @@ fn how_many_files(n: usize) -> String {
 /// reads wrongly.
 fn text_note(column: &PlSmallStr, scope: &str) -> Note {
     Note {
-        summary: format!("{column} is read as text, so a filter or sort on it compares text"),
+        summary: format!("{column} read as text: filter and sort compare text"),
         scope: scope.to_string(),
         read_as_text: None,
         passed_over: None,
@@ -485,25 +477,21 @@ fn note_about_skipped(skipped: SkippedFiles) -> Option<Note> {
     // the rest is counted beside it so the total is the directory's, not a selection.
     let mut said = Vec::new();
     if empty > 0 {
-        said.push(format!(
-            "{} {} empty and {} not read",
-            files(empty),
-            if empty == 1 { "is" } else { "are" },
-            if empty == 1 { "was" } else { "were" }
-        ));
+        let what = if empty == 1 { "file" } else { "files" };
+        said.push(format!("{} empty {what}", group_chrome(empty)));
     }
     if not_parquet > 0 {
-        said.push(format!(
-            "{} {} not Parquet",
-            files(not_parquet),
-            if not_parquet == 1 { "is" } else { "are" }
-        ));
+        said.push(format!("{} not Parquet", files(not_parquet)));
     }
     if bookkeeping > 0 {
-        said.push(format!("{} a writer left behind", files(bookkeeping)));
+        let what = if bookkeeping == 1 { "file" } else { "files" };
+        said.push(format!(
+            "{} writer bookkeeping {what}",
+            group_chrome(bookkeeping)
+        ));
     }
     Some(Note {
-        summary: format!("in the directory, {}", said.join(", ")),
+        summary: format!("skipped: {}", said.join(", ")),
         scope: "in this directory's listing".to_string(),
         read_as_text: None,
         passed_over: None,
@@ -534,12 +522,7 @@ pub fn from_the_open(
     let scope = || "in a spread of this directory's files".to_string();
     if files_differ.columns {
         notes.push(Note {
-            summary: concat!(
-                "the directory's files do not all have the same columns; the table has ",
-                "every column any of them has, and a row from a file without one ",
-                "reads null"
-            )
-            .to_string(),
+            summary: "columns differ across files: a missing column reads null".to_string(),
             scope: scope(),
             read_as_text: None,
             passed_over: None,
@@ -548,10 +531,8 @@ pub fn from_the_open(
     if files_differ.headerless {
         notes.push(Note {
             summary: concat!(
-                "these files look like they have no header row, so datui is reading ",
-                "each file's first row of data as its column names — press H on the Schema ",
-                "tab, or pass ",
-                "--no-header, to read those rows as data instead"
+                "no header row? first row read as names: ",
+                "H on Schema, or --no-header, reads it as data"
             )
             .to_string(),
             scope: scope(),
@@ -563,11 +544,7 @@ pub fn from_the_open(
     // never is and a first row of data often is.
     if names_look_like_data && !files_differ.headerless {
         notes.push(Note {
-            summary: concat!(
-                "the column names look like data, as if the file has no header row — ",
-                "press H on the Schema tab to read the first row as data"
-            )
-            .to_string(),
+            summary: "column names look like data: H on Schema reads them as a row".to_string(),
             scope: "from the column names".to_string(),
             read_as_text: None,
             passed_over: None,
@@ -575,12 +552,7 @@ pub fn from_the_open(
     }
     if files_differ.types {
         notes.push(Note {
-            summary: concat!(
-                "a column is held in more than one type across the files, so it is ",
-                "read as the wider of them — a number stored as text in one file ",
-                "makes the whole column text, and it sorts and filters as text"
-            )
-            .to_string(),
+            summary: "a column's type differs across files: read as the wider type".to_string(),
             scope: scope(),
             read_as_text: None,
             passed_over: None,
@@ -593,7 +565,7 @@ pub fn from_the_open(
             // rows on disk, an update leaves the version it replaced, and compaction
             // leaves both sides — all of them counted here.
             summary: format!(
-                "these are the files under a {format} table, not the table: deleted rows and old versions are counted"
+                "{format} table's files, not the table: deleted rows and old versions counted"
             ),
             scope: format!("in this {format} table's directory"),
             read_as_text: None,
@@ -607,7 +579,7 @@ pub fn from_the_open(
             .collect();
         notes.push(Note {
             summary: format!(
-                "the directory holds more than one format and was read as the commonest; {} not read",
+                "mixed formats, read as the commonest: {} not read",
                 said.join(", ")
             ),
             scope: "in this directory's listing".to_string(),
@@ -826,10 +798,7 @@ mod tests {
             .collect();
         assert_eq!(
             said,
-            [concat!(
-                "the directory holds more than one format and was read as the ",
-                "commonest; 1 csv not read"
-            )],
+            ["mixed formats, read as the commonest: 1 csv not read"],
             "one fact, said once, in the open's words"
         );
     }
@@ -854,17 +823,9 @@ mod tests {
         assert_eq!(
             said,
             [
-                concat!(
-                    "the directory holds more than one format and was read as the ",
-                    "commonest; 1 csv not read"
-                )
-                .to_string(),
-                concat!(
-                    "in the directory, 1 file is empty and was not read, 1 file is ",
-                    "not Parquet, 2 files a writer left behind"
-                )
-                .to_string(),
-                "n is read as text, so a filter or sort on it compares text".to_string(),
+                "mixed formats, read as the commonest: 1 csv not read".to_string(),
+                "skipped: 1 empty file, 1 file not Parquet, 2 writer bookkeeping files".to_string(),
+                "n read as text: filter and sort compare text".to_string(),
             ],
             "the walk's own findings and the view's notes survive the merge"
         );
@@ -887,7 +848,7 @@ mod tests {
             .collect();
         assert_eq!(said.len(), 2, "{said:?}");
         assert!(
-            said[1] == "in the directory, 1 file is not Parquet",
+            said[1] == "skipped: 1 file not Parquet",
             "different facts do not merge: {said:?}"
         );
     }
@@ -971,10 +932,7 @@ mod tests {
                     file(&[("id", DataType::Int64)], 1),
                 ],
                 paths: vec!["d/date=1/a.parquet", "d/dt=2/b.parquet"],
-                expected: vec![
-                    "the directories do not all partition by the same keys: 1 file by \
-                     date, 1 file by dt",
-                ],
+                expected: vec!["mixed partition keys: 1 file by date, 1 file by dt"],
                 ..Shape::default()
             },
             Shape {
@@ -1142,8 +1100,7 @@ mod tests {
                 expected: vec![
                     "fee is in 1 of 2 files; absent from the rest, not null",
                     // Ragged depth is a disagreement in its own right, and says so.
-                    "the directories do not all partition by the same keys: 1 file by m/y, \
-                     1 file by y",
+                    "mixed partition keys: 1 file by m/y, 1 file by y",
                 ],
                 ..Shape::default()
             },
@@ -1213,7 +1170,7 @@ mod tests {
                 expected: vec![
                     "fee is in 1 of the 2 files that could be read; absent from the \
                      rest, not null",
-                    "1 file could not be read and was left out; the rows are not shown",
+                    "1 file unreadable, left out",
                 ],
                 ..Shape::default()
             },
@@ -1311,7 +1268,7 @@ mod tests {
                 paths: Vec::new(),
                 expected: vec![
                     "x is in 1 of the 2 files that could be read; absent from the rest, not null",
-                    "1 file could not be read and was left out; the rows are not shown",
+                    "1 file unreadable, left out",
                 ],
             },
             Shape {
@@ -1325,7 +1282,7 @@ mod tests {
                 paths: Vec::new(),
                 expected: vec![
                     "x is in 1 of the 2 footers that could be read; absent from the rest, not null",
-                    "1 footer could not be read and was left out; the rows are not shown",
+                    "1 footer unreadable, left out",
                 ],
             },
             // --- a type the files disagree about: counted, never divided ---
@@ -1360,7 +1317,7 @@ mod tests {
                 paths: Vec::new(),
                 expected: vec![
                     "n is str in 1 file; read as i64 and not read there",
-                    "1 file could not be read and was left out; the rows are not shown",
+                    "1 file unreadable, left out",
                 ],
             },
             Shape {
@@ -1374,7 +1331,7 @@ mod tests {
                 paths: Vec::new(),
                 expected: vec![
                     "n is str in 1 footer; read as i64 and not read there",
-                    "1 footer could not be read and was left out; the rows are not shown",
+                    "1 footer unreadable, left out",
                 ],
             },
             // --- widening, which settles without loss ---

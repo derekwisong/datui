@@ -8,17 +8,17 @@ and the systemd journal.
 |---|---|---|---|---|
 | [Audio](#audio) | `.wav`, `.wave`, `.bwf`, `.rf64`, `.aif`, `.aiff`, `.aifc` | lazy | | Audio |
 | [MIDI](#midi) | `.mid`, `.midi`, `.smf`, `.kar`, `.rmi` | in memory | | MIDI |
-| [VCD](#vcd) | `.vcd` | converted once | | VCD |
-| [NMEA, GPX](#gps-logs) | `.nmea`, `.gpx` | converted once | NMEA: `fixes`, `GGA`, `RMC`, `VTG`, `GSA`, `GSV`, `GLL`, `ZDA`, `sentences` | GPS |
+| [VCD](#vcd) | `.vcd` | converted to Arrow | | VCD |
+| [NMEA, GPX](#gps-logs) | `.nmea`, `.gpx` | converted to Arrow | NMEA: `fixes`, `GGA`, `RMC`, `VTG`, `GSA`, `GSV`, `GLL`, `ZDA`, `sentences` | GPS |
 | [ULog, DataFlash](#flight-logs) | `.ulg`; DataFlash by content | lazy | a topic, a message type | ULog, DataFlash |
 | [candump](#can-logs) | by content | lazy | `frames`, `signals`, a message | CAN |
-| [FIX](#fix-logs) | by content | converted once | | FIX |
-| [SDF](#sdf) | `.sdf`, `.sd` | converted once | | SDF |
+| [FIX](#fix-logs) | by content | converted to Arrow | | FIX |
+| [SDF](#sdf) | `.sdf`, `.sd` | converted to Arrow | | SDF |
 | [ELF](#elf) | `.elf`, `.axf` | in memory | `symbols`, `sections` | ELF |
 | [systemd journal](#systemd-journal) | by content | in memory | | Journal |
 
-[How each format is read](index.md#how-each-format-is-read) says what lazy,
-converted once and in memory mean. A file of several tables opens the home
+[How each format is read](index.md#how-each-format-is-read) says what lazy scan,
+converted to Arrow and in memory mean. A file of several tables opens the home
 screen inside it, a row per table; downloaded or piped in, it is refused with
 the tables' names, and `--table` picks one.
 

@@ -2918,7 +2918,7 @@ mod tests {
             TempDownload::keep(TempDownload::create(Some(dir.path()), Some("arrow")).unwrap());
         let temp = file.path().to_path_buf();
         let note = crate::notes::Note {
-            summary: "1 line is not NMEA and left out".to_string(),
+            summary: "1 line left out: not NMEA".to_string(),
             scope: "of 9 lines in 2 logs".to_string(),
             read_as_text: None,
             passed_over: None,

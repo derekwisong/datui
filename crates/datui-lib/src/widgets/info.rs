@@ -770,7 +770,7 @@ pub struct DataTableInfo<'a> {
 fn read_line(state: &DataTableState) -> Option<String> {
     let mode = state.read_mode()?.label();
     Some(if state.fetched() {
-        format!("downloaded, then {mode}")
+        format!("download {} {mode}", crate::glyphs::get().arrow_right)
     } else {
         mode.to_string()
     })
@@ -890,7 +890,7 @@ impl<'a> DataTableInfo<'a> {
                     lines.extend(wrapped);
                 }
             }
-            None => lines.push(format!("{name}: not in the codebook")),
+            None => lines.push(format!("{name}: not documented")),
         }
         for (i, line) in lines.iter().take(rows).enumerate() {
             Paragraph::new(clip(line, width))
@@ -925,7 +925,7 @@ impl<'a> DataTableInfo<'a> {
             && !book.source.is_empty()
         {
             lines.push(clip(
-                &format!("Codebook: {}", book.source),
+                &format!("Documentation: {}", book.source),
                 area.width as usize,
             ));
         }
@@ -1623,9 +1623,10 @@ impl<'a> DataTableInfo<'a> {
             let count = notes.len();
             Paragraph::new(Line::from(Span::styled(
                 format!(
-                    "{} {}; no room for this one",
+                    "{} {} {} selected: no room",
                     group_chrome(count),
-                    if count == 1 { "note" } else { "notes" }
+                    if count == 1 { "note" } else { "notes" },
+                    crate::glyphs::get().middot
                 ),
                 dim,
             )))
@@ -1736,7 +1737,7 @@ impl<'a> DataTableInfo<'a> {
         let w = area.width;
 
         let Some(partition_columns) = self.state.partition_columns() else {
-            Paragraph::new("No partition metadata.").render(
+            Paragraph::new("Partition columns: unknown").render(
                 Rect {
                     y,
                     width: w,
@@ -1749,7 +1750,7 @@ impl<'a> DataTableInfo<'a> {
         };
 
         if partition_columns.is_empty() {
-            Paragraph::new("No partition columns.").render(
+            Paragraph::new("Partition columns: none").render(
                 Rect {
                     y,
                     width: w,
@@ -2314,7 +2315,7 @@ mod tests {
             "{lines:#?}"
         );
         let converted = painted(Some(crate::ReadMode::Converted));
-        assert!(converted.iter().any(|l| l.contains("converted once")));
+        assert!(converted.iter().any(|l| l.contains("converted to Arrow")));
         assert!(!painted(None).iter().any(|l| l.starts_with("Read:")));
     }
 

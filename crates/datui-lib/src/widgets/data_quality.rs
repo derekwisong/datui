@@ -116,7 +116,7 @@ pub struct Cancelling {
 }
 
 impl Cancelling {
-    /// What is still going, after "Cancellation requested; " or "Run waits: ".
+    /// What is still going, after "Cancelling: " or "Run waits: ".
     fn what(self) -> &'static str {
         if self.read_runs_out {
             "source read finishing"
@@ -293,7 +293,7 @@ fn render_header(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buf
     if let Some(cancelling) = config.setup.cancelling {
         spans.push(Span::styled(
             format!(
-                "  Cancellation requested; {} {} {}",
+                "  Cancelling: {} {} {}",
                 cancelling.what(),
                 glyphs::get().middot,
                 crate::render::analysis_view::elapsed(cancelling.since.elapsed())
@@ -405,7 +405,7 @@ fn render_setup(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buff
     lines.push(SetupLine::Row(SetupRow::Intervals));
     lines.push(SetupLine::Row(SetupRow::Intent));
     for (note, warn) in column_notes(plan, schema) {
-        for line in crate::widgets::info::wrap_to(&note, width.saturating_sub(2)) {
+        for line in crate::widgets::info::wrap_to(&dotted(&note), width.saturating_sub(2)) {
             lines.push(SetupLine::Note(line, warn));
         }
     }
@@ -423,14 +423,14 @@ fn render_setup(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buff
     lines.push(SetupLine::Rule("Read", view.kept.map(|kept| kept.label())));
     let read_start = lines.len();
     for note in read_lines(config) {
-        for line in crate::widgets::info::wrap_to(&note, width.saturating_sub(2)) {
+        for line in crate::widgets::info::wrap_to(&dotted(&note), width.saturating_sub(2)) {
             lines.push(SetupLine::Note(line, false));
         }
     }
 
     // The status line keeps the bottom row: why Run waits, or that it would
     // replace the report on screen.
-    let status = setup_status(config);
+    let status = setup_status(config).map(|(text, warn)| (dotted(&text), warn));
     let body_height = area.height.saturating_sub(1) as usize;
     // Scrolled only as far as the focused row needs; the read summary, last, is
     // what gives way, and says how much of it is off screen.
@@ -648,7 +648,7 @@ fn column_notes(plan: &DataQualityPlan, schema: &Schema) -> Vec<(String, bool)> 
     }
     for column in unread {
         notes.push((
-            format!("{column} is text: choose its format under Text as time"),
+            format!("{column}: text, no format · set Text as time"),
             true,
         ));
     }
@@ -656,13 +656,13 @@ fn column_notes(plan: &DataQualityPlan, schema: &Schema) -> Vec<(String, bool)> 
     let unpaired = plan.unpaired_roles();
     if plan.temporal_roles.len() == 1 {
         notes.push((
-            "One role makes no interval: assign another under Time roles".to_string(),
+            "1 role, no interval · add one under Time roles".to_string(),
             true,
         ));
     } else if !unpaired.is_empty() {
         notes.push((
             format!(
-                "In no interval: {}. Choose a start and end under Intervals",
+                "In no interval: {} · set Intervals",
                 unpaired
                     .iter()
                     .map(|role| role.label())
@@ -702,7 +702,7 @@ fn column_notes(plan: &DataQualityPlan, schema: &Schema) -> Vec<(String, bool)> 
         .collect::<Vec<_>>();
     if !absent.is_empty() {
         notes.push((
-            format!("Not in this scope, so not checked: {}", absent.join(", ")),
+            format!("Not in scope, not checked: {}", absent.join(", ")),
             true,
         ));
     }
@@ -716,7 +716,7 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
     let state = config.state;
     let mut lines = Vec::new();
     if view.unchanged {
-        lines.push("The report on screen is this setup's: Run shows it, no read".to_string());
+        lines.push("Report on screen: this setup · no read".to_string());
         return lines;
     }
     if view.relabel_only {
@@ -724,20 +724,16 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
         let expected = config.measured.expected != plan.expected;
         lines.push(
             match (compare, expected) {
-                (true, true) => {
-                    "Only Compare and Expected changed: Run updates the report on screen, no read"
-                }
-                (true, false) => {
-                    "Only Compare changed: Run compares the report's segments again, no read"
-                }
-                _ => "Only Expected changed: Run checks the report on screen against it, no read",
+                (true, true) => "Changed: Compare, Expected · no read",
+                (true, false) => "Changed: Compare · no read",
+                _ => "Changed: Expected · no read",
             }
             .to_string(),
         );
         return lines;
     }
     if view.cached {
-        lines.push("This setup's report is in the session cache: no read".to_string());
+        lines.push("Session cache: this setup · no read".to_string());
         return lines;
     }
     let scope_rows = planned_scope_rows(state, plan);
@@ -754,32 +750,32 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
                 crate::data_quality::interval_passes(plan, state.quality_schema(&plan.scope));
             if clocks > 1 {
                 lines.push(format!(
-                    "Window by {}: {clocks} of those passes for intervals, one per column",
+                    "Window by {}: {clocks} of those passes, 1 per column",
                     plan.interval_clock.label()
                 ));
             }
         }
         QualityCompute::Sample if view.reuses_sample => {
-            lines.push("Uses the rows a run already read: no source read".to_string());
+            lines.push("Rows: from an earlier run · no source read".to_string());
         }
         QualityCompute::Sample => lines.push(match &plan.method {
             crate::sampling::SampleMethod::FirstRows => {
-                format!("Reads the first {n} rows of the scope")
+                format!("First {n} rows of the scope")
             }
             crate::sampling::SampleMethod::PerPartition { column } => {
-                format!("One pass over every eligible row, keeping {n} per {column}")
+                format!("1 pass over every eligible row · {n} kept per {column}")
             }
             _ if scope_rows.is_some_and(|rows| rows <= plan.dataset_rows) => {
-                "Reads every row: the scope holds no more than the sample".to_string()
+                "Every row · scope no larger than the sample".to_string()
             }
             _ if view.reads_blocks => {
-                format!("Seeded runs of the file, about {n} rows, not a pass over it")
+                format!("Seeded runs of the file · about {n} rows, no full pass")
             }
-            _ => format!("One pass that streams every eligible row, keeping a seeded {n}"),
+            _ => format!("1 streaming pass over every eligible row · seeded {n} kept"),
         }),
     }
     if plan.compute == QualityCompute::Sample && !view.reuses_sample && view.released {
-        lines.push("Read before and released since, so read again".to_string());
+        lines.push("Released since last read · read again".to_string());
     }
     let exact = scope_rows.is_some_and(|rows| rows <= plan.dataset_rows);
     if plan.compute == QualityCompute::Sample && !exact {
@@ -790,34 +786,34 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
             _ => "",
         };
         match &view.segment_count {
-            SegmentCount::CountPass => lines.push(format!(
-                "Plus one count of {column} for exact segment totals, kept for later runs"
-            )),
+            SegmentCount::CountPass => {
+                lines.push(format!("+1 count of {column} · exact segment totals, kept"))
+            }
             SegmentCount::InSamplePass => lines.push(format!(
-                "Counts every row by {column} in that pass: exact segment totals"
+                "Segment totals: exact, counted by {column} in that pass"
             )),
             SegmentCount::Retained => {
-                lines.push("Segment totals from a count already read: no read".to_string())
+                lines.push("Segment totals: from an earlier count · no read".to_string())
             }
             SegmentCount::RolledUp(finer) => lines.push(format!(
-                "Segment totals summed from the {} counts already read",
+                "Segment totals: summed from earlier {} counts",
                 window_cadence(finer)
             )),
             SegmentCount::TooMany => lines.push(format!(
-                "Too many segments {} to count; choose a coarser grain",
+                "Too many segments {} to count · choose a coarser grain",
                 plan.grain.label()
             )),
             SegmentCount::NotNeeded | SegmentCount::PerValue => {}
         }
     }
     if plan.compute == QualityCompute::Sample {
-        lines.push("Then measured in memory: no further reads".to_string());
+        lines.push("Measured in memory · no further reads".to_string());
     }
     lines.extend(intent_read_lines(plan, exact));
     // Gaps come from the segment counts the run already takes, never a read of
     // their own.
     if plan.expected_windows().is_some() && plan.compute != QualityCompute::Metadata {
-        lines.push("Expected windows: checked against the segment counts, no read".to_string());
+        lines.push("Expected windows: from the segment counts · no read".to_string());
     }
     let rows = planned_rows(state, plan)
         .map(numfmt::group_chrome)
@@ -858,10 +854,10 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
 fn copy_lines(view: &SetupView<'_>, passes: usize) -> Vec<String> {
     let bytes = crate::widgets::info::format_bytes;
     let over_source =
-        format!("Every eligible row, in up to {passes} passes over the source: one per check");
+        format!("Every eligible row · up to {passes} passes over the source, 1 per check");
     match view.copy {
         CopyPlan::NotApplicable => vec![format!(
-            "Every eligible row, in up to {passes} passes over the scope: one per check"
+            "Every eligible row · up to {passes} passes over the scope, 1 per check"
         )],
         CopyPlan::Fetch {
             bytes: size,
@@ -869,36 +865,32 @@ fn copy_lines(view: &SetupView<'_>, passes: usize) -> Vec<String> {
         } => {
             let mut lines = vec![
                 format!(
-                    "One fetch of {} ({size}) into a local copy, then up to {passes} passes over it",
+                    "1 fetch of {} ({size}) to a local copy · up to {passes} passes over it",
                     objects_label(objects),
                     size = bytes(size)
                 ),
-                "The copy stays for later full scans until d releases it".to_string(),
+                "Local copy kept for later full scans · d releases".to_string(),
             ];
             if view.copy_released {
-                lines.push("Copied before; released, so fetched again".to_string());
+                lines.push("Released since last copy · fetched again".to_string());
             }
             lines
         }
         CopyPlan::Kept { bytes: size, .. } => vec![format!(
-            "Every eligible row, in up to {passes} passes over the local copy ({}): no source read",
+            "Every eligible row · up to {passes} passes over the local copy ({}) · no source read",
             bytes(size)
         )],
         CopyPlan::Passes(why) => vec![
             over_source,
             match why {
-                NoCopy::Off => "Local copies are off: quality_local_copy is 0".to_string(),
-                NoCopy::SizeUnknown => {
-                    "Object sizes unknown when it opened, so no local copy".to_string()
-                }
-                NoCopy::Unusable => {
-                    "The local copy did not read as the source, so no local copy".to_string()
-                }
+                NoCopy::Off => "No local copy: quality_local_copy = 0".to_string(),
+                NoCopy::SizeUnknown => "No local copy: object sizes unknown".to_string(),
+                NoCopy::Unusable => "No local copy: copy did not read as the source".to_string(),
                 NoCopy::PartOfTheSource => {
-                    "The scope reads part of the source, so no local copy".to_string()
+                    "No local copy: scope reads part of the source".to_string()
                 }
                 NoCopy::TooLarge { bytes: size, limit } => format!(
-                    "Too large to keep a local copy: {} over the {} limit",
+                    "No local copy: {} over the {} limit",
                     bytes(size),
                     bytes(limit)
                 ),
@@ -906,7 +898,7 @@ fn copy_lines(view: &SetupView<'_>, passes: usize) -> Vec<String> {
                     bytes: size,
                     free: Some(free),
                 } => format!(
-                    "No local copy: {} is more than the {} free on disk",
+                    "No local copy: {} needed, {} free on disk",
                     bytes(size),
                     bytes(free)
                 ),
@@ -954,20 +946,18 @@ fn intent_read_lines(plan: &DataQualityPlan, every_row: bool) -> Vec<String> {
     }
     let key = !plan.intent.key.is_empty();
     match plan.compute {
-        QualityCompute::Metadata => vec!["Column intent needs values: not checked".to_string()],
-        QualityCompute::Full if key => vec![
-            "Column intent: counted in the profile pass; the key adds one pass over its columns"
-                .to_string(),
-        ],
+        QualityCompute::Metadata => vec!["Column intent: not checked, needs values".to_string()],
+        QualityCompute::Full if key => {
+            vec!["Column intent: in the profile pass · key adds 1 pass".to_string()]
+        }
         QualityCompute::Full => {
-            vec!["Column intent: counted in the profile pass, no extra pass".to_string()]
+            vec!["Column intent: in the profile pass · no extra pass".to_string()]
         }
         QualityCompute::Sample => {
-            let mut lines =
-                vec!["Column intent: checked on the rows read, no extra read".to_string()];
+            let mut lines = vec!["Column intent: on the rows read · no extra read".to_string()];
             if key && !every_row {
                 lines.push(format!(
-                    "Key: finds repeats among the {} sampled rows only; Every row checks them all",
+                    "Key: repeats among the {} sampled rows only · Every row checks all",
                     numfmt::group_chrome(plan.dataset_rows)
                 ));
             }
@@ -1014,7 +1004,7 @@ fn setup_status(config: &DataQualityWidgetConfig<'_>) -> Option<(String, bool)> 
                 if view.note.is_some() {
                     "Run waits: "
                 } else {
-                    "Cancellation requested; "
+                    "Cancelling: "
                 },
                 cancelling.what(),
                 glyphs::get().middot,
@@ -1027,7 +1017,7 @@ fn setup_status(config: &DataQualityWidgetConfig<'_>) -> Option<(String, bool)> 
         return Some((note.to_string(), true));
     }
     if view.edited {
-        return Some(("Edited: Enter runs it, Esc discards".to_string(), false));
+        return Some(("Edited · Enter runs, Esc discards".to_string(), false));
     }
     None
 }
@@ -1098,13 +1088,13 @@ fn render_overview(
     let mut list = sections[2];
     if report.findings.is_empty() {
         let message = if report.metadata_only {
-            "No values were read, so nothing about them is known. Set Values to read in Setup (e) to check them."
+            "No values read · e Setup"
         } else if report.no_rows {
-            "The scope has no rows, so nothing about its values is known. Choose other rows in Setup (e) to check them."
+            "No rows in scope · e Setup"
         } else {
-            "No columns to check."
+            "No columns to check"
         };
-        Paragraph::new(message)
+        Paragraph::new(dotted(message))
             .wrap(Wrap { trim: true })
             .style(Style::default().fg(config.theme.get("dimmed")))
             .render(list, buf);
@@ -1145,7 +1135,7 @@ fn render_overview(
     }
     normalize_selection(table_state, shown.len());
     if shown.is_empty() {
-        Paragraph::new("No findings match. Esc shows them all.")
+        Paragraph::new(dotted("No findings match · Esc shows all"))
             .wrap(Wrap { trim: true })
             .style(Style::default().fg(config.theme.get("dimmed")))
             .render(list, buf);
@@ -1634,6 +1624,12 @@ fn segment_text(label: &str) -> String {
     label.replace('∅', glyphs::get().null)
 }
 
+/// Text written with `·` between its parts, in the glyph set's middot: `-` on an
+/// ASCII terminal.
+pub(crate) fn dotted(text: &str) -> String {
+    text.replace('·', glyphs::get().middot)
+}
+
 pub(crate) fn fit(text: &str, width: usize) -> String {
     if glyphs::display_width(text) <= width {
         return text.to_string();
@@ -1780,11 +1776,11 @@ fn evidence_line(
 ) -> String {
     let rows = match finding.evidence(results) {
         Ok(rows) => rows,
-        Err(reason) => return format!("{reason}."),
+        Err(reason) => return reason,
     };
     if let EvidenceRows::Files(QualityScope::SourceFiles(files)) = &rows {
         return format!(
-            "Enter asks before reading the rows of the {} named {}.",
+            "Enter: rows of the {} named {} (asks first)",
             files.len(),
             if files.len() == 1 { "file" } else { "files" }
         );
@@ -1824,13 +1820,13 @@ fn evidence_line(
         } else {
             ""
         };
-        format!("Enter shows {what}{together}.")
+        format!("Enter: {what}{together}")
     } else if sampled {
-        format!("The sampled rows are no longer kept: Enter asks before reading {what} again.")
+        format!("Enter: {what} (sample released, asks first)")
     } else if config.measured.compute == QualityCompute::Full {
-        format!("A full scan keeps no rows: Enter asks before reading {what}.")
+        format!("Enter: {what} (full scan keeps none, asks first)")
     } else {
-        format!("The rows read are no longer kept: Enter asks before reading {what}.")
+        format!("Enter: {what} (rows released, asks first)")
     }
 }
 
@@ -2483,29 +2479,24 @@ fn render_intervals(
     if profiles.is_empty() {
         let schema = config.state.quality_schema(&plan.scope);
         let message = if config.setup.time_candidates.is_empty() {
-            "No date, time or text columns, so no time between dates to measure."
+            "No date, time or text columns"
         } else if plan.compute == QualityCompute::Metadata && !plan.interval_pairs().is_empty() {
-            "File metadata only reads no values, so no time between dates. Set Values \
-             to Read in Setup (e)."
+            "File metadata only · no values read · e Setup"
         } else if plan.interval_pairs().iter().any(|(start, end)| {
             [start, end].into_iter().any(|role| {
                 plan.role_column(*role)
                     .is_some_and(|column| !plan.reads_as_time(column, schema))
             })
         }) {
-            "An interval's column is text with no format. Choose one under Text as \
-             time in Setup (e)."
+            "Interval column is text with no format · Text as time in Setup (e)"
         } else if !plan.interval_pairs().is_empty() {
-            "No rows to measure the time between dates on."
+            "No rows to measure"
         } else if !plan.candidate_pairs().is_empty() {
-            "The time roles make no interval. Choose a start and an end under \
-             Intervals in Setup (e)."
+            "Time roles make no interval · Intervals in Setup (e)"
         } else {
-            "Assign Time roles in Setup (e), such as when a row happened and when it \
-             was received, to measure the time between them. Text is read as time \
-             through a format chosen under Text as time."
+            "No time roles · Time roles in Setup (e)"
         };
-        Paragraph::new(message)
+        Paragraph::new(dotted(message))
             .wrap(Wrap { trim: true })
             .style(Style::default().fg(theme.get("text_primary")))
             .render(
@@ -2765,7 +2756,7 @@ fn render_interval_detail(
         };
         Line::styled(
             fit(
-                &format!("  Rows do not open: {what} is not a value to filter on"),
+                &format!("  Rows do not open: {what} is not a filter value"),
                 width,
             ),
             Style::default().fg(theme.get("dimmed")),
@@ -2832,7 +2823,7 @@ fn render_interval_pairs(
     .render(title, buf);
     if candidates.is_empty() {
         Paragraph::new(Span::styled(
-            "Assign two time roles first: an interval runs from one to the other",
+            dotted("Needs 2 time roles · Time roles in Setup (e)"),
             dimmed,
         ))
         .wrap(Wrap { trim: true })
@@ -3036,14 +3027,15 @@ fn gaps_summary(plan: &DataQualityPlan, gaps: &Gaps) -> String {
         .unwrap_or_default();
     let unit = trend_unit(&plan.grain);
     match gaps {
-        Gaps::NoValues => format!("Expected {cadence}: file metadata only counts no windows"),
+        Gaps::NoValues => format!("Expected {cadence}: file metadata only, no windows counted"),
         Gaps::NoWindows => {
-            format!("Expected {cadence}: no window found and no range stated")
+            format!("Expected {cadence}: no window found, no range set")
         }
         Gaps::TooMany { windows } => format!(
-            "Expected {cadence}: {} in range, over {}; narrow it in Setup (e)",
+            "Expected {cadence}: {} in range, over {} {dot} narrow in Setup (e)",
             counted_unit(*windows, unit),
-            numfmt::group_chrome(crate::quality_trends::MAX_EXPECTED_WINDOWS)
+            numfmt::group_chrome(crate::quality_trends::MAX_EXPECTED_WINDOWS),
+            dot = glyphs::get().middot,
         ),
         // From typed past the last window found, with Before blank.
         Gaps::Checked(check) if check.expected == 0 => {
@@ -3054,9 +3046,10 @@ fn gaps_summary(plan: &DataQualityPlan, gaps: &Gaps) -> String {
             counted_unit(check.expected, unit)
         ),
         Gaps::Checked(check) => format!(
-            "Expected {cadence}, {}: {}; g lists them",
+            "Expected {cadence}, {}: {} {} g lists",
             counted_unit(check.expected, unit),
-            gap_counts(check)
+            gap_counts(check),
+            glyphs::get().middot,
         ),
     }
 }
@@ -3190,7 +3183,7 @@ fn render_trend_detail(
     let (name_width, bars) = trend_layout(results, area.width);
     let view = trend_view(results, config.metric, bars);
     let (Some(line), false) = (view.lines.get(config.trend_line), view.bars.is_empty()) else {
-        Paragraph::new("No bars to show: Esc returns to Trends.")
+        Paragraph::new(dotted("No bars · Esc Trends"))
             .style(Style::default().fg(theme.get("text_primary")))
             .render(area, buf);
         return;
@@ -3593,7 +3586,7 @@ fn render_gaps(
     )
     .render(note, buf);
     if check.runs.is_empty() {
-        Paragraph::new("Every expected window has rows.")
+        Paragraph::new("Every expected window has rows")
             .style(Style::default().fg(theme.get("text_primary")))
             .render(body, buf);
         return;
@@ -3784,7 +3777,7 @@ fn render_detail(
     };
     let index = table_state.selected().unwrap_or(0);
     let Some(profile) = results.columns.get(index) else {
-        Paragraph::new("Select a column first.")
+        Paragraph::new("No column selected")
             .alignment(Alignment::Center)
             .render(area, buf);
         return;
@@ -4155,7 +4148,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
             "Value reads",
             match copy {
                 CopyPlan::Fetch { bytes, .. } => format!(
-                    "{}, fetched once; every pass reads the copy",
+                    "{}, fetched once · passes read the copy",
                     format_bytes(bytes)
                 ),
                 CopyPlan::Kept { bytes, .. } => {
@@ -4190,7 +4183,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
                 reads if plan.compute == QualityCompute::Full => {
                     format!("{reads} extra one-column file reads")
                 }
-                reads => format!("not read; a full scan would add {reads} one-column file reads"),
+                reads => format!("not read · full scan adds {reads} one-column file reads"),
             },
         ),
         row("Remote writes", "none".to_string()),
@@ -4198,8 +4191,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
             "Local file writes",
             match copy {
                 CopyPlan::Fetch { bytes, .. } => format!(
-                    "a copy of {} in the cache directory, kept until released (d), \
-                     reopened or datui exits",
+                    "{} copy in the cache directory · kept until d, reopen or exit",
                     format_bytes(bytes)
                 ),
                 _ => "none".to_string(),
@@ -4218,7 +4210,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
                     .iter()
                     .map(|line| line.strip_prefix("Column intent: ").unwrap_or(line))
                     .collect::<Vec<_>>()
-                    .join("; ")
+                    .join(" · ")
             }
         }),
         row(
@@ -4233,13 +4225,16 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
                         .to_string()
                 }
                 QualityCompute::Full => {
-                    "rows: every eligible row; what each pass re-reads depends on the \
-                     source and its caches"
+                    "rows: every eligible row; bytes: unknown, per source and its caches"
                         .to_string()
                 }
             },
         ),
     ];
+    let rows = rows.map(|row| FieldRow {
+        value: dotted(&row.value),
+        ..row
+    });
     let width = 72.min(area.width.saturating_sub(2));
     let label_width = rows
         .iter()
@@ -4295,39 +4290,41 @@ fn passes_label(config: &DataQualityWidgetConfig<'_>) -> String {
 /// A full scan asks first: it may read the whole source.
 fn render_run_confirmation(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
     let width = 60.min(area.width.saturating_sub(2));
-    let fetch = match config.setup.copy {
-        CopyPlan::Fetch { bytes, .. } => Some(format!(
-            "It fetches {} once into a local copy, and every pass reads the copy.",
-            crate::widgets::info::format_bytes(bytes)
-        )),
-        _ => None,
+    let row = |label: &str, value: String| FieldRow {
+        mark: None,
+        label: label.to_string(),
+        value,
     };
-    let lines = [
-        Some("This setup reads every eligible row and may read the whole source.".to_string()),
-        fetch,
-        Some("The source stays read-only; remote writes are 0 B.".to_string()),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>();
-    let lines = lines
+    let mut rows = vec![row(
+        "Reads",
+        "every eligible row, up to the whole source".to_string(),
+    )];
+    if let CopyPlan::Fetch { bytes, .. } = config.setup.copy {
+        rows.push(row(
+            "Fetch",
+            format!(
+                "{} once, to a local copy",
+                crate::widgets::info::format_bytes(bytes)
+            ),
+        ));
+    }
+    rows.push(row("Source writes", "none".to_string()));
+    let label_width = rows
         .iter()
-        .flat_map(|text| crate::widgets::info::wrap_to(text, width.saturating_sub(4) as usize))
-        .collect::<Vec<_>>();
+        .map(|row| glyphs::display_width(&row.label))
+        .max()
+        .unwrap_or(0)
+        + 2;
+    let lines = field_lines(&rows, label_width, width.saturating_sub(4) as usize, false);
     let popup = centered_rect(width, lines.len() as u16 + 2, area);
     let content = Surface::new("Full Scan")
         .border_style(Style::default().fg(config.ctx.modal_border_active))
         .render(popup, buf, config.ctx);
-    render_counted(
-        lines.into_iter().map(Line::raw).collect(),
-        content,
-        config.theme,
-        buf,
-    );
+    render_counted(lines, content, config.theme, buf);
 }
 
 fn render_run_prompt(area: Rect, theme: &Theme, buf: &mut Buffer) {
-    Paragraph::new("No report yet: e opens Setup, and Enter there runs it.")
+    Paragraph::new(dotted("No report · e Setup, then Enter"))
         .alignment(Alignment::Center)
         .style(Style::default().fg(theme.get("text_primary")))
         .render(area, buf);
@@ -4857,9 +4854,11 @@ mod tests {
             config.rows_kept = kept;
             screen.draw(config, position, width, height).join("\n")
         };
-        assert!(detail(&sampled, true, 80, 24).contains("Enter shows the 1 sampled row."));
-        assert!(detail(&sampled, false, 80, 24).contains("no longer kept"));
-        assert!(detail(&screen.results, false, 80, 24).contains("A full scan keeps no rows"));
+        assert!(detail(&sampled, true, 80, 24).contains("Enter: the 1 sampled row"));
+        assert!(detail(&sampled, false, 80, 24).contains("sample released, asks first"));
+        assert!(
+            detail(&screen.results, false, 80, 24).contains("full scan keeps none, asks first")
+        );
         // A sample that held every row is exact, but it was no full scan.
         let whole_sample = DataQualityPlan {
             compute: QualityCompute::Sample,
@@ -4869,7 +4868,7 @@ mod tests {
         config.measured = &whole_sample;
         config.observation_detail = true;
         let text = screen.draw(config, position, 80, 24).join("\n");
-        assert!(text.contains("The rows read are no longer kept"), "{text}");
+        assert!(text.contains("rows released, asks first"), "{text}");
 
         let read = EvidenceRead {
             rows: EvidenceRows::Matching(polars::prelude::lit(true)),
@@ -5015,7 +5014,7 @@ mod tests {
         let rows = screen.draw(config, 0, 100, 30);
         let text = rows.join("\n");
         assert!(
-            rows[0].contains("Cancellation requested; source read finishing"),
+            rows[0].contains("Cancelling: source read finishing"),
             "the header keeps the state: {text}"
         );
         assert!(
@@ -5032,7 +5031,7 @@ mod tests {
         });
         let rows = screen.draw(config, 0, 100, 30);
         assert!(
-            rows[0].contains("Cancellation requested; run stopping"),
+            rows[0].contains("Cancelling: run stopping"),
             "{}",
             rows.join("\n")
         );
@@ -5383,7 +5382,7 @@ mod interval_tests {
         assert!(screen.results.temporal.is_empty());
         let text = screen.draw(QualityPage::Intervals, 0, 0, (80, 24));
         assert!(
-            text.contains("File metadata only reads no values"),
+            text.contains("File metadata only · no values read"),
             "{text}"
         );
 
@@ -5419,12 +5418,12 @@ mod interval_tests {
         };
         let text = Screen::new(plan.clone()).draw(QualityPage::Setup, 0, 0, (120, 40));
         assert!(
-            text.contains("Window by each interval's end: 2 of those passes for intervals"),
+            text.contains("Window by each interval's end: 2 of those passes, 1 per column"),
             "{text}"
         );
         plan.interval_clock = IntervalClock::Grain;
         let text = Screen::new(plan).draw(QualityPage::Setup, 0, 0, (120, 40));
-        assert!(!text.contains("of those passes for intervals"), "{text}");
+        assert!(!text.contains("of those passes"), "{text}");
     }
 
     /// A full scan's Read says how it gets the rows of a remote source before Run:
@@ -5448,18 +5447,21 @@ mod interval_tests {
         let text = lines(fetch, false);
         assert!(
             text.starts_with(
-                "One fetch of 8 objects (17.0 MiB) into a local copy, then up to 7 passes over it"
+                "1 fetch of 8 objects (17.0 MiB) to a local copy · up to 7 passes over it"
             ),
             "{text}"
         );
-        assert!(text.contains("until d releases it"), "{text}");
-        assert!(!text.contains("released, so"), "{text}");
-        assert!(lines(fetch, true).contains("Copied before; released, so fetched again"));
+        assert!(
+            text.contains("Local copy kept for later full scans · d releases"),
+            "{text}"
+        );
+        assert!(!text.contains("Released since"), "{text}");
+        assert!(lines(fetch, true).contains("Released since last copy · fetched again"));
         let one = CopyPlan::Fetch {
             bytes: MIB,
             objects: 1,
         };
-        assert!(lines(one, false).starts_with("One fetch of 1 object (1.0 MiB)"));
+        assert!(lines(one, false).starts_with("1 fetch of 1 object (1.0 MiB)"));
         assert_eq!(
             lines(
                 CopyPlan::Kept {
@@ -5468,36 +5470,33 @@ mod interval_tests {
                 },
                 false
             ),
-            "Every eligible row, in up to 7 passes over the local copy (17.0 MiB): no source read"
+            "Every eligible row · up to 7 passes over the local copy (17.0 MiB) · no source read"
         );
         assert!(lines(CopyPlan::NotApplicable, false).contains("passes over the scope"));
         for (why, says) in [
-            (NoCopy::Off, "Local copies are off: quality_local_copy is 0"),
-            (
-                NoCopy::SizeUnknown,
-                "Object sizes unknown when it opened, so no local copy",
-            ),
+            (NoCopy::Off, "No local copy: quality_local_copy = 0"),
+            (NoCopy::SizeUnknown, "No local copy: object sizes unknown"),
             (
                 NoCopy::Unusable,
-                "The local copy did not read as the source, so no local copy",
+                "No local copy: copy did not read as the source",
             ),
             (
                 NoCopy::PartOfTheSource,
-                "The scope reads part of the source, so no local copy",
+                "No local copy: scope reads part of the source",
             ),
             (
                 NoCopy::TooLarge {
                     bytes: 3 * 1024 * MIB,
                     limit: 2 * 1024 * MIB,
                 },
-                "Too large to keep a local copy: 3.0 GiB over the 2.0 GiB limit",
+                "No local copy: 3.0 GiB over the 2.0 GiB limit",
             ),
             (
                 NoCopy::NoRoom {
                     bytes: 17 * MIB,
                     free: Some(MIB),
                 },
-                "No local copy: 17.0 MiB is more than the 1.0 MiB free on disk",
+                "No local copy: 17.0 MiB needed, 1.0 MiB free on disk",
             ),
             (
                 NoCopy::NoRoom {
@@ -5509,7 +5508,7 @@ mod interval_tests {
         ] {
             let text = lines(CopyPlan::Passes(why), false);
             assert!(
-                text.starts_with("Every eligible row, in up to 7 passes over the source"),
+                text.starts_with("Every eligible row · up to 7 passes over the source"),
                 "{text}"
             );
             assert!(text.ends_with(says), "{text}");
@@ -5580,7 +5579,7 @@ mod interval_tests {
         });
         let text = screen.draw(QualityPage::Setup, 0, 0, (120, 32));
         assert!(
-            text.contains("In no interval: created. Choose a start and end under Intervals"),
+            text.contains("In no interval: created · set Intervals"),
             "{text}"
         );
         assert!(text.contains("No time zone, read as UTC: sent"), "{text}");
@@ -5945,7 +5944,7 @@ mod trend_tests {
             "{setup}"
         );
         assert!(
-            setup.contains("Expected windows: checked against the segment counts, no read"),
+            setup.contains("Expected windows: from the segment counts · no read"),
             "{setup}"
         );
         let form = ExpectedForm::new(&screen.plan, &screen.theme);

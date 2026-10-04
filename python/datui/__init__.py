@@ -141,8 +141,11 @@ def view(
     View data in the terminal.
 
     Accepts path(s), a LazyFrame, or a DataFrame. Paths may be local or remote
-    (s3://, gs://, http(s)://). Remote non-Parquet files are downloaded to a temp
-    file. With multiple paths, at most one may be remote.
+    (s3://, gs://, abfss://, az://, http(s)://). An az:// URL names no storage
+    account: it comes from the Azure environment variables or the one Azure
+    connection in the config, and without one the open is refused. Remote
+    non-Parquet files are downloaded to a temp file. With multiple paths, at
+    most one may be remote.
 
     With capture=True, returns the final table's logical view on normal quit as a
     LazyFrame — the applied query, filters, sort, drill-down, reshape and column
@@ -199,7 +202,7 @@ def view(
         lf = data
     else:
         raise TypeError(
-            "data must be path(s) (str or Path), a URL (s3://, gs://, http(s)://), "
+            "data must be path(s) (str or Path), a URL (s3://, gs://, abfss://, http(s)://), "
             "or a polars.LazyFrame or polars.DataFrame"
         )
 

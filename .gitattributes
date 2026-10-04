@@ -1,0 +1,28 @@
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Fuzz inputs are bytes, CRLF ones included; replay needs them exact.
+fuzz/corpus/** binary
+
+*.gif binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.parquet binary
+*.arrow binary
+*.feather binary
+*.avro binary
+*.orc binary
+*.xlsx binary
+*.db binary
+*.sqlite binary
+*.npy binary
+*.npz binary
+*.gz binary
+*.zst binary
+*.bz2 binary
+*.xz binary
+*.zip binary

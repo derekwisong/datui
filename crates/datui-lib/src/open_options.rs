@@ -55,6 +55,9 @@ pub struct OpenOptions {
     pub max_buffered_rows: Option<usize>,
     pub max_buffered_mb: Option<usize>,
     pub row_numbers: bool,
+    /// Neither the flag nor the config said: `#` is on for text and logs
+    /// ([`crate::config::RowNumbers::Auto`]), decided once the format is known.
+    pub row_numbers_auto: bool,
     pub row_start_index: usize,
     /// When true, use hive load path for directory/glob; single file uses normal load.
     pub hive: bool,
@@ -229,6 +232,7 @@ impl OpenOptions {
             max_buffered_rows: None,
             max_buffered_mb: None,
             row_numbers: false,
+            row_numbers_auto: true,
             row_start_index: 1,
             hive: false,
             single_spine_schema: true,
@@ -385,7 +389,12 @@ impl OpenOptions {
         opts.pages_lookback = Some(config.performance.pages_behind);
         opts.max_buffered_rows = Some(config.performance.max_buffered_rows);
         opts.max_buffered_mb = Some(config.performance.max_buffered_mb());
-        opts.row_numbers = args.row_numbers.unwrap_or(config.display.row_numbers);
+        let row_numbers = args
+            .row_numbers
+            .map(crate::config::RowNumbers::from)
+            .unwrap_or(config.display.row_numbers);
+        opts.row_numbers = row_numbers == crate::config::RowNumbers::On;
+        opts.row_numbers_auto = row_numbers == crate::config::RowNumbers::Auto;
         opts.row_start_index = config.display.row_numbers_start;
         opts.single_spine_schema = config.read.parquet_schema == ParquetSchema::Union;
         opts.decompress_in_memory = config.read.decompress_in_memory;

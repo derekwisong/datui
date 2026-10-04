@@ -1337,6 +1337,7 @@ fn opened(
             .map(|summary| crate::text_formats::note(summary, "the array".to_string()))
             .collect(),
         units: Vec::new(),
+        indexing: None,
     }
 }
 

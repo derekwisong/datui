@@ -205,7 +205,7 @@ fn apply_args(config: &mut AppConfig, args: &Args) {
         config.display.number_format = config.display.number_format.with_grouping_override(nf);
     }
     if let Some(row_numbers) = args.row_numbers {
-        config.display.row_numbers = row_numbers;
+        config.display.row_numbers = row_numbers.into();
     }
     if let Some(mouse) = args.mouse {
         config.display.mouse = mouse;

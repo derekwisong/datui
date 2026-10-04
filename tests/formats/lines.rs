@@ -1,7 +1,7 @@
 //! Text read as lines: a `.log` file, an unnamed text file, a pipe, a compressed log,
-//! a directory of logs and a followed log each open as `line_no` and `line`, every line
-//! a row, blank ones included; CSV opens as CSV only on evidence, and bytes that are not
-//! text still open in the hex view.
+//! a directory of logs and a followed log each open as a `line` column, every line a
+//! row, blank ones included, numbered by `#` as `less -N` numbers them; CSV opens as CSV
+//! only on evidence, and bytes that are not text still open in the hex view.
 
 use super::*;
 use std::io::Write as _;
@@ -64,15 +64,21 @@ fn read_as_lines(app: &App) -> bool {
 const LOG: &[u8] = b"started\r\n\r\nwarn: disk, 91% full\n\n\nstopped\n";
 const LOG_LINES: [&str; 6] = ["started", "", "warn: disk, 91% full", "", "", "stopped"];
 
+/// What `#` shows for the first `rows` rows on screen.
+fn numbers(app: &App, rows: usize) -> Vec<usize> {
+    let state = app.data_table_state.as_ref().unwrap();
+    state.row_numbers_from(state.start_row(), rows)
+}
+
 #[test]
 fn a_log_opens_as_its_lines_numbered_as_less_numbers_them() {
     let dir = tempfile::tempdir().unwrap();
     let path = write(dir.path(), "app.log", LOG);
     let (app, _rx) = open(vec![path], OpenOptions::default());
-    let df = frame(&app);
-    assert_eq!(df.get_column_names(), ["line_no", "line"]);
-    let numbers: Vec<Option<u32>> = df.column("line_no").unwrap().u32().unwrap().to_vec();
-    assert_eq!(numbers, (1..=6).map(Some).collect::<Vec<_>>());
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.get_column_order(), ["line"]);
+    assert!(state.row_numbers(), "# is on for text");
+    assert_eq!(numbers(&app, 6), [1, 2, 3, 4, 5, 6]);
     assert_eq!(lines(&app), LOG_LINES);
     assert!(read_as_lines(&app), "{:?}", notes(&app));
     assert!(
@@ -165,7 +171,10 @@ fn a_directory_of_logs_names_each_line_s_file() {
     write(dir.path(), "b.log", b"three\n");
     let (app, _rx) = open(vec![dir.path().to_path_buf()], OpenOptions::default());
     let df = frame(&app);
-    assert_eq!(df.get_column_names(), ["file", "line_no", "line"]);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().get_column_order(),
+        ["file", "line"]
+    );
     let files: Vec<Option<&str>> = df.column("file").unwrap().str().unwrap().iter().collect();
     assert_eq!(
         files,
@@ -190,14 +199,44 @@ fn a_query_filters_lines() {
     let dir = tempfile::tempdir().unwrap();
     let path = write(dir.path(), "app.log", LOG);
     let (mut app, rx) = open(vec![path], OpenOptions::default());
-    let mut next = Some(AppEvent::QQuery(
-        "select where line_no > 2, line <> \"\"".to_string(),
-    ));
+    let mut next = Some(AppEvent::QQuery("select where line <> \"\"".to_string()));
     while let Some(event) = next {
         next = app.event(&event);
     }
     drain_events(&mut app, &rx);
-    assert_eq!(lines(&app), ["warn: disk, 91% full", "stopped"]);
+    assert_eq!(lines(&app), ["started", "warn: disk, 91% full", "stopped"]);
+}
+
+/// `#` is each line's number in the file, and stays with it through a filter and a
+/// sort; turned on for a CSV, it numbers the rows of the file as they were read.
+#[test]
+fn row_numbers_are_the_source_row_through_sort_and_filter() {
+    use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "app.log", LOG);
+    let (mut app, rx) = open(vec![path], OpenOptions::default());
+    let run = |app: &mut App, event: AppEvent| {
+        let mut next = Some(event);
+        while let Some(event) = next {
+            next = app.event(&event);
+        }
+        drain_events(app, &rx);
+    };
+    run(
+        &mut app,
+        AppEvent::Filter(vec![FilterStatement {
+            columns: Vec::new(),
+            column: "line".into(),
+            operator: FilterOperator::NotEq,
+            value: "".into(),
+            logical_op: LogicalOperator::And,
+        }]),
+    );
+    assert_eq!(lines(&app), ["started", "warn: disk, 91% full", "stopped"]);
+    assert_eq!(numbers(&app, 3), [1, 3, 6]);
+    run(&mut app, AppEvent::Sort(vec!["line".into()], vec![true]));
+    assert_eq!(lines(&app), ["warn: disk, 91% full", "stopped", "started"]);
+    assert_eq!(numbers(&app, 3), [3, 6, 1]);
 }
 
 /// A followed log shows every line that arrives, blank ones too, and a line is read
@@ -277,4 +316,40 @@ fn copy_as_python_reads_the_lines_datui_shows() {
         return;
     };
     assert_eq!(rows, view_csv(&app), "{script}");
+}
+
+/// A log larger than what an open indexes shows its first rows, and its lines go on
+/// being indexed behind them: the count, End and `#` then reach the last line.
+#[test]
+fn a_large_log_is_indexed_behind_its_first_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let lines = 1_500_000usize;
+    let mut bytes = Vec::with_capacity(lines * 14);
+    for i in 1..=lines {
+        bytes.extend_from_slice(format!("line {i}\n").as_bytes());
+    }
+    assert!(bytes.len() > datui::lines::FIRST_BYTES);
+    let path = write(dir.path(), "big.log", &bytes);
+    let (mut app, rx) = app();
+    // Up to the first rows, and End pressed at once: while lines are still being
+    // indexed it waits for the last of them.
+    let mut next = Some(AppEvent::Open(vec![path], OpenOptions::default()));
+    while app.data_table_state.is_none() || app.is_busy() {
+        match next.take() {
+            Some(event) => next = app.event(&event),
+            None => next = common::next_event(&app, &rx),
+        }
+    }
+    let mut next = press(&mut app, KeyCode::End);
+    while let Some(event) = next {
+        next = app.event(&event);
+    }
+    drain_events(&mut app, &rx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.indexing().is_none());
+    assert_eq!(state.num_rows_if_valid(), Some(lines));
+    assert!(state.on_last_row(), "End reached the last line");
+    assert_eq!(state.selected_display_row(), Some(lines));
+    let numbers = state.row_numbers_from(state.start_row(), state.visible_rows.max(1));
+    assert!(numbers.contains(&lines), "{numbers:?}");
 }

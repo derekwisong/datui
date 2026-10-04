@@ -42,7 +42,7 @@ fn test_default_config() {
     // Check display defaults
     assert_eq!(config.performance.pages_ahead, 3);
     assert_eq!(config.performance.pages_behind, 3);
-    assert!(!config.display.row_numbers);
+    assert_eq!(config.display.row_numbers, datui::config::RowNumbers::Auto);
     assert_eq!(config.display.row_numbers_start, 1);
     assert_eq!(config.display.cell_padding.cells(), 2);
 
@@ -177,7 +177,7 @@ row_numbers_start = 0
     let config: AppConfig = toml::from_str(&content).expect("Failed to parse config");
 
     // Check that custom values are loaded
-    assert!(config.display.row_numbers);
+    assert!(config.display.row_numbers == datui::config::RowNumbers::On);
     assert_eq!(config.display.row_numbers_start, 0);
 
     // Check that defaults are still present for unspecified values
@@ -201,7 +201,7 @@ sample_rows = 50000
 chip_key = "blue"
 "#]);
 
-    assert!(base.display.row_numbers);
+    assert!(base.display.row_numbers == datui::config::RowNumbers::On);
     assert_eq!(base.performance.pages_ahead, 5);
     assert_eq!(base.analysis.sample_rows, 50000);
     assert_eq!(base.theme.colors.chip_key, "blue");
@@ -307,7 +307,7 @@ level = "info"
     assert_eq!(config.csv.infer_rows, 5000);
     assert_eq!(config.log.level.as_deref(), Some("info"));
     assert_eq!(config.performance.pages_ahead, 5);
-    assert!(config.display.row_numbers);
+    assert!(config.display.row_numbers == datui::config::RowNumbers::On);
     assert_eq!(config.analysis.sample_rows, 50000);
     assert_eq!(config.theme.colors.chip_key, "blue");
     assert_eq!(config.query.history_limit, 500);
@@ -486,7 +486,7 @@ cross_filesystems = true
     let kept = layered(&[import, "[display]\n"]);
     assert_eq!(kept.display.unicode, UnicodeMode::Never);
     assert_eq!(kept.performance.pages_ahead, 5);
-    assert!(kept.display.row_numbers);
+    assert!(kept.display.row_numbers == datui::config::RowNumbers::On);
     assert!(!kept.display.right_align_numbers);
     assert_eq!(kept.display.sidebar_width, Some(50));
     assert_eq!(
@@ -511,7 +511,7 @@ cross_filesystems = true
         r#"
 [display]
 unicode = "auto"
-row_numbers = false
+row_numbers = "auto"
 right_align_numbers = true
 number_format = "none"
 
@@ -543,7 +543,10 @@ cross_filesystems = false
     ]);
     assert_eq!(restored.display.unicode, UnicodeMode::Auto);
     assert_eq!(restored.performance.pages_ahead, 3);
-    assert!(!restored.display.row_numbers);
+    assert_eq!(
+        restored.display.row_numbers,
+        datui::config::RowNumbers::Auto
+    );
     assert!(restored.display.right_align_numbers);
     assert_eq!(
         restored.display.number_format,
@@ -1215,7 +1218,7 @@ fn test_missing_import_is_skipped_not_fatal() {
     let config = AppConfig::load_from_file(&root).expect("Missing import must not be fatal");
 
     assert!(
-        config.display.row_numbers,
+        config.display.row_numbers == datui::config::RowNumbers::On,
         "rest of the config still applies"
     );
     assert_eq!(
@@ -1366,7 +1369,7 @@ fn test_config_without_import_is_unchanged() {
 
     let config = AppConfig::load_from_file(&root).expect("Config should load");
 
-    assert!(config.display.row_numbers);
+    assert!(config.display.row_numbers == datui::config::RowNumbers::On);
     assert!(config.import.is_empty());
 }
 
@@ -1394,7 +1397,7 @@ fn test_a_config_with_the_removed_ui_section_still_loads() {
         "[ui.controls]\nrow_count_width = 25\ncustom_controls = [[\"q\", \"Quit\"]]\n\n[display]\nrow_numbers = true\n",
     );
     let config = AppConfig::load_from_file(&root).expect("Config should load");
-    assert!(config.display.row_numbers);
+    assert!(config.display.row_numbers == datui::config::RowNumbers::On);
 }
 
 /// `-c` names one setting; a removed one is refused, with nothing applied: the
@@ -1438,7 +1441,10 @@ fn test_own_default_value_beats_an_import() {
         config.display.notes_accent,
         "explicit true undoes the import"
     );
-    assert!(config.display.row_numbers, "unwritten keys keep the import");
+    assert!(
+        config.display.row_numbers == datui::config::RowNumbers::On,
+        "unwritten keys keep the import"
+    );
     assert_eq!(config.theme.colors.error, "#f7768e");
 }
 

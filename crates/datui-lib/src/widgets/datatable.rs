@@ -319,6 +319,15 @@ pub struct DataTableState {
     /// The two above as the dataset was opened, so a reset returns to them.
     drift_at_open: bool,
     groups_at_open: Arc<Vec<crate::schema_union::DriftGroup>>,
+    /// The data as loaded carries each row's place in the source in the hidden row
+    /// index (lines), which `#` shows while the frame is the scan's.
+    source_rows_at_open: bool,
+    /// Lines still being indexed behind the first rows: the frames grow as they are.
+    indexing: Option<Arc<crate::lines::Lines>>,
+    /// The notes the lines gave when they opened, replaced once they are all indexed.
+    indexing_notes: Vec<crate::notes::Note>,
+    /// Whether the open guessed the lines were text, which their notes say.
+    indexing_guessed: bool,
     /// Where each file's rows begin in the dataset, and the drift group of each file.
     /// Together they turn a row's place in the dataset into what its file was missing.
     drift_file_starts: Vec<usize>,
@@ -985,6 +994,8 @@ pub struct OpenFacts {
     pub records: Option<(Arc<dyn crate::pushdown::Windowed>, usize)>,
     /// Each column's unit, where the file says one.
     pub units: Vec<(String, String)>,
+    /// Lines still being indexed behind the first rows: the frames grow as they are.
+    pub indexing: Option<Arc<crate::lines::Lines>>,
 }
 
 /// The footers' account of a dataset of many files.
@@ -1902,7 +1913,7 @@ impl DataTableState {
         max_buffered_mb: Option<usize>,
         polars_streaming: bool,
     ) -> Result<Self> {
-        let schema = lf.clone().collect_schema()?;
+        let (schema, source_rows_at_open) = Self::without_source_rows(lf.clone().collect_schema()?);
         let column_order: Vec<String> = schema.iter_names().map(|s| s.to_string()).collect();
         Ok(Self {
             unsorted_lf: None,
@@ -1965,6 +1976,10 @@ impl DataTableState {
             drift_groups: Arc::new(Vec::new()),
             drift_at_open: false,
             groups_at_open: Arc::new(Vec::new()),
+            source_rows_at_open,
+            indexing: None,
+            indexing_notes: Vec::new(),
+            indexing_guessed: false,
             drift_file_starts: Vec::new(),
             drift_file_group: Vec::new(),
             drift_files: Vec::new(),
@@ -2018,6 +2033,17 @@ impl DataTableState {
         })
     }
 
+    /// `schema` without the hidden row index, and whether it had one: the rows' place
+    /// in the source, which `#` shows, never a column of theirs.
+    fn without_source_rows(schema: Arc<Schema>) -> (Arc<Schema>, bool) {
+        if !schema.contains(crate::schema_union::DRIFT_COLUMN) {
+            return (schema, false);
+        }
+        let mut schema = (*schema).clone();
+        schema.shift_remove(crate::schema_union::DRIFT_COLUMN);
+        (Arc::new(schema), true)
+    }
+
     /// Create state from an existing LazyFrame (e.g. from Python or in-memory). Uses OpenOptions for display/buffer settings.
     pub fn from_lazyframe(lf: LazyFrame, options: &crate::OpenOptions) -> Result<Self> {
         let mut state = Self::new(
@@ -2042,6 +2068,7 @@ impl DataTableState {
         options: &crate::OpenOptions,
         partition_columns: Option<Vec<String>>,
     ) -> Result<Self> {
+        let (schema, source_rows_at_open) = Self::without_source_rows(schema);
         let column_order: Vec<String> = if let Some(ref part) = partition_columns {
             let part_set: HashSet<&str> = part.iter().map(String::as_str).collect();
             let rest: Vec<String> = schema
@@ -2116,6 +2143,10 @@ impl DataTableState {
             drift_groups: Arc::new(Vec::new()),
             drift_at_open: false,
             groups_at_open: Arc::new(Vec::new()),
+            source_rows_at_open,
+            indexing: None,
+            indexing_notes: Vec::new(),
+            indexing_guessed: false,
             drift_file_starts: Vec::new(),
             drift_file_group: Vec::new(),
             drift_files: Vec::new(),
@@ -2201,6 +2232,7 @@ impl DataTableState {
             detail,
             records,
             units,
+            indexing,
         } = facts;
         debug_assert!(
             self.is_pristine(),
@@ -2259,10 +2291,22 @@ impl DataTableState {
         self.detail = detail;
         if let Some((window, rows)) = records {
             // The reader knows its rows; a count through the frame would build its row
-            // index whole.
-            self.set_num_rows(rows);
+            // index whole. Lines still being indexed know only some of theirs.
+            if indexing.is_none() {
+                self.set_num_rows(rows);
+            }
             self.fixed_window = Some(window);
         }
+        if let Some(lines) = &indexing {
+            // The lines' own notes, as the open wrote them: replaced once every line
+            // is in, when they can say what the whole file holds.
+            self.indexing_guessed = self
+                .open_notes
+                .iter()
+                .any(|n| n.summary.starts_with(crate::lines::GUESSED));
+            self.indexing_notes = crate::lines::notes(lines, self.indexing_guessed);
+        }
+        self.indexing = indexing;
         self.file_units = Arc::new(units);
         self
     }
@@ -5844,6 +5888,11 @@ impl DataTableState {
     /// Asking for it separately would read all of them a second time, so the dataset
     /// says it will have one shortly and the caller does not start a count of its own.
     pub fn counts_itself_later(&self) -> bool {
+        // Lines still being indexed: any frame's count is of the lines so far, and the
+        // indexing is bringing the rest.
+        if self.indexing.is_some() && !self.num_rows_valid {
+            return true;
+        }
         // Only while it does not have one, and only while the frame is the scan. What
         // the pass is bringing is the *dataset's* count; a query's result has a count
         // of its own that nobody else is going to take. Declining it there means the
@@ -5851,6 +5900,37 @@ impl DataTableState {
         // counting while nothing is — and it costs nothing to take, because a frame
         // that is not the scan does not read footers for it either.
         self.footers_pending.is_some() && !self.num_rows_valid && self.is_pristine()
+    }
+
+    /// The lines being indexed behind the first rows, if they still are.
+    pub fn indexing(&self) -> Option<&Arc<crate::lines::Lines>> {
+        self.indexing.as_ref()
+    }
+
+    /// Whether `#` is on for this dataset when the config leaves it to the format:
+    /// text and logs, whose rows carry their place in the file.
+    pub fn numbered_by_default(&self) -> bool {
+        self.source_rows_at_open
+            || matches!(
+                self.read_as,
+                Some(crate::FileFormat::Text | crate::FileFormat::Journal)
+            )
+    }
+
+    /// Every line is indexed, `rows` of them: the count of the lines in order, and the
+    /// notes that say what the whole file holds. The frames already read every line
+    /// (their height waits for the indexing), so nothing read through them is stale.
+    pub(crate) fn lines_indexed(&mut self, rows: usize) {
+        let Some(lines) = self.indexing.take() else {
+            return;
+        };
+        let notes = crate::lines::notes(&lines, self.indexing_guessed);
+        let opened = std::mem::take(&mut self.indexing_notes);
+        self.open_notes.retain(|n| !opened.contains(n));
+        self.open_notes.extend(notes);
+        if self.is_pristine() {
+            self.set_num_rows(rows);
+        }
     }
 
     /// Give up on the rest of the footers: the pass could not read them.
@@ -6619,10 +6699,49 @@ impl DataTableState {
     /// remote dataset whose files are counted, a scan of only the files holding them.
     fn buffer_lf(&self, start: usize, len: usize) -> PolarsResult<LazyFrame> {
         let mut all_columns = self.binary_stub_exprs();
-        if self.drift_column_present {
+        if self.carries_source_rows() {
             all_columns.push(col(crate::schema_union::DRIFT_COLUMN));
         }
         self.window_lf(start, len, all_columns)
+    }
+
+    /// Whether the frame's rows carry their place in the source, for `#`: a dataset's
+    /// rows that know their file, or lines, while the frame is still the scan's. A
+    /// query's rows, a reshape's and a group's stand for no row of the source.
+    pub fn carries_source_rows(&self) -> bool {
+        self.drift_column_present || (self.source_rows_at_open && self.scan_is_the_root())
+    }
+
+    /// What `#` shows for `rows` rows from `start`: each row's place in the source
+    /// where the rows carry it, else its place in the view, counted from
+    /// `row_start_index`. A pristine view's places are the source's either way.
+    pub fn row_numbers_from(&self, start: usize, rows: usize) -> Vec<usize> {
+        let view = |i: usize| start + i + self.row_start_index;
+        let places = self
+            .buffered_df
+            .as_ref()
+            .filter(|_| self.carries_source_rows())
+            .and_then(|df| df.column(crate::schema_union::DRIFT_COLUMN).ok())
+            .and_then(|column| {
+                let offset = start.checked_sub(self.buffered_start_row)?;
+                let len = rows.min(column.len().saturating_sub(offset));
+                let slice = column.slice(offset as i64, len);
+                let places = slice.u32().ok()?;
+                Some(
+                    places
+                        .iter()
+                        .map(|p| p.map(|p| p as usize + self.row_start_index))
+                        .collect::<Vec<_>>(),
+                )
+            });
+        (0..rows)
+            .map(|i| {
+                places
+                    .as_ref()
+                    .and_then(|p| p.get(i).copied().flatten())
+                    .unwrap_or_else(|| view(i))
+            })
+            .collect()
     }
 
     /// The frame for rows `[start, start + len)` of the view, as `all_columns`. For a
@@ -9980,7 +10099,8 @@ struct RowNumbersParams {
     start_row: usize,
     visible_rows: usize,
     num_rows: usize,
-    row_start_index: usize,
+    /// The number each row on screen shows: see [`DataTableState::row_numbers_from`].
+    numbers: Vec<usize>,
     selected_row: Option<usize>,
 }
 
@@ -11001,15 +11121,14 @@ impl DataTable {
             return;
         }
 
+        let number = |row_idx: usize| params.numbers.get(row_idx).copied().unwrap_or_default();
         // Calculate width needed for largest row number
-        let max_row_num =
-            params.start_row + rows_to_render.saturating_sub(1) + params.row_start_index;
+        let max_row_num = (0..rows_to_render).map(number).max().unwrap_or_default();
         let max_width = max_row_num.to_string().len();
 
         // Render row numbers
         for row_idx in 0..rows_to_render.min(area.height.saturating_sub(header_h) as usize) {
-            let row_num = params.start_row + row_idx + params.row_start_index;
-            let row_num_text = row_num.to_string();
+            let row_num_text = number(row_idx).to_string();
 
             // Right-align row numbers within the available width
             let padding = max_width.saturating_sub(row_num_text.len());
@@ -11266,10 +11385,15 @@ impl StatefulWidget for DataTable {
         // Where the scrolling columns are, for the cue drawn over the header after them.
         let mut scroll_indicator: Option<ScrollCue> = None;
 
-        // Calculate row number column width if enabled
+        // The numbers `#` shows, and the column wide enough for the widest.
+        let numbers = if state.row_numbers {
+            state.row_numbers_from(start_row, state.visible_rows)
+        } else {
+            Vec::new()
+        };
         let row_num_width = if state.row_numbers {
-            let max_row_num = start_row + state.visible_rows.saturating_sub(1) + 1; // +1 for 1-based, +1 for potential
-            max_row_num.to_string().len().max(1) as u16 + 1 // +1 for spacing
+            let widest = numbers.iter().max().copied().unwrap_or(1);
+            widest.to_string().len().max(1) as u16 + 1 // +1 for spacing
         } else {
             0
         };
@@ -11283,16 +11407,20 @@ impl StatefulWidget for DataTable {
             width: row_num_width,
             ..area
         };
-        let (visible_rows, row_start_index) = (state.visible_rows, state.row_start_index);
-        let row_numbers = |start_row, num_rows, selected_row| RowNumbersParams {
+        let visible_rows = state.visible_rows;
+        let row_numbers = |start_row, num_rows, numbers, selected_row| RowNumbersParams {
             start_row,
             visible_rows,
             num_rows,
-            row_start_index,
+            numbers,
             selected_row,
         };
-        let row_number_params =
-            row_numbers(start_row, state.num_rows, state.table_state.selected());
+        let row_number_params = row_numbers(
+            start_row,
+            state.num_rows,
+            numbers,
+            state.table_state.selected(),
+        );
 
         // Both sides are cut to the same rows on screen, so the frozen columns are
         // measured on what they show, not on the head of the buffer.
@@ -11457,7 +11585,11 @@ impl StatefulWidget for DataTable {
             match DataFrame::new_infer_height(empty_columns) {
                 Ok(empty_df) => {
                     if state.row_numbers {
-                        self.render_row_numbers(row_num_area, buf, row_numbers(0, 0, None));
+                        self.render_row_numbers(
+                            row_num_area,
+                            buf,
+                            row_numbers(0, 0, Vec::new(), None),
+                        );
                     }
                     self.render_scrolling(
                         &empty_df,

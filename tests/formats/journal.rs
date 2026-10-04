@@ -21,12 +21,14 @@ fn open(paths: Vec<PathBuf>, options: OpenOptions) -> (App, mpsc::Receiver<AppEv
     (app, rx)
 }
 
+/// The table's frame, without the row index that numbers it.
 fn frame(app: &App) -> DataFrame {
     app.data_table_state
         .as_ref()
         .unwrap()
         .lf()
         .clone()
+        .drop(by_name(["__datui_row"], false, false))
         .collect()
         .unwrap()
 }

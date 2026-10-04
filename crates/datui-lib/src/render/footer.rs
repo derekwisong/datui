@@ -199,6 +199,36 @@ pub struct ProgressCount {
     pub noun: &'static str,
     pub done: u64,
     pub total: Option<u64>,
+    /// The numbers are bytes, written with a unit (`41 MB / 133 MB`).
+    pub in_bytes: bool,
+}
+
+impl ProgressCount {
+    /// `done` of `total` things called `noun`.
+    pub fn of(noun: &'static str, done: u64, total: Option<u64>) -> Self {
+        Self {
+            noun,
+            done,
+            total,
+            in_bytes: false,
+        }
+    }
+
+    /// `done` of `total` bytes.
+    pub fn bytes(noun: &'static str, done: u64, total: Option<u64>) -> Self {
+        Self {
+            in_bytes: true,
+            ..Self::of(noun, done, total)
+        }
+    }
+
+    fn number(&self, n: u64) -> String {
+        if self.in_bytes {
+            crate::discover::format_size(n)
+        } else {
+            crate::numfmt::group_chrome(n as usize)
+        }
+    }
 }
 
 impl ProgressLine {
@@ -734,13 +764,10 @@ pub fn render_progress(line: &ProgressLine, area: Rect, buf: &mut Buffer, ctx: &
             spans.push(Span::raw("   "));
         }
         spans.push(Span::styled(format!("{} ", count.noun), dim));
-        spans.push(Span::styled(
-            crate::numfmt::group_chrome(count.done as usize),
-            label,
-        ));
+        spans.push(Span::styled(count.number(count.done), label));
         if let Some(total) = count.total {
             spans.push(Span::styled(
-                format!(" / {}", crate::numfmt::group_chrome(total as usize)),
+                format!(" / {}", count.number(total)),
                 secondary,
             ));
         }
@@ -1042,16 +1069,8 @@ mod tests {
     fn a_progress_line_counts_draws_a_bar_and_offers_stop() {
         let progress = ProgressLine {
             counts: vec![
-                ProgressCount {
-                    noun: "rows",
-                    done: 412_880_117,
-                    total: None,
-                },
-                ProgressCount {
-                    noun: "files",
-                    done: 18_402,
-                    total: Some(126_033),
-                },
+                ProgressCount::of("rows", 412_880_117, None),
+                ProgressCount::of("files", 18_402, Some(126_033)),
             ],
             stoppable: true,
         };

@@ -317,12 +317,24 @@ impl App {
             && let Some(read) = self.find.read
         {
             return Some(ProgressLine {
-                counts: vec![ProgressCount {
-                    noun: "rows",
-                    done: read as u64,
-                    total: state.num_rows_if_valid().map(|n| n as u64),
-                }],
+                counts: vec![ProgressCount::of(
+                    "rows",
+                    read as u64,
+                    state.num_rows_if_valid().map(|n| n as u64),
+                )],
                 stoppable: true,
+            });
+        }
+        // Lines indexed behind the first rows: how many so far, and how far through
+        // the file.
+        if let Some(lines) = state.indexing() {
+            let (done, all) = lines.indexed_bytes();
+            return Some(ProgressLine {
+                counts: vec![
+                    ProgressCount::of("lines", lines.rows() as u64, None),
+                    ProgressCount::bytes("read", done, Some(all)),
+                ],
+                stoppable: false,
             });
         }
         if let Some((read, total)) = self
@@ -330,11 +342,11 @@ impl App {
             .filter(|_| self.dataset_is_still_reading_its_footers())
         {
             return Some(ProgressLine {
-                counts: vec![ProgressCount {
-                    noun: "footers",
-                    done: read as u64,
-                    total: Some(total as u64),
-                }],
+                counts: vec![ProgressCount::of(
+                    "footers",
+                    read as u64,
+                    Some(total as u64),
+                )],
                 stoppable: false,
             });
         }

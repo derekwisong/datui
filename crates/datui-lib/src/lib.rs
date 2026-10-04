@@ -518,6 +518,12 @@ pub enum AppEvent {
     BackgroundFootersJoined {
         generation: u64,
     },
+    /// Every line of a text file opened from its first rows is indexed, `rows` of
+    /// them, for the dataset of `generation`.
+    LinesIndexed {
+        generation: u64,
+        rows: usize,
+    },
     /// Background task completed: chart data for one selection is prepared. The data is
     /// in `App::pending_chart_result`; it belongs to `App::chart_inflight`, which says
     /// whether it is still wanted.
@@ -1185,6 +1191,11 @@ pub struct App {
     /// away from must not move the view of the one they opened next. `end_after_count`
     /// alongside keys itself the same way, to `len_generation`.
     end_when_the_footers_land: Option<u64>,
+    /// End was pressed while a text file's lines were still being indexed: jump when
+    /// the last of them is, for that dataset alone.
+    end_when_indexed: Option<u64>,
+    /// Stops the indexing of the dataset on screen's lines when it goes.
+    indexing_stop: Arc<std::sync::atomic::AtomicBool>,
     /// What a dataset's footers found while the user was looking at a query, a pivot or
     /// a drill-down rather than at the data. Held rather than applied, because widening
     /// the scan under a query takes the query's own columns away, and offered again the
@@ -4669,6 +4680,75 @@ impl App {
         });
     }
 
+    /// Index the rest of a text file's lines behind its first rows, and say when they
+    /// are all in ([`AppEvent::LinesIndexed`]). Not a job, which the user would wait on:
+    /// the table works meanwhile, and a read of every line waits for them on its own
+    /// worker. The last dataset's indexing, if it is still going, stops.
+    fn start_indexing(&mut self) {
+        use std::sync::atomic::Ordering;
+        self.indexing_stop.store(true, Ordering::Relaxed);
+        self.end_when_indexed = None;
+        let Some(lines) = self
+            .data_table_state
+            .as_ref()
+            .and_then(|state| state.indexing().cloned())
+        else {
+            return;
+        };
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.indexing_stop = stop.clone();
+        let generation = self.dataset_generation;
+        let tx = self.events.clone();
+        let _ = std::thread::Builder::new()
+            .name("datui-index".to_string())
+            .spawn(move || {
+                loop {
+                    // Stopped, the reads waiting on the lines go on with what there is.
+                    if stop.load(Ordering::Relaxed) {
+                        lines.stop_indexing();
+                        return;
+                    }
+                    // A panic stops it where it is: the rows so far are what there is,
+                    // rather than a count that never comes.
+                    let done =
+                        logging::catch_panic(|| lines.index_more(INDEX_STEP)).unwrap_or(true);
+                    if done {
+                        lines.stop_indexing();
+                        let rows = lines.rows();
+                        let _ = tx.send(AppEvent::LinesIndexed { generation, rows });
+                        return;
+                    }
+                }
+            });
+    }
+
+    /// More of the dataset's lines are indexed: its frames take them, and once all are,
+    /// its count and an End that waited for it.
+    fn lines_indexed(&mut self, generation: u64, rows: usize) {
+        if generation != self.dataset_generation {
+            return;
+        }
+        let Some(state) = self.data_table_state.as_mut() else {
+            return;
+        };
+        if state.indexing().is_none() {
+            return;
+        }
+        state.lines_indexed(rows);
+        if self.end_when_indexed.take() == Some(generation) {
+            self.take_down_the_counting_status();
+            if let Some(next) = self.jump_key(AppEvent::DoScrollEnd) {
+                let _ = self.events.send(next);
+                return;
+            }
+        }
+        // The count the indexing held back starts now, and rows past the first ones
+        // read are read.
+        if self.in_normal_table_view() && !self.loading.awaiting_dataset() {
+            self.spawn_collect(None);
+        }
+    }
+
     /// Put what a pass found in the slot, unless a later dataset's pass has answered
     /// first. Returns whether it went in, so a pass that lost does not also announce
     /// itself.
@@ -4833,6 +4913,14 @@ impl App {
         // The dataset is on screen now; whatever it still has to learn about itself is
         // read behind it.
         self.start_pending_footers();
+        self.start_indexing();
+        // `#` for text and logs, unless the flag or the config said.
+        if options.row_numbers_auto
+            && let Some(state) = self.data_table_state.as_mut()
+            && state.numbered_by_default()
+        {
+            state.set_row_numbers(true);
+        }
         self.sort_filter_modal = SortFilterModal::new();
         self.pivot_melt_modal = PivotMeltModal::new();
         self.status_message = Some(Self::LOADING_BUFFER.to_string());
@@ -5332,6 +5420,15 @@ impl App {
         // with it, which is what would leave a count answering a question nothing could
         // match it to. A filter and a sort are rebuilt over the joined scan, so they are
         // on this side of it even though they are not pristine.
+        // Lines still being indexed: the end is where the indexing ends.
+        if matches!(jump, AppEvent::DoScrollEnd)
+            && let Some(state) = self.data_table_state.as_ref()
+            && state.indexing().is_some()
+        {
+            self.end_when_indexed = Some(self.dataset_generation);
+            self.status_message = Some(Self::COUNTING_FOR_END.to_string());
+            return None;
+        }
         if matches!(jump, AppEvent::DoScrollEnd)
             && let Some(state) = self.data_table_state.as_ref()
             && state.footers_pending().is_some()
@@ -5663,6 +5760,8 @@ impl App {
             #[cfg(test)]
             file_facts_reader: None,
             end_when_the_footers_land: None,
+            end_when_indexed: None,
+            indexing_stop: Arc::default(),
             len_count_inflight: None,
             count_after_paint: None,
             #[cfg(test)]
@@ -9710,6 +9809,10 @@ fn next_search_epoch() -> u64 {
 /// What a pass behind a staged open reported, and which dataset it was reading for.
 /// `None` where the footers are: a pass that could not read them says so, so the
 /// dataset stops waiting.
+/// Bytes of a text file indexed per step behind its first rows, between which the
+/// indexing looks whether it is still wanted.
+const INDEX_STEP: usize = 16 << 20;
+
 type FootersReported = Option<(u64, Option<crate::widgets::datatable::FootersFound>)>;
 
 impl App {
@@ -9971,6 +10074,7 @@ impl App {
             facts.other_tables = opened.other_tables.clone();
             facts.open_notes.extend(opened.notes.iter().cloned());
             facts.units = opened.units.clone();
+            facts.indexing = opened.indexing.clone();
         }
         if let Some(sqlite) = &options.sqlite {
             facts.pushdown = Some(sqlite.pushdown.clone());
@@ -13540,6 +13644,10 @@ impl App {
                         self.take_down_the_counting_status();
                     }
                 }
+                None
+            }
+            AppEvent::LinesIndexed { generation, rows } => {
+                self.lines_indexed(*generation, *rows);
                 None
             }
             AppEvent::BackgroundFootersJoined { .. } => {

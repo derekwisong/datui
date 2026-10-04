@@ -1231,10 +1231,7 @@ pub(crate) fn lines_arguments(call: &mut Call<'_>) -> Option<Source> {
         "pl.LazyFrame({{\"line\": open({}, encoding=\"utf-8\", errors=\"replace\", newline=\"\").read().removesuffix(\"\\n\").split(\"\\n\")}})",
         py_str(&path.to_string_lossy())
     );
-    let mut after = vec![
-        ".with_columns(pl.col(\"line\").str.strip_suffix(\"\\r\"))".to_string(),
-        ".with_row_index(\"line_no\", offset=1)".to_string(),
-    ];
+    let mut after = vec![".with_columns(pl.col(\"line\").str.strip_suffix(\"\\r\"))".to_string()];
     after.append(&mut call.after);
     Some(Source::Read {
         call: read,

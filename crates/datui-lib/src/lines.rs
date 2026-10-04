@@ -1,11 +1,16 @@
-//! Text read as it stands: a row per line, `line_no` and `line`.
+//! Text read as it stands: a row per line, in a `line` column.
 //!
 //! One pass records where each line starts ([`LineIndex`]); a line is then read from a
 //! map of the file where it is shown, so only the rows a view reaches are decoded.
-//! Every line is a row, blank ones included, so `line_no` is the number `less -N`
-//! gives it. A `\r\n` ending is a line ending; bytes that are not UTF-8 are shown as
-//! `�` and counted in a note. Control characters stay in the value: the screen escapes
-//! them when it draws ([`crate::sanitize`]).
+//! Every line is a row, blank ones included, and each row carries its place in the
+//! file ([`crate::row_index::INDEX`]), so `#` numbers it as `less -N` does through any
+//! sort or filter. A `\r\n` ending is a line ending; bytes that are not UTF-8 are shown
+//! as `�` and counted in a note. Control characters stay in the value: the screen
+//! escapes them when it draws ([`crate::sanitize`]).
+//!
+//! A large file shows its first rows once its first [`FIRST_BYTES`] are indexed; the
+//! rest is indexed behind them ([`Lines::index_more`]), and the frame's height moves
+//! as it goes ([`bound`]).
 //!
 //! A followed file's lines are counted by the watcher ([`crate::follow`]), which moves
 //! the frame's height ([`bound`]); the index reads on from its last whole line when a
@@ -24,10 +29,17 @@ use crate::FileFormat;
 use crate::fixed_records::Bytes;
 use crate::indexed::Offsets;
 
-/// The columns: the file a line is from (several files only), its number and itself.
+/// The columns: the file a line is from (several files only), and the line.
 pub const FILE: &str = "file";
-pub const LINE_NO: &str = "line_no";
 pub const LINE: &str = "line";
+
+/// Bytes an open indexes before it shows the first rows. Past this the rest of a file
+/// is indexed in the background.
+pub const FIRST_BYTES: usize = 8 << 20;
+
+/// Bytes checked as UTF-8 at once, as the newlines in them are found: a chunk is
+/// still in cache when its lines are indexed, and the file is read once.
+const CHUNK: usize = 4 << 20;
 
 /// What datui does with text read as lines: see [`crate::readers`].
 pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
@@ -45,11 +57,10 @@ pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
 
 /// The columns of one file's lines, or several files' with the file named.
 pub fn schema(several: bool) -> Schema {
-    let mut fields = Vec::with_capacity(3);
+    let mut fields = Vec::with_capacity(2);
     if several {
         fields.push(Field::new(FILE.into(), DataType::String));
     }
-    fields.push(Field::new(LINE_NO.into(), DataType::UInt32));
     fields.push(Field::new(LINE.into(), DataType::String));
     Schema::from_iter(fields)
 }
@@ -68,6 +79,9 @@ pub struct LineIndex {
     pub invalid: usize,
     /// Lines past [`crate::indexed::MAX_RECORDS`], left out.
     pub past_limit: usize,
+    /// Lines indexed before this index begins: a step taken apart from the index it
+    /// goes on ([`Self::step_after`]) counts them toward the limit.
+    before: usize,
 }
 
 impl LineIndex {
@@ -96,9 +110,20 @@ impl LineIndex {
         self.end
     }
 
+    /// Whether every byte of `bytes` is indexed.
+    pub fn whole(&self, bytes: &[u8]) -> bool {
+        self.end >= bytes.len() || self.partial.is_some()
+    }
+
     /// Index what `bytes`, the same bytes as before and maybe more, hold past the
     /// last newline.
     pub fn extend(&mut self, bytes: &[u8]) {
+        self.extend_by(bytes, usize::MAX);
+    }
+
+    /// [`Self::extend`] through `budget` more bytes at least: to the end of the line
+    /// that passes it. Returns whether every byte is indexed.
+    pub fn extend_by(&mut self, bytes: &[u8], budget: usize) -> bool {
         if let Some((indexed, invalid)) = self.partial.take() {
             if indexed {
                 self.offsets.truncate(self.offsets.len() - 1);
@@ -108,16 +133,32 @@ impl LineIndex {
             self.invalid -= usize::from(invalid);
         }
         if bytes.len() <= self.end {
-            return;
+            return true;
         }
         self.offsets.widen_for(bytes.len());
-        // Checked once for the whole of it; line by line only when that fails.
-        let all_utf8 = std::str::from_utf8(&bytes[self.end..]).is_ok();
+        let stop = self.end.saturating_add(budget).min(bytes.len());
+        while self.end < stop && self.partial.is_none() {
+            // A chunk ends at a line's end, so each line is checked whole.
+            let cut = (self.end + CHUNK).min(stop);
+            let to = if cut < bytes.len() {
+                memchr::memchr(b'\n', &bytes[cut - 1..]).map_or(bytes.len(), |i| cut + i)
+            } else {
+                cut
+            };
+            self.index_chunk(bytes, to);
+        }
+        self.whole(bytes)
+    }
+
+    /// Index the lines from `end` to `to`: the end of `bytes`, or just past a newline.
+    fn index_chunk(&mut self, bytes: &[u8], to: usize) {
+        // Checked once for the chunk; line by line only when that fails.
+        let all_utf8 = std::str::from_utf8(&bytes[self.end..to]).is_ok();
         let mut at = self.end;
-        while at < bytes.len() {
-            let newline = memchr::memchr(b'\n', &bytes[at..]).map(|i| at + i);
-            let end = newline.unwrap_or(bytes.len());
-            let indexed = self.offsets.len() < crate::indexed::MAX_RECORDS;
+        while at < to {
+            let newline = memchr::memchr(b'\n', &bytes[at..to]).map(|i| at + i);
+            let end = newline.unwrap_or(to);
+            let indexed = self.before + self.offsets.len() < crate::indexed::MAX_RECORDS;
             if indexed {
                 self.offsets.push(at);
             } else {
@@ -132,10 +173,32 @@ impl LineIndex {
                 }
                 None => {
                     self.partial = Some((indexed, invalid));
-                    at = bytes.len();
+                    at = to;
                 }
             }
         }
+    }
+
+    /// An empty index that goes on from this one's last whole line, for a step taken
+    /// without holding this one: [`Self::take_step`] appends it. Not for an index with
+    /// a last line still open, which only a whole read leaves.
+    fn step_after(&self, len: usize) -> Self {
+        Self {
+            offsets: Offsets::for_file(len),
+            end: self.end,
+            before: self.before + self.offsets.len(),
+            ..Default::default()
+        }
+    }
+
+    /// Append `step`, taken from [`Self::step_after`] over the same bytes.
+    fn take_step(&mut self, step: LineIndex) {
+        debug_assert_eq!(step.before, self.offsets.len());
+        self.offsets.append(&step.offsets);
+        self.end = step.end;
+        self.partial = step.partial;
+        self.invalid += step.invalid;
+        self.past_limit += step.past_limit;
     }
 
     /// Line `i` of `bytes`, without its newline or a `\r` before it.
@@ -212,32 +275,125 @@ fn remap(file: &std::fs::File) -> PolarsResult<Bytes> {
 pub struct Lines {
     files: Vec<LineFile>,
     schema: SchemaRef,
+    /// The one file's lines are still being indexed, behind the first rows, and what
+    /// a read of every line waits on until they are.
+    indexing: (std::sync::Mutex<bool>, std::sync::Condvar),
 }
 
 impl Lines {
     /// `bytes` read as lines; `name` is what the `file` column says when there are
     /// several.
     pub fn from_bytes(parts: Vec<(String, Arc<Bytes>)>) -> Self {
+        Self::from_bytes_first(parts, usize::MAX)
+    }
+
+    /// [`Self::from_bytes`], one file's first `first` bytes indexed and the rest left
+    /// to [`Self::index_more`]. Several files are indexed whole: a row's place in one
+    /// would move as the file before it was indexed.
+    pub fn from_bytes_first(parts: Vec<(String, Arc<Bytes>)>, first: usize) -> Self {
         let several = parts.len() > 1;
+        let mut indexing = false;
         let files = parts
             .into_iter()
-            .map(|(name, bytes)| LineFile {
-                name,
-                grows: None,
-                mapped: RwLock::new(Mapped {
-                    index: LineIndex::of(bytes.as_slice()),
-                    bytes,
-                }),
+            .map(|(name, bytes)| {
+                let mut index = LineIndex {
+                    offsets: Offsets::for_file(bytes.len()),
+                    ..Default::default()
+                };
+                let budget = if several { usize::MAX } else { first };
+                indexing |= !index.extend_by(bytes.as_slice(), budget);
+                LineFile {
+                    name,
+                    grows: None,
+                    mapped: RwLock::new(Mapped { index, bytes }),
+                }
             })
             .collect();
         Self {
             files,
             schema: Arc::new(schema(several)),
+            indexing: (indexing.into(), Default::default()),
         }
+    }
+
+    /// Whether lines are still being indexed behind the first rows.
+    pub fn indexing(&self) -> bool {
+        *self.indexing.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// No more lines will be indexed: all of them are, or the indexing stopped (the
+    /// dataset went). Whatever waits on them goes on with what there is.
+    pub fn stop_indexing(&self) {
+        *self.indexing.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        self.indexing.1.notify_all();
+    }
+
+    /// Wait until no more lines will be indexed. On a worker, never the UI thread.
+    fn wait_indexed(&self) {
+        let mut indexing = self.indexing.0.lock().unwrap_or_else(|e| e.into_inner());
+        while *indexing {
+            indexing = self
+                .indexing
+                .1
+                .wait(indexing)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+    }
+
+    /// Index at least `budget` more bytes of a file indexed in part. Returns whether
+    /// every line is indexed. Holds the lines' write lock for the step only, so rows
+    /// are read between steps.
+    pub fn index_more(&self, budget: usize) -> bool {
+        if !self.indexing() {
+            return true;
+        }
+        let whole = self.files.iter().all(|f| {
+            // Read with no lock held, so rows go on being read meanwhile, then taken
+            // in under the write lock: this is the only writer of a file not followed.
+            let (bytes, mut step) = {
+                let mapped = f.mapped.read().unwrap_or_else(|e| e.into_inner());
+                if mapped.index.whole(mapped.bytes.as_slice()) {
+                    return true;
+                }
+                let bytes = mapped.bytes.clone();
+                let step = mapped.index.step_after(bytes.len());
+                (bytes, step)
+            };
+            let whole = step.extend_by(bytes.as_slice(), budget);
+            f.mapped
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .index
+                .take_step(step);
+            whole
+        });
+        if whole {
+            self.stop_indexing();
+        }
+        whole
+    }
+
+    /// Bytes indexed, and the bytes there are.
+    pub fn indexed_bytes(&self) -> (u64, u64) {
+        self.files.iter().fold((0, 0), |(done, all), f| {
+            let m = f.mapped.read().unwrap_or_else(|e| e.into_inner());
+            let len = m.bytes.as_slice().len();
+            let indexed = if m.index.whole(m.bytes.as_slice()) {
+                len
+            } else {
+                m.index.end()
+            };
+            (done + indexed as u64, all + len as u64)
+        })
     }
 
     /// The files at `paths`, mapped and indexed. `follow` reads one on as it grows.
     pub fn open(paths: &[PathBuf], follow: bool) -> Result<Self> {
+        Self::open_first(paths, follow, usize::MAX)
+    }
+
+    /// [`Self::open`], a file not followed indexed through its first `first` bytes.
+    pub fn open_first(paths: &[PathBuf], follow: bool, first: usize) -> Result<Self> {
         let parts = paths
             .iter()
             .map(|path| {
@@ -246,7 +402,8 @@ impl Lines {
                 Ok((file_name(path), Arc::new(bytes)))
             })
             .collect::<Result<Vec<_>>>()?;
-        let mut lines = Self::from_bytes(parts);
+        let first = if follow { usize::MAX } else { first };
+        let mut lines = Self::from_bytes_first(parts, first);
         if follow && let ([file], [path]) = (lines.files.as_mut_slice(), paths) {
             file.grows = Some(path.clone());
         }
@@ -293,11 +450,28 @@ impl Lines {
     /// The frame: a row index decoded a column at a time. A followed file's frame has
     /// the rows of its complete lines, moved as it grows ([`bound`]).
     pub fn lazy(self: &Arc<Self>) -> LazyFrame {
-        if self.grows() {
-            crate::row_index::lazy_with_height(self, self.complete_rows())
-        } else {
-            crate::row_index::lazy(self)
+        if self.indexing() {
+            // Every line, once they are all indexed: the frame's height is taken when
+            // it runs, on a worker, which waits for the indexing. The first rows come
+            // from the window ([`opened`]), which does not wait.
+            let lines = self.clone();
+            let height = DataFrame::empty_with_height(0).lazy().map(
+                move |_| {
+                    lines.wait_indexed();
+                    Ok(DataFrame::empty_with_height(lines.rows()))
+                },
+                AllowedOptimizations::empty(),
+                None,
+                Some("every line"),
+            );
+            return crate::row_index::lazy_numbered_over(self, height);
         }
+        let height = if self.grows() {
+            self.complete_rows()
+        } else {
+            self.rows()
+        };
+        crate::row_index::lazy_numbered(self, height)
     }
 
     /// For each row, its file and the line in it, in order.
@@ -343,11 +517,6 @@ impl Lines {
                 .map(|&(f, _)| Some(self.files[f].name.as_str()))
                 .collect::<StringChunked>()
                 .into_series(),
-            1 => placed
-                .iter()
-                .map(|&(_, i)| Some(i as u32 + 1))
-                .collect::<UInt32Chunked>()
-                .into_series(),
             _ => {
                 let held: Vec<_> = self
                     .files
@@ -381,9 +550,11 @@ impl Lines {
         let start = start.min(rows);
         let len = len.min(rows - start);
         let index: Vec<IdxSize> = (start..start + len).map(|r| r as IdxSize).collect();
-        let columns = (0..self.schema.len())
+        let mut columns = (0..self.schema.len())
             .map(|c| self.column(c, &index))
             .collect::<PolarsResult<Vec<_>>>()?;
+        // Each row's place, as the frame carries it.
+        columns.push(IdxCa::from_vec(crate::row_index::INDEX.into(), index).into_column());
         DataFrame::new(len, columns)
     }
 }
@@ -436,15 +607,38 @@ pub(crate) fn bound(plan: &mut polars::lazy::dsl::DslPlan, rows: IdxSize) -> boo
 
 /// The lines of `input`, for its reader.
 fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
-    let lines = Arc::new(Lines::open(input.paths, input.options.follow)?);
+    let lines = Arc::new(Lines::open_first(
+        input.paths,
+        input.options.follow,
+        FIRST_BYTES,
+    )?);
     let lf = lines.lazy();
     input.report.opened = Some(Arc::new(opened(&lines, input.options)));
     Ok(lf.into())
 }
 
-/// What the Info panel says of lines read, and the window a view reads straight from
-/// them when it can.
+/// What the Info panel says of lines read, the window a view reads straight from them
+/// when it can, and the lines themselves while they are still being indexed.
 pub(crate) fn opened(lines: &Arc<Lines>, options: &crate::OpenOptions) -> crate::members::Opened {
+    crate::members::Opened {
+        // A followed file's rows are the watcher's to count.
+        window: (!lines.grows()).then(|| {
+            (
+                lines.clone() as Arc<dyn crate::pushdown::Windowed>,
+                lines.rows(),
+            )
+        }),
+        notes: notes(lines, options.format_guessed),
+        indexing: lines.indexing().then(|| lines.clone()),
+        ..Default::default()
+    }
+}
+
+/// How the note that the format was guessed begins.
+pub(crate) const GUESSED: &str = "no format detected";
+
+/// What the Info panel says of lines read, as far as they are indexed.
+pub(crate) fn notes(lines: &Lines, format_guessed: bool) -> Vec<crate::notes::Note> {
     let (invalid, past_limit) = lines.counts();
     let scope = match lines.files.len() {
         1 => "the file".to_string(),
@@ -454,10 +648,8 @@ pub(crate) fn opened(lines: &Arc<Lines>, options: &crate::OpenOptions) -> crate:
     let mut notes = vec![format!(
         "read as lines {middot} a row per line, blank lines included"
     )];
-    if options.format_guessed {
-        notes.push(format!(
-            "no format detected {middot} --format csv reads it as CSV"
-        ));
+    if format_guessed {
+        notes.push(format!("{GUESSED} {middot} --format csv reads it as CSV"));
     }
     if invalid > 0 {
         notes.push(format!(
@@ -472,20 +664,10 @@ pub(crate) fn opened(lines: &Arc<Lines>, options: &crate::OpenOptions) -> crate:
             crate::numfmt::group_chrome(crate::indexed::MAX_RECORDS)
         ));
     }
-    crate::members::Opened {
-        // A followed file's rows are the watcher's to count.
-        window: (!lines.grows()).then(|| {
-            (
-                lines.clone() as Arc<dyn crate::pushdown::Windowed>,
-                lines.rows(),
-            )
-        }),
-        notes: notes
-            .into_iter()
-            .map(|n| crate::text_formats::note(n, scope.clone()))
-            .collect(),
-        ..Default::default()
-    }
+    notes
+        .into_iter()
+        .map(|n| crate::text_formats::note(n, scope.clone()))
+        .collect()
 }
 
 // --- What text is -----------------------------------------------------------------
@@ -707,14 +889,14 @@ mod tests {
             Arc::new(Bytes::Owned(bytes.to_vec())),
         )]));
         let df = lines.lazy().collect().unwrap();
-        let numbers: Vec<u32> = df
-            .column(LINE_NO)
+        let places: Vec<u32> = df
+            .column(crate::row_index::INDEX)
             .unwrap()
             .u32()
             .unwrap()
             .into_no_null_iter()
             .collect();
-        assert_eq!(numbers, (1..=df.height() as u32).collect::<Vec<_>>());
+        assert_eq!(places, (0..df.height() as u32).collect::<Vec<_>>());
         df.column(LINE)
             .unwrap()
             .str()
@@ -767,19 +949,105 @@ mod tests {
             ("b.log".into(), Arc::new(Bytes::Owned(b"3\n".to_vec()))),
         ]));
         let df = lines.lazy().collect().unwrap();
-        assert_eq!(df.get_column_names(), [FILE, LINE_NO, LINE]);
+        assert_eq!(df.get_column_names(), [FILE, LINE, crate::row_index::INDEX]);
         let file: Vec<Option<&str>> = df.column(FILE).unwrap().str().unwrap().iter().collect();
         assert_eq!(file, [Some("a.log"), Some("a.log"), Some("b.log")]);
-        let no: Vec<u32> = df
-            .column(LINE_NO)
+        let w = lines.collect_window(1, 5).unwrap();
+        assert_eq!(w.height(), 2);
+        assert_eq!(w.get_column_names(), df.get_column_names());
+        let places: Vec<u32> = w
+            .column(crate::row_index::INDEX)
             .unwrap()
             .u32()
             .unwrap()
             .into_no_null_iter()
             .collect();
-        assert_eq!(no, [1, 2, 1]);
-        let w = lines.collect_window(1, 5).unwrap();
-        assert_eq!(w.height(), 2);
+        assert_eq!(places, [1, 2]);
+    }
+
+    /// An index taken a chunk at a time, in steps of any size, is the one taken whole:
+    /// the same lines, the same count not UTF-8, the last line with no newline kept.
+    #[test]
+    fn an_index_in_steps_is_the_index_whole() {
+        let mut bytes = Vec::new();
+        let mut bad = 0;
+        for i in 0..200_000u32 {
+            match i % 7 {
+                0 => bytes.extend_from_slice(b"\r\n"),
+                3 => {
+                    bytes.extend_from_slice(b"bad \xff\xfe line\n");
+                    bad += 1;
+                }
+                _ => bytes.extend_from_slice(
+                    format!("line {i} {}\n", "x".repeat((i % 50) as usize)).as_bytes(),
+                ),
+            }
+        }
+        bytes.extend_from_slice(b"no newline at the end \xff");
+        let whole = LineIndex::of(&bytes);
+        assert_eq!(whole.lines(), 200_001);
+        assert_eq!(whole.invalid, bad + 1);
+        for step in [1, 4096, CHUNK - 3, CHUNK * 2 + 17] {
+            let mut index = LineIndex {
+                offsets: Offsets::for_file(bytes.len()),
+                ..Default::default()
+            };
+            let mut steps = 0;
+            while !index.extend_by(&bytes, step) {
+                steps += 1;
+                assert!(index.lines() < whole.lines(), "{step}");
+            }
+            assert!(steps > 0 || step > bytes.len(), "{step}");
+            assert_eq!(index.lines(), whole.lines(), "{step}");
+            assert_eq!(index.invalid, whole.invalid, "{step}");
+            assert_eq!(index.complete(), whole.complete(), "{step}");
+            for i in [0, 1, 3, 1000, whole.lines() - 1] {
+                assert_eq!(index.line(&bytes, i), whole.line(&bytes, i), "{step} {i}");
+            }
+        }
+    }
+
+    /// A large file shows its first lines indexed, and indexes the rest in steps; its
+    /// frame reads every line once they are in, numbered by their place, on either
+    /// engine, and a read of it started meanwhile waits for them.
+    #[test]
+    fn a_large_file_indexes_behind_its_first_rows() {
+        let mut bytes = Vec::new();
+        for i in 0..100_000u32 {
+            bytes.extend_from_slice(format!("{i}\n").as_bytes());
+        }
+        let lines = Arc::new(Lines::from_bytes_first(
+            vec![("a.log".into(), Arc::new(Bytes::Owned(bytes)))],
+            1000,
+        ));
+        assert!(lines.indexing());
+        let first = lines.rows();
+        assert!(first > 0 && first < 100_000, "{first}");
+        assert_eq!(lines.collect_window(0, 200_000).unwrap().height(), first);
+        let lf = lines.lazy();
+        let waiting = {
+            let lf = lf.clone().filter(col(LINE).eq(lit("99999")));
+            std::thread::spawn(move || lf.collect().unwrap())
+        };
+        while !lines.index_more(50_000) {}
+        assert!(!lines.indexing());
+        assert_eq!(lines.rows(), 100_000);
+        let (done, all) = lines.indexed_bytes();
+        assert_eq!(done, all);
+        let df = waiting.join().unwrap();
+        assert_eq!(df.height(), 1);
+        assert_eq!(
+            df.column(crate::row_index::INDEX)
+                .unwrap()
+                .u32()
+                .unwrap()
+                .get(0),
+            Some(99_999)
+        );
+        for streaming in [false, true] {
+            let df = crate::statistics::collect_lazy(lf.clone(), streaming).unwrap();
+            assert_eq!(df.height(), 100_000, "streaming {streaming}");
+        }
     }
 
     #[test]

@@ -299,7 +299,7 @@ fn a_log_is_known_by_its_first_bytes() {
     drain_events(&mut app, &rx);
     assert_eq!(
         frame(&app).get_column_names(),
-        ["line_no", "line"],
+        ["line", "__datui_row"],
         "not a GPS log"
     );
 }

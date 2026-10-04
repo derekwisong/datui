@@ -264,8 +264,8 @@ pub const SETTINGS: &[Setting] = &[
     s("csv.ignore_errors", Bool, Value("false"), "Skip rows that do not parse instead of failing.").flag("ignore-errors").kwarg("ignore_errors"),
     // [display]
     s("display.unicode", Choice(&["auto", "always", "never"]), Value("\"auto\""), "Box-drawing and arrow glyphs, or plain ASCII. auto uses them when the locale is UTF-8."),
-    s("display.row_numbers", Bool, Value("false"), "Show row numbers on the left (# toggles).").flag("row-numbers").kwarg("row_numbers"),
-    s("display.row_numbers_start", Count, Value("1"), "The first row's number.").kwarg("row_numbers_start"),
+    s("display.row_numbers", Toml("\"auto\" \\| bool"), Value("\"auto\""), "Number rows on the left by their place in the source, kept through a sort or filter (# toggles). auto: for text and logs; true or false: for every format.").flag("row-numbers").kwarg("row_numbers"),
+    s("display.row_numbers_start", Count, Value("1"), "The number of the source's first row.").kwarg("row_numbers_start"),
     s("display.cell_padding", Toml("\"comfortable\" \\| \"compact\" \\| integer"), Value("\"comfortable\""), "Space between columns: comfortable (2 cells), compact (1) or a number of cells."),
     s("display.column_colors", Bool, Value("true"), "Color cells by column type.").kwarg("column_colors"),
     s("display.type_row", Bool, Value("true"), "A second header row naming each column's type (D toggles)."),

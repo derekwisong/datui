@@ -68,6 +68,20 @@ impl Offsets {
         }
     }
 
+    /// Add `other`'s offsets after these, widening these when `other` is wide.
+    pub fn append(&mut self, other: &Offsets) {
+        match (&mut *self, other) {
+            (Self::Narrow(v), Self::Narrow(o)) => v.extend_from_slice(o),
+            (Self::Wide(v), Self::Wide(o)) => v.extend_from_slice(o),
+            (Self::Wide(v), Self::Narrow(o)) => v.extend(o.iter().map(|&at| u64::from(at))),
+            (Self::Narrow(v), Self::Wide(o)) => {
+                let mut wide: Vec<u64> = v.iter().map(|&at| u64::from(at)).collect();
+                wide.extend_from_slice(o);
+                *self = Self::Wide(wide);
+            }
+        }
+    }
+
     /// Keep the first `len`.
     pub fn truncate(&mut self, len: usize) {
         match self {

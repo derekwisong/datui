@@ -637,6 +637,40 @@ impl Node {
         }
     }
 
+    /// An error for the first comparison (`=`, `<`, … or `in`) of a temporal column with
+    /// quoted text. Quoted text is a string in q, never a date, so it stays an error; this
+    /// one says so in q's words. Only a column `schema` types; the rest is Polars'.
+    fn check_quoted_temporal(&self, schema: &Schema) -> Result<(), String> {
+        match self {
+            Node::Bin(op, left, right) => {
+                left.check_quoted_temporal(schema)?;
+                right.check_quoted_temporal(schema)?;
+                let compares = matches!(
+                    op,
+                    BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq
+                );
+                if compares
+                    && let Some(err) = quoted_temporal(left, right, schema)
+                        .or_else(|| quoted_temporal(right, left, schema))
+                {
+                    return Err(err);
+                }
+            }
+            Node::Coalesce(left, right) | Node::Filter(left, right) => {
+                left.check_quoted_temporal(schema)?;
+                right.check_quoted_temporal(schema)?;
+            }
+            Node::When(c, t, o) => {
+                c.check_quoted_temporal(schema)?;
+                t.check_quoted_temporal(schema)?;
+                o.check_quoted_temporal(schema)?;
+            }
+            Node::Op(inner, _) | Node::Alias(inner, _) => inner.check_quoted_temporal(schema)?,
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Give a zoneless timestamp literal on one side the zone of the other side's type.
     fn share_zone(a: &mut Node, b: &mut Node, schema: &Schema) {
         if !Self::take_zone(a, b, schema) {
@@ -968,6 +1002,62 @@ fn brackets_balanced(tokens: &[Token]) -> bool {
         Token::RBracket => depth.checked_sub(1).map(|d| depth = d).is_some(),
         _ => true,
     })
+}
+
+/// The error for `column` of a temporal type compared with the quoted `text`, naming
+/// the literal the type takes: the text itself when it is one once unquoted.
+fn quoted_temporal(column: &Node, text: &Node, schema: &Schema) -> Option<String> {
+    let (Node::Col(name), Node::Str(s)) = (column, text) else {
+        return None;
+    };
+    let shown = if is_plain_name(name) {
+        name.clone()
+    } else {
+        format!("col[\"{name}\"]")
+    };
+    let unquoted = tokenize(s).ok();
+    let literal = |is_kind: fn(&Token) -> bool, example: &str| match unquoted.as_deref() {
+        Some([token]) if is_kind(token) => s.trim().to_string(),
+        _ => example.to_string(),
+    };
+    let (kind, remedy) = match schema.get(name)? {
+        DataType::Date => (
+            "date",
+            format!(
+                "A date is {}",
+                literal(|t| matches!(t, Token::DateLiteral(_)), "2024.01.01")
+            ),
+        ),
+        DataType::Datetime(..) => (
+            "timestamp",
+            format!(
+                "A timestamp is {}",
+                literal(
+                    |t| matches!(t, Token::TimestampLiteral { .. }),
+                    "2024.01.01T05:00:00"
+                )
+            ),
+        ),
+        DataType::Time => (
+            "time",
+            format!(
+                "A time has no literal; compare {shown}.hour, {shown}.minute or {shown}.second with a number"
+            ),
+        ),
+        DataType::Duration(_) => ("duration", "A duration has no literal".to_string()),
+        _ => return None,
+    };
+    Some(format!(
+        "{shown} is a {kind}; \"{s}\" is a string. {remedy}"
+    ))
+}
+
+/// Whether `name` reads as a column when typed bare, rather than needing `col["…"]`.
+fn is_plain_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
+        && chars.all(|c| c.is_alphanumeric() || c == '_')
+        && !matches!(name, "select" | "where" | "by")
 }
 
 /// OR of the conditions as a balanced tree, so a long `in` list nests
@@ -1831,6 +1921,16 @@ impl QueryNodes {
         }
     }
 
+    /// Fails on a temporal column compared with quoted text; see
+    /// [`Node::check_quoted_temporal`].
+    fn check_quoted_temporal(&self, schema: &Schema) -> Result<(), String> {
+        self.cols
+            .iter()
+            .chain(self.filter.iter())
+            .chain(self.group_by.iter())
+            .try_for_each(|node| node.check_quoted_temporal(schema))
+    }
+
     /// The where clause as a Python `.filter(...)` call, if there is one.
     pub(crate) fn python_filter(&self) -> Option<String> {
         self.filter
@@ -1891,11 +1991,13 @@ pub fn parse_query(query: &str) -> Result<ParsedQuery, String> {
 }
 
 /// [`parse_query`] for data of `schema`: a timestamp literal compared with a column
-/// that has a time zone reads as a clock in that zone.
+/// that has a time zone reads as a clock in that zone, and a temporal column compared
+/// with quoted text is an error.
 pub fn parse_query_over(query: &str, schema: Option<&Schema>) -> Result<ParsedQuery, String> {
     let mut nodes = parse_nodes(query)?;
     if let Some(schema) = schema {
         nodes.resolve_time_zones(schema);
+        nodes.check_quoted_temporal(schema)?;
     }
     Ok(nodes.into_parsed())
 }
@@ -3131,6 +3233,127 @@ mod tests {
             python.contains("time_zone=\"America/New_York\", ambiguous=\"earliest\""),
             "{python}"
         );
+    }
+
+    /// One row of each temporal type, plus text, for the quoted-text errors.
+    fn temporal_frame() -> DataFrame {
+        df!("d" => &["2024-01-01"], "s" => &["2024.01.01"])
+            .unwrap()
+            .lazy()
+            .with_columns([
+                lit("2024-01-01T05:00:00")
+                    .str()
+                    .to_datetime(None, None, StrptimeOptions::default(), lit("raise"))
+                    .alias("ts"),
+                lit("2024-01-01T05:00:00")
+                    .str()
+                    .to_datetime(None, None, StrptimeOptions::default(), lit("raise"))
+                    .dt()
+                    .time()
+                    .alias("t"),
+                lit(5i64)
+                    .cast(DataType::Duration(TimeUnit::Milliseconds))
+                    .alias("dur"),
+                col("d").str().to_date(StrptimeOptions::default()),
+            ])
+            .collect()
+            .unwrap()
+    }
+
+    /// The error parsing `query` over `df`.
+    fn parse_error_over(query: &str, df: &DataFrame) -> String {
+        parse_query_over(query, Some(df.schema().as_ref()))
+            .err()
+            .unwrap_or_else(|| panic!("{query} should fail"))
+    }
+
+    #[test]
+    fn test_quoted_text_against_temporal_column_is_a_q_error() {
+        let df = temporal_frame();
+        let cases = [
+            (
+                "select where d = \"2024.01.01\"",
+                "d is a date; \"2024.01.01\" is a string. A date is 2024.01.01",
+            ),
+            (
+                "select where d < \"Jan 1\"",
+                "d is a date; \"Jan 1\" is a string. A date is 2024.01.01",
+            ),
+            (
+                "select where d = \"2024-01-01\"",
+                "d is a date; \"2024-01-01\" is a string. A date is 2024.01.01",
+            ),
+            (
+                "select where ts = \"2024.01.01T05:00:00\"",
+                "ts is a timestamp; \"2024.01.01T05:00:00\" is a string. A timestamp is 2024.01.01T05:00:00",
+            ),
+            (
+                "select where ts < \"2023.06.30T23:59:59.5\"",
+                "ts is a timestamp; \"2023.06.30T23:59:59.5\" is a string. A timestamp is 2023.06.30T23:59:59.5",
+            ),
+            (
+                "select where ts < \"2024.01.01\"",
+                "ts is a timestamp; \"2024.01.01\" is a string. A timestamp is 2024.01.01T05:00:00",
+            ),
+            (
+                "select where t = \"05:00:00\"",
+                "t is a time; \"05:00:00\" is a string. A time has no literal; compare t.hour, t.minute or t.second with a number",
+            ),
+            (
+                "select where t < \"05:00:00\"",
+                "t is a time; \"05:00:00\" is a string. A time has no literal; compare t.hour, t.minute or t.second with a number",
+            ),
+            (
+                "select where dur = \"5s\"",
+                "dur is a duration; \"5s\" is a string. A duration has no literal",
+            ),
+            (
+                "select where \"5s\" >= dur",
+                "dur is a duration; \"5s\" is a string. A duration has no literal",
+            ),
+            (
+                "select where d in [\"2024.01.01\", \"2024.01.02\"]",
+                "d is a date; \"2024.01.01\" is a string. A date is 2024.01.01",
+            ),
+            (
+                "select x: d != \"x\"",
+                "d is a date; \"x\" is a string. A date is 2024.01.01",
+            ),
+        ];
+        for (query, want) in cases {
+            assert_eq!(parse_error_over(query, &df), want, "{query}");
+        }
+
+        // A name that is not a bare word is named as it is typed.
+        let mut renamed = df.clone();
+        renamed.rename("d", "start date".into()).unwrap();
+        assert_eq!(
+            parse_error_over("select where col[\"start date\"] = \"x\"", &renamed),
+            "col[\"start date\"] is a date; \"x\" is a string. A date is 2024.01.01"
+        );
+
+        // The remedies run.
+        assert_eq!(eval("select where d = 2024.01.01", &df).height(), 1);
+        assert_eq!(eval("select where d in [2024.01.01]", &df).height(), 1);
+        assert_eq!(
+            eval("select where ts = 2024.01.01T05:00:00", &df).height(),
+            1
+        );
+        assert_eq!(eval("select where t.hour = 5", &df).height(), 1);
+    }
+
+    #[test]
+    fn test_quoted_text_against_text_column_still_compares() {
+        let df = temporal_frame();
+        assert_eq!(eval("select where s = \"2024.01.01\"", &df).height(), 1);
+        assert_eq!(eval("select where s < \"2025\"", &df).height(), 1);
+        assert_eq!(eval("select where s in [\"2024.01.01\"]", &df).height(), 1);
+        // `like` and string functions are text by name; left to themselves.
+        assert!(
+            parse_query_over("select where d like \"2024*\"", Some(df.schema().as_ref())).is_ok()
+        );
+        // Without a schema nothing is known, so nothing is refused here.
+        assert!(parse_query_over("select where d = \"2024.01.01\"", None).is_ok());
     }
 
     #[test]

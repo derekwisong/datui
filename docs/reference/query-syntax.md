@@ -139,6 +139,11 @@ A timestamp literal compared with a column that has a time zone is read as a
 clock time in that zone. A clock time repeated when clocks fall back means its
 first instant.
 
+Quoted text is a string, never a date: `where d = "2024.01.01"` on a date
+column is an error that names the literal to write, here `2024.01.01`. Time and
+duration columns have no literal; compare `t.hour`, `t.minute` or `t.second`
+with a number.
+
 Either side of a comparison can be a column, a literal or an expression:
 `where a = 10`, `where created_at.date > other_date_col`.
 

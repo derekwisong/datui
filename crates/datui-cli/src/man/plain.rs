@@ -60,6 +60,7 @@ fn glyph(name: &str) -> &'static str {
         "oq" | "cq" => "'",
         "lq" | "rq" | "dq" => "\"",
         "*m" => "µ",
+        "*r" => "ρ",
         "de" => "°",
         "bu" => "•",
         "co" => "©",

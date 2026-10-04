@@ -27,6 +27,7 @@ fn special(c: char) -> String {
         '\u{201c}' => "lq",
         '\u{201d}' => "rq",
         '\u{03bc}' | '\u{00b5}' => "*m",
+        '\u{03c1}' => "*r",
         '\u{00b0}' => "de",
         _ => return format!("\\[u{:04X}]", c as u32),
     };

@@ -505,9 +505,9 @@ pub enum ViewsAction {
 /// What `datui formats` does besides listing.
 #[derive(Clone, Debug, Subcommand)]
 pub enum FormatsAction {
-    /// Check a format spec or a QuickFIX dictionary, by name or by file; with FILE, print its first decoded rows. Exits non-zero on an error
+    /// Check a format spec, a QuickFIX dictionary or a DBC file, by name or by file; with FILE, print its first decoded rows, or for a dictionary what it names in the log. Exits non-zero on an error
     Check {
-        /// A format spec or QuickFIX dictionary on the search path, by name, or its file
+        /// A format spec, QuickFIX dictionary or DBC file on the search path, by name, or its file
         #[arg(value_name = "SPEC")]
         spec: String,
         /// A file (or directory of column files) to read with it

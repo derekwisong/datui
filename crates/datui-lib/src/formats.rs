@@ -5139,6 +5139,9 @@ fn check(
     if let Some(dict) = fix_dict_named(named, registry)? {
         return check_fix(&dict, file);
     }
+    if let Some(dbc) = dbc_named(named, registry)? {
+        return check_dbc(&dbc, file);
+    }
     let spec = if as_file.is_file() {
         Arc::new(Spec::load(as_file).map_err(|e| format!("error: {e}\n"))?)
     } else if let Some(spec) = registry.get(named) {
@@ -5248,6 +5251,84 @@ fn fix_dict_named(
         };
     }
     Ok(registry.fix_dict(named).cloned())
+}
+
+/// The DBC file `named` names: a `.dbc` file, a `kind = "dbc"` TOML file, or one on the
+/// search path by its name.
+fn dbc_named(named: &str, registry: &Registry) -> Result<Option<Arc<crate::dbc::Dbc>>, String> {
+    let as_file = Path::new(named);
+    if as_file.is_file() {
+        // Any other file would parse as an empty DBC: only these two kinds are asked.
+        let dbc_like = as_file
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("dbc") || e.eq_ignore_ascii_case("toml"));
+        if !dbc_like {
+            return Ok(None);
+        }
+        return match crate::dbc::load(as_file) {
+            Ok(dbc) => Ok(dbc.map(Arc::new)),
+            Err(e) => Err(format!("error: {e}\n")),
+        };
+    }
+    Ok(registry
+        .dbc
+        .iter()
+        .find(|found| found.dbc.name == named)
+        .map(|found| found.dbc.clone()))
+}
+
+/// `formats check` of a DBC file: its messages and signals, what it passed over and
+/// the interface it applies to; with `file`, a candump log, how many of its frames it
+/// names and which messages.
+fn check_dbc(dbc: &Arc<crate::dbc::Dbc>, file: Option<&Path>) -> Result<String, String> {
+    use std::io::Read;
+    let mut out = format!("{}: ok\n", dbc.name);
+    if let Some(from) = &dbc.path {
+        out.push_str(&format!("  from {}\n", from.display()));
+    }
+    if let Some(interface) = &dbc.interface {
+        out.push_str(&format!("  matches interface {interface}\n"));
+    }
+    let signals: usize = dbc.messages.iter().map(|m| m.signals.len()).sum();
+    out.push_str(&format!(
+        "  {}, {}\n",
+        crate::text_formats::count(dbc.messages.len() as u64, "message", "messages"),
+        crate::text_formats::count(signals as u64, "signal", "signals"),
+    ));
+    for note in &dbc.notes {
+        out.push_str(&format!("warning: {note}\n"));
+    }
+    let Some(file) = file else {
+        return Ok(out);
+    };
+    let failed =
+        |out: &str, e: &dyn std::fmt::Display| format!("{out}error: {}: {e}\n", file.display());
+    let read = std::sync::atomic::AtomicU64::new(0);
+    let mut bytes = Vec::new();
+    crate::gps::open_reader(file, &crate::OpenOptions::default(), &read)
+        .and_then(|mut reader| reader.read_to_end(&mut bytes).map_err(Into::into))
+        .map_err(|e| failed(&out, &e))?;
+    let index = crate::candump::index(&bytes).map_err(|e| failed(&out, &e))?;
+    let layers = crate::candump::Layers {
+        dbcs: vec![dbc.clone()],
+    };
+    let listing = crate::candump::Listing::resolve(&index, layers);
+    let frames = index.keys.len();
+    out.push_str(&format!(
+        "{}, {} of them named by {}\n",
+        crate::text_formats::count(frames as u64, "frame", "frames"),
+        frames - listing.unknown,
+        dbc.name
+    ));
+    let named: Vec<String> = listing
+        .messages
+        .iter()
+        .map(|(name, (_, rows))| format!("{name} ({})", rows.len()))
+        .collect();
+    if !named.is_empty() {
+        out.push_str(&format!("messages in the log: {}\n", named.join(", ")));
+    }
+    Ok(out)
 }
 
 /// `formats check` of a FIX dictionary: what it names and matches; with `file`, how
@@ -6474,6 +6555,50 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
             listing.contains("body  (1 message, interface can1)"),
             "{listing}"
         );
+    }
+
+    /// `formats check` takes a DBC file by name, as a `.dbc` file or as the `kind = "dbc"`
+    /// TOML file that names one; with a candump log, it says how many frames it names.
+    /// One that does not parse is refused at its line.
+    #[test]
+    fn formats_check_reads_dbc_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("car.dbc"),
+            "BO_ 291 ENGINE: 8 ECU\n SG_ Speed : 0|16@1+ (0.125,0) [0|8191] \"rpm\" GW\n SG_ Temp : 16|8@1+ (1,-40) [-40|215] \"C\" GW\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("body.toml"),
+            "kind = \"dbc\"\nfile = \"car.dbc\"\n[match]\ninterface = \"can1\"\n",
+        )
+        .unwrap();
+        let bad = dir.path().join("bad.dbc");
+        std::fs::write(&bad, "BO_ 1 A: 8 X\n SG_ nope\n").unwrap();
+        let registry = Registry::load(&[dir.path().to_path_buf()]);
+        let options = crate::OpenOptions::default();
+
+        let text = check("car", None, &registry, &options).unwrap();
+        assert!(text.starts_with("car: ok\n"), "{text}");
+        assert!(text.contains("car.dbc"), "{text}");
+        assert!(text.contains("1 message, 2 signals"), "{text}");
+
+        let toml = dir.path().join("body.toml");
+        let text = check(&toml.to_string_lossy(), None, &registry, &options).unwrap();
+        assert!(text.contains("matches interface can1"), "{text}");
+
+        let log = dir.path().join("drive.log");
+        std::fs::write(
+            &log,
+            "(1706689000.100000) can0 123#B80B280000000000\n(1706689000.200000) can0 456#00\n(1706689000.300000) can0 123#C00B290000000000\n",
+        )
+        .unwrap();
+        let text = check("car", Some(&log), &registry, &options).unwrap();
+        assert!(text.contains("3 frames, 2 of them named by car"), "{text}");
+        assert!(text.contains("messages in the log: ENGINE (2)"), "{text}");
+
+        let e = check(&bad.to_string_lossy(), None, &registry, &options).unwrap_err();
+        assert!(e.starts_with("error: ") && e.contains("bad.dbc\":2"), "{e}");
     }
 
     /// FIX dictionaries share the search path: a `kind = "fix"` TOML file and a

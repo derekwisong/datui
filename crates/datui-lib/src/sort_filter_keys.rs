@@ -67,7 +67,11 @@ impl App {
                         FilterEditStep::Value => {}
                     }
                 }
-                KeyCode::Enter => m.commit_editor(),
+                KeyCode::Enter => {
+                    m.commit_editor();
+                    // Said now, on the row just saved, rather than when applying.
+                    self.sort_filter_modal.sort.status = self.filter_problem();
+                }
                 KeyCode::BackTab => {
                     editor.step = match editor.step {
                         FilterEditStep::Column | FilterEditStep::Operator => FilterEditStep::Column,

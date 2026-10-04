@@ -782,9 +782,6 @@ mod read {
         column: usize,
         operator: FilterOperator,
         value: Value,
-        /// A float `=` or `!=`: within this of the value, as the sidebar's filter
-        /// compares (`python_script::float_half_step`).
-        near: Option<f64>,
     }
 
     /// The rows a view shows: the sidebar's filters, joined left to right as the
@@ -997,17 +994,10 @@ mod read {
                 Kind::Text => Value::Text(filter.value.clone()),
                 _ => return None,
             };
-            let near = match (kind, filter.operator) {
-                (Kind::Float, FilterOperator::Eq | FilterOperator::NotEq) => {
-                    crate::python_script::float_half_step(&filter.value)
-                }
-                _ => None,
-            };
             Some(Atom {
                 column,
                 operator: filter.operator,
                 value,
-                near,
             })
         }
 
@@ -1019,16 +1009,6 @@ mod read {
             } else {
                 ""
             };
-            if let (Some(half), Value::Real(v)) = (atom.near, &atom.value) {
-                params.push(Value::Real(v - half));
-                params.push(Value::Real(v + half));
-                let not = if atom.operator == FilterOperator::NotEq {
-                    "NOT "
-                } else {
-                    ""
-                };
-                return format!("{e} {not}BETWEEN ? AND ?");
-            }
             params.push(atom.value.clone());
             match atom.operator {
                 FilterOperator::Eq => format!("{e} = ?{collate}"),

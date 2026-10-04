@@ -36,7 +36,7 @@ Where a dataset opens.
 | `c` | Open charts |
 | `s` | Open the Sort & Filter sidebar (tabs: Columns, Filters), on the cursor's column |
 | `F` | Value counts of the cursor's column: each value's rows, percent and a bar, with a summary |
-| `+ / -` | Filter on the cursor's cell: + keeps the rows with its value, - drops them (a null cell: the nulls). Each adds a row to the Filters tab, joined with "and"; a float matches as drawn |
+| `+ / -` | Filter on the cursor's cell: + keeps the rows with its value, - drops them (a null cell: the nulls). Each adds a row to the Filters tab, joined with "and"; the value is the cell's exactly as stored |
 | `a` | Open Analysis. In a Data Quality evidence drill a is disabled; Esc returns to the observation |
 | `p` | Open Pivot & Melt |
 | `e` | Export data to file |
@@ -322,6 +322,11 @@ Where a dataset opens.
 | `Space` | Toggle and/or on the row |
 | `d / Del` | Delete the row |
 | `C` | Clear every staged filter |
+| Date | 2024-01-01 |
+| Date and time | 2024-01-01, 2024-01-01 05:30, 2024-01-01T05:30:00.25, a clock in the column's zone; +01:00 or Z names an instant |
+| Time | 05:30, 05:30:00.25 |
+| Duration | 1d 2h 30m, 90s, 1500ms (d h m s ms us ns) |
+| Decimal | 1.5, at the column's scale |
 
 ## Pivot and melt
 

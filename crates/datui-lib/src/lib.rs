@@ -184,6 +184,7 @@ pub mod tee;
 mod terminal;
 pub mod terminal_input;
 pub mod text_formats;
+pub mod typed_value;
 pub mod ulog;
 mod unfinished;
 pub mod value_counts;
@@ -13848,6 +13849,17 @@ impl App {
         }
     }
 
+    /// Why one of the sidebar's filters cannot apply: its value does not read as its
+    /// column's type. The first such, said for the user.
+    fn filter_problem(&self) -> Option<String> {
+        let schema = self.data_table_state.as_ref()?.schema();
+        self.sort_filter_modal
+            .filter
+            .statements
+            .iter()
+            .find_map(|f| crate::python_script::SidebarFilter::problem(f, schema.get(&f.column)))
+    }
+
     /// Whether the dataset on screen is delimited text, whose first row `H` on the
     /// Info panel's Schema tab reads the other way.
     pub fn header_toggle_offered(&self) -> bool {
@@ -13907,7 +13919,7 @@ impl App {
     /// `+` / `-`: a filter on the cursor's cell, added to the sidebar's Filters list
     /// and applied, so it shows there, joins the others with "and", and `R` clears
     /// it. `+` keeps the rows with the cell's value and `-` drops them; a null cell
-    /// is "is null" or "not null". A float matches at the digits the table shows.
+    /// is "is null" or "not null". The value is the cell's exactly as stored.
     fn quick_filter(&mut self, keep: bool) -> Option<AppEvent> {
         let state = self.data_table_state.as_ref()?;
         let column = state.current_column()?.to_string();
@@ -13929,34 +13941,9 @@ impl App {
             } else {
                 FilterOperator::NotEq
             };
-            let text = match &dtype {
-                DataType::String => value.get_str().map(str::to_string),
-                // The preview's own text: what the eye matched is what is kept.
-                DataType::Float32 | DataType::Float64 => {
-                    Some(crate::exact::str_value(&value).into_owned())
-                }
-                // Compared as Polars writes them as text (`Equality::AsText`).
-                DataType::Date
-                | DataType::Datetime(..)
-                | DataType::Time
-                | DataType::Duration(_)
-                | DataType::Decimal(..) => series
-                    .cast(&DataType::String)
-                    .ok()
-                    .and_then(|text| text.str().ok()?.get(0).map(str::to_string)),
-                DataType::Boolean
-                | DataType::Int8
-                | DataType::Int16
-                | DataType::Int32
-                | DataType::Int64
-                | DataType::UInt8
-                | DataType::UInt16
-                | DataType::UInt32
-                | DataType::UInt64
-                | DataType::Categorical(..)
-                | DataType::Enum(..) => Some(crate::exact::str_value(&value).into_owned()),
-                _ => None,
-            };
+            // Text that reads back to this very value: a float exactly as stored,
+            // a date and time to its last digit, in its zone.
+            let text = crate::typed_value::text_of(&value, &dtype);
             let Some(text) = text else {
                 let kind = match dtype {
                     DataType::List(_) => "lists",
@@ -14072,6 +14059,11 @@ impl App {
         // A row still under edit is committed, never silently dropped.
         if self.sort_filter_modal.filter.editor.is_some() {
             self.sort_filter_modal.filter.commit_editor();
+        }
+        // A value its column cannot compare with stays in the sidebar, which says why.
+        if let Some(why) = self.filter_problem() {
+            self.sort_filter_modal.sort.status = Some(why);
+            return None;
         }
         let (columns, descending) = self.sort_filter_modal.sort.sorted_columns_and_directions();
         let column_order = self.sort_filter_modal.sort.get_column_order();

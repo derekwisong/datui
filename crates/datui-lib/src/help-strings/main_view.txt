@@ -30,8 +30,8 @@ Data operations:
                     rows, percent and a bar, with a summary
   + / -:            Filter on the cursor's cell: + keeps the rows with its
                     value, - drops them (a null cell: the nulls). Each adds
-                    a row to the Filters tab, joined with "and"; a float
-                    matches as drawn
+                    a row to the Filters tab, joined with "and"; the value
+                    is the cell's exactly as stored
   a:                Open Analysis. In a Data Quality evidence
                     drill a is disabled; Esc returns to the observation
   p:                Open Pivot & Melt

@@ -40,10 +40,11 @@ cross.
 | <kbd>-</kbd> | Drop those rows; on a null cell, drop the nulls |
 
 Each press adds a row to the [Filters tab](#filters-tab), joined to the others
-with **and**, so you can edit or delete it there and <kbd>R</kbd> clears it. A
-float matches the number as the table draws it: on a cell drawn `0.3`, `+`
-keeps every row drawn `0.3`, `0.1 + 0.2` among them. A list, struct or binary
-cell has no value to compare; the bar says so.
+with **and**, so you can edit or delete it there and <kbd>R</kbd> clears it. The
+value is the cell's exactly as stored: a float to its last digit, so `0.1 + 0.2`
+and `0.3` are two values even where the table draws both as `0.3`, and a date
+and time to its last fraction of a second, in its zone. A list, struct or
+binary cell has no value to compare; the bar says so.
 
 ## Apply or cancel changes
 
@@ -211,14 +212,24 @@ every terminal: finish the row with <kbd>Enter</kbd>, then press
 | `contains` `!contains` | text contains, or does not contain, the value |
 | `is null` `not null` | the value is null, or is not; these take no value |
 
-The value is parsed as the column's type, so `> 1000` on a number column is a
-numeric comparison. On a float column, `=` and `!=` compare to the sixth
-decimal place, where the table rounds a float, or to the last digit you write
-past it: `= 0.3` holds `0.1 + 0.2`, which the table draws as `0.3`. In
-exponent notation the last digit written counts: `= 1.2346e7` holds
-12,345,800. A date, time, duration or decimal
-column compares `=` and `!=` with its text, such as `2024-01-01`. Filters stay in place while you chart, analyze or export,
-and are saved in [views](views.md).
+The value is read as the column's type, so `> 1000` on a number column is a
+numeric comparison and `>= 2024-01-01` on a date column compares dates:
+
+| Column | Write the value as |
+|---|---|
+| Whole number, float | `1000`, `-3.5`, `1e-6`; a float compares exactly, so `= 0.3` does not hold `0.1 + 0.2` |
+| Flag | `true` or `false` |
+| Date | `2024-01-01` |
+| Date and time | `2024-01-01` (its midnight), `2024-01-01 05:30`, `2024-01-01T05:30:00.25`; a column with a time zone reads the clock there, and an offset (`+01:00`, `Z`) names the instant instead |
+| Time | `05:30`, `05:30:00`, `05:30:00.25` |
+| Duration | `1d 2h 30m`, `90s`, `1500ms`, `-5m`: whole numbers of `d` `h` `m` `s` `ms` `us` `ns` |
+| Decimal | `1.5`, read at the column's scale, so it is `1.50` |
+
+A value the column cannot read keeps the sidebar open, and the line above the
+keys says why, such as `day: "2024-13-01" is not a date written YYYY-MM-DD`. A
+clock a time zone skips or repeats (the night clocks change) asks for its
+offset. Filters stay in place while you chart, analyze or export, and are
+saved in [views](views.md).
 
 ## From the query prompt
 

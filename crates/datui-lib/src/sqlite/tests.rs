@@ -801,7 +801,6 @@ fn filters_and_sorts_run_in_sqlite_as_polars_would() {
             vec![("u".to_string(), true)],
         ),
         (vec![filter("s", NotEq, "Apple", And)], vec![]),
-        // A float `=` holds the digits written, in SQLite as in Polars.
         (vec![filter("x", Eq, "2.5", And)], vec![]),
         (vec![filter("x", NotEq, "2.5", And)], vec![]),
         (

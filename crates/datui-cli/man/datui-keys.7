@@ -66,7 +66,7 @@ Open the Sort & Filter sidebar (tabs: Columns, Filters), on the cursor's column
 Value counts of the cursor's column: each value's rows, percent and a bar, with a summary
 .TP
 \fB+ / \-\fR
-Filter on the cursor's cell: + keeps the rows with its value, \- drops them (a null cell: the nulls). Each adds a row to the Filters tab, joined with "and"; a float matches as drawn
+Filter on the cursor's cell: + keeps the rows with its value, \- drops them (a null cell: the nulls). Each adds a row to the Filters tab, joined with "and"; the value is the cell's exactly as stored
 .TP
 \fBa\fR
 Open Analysis. In a Data Quality evidence drill a is disabled; Esc returns to the observation
@@ -596,6 +596,21 @@ Delete the row
 .TP
 \fBC\fR
 Clear every staged filter
+.TP
+Date
+2024-01-01
+.TP
+Date and time
+2024-01-01, 2024-01-01 05:30, 2024-01-01T05:30:00.25, a clock in the column's zone; +01:00 or Z names an instant
+.TP
+Time
+05:30, 05:30:00.25
+.TP
+Duration
+1d 2h 30m, 90s, 1500ms (d h m s ms us ns)
+.TP
+Decimal
+1.5, at the column's scale
 .SS "Pivot and melt"
 \fBp\fR at the table.
 .TP

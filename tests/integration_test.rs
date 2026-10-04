@@ -22210,7 +22210,7 @@ fn open_quick_filter_table(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::
     let mut df = df!(
         "name" => &[Some("north"), Some("south"), None, Some("north"), Some("east"), Some("south")],
         "n" => &[1i64, 2, 3, 2, 2, 1],
-        // 0.1 + 0.2 is drawn as 0.3, and so is 0.3; a third is drawn 0.333333.
+        // 0.1 + 0.2 and 0.3 are both drawn 0.3, and are not equal.
         "x" => &[Some(0.1 + 0.2), Some(0.3), Some(1.0 / 3.0), Some(1.0 / 3.0), None, Some(2.5)],
         "day" => &[Some(19723i32), Some(19724), Some(19723), None, Some(19725), Some(19723)],
     )
@@ -22361,7 +22361,7 @@ fn plus_and_minus_filter_on_the_cursors_cell() {
     run_and_settle(&mut app, key(KeyCode::Home), &rx, &tx);
     assert_eq!(quick_view(&app), (6, vec![]), "R clears them");
 
-    // A float, as drawn: 0.1 + 0.2 and 0.3 are both 0.3 on screen.
+    // A float, exactly as stored: 0.1 + 0.2 is drawn 0.3 beside 0.3, and is not it.
     let to_x = |app: &mut App| {
         for c in ['{', 'l', 'l'] {
             table_key(app, &rx, &tx, c);
@@ -22373,14 +22373,28 @@ fn plus_and_minus_filter_on_the_cursors_cell() {
     };
     to_x(&mut app);
     table_key(&mut app, &rx, &tx, '+');
-    assert_eq!(quick_view(&app), (2, strings(&["x = 0.3"])));
+    assert_eq!(quick_view(&app), (1, strings(&["x = 0.30000000000000004"])));
+    table_key(&mut app, &rx, &tx, 'R');
+    run_and_settle(&mut app, key(KeyCode::Home), &rx, &tx);
+    to_x(&mut app);
+    table_key(&mut app, &rx, &tx, 'j');
+    table_key(&mut app, &rx, &tx, '+');
+    assert_eq!(quick_view(&app), (1, strings(&["x = 0.3"])));
+    table_key(&mut app, &rx, &tx, 'R');
+    run_and_settle(&mut app, key(KeyCode::Home), &rx, &tx);
+    // A third twice: + keeps both, - drops exactly those (and the null).
+    to_x(&mut app);
+    table_key(&mut app, &rx, &tx, 'j');
+    table_key(&mut app, &rx, &tx, 'j');
+    table_key(&mut app, &rx, &tx, '+');
+    assert_eq!(quick_view(&app).0, 2);
     table_key(&mut app, &rx, &tx, 'R');
     run_and_settle(&mut app, key(KeyCode::Home), &rx, &tx);
     to_x(&mut app);
     table_key(&mut app, &rx, &tx, 'j');
     table_key(&mut app, &rx, &tx, 'j');
     table_key(&mut app, &rx, &tx, '-');
-    assert_eq!(quick_view(&app), (3, strings(&["x != 0.333333"])));
+    assert_eq!(quick_view(&app), (3, strings(&["x != 0.3333333333333333"])));
     table_key(&mut app, &rx, &tx, 'R');
     run_and_settle(&mut app, key(KeyCode::Home), &rx, &tx);
 
@@ -22399,7 +22413,7 @@ fn plus_and_minus_filter_on_the_cursors_cell() {
     table_key(&mut app, &rx, &tx, 'R');
     run_and_settle(&mut app, key(KeyCode::Home), &rx, &tx);
 
-    // A date, by its text.
+    // A date.
     table_key(&mut app, &rx, &tx, '{');
     for c in ['l', 'l', 'l'] {
         table_key(&mut app, &rx, &tx, c);
@@ -22425,6 +22439,97 @@ fn plus_and_minus_filter_on_the_cursors_cell() {
         app.flash_message(),
         Some("+ and - filter on plain values, not lists")
     );
+}
+
+/// `+` and `-` on a cell of every type keep or drop exactly the rows with its value:
+/// the filter's text reads back to the very value, to the last fraction of a second,
+/// in the column's zone, at the column's scale.
+#[test]
+fn plus_and_minus_keep_the_exact_value_of_every_type() {
+    // Each column: the first row's value three times, two others, a null.
+    let paris = TimeZone::opt_try_new(Some("Europe/Paris")).unwrap();
+    // 02:30:00.123456 on the night Paris falls back, the second time.
+    let ambiguous = 1_729_992_600_123_456i64;
+    let pattern = |a: i64, b: i64, c: i64| [Some(a), Some(b), Some(a), None, Some(c), Some(a)];
+    let mut df = df!(
+        "f" => &[Some(0.1f32), Some(0.2), Some(0.1), None, Some(0.3), Some(0.1)],
+        "day" => &[Some(19723i32), Some(19724), Some(19723), None, Some(19725), Some(19723)],
+        "ts" => &pattern(1_704_085_200_123_456, 1_704_085_200_123_457, 0),
+        "tz" => &pattern(ambiguous, ambiguous - 3_600_000_000, 0),
+        "clock" => &pattern(18_367_123_456_789, 18_367_123_456_788, 0),
+        "dur" => &pattern(93_784_000_005, 93_784_000_006, -90_000_000),
+        "dec" => &[Some("1.50"), Some("2.00"), Some("1.5"), None, Some("3.25"), Some("1.50")],
+    )
+    .unwrap()
+    .lazy()
+    .with_columns([
+        col("day").cast(DataType::Date),
+        col("ts").cast(DataType::Datetime(TimeUnit::Microseconds, None)),
+        col("tz").cast(DataType::Datetime(TimeUnit::Microseconds, paris)),
+        col("clock").cast(DataType::Time),
+        col("dur").cast(DataType::Duration(TimeUnit::Microseconds)),
+        col("dec").cast(DataType::Decimal(10, 2)),
+    ])
+    .collect()
+    .unwrap();
+    let path = common::fixture_dir().join("quick_filter_types.parquet");
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    draw_sized(&mut app, (160, 24));
+
+    for column in ["f", "day", "ts", "tz", "clock", "dur", "dec"] {
+        for (pressed, rows) in [('+', 3), ('-', 2)] {
+            app.data_table_state
+                .as_mut()
+                .unwrap()
+                .set_current_column(column);
+            run_and_settle(&mut app, key_event(pressed), &rx, &tx);
+            draw_sized(&mut app, (160, 24));
+            let (got, filters) = quick_view(&app);
+            assert_eq!(got, rows, "{column} {pressed}: {filters:?}");
+            run_and_settle(&mut app, key_event('R'), &rx, &tx);
+            run_and_settle(&mut app, key(KeyCode::Home), &rx, &tx);
+            draw_sized(&mut app, (160, 24));
+        }
+    }
+}
+
+fn key_event(c: char) -> AppEvent {
+    key(KeyCode::Char(c))
+}
+
+/// A filter value its column cannot read stays in the sidebar, which says why, and
+/// applies nothing.
+#[test]
+fn a_filter_value_its_column_cannot_read_is_refused_with_a_reason() {
+    let (mut app, rx, tx) = open_quick_filter_table("quick_filter_refused.parquet");
+    press(&mut app, KeyCode::Char('s'));
+    app.sort_filter_modal
+        .filter
+        .statements
+        .push(datui::filter_modal::FilterStatement {
+            column: "day".into(),
+            operator: datui::filter_modal::FilterOperator::Gt,
+            value: "2024-13-01".into(),
+            logical_op: datui::filter_modal::LogicalOperator::And,
+        });
+    run_and_settle(&mut app, key(KeyCode::Enter), &rx, &tx);
+    assert_eq!(app.input_mode, InputMode::SortFilter, "the sidebar stays");
+    assert_eq!(
+        app.sort_filter_modal.sort.status.as_deref(),
+        Some("day: \"2024-13-01\" is not a date written YYYY-MM-DD")
+    );
+    assert_eq!(quick_view(&app), (6, vec![]), "nothing applied");
+    // Fixed, it applies.
+    app.sort_filter_modal.filter.statements[0].value = "2024-01-01".into();
+    run_and_settle(&mut app, key(KeyCode::Enter), &rx, &tx);
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert_eq!(quick_view(&app), (2, strings(&["day > 2024-01-01"])));
 }
 
 /// The theme's style for the column cursor's header and the current cell.

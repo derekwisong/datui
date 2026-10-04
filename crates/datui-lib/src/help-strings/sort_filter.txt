@@ -50,6 +50,17 @@ Filters tab:
   d / Del:          Delete the row
   C:                Clear every staged filter
 
+  Operators: = != < > <= >= compare, contains and !contains match text, and
+  is null and not null take no value. The value is read as the column's type:
+    Date:           2024-01-01
+    Date and time:  2024-01-01, 2024-01-01 05:30, 2024-01-01T05:30:00.25,
+                    a clock in the column's zone; +01:00 or Z names an instant
+    Time:           05:30, 05:30:00.25
+    Duration:       1d 2h 30m, 90s, 1500ms (d h m s ms us ns)
+    Decimal:        1.5, at the column's scale
+  A float compares exactly. A value the column cannot read keeps the sidebar
+  open and says why.
+
 Files that disagree:
   Sorting or filtering by a column some files store in another type leaves those
   files' rows out: there is no value in that column to order or compare them by.

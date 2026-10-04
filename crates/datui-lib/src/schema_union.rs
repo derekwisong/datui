@@ -1281,7 +1281,7 @@ pub(crate) fn before_local_footer_read(path: &std::path::Path) {
 
 /// Footers read before a dataset opens. Past this many files the reads cost more than
 /// the schema is worth, so a spread sample stands in for the rest. Documented in
-/// `docs/user-guide/loading-data.md`; a fixed threshold, not a setting.
+/// `docs/user-guide/large-datasets.md`; a fixed threshold, not a setting.
 pub const MAX_FOOTER_READS: usize = 20_000;
 
 /// Which of a dataset's `files` footers to read: all of them, or — past

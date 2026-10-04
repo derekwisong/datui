@@ -374,6 +374,9 @@ pub(crate) enum Node {
         iso: String,
         format: String,
         unit: TimeUnit,
+        /// The zone of the column it meets, read as a clock there; none for a column
+        /// without one. See [`Node::resolve_time_zones`].
+        zone: Option<String>,
     },
     Bin(BinOp, Box<Node>, Box<Node>),
     Coalesce(Box<Node>, Box<Node>),
@@ -513,14 +516,22 @@ impl Node {
                 };
                 lit(iso.as_str()).str().to_date(opts)
             }
-            Node::Timestamp { iso, format, unit } => {
+            Node::Timestamp {
+                iso,
+                format,
+                unit,
+                zone,
+            } => {
                 let opts = StrptimeOptions {
                     format: Some(format.as_str().into()),
                     ..Default::default()
                 };
+                // Set only from a column's own dtype, so it parses.
+                let zone = TimeZone::opt_try_new(zone.as_deref()).ok().flatten();
+                // A clock time a fall back repeats is its first instant.
                 lit(iso.as_str())
                     .str()
-                    .to_datetime(Some(*unit), None, opts, lit("raise"))
+                    .to_datetime(Some(*unit), zone, opts, lit("earliest"))
             }
             Node::Bin(op, left, right) => {
                 let (left, right) = (left.to_expr(), right.to_expr());
@@ -601,6 +612,61 @@ impl Node {
         }
     }
 
+    /// Each timestamp literal that meets a column with a time zone, by a comparison,
+    /// arithmetic, `^` or the two sides of a `?`, takes that zone, so it reads as a clock
+    /// there; Polars refuses to compare a zoned datetime with a naive one.
+    pub(crate) fn resolve_time_zones(&mut self, schema: &Schema) {
+        match self {
+            Node::Bin(_, left, right) | Node::Coalesce(left, right) => {
+                left.resolve_time_zones(schema);
+                right.resolve_time_zones(schema);
+                Self::share_zone(left, right, schema);
+            }
+            Node::Filter(values, predicate) => {
+                values.resolve_time_zones(schema);
+                predicate.resolve_time_zones(schema);
+            }
+            Node::When(c, t, o) => {
+                c.resolve_time_zones(schema);
+                t.resolve_time_zones(schema);
+                o.resolve_time_zones(schema);
+                Self::share_zone(t, o, schema);
+            }
+            Node::Op(inner, _) | Node::Alias(inner, _) => inner.resolve_time_zones(schema),
+            _ => {}
+        }
+    }
+
+    /// Give a zoneless timestamp literal on one side the zone of the other side's type.
+    fn share_zone(a: &mut Node, b: &mut Node, schema: &Schema) {
+        if !Self::take_zone(a, b, schema) {
+            Self::take_zone(b, a, schema);
+        }
+    }
+
+    /// Whether `literal`, a zoneless timestamp literal, took the zone of `other`'s type.
+    fn take_zone(literal: &mut Node, other: &Node, schema: &Schema) -> bool {
+        if let Node::Timestamp {
+            zone: zone @ None, ..
+        } = literal
+            && let Some(DataType::Datetime(_, Some(tz))) = other.dtype(schema)
+        {
+            *zone = Some(tz.to_string());
+            return true;
+        }
+        false
+    }
+
+    /// The type the expression has over `schema`, when Polars can say.
+    fn dtype(&self, schema: &Schema) -> Option<DataType> {
+        DataFrame::empty_with_schema(schema)
+            .lazy()
+            .select([self.to_expr()])
+            .collect_schema()
+            .ok()
+            .and_then(|s| s.get_at_index(0).map(|(_, dtype)| dtype.clone()))
+    }
+
     /// The literal as Python, bare: `1.0`, `"a"`, `True`, `None`.
     fn python_literal(&self) -> Option<String> {
         Some(match self {
@@ -629,11 +695,20 @@ impl Node {
                     .collect();
                 format!("pl.date({})", parts.join(", "))
             }
-            Node::Timestamp { iso, format, unit } => format!(
-                "pl.lit({}).str.to_datetime({}, time_unit={})",
+            Node::Timestamp {
+                iso,
+                format,
+                unit,
+                zone,
+            } => format!(
+                "pl.lit({}).str.to_datetime({}, time_unit={}{})",
                 py_str(iso),
                 py_str(format),
-                py_str(time_unit_name(*unit))
+                py_str(time_unit_name(*unit)),
+                zone.as_ref().map_or(String::new(), |zone| format!(
+                    ", time_zone={}, ambiguous=\"earliest\"",
+                    py_str(zone)
+                ))
             ),
             Node::Bin(op, left, right) => {
                 // A literal on the right stays bare (`pl.col("a") > 1.0`); Python's
@@ -1465,6 +1540,7 @@ fn parse_term(tokens: &[Token]) -> Result<(Node, &[Token]), String> {
                 iso: iso.clone(),
                 format: format_str.clone(),
                 unit: *time_unit,
+                zone: None,
             },
             &tokens[1..],
         )),
@@ -1742,6 +1818,19 @@ impl QueryNodes {
         }
     }
 
+    /// Each timestamp literal read in the zone of the column it meets in `schema`; see
+    /// [`Node::resolve_time_zones`].
+    pub(crate) fn resolve_time_zones(&mut self, schema: &Schema) {
+        let nodes = self
+            .cols
+            .iter_mut()
+            .chain(self.filter.iter_mut())
+            .chain(self.group_by.iter_mut());
+        for node in nodes {
+            node.resolve_time_zones(schema);
+        }
+    }
+
     /// The where clause as a Python `.filter(...)` call, if there is one.
     pub(crate) fn python_filter(&self) -> Option<String> {
         self.filter
@@ -1799,6 +1888,16 @@ fn python_list(nodes: &[Node]) -> String {
 
 pub fn parse_query(query: &str) -> Result<ParsedQuery, String> {
     parse_nodes(query).map(QueryNodes::into_parsed)
+}
+
+/// [`parse_query`] for data of `schema`: a timestamp literal compared with a column
+/// that has a time zone reads as a clock in that zone.
+pub fn parse_query_over(query: &str, schema: Option<&Schema>) -> Result<ParsedQuery, String> {
+    let mut nodes = parse_nodes(query)?;
+    if let Some(schema) = schema {
+        nodes.resolve_time_zones(schema);
+    }
+    Ok(nodes.into_parsed())
 }
 
 /// Parse a q query into nodes. An empty query selects every column.
@@ -2874,7 +2973,7 @@ mod tests {
             group_by: by,
             distinct,
             ..
-        } = parse_query(query).unwrap();
+        } = parse_query_over(query, Some(df.schema().as_ref())).unwrap();
         let mut lf = df.clone().lazy();
         if let Some(f) = filter {
             lf = lf.filter(f);
@@ -2970,6 +3069,68 @@ mod tests {
         let out = eval("select trips: count pickup by pickup.hour", &df);
         assert_eq!(values(&out, "pickup_hour"), ["8", "17"]);
         assert_eq!(values(&out, "trips"), ["2", "1"]);
+    }
+
+    /// A timestamp literal reads as a clock in the zone of the column it meets, as
+    /// the table shows that column; Polars refuses a zoned/naive comparison otherwise.
+    #[test]
+    fn a_timestamp_literal_takes_the_zone_of_its_column() {
+        let zoned = |zone: &str| {
+            df!("t" => &["2013-01-15 14:00:00", "2013-01-15 15:00:00"])
+                .unwrap()
+                .lazy()
+                .with_column(col("t").str().to_datetime(
+                    Some(TimeUnit::Microseconds),
+                    TimeZone::opt_try_new(Some(zone)).unwrap(),
+                    StrptimeOptions::default(),
+                    lit("raise"),
+                ))
+                .collect()
+                .unwrap()
+        };
+        for zone in ["UTC", "America/New_York"] {
+            let df = zoned(zone);
+            for (query, rows) in [
+                ("select where t > 2013.01.15T14:30:00.123456", 1),
+                ("select where 2013.01.15T14:30:00 < t", 1),
+                ("select where t = 2013.01.15T15:00:00", 1),
+                (
+                    "select where t >= 2013.01.15T14:00:00, t < 2013.01.16T00:00:00",
+                    2,
+                ),
+                ("select where t > 2013.01.15", 2),
+            ] {
+                assert_eq!(eval(query, &df).height(), rows, "{zone}: {query}");
+            }
+            let out = eval("select later: t ^ 2013.01.15T00:00:00", &df);
+            assert_eq!(out.height(), 2, "{zone}");
+        }
+        // A column with no zone is untouched.
+        let naive = df!("t" => &["2013-01-15 14:00:00"])
+            .unwrap()
+            .lazy()
+            .with_column(col("t").str().to_datetime(
+                None,
+                None,
+                StrptimeOptions::default(),
+                lit("raise"),
+            ))
+            .collect()
+            .unwrap();
+        assert_eq!(
+            eval("select where t < 2013.01.15T14:30:00", &naive).height(),
+            1
+        );
+
+        // "Copy as Python" says the same.
+        let schema = zoned("America/New_York").schema().clone();
+        let mut nodes = parse_nodes("select where t > 2013.01.15T14:30:00").unwrap();
+        nodes.resolve_time_zones(&schema);
+        let python = nodes.python_filter().unwrap();
+        assert!(
+            python.contains("time_zone=\"America/New_York\", ambiguous=\"earliest\""),
+            "{python}"
+        );
     }
 
     #[test]

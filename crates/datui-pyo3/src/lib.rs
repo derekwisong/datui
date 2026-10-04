@@ -355,11 +355,13 @@ fn view_from_json(
     run_tui(plan, args, capture)
 }
 
-/// Launch the datui TUI with one or more paths (local files, S3, GCS, or HTTP/HTTPS URLs).
+/// Launch the datui TUI with one or more paths (local files, S3, GCS, Azure, or HTTP/HTTPS URLs).
 ///
 /// Paths are passed to the same loading logic as the CLI: local files, `s3://`, `gs://`,
-/// and `http(s)://` are supported. Glob patterns (e.g. `"data/**/*.parquet"`) are supported
-/// for Parquet; the loader passes them to Polars for expansion. Non-Parquet remote files
+/// `abfss://`, and `http(s)://` are supported. `az://container/path` takes its storage
+/// account from the Azure environment variables or the one Azure connection in the
+/// config, and is refused, naming the `abfss://` form, when neither gives one. Glob
+/// patterns (e.g. `"data/**/*.parquet"`) are supported for Parquet; the loader passes them to Polars for expansion. Non-Parquet remote files
 /// are downloaded to a temp file then loaded. Multiple paths are allowed; the same rule
 /// as the CLI applies (e.g. only one remote URL when the first path is remote).
 ///

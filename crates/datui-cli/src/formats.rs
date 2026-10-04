@@ -695,9 +695,9 @@ impl FileFormat {
 
     /// How a file of this format is read when it is opened, as `stored` on disk.
     ///
-    /// The one answer to "does this read only what it shows": the loading-data docs'
-    /// format table, the home screen's marker and the Info panel's `Read:` line all
-    /// ask here. `None` when a file stored that way does not open: a compressed
+    /// The one answer to "does this read only what it shows": the format table in
+    /// `docs/formats/index.md`, the home screen's marker and the Info panel's `Read:`
+    /// line all ask here. `None` when a file stored that way does not open: a compressed
     /// Parquet file, or an IPC stream of anything but Arrow.
     pub fn read_mode(self, stored: Stored) -> Option<ReadMode> {
         let d = self.descriptor();
@@ -804,7 +804,7 @@ impl FileFormat {
 pub fn format_help() -> String {
     let names: Vec<&str> = FileFormat::ALL.iter().map(|f| f.name()).collect();
     format!(
-        "File format, when the extension does not say: {}; or a format spec, by name (acme.l2feed), file (./acme.toml) or http(s), s3, gs or az URL (at most 1 MiB)",
+        "File format, when the extension does not say: {}; or a format spec: its name (`datui formats` lists them), its file (a path with a / or ending .toml), or its http(s), s3, gs or az URL (at most 1 MiB)",
         names.join(", ")
     )
 }
@@ -945,6 +945,8 @@ mod tests {
         );
         assert!(one_table(None).starts_with("This file holds one table"));
         assert!(FileFormat::Excel.takes_table(), "a sheet is a table");
+        // A spec named in help would have to ship; none does.
+        assert!(!format.contains("acme"), "{format}");
     }
 
     /// Every format read into files of its own says so in words of its own: none falls

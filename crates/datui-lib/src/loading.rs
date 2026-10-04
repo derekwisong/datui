@@ -1913,11 +1913,16 @@ pub(crate) fn delimited_format(path: &Path, options: &OpenOptions) -> Option<Fil
 pub(crate) const NO_RANGES: &str = "The server does not send byte ranges, so the model's header cannot be read without downloading the whole file.";
 
 /// The download a remote source needs before it can be read, if it needs one: an HTTP
-/// file always, and one object of a store that cannot be scanned in place.
+/// file always, and one object of a store that cannot be scanned in place. A format
+/// spec reads local bytes, so one object it reads is downloaded whatever its name.
 #[cfg(any(feature = "http", feature = "cloud"))]
 fn remote_download(src: &source::InputSource, options: &OpenOptions) -> Option<PendingDownload> {
+    let spec = options.spec_file.is_some() || options.spec_name.is_some();
     #[cfg(feature = "cloud")]
-    if let Some(arrow) = cloud_arrow(src, options) {
+    let should_download =
+        |url: &str| should_download(url) || (spec && !source::is_prefix_or_glob(url));
+    #[cfg(feature = "cloud")]
+    if !spec && let Some(arrow) = cloud_arrow(src, options) {
         return Some(arrow);
     }
     let options = options.clone();
@@ -2000,8 +2005,8 @@ mod tests {
     use polars::prelude::IntoLazy;
 
     /// An open routes a remote file as `FileFormat::bucket_object` and `http_file` say,
-    /// which the loading-data page's table and the home screen's marker read: read in
-    /// place, or downloaded first. A bucket's Arrow is listed first, and read in place
+    /// which the format table in `docs/formats/index.md` and the home screen's marker
+    /// read: read in place, or downloaded first. A bucket's Arrow is listed first, and read in place
     /// unless the listing finds a stream; a compressed object is downloaded.
     #[cfg(all(feature = "http", feature = "cloud"))]
     #[test]
@@ -2680,6 +2685,53 @@ mod tests {
         assert!(matches!(
             answer(&mut loader, id, schema_read("dir")),
             Step::Install(_)
+        ));
+    }
+
+    /// A format spec reads local bytes: one object it reads is downloaded first, whatever
+    /// its name says, and a prefix or a glob goes on to the scan, which refuses it.
+    #[cfg(feature = "cloud")]
+    #[test]
+    fn a_remote_object_a_spec_reads_is_downloaded_first() {
+        let asked = [
+            OpenOptions {
+                spec_name: Some("vendor.feed".into()),
+                ..OpenOptions::default()
+            },
+            OpenOptions {
+                spec_file: Some(PathBuf::from("feed.toml")),
+                ..OpenOptions::default()
+            },
+        ];
+        let open = |url: &str, options: &OpenOptions| {
+            Loader::default().open(OpenRequest {
+                options: options.clone(),
+                ..request(url)
+            })
+        };
+        for options in &asked {
+            for url in [
+                "s3://b/day",
+                "s3://b/day.parquet",
+                "gs://b/day.arrow",
+                "abfss://c@acct.dfs.core.windows.net/day.l2",
+            ] {
+                assert!(
+                    matches!(open(url, options), Step::Probe(_)),
+                    "{url} is downloaded"
+                );
+            }
+            for url in ["s3://b/days/", "gs://b/days/*.l2"] {
+                assert!(
+                    matches!(open(url, options), Step::Scan { .. }),
+                    "{url} goes on to the scan"
+                );
+            }
+        }
+        // Without a spec, Parquet is still read in place.
+        assert!(matches!(
+            open("s3://b/day.parquet", &OpenOptions::default()),
+            Step::Scan { .. }
         ));
     }
 

@@ -391,9 +391,9 @@ impl FormatChoice {
     }
 }
 
-/// A built-in format's name, a spec's (namespaced, `acme.l2feed`, so one is never
+/// A built-in format's name, a spec's (namespaced, `vendor.format`, so one is never
 /// taken for the other), or a spec's file: a path only if it has a `/` or ends
-/// `.toml`, so `./acme` names a file and `acme.l2feed` a spec.
+/// `.toml`, so `./vendor` names a file and `vendor.format` a spec.
 fn parse_format(text: &str) -> Result<FormatChoice, String> {
     let is_path = text.contains('/')
         || (cfg!(windows) && text.contains('\\'))
@@ -420,7 +420,7 @@ fn parse_format(text: &str) -> Result<FormatChoice, String> {
         String::new()
     };
     Err(format!(
-        "\"{text}\" is not a format: {}, a spec name such as acme.l2feed (`datui formats` lists them), or a spec file such as ./acme.toml.{file}",
+        "\"{text}\" is not a format: {}, a spec's name (`datui formats` lists them), or a spec file (a path with a / or ending .toml).{file}",
         names.join(", ")
     ))
 }
@@ -505,9 +505,9 @@ pub enum ViewsAction {
 /// What `datui formats` does besides listing.
 #[derive(Clone, Debug, Subcommand)]
 pub enum FormatsAction {
-    /// Check a format spec or a QuickFIX dictionary, by name or by file; with FILE, print its first decoded rows. Exits non-zero on an error
+    /// Check a format spec or a dictionary (QuickFIX XML, DBC or TOML), by name or by file; with FILE, print its first decoded rows, or what a dictionary names in the log. Exits non-zero on an error
     Check {
-        /// A format spec or QuickFIX dictionary on the search path, by name, or its file
+        /// A format spec or dictionary on the search path, by name, or its file
         #[arg(value_name = "SPEC")]
         spec: String,
         /// A file (or directory of column files) to read with it
@@ -730,9 +730,11 @@ mod tests {
         );
         let refused = format("cvs").unwrap_err().to_string();
         assert!(
-            refused.contains("spec name") && refused.contains("./acme.toml"),
+            refused.contains("a spec's name") && refused.contains("ending .toml"),
             "{refused}"
         );
+        // No spec of that name ships, so the user-facing text names none.
+        assert!(!refused.contains("acme"), "{refused}");
         let args = Args::try_parse_from(["datui", "x", "-F", "parquet"]).unwrap();
         assert_eq!(
             args.format,

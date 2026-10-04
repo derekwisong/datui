@@ -236,3 +236,54 @@ fn a_folder_marker_in_a_csv_prefix_is_not_read() {
     .unwrap();
     assert_eq!(df.height(), 2);
 }
+
+/// `az://container/path` names no account: the open takes it from the one Azure
+/// connection in the config and goes on as `abfss://`, which opens like any Azure
+/// object. With no account anywhere it is refused, saying how to name one.
+#[test]
+fn an_az_url_opens_as_abfss_or_says_which_account_is_missing() {
+    let mut app = new_app();
+    app.app_config
+        .cloud
+        .connections
+        .push(crate::config::CloudConnectionConfig {
+            name: "lake".to_string(),
+            kind: Some("azure".to_string()),
+            account: Some("lake001".to_string()),
+            ..Default::default()
+        });
+    let open = |app: &mut App, url: &str| {
+        app.event(&AppEvent::Open(
+            vec![PathBuf::from(url)],
+            OpenOptions::default(),
+        ))
+    };
+    match open(&mut app, "az://raw/2024/day.parquet") {
+        Some(AppEvent::Open(paths, _)) => assert_eq!(
+            paths,
+            [PathBuf::from(
+                "abfss://raw@lake001.dfs.core.windows.net/2024/day.parquet"
+            )]
+        ),
+        _ => panic!("expanded to abfss://"),
+    }
+    assert!(matches!(
+        source::input_source(Path::new(
+            "abfss://raw@lake001.dfs.core.windows.net/2024/day.parquet"
+        )),
+        source::InputSource::Azure(_)
+    ));
+
+    let accountless = std::env::var("AZURE_STORAGE_ACCOUNT_NAME").is_err()
+        && std::env::var("AZURE_STORAGE_CONNECTION_STRING").is_err();
+    if accountless {
+        let mut app = new_app();
+        match open(&mut app, "az://raw/day.parquet") {
+            Some(AppEvent::Crash(message)) => assert!(
+                message.contains("abfss://raw@<account>.dfs.core.windows.net/day.parquet"),
+                "{message}"
+            ),
+            _ => panic!("refused"),
+        }
+    }
+}

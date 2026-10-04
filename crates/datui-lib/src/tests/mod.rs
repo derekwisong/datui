@@ -6,8 +6,9 @@ static INIT: Once = Once::new();
 
 #[cfg(feature = "cloud")]
 mod cloud_recent_facts {
-    use crate::cloud_hive::{DatasetFile, FileFooter};
+    use crate::dataset_files::DatasetFile;
     use crate::discover::EntryKind;
+    use crate::schema_union::FileFooter;
     use polars::prelude::{DataType, Field, Schema};
     use std::sync::Arc;
 
@@ -18,6 +19,26 @@ mod cloud_recent_facts {
             stamp,
             etag: None,
         }
+    }
+
+    /// What an open of `full` would record from the footers at `read`.
+    fn facts_of_open(
+        full: &str,
+        files: &[DatasetFile],
+        read: &[usize],
+        footers: &[Option<FileFooter>],
+    ) -> Option<(std::path::PathBuf, crate::cache::DatasetFacts)> {
+        static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+        let runtime = RUNTIME.get_or_init(|| tokio::runtime::Runtime::new().unwrap());
+        let source = crate::dataset_files::StoreFiles::new(
+            full,
+            String::new(),
+            None,
+            Arc::new(object_store::memory::InMemory::new()),
+            Default::default(),
+            runtime.handle(),
+        );
+        crate::dataset_files::facts_of(Arc::new(source), files.to_vec(), read, footers)
     }
 
     fn footer(rows: &[usize]) -> Option<FileFooter> {
@@ -46,8 +67,7 @@ mod cloud_recent_facts {
         let read = vec![0, 1];
         let footers = vec![footer(&[5, 7]), footer(&[8])];
         let (path, facts) =
-            crate::App::facts_from_cloud_footers("s3://bucket/sales/", &files, &read, &footers)
-                .expect("facts");
+            facts_of_open("s3://bucket/sales/", &files, &read, &footers).expect("facts");
         assert_eq!(path, std::path::PathBuf::from("s3://bucket/sales/"));
         assert_eq!(facts.rows, Some(20));
         assert_eq!(facts.cols, Some(3), "the partition column counts");
@@ -61,7 +81,7 @@ mod cloud_recent_facts {
 
         // A flat prefix is a directory of files; one object is a file.
         let flat = vec![file("sales/a.parquet", 1, 1), file("sales/b.parquet", 1, 1)];
-        let (_, facts) = crate::App::facts_from_cloud_footers(
+        let (_, facts) = facts_of_open(
             "s3://bucket/sales/",
             &flat,
             &[0, 1],
@@ -70,13 +90,8 @@ mod cloud_recent_facts {
         .unwrap();
         assert_eq!(facts.kind, Some(EntryKind::MultiFile));
         let one = vec![file("sales/a.parquet", 1, 1)];
-        let (_, facts) = crate::App::facts_from_cloud_footers(
-            "s3://bucket/sales/a.parquet",
-            &one,
-            &[0],
-            &[footer(&[4])],
-        )
-        .unwrap();
+        let (_, facts) =
+            facts_of_open("s3://bucket/sales/a.parquet", &one, &[0], &[footer(&[4])]).unwrap();
         assert_eq!(facts.kind, Some(EntryKind::File));
         assert!(facts.holds.is_empty());
         assert_eq!(facts.rows, Some(4));
@@ -87,7 +102,7 @@ mod cloud_recent_facts {
     #[test]
     fn a_prefix_without_its_slash_is_still_a_directory() {
         let files = vec![file("sales/a.parquet", 1, 1), file("sales/b.parquet", 1, 1)];
-        let (_, facts) = crate::App::facts_from_cloud_footers(
+        let (_, facts) = facts_of_open(
             "s3://bucket/sales",
             &files,
             &[0, 1],
@@ -96,13 +111,8 @@ mod cloud_recent_facts {
         .unwrap();
         assert_eq!(facts.kind, Some(EntryKind::MultiFile));
         let one = vec![file("sales/a.parquet", 1, 1)];
-        let (_, facts) = crate::App::facts_from_cloud_footers(
-            "s3://bucket/sales/a.parquet",
-            &one,
-            &[0],
-            &[footer(&[1])],
-        )
-        .unwrap();
+        let (_, facts) =
+            facts_of_open("s3://bucket/sales/a.parquet", &one, &[0], &[footer(&[1])]).unwrap();
         assert_eq!(facts.kind, Some(EntryKind::File));
     }
 
@@ -119,11 +129,23 @@ mod cloud_recent_facts {
             cols_sampled: true,
             ..Default::default()
         };
-        assert!(crate::App::facts_worth_recording(None, &sample));
-        assert!(crate::App::facts_worth_recording(Some(&sample), &sample));
-        assert!(crate::App::facts_worth_recording(Some(&sample), &whole));
-        assert!(crate::App::facts_worth_recording(Some(&whole), &whole));
-        assert!(!crate::App::facts_worth_recording(Some(&whole), &sample));
+        assert!(crate::dataset_files::facts_worth_recording(None, &sample));
+        assert!(crate::dataset_files::facts_worth_recording(
+            Some(&sample),
+            &sample
+        ));
+        assert!(crate::dataset_files::facts_worth_recording(
+            Some(&sample),
+            &whole
+        ));
+        assert!(crate::dataset_files::facts_worth_recording(
+            Some(&whole),
+            &whole
+        ));
+        assert!(!crate::dataset_files::facts_worth_recording(
+            Some(&whole),
+            &sample
+        ));
     }
 
     /// One object opened from a bucket is recorded from the footer the open read:
@@ -162,7 +184,7 @@ mod cloud_recent_facts {
         let files: Vec<DatasetFile> = (0..5)
             .map(|i| file(&format!("x/p{i}.parquet"), 10, 1))
             .collect();
-        let (_, facts) = crate::App::facts_from_cloud_footers(
+        let (_, facts) = facts_of_open(
             "s3://bucket/x/",
             &files,
             &[0, 4],

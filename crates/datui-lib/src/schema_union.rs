@@ -65,6 +65,11 @@ impl Listing<'_> {
     pub fn is_cancelled(&self) -> bool {
         self.0.is_cancelled()
     }
+
+    /// The flag itself, for listing tasks that outlive the borrow.
+    pub fn cancel_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.0.cancel_flag()
+    }
 }
 
 impl Drop for Listing<'_> {
@@ -1910,8 +1915,7 @@ pub fn partitions_of_listing(first: &str, newest: &str) -> (Vec<String>, Vec<(St
 ///
 /// It starts from the footers the open already read — the two ends, or a sample — and
 /// reads only the rest. Once every file's footer is in, the whole set is handed back
-/// once, for the shape cache, so a reopen reads none. Shared by local directories and
-/// cloud prefixes; `F` is the route's footer.
+/// once, for the shape cache, so a reopen reads none.
 pub struct FooterCount<F> {
     files: usize,
     /// The files the count answers for, as indices, in order: those whose footer the
@@ -1951,41 +1955,23 @@ impl<F: Clone> FooterCount<F> {
     }
 
     /// Count, reading the footers not yet in with `read`, which answers in the order it
-    /// is asked. One that would not read before is tried again: a read can fail for a
-    /// moment's trouble as well as a broken file. Holds the footers while it reads, so
-    /// two counts at once do not both read the same ones.
+    /// is asked, or `None` when the reads were abandoned. One that would not read before
+    /// is tried again: a read can fail for a moment's trouble as well as a broken file.
+    /// Holds the footers while it reads, so two counts at once do not both read the
+    /// same ones.
     pub fn count(
         &self,
-        read: impl FnOnce(&[usize]) -> Vec<Option<F>>,
+        read: impl FnOnce(&[usize]) -> Option<Vec<Option<F>>>,
         row_groups: impl Fn(&F) -> Vec<usize>,
-    ) -> Counted<F> {
+    ) -> Option<Counted<F>> {
         let mut footers = self.footers.lock().unwrap_or_else(|e| e.into_inner());
         let missing = self.missing(&mut footers);
         let read = if missing.is_empty() {
             Vec::new()
         } else {
-            read(&missing)
+            read(&missing)?
         };
-        self.settle(&mut footers, missing, read, row_groups)
-    }
-
-    /// The footers a count has yet to read, for a caller that reads them where it
-    /// cannot hold a lock (across an `await`) and so serializes its counts itself.
-    /// [`Self::settle_now`] takes what it read.
-    pub fn missing_now(&self) -> Vec<usize> {
-        let mut footers = self.footers.lock().unwrap_or_else(|e| e.into_inner());
-        self.missing(&mut footers)
-    }
-
-    /// The count, given `read`, the footers at `missing` from [`Self::missing_now`].
-    pub fn settle_now(
-        &self,
-        missing: Vec<usize>,
-        read: Vec<Option<F>>,
-        row_groups: impl Fn(&F) -> Vec<usize>,
-    ) -> Counted<F> {
-        let mut footers = self.footers.lock().unwrap_or_else(|e| e.into_inner());
-        self.settle(&mut footers, missing, read, row_groups)
+        Some(self.settle(&mut footers, missing, read, row_groups))
     }
 
     fn missing(&self, footers: &mut Vec<Option<F>>) -> Vec<usize> {
@@ -3356,10 +3342,8 @@ mod tests {
             .finish(&mut frame)
             .unwrap();
 
-        let (files, read, footers) =
-            crate::widgets::datatable::DataTableState::footers_of_parquet_dir(dir.path());
-        assert_eq!((files.len(), read.len()), (1, 1));
-        let footer = footers[0].as_ref().expect("the footer reads");
+        let footer = crate::dataset_files::local_footer(&dir.path().join("wide.parquet"))
+            .expect("the footer reads");
         assert_eq!(footer.rows(), 20_000);
         assert_eq!(footer.row_group_bytes.len(), 1, "one row group");
 

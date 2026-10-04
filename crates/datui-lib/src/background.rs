@@ -172,7 +172,8 @@ impl LenCount {
             });
         }
         match &self.count_dir {
-            Some(dir) => DataTableState::count_rows_from_parquet_dir(dir, &self.meter)
+            Some(dir) => crate::dataset_files::LocalFiles::new(dir)
+                .count_rows(&self.meter)
                 .map(Counted::from)
                 .map_err(|e| log::warn!(target: "datui", "row count failed: {e:#}")),
             None => {

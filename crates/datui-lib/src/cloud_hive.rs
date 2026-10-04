@@ -1,5 +1,6 @@
-//! Cloud Hive schema fast path: infer schema from one Parquet file (metadata only) for S3/GCS
-//! to avoid slow collect_schema() over many files. Single-spine listing + footer read.
+//! Parquet in an object store, short of its data: a prefix listed in key ranges at
+//! once, and footers read by small ranged reads. [`crate::dataset_files::StoreFiles`]
+//! opens a dataset over these.
 
 use color_eyre::Result;
 use object_store::path::Path as OsPath;
@@ -7,8 +8,11 @@ use object_store::{ObjectStore, ObjectStoreExt};
 use polars::prelude::Schema;
 use std::sync::Arc;
 
+use crate::dataset_files::DatasetFile;
 pub use crate::schema_union::FileFooter;
-pub use crate::schema_union::lenient_scan;
+#[cfg(test)]
+use crate::schema_union::lenient_scan;
+#[cfg(test)]
 use crate::schema_union::with_partition_columns;
 
 const PARQUET_FOOTER_TAIL_BYTES: usize = 256 * 1024;
@@ -54,23 +58,6 @@ pub async fn footer_of_cloud_parquet(
     footer
 }
 
-/// One data file of a cloud dataset: its key in the store and its size.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DatasetFile {
-    pub key: String,
-    pub size: u64,
-    /// When the object was last written, in seconds since the epoch, where the store
-    /// said. Part of the fingerprint that decides whether what datui remembers about
-    /// this dataset still describes it.
-    pub stamp: u64,
-    /// The store's own tag for this version of the object, where it gave one.
-    ///
-    /// The strongest part of that fingerprint, and free — it comes back in the same
-    /// listing response as the size. A size and a whole-second timestamp cannot see a
-    /// file overwritten within the same second at the same length; an ETag can.
-    pub etag: Option<String>,
-}
-
 /// Every Parquet file under `prefix`, sorted by key, which is the order a scan of the
 /// prefix reads them in. One listing, however deep the partitions go. Job files,
 /// hidden files and empty objects are left out: none of them is data, and a scan that
@@ -104,29 +91,34 @@ pub async fn list_dataset_files(
     prefix: &str,
     pattern: Option<&globset::GlobMatcher>,
 ) -> Result<(Vec<DatasetFile>, crate::schema_union::SkippedFiles)> {
+    let progress = crate::schema_union::FooterProgress::default();
+    let listing = progress.listing();
     list_dataset_files_reporting(
         store,
         prefix,
         pattern,
         ListShards::ONE,
-        &crate::schema_union::FooterProgress::default(),
+        listing.counter(),
+        listing.cancel_flag(),
     )
     .await
 }
 
-/// As [`list_dataset_files`], counting each object off against `progress` as it is
-/// listed. A prefix of a few hundred thousand objects is hundreds of pages, and this
-/// count is all the loading screen has to say about them.
+/// As [`list_dataset_files`], counting each object off against `listed` as it is
+/// listed, and stopping once `cancelled` is set. A prefix of a few hundred thousand
+/// objects is hundreds of pages, and this count is all the loading screen has to say
+/// about them.
 pub async fn list_dataset_files_reporting(
     store: &Arc<dyn ObjectStore>,
     prefix: &str,
     pattern: Option<&globset::GlobMatcher>,
     plan: ListShards,
-    progress: &crate::schema_union::FooterProgress,
+    listed: Arc<std::sync::atomic::AtomicUsize>,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(Vec<DatasetFile>, crate::schema_union::SkippedFiles)> {
     let prefix = prefix.trim_matches('/');
     let prefix_path = (!prefix.is_empty()).then(|| crate::cloud_browse::object_path(prefix));
-    let objects = list_objects(store, prefix_path.as_ref(), plan, progress).await?;
+    let objects = list_objects(store, prefix_path.as_ref(), plan, listed, cancelled).await?;
     // Counted as they are passed over rather than walked again: the listing is the one
     // place that sees every name, and a note that says how many objects were not read
     // costs nothing here and a second listing anywhere else.
@@ -569,10 +561,10 @@ async fn list_objects(
     store: &Arc<dyn ObjectStore>,
     prefix: Option<&OsPath>,
     plan: ListShards,
-    progress: &crate::schema_union::FooterProgress,
+    listed: Arc<std::sync::atomic::AtomicUsize>,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<Vec<object_store::ObjectMeta>> {
     use futures::future::{Either, select};
-    let listing = progress.listing();
     // Split points never fall inside the prefix, nor its `/`.
     let fixed = prefix.map_or(0, |p| p.as_ref().len() + 1);
     let sharing = Arc::new(Sharing {
@@ -588,8 +580,8 @@ async fn list_objects(
         fixed,
         sharing: sharing.clone(),
         more: more_tx,
-        listed: listing.counter(),
-        cancelled: progress.cancel_flag(),
+        listed,
+        cancelled,
     };
     let spawn = |running: &mut tokio::task::JoinSet<Result<Vec<object_store::ObjectMeta>>>,
                  range: KeyRange| {
@@ -641,6 +633,7 @@ async fn list_objects(
 /// a vendor added for a month is visible rather than hidden behind whichever file the
 /// schema was taken from. See [`crate::schema_union`] for the ordering and the type
 /// rules; [`lenient_scan`] does the reading.
+#[cfg(test)]
 pub fn dataset_schema_from_footers(
     files: &[DatasetFile],
     read: &[usize],
@@ -680,6 +673,7 @@ const COUNT_TAIL_BYTES: u64 = 16 * 1024;
 /// Every file's footer, in file order: a small ranged read at the end of each file,
 /// many at once. No data is read. A file whose footer cannot be read is `None` rather
 /// than an error, so one object mid-write does not stop the dataset from opening.
+#[cfg(test)]
 pub async fn footers_of_files(
     store: &Arc<dyn ObjectStore>,
     files: &[DatasetFile],
@@ -758,84 +752,6 @@ pub async fn footers_of_files_reporting(
     // this only hands the running total back to be stamped with how long the pass took.
     meter.read_footers(began.elapsed(), Some(read.len()), true);
     out
-}
-
-/// The footers of `files` at `read`, in that order, as the pass that settles the row
-/// count. A footer that cannot be read is `None`, and counts as no rows.
-///
-/// Metered like any other footer pass, because that is what it is. Left unmetered, a
-/// staged cloud open — which is every prefix past a wave of objects — would report
-/// about half the requests it made.
-pub async fn footers_for_count(
-    store: &Arc<dyn ObjectStore>,
-    files: &[DatasetFile],
-    read: &[usize],
-    meter: &Arc<crate::measurements::Meter>,
-) -> Vec<Option<FileFooter>> {
-    // Counted as the pass that settles the row count, which is recorded once: this runs
-    // again every time the count is invalidated, and a dataset explored for a few
-    // minutes would otherwise report an open that kept getting more expensive.
-    let counting = Arc::new(crate::measurements::Meter::default());
-    let began = std::time::Instant::now();
-    let footers = footers_of_files(store, files, read, &counting).await;
-    // Against a meter of its own first, so that a pass the one-shot declines adds
-    // nothing to the dataset's figures.
-    let wire = counting.footers().and_then(|c| c.over_the_wire);
-    // Not recorded when nothing parsed, the same as the local count: a pass that
-    // settled nothing must not take the one measurement this gets, or the pass that
-    // eventually succeeds is declined and never reported.
-    if footers.iter().any(Option::is_some) {
-        meter.counted_rows(began.elapsed(), Some(read.len()), wire);
-    }
-    footers
-}
-
-/// A remote dataset's row count, taken from its footers, each read once: the shared
-/// [`crate::schema_union::FooterCount`], read from the store.
-pub struct FooterCount {
-    files: Arc<Vec<DatasetFile>>,
-    count: crate::schema_union::FooterCount<FileFooter>,
-    /// Held across the reads, which await, so two counts at once do not both read
-    /// the same footers.
-    reading: tokio::sync::Mutex<()>,
-}
-
-/// What a count found.
-pub type Counted = crate::schema_union::Counted<FileFooter>;
-
-impl FooterCount {
-    /// A count of `counted`, starting from the footers `known` already holds, given as
-    /// each one's index into `files`.
-    pub fn new(
-        files: Arc<Vec<DatasetFile>>,
-        counted: Vec<usize>,
-        known: impl IntoIterator<Item = (usize, Option<FileFooter>)>,
-    ) -> Self {
-        let count = crate::schema_union::FooterCount::new(files.len(), counted, known);
-        Self {
-            files,
-            count,
-            reading: tokio::sync::Mutex::new(()),
-        }
-    }
-
-    /// Count, reading the footers not yet in. One that would not read before is tried
-    /// again: a read can fail for a moment's throttling as well as a broken file.
-    pub async fn count(
-        &self,
-        store: &Arc<dyn ObjectStore>,
-        meter: &Arc<crate::measurements::Meter>,
-    ) -> Counted {
-        let _reading = self.reading.lock().await;
-        let missing = self.count.missing_now();
-        let read = if missing.is_empty() {
-            Vec::new()
-        } else {
-            footers_for_count(store, &self.files, &missing, meter).await
-        };
-        self.count
-            .settle_now(missing, read, |f| f.row_group_rows.clone())
-    }
 }
 
 pub(crate) async fn footer_of_file(
@@ -973,15 +889,6 @@ mod tests {
         ]
     }
 
-    /// A remote dataset carries its row-group sizes through to the schema too.
-    ///
-    /// The two routes read their footers differently — a ranged read of the tail here,
-    /// a whole local file there — and it is the `FileSchema` each builds that decides
-    /// whether datui can say anything about row groups at all. Dropping the sizes on
-    /// this side leaves the note working perfectly for local datasets and silent for
-    /// the ones it exists for.
-    /// An abandoned load's footer pass stops issuing reads: with the counter
-    /// cancelled, the pass returns empty-handed and requests nothing.
     /// Split points lie strictly between the last key listed and the range's end, in
     /// order, and never inside the prefix or a partition's name.
     #[test]
@@ -1082,7 +989,10 @@ mod tests {
                     .unwrap();
             }
             let prefix = OsPath::from("p/by_station");
-            let progress = crate::schema_union::FooterProgress::default();
+            let (listed, cancelled): (
+                Arc<std::sync::atomic::AtomicUsize>,
+                Arc<std::sync::atomic::AtomicBool>,
+            ) = (Arc::default(), Arc::default());
             let keys_of = |objects: Vec<object_store::ObjectMeta>| {
                 let mut keys: Vec<String> = objects
                     .into_iter()
@@ -1092,9 +1002,15 @@ mod tests {
                 keys
             };
             let one = keys_of(
-                list_objects(&store, Some(&prefix), ListShards::ONE, &progress)
-                    .await
-                    .unwrap(),
+                list_objects(
+                    &store,
+                    Some(&prefix),
+                    ListShards::ONE,
+                    listed.clone(),
+                    cancelled.clone(),
+                )
+                .await
+                .unwrap(),
             );
             let mut expected: Vec<String> = keys
                 .iter()
@@ -1116,9 +1032,15 @@ mod tests {
                     split_into,
                 };
                 let ranges = keys_of(
-                    list_objects(&store, Some(&prefix), plan, &progress)
-                        .await
-                        .unwrap(),
+                    list_objects(
+                        &store,
+                        Some(&prefix),
+                        plan,
+                        listed.clone(),
+                        cancelled.clone(),
+                    )
+                    .await
+                    .unwrap(),
                 );
                 assert_eq!(ranges.len(), one.len(), "{plan:?}: a key twice or missing");
                 assert_eq!(ranges, one, "{plan:?}");
@@ -1138,7 +1060,8 @@ mod tests {
                     split_after: 20,
                     split_into: 4,
                 },
-                &progress,
+                listed,
+                cancelled,
             )
             .await
             .unwrap();
@@ -1173,11 +1096,21 @@ mod tests {
                     .unwrap();
             }
             let progress = crate::schema_union::FooterProgress::default();
-            let (files, _skipped) =
-                list_dataset_files_reporting(&store, "data/", None, ListShards::ONE, &progress)
-                    .await
-                    .unwrap();
-            assert_eq!(files.len(), 2);
+            {
+                let listing = progress.listing();
+                let (files, _skipped) = list_dataset_files_reporting(
+                    &store,
+                    "data/",
+                    None,
+                    ListShards::ONE,
+                    listing.counter(),
+                    listing.cancel_flag(),
+                )
+                .await
+                .unwrap();
+                assert_eq!(files.len(), 2);
+                assert_eq!(progress.listed(), Some(3), "every object, data or not");
+            }
             assert_eq!(progress.listed(), None, "a finished listing shows no count");
             let listing = progress.listing();
             assert_eq!(
@@ -1185,18 +1118,26 @@ mod tests {
                 Some(0),
                 "a new listing starts from nothing"
             );
-            drop(listing);
 
             progress.cancel();
             assert!(
-                list_dataset_files_reporting(&store, "data/", None, ListShards::ONE, &progress)
-                    .await
-                    .is_err(),
+                list_dataset_files_reporting(
+                    &store,
+                    "data/",
+                    None,
+                    ListShards::ONE,
+                    listing.counter(),
+                    listing.cancel_flag(),
+                )
+                .await
+                .is_err(),
                 "an abandoned load stops listing"
             );
         });
     }
 
+    /// An abandoned load's footer pass stops issuing reads: with the counter
+    /// cancelled, the pass returns empty-handed and requests nothing.
     #[test]
     fn a_cancelled_pass_reads_no_footers() {
         use object_store::PutPayload;
@@ -1231,6 +1172,13 @@ mod tests {
         });
     }
 
+    /// A remote dataset carries its row-group sizes through to the schema too.
+    ///
+    /// The two routes read their footers differently — a ranged read of the tail here,
+    /// a whole local file there — but into the one `FileFooter`, which decides whether
+    /// datui can say anything about row groups at all. Dropping the sizes on this side
+    /// would leave the note working for local datasets and silent for the ones it
+    /// exists for.
     #[test]
     fn a_remote_dataset_carries_its_row_group_sizes_into_the_schema() {
         use object_store::PutPayload;
@@ -1470,9 +1418,15 @@ mod tests {
         let meter = Arc::new(crate::measurements::Meter::default());
         // As the open leaves it: a count belongs to an open this meter measured.
         meter.listed(std::time::Duration::from_millis(1), Some(1), false);
-        rt.block_on(async {
-            footers_for_count(&store, &files, &[0], &meter).await;
-        });
+        let source = crate::dataset_files::StoreFiles::new(
+            "memory://data/",
+            "data/".to_string(),
+            None,
+            store.clone(),
+            polars::prelude::cloud::CloudOptions::default(),
+            rt.handle(),
+        );
+        crate::dataset_files::footers_for_count(&source, &Arc::new(files), &[0], &meter);
         assert_eq!(
             meter.footers(),
             None,
@@ -1494,7 +1448,9 @@ mod tests {
             stamp: 0,
             etag: None,
         }];
-        let footers = rt.block_on(async { footers_for_count(&store, &files, &[0], &meter).await });
+        let footers =
+            crate::dataset_files::footers_for_count(&source, &Arc::new(files), &[0], &meter)
+                .unwrap();
         assert_eq!(
             footers
                 .iter()
@@ -2029,12 +1985,7 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, body()).unwrap();
         }
-        let (local, _read, _footers, _skipped) =
-            crate::widgets::datatable::DataTableState::footers_of_parquet_dir_reporting(
-                dir.path(),
-                &crate::schema_union::FooterProgress::default(),
-                &crate::measurements::Meter::default(),
-            );
+        let (local, _skipped) = crate::dataset_files::LocalFiles::new(dir.path()).walk(None);
         let mut from_disk: Vec<String> = local
             .iter()
             .map(|p| {
@@ -2359,8 +2310,8 @@ mod tests {
 
         assert_eq!(
             progress.last_pass().read,
-            files,
-            "the pass behind the open read every footer"
+            files - 2,
+            "the pass behind the open read every footer but the two the open did"
         );
         assert_eq!(
             state.get_column_order().last().map(String::as_str),
@@ -2604,7 +2555,7 @@ mod tests {
                 ]
             );
 
-            let footers = footers_for_count(
+            let footers = footers_of_files(
                 &store,
                 &files,
                 &[0, 1],
@@ -2918,16 +2869,21 @@ mod tests {
         ));
         let mut planted = sampled[0].clone().unwrap();
         planted.row_group_rows = vec![999];
-        let count = crate::App::cloud_file_counter(
-            rt.handle(),
+        let source = Arc::new(crate::dataset_files::StoreFiles::new(
+            full,
+            "data/".to_string(),
+            None,
             store.clone(),
+            polars::prelude::cloud::CloudOptions::default(),
+            rt.handle(),
+        ));
+        let count = crate::dataset_files::counter_for(
+            source,
+            files.to_vec(),
+            [(0, Some(planted)), (4, sampled[1].clone())],
+            Some(fingerprint.clone()),
             meter.clone(),
-            FooterCount::new(
-                files.clone(),
-                (0..5).collect(),
-                [(0, Some(planted)), (4, sampled[1].clone())],
-            ),
-            crate::App::shape_keeper(Some(cache.clone()), full, &fingerprint, files.clone()),
+            Some(cache.clone()),
         );
         let groups = count().unwrap();
         assert_eq!(groups, [vec![999], vec![2], vec![3], vec![4], vec![5]]);

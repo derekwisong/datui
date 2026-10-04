@@ -650,6 +650,24 @@ pub(crate) fn facts_of(
     Some((PathBuf::from(listed.source.key()), facts))
 }
 
+/// Every footer of the local directory `dir` as the last open that read them all left
+/// them, if its files are as they were then. Only a directory an open remembered is
+/// listed whole for this; any other costs one stat.
+pub(crate) fn remembered_footers(
+    dir: &Path,
+    cache: &crate::cache::CacheManager,
+) -> Option<(Vec<DatasetFile>, Vec<Option<FileFooter>>)> {
+    let local = LocalFiles::new(dir);
+    if !cache.has_dataset_shape(local.key()) {
+        return None;
+    }
+    let (files, _, fingerprint) = list(&local, &FooterProgress::default(), &Meter::default())?;
+    let shape = cache.dataset_shape(local.key(), &fingerprint?)?;
+    let sizes: Vec<u64> = files.iter().map(|f| f.size).collect();
+    let footers = crate::schema_union::footers_from_cache(&shape.files, &shape.schemas, &sizes)?;
+    Some((files, footers))
+}
+
 /// Whether a record learned from an open should replace what the index has: anything
 /// replaces nothing, a whole read replaces anything, and a sampled read replaces only
 /// another sample.
@@ -695,7 +713,7 @@ impl LocalFiles {
     pub fn walk(&self, listing: Option<&Listing<'_>>) -> (Vec<PathBuf>, SkippedFiles) {
         let mut files = Vec::new();
         let mut skipped = SkippedFiles::default();
-        let walked = walk_dirs(&self.dir, MAX_DEPTH, listing);
+        let walked = walk_dirs(&self.dir, MAX_DEPTH, listing, None);
         collect_data_files(
             &walked,
             &self.dir,
@@ -712,6 +730,27 @@ impl LocalFiles {
         // integration tests, which are the same directory differing by one file name.
         files.sort();
         (files, skipped)
+    }
+
+    /// The first files of the directory, sorted, down `levels` levels: more than
+    /// `enough` of them when there are, which is how a caller tells a dataset too large
+    /// to measure from one it can. For the home screen, which looks at a dataset
+    /// rather than opening it.
+    pub fn first_files(&self, levels: usize, enough: usize) -> Vec<PathBuf> {
+        let walked = walk_dirs(&self.dir, levels, None, Some(enough));
+        let mut files = Vec::new();
+        collect_data_files(
+            &walked,
+            &self.dir,
+            &mut files,
+            &mut SkippedFiles::default(),
+            0,
+            levels,
+            false,
+        );
+        files.sort();
+        files.truncate(enough + 1);
+        files
     }
 
     /// The directory's row count from every file's footer, for a dataset that opened
@@ -899,11 +938,24 @@ type WalkedDirs = HashMap<PathBuf, Vec<(PathBuf, bool)>>;
 ///
 /// With a `listing`, each directory's files are counted off against it as it is read,
 /// and an abandoned load stops the walk: what it has is incomplete and is not used.
-fn walk_dirs(root: &Path, max_depth: usize, listing: Option<&Listing<'_>>) -> WalkedDirs {
+///
+/// With `enough`, the walk stops at the end of the level where it has seen more data
+/// files than that, and reads at most [`MAX_NAMES_PER_DIR`] entries of a directory: a
+/// look at a dataset rather than a listing of it.
+fn walk_dirs(
+    root: &Path,
+    max_depth: usize,
+    listing: Option<&Listing<'_>>,
+    enough: Option<usize>,
+) -> WalkedDirs {
     let mut walked = WalkedDirs::new();
     let mut level = vec![root.to_path_buf()];
+    let mut seen = 0usize;
     for _ in 0..max_depth {
-        if level.is_empty() || listing.is_some_and(|l| l.is_cancelled()) {
+        if level.is_empty()
+            || listing.is_some_and(|l| l.is_cancelled())
+            || enough.is_some_and(|enough| seen > enough)
+        {
             break;
         }
         let read = each_at_once(level.len(), |i| {
@@ -913,6 +965,7 @@ fn walk_dirs(root: &Path, max_depth: usize, listing: Option<&Listing<'_>>) -> Wa
             let entries = std::fs::read_dir(&level[i]).ok()?;
             let entries: Vec<(PathBuf, bool)> = entries
                 .flatten()
+                .take(enough.map_or(usize::MAX, |_| MAX_NAMES_PER_DIR))
                 .map(|entry| {
                     let path = entry.path();
                     // The entry's own type costs no stat; a link is followed, as
@@ -941,12 +994,28 @@ fn walk_dirs(root: &Path, max_depth: usize, listing: Option<&Listing<'_>>) -> Wa
                     .filter(|(_, is_dir)| *is_dir)
                     .map(|(p, _)| p.clone()),
             );
+            if enough.is_some() {
+                seen += entries
+                    .iter()
+                    .filter(|(path, is_dir)| {
+                        !is_dir
+                            && crate::discover::is_parquet_key(
+                                &crate::discover::directory_and_name(path),
+                            )
+                    })
+                    .count();
+            }
             walked.insert(dir, entries);
         }
         level = next;
     }
     walked
 }
+
+/// Entries read from one directory by a walk that only looks. Past it the sample is
+/// over the names this listing saw rather than over the directory, and the row count
+/// is long out of reach either way.
+const MAX_NAMES_PER_DIR: usize = 20_000;
 
 /// `work` for each index below `n`, on up to a wave of threads pulling the next index
 /// as each finishes, and the answers in index order. Sized for waiting on a disk or a
@@ -1542,5 +1611,124 @@ mod tests {
         let (files, _) = LocalFiles::new(dir.path()).walk(Some(&listing));
         assert!(files.is_empty(), "a cancelled listing reads no directory");
         assert_eq!(progress.listed(), Some(0));
+    }
+
+    /// A tree of `files` small Parquet files under `part=N/` directories, a hundred to a
+    /// directory, three rows each.
+    fn tree(dir: &Path, files: usize) {
+        let mut bytes = Vec::new();
+        ParquetWriter::new(&mut bytes)
+            .finish(&mut df!("v" => [1i64, 2, 3]).unwrap())
+            .unwrap();
+        for i in 0..files {
+            let sub = dir.join(format!("part={}", i / 100));
+            fs::create_dir_all(&sub).unwrap();
+            fs::write(sub.join(format!("f{i:04}.parquet")), &bytes).unwrap();
+        }
+    }
+
+    /// Open `dir` as the app does, and wait for the pass behind the open.
+    fn open_whole(dir: &Path, cache: &crate::cache::CacheManager) {
+        let progress = Arc::new(FooterProgress::default());
+        let report = OpenReport {
+            progress: progress.clone(),
+            meter: Arc::new(Meter::default()),
+            remembered: Some(cache.clone()),
+        };
+        let options = crate::OpenOptions {
+            hive: true,
+            ..crate::OpenOptions::default()
+        };
+        let (_, facts) = open(Arc::new(LocalFiles::new(dir)), &options, &report).unwrap();
+        if let Some(join) = facts.footers_pending {
+            join(&progress).expect("the pass reads the rest");
+        }
+    }
+
+    /// A local open records what the home screen shows, as a cloud one does, under the
+    /// directory however it was named.
+    #[test]
+    fn a_local_open_records_what_the_home_screen_will_show() {
+        let dir = tempfile::tempdir().unwrap();
+        tree(dir.path(), 3);
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache = crate::cache::CacheManager::with_dir(cache_dir.path().to_path_buf());
+        open_whole(dir.path(), &cache);
+
+        let key = crate::canonical::canonicalize(dir.path()).unwrap();
+        let facts = cache.dataset_facts(&key).expect("recorded");
+        assert_eq!(facts.rows, Some(9));
+        assert_eq!(facts.kind, Some(crate::discover::EntryKind::Hive));
+        assert_eq!(facts.columns, ["part", "v"]);
+        assert!(!facts.cols_sampled);
+        assert!(
+            facts.size > 0,
+            "the size, from the files the footers came from"
+        );
+        assert_eq!(
+            facts.mtime,
+            LocalFiles::new(dir.path()).modified(&[]),
+            "dated by the directory, which is what the home screen holds it to"
+        );
+    }
+
+    /// The home screen measures a dataset past its footer budget from the shape an
+    /// open kept, reading no footer; one that changed since is sampled again.
+    #[test]
+    fn the_home_screen_measures_a_large_dataset_from_the_shape_an_open_kept() {
+        use crate::discover::{Entry, EntryKind};
+        let dir = tempfile::tempdir().unwrap();
+        tree(dir.path(), 150);
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache = crate::cache::CacheManager::with_dir(cache_dir.path().to_path_buf());
+        let measure = |cache: Option<&crate::cache::CacheManager>| {
+            let mut entry = Entry::directory(dir.path());
+            entry.kind = EntryKind::Hive;
+            crate::discover::enrich_with(
+                &mut entry,
+                &crate::schema_union::ReadAs::default(),
+                cache,
+            );
+            entry
+        };
+        assert_eq!(
+            measure(Some(&cache)).rows,
+            None,
+            "past the budget, unopened"
+        );
+
+        open_whole(dir.path(), &cache);
+        let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = reads.clone();
+        let _hook = crate::schema_union::on_local_footer_read(dir.path(), move |_| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
+        let entry = measure(Some(&cache));
+        assert_eq!(
+            entry.rows,
+            Some(450),
+            "every file's rows, from the open's footers"
+        );
+        assert_eq!(
+            entry.cols,
+            Some(2),
+            "the partition column and the file's own"
+        );
+        assert!(!entry.cols_sampled);
+        assert_eq!(entry.cost.row_groups, Some(150));
+        assert_eq!(
+            reads.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "and no footer was read for it"
+        );
+        assert_eq!(
+            measure(None).rows,
+            None,
+            "without the shape, a sample as before"
+        );
+
+        // A file added since: the listing no longer matches, so the shape is not used.
+        tree(dir.path(), 151);
+        assert_eq!(measure(Some(&cache)).rows, None);
     }
 }

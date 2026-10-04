@@ -7365,6 +7365,14 @@ fn a_file_a_specs_magic_names_is_listed_under_the_spec() {
     let model = row("model.bin");
     assert_eq!((model.kind, model.format_spec), (EntryKind::File, None));
 
+    // A recent of it, which no listing classified, is named the same way.
+    let mut recent = discover::Entry::for_test(&tmp.path().join("data.bin"), "data.bin");
+    discover::name_unlisted_file(&mut recent, &registry);
+    assert_eq!(recent.format_spec.as_deref(), Some("acme.mktd"));
+    let mut recent = discover::Entry::for_test(&tmp.path().join("old.bin"), "old.bin");
+    discover::name_unlisted_file(&mut recent, &registry);
+    assert_eq!(recent.format_spec, None);
+
     // The open reads it with the same spec.
     let path = tmp.path().join("data.bin");
     let route = datui::formats::route(&path, &Default::default(), &registry).unwrap();

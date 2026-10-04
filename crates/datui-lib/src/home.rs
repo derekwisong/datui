@@ -2006,6 +2006,9 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 return split;
             }
             let mut entry = entry_for_path(p, network_check(p));
+            if !network_check(p) {
+                discover::name_unlisted_file(&mut entry, formats);
+            }
             // A dataset opened from a catalog comes back under the catalog's name for
             // it, not its URL's last segment (#547 D12).
             if let Some(dataset) = catalogs

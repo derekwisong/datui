@@ -675,6 +675,32 @@ pub fn name_spec_file(entry: &mut Entry, spec: &crate::formats::Spec) {
     }
 }
 
+/// Name a local file row no listing classified (a recent) by the spec that reads it,
+/// as a listing names one: a spec's glob, else, when its name says nothing, the magic
+/// in its first bytes.
+pub fn name_unlisted_file(entry: &mut Entry, formats: &crate::formats::Registry) {
+    if formats.is_empty()
+        || entry.kind != EntryKind::File
+        || entry.table.is_some()
+        || is_data_file(&entry.path)
+    {
+        return;
+    }
+    let spec = match formats.by_glob(&entry.path, false).into_iter().next() {
+        Some(spec) => Some(spec),
+        None if worth_sniffing(&entry.path) && is_regular_file(&entry.path) => {
+            match sniff_listed(&entry.path, formats) {
+                Some(Sniffed::Spec(spec)) => Some(spec),
+                _ => None,
+            }
+        }
+        None => None,
+    };
+    if let Some(spec) = spec {
+        name_spec_file(entry, &spec);
+    }
+}
+
 /// How many extension-less files one listing looks inside. A directory of Spark output
 /// is a few hundred part files; past this the rest are listed by name alone.
 pub(crate) const MAX_SNIFFS_PER_DIR: usize = 256;

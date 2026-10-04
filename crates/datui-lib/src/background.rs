@@ -92,6 +92,9 @@ pub(crate) struct LenCount {
     /// The open's meter. Counting a local directory re-reads every footer, which costs
     /// what the open's own pass cost and is tallied with it.
     pub(crate) meter: Arc<crate::measurements::Meter>,
+    /// What a count of footers has read of how many, for the footer's progress line;
+    /// cancelled, the count stops (Esc).
+    pub(crate) progress: Arc<crate::schema_union::FooterProgress>,
 }
 
 /// A count, and for a remote dataset of many files the row groups it was summed from.
@@ -119,6 +122,7 @@ impl LenCount {
             meter: state.measurements().clone(),
             lf: state.lf_clone(),
             streaming: state.polars_streaming_enabled(),
+            progress: Arc::new(crate::schema_union::FooterProgress::counting()),
         }
     }
 
@@ -162,18 +166,23 @@ impl LenCount {
                 .map(Counted::from)
                 .map_err(|e| log::warn!(target: "datui", "row count failed: {e}"));
         }
-        // A dataset's footers, many at once. Should one not read, the scan counts itself.
-        if let Some(count) = &self.files
-            && let Ok(groups) = count()
-        {
-            return Ok(Counted {
-                rows: groups.iter().flatten().sum(),
-                file_row_groups: Some(groups),
-            });
+        // A dataset's footers, many at once. Should one not read, the scan counts itself;
+        // a count that was stopped does not.
+        if let Some(count) = &self.files {
+            match count(&self.progress) {
+                Ok(groups) => {
+                    return Ok(Counted {
+                        rows: groups.iter().flatten().sum(),
+                        file_row_groups: Some(groups),
+                    });
+                }
+                Err(_) if self.progress.is_cancelled() => return Err(()),
+                Err(_) => {}
+            }
         }
         match &self.count_dir {
             Some(dir) => crate::dataset_files::LocalFiles::new(dir)
-                .count_rows(&self.meter)
+                .count_rows(&self.meter, &self.progress)
                 .map(Counted::from)
                 .map_err(|e| log::warn!(target: "datui", "row count failed: {e:#}")),
             None => {

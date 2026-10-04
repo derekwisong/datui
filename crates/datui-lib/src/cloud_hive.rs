@@ -665,7 +665,8 @@ pub fn dataset_schema_from_footers(
     Ok((union, partition_columns))
 }
 
-/// How many footers are read at once when counting.
+/// Footers read at once by an open: one wave.
+#[cfg(test)]
 pub const FOOTERS_AT_ONCE: usize = crate::schema_union::FOOTERS_AT_ONCE;
 /// The first read of a footer. Most footers fit; a larger one costs a second request.
 const COUNT_TAIL_BYTES: u64 = 16 * 1024;
@@ -704,7 +705,7 @@ pub async fn footers_of_files_reporting(
 ) -> Vec<Option<FileFooter>> {
     let began = std::time::Instant::now();
     let pass = progress.pass(read.len());
-    let permits = Arc::new(tokio::sync::Semaphore::new(FOOTERS_AT_ONCE));
+    let permits = Arc::new(tokio::sync::Semaphore::new(progress.reads_at_once()));
     let cancelled = progress.cancel_flag();
     let mut reads = tokio::task::JoinSet::new();
     for (slot, file) in read
@@ -1427,7 +1428,13 @@ mod tests {
             polars::prelude::cloud::CloudOptions::default(),
             rt.handle(),
         );
-        crate::dataset_files::footers_for_count(&source, &Arc::new(files), &[0], &meter);
+        crate::dataset_files::footers_for_count(
+            &source,
+            &Arc::new(files),
+            &[0],
+            &meter,
+            &Default::default(),
+        );
         assert_eq!(
             meter.footers(),
             None,
@@ -1449,9 +1456,14 @@ mod tests {
             stamp: 0,
             etag: None,
         }];
-        let footers =
-            crate::dataset_files::footers_for_count(&source, &Arc::new(files), &[0], &meter)
-                .unwrap();
+        let footers = crate::dataset_files::footers_for_count(
+            &source,
+            &Arc::new(files),
+            &[0],
+            &meter,
+            &Default::default(),
+        )
+        .unwrap();
         assert_eq!(
             footers
                 .iter()
@@ -2458,7 +2470,7 @@ mod tests {
         let counter = state
             .remote_files_counter()
             .expect("the dataset has not counted itself yet");
-        let groups = counter().expect("the readable objects are counted");
+        let groups = counter(&Default::default()).expect("the readable objects are counted");
         let total = groups.iter().flatten().sum();
         assert!(state.count_landed(state.len_generation(), total, Some(&groups)));
         assert_eq!(
@@ -2895,7 +2907,7 @@ mod tests {
             meter.clone(),
             Some(cache.clone()),
         );
-        let groups = count().unwrap();
+        let groups = count(&Default::default()).unwrap();
         assert_eq!(groups, [vec![999], vec![2], vec![3], vec![4], vec![5]]);
         assert_eq!(
             meter.footers().and_then(|c| c.files),
@@ -3015,7 +3027,7 @@ mod tests {
         let counter = state
             .remote_files_counter()
             .expect("the dataset has not counted itself yet, so it offers to");
-        let groups = counter().expect("the readable objects are counted");
+        let groups = counter(&Default::default()).expect("the readable objects are counted");
         let total = groups.iter().flatten().sum();
         assert!(state.count_landed(state.len_generation(), total, Some(&groups)));
         assert_eq!(

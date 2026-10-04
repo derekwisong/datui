@@ -329,6 +329,8 @@ pub struct DataTableState {
     view_numbered: bool,
     /// Lines still being indexed behind the first rows: the frames grow as they are.
     indexing: Option<Arc<crate::lines::Lines>>,
+    /// The dataset's row count from a sample of its footers, until it is counted.
+    row_estimate: Option<crate::schema_union::RowEstimate>,
     /// The notes the lines gave when they opened, replaced once they are all indexed.
     indexing_notes: Vec<crate::notes::Note>,
     /// Whether the open guessed the lines were text, which their notes say.
@@ -859,7 +861,11 @@ impl FillPlan {
 /// the type most rows have.
 pub type FileScan = Arc<dyn Fn(&[String], &[PlSmallStr]) -> PolarsResult<LazyFrame> + Send + Sync>;
 /// Counts the rows in each row group of every file of a dataset. Blocks.
-pub type FileCounter = Arc<dyn Fn() -> Result<Vec<Vec<usize>>, String> + Send + Sync>;
+pub type FileCounter = Arc<
+    dyn Fn(&Arc<crate::schema_union::FooterProgress>) -> Result<Vec<Vec<usize>>, String>
+        + Send
+        + Sync,
+>;
 /// Reads every footer of a dataset that opened from a couple of them, and returns what
 /// they say. `None` when they could not be read, in which case the dataset stays as it
 /// opened. Blocks, and counts itself off against the progress it is given.
@@ -882,6 +888,8 @@ pub struct FootersFound {
     /// How to read part of a remote dataset rather than all of it. `None` for one that
     /// does not read by file.
     pub remote: Option<RemoteRead>,
+    /// The row count the footers read say, when they were a sample.
+    pub estimate: Option<crate::schema_union::RowEstimate>,
 }
 
 /// How a remote dataset reads some of its files, as the pass behind an open found them.
@@ -1985,6 +1993,7 @@ impl DataTableState {
             source_rows_at_open,
             view_numbered: false,
             indexing: None,
+            row_estimate: None,
             indexing_notes: Vec::new(),
             indexing_guessed: false,
             drift_file_starts: Vec::new(),
@@ -2153,6 +2162,7 @@ impl DataTableState {
             source_rows_at_open,
             view_numbered: false,
             indexing: None,
+            row_estimate: None,
             indexing_notes: Vec::new(),
             indexing_guessed: false,
             drift_file_starts: Vec::new(),
@@ -5935,6 +5945,37 @@ impl DataTableState {
         self.indexing.as_ref()
     }
 
+    /// The dataset's row count from a sample of its footers, while the frame is the
+    /// dataset as loaded and its count is not known. `pass` is the estimate of the
+    /// footer pass still reading, which the dataset has not been given yet.
+    pub fn row_estimate(
+        &self,
+        pass: Option<crate::schema_union::RowEstimate>,
+    ) -> Option<crate::schema_union::RowEstimate> {
+        if self.num_rows_valid || !self.is_pristine() {
+            return None;
+        }
+        self.row_estimate
+            .or_else(|| pass.filter(|_| self.footers_pending.is_some()))
+    }
+
+    /// Where each of the dataset's files starts in the view, with the total last: while
+    /// the view keeps the dataset's rows and every file's rows are known.
+    pub fn file_row_starts(&self) -> Option<Vec<usize>> {
+        if self.changes_rows() {
+            return None;
+        }
+        self.remote_files.as_ref()?.offsets.clone()
+    }
+
+    /// How many files a count of the dataset reads footers of, when it reads them.
+    pub fn files_to_count(&self) -> Option<usize> {
+        self.remote_files
+            .as_ref()
+            .filter(|f| f.offsets.is_none())
+            .map(|f| f.urls.len())
+    }
+
     /// Whether `#` is on for this dataset when the config leaves it to the format:
     /// text and logs, whose rows carry their place in the file.
     pub fn numbered_by_default(&self) -> bool {
@@ -6017,7 +6058,13 @@ impl DataTableState {
             files,
             row_groups,
             remote,
+            estimate,
         } = found;
+        self.row_estimate = if row_groups.is_empty() {
+            estimate
+        } else {
+            None
+        };
         let (file_rows, files) = (file_rows.as_slice(), files.as_slice());
         let known: std::collections::HashSet<&str> =
             self.column_order.iter().map(String::as_str).collect();
@@ -12524,6 +12571,7 @@ mod tests {
         assert!(
             state
                 .join_dataset_schema(FootersFound {
+                    estimate: None,
                     dataset: dataset_of(wider()),
                     lf: wider(),
                     file_rows: Vec::new(),
@@ -12586,6 +12634,7 @@ mod tests {
         assert!(
             state
                 .join_dataset_schema(FootersFound {
+                    estimate: None,
                     dataset: dataset_of(wide()),
                     lf: wide(),
                     file_rows: Vec::new(),
@@ -12646,7 +12695,7 @@ mod tests {
             remote_files: Some(RemoteFiles {
                 urls: Arc::new(vec!["one".to_string()]),
                 scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-                count: Arc::new(|| Ok(vec![vec![100]])),
+                count: Arc::new(|_| Ok(vec![vec![100]])),
                 offsets: None,
             }),
             footers_pending: Some(Arc::new(|_| None)),
@@ -12660,6 +12709,7 @@ mod tests {
         // The user is in a query when it lands, so the columns cannot go in.
         state.active_query = "select doubled: id * 2".to_string();
         let held = state.join_dataset_schema(FootersFound {
+            estimate: None,
             dataset: dataset_of(wider()),
             lf: wider(),
             file_rows: vec![100],
@@ -12731,6 +12781,7 @@ mod tests {
         assert!(
             state
                 .join_dataset_schema(FootersFound {
+                    estimate: None,
                     dataset: dataset_of(second_time()),
                     lf: second_time(),
                     file_rows: Vec::new(),
@@ -12782,6 +12833,7 @@ mod tests {
                 column_bytes: Vec::new(),
             };
             FootersFound {
+                estimate: None,
                 dataset: crate::schema_union::union_sampled(1, &[0], &[Some(footer)]),
                 lf: wider(),
                 file_rows: Vec::new(),
@@ -15940,7 +15992,7 @@ mod tests {
             remote_files: Some(RemoteFiles {
                 urls: Arc::new(urls.clone()),
                 scan,
-                count: Arc::new(|| Ok(vec![vec![3], vec![2], vec![2]])),
+                count: Arc::new(|_| Ok(vec![vec![3], vec![2], vec![2]])),
                 offsets: None,
             }),
             dataset: Some(DatasetAtOpen {
@@ -16222,7 +16274,7 @@ mod tests {
             remote_files: Some(RemoteFiles {
                 urls: Arc::new(urls.clone()),
                 scan,
-                count: Arc::new(|| Ok(vec![vec![3], vec![2]])),
+                count: Arc::new(|_| Ok(vec![vec![3], vec![2]])),
                 offsets: None,
             }),
             dataset: Some(DatasetAtOpen {
@@ -16232,7 +16284,7 @@ mod tests {
             }),
             ..Default::default()
         });
-        let groups = (state.remote_files_counter().unwrap())().unwrap();
+        let groups = (state.remote_files_counter().unwrap())(&Default::default()).unwrap();
         assert!(state.count_landed(state.len_generation(), 5, Some(&groups)));
         assert!(state.drifts(), "the two files disagree on `n`");
 
@@ -16297,12 +16349,12 @@ mod tests {
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(urls),
                     scan,
-                    count: Arc::new(|| Ok(vec![vec![50, 50]; 5])),
+                    count: Arc::new(|_| Ok(vec![vec![50, 50]; 5])),
                     offsets: None,
                 }),
                 ..Default::default()
             });
-        let groups = (state.remote_files_counter().unwrap())().unwrap();
+        let groups = (state.remote_files_counter().unwrap())(&Default::default()).unwrap();
         assert!(state.count_landed(state.len_generation(), 500, Some(&groups)));
         assert_eq!(state.num_rows_if_valid(), Some(500));
         assert!(state.remote_files_counter().is_none(), "counted once");
@@ -16341,7 +16393,7 @@ mod tests {
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(vec!["one".to_string(), "two".to_string()]),
                     scan: Arc::new(move |_: &[String], _: &[PlSmallStr]| Ok(lf())),
-                    count: Arc::new(|| Err("counted at the open".to_string())),
+                    count: Arc::new(|_| Err("counted at the open".to_string())),
                     offsets: None,
                 }),
                 row_groups: vec![vec![30, 30], vec![40]],

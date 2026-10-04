@@ -3383,6 +3383,8 @@ mod tests {
         ];
         // What needs a state the fixture does not have, or would leave the test.
         let exempt: &[(Context, &str)] = &[
+            // Only where the row count is an estimate.
+            (Context::Info, "c"),
             // Only on a file read through a format spec.
             (Context::Table, "b"),
             // Nothing to leave at the plain table.

@@ -844,6 +844,9 @@ pub struct ReadConfig {
     /// heard of as it happens, the least time between two reads. A burst of appends
     /// within one interval is one refresh.
     pub follow_interval: Interval,
+    /// A dataset of more files than this shows an estimated row count until asked to
+    /// count exactly. 0 always counts.
+    pub exact_count_files: usize,
     /// Ask before reading more than this of a file whole into memory (JSON, Avro, ORC,
     /// Excel and the other formats read in memory). 0 never asks.
     pub memory_warning: ByteSize,
@@ -868,6 +871,7 @@ impl Default for ReadConfig {
             decompress_in_memory: false,
             temp_dir: None,
             follow_interval: Interval(crate::follow::DEFAULT_INTERVAL),
+            exact_count_files: 50_000,
             memory_warning: ByteSize::mib(1024),
             audio_float: false,
         }

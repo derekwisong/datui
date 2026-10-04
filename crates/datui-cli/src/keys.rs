@@ -723,6 +723,8 @@ pub const SCREENS: &[Screen] = &[
                     .more("Documentation tab: copy the link or value on the cursor's line, whole, however it is cut on screen"),
                 k("H", "Header", "Schema tab, CSV: first row as data or names")
                     .more("Schema tab, CSV, TSV, PSV: read the first row as data, under column_1, column_2, …; again to read it as column names. Reads the file again, so the query, filters and sort are cleared, and the panel closes"),
+                k("c", "Count", "Count every row, where the count is an estimate")
+                    .more("A dataset of more files than read.exact_count_files shows a row count estimated from a sample of its footers; c reads every footer for the exact count. The footer shows how far it has got, and Esc at the table stops it"),
                 k("x", "Hex", "Show the file's bytes in the hex view"),
                 k("Esc / i", "Close", "Close the panel"),
             ],

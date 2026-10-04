@@ -191,7 +191,31 @@ pub(crate) fn spool_dir(options: &OpenOptions) -> Option<PathBuf> {
         .cache_dir()
         .join("spool");
     std::fs::create_dir_all(&dir).ok()?;
+    forget_old_spools(&dir);
     Some(dir)
+}
+
+/// How old a spool left behind is before it goes: one a session that crashed did not
+/// remove. Long enough that no session still reading its own is near it.
+const OLD_SPOOL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
+/// Remove the spools in `dir` older than [`OLD_SPOOL`]. Best effort: the cache is
+/// not the system temp directory, which a reboot empties.
+fn forget_old_spools(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|at| at.elapsed().ok())
+            .is_some_and(|age| age > OLD_SPOOL);
+        if old && entry.path().extension().is_some_and(|e| e == "tmp") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Read what `open` answers with into a temporary file in the spool directory

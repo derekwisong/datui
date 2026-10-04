@@ -108,6 +108,8 @@ pub enum Total {
     Unknown,
     /// The rows so far of standard input still arriving: `12,400+`.
     Partial(usize),
+    /// From a sample of a dataset's files, until they are counted: `~4.12B (est.)`.
+    Estimated(usize),
 }
 
 /// Where the cursor is: `41,208 / 1,204,331`, led by the column when the table is
@@ -139,6 +141,9 @@ impl Position {
             Total::Known(n) => crate::numfmt::group_chrome(n),
             Total::Partial(n) if short => format!("{}+", crate::discover::format_rows(n)),
             Total::Partial(n) => format!("{}+", crate::numfmt::group_chrome(n)),
+            // As precise as a sample is, whatever the room.
+            Total::Estimated(n) if short => format!("~{}", crate::discover::format_rows(n)),
+            Total::Estimated(n) => format!("~{} (est.)", crate::discover::format_rows(n)),
             Total::Pending => spinner.to_string(),
             Total::Unknown => "?".to_string(),
         };

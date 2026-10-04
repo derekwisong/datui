@@ -435,11 +435,12 @@ fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
         remote_files: Some(RemoteFiles {
             urls: Arc::new(vec!["one".to_string()]),
             scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-            count: Arc::new(|| Ok(vec![vec![100]])),
+            count: Arc::new(|_| Ok(vec![vec![100]])),
             offsets: None,
         }),
         footers_pending: Some(Arc::new(move |_| {
             Some(FootersFound {
+                estimate: None,
                 dataset: dataset_of(rows()),
                 lf: rows(),
                 file_rows: vec![100],
@@ -448,7 +449,7 @@ fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
                 remote: Some(crate::widgets::datatable::RemoteRead {
                     urls: vec!["one".to_string()],
                     scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-                    count: Arc::new(|| Ok(vec![vec![100]])),
+                    count: Arc::new(|_| Ok(vec![vec![100]])),
                 }),
             })
         })),
@@ -497,6 +498,157 @@ fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
         app.end_when_the_footers_land.is_none(),
         "and the key is spent, not left waiting on the next dataset"
     );
+}
+
+/// A dataset whose footer pass read a sample of its files shows the row count the
+/// sample estimates. Past `[read] exact_count_files` the count waits to be asked: `c`
+/// in the Info panel reads every footer, with a progress line Esc stops, and the
+/// estimate stands until a count lands exact.
+#[test]
+fn a_sampled_dataset_shows_an_estimate_until_it_is_counted() {
+    use crate::render::footer::Total;
+    use crate::render::main_view::MainViewContent;
+    use crate::schema_union::RowEstimate;
+    use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles, RemoteRead};
+    use crate::{App, OpenOptions};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use polars::prelude::*;
+    use std::sync::{Arc, Mutex, mpsc};
+
+    let rows = || df!("id" => (0..100i64).collect::<Vec<_>>()).unwrap().lazy();
+    let dataset_of = |lf: LazyFrame| {
+        let mut lf = lf;
+        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
+        let footer = crate::schema_union::FileFooter {
+            schema,
+            row_group_rows: vec![40],
+            file_bytes: 0,
+            row_group_bytes: Vec::new(),
+            column_bytes: Vec::new(),
+        };
+        crate::schema_union::union_sampled(3, &[0], &[Some(footer)])
+    };
+    let urls = || vec!["a".to_string(), "b".to_string(), "c".to_string()];
+    // A count that says it has read one footer of three, then waits to be let go.
+    let (go, gate) = mpsc::channel::<()>();
+    let gate = Arc::new(Mutex::new(gate));
+    let counter: crate::widgets::datatable::FileCounter = Arc::new(move |progress| {
+        let pass = progress.pass(3);
+        pass.advance();
+        let _ = gate.lock().unwrap().recv();
+        if progress.is_cancelled() {
+            return Err("cancelled".to_string());
+        }
+        pass.advance();
+        pass.advance();
+        Ok(vec![vec![40], vec![30], vec![30]])
+    });
+    let joined = counter.clone();
+    let mut state = DataTableState::from_schema_and_lazyframe(
+        dataset_of(rows()).schema.clone(),
+        rows(),
+        &OpenOptions::default(),
+        None,
+    )
+    .unwrap()
+    .with_open(crate::widgets::datatable::OpenFacts {
+        remote_source: true,
+        remote_files: Some(RemoteFiles {
+            urls: Arc::new(urls()),
+            scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+            count: counter,
+            offsets: None,
+        }),
+        footers_pending: Some(Arc::new(move |_| {
+            Some(FootersFound {
+                estimate: Some(RowEstimate {
+                    rows: 120,
+                    sampled: 2,
+                    files: 3,
+                }),
+                dataset: dataset_of(rows()),
+                lf: rows(),
+                file_rows: Vec::new(),
+                files: urls(),
+                row_groups: Vec::new(),
+                remote: Some(RemoteRead {
+                    urls: urls(),
+                    scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
+                    count: joined.clone(),
+                }),
+            })
+        })),
+        ..Default::default()
+    });
+    state.visible_rows = 10;
+
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, crate::tests::test_runtime());
+    app.app_config.read.exact_count_files = 2;
+    app.install_for_tests(state, None, &OpenOptions::default(), None);
+    let pump = |app: &mut App, done: &dyn Fn(&App) -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !done(app) {
+            assert!(std::time::Instant::now() < deadline, "never got there");
+            if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                let mut next = app.event(&event);
+                while let Some(event) = next {
+                    next = app.event(&event);
+                }
+            }
+        }
+    };
+    let total = |app: &App| {
+        app.footer(MainViewContent::Datatable, false)
+            .position
+            .map(|p| p.total)
+    };
+    pump(&mut app, &|app| {
+        app.data_table_state
+            .as_ref()
+            .is_some_and(|s| s.footers_pending().is_none())
+    });
+    assert_eq!(total(&app), Some(Total::Estimated(120)));
+    assert!(
+        app.len_count_inflight.is_none(),
+        "too many files to count unasked"
+    );
+
+    // `c` in the Info panel counts; the footer says how far, and Esc stops it.
+    let key = |app: &mut App, code: KeyCode| {
+        let _ = app.key(&KeyEvent::new(code, KeyModifiers::NONE));
+    };
+    key(&mut app, KeyCode::Char('i'));
+    key(&mut app, KeyCode::Char('c'));
+    key(&mut app, KeyCode::Esc);
+    pump(&mut app, &|app| app.footers_counted().is_some());
+    let line = app
+        .footer_progress_line(MainViewContent::Datatable)
+        .expect("a progress line");
+    assert!(line.stoppable);
+    assert_eq!(line.counts[0].noun, "files");
+    assert_eq!((line.counts[0].done, line.counts[0].total), (1, Some(3)));
+    key(&mut app, KeyCode::Esc);
+    go.send(()).unwrap();
+    pump(&mut app, &|app| app.len_count_inflight.is_none());
+    assert_eq!(
+        total(&app),
+        Some(Total::Estimated(120)),
+        "stopped at the estimate"
+    );
+
+    // Asked again, it counts to the end.
+    key(&mut app, KeyCode::Char('i'));
+    key(&mut app, KeyCode::Char('c'));
+    key(&mut app, KeyCode::Esc);
+    go.send(()).unwrap();
+    pump(&mut app, &|app| {
+        app.data_table_state
+            .as_ref()
+            .is_some_and(|s| s.is_num_rows_valid())
+    });
+    assert_eq!(total(&app), Some(Total::Known(100)));
+    assert!(app.row_estimate().is_none());
 }
 
 /// Every key the busy classifier lets through must read nothing.
@@ -667,11 +819,12 @@ fn end_pressed_at_one_dataset_does_not_move_the_next() {
             remote_files: Some(RemoteFiles {
                 urls: Arc::new(vec!["one".to_string()]),
                 scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-                count: Arc::new(|| Ok(vec![vec![100]])),
+                count: Arc::new(|_| Ok(vec![vec![100]])),
                 offsets: None,
             }),
             footers_pending: Some(Arc::new(move |_| {
                 Some(FootersFound {
+                    estimate: None,
                     dataset: dataset_of(rows()),
                     lf: rows(),
                     file_rows: vec![100],
@@ -680,7 +833,7 @@ fn end_pressed_at_one_dataset_does_not_move_the_next() {
                     remote: Some(crate::widgets::datatable::RemoteRead {
                         urls: vec!["one".to_string()],
                         scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-                        count: Arc::new(|| Ok(vec![vec![100]])),
+                        count: Arc::new(|_| Ok(vec![vec![100]])),
                     }),
                 })
             })),
@@ -758,11 +911,12 @@ fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
         remote_files: Some(RemoteFiles {
             urls: Arc::new(vec!["one".to_string()]),
             scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(narrow())),
-            count: Arc::new(|| Ok(vec![vec![100]])),
+            count: Arc::new(|_| Ok(vec![vec![100]])),
             offsets: None,
         }),
         footers_pending: Some(Arc::new(move |_| {
             Some(FootersFound {
+                estimate: None,
                 dataset: dataset_of(wide()),
                 lf: wide(),
                 file_rows: vec![100],
@@ -771,7 +925,7 @@ fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
                 remote: Some(crate::widgets::datatable::RemoteRead {
                     urls: vec!["one".to_string()],
                     scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(wide())),
-                    count: Arc::new(|| Ok(vec![vec![100]])),
+                    count: Arc::new(|_| Ok(vec![vec![100]])),
                 }),
             })
         })),
@@ -1001,13 +1155,14 @@ fn a_pass_that_brings_no_count_still_leaves_rows_on_screen() {
         remote_files: Some(RemoteFiles {
             urls: Arc::new(vec!["one".to_string()]),
             scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-            count: Arc::new(|| Ok(vec![vec![100]])),
+            count: Arc::new(|_| Ok(vec![vec![100]])),
             offsets: None,
         }),
         // No row groups: a dataset sampled past the footer limit, or one whose
         // footer would not parse the second time.
         footers_pending: Some(Arc::new(move |_| {
             Some(FootersFound {
+                estimate: None,
                 dataset: dataset_of(wider()),
                 lf: wider(),
                 file_rows: Vec::new(),
@@ -1073,7 +1228,7 @@ fn end_on_a_sorted_dataset_still_reading_its_footers_waits_for_the_pass() {
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(vec!["one".to_string()]),
                     scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-                    count: Arc::new(|| Ok(vec![vec![100]])),
+                    count: Arc::new(|_| Ok(vec![vec![100]])),
                     offsets: None,
                 }),
                 footers_pending: Some(Arc::new(|_| None)),
@@ -1155,11 +1310,12 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(vec!["one".to_string()]),
                     scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-                    count: Arc::new(|| Ok(vec![vec![100]])),
+                    count: Arc::new(|_| Ok(vec![vec![100]])),
                     offsets: None,
                 }),
                 footers_pending: Some(Arc::new(move |_| {
                     Some(FootersFound {
+                        estimate: None,
                         dataset: dataset_of(wide()),
                         lf: wide(),
                         file_rows: vec![100],
@@ -1168,7 +1324,7 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
                         remote: Some(crate::widgets::datatable::RemoteRead {
                             urls: vec!["one".to_string()],
                             scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(wide())),
-                            count: Arc::new(|| Ok(vec![vec![100]])),
+                            count: Arc::new(|_| Ok(vec![vec![100]])),
                         }),
                     })
                 })),
@@ -1275,7 +1431,7 @@ fn a_count_that_failed_for_another_frame_does_not_answer_for_this_end() {
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(vec!["one".to_string()]),
                     scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-                    count: Arc::new(|| Ok(vec![vec![100]])),
+                    count: Arc::new(|_| Ok(vec![vec![100]])),
                     offsets: None,
                 }),
                 ..Default::default()
@@ -1333,7 +1489,7 @@ fn uncounted_remote_app() -> (crate::App, std::sync::mpsc::Receiver<crate::AppEv
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(vec!["one".to_string()]),
                     scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(frame())),
-                    count: Arc::new(|| Ok(vec![vec![100]])),
+                    count: Arc::new(|_| Ok(vec![vec![100]])),
                     offsets: None,
                 }),
                 ..Default::default()
@@ -1851,7 +2007,7 @@ fn an_end_pressed_on_the_dataset_they_left_does_not_move_the_next_one() {
             remote_files: Some(RemoteFiles {
                 urls: Arc::new(vec!["one".to_string()]),
                 scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-                count: Arc::new(move || Ok(vec![vec![n as usize]])),
+                count: Arc::new(move |_| Ok(vec![vec![n as usize]])),
                 offsets: None,
             }),
             ..Default::default()
@@ -3075,7 +3231,7 @@ fn a_count_landing_during_a_load_does_not_bump_the_generation() {
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(vec!["one".to_string()]),
                     scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-                    count: Arc::new(|| Ok(vec![vec![100]])),
+                    count: Arc::new(|_| Ok(vec![vec![100]])),
                     offsets: None,
                 }),
                 ..Default::default()
@@ -3229,7 +3385,7 @@ fn a_query_over_a_dataset_still_reading_its_footers_is_counted() {
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(vec!["one".to_string()]),
                     scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
-                    count: Arc::new(|| Ok(vec![vec![100]])),
+                    count: Arc::new(|_| Ok(vec![vec![100]])),
                     offsets: None,
                 }),
                 footers_pending: Some(Arc::new(|_| None)),
@@ -3307,6 +3463,7 @@ fn a_pass_from_the_dataset_before_this_one_joins_nothing_to_it() {
     let state = state_of(first()).with_open(crate::widgets::datatable::OpenFacts {
         footers_pending: Some(Arc::new(move |_progress| {
             Some(crate::widgets::datatable::FootersFound {
+                estimate: None,
                 dataset: dataset_of(its_columns()),
                 lf: its_columns(),
                 file_rows: Vec::new(),
@@ -3502,6 +3659,7 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
         app.footers_held = Some((
             app.dataset_generation,
             FootersFound {
+                estimate: None,
                 dataset: dataset_of(wider()),
                 lf: wider(),
                 file_rows: Vec::new(),
@@ -3589,6 +3747,7 @@ fn columns_held_for_one_dataset_are_not_given_to_the_next() {
     app.footers_held = Some((
         app.dataset_generation,
         FootersFound {
+            estimate: None,
             dataset: dataset_of(its_columns()),
             lf: its_columns(),
             file_rows: Vec::new(),
@@ -3662,6 +3821,7 @@ fn a_late_event_from_an_old_pass_does_not_throw_away_the_live_answer() {
         &app.pending_footers_result,
         live,
         Some(FootersFound {
+            estimate: None,
             dataset: dataset_of(wider()),
             lf: wider(),
             file_rows: Vec::new(),
@@ -3713,6 +3873,7 @@ fn an_older_pass_finishing_late_does_not_displace_a_newer_one() {
             column_bytes: Vec::new(),
         };
         crate::widgets::datatable::FootersFound {
+            estimate: None,
             dataset: crate::schema_union::union_sampled(1, &[0], &[Some(footer)]),
             lf,
             file_rows: Vec::new(),
@@ -3813,6 +3974,7 @@ fn columns_arriving_under_a_query_wait_rather_than_break_it() {
     app.footers_held = Some((
         generation,
         crate::widgets::datatable::FootersFound {
+            estimate: None,
             dataset: dataset_of(wider()),
             lf: wider(),
             file_rows: Vec::new(),
@@ -3924,6 +4086,7 @@ fn a_staged_open_joins_what_its_footers_found() {
         // What the pass behind the open will find: one column more.
         footers_pending: Some(Arc::new(move |_progress| {
             Some(crate::widgets::datatable::FootersFound {
+                estimate: None,
                 dataset: dataset_of(counted()),
                 lf: counted(),
                 file_rows: Vec::new(),

@@ -108,7 +108,11 @@ impl App {
         let arriving = state
             .follow()
             .is_some_and(|follow| follow.is_pipe() && follow.live());
-        let total = if pending {
+        let estimate = self.row_estimate();
+        let total = if let Some(estimate) = estimate {
+            // Until it is counted, which the progress line says while it is.
+            Total::Estimated(estimate.rows as usize)
+        } else if pending {
             Total::Pending
         } else if unknown {
             Total::Unknown
@@ -314,6 +318,27 @@ impl App {
     /// it. A find reading the view counts its rows; a dataset still reading its
     /// footers counts files.
     pub(crate) fn footer_progress_line(&self, content: MainViewContent) -> Option<ProgressLine> {
+        // Value counts reading the view: the rows read, and of a dataset of files, how
+        // many of them the read has reached.
+        if content == MainViewContent::ValueCounts
+            && let Some(computing) = self.value_counts.computing.as_ref()
+            && let Some(rows) = computing.watch.rows_seen()
+        {
+            let noun = if computing.exact { "rows" } else { "sampling" };
+            let mut counts = vec![ProgressCount::of(noun, rows as u64, None)];
+            if let Some((reached, files)) = computing.files_reached() {
+                counts.push(ProgressCount::of(
+                    "files",
+                    reached as u64,
+                    Some(files as u64),
+                ));
+            }
+            return Some(ProgressLine {
+                counts,
+                // Esc leaves a sample being read, and stops a count of every row.
+                stoppable: computing.exact,
+            });
+        }
         if content != MainViewContent::Datatable {
             return None;
         }
@@ -340,6 +365,13 @@ impl App {
                     ProgressCount::bytes("read", done, Some(all)),
                 ],
                 stoppable: false,
+            });
+        }
+        // The exact count of a dataset of many files: footers read of how many.
+        if let Some((read, total)) = self.footers_counted() {
+            return Some(ProgressLine {
+                counts: vec![ProgressCount::of("files", read as u64, Some(total as u64))],
+                stoppable: true,
             });
         }
         if let Some((read, total)) = self

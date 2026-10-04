@@ -213,8 +213,12 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let numbers = row("display.row_numbers");
-        assert_eq!(numbers[3], "true");
-        assert!(numbers[4].ends_with("config.toml"), "{numbers:?}");
+        // From the end: the type, `"auto" | bool`, is several words.
+        let [.., value, source] = numbers.as_slice() else {
+            panic!("{numbers:?}");
+        };
+        assert_eq!(*value, "true");
+        assert!(source.ends_with("config.toml"), "{numbers:?}");
         assert_eq!(row("display.row_numbers_start")[3..], ["7", "-c"]);
         assert_eq!(row("display.mouse")[3..], ["true", "default"]);
         for setting in SETTINGS.iter().filter(|s| !s.key.ends_with(".*")) {

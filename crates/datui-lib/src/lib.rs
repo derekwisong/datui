@@ -1196,6 +1196,11 @@ pub struct App {
     end_when_indexed: Option<u64>,
     /// Stops the indexing of the dataset on screen's lines when it goes.
     indexing_stop: Arc<std::sync::atomic::AtomicBool>,
+    /// The last count started: what it has read of the footers, and its stop (Esc).
+    count_progress: Arc<crate::schema_union::FooterProgress>,
+    /// The `len_generation` an exact count was asked for (`c` in the Info panel), for
+    /// a dataset of more files than the count reads unasked.
+    exact_count_asked: Option<u64>,
     /// What a dataset's footers found while the user was looking at a query, a pivot or
     /// a drill-down rather than at the data. Held rather than applied, because widening
     /// the scan under a query takes the query's own columns away, and offered again the
@@ -4761,6 +4766,60 @@ impl App {
         }
     }
 
+    /// Whether the dataset's count waits to be asked for: it has more files than
+    /// `[read] exact_count_files` and an estimate to show meanwhile.
+    fn count_held_at_estimate(&self, state: &DataTableState) -> bool {
+        let limit = self.app_config.read.exact_count_files;
+        limit > 0
+            && state.files_to_count().is_some_and(|files| files > limit)
+            && self.exact_count_asked != Some(state.len_generation())
+            && state.row_estimate(None).is_some()
+    }
+
+    /// The dataset's row count from a sample of its footers, while it is not counted:
+    /// the dataset's own, or the one its footer pass has said so far.
+    pub(crate) fn row_estimate(&self) -> Option<crate::schema_union::RowEstimate> {
+        self.data_table_state
+            .as_ref()?
+            .row_estimate(self.footer_progress.estimate())
+    }
+
+    /// Whether the count running reads footers it can say it has read, and so can be
+    /// stopped: `(read, of)`.
+    pub(crate) fn footers_counted(&self) -> Option<(usize, usize)> {
+        self.len_count_inflight?;
+        self.count_progress
+            .reading()
+            .filter(|_| !self.count_progress.is_cancelled())
+    }
+
+    /// `c` in the Info panel: count every row exactly, though the dataset has more
+    /// files than the count reads unasked.
+    pub(crate) fn count_exactly(&mut self) {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        if state.is_num_rows_valid() {
+            return;
+        }
+        let generation = state.len_generation();
+        self.exact_count_asked = Some(generation);
+        // A count stopped before is asked again.
+        if self.len_count_failed == Some(generation) {
+            self.len_count_failed = None;
+        }
+        if self.len_count_inflight != Some(generation) {
+            self.len_count_inflight = Some(generation);
+            let job = LenCount::for_state(state);
+            self.spawn_count(job);
+        }
+    }
+
+    /// Esc while a count reads footers: stop it. What it read is kept for the next.
+    fn stop_count(&mut self) {
+        self.count_progress.cancel();
+    }
+
     /// Put what a pass found in the slot, unless a later dataset's pass has answered
     /// first. Returns whether it went in, so a pass that lost does not also announce
     /// itself.
@@ -5009,6 +5068,10 @@ impl App {
     /// As [`Self::spawn_async_collect`]; with no `status`, a load-ahead that nothing
     /// waits on: its job holds no keys. See [`InflightCollect`].
     fn spawn_collect(&mut self, status: Option<&str>) -> bool {
+        let held = self
+            .data_table_state
+            .as_ref()
+            .is_some_and(|state| self.count_held_at_estimate(state));
         let Some(state) = self.data_table_state.as_mut() else {
             return false;
         };
@@ -5034,6 +5097,8 @@ impl App {
             && !state.counts_itself_later()
             // A count that failed is not tried again on every scroll. End asks again.
             && self.len_count_failed != Some(generation)
+            // A dataset of too many files to count unasked shows its estimate.
+            && !held
         {
             self.len_count_inflight = Some(generation);
             count = Some(LenCount::for_state(state));
@@ -5160,9 +5225,10 @@ impl App {
 
     /// Count the rows off the UI thread; the answer comes back as `BackgroundLenReady`
     /// or `BackgroundLenFailed`.
-    fn spawn_count(&self, job: LenCount) {
+    fn spawn_count(&mut self, job: LenCount) {
         #[cfg(test)]
         self.counts_spawned.set(self.counts_spawned.get() + 1);
+        self.count_progress = job.progress.clone();
         let count = OwedCount::new(job, self.events.clone());
         self.runtime
             .spawn_blocking(move || count.answer(LenCount::run));
@@ -5779,6 +5845,8 @@ impl App {
             end_when_the_footers_land: None,
             end_when_indexed: None,
             indexing_stop: Arc::default(),
+            count_progress: Arc::default(),
+            exact_count_asked: None,
             len_count_inflight: None,
             count_after_paint: None,
             #[cfg(test)]
@@ -11651,6 +11719,15 @@ impl App {
             self.cancel_find();
             return None;
         }
+        // And for a count of footers, at the table its progress line is on.
+        if event.code == KeyCode::Esc
+            && self.input_mode == InputMode::Normal
+            && self.in_normal_table_view()
+            && self.footers_counted().is_some()
+        {
+            self.stop_count();
+            return None;
+        }
 
         if event.code == KeyCode::Esc
             && self.input_mode == InputMode::Normal
@@ -16284,6 +16361,7 @@ impl App {
             column,
             exact,
             watch: watch.clone(),
+            file_starts: state.file_row_starts().map(Arc::new),
         });
         self.spawn_job(Job::ValueCounts, None, move |_| {
             plan.run(&watch)

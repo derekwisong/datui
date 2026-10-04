@@ -47,6 +47,7 @@ pub fn render(
     let query_reading = app.query_reading().map(str::to_string);
     let frame = app.throbber_frame as usize;
     let header_toggle = app.header_toggle_offered();
+    let estimate = app.row_estimate();
     match &mut app.data_table_state {
         Some(state) => {
             let mut table_area = data_area;
@@ -148,6 +149,7 @@ pub fn render(
                 info_widget.hex = hex;
                 info_widget.header_toggle = header_toggle;
                 info_widget.codebook = app.codebook.as_deref();
+                info_widget.estimate = estimate;
                 info_widget.documentation = app
                     .info_documentation
                     .is_open()

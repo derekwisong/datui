@@ -75,6 +75,7 @@ fn a_short_read_on_a_remote_scan_is_the_count() {
         lf: unreadable,
         streaming: false,
         meter: Arc::new(crate::measurements::Meter::default()),
+        progress: Default::default(),
     };
     let rows = |counted: Result<Counted, ()>| counted.map(|c| c.rows);
     assert_eq!(
@@ -173,7 +174,7 @@ fn end_on_an_uncounted_remote_dataset_waits_for_the_count() {
                         })
                     },
                 ),
-                count: Arc::new(|| Ok(vec![vec![400], vec![300, 300]])),
+                count: Arc::new(|_| Ok(vec![vec![400], vec![300, 300]])),
                 offsets: None,
             }),
             ..Default::default()

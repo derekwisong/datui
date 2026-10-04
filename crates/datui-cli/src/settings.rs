@@ -253,6 +253,7 @@ pub const SETTINGS: &[Setting] = &[
     s("read.decompress_in_memory", Bool, Value("false"), "Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file.").kwarg("decompress_in_memory"),
     s("read.temp_dir", Path, Unset("\"/tmp\""), "Directory for decompression temp files. Unset: the system's.").flag("temp-dir").kwarg("temp_dir"),
     s("read.follow_interval", Duration, Value("\"250ms\""), "With --follow, how often the file is checked for new rows, or on Linux the least time between two reads, 10ms to 1m. Appends within one interval are one refresh."),
+    s("read.exact_count_files", Count, Value("50000"), "A dataset of more files than this shows a row count estimated from a sample of its footers until c in the Info panel counts it; 0 always counts."),
     s("read.memory_warning", Size, Value("\"1GiB\""), "Ask before reading more than this of a file whole into memory (JSON, Avro, ORC, Excel and the other formats read in memory); 0 never asks."),
     s("read.audio_float", Bool, Value("false"), "Show integer audio samples as float in [-1, 1].").kwarg("audio_float"),
     // [csv]

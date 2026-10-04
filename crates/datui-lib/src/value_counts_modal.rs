@@ -14,6 +14,20 @@ pub struct Computing {
     pub exact: bool,
     /// How the read is told to stop, and what it has read.
     pub watch: ReadWatch,
+    /// Where each of the dataset's files starts, with the total last, when the read
+    /// is of the files in order: how many of them the rows read have reached.
+    pub file_starts: Option<std::sync::Arc<Vec<usize>>>,
+}
+
+impl Computing {
+    /// The files the rows read so far have reached, and the files there are.
+    pub fn files_reached(&self) -> Option<(usize, usize)> {
+        let starts = self.file_starts.as_ref()?;
+        let files = starts.len().checked_sub(1)?;
+        let seen = self.watch.rows_seen()?;
+        let reached = starts[..files].partition_point(|&start| start <= seen);
+        Some((reached.min(files), files))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -178,6 +192,24 @@ impl ValueCountsModal {
 mod tests {
     use super::*;
     use polars::prelude::*;
+
+    /// A count of a dataset of files says how many the rows it has read reach.
+    #[test]
+    fn a_count_says_how_many_files_its_rows_reach() {
+        let computing = Computing {
+            column: "k".to_string(),
+            exact: false,
+            watch: ReadWatch::default(),
+            file_starts: Some(std::sync::Arc::new(vec![0, 100, 250, 400])),
+        };
+        assert_eq!(computing.files_reached(), None, "nothing read yet");
+        computing.watch.saw(0);
+        assert_eq!(computing.files_reached(), Some((1, 3)));
+        computing.watch.saw(150);
+        assert_eq!(computing.files_reached(), Some((2, 3)));
+        computing.watch.saw(1_000);
+        assert_eq!(computing.files_reached(), Some((3, 3)));
+    }
 
     fn counts(column: &str, values: &[i32]) -> ValueCounts {
         crate::value_counts::Plan {

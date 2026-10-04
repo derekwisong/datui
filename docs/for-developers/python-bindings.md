@@ -1,88 +1,77 @@
-# Python Bindings
+# Build Python bindings
 
-Build with **maturin** from `python/`. The extension crate,
-`crates/datui-pyo3`, is separate from the Cargo workspace.
-For using the installed package, see the [Python guide](../user-guide/python-module.md).
+The extension, `crates/datui-pyo3`, builds with maturin from `python/`. It is
+not a member of the Cargo workspace. For the installed package, see
+[Use datui from Python](../user-guide/python-module.md) and the
+[Python API](../reference/python-api.md).
 
 <a id="virtual-environment"></a>
 
 ## Set up
 
-From the repository root, create or activate a virtual environment:
-
-```bash
+```bash,repo
 python -m venv .venv
-source .venv/bin/activate
-pip install maturin "polars==1.43.*" "pytest>=7.0"
+.venv/bin/pip install maturin "polars==1.43.*" "pytest>=7.0"
 ```
 
-You also need Rust and Python development headers (`python3-dev` on Debian/Ubuntu).
-The [setup script](contributing.md#setup) installs these dependencies in `.venv`
-as well. Use the commands above when setting up only the Python bindings.
+It also needs Rust and the Python headers (`python3-dev` on Debian and Ubuntu).
+The [setup script](contributing.md) installs these into `.venv` too.
 
 <a id="building-locally"></a>
 <a id="testing"></a>
 
 ## Build and test
 
-```bash
-cd python
-maturin develop
-cd ..
-pytest python/tests/ -v
+The `datui` command the wheel installs runs a bundled binary, found beside the
+package rather than on `PATH`. Build it, copy it in, then build the extension:
+
+```bash,repo
+cargo build
+mkdir -p python/datui_bin
+cp target/debug/datui python/datui_bin/
+cp LICENSE python/LICENSE
+cd python && ../.venv/bin/maturin develop && cd ..
+.venv/bin/pytest python/tests/ -v
 ```
 
-Add `--release` to `maturin develop` for an optimized build. The tests cover
-imports, options, invalid inputs and serialized plans. On platforms with PTY
-support, they also open the TUI and check that a captured frame survives closing it.
+On Windows, copy `target/debug/datui.exe`. Add `--release` to `maturin develop`
+for an optimized build. The tests cover imports, options, invalid input and
+serialized plans; where there is a pseudo-terminal, they also open the TUI and
+check that a captured frame outlives it, and that the
+[Python API](../reference/python-api.md) page lists every keyword.
 
 <a id="running"></a>
 
 ## Run
 
 ```python
-import datui
 import polars as pl
+import datui
 
-datui.view(pl.scan_csv("data.csv"))
+datui.view(pl.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]}))
 ```
 
-Press `q` to close the view. See [capture](../user-guide/python-module.md)
-for returning the edited view as a LazyFrame.
-
-The Python `datui` command needs a bundled binary. For local development,
-build and copy it from the repository root, then rerun maturin:
-
-```bash
-cargo build
-mkdir -p python/datui_bin
-cp target/debug/datui python/datui_bin/
-cd python
-maturin develop
-```
-
-On Windows, copy `target/debug/datui.exe` instead. The console script looks
-beside the package for this binary; it does not search `PATH`. You can also
-run `target/debug/datui` directly.
+`q` closes the view. The docs' Python blocks run with
+`.venv/bin/python scripts/docs/doc_examples.py --python`, with this build
+installed.
 
 ## Polars compatibility
 
-Python frames cross the extension boundary as serialized LazyFrame plans.
-Rust Polars **0.55** is paired with Python Polars **1.43**. The wheel declares
-`polars>=1.38` without an upper bound, so installation alone does not prove
-that every plan is compatible. Use the paired version when debugging a plan
-that cannot be read.
+Python frames cross into the extension as serialized LazyFrame plans. Rust
+Polars **0.55** is paired with Python Polars **1.43**. The wheel declares
+`polars>=1.38` with no upper bound, so installing it does not prove every plan
+reads. Use the paired version when debugging a plan that does not.
 
 The bridge checks the plan's DSL version and replaces its per-commit schema
-hash with the receiver's hash. Capture uses the same process in reverse.
-This handles differing build hashes; it does not translate incompatible plans.
+hash with the receiver's; capture does the same in reverse. That handles
+differing build hashes; it does not translate incompatible plans.
 
-When upgrading Rust Polars, review these together:
+When the Rust Polars moves, change these together:
 
 | File | Setting |
 |---|---|
-| `python/pyproject.toml` | Minimum supported Python Polars version |
+| `python/pyproject.toml` | The lowest Python Polars supported |
 | `python/datui/__init__.py` | `PAIRED_POLARS` |
-| `scripts/requirements-fixtures.txt` | Development/test Polars pin |
+| `scripts/requirements-fixtures.txt` | The development and test Polars pin |
 
 Run the Python tests after changing either side of the bridge.

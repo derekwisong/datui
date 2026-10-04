@@ -1,4 +1,4 @@
-# Security Checks
+# Security checks
 
 > Reporting a vulnerability, rather than running the checks? See
 > [SECURITY.md](https://github.com/derekwisong/datui/blob/main/SECURITY.md),
@@ -7,18 +7,18 @@
 Datui runs two automated security checks alongside the usual format and clippy
 gates. Both are in the `Security` workflow, and both can be run locally.
 
-## Running them locally
+## Run them locally
 
 Install the tools once:
 
-```bash
+```bash,repo
 cargo install cargo-deny --locked
 uv tool install zizmor          # or: pipx install zizmor
 ```
 
 Then:
 
-```bash
+```bash,repo
 ./scripts/code/check_security.sh
 ```
 
@@ -51,7 +51,7 @@ to the Security tab with a specific remediation. It never fails a build.
 
 Most advisory failures are cleared by updating the lockfile:
 
-```bash
+```bash,repo
 cargo update
 cargo deny check advisories
 ```
@@ -81,7 +81,7 @@ Dependabot proposes updates to pinned actions.
 
 Resolve the SHA for a tag with:
 
-```bash
+```bash,repo
 gh api repos/actions/checkout/tags --jq '.[] | select(.name == "v5.1.0") | .commit.sha'
 ```
 

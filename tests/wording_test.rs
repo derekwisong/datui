@@ -83,6 +83,11 @@ const ALLOWED: &[(&str, &str)] = &[
     // The Excel reader: the workbook XML's own tag, and Excel's kinds of sheet that
     // are not worksheets (chart sheet, dialog sheet, macro sheet).
     ("crates/datui-lib/src/excel.rs", "sheet"),
+    // The doc-example runner's fence attribute, in the docs on writing docs.
+    (
+        "docs/for-developers/documentation.md",
+        "| Shape to fill in | `bash,template`",
+    ),
     // The check describing itself.
     ("docs/for-developers/tests.md", "\"opens anything\" claims"),
     // GGUF's own key.

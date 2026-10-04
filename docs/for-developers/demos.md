@@ -1,6 +1,6 @@
-# Demos
+# Record demos
 
-```bash
+```bash,repo
 python demo/build.py
 python scripts/demos/generate_demos.py --number 2
 ```
@@ -32,7 +32,7 @@ inputs are separate from the public data build. Use a public-data tape when
 recording from a fresh checkout. SSA may require a manual download; the data
 builder accepts `--names-zip /path/to/names.zip`.
 
-## Generating the animations
+## Record the animations
 
 | Command | Result |
 |---|---|

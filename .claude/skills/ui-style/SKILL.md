@@ -257,8 +257,9 @@ leaving:
   only) and `~` goes to the filter. Never assign a letter key on the home
   screen.
 
-Any other key may move, with the help string, the docs key table and a
-release-notes line updated in the same PR.
+Any other key may move, with the help string and a release-notes line
+updated in the same PR. The docs' key tables are generated from the help
+strings: run `cargo run -p datui-cli --bin gen_docs -- write`.
 
 ## Acceptance checklist for a migrated screen
 
@@ -273,8 +274,12 @@ release-notes line updated in the same PR.
 - [ ] View-changing state visible on the main screen after the surface
       closes.
 - [ ] Contract keybinds identical before and after.
-- [ ] Help string, docs page and keyboard-shortcuts.md updated; buffer test
+- [ ] Help string and docs page updated, `gen_docs write` run
+      (keyboard-shortcuts.md is generated from the help strings); buffer test
       for the layout; integration test for the keys.
+- [ ] Every code block in the docs page is runnable and passes
+      `scripts/docs/doc_examples.py`, or is labeled `,template` with
+      `<PLACEHOLDER>`s; the page leads with the key, then a table.
 - [ ] Before/after screenshots in the PR.
 
 ## Anti-pattern gallery (what the migrations delete)

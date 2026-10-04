@@ -1,6 +1,6 @@
-# Glyph Coverage Audit
+# Check glyph coverage
 
-```bash
+```bash,repo
 scripts/code/audit_glyphs.py             # audit glyphs.rs against installed fonts
 scripts/code/audit_glyphs.py --markdown  # the coverage table, for pasting
 ```
@@ -29,7 +29,7 @@ color. A wider list (Fira Code, Hack, Cascadia, Iosevka, Menlo, SF Mono, Consola
 DejaVu Sans Mono) is audited informationally wherever those fonts are
 installed.
 
-## Adding a glyph
+## Add a glyph
 
 1. Pick a codepoint and check it: `fc-list "<font>:charset=<hex>"` per floor
    font, or just add it to `glyphs.rs` and run the script.
@@ -39,5 +39,5 @@ installed.
 
 Users whose fonts carry more than the floor can override any slot with the
 `[glyphs]` config section; see
-[Configuration](../reference/settings.md#glyphs). The default set never
+[Settings](../reference/settings.md#glyphs). The default set never
 assumes more than the floor.

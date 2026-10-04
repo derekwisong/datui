@@ -1,6 +1,6 @@
-# Tests
+# Run tests
 
-```bash
+```bash,repo
 ./scripts/dev/setup-test-data.sh   # once: creates .venv and generates the fixtures
 ./scripts/dev/test.sh full         # cargo test --workspace --locked --no-fail-fast
 ./scripts/dev/test.sh --help       # the scoped commands
@@ -10,7 +10,7 @@
 and `datui-cli`. CI runs the same tests with
 `cargo nextest run --workspace --locked --no-fail-fast`, one process per test,
 then `cargo test --doc --workspace --locked`. The Python bindings are tested
-separately; see [Python Bindings](python-bindings.md#testing).
+separately; see [Build Python bindings](python-bindings.md#build-and-test).
 
 ## Select the checks
 
@@ -52,14 +52,15 @@ submission, broaden to related targets and run formatting/clippy for Rust
 changes. Run the full suite for cross-cutting App/event-loop, LazyFrame,
 loading/schema, shared configuration, dependency/feature, and harness/layout
 changes. For isolated changes, CI supplies full-workspace coverage; report
-which checks were local. Documentation-only changes do not require Rust tests.
+which checks were local. Documentation-only changes need the
+[documentation checks](documentation.md#run-the-checks), not Rust tests.
 Replay the fuzz corpus for parser or matcher changes
 (`./scripts/dev/test.sh integration fuzz_corpus_test`). Do not rerun an unchanged
 broad check merely because another small scoped check finished.
 
 Select multiple affected targets explicitly when needed:
 
-```bash
+```bash,repo
 cargo test --locked -p datui --test statistics_test --test distribution_detection_test
 ```
 
@@ -110,7 +111,7 @@ generator themselves.
 
 To regenerate by hand:
 
-```bash
+```bash,repo
 .venv/bin/python scripts/generate_sample_data.py
 ```
 
@@ -179,6 +180,8 @@ Run it after adding tests that build an `App` or touch the cache or config.
 | `tests/fuzz_corpus_test.rs` | Every committed fuzz corpus input through its target's body in `fuzz/src/`; see [Fuzzing](fuzzing.md) |
 | `tests/cloud_live_test.rs` | Against a real object store. Ignored by default; run with `DATUI_LIVE_GCS=1` or `DATUI_LIVE_S3=<endpoint>` and `--ignored` |
 | `tests/wording_test.rs` | Retired words ([glossary](../reference/glossary.md)) and "opens anything" claims, in the UI strings, help strings, docs, `--help` and the manpage. A real use goes in its `ALLOWED` list |
+| `crates/datui-cli/src/docgen.rs` | `the_generated_docs_are_current`: the generated pages match the code ([Build documentation](documentation.md#generated-pages)) |
+| `crates/datui-lib/src/tests/doc_queries_tests.rs` | The docs' `q` blocks parse, and their `sql` and `q` blocks run on the datasets they name |
 | `tests/common/` | Shared helpers |
 
 Unit tests live beside the code they test.
@@ -208,7 +211,7 @@ covers the buffer collect.
 
 ## Startup timing
 
-```bash
+```bash,repo
 cargo build --release
 scripts/dev/first_frame_probe.py before=/path/to/old/datui after=target/release/datui --runs 20
 ```

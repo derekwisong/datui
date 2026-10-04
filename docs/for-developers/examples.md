@@ -1,12 +1,15 @@
 # Check the examples
 
-The guides' examples run on the built-in **Public datasets**, as their
-publishers serve them. Recheck them before a release, before recording demos,
-and after a change to anything an example touches.
+The numbers the guides quote from the built-in **Public datasets** are checked
+by one script; that every command and query runs is
+[the doc-example runner's](documentation.md#code-blocks) job.
 
-```bash
+```bash,repo
 .venv/bin/python scripts/docs/check_examples.py
 ```
+
+Run it before a release, before recording demos, and after a change to
+anything an example touches.
 
 The script reruns each documented query on the frozen datasets through Polars
 SQL and compares the numbers with the text. It downloads about 140 MB on the
@@ -25,9 +28,10 @@ it; `-k food` runs one check). It needs the network, so CI does not run it.
 
 ## By hand
 
-What a key does on screen, the sampled analyses and the remote datasets need
-a person. Build a release binary, run it with a throwaway cache and config
-(`DATUI_CACHE_DIR`, `XDG_CONFIG_HOME`), and open each dataset from the home
+The runner opens what each command names and runs each query; what a key does
+on screen, and the numbers a sampled analysis or a remote dataset shows, still
+need a person. Build a release binary, run it with a throwaway cache and config
+(`DATUI_CACHE_DIR`, `DATUI_CONFIG_DIR`), and open each dataset from the home
 screen.
 
 | Page | Do | Expect |
@@ -43,8 +47,7 @@ screen.
 | [Export](../user-guide/exporting-data.md) | `goals.csv` | 381 lines, the three shown first |
 | [Views](../user-guide/views.md) | Save on 2024, apply on 2023; `--view` on 2022 | 366, 365 and 365 rows |
 | [Remote data](../user-guide/remote-data.md) | NOAA 2024, its element counts, Bitcoin 2024 | 37,108,477 rows; `PRCP` first; 12 months |
-| [Python](../user-guide/python-module.md) | The capture example, with the wheel built as in [Python bindings](python-bindings.md) | The three-row summary |
-| `datui --help`, `man -l target/release/datui.1` | Each example command | Each opens what its line says |
+| [Python](../user-guide/python-module.md) | The capture example, with the wheel built as in [Build Python bindings](python-bindings.md) | The three-row summary |
 
 Earthquakes change daily, and Bitcoin gains a partition a day: their pages
 quote no counts. A number that no longer matches is a docs fix or a datui bug;

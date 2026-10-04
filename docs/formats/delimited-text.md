@@ -21,7 +21,8 @@ datui --delimiter ';' sales.csv
 
 A file with another extension, or none, opens with `--format csv` (or `tsv`,
 `psv`); text piped in is [detected by content](index.md#detected-by-content).
-<kbd>H</kbd> reads the first row as data, or as column names again.
+<kbd>H</kbd> on the [Info panel](../user-guide/dataset-info.md)'s Schema tab
+reads the first row as data, or as column names again.
 
 ## CSV options
 

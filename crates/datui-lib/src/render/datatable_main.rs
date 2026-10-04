@@ -83,6 +83,7 @@ pub fn render(
     let hex = app.hex_target().is_some();
     let query_reading = app.query_reading().map(str::to_string);
     let frame = app.throbber_frame as usize;
+    let header_toggle = app.header_toggle_offered();
     match &mut app.data_table_state {
         Some(state) => {
             let mut table_area = data_area;
@@ -181,6 +182,7 @@ pub fn render(
                 };
                 let mut info_widget = DataTableInfo::new(state, info_ctx, &mut app.info_modal, ctx);
                 info_widget.hex = hex;
+                info_widget.header_toggle = header_toggle;
                 info_widget.codebook = app.codebook.as_deref();
                 info_widget.render(sort_area, buf);
             }

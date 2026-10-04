@@ -549,7 +549,8 @@ pub fn from_the_open(
         notes.push(Note {
             summary: concat!(
                 "these files look like they have no header row, so datui is reading ",
-                "each file's first row of data as its column names — press H, or pass ",
+                "each file's first row of data as its column names — press H on the Schema ",
+                "tab, or pass ",
                 "--no-header, to read those rows as data instead"
             )
             .to_string(),
@@ -564,7 +565,7 @@ pub fn from_the_open(
         notes.push(Note {
             summary: concat!(
                 "the column names look like data, as if the file has no header row — ",
-                "press H to read the first row as data"
+                "press H on the Schema tab to read the first row as data"
             )
             .to_string(),
             scope: "from the column names".to_string(),

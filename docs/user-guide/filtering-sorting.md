@@ -28,6 +28,23 @@ from eight chains, nutrients per item. Find the chicken dishes with at least
 The table shows 30 of 515, led by McDonald's 20 piece Buttermilk Crispy
 Chicken Tenders at 2,430 calories. The `calories` header carries `▼`.
 
+## Filter on a cell
+
+At the table, <kbd>+</kbd> and <kbd>-</kbd> filter on the cell under the
+cursor, where the row cursor and the [column cursor](#move-across-a-wide-table)
+cross.
+
+| Key | Does |
+|---|---|
+| <kbd>+</kbd> | Keep the rows whose value in this column is the cell's; on a null cell, keep the nulls |
+| <kbd>-</kbd> | Drop those rows; on a null cell, drop the nulls |
+
+Each press adds a row to the [Filters tab](#filters-tab), joined to the others
+with **and**, so you can edit or delete it there and <kbd>R</kbd> clears it. A
+float matches the number as the table draws it: on a cell drawn `0.3`, `+`
+keeps every row drawn `0.3`, `0.1 + 0.2` among them. A list, struct or binary
+cell has no value to compare; the bar says so.
+
 ## Apply or cancel changes
 
 | Key | Does |
@@ -147,6 +164,11 @@ and that cell are drawn reversed.
   takes the cursor.
 - Hidden columns are not listed by <kbd>g</kbd>.
 
+<kbd>H</kbd> and <kbd>L</kbd> move the cursor's column itself one place left
+or right, the cursor with it: the same column order the Columns tab's
+<kbd>+</kbd> <kbd>-</kbd> set, and <kbd>R</kbd> puts it back. A frozen column
+moves among the frozen ones, and a scrolling column among the scrolling ones.
+
 The keys that act on one column act on the cursor's:
 
 | Key | On the cursor's column |
@@ -187,13 +209,19 @@ every terminal: finish the row with <kbd>Enter</kbd>, then press
 | `=` `!=` | equal, not equal |
 | `<` `>` `<=` `>=` | less, greater, or equal |
 | `contains` `!contains` | text contains, or does not contain, the value |
+| `is null` `not null` | the value is null, or is not; these take no value |
 
 The value is parsed as the column's type, so `> 1000` on a number column is a
-numeric comparison. Filters stay in place while you chart, analyze or export,
+numeric comparison. On a float column, `=` and `!=` compare to the sixth
+decimal place, where the table rounds a float, or to the last digit you write
+past it: `= 0.3` holds `0.1 + 0.2`, which the table draws as `0.3`. In
+exponent notation the last digit written counts: `= 1.2346e7` holds
+12,345,800. A date, time, duration or decimal
+column compares `=` and `!=` with its text, such as `2024-01-01`. Filters stay in place while you chart, analyze or export,
 and are saved in [views](views.md).
 
 ## From the query prompt
 
 For anything more involved, a SQL `WHERE` or the `where` clause of a
 [q query](../reference/query-syntax.md#where-clause--and-) takes
-expressions, `OR` groups, null tests and date arithmetic.
+expressions, `OR` groups and date arithmetic.

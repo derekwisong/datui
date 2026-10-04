@@ -1,6 +1,6 @@
 //! The sort and filter modal's keys.
 
-use crate::filter_modal::FilterEditStep;
+use crate::filter_modal::{FilterEditStep, FilterOperator};
 use crate::sort_filter_modal::{SortFilterFocus, SortFilterTab};
 use crate::sort_modal::SortFocus;
 use crate::widgets::column_widths::WidthChoice;
@@ -47,6 +47,16 @@ impl App {
                             if editor.column.selected_original().is_some() {
                                 editor.step = FilterEditStep::Operator;
                             }
+                        }
+                        // A null test has no value to ask for: choosing it commits.
+                        FilterEditStep::Operator
+                            if editor
+                                .operator
+                                .selected_original()
+                                .and_then(|i| FilterOperator::iterator().nth(i))
+                                .is_some_and(|op| !op.takes_value()) =>
+                        {
+                            m.commit_editor();
                         }
                         FilterEditStep::Operator => {
                             editor.step = FilterEditStep::Value;

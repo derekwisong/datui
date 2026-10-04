@@ -140,6 +140,45 @@ pub struct SidebarFilter {
     /// The value as typed, which `contains` matches as text whatever the column.
     pub text: String,
     pub logical_op: LogicalOperator,
+    /// How `=` and `!=` compare: see [`Equality`].
+    pub equality: Equality,
+}
+
+/// How `=` and `!=` compare a column with the value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Equality {
+    /// The value as typed against the column's own type.
+    Plain,
+    /// A float column against the digits written: within `half` of the value, so
+    /// `0.3` holds `0.1 + 0.2` and a preview's rounded number holds the rows it
+    /// was rounded from. See [`float_half_step`].
+    Near { half: f64 },
+    /// A date, time, duration or decimal column by its text, as Polars casts it to
+    /// text: the column's type has no literal the typed text could become.
+    AsText,
+}
+
+/// Half a step in the last digit `text` writes, for a float `=`: `1.2346e7` is
+/// within 500. Plain notation is never coarser than the sixth decimal place, where
+/// the table's preview of a float rounds, so `0.3` is within 0.0000005 and holds
+/// `0.1 + 0.2`. `None` for text that is not a finite number.
+pub fn float_half_step(text: &str) -> Option<f64> {
+    let text = text.trim();
+    let value: f64 = text.parse().ok()?;
+    if !value.is_finite() {
+        return None;
+    }
+    let (mantissa, exponent) = match text.find(['e', 'E']) {
+        Some(at) => (&text[..at], text[at + 1..].parse::<i32>().ok()?),
+        None => (text, 0),
+    };
+    let decimals = mantissa.find('.').map_or(0, |at| mantissa.len() - at - 1) as i32;
+    let places = if exponent == 0 && !text.contains(['e', 'E']) {
+        decimals.max(6)
+    } else {
+        decimals - exponent
+    };
+    Some(0.5 * 10f64.powi(-places))
 }
 
 impl SidebarFilter {
@@ -147,9 +186,14 @@ impl SidebarFilter {
         let text = statement.value.as_str();
         let as_text = || FilterValue::Str(text.to_string());
         let value = match dtype {
-            Some(DataType::Float32 | DataType::Float64) => text
+            Some(DataType::Float64) => text
                 .parse()
                 .map(FilterValue::Float)
+                .unwrap_or_else(|_| as_text()),
+            // Read at the column's own precision: `0.1` as an f64 is not any f32.
+            Some(DataType::Float32) => text
+                .parse::<f32>()
+                .map(|f| FilterValue::Float(f64::from(f)))
                 .unwrap_or_else(|_| as_text()),
             Some(DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64) => text
                 .parse()
@@ -165,12 +209,37 @@ impl SidebarFilter {
                 .unwrap_or_else(|_| as_text()),
             _ => as_text(),
         };
+        let equality = match (dtype, &value) {
+            (Some(DataType::Float32 | DataType::Float64), FilterValue::Float(_)) => {
+                float_half_step(text).map_or(Equality::Plain, |half| Equality::Near { half })
+            }
+            (
+                Some(
+                    DataType::Date
+                    | DataType::Datetime(..)
+                    | DataType::Time
+                    | DataType::Duration(_)
+                    | DataType::Decimal(..),
+                ),
+                _,
+            ) => Equality::AsText,
+            _ => Equality::Plain,
+        };
         Self {
             column: statement.column.clone(),
             operator: statement.operator,
             value,
             text: statement.value.clone(),
             logical_op: statement.logical_op,
+            equality,
+        }
+    }
+
+    /// The bounds a [`Equality::Near`] `=` holds, inclusive.
+    fn near_bounds(&self, half: f64) -> Option<(f64, f64)> {
+        match self.value {
+            FilterValue::Float(f) => Some((f - half, f + half)),
+            _ => None,
         }
     }
 
@@ -181,6 +250,27 @@ impl SidebarFilter {
                 .str()
                 .contains_literal(lit(self.text.as_str()))
         };
+        let equal = matches!(self.operator, FilterOperator::Eq | FilterOperator::NotEq);
+        if equal {
+            let not = self.operator == FilterOperator::NotEq;
+            match self.equality {
+                Equality::Near { half } => {
+                    if let Some((low, high)) = self.near_bounds(half) {
+                        return if not {
+                            column.clone().lt(lit(low)).or(column.gt(lit(high)))
+                        } else {
+                            column.clone().gt_eq(lit(low)).and(column.lt_eq(lit(high)))
+                        };
+                    }
+                }
+                Equality::AsText => {
+                    let text = column.cast(DataType::String);
+                    let value = lit(self.text.as_str());
+                    return if not { text.neq(value) } else { text.eq(value) };
+                }
+                Equality::Plain => {}
+            }
+        }
         match self.operator {
             FilterOperator::Eq => column.eq(self.value.lit()),
             FilterOperator::NotEq => column.neq(self.value.lit()),
@@ -190,11 +280,40 @@ impl SidebarFilter {
             FilterOperator::LtEq => column.lt_eq(self.value.lit()),
             FilterOperator::Contains => contains(),
             FilterOperator::NotContains => contains().not(),
+            FilterOperator::IsNull => column.is_null(),
+            FilterOperator::IsNotNull => column.is_not_null(),
         }
     }
 
     fn python(&self) -> String {
         let column = format!("pl.col({})", py_str(&self.column));
+        let equal = matches!(self.operator, FilterOperator::Eq | FilterOperator::NotEq);
+        let not = if matches!(
+            self.operator,
+            FilterOperator::NotEq | FilterOperator::NotContains
+        ) {
+            "~"
+        } else {
+            ""
+        };
+        if equal {
+            match self.equality {
+                Equality::Near { half } => {
+                    if let Some((low, high)) = self.near_bounds(half) {
+                        return format!(
+                            "{not}{column}.is_between({}, {})",
+                            py_float(low),
+                            py_float(high)
+                        );
+                    }
+                }
+                Equality::AsText => {
+                    let op = if not.is_empty() { "==" } else { "!=" };
+                    return format!("{column}.cast(pl.String) {op} {}", py_str(&self.text));
+                }
+                Equality::Plain => {}
+            }
+        }
         let op = match self.operator {
             FilterOperator::Eq => "==",
             FilterOperator::NotEq => "!=",
@@ -203,16 +322,13 @@ impl SidebarFilter {
             FilterOperator::GtEq => ">=",
             FilterOperator::LtEq => "<=",
             FilterOperator::Contains | FilterOperator::NotContains => {
-                let not = if self.operator == FilterOperator::NotContains {
-                    "~"
-                } else {
-                    ""
-                };
                 return format!(
                     "{not}{column}.str.contains({}, literal=True)",
                     py_str(&self.text)
                 );
             }
+            FilterOperator::IsNull => return format!("{column}.is_null()"),
+            FilterOperator::IsNotNull => return format!("{column}.is_not_null()"),
         };
         format!("{column} {op} {}", self.value.python())
     }
@@ -1459,6 +1575,80 @@ mod tests {
             steps,
         }
         .render()
+    }
+
+    #[test]
+    fn a_float_equality_holds_half_a_step_of_the_digits_written() {
+        let close = |text: &str, want: f64| {
+            let half = float_half_step(text).unwrap();
+            assert!((half - want).abs() <= want * 1e-9, "{text}: {half}");
+        };
+        // Plain notation is never finer than the preview's sixth decimal.
+        close("0.3", 5e-7);
+        close("3", 5e-7);
+        close("0.33333333", 5e-9);
+        // Exponent notation keeps the mantissa's digits.
+        close("1.2346e7", 500.0);
+        close("1.0000e-7", 5e-12);
+        assert_eq!(float_half_step("NaN"), None);
+        assert_eq!(float_half_step("inf"), None);
+        assert_eq!(float_half_step("north"), None);
+    }
+
+    #[test]
+    fn quick_filter_statements_select_what_they_say() {
+        let frame = df!(
+            "x" => &[Some(0.1 + 0.2), Some(0.3), Some(1.0 / 3.0), None],
+            "f" => &[Some(0.1f32), Some(0.2), None, Some(0.1)],
+            "d" => &[Some(19723i32), Some(19724), None, Some(19723)],
+        )
+        .unwrap()
+        .lazy()
+        .with_column(col("d").cast(DataType::Date))
+        .collect()
+        .unwrap();
+        let schema = frame.schema().clone();
+        let rows = |statement: FilterStatement| {
+            let typed = SidebarFilter::typed(&statement, schema.get(&statement.column));
+            frame
+                .clone()
+                .lazy()
+                .filter(filters_expr(&[typed]).unwrap())
+                .collect()
+                .unwrap()
+                .height()
+        };
+        assert_eq!(rows(statement("x", FilterOperator::Eq, "0.3")), 2);
+        assert_eq!(rows(statement("x", FilterOperator::NotEq, "0.3")), 1);
+        assert_eq!(rows(statement("x", FilterOperator::Eq, "0.333333")), 1);
+        assert_eq!(rows(statement("x", FilterOperator::IsNull, "")), 1);
+        assert_eq!(rows(statement("x", FilterOperator::IsNotNull, "")), 3);
+        assert_eq!(rows(statement("f", FilterOperator::Eq, "0.1")), 2);
+        assert_eq!(rows(statement("d", FilterOperator::Eq, "2024-01-01")), 2);
+        assert_eq!(rows(statement("d", FilterOperator::NotEq, "2024-01-01")), 1);
+    }
+
+    #[test]
+    fn quick_filter_statements_read_back_in_python() {
+        let python = |column: &str, dtype: DataType, operator, value: &str| {
+            SidebarFilter::typed(&statement(column, operator, value), Some(&dtype)).python()
+        };
+        assert_eq!(
+            python("x", DataType::Float64, FilterOperator::Eq, "0.5"),
+            "pl.col(\"x\").is_between(0.4999995, 0.5000005)"
+        );
+        assert_eq!(
+            python("x", DataType::Float64, FilterOperator::NotEq, "0.5"),
+            "~pl.col(\"x\").is_between(0.4999995, 0.5000005)"
+        );
+        assert_eq!(
+            python("x", DataType::String, FilterOperator::IsNull, ""),
+            "pl.col(\"x\").is_null()"
+        );
+        assert_eq!(
+            python("d", DataType::Date, FilterOperator::Eq, "2024-01-01"),
+            "pl.col(\"d\").cast(pl.String) == \"2024-01-01\""
+        );
     }
 
     #[test]

@@ -36,6 +36,7 @@ Where a dataset opens.
 | `c` | Open charts |
 | `s` | Open the Sort & Filter sidebar (tabs: Columns, Filters), on the cursor's column |
 | `F` | Value counts of the cursor's column: each value's rows, percent and a bar, with a summary |
+| `+ / -` | Filter on the cursor's cell: + keeps the rows with its value, - drops them (a null cell: the nulls). Each adds a row to the Filters tab, joined with "and"; a float matches as drawn |
 | `a` | Open Analysis. In a Data Quality evidence drill a is disabled; Esc returns to the observation |
 | `p` | Open Pivot & Melt |
 | `e` | Export data to file |
@@ -49,15 +50,15 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `i` | Open Info panel (tabs: Schema, Resources, Partitions, Notes) |
+| `i` | Open Info panel (tabs: Schema, Resources, Partitions, Notes). H on its Schema tab reads a CSV's first row as data, or as column names |
 | `#` | Toggle row numbers |
 | `< / >` | The column cursor's column 4 cells narrower or wider |
 | `= / w` | Fit it to the rows on screen; back to automatic width |
 | `,` | Toggle number formatting (digit grouping) |
 | `D` | Toggle the type row under the column headers |
 | `b` | A binary file read through a format spec: read it again with another spec. Clears the query, filters and sort |
-| `H` | CSV, TSV, PSV: read the first row as data, under column_1, column_2, …; again to read it as column names. Reads the file again, so the query, filters and sort are cleared |
-| `t` | Follow the file as it grows (CSV, TSV, PSV, NDJSON). Reads it again, as H does; while following, t pauses and resumes, and Esc stops |
+| `H / L` | Move the cursor's column one place left or right, the cursor with it; a frozen column moves among the frozen ones. R puts the order back |
+| `t` | Follow the file as it grows (CSV, TSV, PSV, NDJSON). Reads it again, so the query, filters and sort are cleared; while following, t pauses and resumes, and Esc stops |
 | `? / F1` | Open this help (F1 works in text fields). Esc or ? to close. |
 
 ### Table · Help navigation
@@ -259,6 +260,7 @@ Where a dataset opens.
 | `PgUp / PgDn` | Model, Audio, MIDI, Metadata and format tabs: scroll the list a page |
 | `Home / End` | Model, Audio, MIDI, Metadata and format tabs: the top or the end of the list |
 | `Enter` | Notes tab: take the offer on the note, where it has one |
+| `H` | Schema tab, CSV, TSV, PSV: read the first row as data, under column_1, column_2, …; again to read it as column names. Reads the file again, so the query, filters and sort are cleared, and the panel closes |
 | `? / F1` | Show this help |
 | `Esc / i` | Close info panel |
 

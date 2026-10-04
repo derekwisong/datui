@@ -40,6 +40,15 @@ impl App {
                     self.open_hex(path, crate::hex_view::Origin::Table, false, None);
                 }
             }
+            // Delimited text: read the first row as data, or as names again. The read
+            // takes the screen, so the panel closes for it.
+            KeyCode::Char('H') if event.is_press() && schema_tab => {
+                if self.header_toggle_offered() {
+                    self.info_modal.close();
+                    self.input_mode = InputMode::Normal;
+                    return self.toggle_header();
+                }
+            }
             KeyCode::Tab if event.is_press() && schema_tab => {
                 self.info_modal.next_focus();
             }

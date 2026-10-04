@@ -15,6 +15,10 @@ on Schema for anything else.
   Home / End:       Model, Audio, MIDI, Metadata and format tabs: the top
                     or the end of the list
   Enter:            Notes tab: take the offer on the note, where it has one
+  H:                Schema tab, CSV, TSV, PSV: read the first row as data,
+                    under column_1, column_2, …; again to read it as column
+                    names. Reads the file again, so the query, filters and
+                    sort are cleared, and the panel closes
   ? / F1:           Show this help
   Esc / i:          Close info panel
 

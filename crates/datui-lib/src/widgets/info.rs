@@ -759,6 +759,8 @@ pub struct DataTableInfo<'a> {
     pub theme: &'a RenderContext,
     /// The dataset is one local file, which `x` shows as hex.
     pub hex: bool,
+    /// The dataset is delimited text, whose first row `H` reads the other way.
+    pub header_toggle: bool,
     /// What the columns mean, from the collection that lists the dataset.
     pub codebook: Option<&'a crate::codebook::Codebook>,
 }
@@ -805,6 +807,7 @@ impl<'a> DataTableInfo<'a> {
             modal,
             theme,
             hex: false,
+            header_toggle: false,
             codebook: None,
         }
     }
@@ -1890,6 +1893,9 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         }
         if tab == InfoTab::Schema {
             footer = footer.hint_weighted("Tab", "Focus", 1);
+            if self.header_toggle {
+                footer = footer.hint_weighted("H", "Header", -1);
+            }
         }
         if self.hex {
             footer = footer.hint_weighted("x", "Hex", 0);
@@ -2169,6 +2175,59 @@ mod tests {
         assert!(text.contains("Esc"), "the footer names the way out: {text}");
         assert!(text.contains("Tabs"), "and the tab keys: {text}");
         assert!(!text.contains(">>"), "the bespoke marker is gone: {text}");
+    }
+
+    /// The Schema tab's footer offers `H` for delimited text alone, and no other
+    /// tab does.
+    #[test]
+    fn the_schema_footer_offers_h_only_where_it_works() {
+        use crate::widgets::datatable::DataTableState;
+        use polars::prelude::*;
+
+        let lf = || df!("a" => &[1i64], "b" => &[2i64]).unwrap().lazy();
+        let schema = std::sync::Arc::new((*lf().collect_schema().unwrap()).clone());
+        let state = DataTableState::from_schema_and_lazyframe(
+            schema,
+            lf(),
+            &crate::OpenOptions::default(),
+            None,
+        )
+        .unwrap();
+        let theme = RenderContext::for_test();
+        let area = Rect::new(0, 0, 80, 16);
+        let footer = |header_toggle: bool, tab: InfoTab| {
+            let mut buf = Buffer::empty(area);
+            let mut modal = InfoModal {
+                active_tab: tab,
+                ..Default::default()
+            };
+            let mut panel = DataTableInfo::new(
+                &state,
+                InfoContext {
+                    format: None,
+                    facts: None,
+                    facts_tab: None,
+                    footer_expected: false,
+                    declared_types: false,
+                },
+                &mut modal,
+                &theme,
+            );
+            panel.header_toggle = header_toggle;
+            (&mut panel).render(area, &mut buf);
+            (0..area.height)
+                .map(|y| {
+                    (0..area.width)
+                        .map(|x| buf[(x, y)].symbol().to_string())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let shown = footer(true, InfoTab::Schema);
+        assert!(shown.contains("Header"), "{shown}");
+        assert!(!footer(false, InfoTab::Schema).contains("Header"));
+        assert!(!footer(true, InfoTab::Resources).contains("Header"));
     }
 
     /// Times read in the unit the docs promise, on both sides of the switch.

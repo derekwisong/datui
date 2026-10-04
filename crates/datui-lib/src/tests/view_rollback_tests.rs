@@ -513,6 +513,7 @@ fn sorted_and_filtered(
     app.event(&AppEvent::Sort(vec!["val".to_string()], vec![true]));
     super::chart_prepare_tests::pump(app, rx, tx, |a| !crate::tests::work_pending(a));
     app.event(&AppEvent::Filter(vec![FilterStatement {
+        columns: Vec::new(),
         column: "val".to_string(),
         operator: FilterOperator::Gt,
         value: "0".to_string(),
@@ -1196,6 +1197,7 @@ fn blank_view(app: &mut App, name: &str) -> SavedView {
 fn a_view_failing_after_any_step_puts_the_view_back() {
     use crate::filter_modal::{FilterOperator, LogicalOperator};
     let filter = |column: &str| FilterStatement {
+        columns: Vec::new(),
         column: column.to_string(),
         operator: FilterOperator::Gt,
         value: "0".to_string(),

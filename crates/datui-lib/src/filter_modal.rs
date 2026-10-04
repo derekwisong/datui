@@ -114,6 +114,11 @@ impl LogicalOperator {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FilterStatement {
+    /// The columns a find kept over every column ([`ANY_COLUMN`]) searches: the
+    /// ones shown when it was kept, so the table, the script and a saved view match
+    /// the same cells whatever the layout later. Empty for every other statement.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns: Vec<String>,
     pub column: String,
     pub operator: FilterOperator,
     pub value: String,
@@ -227,12 +232,16 @@ impl FilterModal {
             .unwrap_or_else(|| ANY_COLUMN.to_string())
     }
 
-    /// How a statement's column reads in the list.
-    pub fn column_label(column: &str) -> &str {
-        if column == ANY_COLUMN {
-            ANY_COLUMN_LABEL
+    /// How a statement's column reads in the list: a find over every column is
+    /// "any column shown" while it searches the columns shown, else counts them.
+    pub fn column_label(&self, statement: &FilterStatement) -> String {
+        if statement.column != ANY_COLUMN {
+            return statement.column.clone();
+        }
+        if statement.columns.is_empty() || statement.columns == self.available_columns {
+            ANY_COLUMN_LABEL.to_string()
         } else {
-            column
+            format!("{} columns", statement.columns.len())
         }
     }
 
@@ -311,7 +320,19 @@ impl FilterModal {
             self.editor = Some(editor);
             return;
         }
+        // Over every column: the columns it searched before, else the ones shown.
+        let columns = if column == ANY_COLUMN {
+            editor
+                .editing
+                .and_then(|i| self.statements.get(i))
+                .filter(|s| s.column == ANY_COLUMN && !s.columns.is_empty())
+                .map(|s| s.columns.clone())
+                .unwrap_or_else(|| self.available_columns.clone())
+        } else {
+            Vec::new()
+        };
         let statement = FilterStatement {
+            columns,
             column,
             operator,
             // A null test keeps no stale value from an earlier operator.
@@ -395,6 +416,7 @@ mod tests {
     fn a_kept_find_over_every_column_edits_as_one() {
         let mut m = modal();
         m.statements = vec![FilterStatement {
+            columns: Vec::new(),
             column: ANY_COLUMN.into(),
             operator: FilterOperator::HasFuzzy,
             value: "chkn".into(),
@@ -472,12 +494,14 @@ mod tests {
         let mut m = modal();
         m.statements = vec![
             FilterStatement {
+                columns: Vec::new(),
                 column: "salary".into(),
                 operator: FilterOperator::Gt,
                 value: "1".into(),
                 logical_op: LogicalOperator::And,
             },
             FilterStatement {
+                columns: Vec::new(),
                 column: "name".into(),
                 operator: FilterOperator::Eq,
                 value: "ann".into(),
@@ -503,12 +527,14 @@ mod tests {
         let mut m = modal();
         m.statements = vec![
             FilterStatement {
+                columns: Vec::new(),
                 column: "salary".into(),
                 operator: FilterOperator::Gt,
                 value: "1".into(),
                 logical_op: LogicalOperator::And,
             },
             FilterStatement {
+                columns: Vec::new(),
                 column: "name".into(),
                 operator: FilterOperator::Eq,
                 value: "ann".into(),
@@ -540,12 +566,14 @@ mod tests {
         let mut m = modal();
         m.statements = vec![
             FilterStatement {
+                columns: Vec::new(),
                 column: "salary".into(),
                 operator: FilterOperator::Gt,
                 value: "1".into(),
                 logical_op: LogicalOperator::And,
             },
             FilterStatement {
+                columns: Vec::new(),
                 column: "name".into(),
                 operator: FilterOperator::Eq,
                 value: "ann".into(),

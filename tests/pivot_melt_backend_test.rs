@@ -257,6 +257,7 @@ fn test_pivot_on_current_view_after_filter() {
         .height();
 
     let statements = vec![FilterStatement {
+        columns: Vec::new(),
         column: "id".to_string(),
         operator: FilterOperator::Eq,
         value: "5".to_string(),

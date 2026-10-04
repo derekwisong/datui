@@ -12293,6 +12293,8 @@ impl App {
         }
         self.ensure_chart_data();
         self.home_score_search();
+        // New rows on hand under an open find prompt: light up their matches.
+        self.refresh_stale_live_matches();
         Ok(out)
     }
 
@@ -14272,6 +14274,7 @@ impl App {
             (operator, text)
         };
         let statement = FilterStatement {
+            columns: Vec::new(),
             column,
             operator,
             value: text,

@@ -9102,7 +9102,20 @@ impl DataTableState {
     fn view_steps(&self) -> Vec<Step> {
         let mut steps = self.base_steps.clone();
         if !self.filters.is_empty() {
-            steps.push(Step::Filter(self.typed_filters()));
+            let typed = self.typed_filters();
+            let durations: Vec<String> = typed
+                .iter()
+                .flat_map(|f| f.unscriptable_columns())
+                .collect();
+            // Said before the filter: from there the script cannot keep the rows
+            // datui keeps.
+            if !durations.is_empty() {
+                steps.push(Step::Unreproducible(format!(
+                    "a kept find matches {} as datui writes durations",
+                    durations.join(", ")
+                )));
+            }
+            steps.push(Step::Filter(typed));
         }
         // Rows of files that hold a filtered or sorted column as another type: datui
         // leaves them out by where they were read, which a script cannot know.
@@ -9828,7 +9841,7 @@ pub struct DataTable {
     find_column: Option<String>,
     /// The cells a find being typed matches, by view row and column, drawn as
     /// found.
-    pub match_cells: Option<std::collections::HashSet<(usize, String)>>,
+    pub match_cells: Option<std::sync::Arc<crate::find::MatchCells>>,
     /// The view row the first row drawn is: set at render.
     drawn_from: usize,
     /// Each column's unit from a delimited spec's unit row, for the type row: set at
@@ -10313,7 +10326,7 @@ impl DataTable {
     /// Draw these cells (view row, column) as found: a find's matches as it is typed.
     pub fn with_match_cells(
         mut self,
-        cells: Option<std::collections::HashSet<(usize, String)>>,
+        cells: Option<std::sync::Arc<crate::find::MatchCells>>,
     ) -> Self {
         self.match_cells = cells;
         self
@@ -10702,7 +10715,9 @@ impl DataTable {
                             Some(SliceCell::Value(text)) => {
                                 let mut style = col.cell_style.unwrap_or_default();
                                 if self.match_cells.as_ref().is_some_and(|cells| {
-                                    cells.contains(&(self.drawn_from + row_index, col.name.clone()))
+                                    cells.get(col.name.as_str()).is_some_and(|rows| {
+                                        rows.contains(&(self.drawn_from + row_index))
+                                    })
                                 }) {
                                     style = style.patch(self.find_style);
                                 }
@@ -11094,16 +11109,22 @@ impl StatefulWidget for DataTable {
         let visible_rows_changed = new_visible_rows != state.visible_rows;
         state.visible_rows = new_visible_rows;
 
+        // Fewer rows (the footer grew a line): the page starts that much later, so the
+        // row the cursor is on stays the row it is on.
         if let Some(selected) = state.table_state.selected()
             && selected >= state.visible_rows
             && state.visible_rows > 0
         {
-            state.table_state.select(Some(state.visible_rows - 1))
+            let overflow = selected - (state.visible_rows - 1);
+            state.start_row += overflow;
+            state.table_state.select(Some(state.visible_rows - 1));
         }
 
-        if visible_rows_changed {
-            // Flag that the buffer needs re-collection for the new visible_rows.
-            // The App event loop checks this flag after each render and triggers an async collect.
+        // Only a page the rows on hand do not cover needs a read: the footer growing
+        // and shrinking a line must not re-read the buffer each time.
+        if visible_rows_changed && !state.page_on_hand(state.start_row) {
+            // The App event loop checks this flag after each render and triggers an
+            // async collect.
             state.needs_recollect = true;
         }
 
@@ -11588,6 +11609,7 @@ mod checkpoint_tests {
 
     fn filter(column: &str, op: FilterOperator, value: &str) -> FilterStatement {
         FilterStatement {
+            columns: Vec::new(),
             column: column.to_string(),
             operator: op,
             value: value.to_string(),
@@ -13015,6 +13037,7 @@ mod tests {
         let lf = create_test_lf();
         let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         let filters = vec![FilterStatement {
+            columns: Vec::new(),
             column: "a".to_string(),
             operator: FilterOperator::Gt,
             value: "2".to_string(),
@@ -13784,12 +13807,14 @@ mod tests {
         let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         let filters = vec![
             FilterStatement {
+                columns: Vec::new(),
                 column: "c".to_string(),
                 operator: FilterOperator::Eq,
                 value: "1".to_string(),
                 logical_op: LogicalOperator::And,
             },
             FilterStatement {
+                columns: Vec::new(),
                 column: "d".to_string(),
                 operator: FilterOperator::Eq,
                 value: "2".to_string(),
@@ -13806,6 +13831,7 @@ mod tests {
         let lf = create_large_test_lf();
         let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         let filters = vec![FilterStatement {
+            columns: Vec::new(),
             column: "c".to_string(),
             operator: FilterOperator::Eq,
             value: "1".to_string(),
@@ -14247,6 +14273,7 @@ mod tests {
         let lf = create_pivot_long_lf();
         let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
         state.filter(vec![FilterStatement {
+            columns: Vec::new(),
             column: "id".to_string(),
             operator: FilterOperator::Eq,
             value: "1".to_string(),
@@ -16368,6 +16395,7 @@ mod tests {
         );
 
         state.filter(vec![FilterStatement {
+            columns: Vec::new(),
             column: "a".to_string(),
             operator: FilterOperator::Gt,
             value: "990".to_string(),
@@ -18564,6 +18592,7 @@ mod tests {
 
         state.defer_collect = true;
         state.filter(vec![FilterStatement {
+            columns: Vec::new(),
             column: "n".to_string(),
             operator: crate::filter_modal::FilterOperator::Eq,
             value: "3".to_string(),

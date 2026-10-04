@@ -483,11 +483,7 @@ fn render_filters(
     let col_w = filter
         .statements
         .iter()
-        .map(|s| {
-            crate::filter_modal::FilterModal::column_label(&s.column)
-                .chars()
-                .count()
-        })
+        .map(|s| filter.column_label(s).chars().count())
         .max()
         .unwrap_or(6)
         .clamp(6, 14);
@@ -630,7 +626,7 @@ fn render_filters(
         }
         let text = format!(
             "{:<col$} {:<op$} {}{}",
-            crate::filter_modal::FilterModal::column_label(&statement.column),
+            filter.column_label(statement),
             statement.operator.as_str(),
             statement.value,
             conjunction,
@@ -669,6 +665,7 @@ mod tests {
             })
             .collect();
         m.filter.statements = vec![FilterStatement {
+            columns: Vec::new(),
             column: "protein".to_string(),
             operator: FilterOperator::GtEq,
             value: "40".to_string(),

@@ -573,6 +573,98 @@ fn a_kept_find_searches_the_shown_columns() {
     assert_eq!(state.num_rows(), 0, "name is hidden, so alan is not kept");
 }
 
+/// A find kept over every column keeps the columns it searched: hiding one later
+/// changes neither the rows kept nor what the script filters on, through a sort.
+#[test]
+fn a_kept_find_keeps_its_columns_when_the_layout_changes() {
+    let mut h = Harness::with_data();
+    h.press(KeyCode::Char('/'));
+    h.type_str("al");
+    h.press_with(KeyCode::Char('g'), KeyModifiers::CONTROL);
+    let rows = |h: &Harness| h.app.data_table_state.as_ref().unwrap().num_rows();
+    assert_eq!(rows(&h), 1);
+    h.run(AppEvent::ColumnOrder(vec!["age".to_string()], 0));
+    h.run(AppEvent::Sort(vec!["age".to_string()], vec![true]));
+    assert_eq!(rows(&h), 1, "alan is still kept on name");
+    let state = h.app.data_table_state.as_ref().unwrap();
+    let searched: Vec<String> = state
+        .python_steps()
+        .iter()
+        .find_map(|step| match step {
+            crate::python_script::Step::Filter(filters) => {
+                Some(filters[0].searched.iter().map(|(n, _)| n.clone()).collect())
+            }
+            _ => None,
+        })
+        .expect("a filter step");
+    assert!(searched.contains(&"name".to_string()), "{searched:?}");
+}
+
+/// The footer growing a line keeps the cursor on the record it was on, even on the
+/// bottom row of the page.
+#[test]
+fn the_cursor_keeps_its_record_when_the_footer_grows() {
+    let csv: String = std::iter::once("n".to_string())
+        .chain((0..200).map(|i| i.to_string()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut h = Harness::with_csv(&csv);
+    query_screen(&mut h.app);
+    // The rows a page this tall needs, as the run loop reads them after a draw.
+    h.run(AppEvent::Collect);
+    query_screen(&mut h.app);
+    let visible = h.app.data_table_state.as_ref().unwrap().visible_rows;
+    h.app
+        .data_table_state
+        .as_mut()
+        .unwrap()
+        .table_state
+        .select(Some(visible - 1));
+    let row = h.app.data_table_state.as_ref().unwrap().cursor_row();
+    assert_eq!(row, visible - 1, "on the bottom row");
+    h.press(KeyCode::Char('/'));
+    query_screen(&mut h.app);
+    let state = h.app.data_table_state.as_ref().unwrap();
+    assert!(state.visible_rows < visible, "the prompt took a row");
+    assert_eq!(state.cursor_row(), row, "the same record");
+}
+
+/// The matches follow the rows on hand: rows read while the prompt is open light up
+/// as they arrive, with no key pressed.
+#[test]
+fn the_live_matches_follow_the_rows_on_hand() {
+    let csv: String = std::iter::once("n".to_string())
+        .chain((0..200).map(|i| format!("x{i}")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut h = Harness::with_csv(&csv);
+    h.press(KeyCode::Char('/'));
+    h.type_str("x");
+    let before = h
+        .app
+        .find
+        .live
+        .as_ref()
+        .map_or(0, |l| l.within(0..usize::MAX));
+    query_screen(&mut h.app);
+    h.run(AppEvent::Collect);
+    let after = h
+        .app
+        .find
+        .live
+        .as_ref()
+        .map_or(0, |l| l.within(0..usize::MAX));
+    let held = h
+        .app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .rows_on_hand()
+        .map_or(0, |(df, _)| df.height());
+    assert_eq!(after, held, "every row held has its match");
+    assert!(after > before, "{before} -> {after}");
+}
+
 /// Letters in order: `gce` finds grace.
 #[test]
 fn a_fuzzy_find_matches_letters_in_order() {

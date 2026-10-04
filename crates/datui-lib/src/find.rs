@@ -590,21 +590,31 @@ pub struct Find {
     pub active: Option<ActiveFind>,
     /// The cells the prompt's pattern matches among the rows on hand.
     pub live: Option<LiveMatches>,
+    /// The rows on hand `live` was worked out over: their first view row, how many,
+    /// and the frame. Rows that arrive or a new frame make it stale.
+    live_rows: Option<(usize, usize, u64)>,
     /// Rows the find reading has read, for the footer's progress line.
     pub read: Option<usize>,
 }
 
-/// The cells a pattern being typed matches among the rows on hand: view row and
-/// column name. Worked out in memory as the pattern changes; never read.
+/// The view rows a pattern being typed matches among the rows on hand, by column
+/// name: looked up by the table as it draws, without a name cloned per cell.
+pub type MatchCells = std::collections::HashMap<String, std::collections::HashSet<usize>>;
+
+/// The cells a pattern being typed matches among the rows on hand. Worked out in
+/// memory as the pattern or the rows on hand change; never read.
 #[derive(Debug, Clone, Default)]
 pub struct LiveMatches {
-    pub cells: std::collections::HashSet<(usize, String)>,
+    pub cells: Arc<MatchCells>,
 }
 
 impl LiveMatches {
     /// The matches in view rows `rows`: the count the prompt shows.
     pub fn within(&self, rows: Range<usize>) -> usize {
-        self.cells.iter().filter(|(r, _)| rows.contains(r)).count()
+        self.cells
+            .values()
+            .map(|hits| hits.iter().filter(|r| rows.contains(r)).count())
+            .sum()
     }
 }
 
@@ -633,6 +643,7 @@ impl Find {
             error: None,
             active: None,
             live: None,
+            live_rows: None,
             read: None,
         }
     }
@@ -702,6 +713,7 @@ impl App {
     /// what is already in memory is matched, so typing never waits on a read.
     pub(crate) fn refresh_live_matches(&mut self) {
         self.find.live = None;
+        self.find.live_rows = self.rows_on_hand_key();
         let spec = self.find.prompt_spec();
         if spec.pattern.trim().is_empty() || spec.check().is_err() {
             return;
@@ -730,7 +742,7 @@ impl App {
         let Ok(found) = df.clone().lazy().select(exprs).collect() else {
             return;
         };
-        let mut cells = std::collections::HashSet::new();
+        let mut cells = MatchCells::new();
         for (i, (name, _)) in columns.iter().enumerate() {
             let Ok(hits) = found
                 .column(&format!("m{i}"))
@@ -738,13 +750,38 @@ impl App {
             else {
                 continue;
             };
-            for (row, hit) in hits.iter().enumerate() {
-                if hit == Some(true) {
-                    cells.insert((start + row, name.clone()));
-                }
+            let rows: std::collections::HashSet<usize> = hits
+                .iter()
+                .enumerate()
+                .filter(|(_, hit)| *hit == Some(true))
+                .map(|(row, _)| start + row)
+                .collect();
+            if !rows.is_empty() {
+                cells.insert(name.clone(), rows);
             }
         }
-        self.find.live = Some(LiveMatches { cells });
+        self.find.live = Some(LiveMatches {
+            cells: Arc::new(cells),
+        });
+    }
+
+    /// Which rows are on hand, to tell when the live matches were worked out over
+    /// others.
+    fn rows_on_hand_key(&self) -> Option<(usize, usize, u64)> {
+        let state = self.data_table_state.as_ref()?;
+        let (df, start) = state.rows_on_hand()?;
+        Some((start, df.height(), state.len_generation()))
+    }
+
+    /// While the find prompt is open, work the matches out again when the rows on
+    /// hand changed under it: a collect after the footer took a row, a follow's new
+    /// rows.
+    pub(crate) fn refresh_stale_live_matches(&mut self) {
+        if self.input_type == Some(InputType::Find)
+            && self.find.live_rows != self.rows_on_hand_key()
+        {
+            self.refresh_live_matches();
+        }
     }
 
     /// The matches the prompt's pattern has among the rows on screen, while the
@@ -757,11 +794,11 @@ impl App {
     }
 
     /// The cells to light up: the prompt's matches while it is open.
-    pub fn live_cells(&self) -> Option<&std::collections::HashSet<(usize, String)>> {
+    pub fn live_cells(&self) -> Option<Arc<MatchCells>> {
         (self.input_type == Some(InputType::Find))
             .then_some(self.find.live.as_ref())
             .flatten()
-            .map(|live| &live.cells)
+            .map(|live| live.cells.clone())
     }
 
     /// The column a find limited to one column searches: the column cursor's, which a
@@ -859,7 +896,14 @@ impl App {
         } else {
             FilterOperator::Has
         };
+        // Over every column, the ones shown now: what the find searched.
+        let columns = if spec.column.is_none() {
+            state.get_column_order().to_vec()
+        } else {
+            Vec::new()
+        };
         let statement = FilterStatement {
+            columns,
             column: spec
                 .column
                 .clone()

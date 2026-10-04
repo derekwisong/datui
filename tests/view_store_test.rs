@@ -43,6 +43,7 @@ fn test_view_creation() -> Result<()> {
         sql_query: None,
         fuzzy_query: None,
         filters: vec![FilterStatement {
+            columns: Vec::new(),
             column: "col1".to_string(),
             operator: FilterOperator::Gt,
             value: "10".to_string(),

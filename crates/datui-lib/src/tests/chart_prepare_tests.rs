@@ -572,6 +572,7 @@ fn a_sort_or_filter_keeps_the_chart_columns() {
 
     use crate::filter_modal::{FilterOperator, LogicalOperator};
     app.event(&AppEvent::Filter(vec![FilterStatement {
+        columns: Vec::new(),
         column: "x".to_string(),
         operator: FilterOperator::Lt,
         value: "3".to_string(),

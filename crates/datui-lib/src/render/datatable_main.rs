@@ -43,7 +43,7 @@ pub fn render(
         .opened_format()
         .is_some_and(|f| f.descriptor().declares_types);
     let find_cell = app.find_hit();
-    let match_cells = app.live_cells().cloned();
+    let match_cells = app.live_cells();
     let hex = app.hex_target().is_some();
     let query_reading = app.query_reading().map(str::to_string);
     let frame = app.throbber_frame as usize;

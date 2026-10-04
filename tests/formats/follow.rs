@@ -158,6 +158,7 @@ fn a_filter_counts_and_reads_the_new_rows() {
     pump_open_until_loaded(&mut app, &rx, vec![path.clone()], following());
     screen(&mut app);
     app.event(&AppEvent::Filter(vec![FilterStatement {
+        columns: Vec::new(),
         column: "n".into(),
         operator: FilterOperator::Eq,
         value: "3".into(),

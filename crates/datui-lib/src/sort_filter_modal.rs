@@ -290,6 +290,7 @@ mod tests {
 
     fn statement(column: &str) -> FilterStatement {
         FilterStatement {
+            columns: Vec::new(),
             column: column.to_string(),
             operator: FilterOperator::Eq,
             value: "x".to_string(),

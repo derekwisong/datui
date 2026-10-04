@@ -228,6 +228,7 @@ fn test_full_workflow() {
         .filter
         .statements
         .push(datui::filter_modal::FilterStatement {
+            columns: Vec::new(),
             column,
             operator: datui::filter_modal::FilterOperator::Eq,
             value: "1".to_string(),
@@ -3774,6 +3775,7 @@ fn data_quality_setup_names_every_count_pass_on_one_parquet_file() {
     let sorted = || AppEvent::Sort(vec!["id".into()], vec![true]);
     let filtered = || {
         AppEvent::Filter(vec![FilterStatement {
+            columns: Vec::new(),
             column: "id".into(),
             operator: FilterOperator::Gt,
             value: "10".into(),
@@ -5320,6 +5322,7 @@ fn test_async_collect_handles_invalidated_num_rows() {
 
     // Apply a filter via the public event. This invalidates num_rows.
     let filter = FilterStatement {
+        columns: Vec::new(),
         column: "value".to_string(),
         operator: FilterOperator::Lt,
         value: "200".to_string(),
@@ -10898,6 +10901,7 @@ fn filter_stmt(
     value: &str,
 ) -> datui::filter_modal::FilterStatement {
     datui::filter_modal::FilterStatement {
+        columns: Vec::new(),
         column: column.to_string(),
         operator,
         value: value.to_string(),
@@ -22760,6 +22764,7 @@ fn a_filter_value_its_column_cannot_read_is_refused_with_a_reason() {
         .filter
         .statements
         .push(datui::filter_modal::FilterStatement {
+            columns: Vec::new(),
             column: "day".into(),
             operator: datui::filter_modal::FilterOperator::Gt,
             value: "2024-13-01".into(),
@@ -23582,6 +23587,7 @@ fn python_filter(
     logical_op: datui::filter_modal::LogicalOperator,
 ) -> datui::filter_modal::FilterStatement {
     datui::filter_modal::FilterStatement {
+        columns: Vec::new(),
         column: column.to_string(),
         operator,
         value: value.to_string(),

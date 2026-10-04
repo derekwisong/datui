@@ -41,6 +41,7 @@ fn a_collect_in_flight_serves_the_frame_but_not_a_changed_frame() {
 
     // A filter changes the data underneath; those rows no longer answer.
     app.event(&AppEvent::Filter(vec![FilterStatement {
+        columns: Vec::new(),
         column: "a".to_string(),
         operator: FilterOperator::Lt,
         value: "50".to_string(),
@@ -108,6 +109,7 @@ fn a_short_read_on_a_remote_scan_is_the_count() {
     state.visible_rows = 10;
     state.deferred(|s| {
         s.filter(vec![FilterStatement {
+            columns: Vec::new(),
             column: "a".to_string(),
             operator: FilterOperator::Lt,
             value: "50".to_string(),
@@ -222,6 +224,7 @@ fn filtered_local(rows: i32, keep: i32) -> (App, std::sync::mpsc::Receiver<AppEv
     state.visible_rows = 10;
     state.deferred(|s| {
         s.filter(vec![FilterStatement {
+            columns: Vec::new(),
             column: "a".to_string(),
             operator: FilterOperator::Lt,
             value: keep.to_string(),
@@ -489,6 +492,7 @@ fn a_count_for_a_replaced_frame_never_starts() {
     app.spawn_async_collect("Filtering...");
     assert_eq!(app.count_after_paint, Some(first));
     app.event(&AppEvent::Filter(vec![FilterStatement {
+        columns: Vec::new(),
         column: "a".to_string(),
         operator: FilterOperator::Lt,
         value: "40000".to_string(),
@@ -577,6 +581,7 @@ fn a_filter_applied_from_the_end_shows_its_rows() {
     app.data_table_state = Some(state);
 
     app.event(&AppEvent::Filter(vec![FilterStatement {
+        columns: Vec::new(),
         column: "a".to_string(),
         operator: FilterOperator::Lt,
         value: "100".to_string(),

@@ -933,8 +933,12 @@ mod tests {
 
     #[test]
     fn an_override_reads_its_value_for_the_key() {
-        let o: Override = "display.row_numbers=yes".parse().unwrap();
+        let o: Override = "display.mouse=yes".parse().unwrap();
         assert_eq!(o.value, toml::Value::Boolean(true));
+        let o: Override = "display.row_numbers=auto".parse().unwrap();
+        assert_eq!(o.value, toml::Value::String("auto".into()));
+        let o: Override = "display.row_numbers=false".parse().unwrap();
+        assert_eq!(o.value, toml::Value::Boolean(false));
         let o: Override = "csv.comment=#".parse().unwrap();
         assert_eq!(o.value, toml::Value::String("#".into()));
         let o: Override = "cloud.env_files=a.env, b.env".parse().unwrap();

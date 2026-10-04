@@ -2,13 +2,15 @@ use clap::Parser;
 use color_eyre::Result;
 use datui::cli::Command;
 use datui::{APP_NAME, Args, ConfigManager, RunInput, error_display};
+use datui_cli::exit;
+use std::io::IsTerminal;
 
 /// Run a command that opens no data, and exit with its code.
 fn run_command(command: &Command, args: &Args) -> ! {
     let fail = |e: color_eyre::Report| {
         (
             format!("{}\n", error_display::user_message_from_report(&e, None)),
-            1,
+            exit::FAILURE,
         )
     };
     let (text, code) = match command {
@@ -24,13 +26,19 @@ fn run_command(command: &Command, args: &Args) -> ! {
             let cache = datui::CacheManager::new(APP_NAME).ok();
             datui::commands::cache(cache.as_ref(), action)
         }
-        Command::Completions { shell } => (datui::cli::completions(*shell), 0),
+        Command::Completions { shell } => (datui::cli::completions(*shell), exit::SUCCESS),
+        Command::Man { page, list, dir } => datui::commands::man(
+            page.as_deref(),
+            *list,
+            dir.as_deref(),
+            std::io::stdout().is_terminal(),
+        ),
         Command::Views { action } => match ConfigManager::new(APP_NAME) {
             Ok(manager) => datui::commands::views(&manager, action),
             Err(e) => fail(e),
         },
     };
-    if code == 0 {
+    if code == exit::SUCCESS {
         print!("{text}");
     } else if matches!(command, Command::Formats { .. }) {
         // A failed check is a report of its own.
@@ -42,6 +50,7 @@ fn run_command(command: &Command, args: &Args) -> ! {
 }
 
 fn main() -> Result<()> {
+    // A usage error ends with clap's status, exit::USAGE.
     let args = Args::parse();
 
     if let Some(command) = &args.command {
@@ -59,7 +68,7 @@ fn main() -> Result<()> {
     }
     if let Err(e) = ran {
         eprintln!("Error: {}", e);
-        std::process::exit(1);
+        std::process::exit(exit::FAILURE);
     }
     Ok(())
 }

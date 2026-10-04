@@ -1,4 +1,4 @@
-//! `datui cache` and `datui views`: maintenance that opens no data.
+//! `datui cache`, `datui views` and `datui man`: commands that open no data.
 
 use datui_cli::{CacheAction, ViewsAction};
 
@@ -96,6 +96,66 @@ fn matches(criteria: &MatchCriteria) -> String {
     }
 }
 
+/// What `datui man` prints, and its exit code: the page list (`list`), every page
+/// written under `dir`, or one page. On a terminal (`terminal`) a page is shown with
+/// `man`, as `git help` does; when `man` cannot show it, or for a pipe, the page's
+/// roff is printed, for `man -l -` or a file.
+pub fn man(
+    page: Option<&str>,
+    list: bool,
+    dir: Option<&std::path::Path>,
+    terminal: bool,
+) -> (String, i32) {
+    use datui_cli::man::{PAGES, find};
+    if list {
+        let width = PAGES.iter().map(|p| p.title().len()).max().unwrap_or(0);
+        let text = PAGES
+            .iter()
+            .map(|p| format!("{:width$}  {}\n", p.title(), p.summary()))
+            .collect();
+        return (text, 0);
+    }
+    if let Some(dir) = dir {
+        let written: std::io::Result<()> = PAGES.iter().try_for_each(|p| {
+            let section = dir.join(format!("man{}", p.section));
+            std::fs::create_dir_all(&section)?;
+            std::fs::write(section.join(p.file_name()), p.roff())
+        });
+        return match written {
+            Ok(()) => (
+                format!("Wrote {} pages under {}\n", PAGES.len(), dir.display()),
+                0,
+            ),
+            Err(e) => (format!("{}: {e}\n", dir.display()), 1),
+        };
+    }
+    let name = page.unwrap_or("datui");
+    let Some(page) = find(name) else {
+        return (
+            format!("No manual page {name}; `datui man --list` lists them\n"),
+            1,
+        );
+    };
+    if terminal && let Some(code) = show_with_man(page) {
+        return (String::new(), code);
+    }
+    (page.roff(), 0)
+}
+
+/// Show `page` with `man`, from a temporary file named as the page, so its title and
+/// section are its own. `None` when `man` cannot be run.
+fn show_with_man(page: &datui_cli::man::Page) -> Option<i32> {
+    let dir = tempfile::Builder::new()
+        .prefix("datui-man-")
+        .tempdir()
+        .ok()?;
+    let path = dir.path().join(page.file_name());
+    std::fs::write(&path, page.roff()).ok()?;
+    // A path with a slash is a file to man-db, mandoc and macOS's man alike.
+    let status = std::process::Command::new("man").arg(&path).status().ok()?;
+    Some(status.code().unwrap_or(1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,5 +227,24 @@ mod tests {
     fn cache_clear_says_what_it_did() {
         let (text, code) = cache(None, &CacheAction::Clear { recents: false });
         assert_eq!((text.as_str(), code), ("No cache to clear\n", 0));
+    }
+
+    #[test]
+    fn man_lists_writes_and_prints_pages() {
+        let (list, code) = man(None, true, None, false);
+        assert_eq!(code, 0);
+        assert!(list.contains("datui-config(5)"), "{list}");
+        let dir = tempfile::tempdir().unwrap();
+        let (_, code) = man(None, false, Some(dir.path()), false);
+        assert_eq!(code, 0);
+        assert!(dir.path().join("man1/datui.1").exists());
+        assert!(dir.path().join("man5/datui-config.5").exists());
+        assert!(dir.path().join("man7/datui-keys.7").exists());
+        let (page, code) = man(Some("keys"), false, None, false);
+        assert_eq!(code, 0);
+        assert!(page.contains(".TH DATUI\\-KEYS 7"), "{page}");
+        let (said, code) = man(Some("nope"), false, None, false);
+        assert_eq!(code, 1);
+        assert!(said.contains("datui man --list"), "{said}");
     }
 }

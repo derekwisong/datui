@@ -18611,7 +18611,8 @@ fn conclude(
 static ENDED_BY_SIGNAL: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
 /// The exit status for the binary when a signal ended the session [`run`] returned
-/// from: `128 + n` for SIGTERM or SIGHUP, as if it had not been caught, and on
+/// from: `128 + n` for SIGTERM, SIGHUP or SIGINT, as if it had not been caught (the
+/// statuses of `datui_cli::exit`), and on
 /// Windows the status a console process closed by its window ends with.
 pub fn ended_by_signal() -> Option<i32> {
     let status = ENDED_BY_SIGNAL.load(std::sync::atomic::Ordering::SeqCst);
@@ -18644,13 +18645,18 @@ fn end_session(status: i32, tx: &std::sync::mpsc::Sender<AppEvent>) {
     });
 }
 
-/// End the session on SIGTERM or SIGHUP (the terminal closing).
+/// End the session on SIGTERM, SIGHUP (the terminal closing) or SIGINT (`kill -INT`;
+/// Ctrl+C at the terminal is a key, not this signal).
 #[cfg(unix)]
 fn quit_on_signals(runtime: &tokio::runtime::Handle, tx: &std::sync::mpsc::Sender<AppEvent>) {
     use tokio::signal::unix::{SignalKind, signal};
     // `signal` registers with the runtime it is called in.
     let _runtime = runtime.enter();
-    for kind in [SignalKind::terminate(), SignalKind::hangup()] {
+    for kind in [
+        SignalKind::terminate(),
+        SignalKind::hangup(),
+        SignalKind::interrupt(),
+    ] {
         let Ok(mut arrivals) = signal(kind) else {
             continue;
         };

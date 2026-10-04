@@ -129,6 +129,12 @@ def lint() -> list[str]:
                 resolved = posixpath.normpath(posixpath.join(posixpath.dirname(rel), path))
                 if resolved.startswith("demos/"):
                     continue  # the docs build copies demos/ into each book
+                if resolved.startswith("reference/man/"):
+                    # The docs build renders crates/datui-cli/man/ there.
+                    page = ROOT / "crates/datui-cli/man" / posixpath.basename(resolved).removesuffix(".html")
+                    if not page.exists():
+                        problems.append(f"docs/{rel}:{n}: `{target}`: no manpage {page.name}")
+                    continue
                 if resolved == ".." and path.endswith("/"):
                     continue  # the landing page, one level above every book
                 if resolved.startswith("..") or "plans/" in resolved:

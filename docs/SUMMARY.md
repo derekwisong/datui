@@ -45,6 +45,7 @@
 # Reference
 
 - [Command-line options](reference/command-line-options.md)
+- [Manual pages](reference/manual-pages.md)
 - [Keyboard shortcuts](reference/keyboard-shortcuts.md)
 - [Settings](reference/settings.md)
 - [Environment variables](reference/environment.md)

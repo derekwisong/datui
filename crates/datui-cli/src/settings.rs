@@ -686,6 +686,24 @@ pub fn in_section(section: &str) -> impl Iterator<Item = &'static Setting> + '_ 
     SETTINGS.iter().filter(move |s| s.section() == section)
 }
 
+/// How a value of each type is written, as Markdown: the settings reference and
+/// datui-config(5).
+pub const TYPES: &[(&str, &str)] = &[
+    (
+        "size",
+        "A number and a unit: `512MiB`, `2GiB`, `100KiB` (`MB`, `GB` are powers of 1000). `0` needs none",
+    ),
+    ("duration", "A number and a unit: `250ms`, `1.5s`, `2m`"),
+    (
+        "list",
+        "In a file, a TOML array; with `-c`, `a,b` or the array",
+    ),
+    (
+        "color",
+        "A name (`red`, `bright_blue`, `default`), `#rrggbb` or `indexed(0-255)`",
+    ),
+];
+
 /// `docs/reference/settings.md`: every key by section, from this table. Written by
 /// `gen_docs settings`; a test fails while the committed page differs.
 pub fn render_settings_markdown() -> String {
@@ -703,12 +721,11 @@ pub fn render_settings_markdown() -> String {
          set. See [Configure datui](../user-guide/configuration.md) for where the file\n\
          lives, imports, the theme and troubleshooting.\n\n\
          | Type | Written as |\n\
-         |---|---|\n\
-         | size | A number and a unit: `512MiB`, `2GiB`, `100KiB` (`MB`, `GB` are powers of 1000). `0` needs none |\n\
-         | duration | A number and a unit: `250ms`, `1.5s`, `2m` |\n\
-         | list | In a file, a TOML array; with `-c`, `a,b` or the array |\n\
-         | color | A name (`red`, `bright_blue`, `default`), `#rrggbb` or `indexed(0-255)` |\n",
+         |---|---|\n",
     );
+    for (kind, written) in TYPES {
+        out.push_str(&format!("| {kind} | {written} |\n"));
+    }
     for section in SECTIONS {
         let settings: Vec<&Setting> = in_section(section.name).collect();
         if settings.is_empty() {

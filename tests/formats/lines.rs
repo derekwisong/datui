@@ -237,6 +237,32 @@ fn row_numbers_are_the_source_row_through_sort_and_filter() {
     run(&mut app, AppEvent::Sort(vec!["line".into()], vec![true]));
     assert_eq!(lines(&app), ["warn: disk, 91% full", "stopped", "started"]);
     assert_eq!(numbers(&app, 3), [3, 6, 1]);
+
+    // A CSV opens without them; turned on over a sort, they are the file's rows.
+    let path = write(dir.path(), "hosts.csv", b"host,up\nc,1\na,0\nb,1\n");
+    let (mut app, rx) = open(vec![path], OpenOptions::default());
+    assert!(!app.data_table_state.as_ref().unwrap().row_numbers());
+    let run = |app: &mut App, event: AppEvent| {
+        let mut next = Some(event);
+        while let Some(event) = next {
+            next = app.event(&event);
+        }
+        drain_events(app, &rx);
+    };
+    run(&mut app, AppEvent::Sort(vec!["host".into()], vec![false]));
+    assert_eq!(
+        numbers(&app, 3),
+        [1, 2, 3],
+        "the view's places while # is off"
+    );
+    run(
+        &mut app,
+        AppEvent::Key(KeyEvent::new(KeyCode::Char('#'), KeyModifiers::NONE)),
+    );
+    assert!(app.data_table_state.as_ref().unwrap().row_numbers());
+    assert_eq!(numbers(&app, 3), [2, 3, 1]);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.get_column_order(), ["host", "up"]);
 }
 
 /// A followed log shows every line that arrives, blank ones too, and a line is read

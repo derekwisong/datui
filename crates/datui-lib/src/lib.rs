@@ -12016,8 +12016,12 @@ impl App {
                 self.quick_filter(event.code == KeyCode::Char('+'))
             }
             KeyCode::Char('#') => {
-                if let Some(ref mut state) = self.data_table_state {
-                    state.toggle_row_numbers();
+                let renumbered = self
+                    .data_table_state
+                    .as_mut()
+                    .is_some_and(|state| state.deferred(|s| s.toggle_row_numbers()));
+                if renumbered {
+                    self.spawn_async_collect(Self::LOADING_BUFFER);
                 }
                 None
             }

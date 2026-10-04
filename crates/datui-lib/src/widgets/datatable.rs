@@ -322,6 +322,11 @@ pub struct DataTableState {
     /// The data as loaded carries each row's place in the source in the hidden row
     /// index (lines), which `#` shows while the frame is the scan's.
     source_rows_at_open: bool,
+    /// The sorted or filtered view numbers its rows itself, `#` being on and the data
+    /// as loaded carrying no place of its own: a row index over the base, under the
+    /// filters and sort. Taken only while `#` is on, because a row index between a
+    /// scan and a filter keeps the filter from being pushed into the scan.
+    view_numbered: bool,
     /// Lines still being indexed behind the first rows: the frames grow as they are.
     indexing: Option<Arc<crate::lines::Lines>>,
     /// The notes the lines gave when they opened, replaced once they are all indexed.
@@ -686,6 +691,7 @@ pub struct ViewRollback {
     drilled_down_group_key: Option<Vec<String>>,
     drilled_down_group_key_columns: Option<Vec<String>>,
     drift_column_present: bool,
+    view_numbered: bool,
     drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
     notes: Vec<crate::notes::Note>,
     notes_seen: bool,
@@ -1977,6 +1983,7 @@ impl DataTableState {
             drift_at_open: false,
             groups_at_open: Arc::new(Vec::new()),
             source_rows_at_open,
+            view_numbered: false,
             indexing: None,
             indexing_notes: Vec::new(),
             indexing_guessed: false,
@@ -2144,6 +2151,7 @@ impl DataTableState {
             drift_at_open: false,
             groups_at_open: Arc::new(Vec::new()),
             source_rows_at_open,
+            view_numbered: false,
             indexing: None,
             indexing_notes: Vec::new(),
             indexing_guessed: false,
@@ -2341,6 +2349,7 @@ impl DataTableState {
         // as missing from one, and notes about the files behind it no longer describe
         // what is on screen.
         self.drift_column_present = false;
+        self.view_numbered = false;
         self.drift_groups = Arc::new(Vec::new());
         self.notes = Vec::new();
         self.view_notes = Vec::new();
@@ -3421,8 +3430,27 @@ impl DataTableState {
         self.row_numbers = enabled;
     }
 
-    pub fn toggle_row_numbers(&mut self) {
+    /// `#` on or off. Returns whether the view's frame changed and its rows need
+    /// reading again: a sorted or filtered view of data with no place of its own
+    /// numbers its rows once `#` is on.
+    pub fn toggle_row_numbers(&mut self) -> bool {
         self.row_numbers = !self.row_numbers;
+        if self.row_numbers && self.wants_view_numbers() && !self.view_numbered {
+            self.drop_buffer();
+            self.apply_transformations();
+            return true;
+        }
+        false
+    }
+
+    /// Whether the view would number its rows itself with `#` on: it is sorted or
+    /// filtered over the scan, and the scan's rows do not carry their place.
+    fn wants_view_numbers(&self) -> bool {
+        self.scan_is_the_root()
+            && !self.drift_column_present
+            && !self.source_rows_at_open
+            && self.pushed_view().is_none()
+            && (!self.filters.is_empty() || !self.sort_columns.is_empty() || !self.sort_ascending)
     }
 
     /// Whether the row-number column is shown.
@@ -6709,7 +6737,8 @@ impl DataTableState {
     /// rows that know their file, or lines, while the frame is still the scan's. A
     /// query's rows, a reshape's and a group's stand for no row of the source.
     pub fn carries_source_rows(&self) -> bool {
-        self.drift_column_present || (self.source_rows_at_open && self.scan_is_the_root())
+        self.drift_column_present
+            || (self.scan_is_the_root() && (self.source_rows_at_open || self.view_numbered))
     }
 
     /// What `#` shows for `rows` rows from `start`: each row's place in the source
@@ -7982,6 +8011,7 @@ impl DataTableState {
             drilled_down_group_key: self.drilled_down_group_key.clone(),
             drilled_down_group_key_columns: self.drilled_down_group_key_columns.clone(),
             drift_column_present: self.drift_column_present,
+            view_numbered: self.view_numbered,
             drift_groups: self.drift_groups.clone(),
             notes: self.notes.clone(),
             notes_seen: self.notes_seen,
@@ -8049,6 +8079,7 @@ impl DataTableState {
         self.drilled_down_group_key = saved.drilled_down_group_key;
         self.drilled_down_group_key_columns = saved.drilled_down_group_key_columns;
         self.drift_column_present = saved.drift_column_present;
+        self.view_numbered = saved.view_numbered;
         self.drift_groups = saved.drift_groups;
         self.notes = saved.notes;
         self.notes_seen = saved.notes_seen;
@@ -9338,6 +9369,10 @@ impl DataTableState {
             return;
         }
         let mut lf = self.base_lf.clone();
+        self.view_numbered = self.row_numbers && self.wants_view_numbers();
+        if self.view_numbered {
+            lf = lf.with_row_index(crate::schema_union::DRIFT_COLUMN, None);
+        }
         if let Some(e) = crate::python_script::filters_expr(&self.typed_filters()) {
             lf = lf.filter(e);
         }

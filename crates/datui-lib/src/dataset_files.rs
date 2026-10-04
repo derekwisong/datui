@@ -236,7 +236,7 @@ pub(crate) fn open(
     );
     let opened = listed.dataset(&read, &footers)?;
     // A shape just found needs no storing again: the lookup has dated it.
-    listed.remember(&read, &footers, Some(&opened.dataset.schema), !from_cache);
+    listed.remember(&read, &footers, !from_cache);
     let state = DataTableState::from_schema_and_lazyframe(
         opened.dataset.schema.clone(),
         opened.lf,
@@ -287,7 +287,7 @@ pub(crate) fn open(
             let whole = listed.dataset(&read, &footers)?;
             // This is the pass that reads a large dataset's footers, so this is where
             // a large dataset gets remembered.
-            listed.remember(&read, &footers, Some(&whole.dataset.schema), true);
+            listed.remember(&read, &footers, true);
             Some(FootersFound {
                 dataset: whole.dataset,
                 lf: whole.lf,
@@ -403,24 +403,36 @@ impl Listed {
     /// moment's trouble into a file that is missing from the dataset on every open from
     /// now until something else changes. Read them again next time; the one that was
     /// really corrupt costs a read and says the same thing.
-    ///
-    /// `schema` is the union of these footers, where the caller has built it already.
-    fn remember(
-        &self,
-        read: &[usize],
-        footers: &[Option<FileFooter>],
-        schema: Option<&polars::prelude::Schema>,
-        shape: bool,
-    ) {
+    fn remember(&self, read: &[usize], footers: &[Option<FileFooter>], shape: bool) {
         let Some(cache) = self.remembered.as_ref() else {
             return;
         };
+        // The shape first: it is on the pass's path, and the record behind it would
+        // otherwise hold the cache's lock while it waits on the disk.
+        if let Some(fingerprint) = self.fingerprint.as_ref().filter(|_| shape)
+            && read.len() == self.files.len()
+            && footers.iter().all(Option::is_some)
+        {
+            let (cached, schemas) = crate::schema_union::footers_to_cache(footers);
+            cache.save_dataset_shape(
+                self.source.key(),
+                crate::cache::DatasetShape {
+                    fingerprint: fingerprint.clone(),
+                    files: cached,
+                    schemas,
+                    taken_at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or_default(),
+                },
+            );
+        }
         // What the home screen reads, written behind the open: a sampled read still says
-        // what the columns are, where the shape below wants every footer. A sampled read
-        // does not replace a whole one, though: the shape cache is the smaller of the two
-        // and forgets a dataset long before the index does.
+        // what the columns are, where the shape wants every footer. A sampled read does
+        // not replace a whole one, though: the shape cache is the smaller of the two and
+        // forgets a dataset long before the index does.
         let path = PathBuf::from(self.source.key());
-        if let Some(facts) = self.facts(read, footers, schema) {
+        if let Some(facts) = self.facts(read, footers) {
             let (cache, writing) = (cache.clone(), self.writing.clone());
             self.writes.spawn(move || {
                 let _one = writing.lock().unwrap_or_else(|e| e.into_inner());
@@ -448,25 +460,6 @@ impl Listed {
                 }
             });
         }
-        let Some(fingerprint) = self.fingerprint.as_ref().filter(|_| shape) else {
-            return;
-        };
-        if read.len() != self.files.len() || !footers.iter().all(Option::is_some) {
-            return;
-        }
-        let (cached, schemas) = crate::schema_union::footers_to_cache(footers);
-        cache.save_dataset_shape(
-            self.source.key(),
-            crate::cache::DatasetShape {
-                fingerprint: fingerprint.clone(),
-                files: cached,
-                schemas,
-                taken_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or_default(),
-            },
-        );
     }
 
     /// Every column the footers at `read` give, typed with the partition columns ahead.
@@ -488,24 +481,43 @@ impl Listed {
         Some(dataset)
     }
 
+    /// The dataset's column names as the union orders them, partition columns first,
+    /// without the union's typing: over each distinct schema once, which a dataset of a
+    /// hundred thousand files has a handful of. `None` when no footer read.
+    fn column_names(&self, footers: &[Option<FileFooter>]) -> Option<Vec<String>> {
+        // Each distinct schema once, in the order its files first come.
+        let mut schemas: Vec<&Arc<polars::prelude::Schema>> = Vec::new();
+        for footer in footers.iter().flatten() {
+            if !schemas
+                .iter()
+                .any(|s| Arc::ptr_eq(s, &footer.schema) || **s == footer.schema)
+            {
+                schemas.push(&footer.schema);
+            }
+        }
+        // The newest file's columns lead, as in the union.
+        let newest = &footers.iter().rev().flatten().next()?.schema;
+        let mut names: Vec<String> = self.partition_columns.clone();
+        let mut seen: std::collections::HashSet<String> = names.iter().cloned().collect();
+        for schema in std::iter::once(newest).chain(schemas) {
+            for name in schema.iter_names() {
+                if seen.insert(name.to_string()) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+        Some(names)
+    }
+
     /// What the home screen can say about the dataset from the footers at `read`: its
     /// columns, its rows when every footer was read, its kind and what it holds.
     fn facts(
         &self,
         read: &[usize],
         footers: &[Option<FileFooter>],
-        schema: Option<&polars::prelude::Schema>,
     ) -> Option<crate::cache::DatasetFacts> {
         use crate::discover::{CLASSIFIER_VERSION, EntryKind, Holds};
-        let unioned;
-        let schema = match schema {
-            Some(schema) => schema,
-            None => {
-                unioned = self.schema(read, footers)?.schema;
-                &unioned
-            }
-        };
-        let columns: Vec<String> = schema.iter_names().map(|name| name.to_string()).collect();
+        let columns = self.column_names(footers)?;
         let files = &self.files;
         let every_footer = read.len() == files.len() && footers.iter().all(Option::is_some);
         let rows = every_footer.then(|| footers.iter().flatten().map(FileFooter::rows).sum());
@@ -670,7 +682,7 @@ impl Listed {
                 .ok_or_else(|| "cancelled".to_string())?;
             if let Some(whole) = counted.whole.as_deref() {
                 let every: Vec<usize> = (0..listed.files.len()).collect();
-                listed.remember(&every, whole, None, true);
+                listed.remember(&every, whole, true);
             }
             Ok(counted.row_groups)
         })
@@ -747,7 +759,7 @@ pub(crate) fn facts_of(
         Arc::new(Meter::default()),
         None,
     )?;
-    let facts = listed.facts(read, footers, None)?;
+    let facts = listed.facts(read, footers)?;
     Some((PathBuf::from(listed.source.key()), facts))
 }
 

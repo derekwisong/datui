@@ -1261,6 +1261,10 @@ pub fn footers_from_cache(
     if cached.len() != file_bytes.len() {
         return None;
     }
+    // One schema shared by every file that has it, as a fresh pass shares them.
+    let shared: Vec<Arc<Schema>> = (0..schemas.len())
+        .map(|at| crate::cache::DatasetShape::schema_at(schemas, at).map(Arc::new))
+        .collect::<Option<_>>()?;
     cached
         .iter()
         .zip(file_bytes)
@@ -1268,14 +1272,14 @@ pub fn footers_from_cache(
             let Some(at) = f.schema else {
                 return Some(None);
             };
-            let schema = crate::cache::DatasetShape::schema_at(schemas, at)?;
+            let schema = shared.get(at)?;
             let column_bytes = schema
                 .iter_names()
                 .zip(&f.column_bytes)
                 .map(|(name, bytes)| (name.to_string(), *bytes))
                 .collect();
             Some(Some(FileFooter {
-                schema: Arc::new(schema),
+                schema: schema.clone(),
                 row_group_rows: f.row_group_rows.clone(),
                 row_group_bytes: f.row_group_bytes.clone(),
                 file_bytes: bytes as usize,

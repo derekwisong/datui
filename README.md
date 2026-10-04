@@ -35,11 +35,15 @@ curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/inst
 | Binaries | Linux, macOS and Windows binaries, `.deb`, `.rpm` and Arch tarballs on the [latest release](https://github.com/derekwisong/datui/releases/latest) |
 <!-- end generated: install -->
 
-The packages install the manual (`man datui`) and shell completions. After
-`cargo install`, `datui man --dir ~/.local/share/man` writes the manual and
-`datui completions SHELL` prints a completion script. The
-[installation guide][install-guide] covers user-only installs, RPMs and
-building from source.
+On Linux and macOS the packages install the manual: `man datui`. After
+`cargo install`, this writes it where `man` finds it for your user:
+
+```bash
+datui man --dir ~/.local/share/man
+```
+
+The [installation guide][install-guide] covers user-only installs, RPMs, shell
+completions and building from source.
 
 ## Try it
 

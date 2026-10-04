@@ -85,7 +85,7 @@
     .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
     .tabs button { border: 1px solid var(--line); background: transparent; color: var(--muted); border-radius: 5px; padding: 5px 12px; font-size: 14px; }
     .tabs button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--bg); }
-    .install-after { margin-top: 24px; font-size: 15px; }
+    .install-after { margin: 24px 0 12px; font-size: 15px; }
     .proof { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin: 0 0 18px; }
     .stat { padding: 22px; border-radius: 8px; background: var(--panel); min-width: 0; }
     .stat .figure { font: 700 44px/1.1 var(--mono); letter-spacing: -.04em; color: var(--accent); margin: 0 0 8px; }
@@ -208,7 +208,9 @@ sudo apt install datui</code></pre>
   </section>
 </div>
 {# end generated: install #}
-        <p class="install-after">The packages install the manual (<code>man datui</code>) and shell completions. After <code>cargo install</code>, <code>datui man --dir ~/.local/share/man</code> writes the manual and <code>datui completions bash</code> prints a completion script. <a href="{{ guide('getting-started/installation') }}">Installation guide</a> · <a href="{{ repo }}/releases/latest">Latest release</a></p>
+        <p class="install-after">On Linux and macOS the packages install the manual: <code>man datui</code>. After <code>cargo install</code>, this writes it where <code>man</code> finds it for your user:</p>
+        <pre data-example="bash"><code>datui man --dir ~/.local/share/man</code></pre>
+        <p class="install-after"><a href="{{ guide('getting-started/installation') }}">Installation guide</a>: user-only installs, shell completions, building from source · <a href="{{ repo }}/releases/latest">Latest release</a></p>
       </section>
 
       <section aria-labelledby="proof-title">

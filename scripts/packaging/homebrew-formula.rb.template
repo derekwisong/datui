@@ -20,6 +20,16 @@ class Datui < Formula
 
   def install
     bin.install "datui"
-    man1.install "datui.1"
+    # Archives from 0.4.0 carry man/manN/ and completions/; older ones a lone datui.1.
+    if File.directory?("man")
+      man1.install Dir["man/man1/*.1"]
+      man5.install Dir["man/man5/*.5"]
+      man7.install Dir["man/man7/*.7"]
+      bash_completion.install "completions/datui.bash" => "datui"
+      zsh_completion.install "completions/_datui"
+      fish_completion.install "completions/datui.fish"
+    else
+      man1.install "datui.1"
+    end
   end
 end

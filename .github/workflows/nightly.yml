@@ -75,9 +75,7 @@ jobs:
         run: cargo build --release --locked --workspace -p datui
 
       - name: Verify release artifacts
-        run: |
-          test -f target/release/datui || (echo "Release binary not found" && exit 1)
-          test -f target/release/datui.1 || (echo "Manpage not found" && exit 1)
+        run: test -f target/release/datui || (echo "Release binary not found" && exit 1)
 
       - name: Cache cargo packaging tools
         id: cache-cargo-tools
@@ -113,6 +111,7 @@ jobs:
       - name: Build Python wheel
         run: |
           pip install maturin
+          python3 scripts/packaging/wheel_manpages.py
           cd python && maturin build --release --out dist
 
       - name: Upload packaging artifacts
@@ -126,7 +125,8 @@ jobs:
             target/cargo-aur/PKGBUILD
             python/dist/*.whl
             target/release/datui
-            target/release/datui.1
+            target/dist/man
+            target/dist/completions
 
   # Time to first rows and peak memory on generated files, tonight's build against
   # the last build that passed this check (scripts/bench/startup.py guard). Both run
@@ -437,8 +437,8 @@ jobs:
           mkdir -p "$STAGING"
           cp LICENSE "$STAGING/"
           cp "target/${TARGET}/release/datui" "$STAGING/"
-          cp "target/${TARGET}/release/datui.1" "$STAGING/"
           chmod +x "$STAGING/datui"
+          cargo run --locked -q -p datui-cli --bin gen_docs -- dist "$STAGING"
           tar czvf "datui-${VERSION}-${TARGET}.tar.gz" -C "$STAGING" .
 
       - name: Bundle CLI for wheel
@@ -451,6 +451,7 @@ jobs:
       - name: Build Python wheel
         run: |
           pip install maturin
+          python3 scripts/packaging/wheel_manpages.py
           cd python && maturin build --release --out dist --target ${{ matrix.target }}
 
       - name: Upload macOS artifacts
@@ -461,7 +462,6 @@ jobs:
             datui-${{ steps.version.outputs.version }}-${{ matrix.target }}.tar.gz
             python/dist/*.whl
             target/${{ matrix.target }}/release/datui
-            target/${{ matrix.target }}/release/datui.1
 
   # As on windows: CI's macos job only runs on a release commit, so this is the
   # one place the suite meets macOS during a cycle. Native arm64 only, as CI's

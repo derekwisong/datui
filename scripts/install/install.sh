@@ -42,7 +42,7 @@ if [ "$(id -u)" != 0 ] && ! command -v sudo > /dev/null 2>&1; then
     USER_INSTALL=true
 fi
 USER_BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
-USER_MAN_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/man/man1"
+USER_MAN_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/man"
 
 # Use sudo only when not root (e.g. containers often run as root and may not have sudo).
 run_priv() {
@@ -184,33 +184,46 @@ download_tarball() {
     verify_checksum "$TMP_DIR/$FILENAME" "$FILENAME"
 }
 
-install_tarball() {
-    tar -xzf "$TMP_DIR/$FILENAME" -C "$TMP_DIR"
-
+# Copy the archive's manpages into DIR/manN: man/manN/ in archives from 0.4.0, a
+# lone datui.1 (macOS) or target/release/datui.1.gz (Linux) before. RUN runs the
+# install, through run_priv when the directory needs root.
+install_manpages() {
+    DIR="$1"
+    RUN="$2"
+    if [ -d "$TMP_DIR/man" ]; then
+        for SECTION_DIR in "$TMP_DIR"/man/man*; do
+            [ -d "$SECTION_DIR" ] || continue
+            $RUN install -d "$DIR/$(basename "$SECTION_DIR")"
+            $RUN install -m 644 "$SECTION_DIR"/* "$DIR/$(basename "$SECTION_DIR")/"
+        done
+        return
+    fi
     if [ -f "$TMP_DIR/$MANPAGE_NAME" ]; then
-        # macOS tarball has datui/datui.1 at root
         MANPAGE_PATH="$TMP_DIR/$MANPAGE_NAME"
     else
-        # Linux tarball has target/release/datui.1.gz
         MANPAGE_PATH="$TMP_DIR/target/release/$MANPAGE_GZ_NAME"
     fi
+    if [ -f "$MANPAGE_PATH" ]; then
+        $RUN install -d "$DIR/man1"
+        $RUN install -m 644 "$MANPAGE_PATH" "$DIR/man1/"
+    fi
+}
+
+install_tarball() {
+    tar -xzf "$TMP_DIR/$FILENAME" -C "$TMP_DIR"
 
     if [ "$USER_INSTALL" = true ]; then
         echo "Installing into $USER_BIN_DIR (no root needed)..."
         install -d "$USER_BIN_DIR"
         install -m 755 "$TMP_DIR/$BINARY_NAME" "$USER_BIN_DIR/$BINARY_NAME"
-        if [ -f "$MANPAGE_PATH" ]; then
-            install -d "$USER_MAN_DIR"
-            install -m 644 "$MANPAGE_PATH" "$USER_MAN_DIR/"
-        fi
+        install_manpages "$USER_MAN_DIR" ""
         return
     fi
 
     echo "Installing into /usr/local/bin..."
     run_priv install -d /usr/local/bin
     run_priv install -m 755 "$TMP_DIR/$BINARY_NAME" "/usr/local/bin/$BINARY_NAME"
-    run_priv install -d /usr/local/share/man/man1
-    run_priv install -m 644 "$MANPAGE_PATH" "/usr/local/share/man/man1/"
+    install_manpages /usr/local/share/man run_priv
 }
 
 install_apt() {

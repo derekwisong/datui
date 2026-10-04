@@ -3,8 +3,9 @@
 A format spec is a TOML file that describes a binary format, or a family of
 delimited text files, so datui opens it as a table.
 
-```bash
-cat > l2feed.toml <<'EOF'
+**`l2feed.toml`**
+
+```toml,file=l2feed.toml
 name = "acme.l2feed"
 description = "Level 2 capture"
 match = { glob = ["*.l2"], magic = "L2FD" }
@@ -21,8 +22,46 @@ fields = [
   { name = "side",   type = "u1", enum = { 1 = "BUY", 2 = "SELL" } },
   { name = "price",  type = "u4", scale = 4, null = "max" },
 ]
-EOF
-python3 -c "import struct; open('day.l2', 'wb').write(struct.pack('<4sB', b'L2FD', 2) + struct.pack('<Q8sBI', 1709294400000000000, b'MSFT', 1, 4105000) + struct.pack('<Q8sBI', 1709294400000500000, b'AAPL', 2, 4294967295))"
+```
+
+**`make_day_l2.py`** writes `day.l2`, a file in that format:
+
+```python,file=make_day_l2.py
+import ctypes
+
+
+class Header(ctypes.LittleEndianStructure):
+    _layout_ = "ms"
+    _pack_ = 1  # no padding between fields
+    _fields_ = [
+        ("magic", ctypes.c_char * 4),
+        ("count", ctypes.c_uint8),
+    ]
+
+
+class Record(ctypes.LittleEndianStructure):
+    _layout_ = "ms"
+    _pack_ = 1
+    _fields_ = [
+        ("ts", ctypes.c_uint64),  # nanoseconds since 1970
+        ("symbol", ctypes.c_char * 8),
+        ("side", ctypes.c_uint8),  # 1 BUY, 2 SELL
+        ("price", ctypes.c_uint32),  # in ten-thousandths; the largest value is null
+    ]
+
+
+records = [
+    Record(1709294400000000000, b"MSFT", 1, 4105000),
+    Record(1709294400000500000, b"AAPL", 2, 0xFFFFFFFF),
+]
+with open("day.l2", "wb") as f:
+    f.write(bytes(Header(b"L2FD", len(records))))
+    for record in records:
+        f.write(bytes(record))
+```
+
+```bash
+python3 make_day_l2.py
 datui formats check ./l2feed.toml day.l2
 datui --format ./l2feed.toml day.l2
 mkdir -p formats
@@ -135,8 +174,9 @@ header. A spec of `kind = "delimited"` holds the [CSV options](delimited-text.md
 for such a family of files, so they open with no flags: from the command line,
 from the home screen, compressed, or as a directory.
 
-```bash
-cat > instrument.toml <<'EOF'
+**`instrument.toml`**
+
+```toml,file=instrument.toml
 name = "acme.instrument-log"
 kind = "delimited"
 match = { magic = "#device_info" }
@@ -147,14 +187,19 @@ metadata_line = 1
 
 [columns]
 time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
-EOF
-cat > flight.csv <<'EOF'
+```
+
+**`flight.csv`**
+
+```csv,file=flight.csv
 #device_info, log_version="1.03", model="Unit 7, rev B", serial="123"
 #yyyy-mm-dd, hh:mm:ss, hh:mm, degrees, volts, deg F
   Lcl Date, Lcl Time, UTCOfst,     Latitude, bus1volts, T1 Temp
           ,         ,        ,             ,      25.1,   187.2
 2024-03-01, 10:00:00,  -05:00,    40.100000,      25.0,   180.0
-EOF
+```
+
+```bash
 datui formats check ./instrument.toml flight.csv
 datui --format ./instrument.toml flight.csv
 ```

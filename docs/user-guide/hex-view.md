@@ -21,8 +21,33 @@ at once.
 This makes `feed.bin`, 500 records of 25 bytes that each start with `SYNC`,
 and opens it:
 
+**`make_feed.py`**
+
+```python,file=make_feed.py
+import ctypes
+
+
+class Record(ctypes.LittleEndianStructure):
+    _layout_ = "ms"
+    _pack_ = 1  # no padding: 25 bytes a record
+    _fields_ = [
+        ("sync", ctypes.c_char * 4),
+        ("seq", ctypes.c_uint64),
+        ("price", ctypes.c_uint32),
+        ("change", ctypes.c_int16),
+        ("size", ctypes.c_int16),
+        ("flags", ctypes.c_int32),
+        ("check", ctypes.c_uint8),
+    ]
+
+
+with open("feed.bin", "wb") as f:
+    for i in range(500):
+        f.write(bytes(Record(b"SYNC", i, 3 * i, -i, i, 0, i % 256)))
+```
+
 ```bash
-python3 -c "import struct,sys; sys.stdout.buffer.write(b''.join(b'SYNC'+struct.pack('<QIhhiB', i, 3*i, -i, i, 0, i%256) for i in range(500)))" > feed.bin
+python3 make_feed.py
 datui --hex feed.bin
 ```
 

@@ -106,10 +106,31 @@ attributes go after the language, comma-separated:
 | `rows=N` | The rows a `sql` or `q` block returns |
 | `repo` | Run from a checkout of this repository; its `scripts/` paths must exist, and it is not run |
 | `install` | Installs datui; `test-install.yml` covers it |
+| `file=NAME` | A file the page's next runnable block uses by name; written into its directory before it runs, not run itself |
 
 A runnable block stands alone: it uses the built-in catalog's public data,
-real commands (`seq`, `printf`, `journalctl`), or files it makes itself
-(`printf 'a,b\n1,2\n' > t.csv`). A `bash` or `toml` block never starts a line
+real commands (`seq`, `printf`, `journalctl`), or the file blocks above it.
+Files an example needs are titled file blocks, never heredocs; sample-data
+generators are readable scripts. Each file is its own block, its name in bold
+on the line above, and the command block runs it by name:
+
+````markdown
+**`make_day_l2.py`**
+
+```python,file=make_day_l2.py
+...
+```
+
+```bash
+python3 make_day_l2.py
+datui day.l2
+```
+````
+
+The lint fails a heredoc or a `python -c` in a shell block, and a file block
+the next runnable block does not name. A binary generator lays out its records
+with `ctypes.LittleEndianStructure` (`_pack_ = 1`, `_layout_ = "ms"`), a field
+per field of the format. A `bash` or `toml` block never starts a line
 with a `# comment`; say it in the text, or at the end of a command.
 
 The examples `datui --help`, the manpage and the command-line reference show

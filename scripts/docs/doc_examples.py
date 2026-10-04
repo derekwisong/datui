@@ -8,6 +8,10 @@ Every fenced block in docs/, the READMEs and the next release's notes is one of:
   template  `,template`: a shape to fill in. Its <PLACEHOLDERS> cannot be mistaken
             for real values, and the sentence before it says what to replace.
   output    `text`, `console`, or `,output`: what a command prints, or a screen.
+  file      `,file=NAME`: a file an example needs, shown under its name. The
+            page's next runnable block uses it by name; it is written into that
+            block's directory before the block runs. Shell blocks never make
+            files with heredocs, and never generate data with `python3 -c`.
 
 Attributes after the language, comma-separated:
 
@@ -24,6 +28,7 @@ Attributes after the language, comma-separated:
   repo            (bash) run from a checkout of the repository; its scripts
                   must exist, and it is not run here
   install         installs datui; test-install.yml installs it, not this script
+  file=NAME       a file the page's next runnable block uses: not run itself
 
 Usage:
   doc_examples.py --lint                 labels and templates; needs no binary
@@ -56,11 +61,14 @@ DATASETS = Path(__file__).resolve().parent / "doc_datasets.toml"
 RUNNABLE = {"bash", "sh", "toml", "python", "sql", "q", "powershell"}
 OUTPUT = {"text", "console"}
 # Code that is shown, never run: contributor docs' excerpts.
-EXCERPT = {"rust", "yaml", "json", "html", "xml", "csv", "diff"}
+EXCERPT = {"rust", "yaml", "json", "html", "xml", "csv", "diff", "markdown"}
 ATTRS = {"template", "output", "network", "interactive", "continue", "spec", "repo", "install"}
-VALUED = {"expect", "dataset", "rows"}
+VALUED = {"expect", "dataset", "rows", "file"}
 PLACEHOLDER = re.compile(r"<[A-Z][A-Z0-9_]*>")
 FENCE = re.compile(r"^(\s*)(```+|~~~+)(.*)$")
+# A file written from a shell block, or data made by a one-liner: a file block instead.
+HEREDOC = re.compile(r"<<-?\s*['\"]?[A-Za-z_]\w*")
+ONE_LINER = re.compile(r"\bpython3?\s+-c\b")
 
 
 @dataclass
@@ -72,12 +80,15 @@ class Block:
     values: dict[str, str] = field(default_factory=dict)
     body: str = ""
     before: str = ""  # the paragraph before the block
+    files: list[Block] = field(default_factory=list)  # file blocks written before it runs
 
     def where(self) -> str:
         return f"{self.path.relative_to(ROOT)}:{self.line}"
 
     @property
     def kind(self) -> str:
+        if "file" in self.values:
+            return "file"
         if "template" in self.attrs:
             return "template"
         if "output" in self.attrs or self.lang in OUTPUT:
@@ -153,7 +164,26 @@ def blocks_in(path: Path, problems: list[str]) -> list[Block]:
         out.append(block)
         last = ""
         i += 1
+    attach_files(out, problems)
     return out
+
+
+def attach_files(blocks: list[Block], problems: list[str]) -> None:
+    """Give each file block to the next runnable block, which must use it by name."""
+    pending: list[Block] = []
+    for b in blocks:
+        if b.kind == "file":
+            name = b.values["file"]
+            if not name or "/" in name or name.startswith("."):
+                problems.append(f"{b.where()}: `file={name}` is not a plain file name")
+            pending.append(b)
+        elif b.kind == "runnable" and pending:
+            for f in pending:
+                if f.values["file"] not in b.body:
+                    problems.append(f"{f.where()}: {f.values['file']} is not used by the next runnable block ({b.where()})")
+            b.files, pending = pending, []
+    for f in pending:
+        problems.append(f"{f.where()}: {f.values['file']} has no runnable block after it to use it")
 
 
 def all_blocks(problems: list[str]) -> list[Block]:
@@ -218,6 +248,11 @@ def lint(blocks: list[Block], problems: list[str]) -> None:
             problems.append(
                 f"{b.where()}: {PLACEHOLDER.search(b.body).group(0)} is a placeholder; mark the block `template`"
             )
+        if b.lang in ("bash", "sh", "powershell") and b.kind in ("runnable", "template"):
+            if m := HEREDOC.search(b.body):
+                problems.append(f"{b.where()}: `{m.group(0)}` is a heredoc; show the file as a `,file=NAME` block")
+            if ONE_LINER.search(b.body):
+                problems.append(f"{b.where()}: a `python -c` one-liner; show the script as a `,file=NAME` block")
         if b.lang in ("bash", "sh") and b.kind in ("runnable", "template"):
             for words in datui_invocations(b.body):
                 for w in words[1:]:
@@ -238,7 +273,7 @@ def lint(blocks: list[Block], problems: list[str]) -> None:
             elif ("url" in entry or "open" in entry) != ("network" in b.attrs):
                 want = "needs `network`: its dataset is public data" if "path" not in entry else "is local data: drop `network`"
                 problems.append(f"{b.where()}: {want}")
-        if b.lang == "toml" and b.kind == "runnable" and "spec" not in b.attrs:
+        if b.lang == "toml" and b.kind in ("runnable", "file") and "spec" not in b.attrs:
             try:
                 tomllib.loads(b.body)
             except tomllib.TOMLDecodeError as e:
@@ -277,6 +312,8 @@ def environment(work: Path, real: str | None) -> dict[str, str]:
 def run_block(b: Block, work: Path, real: str | None, timeout: float) -> str | None:
     """Run one block in `work`; the failure, or None."""
     env = environment(work, real)
+    for f in b.files:
+        (work / f.values["file"]).write_text(f.body, encoding="utf-8")
     if "expect" in b.values:
         env["DATUI_DOC_EXPECT"] = b.values["expect"]
     if b.lang in ("bash", "sh"):

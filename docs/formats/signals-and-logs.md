@@ -24,15 +24,28 @@ the tables' names, and `--table` picks one.
 
 ## Audio
 
-```bash
-python3 - <<'EOF'
-import math, struct, wave
+**`make_take_wav.py`** writes one second of a tone on the left channel:
+
+```python,file=make_take_wav.py
+import ctypes
+import math
+import wave
+
+
+class Frame(ctypes.LittleEndianStructure):
+    _fields_ = [("left", ctypes.c_int16), ("right", ctypes.c_int16)]
+
+
+frames = b"".join(bytes(Frame(int(8000 * math.sin(i / 20)), 0)) for i in range(48000))
 with wave.open("take.wav", "wb") as w:
     w.setnchannels(2)
-    w.setsampwidth(2)
+    w.setsampwidth(2)  # bytes a sample
     w.setframerate(48000)
-    w.writeframes(b"".join(struct.pack("<hh", int(8000 * math.sin(i / 20)), 0) for i in range(48000)))
-EOF
+    w.writeframes(frames)
+```
+
+```bash
+python3 make_take_wav.py
 datui take.wav
 datui -c read.audio_float=true take.wav
 ```
@@ -118,8 +131,9 @@ Notes that never end are counted on the Notes tab.
 
 ## VCD
 
-```bash
-cat > counter.vcd <<'EOF'
+**`counter.vcd`**
+
+```text,file=counter.vcd
 $timescale 1 ns $end
 $scope module tb $end
 $var wire 1 ! clk $end
@@ -137,7 +151,9 @@ b0001 "
 #15
 1!
 b0010 "
-EOF
+```
+
+```bash
 datui counter.vcd
 ```
 
@@ -194,26 +210,39 @@ changes.
 
 ## GPS logs
 
-```bash
-python3 - <<'EOF'
-from functools import reduce
-def line(body):
-    return "$%s*%02X\n" % (body, reduce(lambda a, c: a ^ ord(c), body, 0))
+**`make_drive_nmea.py`** writes three seconds of fixes, each an RMC and a GGA
+sentence:
+
+```python,file=make_drive_nmea.py
+def sentence(body):
+    """$BODY*CS, where CS is the XOR of the body's bytes, in hex."""
+    checksum = 0
+    for c in body:
+        checksum ^= ord(c)
+    return f"${body}*{checksum:02X}\n"
+
+
 with open("drive.nmea", "w") as f:
-    for s in range(3):
-        t = "1200%02d" % s
-        f.write(line(f"GPRMC,{t}.00,A,4042.6142,N,07400.4168,W,10.5,90.0,010324,,,A"))
-        f.write(line(f"GPGGA,{t}.00,4042.6142,N,07400.4168,W,1,08,0.9,10.0,M,-34.0,M,,"))
-EOF
-datui drive.nmea
-datui --table GGA drive.nmea
-cat > ride.gpx <<'EOF'
+    for second in range(3):
+        t = f"1200{second:02d}.00"
+        f.write(sentence(f"GPRMC,{t},A,4042.6142,N,07400.4168,W,10.5,90.0,010324,,,A"))
+        f.write(sentence(f"GPGGA,{t},4042.6142,N,07400.4168,W,1,08,0.9,10.0,M,-34.0,M,,"))
+```
+
+**`ride.gpx`**
+
+```xml,file=ride.gpx
 <?xml version="1.0"?>
 <gpx version="1.1" creator="docs"><trk><name>ride</name><trkseg>
 <trkpt lat="40.71" lon="-74.00"><ele>10</ele><time>2024-03-01T12:00:00Z</time></trkpt>
 <trkpt lat="40.72" lon="-74.01"><ele>12</ele><time>2024-03-01T12:00:05Z</time></trkpt>
 </trkseg></trk></gpx>
-EOF
+```
+
+```bash
+python3 make_drive_nmea.py
+datui drive.nmea
+datui --table GGA drive.nmea
 datui ride.gpx
 ```
 
@@ -332,18 +361,24 @@ reading the log again.
 
 ## CAN logs
 
-```bash
-cat > candump.log <<'EOF'
+**`candump.log`**
+
+```text,file=candump.log
 (1706689000.100000) can0 123#A00F000000000000
 (1706689000.200000) can0 123#B80B000000000000
 (1706689000.300000) can0 456#01
-EOF
-cat > vehicle.dbc <<'EOF'
+```
+
+**`vehicle.dbc`**
+
+```text,file=vehicle.dbc
 VERSION ""
 
 BO_ 291 Engine: 8 ECU
  SG_ rpm : 0|16@1+ (0.25,0) [0|16383.75] "rpm" Vector__XXX
-EOF
+```
+
+```bash
 datui candump.log
 datui candump.log --dict vehicle.dbc --table Engine
 ```
@@ -400,11 +435,14 @@ message's id, frames, signals and comment.
 
 ## FIX logs
 
-```bash
-cat > session.log <<'EOF'
+**`session.log`**
+
+```text,file=session.log
 2024-03-01 12:00:00.001 OUT 8=FIX.4.4|9=65|35=D|49=BUYSIDE|56=BROKER|11=ord1|55=MSFT|54=1|38=100|40=2|44=410.5|10=000|
 2024-03-01 12:00:00.020 IN 8=FIX.4.4|9=70|35=8|49=BROKER|56=BUYSIDE|11=ord1|55=MSFT|54=1|150=0|39=0|14=0|10=000|
-EOF
+```
+
+```bash
 datui session.log
 ```
 
@@ -455,13 +493,16 @@ version's names winning. Venues and brokers add their own tags (5000-9999 and
 Continuing from the FIX example above, a TOML dictionary for the broker's
 messages, checked against the log:
 
-```bash,continue
-cat > broker.toml <<'EOF'
+**`broker.toml`**
+
+```toml,file=broker.toml
 name = "acme.fix.broker-x"
 kind = "fix"
 match = { sender = "BROKER", begin_string = "FIX.4.4" }
 tags = { 9001 = "AlgoName", 9002 = { name = "Urgency", type = "int", enum = { 1 = "Low", 2 = "High" } } }
-EOF
+```
+
+```bash,continue
 datui formats check ./broker.toml session.log
 datui --dict broker.toml session.log
 ```

@@ -5,16 +5,22 @@ time, and a file of several tables lists them like a directory.
 
 ## SQLite
 
-```bash
-python3 - <<'EOF'
+**`make_shop_db.py`**
+
+```python,file=make_shop_db.py
 import sqlite3
+
 db = sqlite3.connect("shop.db")
 db.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer TEXT, amount REAL)")
 db.execute("CREATE TABLE customers (name TEXT, city TEXT)")
 db.executemany("INSERT INTO orders (customer, amount) VALUES (?, ?)", [("ana", 9.5), ("bo", 3.25)])
 db.executemany("INSERT INTO customers VALUES (?, ?)", [("ana", "Lima"), ("bo", "Oslo")])
 db.commit()
-EOF
+db.close()
+```
+
+```bash
+python3 make_shop_db.py
 datui shop.db --table orders
 datui shop.db/orders
 cat shop.db | datui --table orders
@@ -92,18 +98,48 @@ The database is only read:
 
 ## NumPy
 
-```bash
-python3 - <<'EOF'
-import struct, zipfile
-def npy(descr, shape, data):
+**`make_arrays.py`** writes `prices.npy` and `run.npz`:
+
+```python,file=make_arrays.py
+import ctypes
+import zipfile
+
+
+class Preamble(ctypes.LittleEndianStructure):
+    _layout_ = "ms"
+    _pack_ = 1  # no padding between fields
+    _fields_ = [
+        ("magic", ctypes.c_char * 6),
+        ("major", ctypes.c_uint8),
+        ("minor", ctypes.c_uint8),
+        ("header_len", ctypes.c_uint16),
+    ]
+
+
+def npy(descr, shape, values):
+    """An .npy file: the preamble, a header padded to 64 bytes, then the values."""
     header = repr({"descr": descr, "fortran_order": False, "shape": shape}).encode()
     header += b" " * (63 - (10 + len(header)) % 64) + b"\n"
-    return b"\x93NUMPY\x01\x00" + struct.pack("<H", len(header)) + header + data
-open("prices.npy", "wb").write(npy("<f8", (3,), struct.pack("<3d", 1.5, 2.5, 4.0)))
+    return bytes(Preamble(b"\x93NUMPY", 1, 0, len(header))) + header + bytes(values)
+
+
+def f8(*values):  # little-endian float64, as "<f8" says
+    return (ctypes.c_double.__ctype_le__ * len(values))(*values)
+
+
+def f4(*values):  # little-endian float32, "<f4"
+    return (ctypes.c_float.__ctype_le__ * len(values))(*values)
+
+
+with open("prices.npy", "wb") as f:
+    f.write(npy("<f8", (3,), f8(1.5, 2.5, 4.0)))
 with zipfile.ZipFile("run.npz", "w") as z:
-    z.writestr("weights.npy", npy("<f4", (2, 2), struct.pack("<4f", 1, 2, 3, 4)))
-    z.writestr("bias.npy", npy("<f4", (2,), struct.pack("<2f", 0.5, -0.5)))
-EOF
+    z.writestr("weights.npy", npy("<f4", (2, 2), f4(1, 2, 3, 4)))
+    z.writestr("bias.npy", npy("<f4", (2,), f4(0.5, -0.5)))
+```
+
+```bash
+python3 make_arrays.py
 datui prices.npy
 datui run.npz --table weights
 datui run.npz/weights

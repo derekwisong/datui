@@ -3,8 +3,24 @@
 A SafeTensors or GGUF file opens as a table of its tensors, one row each, read
 from its header without reading the weights.
 
+**`make_tiny_safetensors.py`**
+
+```python,file=make_tiny_safetensors.py
+import ctypes
+import json
+
+# One tensor, `w`: 2 x 2 float32, at bytes 0 to 16 of the data.
+header = json.dumps({"w": {"dtype": "F32", "shape": [2, 2], "data_offsets": [0, 16]}}).encode()
+weights = (ctypes.c_float.__ctype_le__ * 4)(1, 2, 3, 4)
+
+with open("tiny.safetensors", "wb") as f:
+    f.write(len(header).to_bytes(8, "little"))  # the header's length, u64
+    f.write(header)
+    f.write(bytes(weights))
+```
+
 ```bash
-python3 -c "import json, struct; h = json.dumps({'w': {'dtype': 'F32', 'shape': [2, 2], 'data_offsets': [0, 16]}}).encode(); open('tiny.safetensors', 'wb').write(struct.pack('<Q', len(h)) + h + bytes(16))"
+python3 make_tiny_safetensors.py
 datui tiny.safetensors
 ```
 

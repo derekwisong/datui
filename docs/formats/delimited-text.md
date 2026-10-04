@@ -52,14 +52,17 @@ CSV files in a bucket takes every option but `--infer-types` and
 
 Loggers often write comments and a units line above a padded header:
 
-```bash
-cat > log.csv <<'EOF'
+**`log.csv`**
+
+```csv,file=log.csv
 #device_info, log_version="1.03", model="X", serial="123"
 #yyyy-mm-dd, hh:mm:ss, hh:mm, degrees, volts, deg F
   Lcl Date, Lcl Time, UTCOfst,     Latitude, bus1volts, E1 CHT1
           ,         ,        ,             ,      25.1,   187.2
 2024-03-01, 10:00:00,  -05:00,    40.100000,      25.0,   180.0
-EOF
+```
+
+```bash
 datui --comment '#' log.csv
 datui --comment '#' --header-rows 3,2 log.csv
 datui --header-rows 3 log.csv

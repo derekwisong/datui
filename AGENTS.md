@@ -232,6 +232,8 @@ work. The short version:
 5. Every code block you add is runnable, and runs under
    `scripts/docs/doc_examples.py`, or is labeled `,template` with
    `<PLACEHOLDER>`s. See `docs/for-developers/documentation.md`.
+   Files an example needs are titled file blocks, never heredocs; sample-data
+   generators are readable scripts.
 6. If it is worth telling users, add a line to `release-notes/v<next>.md`,
    most important first, one plain sentence each.
 

@@ -515,7 +515,7 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             own.push(("Enter", "Details"));
         }
         // Enter opens the rows behind the count under the cursor, when it has any.
-        QualityPage::IntervalDetail if modal.interval_evidence().is_some() => {
+        QualityPage::IntervalDetail if modal.interval_evidence(None).is_some() => {
             own.push((
                 "Enter",
                 if app.quality_rows_kept().is_some() {

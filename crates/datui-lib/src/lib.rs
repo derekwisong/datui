@@ -1230,7 +1230,10 @@ impl App {
     /// The rows an interval's count under the cursor counted: from the rows the run
     /// kept, or staged as a read when it kept none. Nothing opens for a count of none.
     fn open_interval_evidence(&mut self) -> Option<AppEvent> {
-        let (predicate, label, count) = self.analysis_modal.interval_evidence()?;
+        let schema = self.data_table_state.as_ref().map(|state| state.schema());
+        let (predicate, label, count) = self
+            .analysis_modal
+            .interval_evidence(schema.map(|schema| schema.as_ref()))?;
         let sampled = self
             .analysis_modal
             .data_quality_results

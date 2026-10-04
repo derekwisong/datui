@@ -2021,13 +2021,20 @@ impl TemporalLatencyProfile {
     /// than a stretch of rows or a file.
     pub fn segment_opens(&self, plan: &DataQualityPlan) -> bool {
         let grain = plan.interval_grain(&self.start_column, &self.end_column);
-        segment_predicate(plan, &grain, &self.segment).is_some()
+        segment_predicate(plan, &grain, &self.segment, None).is_some()
     }
 
     /// The rows behind `fact` in this interval's segment, as a predicate over the
     /// scope `plan` measured: `None` when a segment cannot be told by its values
     /// (row chunks, files) or the fact is not measured.
-    pub fn evidence_predicate(&self, fact: IntervalFact, plan: &DataQualityPlan) -> Option<Expr> {
+    /// `schema` is the data's, where known: with it a partition segment compares in
+    /// its column's type.
+    pub fn evidence_predicate(
+        &self,
+        fact: IntervalFact,
+        plan: &DataQualityPlan,
+        schema: Option<&Schema>,
+    ) -> Option<Expr> {
         self.count(fact, plan)?;
         let micros = || interval_micros(plan, &self.start_column, &self.end_column);
         let rows = match fact {
@@ -2042,10 +2049,12 @@ impl TemporalLatencyProfile {
             }
         };
         let grain = plan.interval_grain(&self.start_column, &self.end_column);
-        Some(match segment_predicate(plan, &grain, &self.segment)? {
-            Some(segment) => segment.and(rows),
-            None => rows,
-        })
+        Some(
+            match segment_predicate(plan, &grain, &self.segment, schema)? {
+                Some(segment) => segment.and(rows),
+                None => rows,
+            },
+        )
     }
 }
 
@@ -2128,10 +2137,39 @@ fn label_text(column: &str) -> Expr {
     )
 }
 
+/// The rows of a partition segment whose label writes `value`. Where the column's
+/// type writes each value one way (text, flags, whole numbers, dates, decimals) and
+/// `value` reads back as that very label, a plain comparison, which file statistics
+/// can answer; otherwise, such as a float the label rounds, the label of each row.
+fn partition_label_predicate(column: &str, value: &str, schema: Option<&Schema>) -> Expr {
+    let writes_each_once = |dtype: &&DataType| {
+        dtype.is_integer()
+            || matches!(
+                dtype,
+                DataType::String
+                    | DataType::Boolean
+                    | DataType::Date
+                    | DataType::Decimal(..)
+                    | DataType::Categorical(..)
+                    | DataType::Enum(..)
+            )
+    };
+    let native = schema
+        .and_then(|schema| schema.get(column))
+        .filter(writes_each_once)
+        .and_then(|dtype| crate::typed_value::parse(value, dtype).ok())
+        .filter(|scalar| crate::exact::str_value(scalar.value()) == value);
+    match native {
+        Some(scalar) => col(column).eq(lit(scalar)),
+        None => label_text(column).eq(lit(value.to_string())),
+    }
+}
+
 fn segment_predicate(
     plan: &DataQualityPlan,
     grain: &QualityGrain,
     label: &str,
+    schema: Option<&Schema>,
 ) -> Option<Option<Expr>> {
     match grain {
         QualityGrain::Dataset => Some(None),
@@ -2140,7 +2178,7 @@ fn segment_predicate(
             Some(Some(if value == "∅" {
                 col(column.as_str()).is_null()
             } else {
-                label_text(column).eq(lit(value.to_string()))
+                partition_label_predicate(column, value, schema)
             }))
         }
         QualityGrain::TimeWindows { column, every } => {
@@ -5880,17 +5918,55 @@ mod tests {
             } else {
                 assert_eq!(labels.len(), 2, "{grain:?}: {labels:?}");
             }
+            let schema = lf.clone().collect_schema().unwrap();
             for segment in &results.segments {
-                let predicate = segment_predicate(&plan, &grain, &segment.label)
-                    .unwrap()
-                    .unwrap();
-                let rows = lf.clone().filter(predicate).collect().unwrap().height();
-                assert_eq!(
-                    Some(rows),
-                    segment.total_rows,
-                    "{grain:?} {}",
-                    segment.label
-                );
+                // By the column's type, and by each row's label: the same rows.
+                for schema in [Some(schema.as_ref()), None] {
+                    let predicate = segment_predicate(&plan, &grain, &segment.label, schema)
+                        .unwrap()
+                        .unwrap();
+                    let rows = lf.clone().filter(predicate).collect().unwrap().height();
+                    assert_eq!(
+                        Some(rows),
+                        segment.total_rows,
+                        "{grain:?} {}",
+                        segment.label
+                    );
+                }
+            }
+        }
+    }
+
+    /// A partition segment's rows are the same found by the column's type as by each
+    /// row's label, for text, whole numbers, decimals and the floats a label rounds.
+    #[test]
+    fn partition_segments_find_the_same_rows_by_type_as_by_label() {
+        let lf = df!(
+            "region" => &[Some("west"), Some("east"), None, Some("west")],
+            "year" => &[2020i16, 2021, 2020, 2020],
+            "price" => &["1.50", "2.00", "1.50", "3.25"],
+            "share" => &[1.0 / 3.0, 0.333_333_3, 0.5, 1.0 / 3.0],
+        )
+        .unwrap()
+        .lazy()
+        .with_column(col("price").cast(DataType::Decimal(10, 2)));
+        let schema = lf.clone().collect_schema().unwrap();
+        for column in ["region", "year", "price", "share"] {
+            let grain = QualityGrain::Partition(column.into());
+            let plan = DataQualityPlan {
+                compute: QualityCompute::Full,
+                grain: grain.clone(),
+                ..DataQualityPlan::default()
+            };
+            let results = compute_data_quality(&lf, Some(4), &plan, None, false).unwrap();
+            for segment in &results.segments {
+                for schema in [Some(schema.as_ref()), None] {
+                    let predicate = segment_predicate(&plan, &grain, &segment.label, schema)
+                        .unwrap()
+                        .unwrap();
+                    let rows = lf.clone().filter(predicate).collect().unwrap().height();
+                    assert_eq!(Some(rows), segment.total_rows, "{}", segment.label);
+                }
             }
         }
     }
@@ -9397,11 +9473,11 @@ mod temporal_tests {
                 for latency in &results.temporal {
                     for fact in IntervalFact::ALL {
                         let Some((count, _)) = latency.count(fact, &plan) else {
-                            assert!(latency.evidence_predicate(fact, &plan).is_none());
+                            assert!(latency.evidence_predicate(fact, &plan, None).is_none());
                             continue;
                         };
                         let predicate = latency
-                            .evidence_predicate(fact, &plan)
+                            .evidence_predicate(fact, &plan, None)
                             .unwrap_or_else(|| panic!("{grain:?} {fact:?} opens nothing"));
                         let rows = frame.clone().filter(predicate).collect().unwrap().height();
                         assert_eq!(rows, count, "{grain:?} {} {fact:?}", latency.segment);
@@ -9421,7 +9497,7 @@ mod temporal_tests {
         let results = compute_data_quality(&frame, Some(8), &plan, None, false).unwrap();
         assert!(results.temporal.iter().all(|latency| {
             latency
-                .evidence_predicate(IntervalFact::Negative, &plan)
+                .evidence_predicate(IntervalFact::Negative, &plan, None)
                 .is_none()
         }));
     }
@@ -9501,7 +9577,7 @@ mod temporal_tests {
                             let Some((count, _)) = latency.count(fact, &plan) else {
                                 continue;
                             };
-                            let predicate = latency.evidence_predicate(fact, &plan).unwrap();
+                            let predicate = latency.evidence_predicate(fact, &plan, None).unwrap();
                             let rows = frame.clone().filter(predicate).collect().unwrap();
                             assert_eq!(
                                 rows.height(),

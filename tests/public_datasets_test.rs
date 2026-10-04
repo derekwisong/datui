@@ -1,4 +1,4 @@
-//! A named web file in a collection uses the normal download and open path.
+//! A named web file in a catalog uses the normal download and open path.
 
 #![cfg(all(feature = "cloud", feature = "http"))]
 
@@ -30,6 +30,24 @@ fn drive(app: &mut App, event: AppEvent) {
     }
 }
 
+/// The test defaults, and the catalog `id` holding the web file `name` at `url`.
+fn config_with(id: &str, name: &str, url: &str) -> datui::config::AppConfig {
+    let mut config =
+        common::layered_config(&["[home]\ndesktop_recents = false\n[cloud]\ndiscover = false\n"]);
+    config.read_catalogs = vec![
+        datui::catalog::parse(
+            &format!("[web]\nname = {name:?}\nurl = {url:?}\n"),
+            id,
+            datui::catalog::Origin::Listed,
+            None,
+        )
+        .unwrap(),
+    ];
+    config.sync_dataset_access();
+    config.validate().unwrap();
+    config
+}
+
 #[track_caller]
 fn pump(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>, done: impl Fn(&App) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -52,7 +70,7 @@ fn pump(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>, done: impl Fn(&
 }
 
 #[test]
-fn a_web_file_in_a_collection_is_fetched_only_when_opened() {
+fn a_web_file_in_a_catalog_is_fetched_only_when_opened() {
     common::isolate_cache();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/foods.csv", listener.local_addr().unwrap());
@@ -76,13 +94,7 @@ fn a_web_file_in_a_collection_is_fetched_only_when_opened() {
             );
         }
     });
-    let config = common::layered_config(&[
-        "[home]\ndesktop_recents = false\n[cloud]\ndiscover = false\n",
-        &format!(
-            "[[sources]]\nname = \"public\"\n[[sources.datasets]]\nname = \"Foods\"\nurl = {url:?}\n"
-        ),
-    ]);
-    config.validate().unwrap();
+    let config = config_with("public", "Foods", &url);
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new_with_config(
         tx,
@@ -136,7 +148,7 @@ fn a_web_file_in_a_collection_is_fetched_only_when_opened() {
     );
 }
 
-/// A web file opened from a collection comes back under Recent by the collection's
+/// A web file opened from a catalog comes back under Recent by the catalog's
 /// name for it, with the shape its open measured: nothing lists a web file, so the
 /// open is what has to remember it (#547 D12).
 #[test]
@@ -161,13 +173,7 @@ fn a_downloaded_dataset_comes_back_named_and_measured() {
             );
         }
     });
-    let config = common::layered_config(&[
-        "[home]\ndesktop_recents = false\n[cloud]\ndiscover = false\n",
-        &format!(
-            "[[sources]]\nname = \"birds\"\n[[sources.datasets]]\nname = \"Palmer penguins\"\nurl = {url:?}\n"
-        ),
-    ]);
-    config.validate().unwrap();
+    let config = config_with("birds", "Palmer penguins", &url);
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new_with_config(
         tx,
@@ -204,7 +210,7 @@ fn a_downloaded_dataset_comes_back_named_and_measured() {
     });
 
     drive(&mut app, key(KeyCode::Char('q')));
-    // Under Recent, not only the collection's own row, which shares its URL.
+    // Under Recent, not only the catalog's own row, which shares its URL.
     let recent = |app: &App| {
         app.home
             .sections

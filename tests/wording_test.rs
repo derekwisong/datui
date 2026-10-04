@@ -44,6 +44,14 @@ const RETIRED: &[(&str, &str)] = &[
     ("fuzzy search", "Text query"),
     ("locate", "find"),
     ("go to line", "go to row"),
+    // One concept for named datasets (0.4.0).
+    ("collection", "catalog"),
+    ("collections", "catalogs"),
+    ("codebook", "documentation"),
+    ("suggested place", "bookmark"),
+    ("suggested places", "bookmarks"),
+    ("remembered directory", "catalog entry"),
+    ("remembered directories", "catalog entries"),
     // How a file is read: name what happens, not how often.
     ("converted once", "converted to Arrow, or decompressed copy"),
     ("downloaded, then", "download →"),
@@ -66,6 +74,16 @@ const RETIRED: &[(&str, &str)] = &[
 const ALLOWED: &[(&str, &str)] = &[
     // The glossary names what each word replaces.
     ("docs/reference/glossary.md", "| "),
+    // NOAA's own words, quoted in the public catalog.
+    ("docs/reference/catalogs.md", "International collection"),
+    // An anchor kept so old links land.
+    ("docs/user-guide/home-screen.md", "<a id=\"collections\">"),
+    // The retired keys, named so a file that still has them is told what to write.
+    ("crates/datui-lib/src/catalog.rs", "codebook"),
+    (
+        "crates/datui-lib/src/config.rs",
+        "a collection is a catalog file now",
+    ),
     // Omarchy's own word for the theme file its tooling fills in.
     (
         "docs/user-guide/configuration.md",

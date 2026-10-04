@@ -3310,6 +3310,8 @@ mod tests {
             (Context::Info, "PgUp / PgDn"),
             (Context::Info, "Home / End"),
             (Context::Info, "Enter"),
+            // The Documentation tab: a dataset no catalog lists has none.
+            (Context::Info, "y"),
             // A sample, a followed file.
             (Context::ValueCounts, "a"),
             (Context::ValueCounts, "t"),

@@ -349,7 +349,7 @@ fn the_home_screen_counts_and_lists_tables() {
         browsing: Some(db.clone()),
         ..HomeState::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     assert_eq!(listed(&home), ["big_orders", "customers", "orders"]);
     let orders = home
         .sections

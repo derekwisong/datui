@@ -5,11 +5,11 @@
 //!
 //! Code lives in your working directory; the interesting datasets usually do not.
 //! They are on a mount, a NAS, a scratch volume. So the home screen is built around
-//! *roots* — places to look — gathered from two sources, neither of which requires
-//! maintaining a catalogue:
+//! *roots* — places to look — and *catalogs*, named datasets and directories:
 //!
-//! 1. **Configured** — `[home] directories`, a `PATH`-shaped list of places.
-//! 2. **The working directory** — free, and right for local exports and fixtures.
+//! 1. **The working directory** — free, and right for local exports and fixtures.
+//! 2. **Catalogs** — `catalog.toml` (Ctrl+D adds to it), the files `catalogs` lists, and
+//!    the bundled `public` catalog. A directory in one is a row to step into.
 //!
 //! What bridges "code here, data there" with no configuration at all is `RECENT`:
 //! every dataset you have opened, grouped under the directory or prefix it lives in.
@@ -24,9 +24,6 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RootOrigin {
     Cwd,
-    Configured,
-    /// Kept with Ctrl+D on the home screen: `[home] directories` without editing it.
-    Remembered,
     /// Derived from the desktop's own recently-used list.
     Desktop,
 }
@@ -35,8 +32,6 @@ impl RootOrigin {
     pub fn note(self) -> &'static str {
         match self {
             RootOrigin::Cwd => "current directory",
-            RootOrigin::Configured => "configured",
-            RootOrigin::Remembered => "remembered",
             RootOrigin::Desktop => "opened elsewhere",
         }
     }
@@ -853,57 +848,58 @@ impl CloudSource {
     }
 }
 
-/// A `[[sources]]` collection as the home screen shows it: a section of named datasets,
-/// local and remote alike.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Collection {
-    /// The collection's name, as in `[[sources]]` and `[home] hide`.
-    pub name: String,
+/// A catalog as the home screen shows it: a section of named datasets, local and remote
+/// alike.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShownCatalog {
+    /// The catalog's id, as `[home] hide` names it.
+    pub id: String,
     /// The section's title.
     pub label: String,
-    /// The built-in catalog, rather than a collection from the config.
-    pub builtin: bool,
-    pub datasets: Vec<CollectionDataset>,
+    /// `catalog.toml`, a listed file, or the bundled catalog.
+    pub origin: crate::catalog::Origin,
+    pub datasets: Vec<ShownDataset>,
+    /// Left out for a mistake: the one line its section says instead of rows.
+    pub broken: Option<String>,
 }
 
-/// One dataset of a [`Collection`].
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CollectionDataset {
+/// One dataset of a [`ShownCatalog`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ShownDataset {
     /// The row's name.
     pub name: String,
     /// The local path with `~` and `$VAR` expanded, or the URL.
     pub location: PathBuf,
     /// `key  value` lines for the details pane.
     pub details: Vec<(String, String)>,
-    /// What the collection says a remote file weighs, before it is downloaded.
+    /// What the catalog says a remote file weighs, until it is measured.
     pub size: Option<u64>,
-    /// What its columns mean, when the collection says.
+    /// What its columns mean, when the catalog says.
     pub codebook: Option<std::sync::Arc<crate::codebook::Codebook>>,
     /// Places inside it to start from, by name, listed under its row.
-    pub suggested: Vec<(String, PathBuf)>,
+    pub bookmarks: Vec<(String, PathBuf)>,
+    /// The entry as its catalog writes it: what the Documentation view shows.
+    pub entry: std::sync::Arc<crate::catalog::Dataset>,
 }
 
-impl Collection {
-    /// A configured collection as the home screen shows it.
-    pub fn from_config(source: &crate::config::SourceConfig, builtin: bool) -> Self {
+impl ShownCatalog {
+    /// A catalog as the home screen shows it.
+    pub fn from_catalog(catalog: &crate::catalog::Catalog) -> Self {
         Self {
-            name: source.name.clone(),
-            label: source.label().to_string(),
-            builtin,
-            datasets: source
+            id: catalog.id.clone(),
+            label: catalog.label.clone(),
+            origin: catalog.origin,
+            datasets: catalog
                 .datasets
                 .iter()
                 .map(|dataset| {
-                    let location = dataset
-                        .local_path()
-                        .or_else(|| dataset.url.as_deref().map(PathBuf::from))
-                        .unwrap_or_default();
+                    let location = dataset.location();
                     let mut details: Vec<(String, String)> = [
                         ("about", &dataset.description),
                         ("publisher", &dataset.publisher),
                         ("license", &dataset.license),
                         ("homepage", &dataset.homepage),
-                        ("documentation", &dataset.codebook),
+                        ("documentation", &dataset.documentation),
                     ]
                     .into_iter()
                     .filter(|(_, value)| !value.is_empty())
@@ -913,70 +909,106 @@ impl Collection {
                         None => details.push(("path".to_string(), display_path(&location))),
                         Some(url) => {
                             details.push(("url".to_string(), url.clone()));
-                            // How it is read: what `auth` and `connection` say, in words.
-                            let login = match (&dataset.connection, dataset.auth.as_deref()) {
-                                (Some(connection), _) => connection.clone(),
-                                (None, Some("anonymous")) => "none".to_string(),
-                                _ if !crate::config::is_object_store_dataset(url) => {
-                                    "none".to_string()
-                                }
-                                _ => "auto".to_string(),
-                            };
-                            details.push(("login".to_string(), login));
+                            details.push(("login".to_string(), login_of(dataset)));
                         }
                     }
-                    CollectionDataset {
+                    ShownDataset {
                         name: dataset.name.clone(),
                         location,
                         details,
                         size: dataset.size,
                         codebook: crate::codebook::Codebook::of(dataset).map(std::sync::Arc::new),
-                        suggested: dataset
-                            .suggested
+                        bookmarks: dataset
+                            .bookmarks
                             .iter()
-                            .filter_map(|s| {
-                                dataset
-                                    .suggested_location(s)
-                                    .map(|place| (s.name.trim().to_string(), place))
-                            })
+                            .map(|(name, path)| (name.clone(), dataset.bookmark_location(path)))
                             .collect(),
+                        entry: std::sync::Arc::new(dataset.clone()),
                     }
                 })
                 .collect(),
+            broken: None,
+        }
+    }
+
+    /// A catalog file left out for a mistake, as a section that says what is wrong.
+    pub fn from_broken(broken: &crate::catalog::Broken) -> Self {
+        Self {
+            id: broken.id.clone(),
+            label: broken.id.clone(),
+            origin: broken.origin,
+            datasets: Vec::new(),
+            broken: Some(broken.callout()),
+        }
+    }
+
+    /// The chip beside the section's title: where its datasets are written. Each is
+    /// one of [`CATALOG_ORIGINS`].
+    pub fn origin_note(&self) -> &'static str {
+        match self.origin {
+            crate::catalog::Origin::Mine => "catalog.toml",
+            crate::catalog::Origin::Listed | crate::catalog::Origin::Folder => "catalog",
+            crate::catalog::Origin::Bundled => "built in",
         }
     }
 }
 
-/// The collections the home screen shows, in order.
-///
-/// The built-in catalog keeps only what this build can open: every dataset in it is
-/// remote, and a build without `cloud` or `http` would list rows that only fail.
-/// A configured collection is shown whole; the user named those, and opening one
-/// says why it cannot be read.
-pub fn collections(config: &crate::config::AppConfig) -> Vec<Collection> {
-    config
-        .shown_collections()
-        .iter()
-        .filter_map(|source| {
-            let builtin = !config.sources.iter().any(|s| s.name == source.name);
-            let mut collection = Collection::from_config(source, builtin);
-            if builtin {
-                collection
-                    .datasets
-                    .retain(|d| crate::source::opens_in_this_build(&d.location));
-                if collection.datasets.is_empty() {
-                    return None;
-                }
-            }
-            Some(collection)
-        })
-        .collect()
+/// The chips a catalog's section carries, and nothing else does.
+pub const CATALOG_ORIGINS: [&str; 3] = ["catalog.toml", "catalog", "built in"];
+
+/// Whether a section's origin chip says it is a catalog.
+pub fn is_catalog_origin(origin: &str) -> bool {
+    CATALOG_ORIGINS.contains(&origin)
 }
 
-/// The row for one dataset of a collection. Nothing is read to make it but a local
-/// path's own directory entry; a remote dataset is named by its URL alone.
-fn collection_entry(
-    dataset: &CollectionDataset,
+/// How a catalog URL is read, in words: what `auth` and `connection` say.
+pub fn login_of(dataset: &crate::catalog::Dataset) -> String {
+    match dataset.object_store_auth() {
+        Some(crate::config::DatasetAuth::Connection(connection)) => connection,
+        Some(crate::config::DatasetAuth::Anonymous) | None => "none".to_string(),
+        Some(crate::config::DatasetAuth::Auto) => "auto".to_string(),
+    }
+}
+
+/// The catalogs the home screen shows, in order.
+///
+/// The bundled catalog keeps only what this build can open: every dataset in it is
+/// remote, and a build without `cloud` or `http` would list rows that only fail. A
+/// catalog of the user's is shown whole; they named those, and opening one says why it
+/// cannot be read. An empty catalog has no section.
+pub fn catalogs(config: &crate::config::AppConfig) -> Vec<ShownCatalog> {
+    let mut out: Vec<ShownCatalog> = config
+        .shown_catalogs()
+        .iter()
+        .filter_map(|catalog| {
+            let mut shown = ShownCatalog::from_catalog(catalog);
+            if catalog.origin == crate::catalog::Origin::Bundled {
+                shown
+                    .datasets
+                    .retain(|d| crate::source::opens_in_this_build(&d.location));
+            }
+            (!shown.datasets.is_empty()).then_some(shown)
+        })
+        .collect();
+    // A broken file's section says so, before the bundled catalog, unless it is hidden.
+    let at = out
+        .iter()
+        .position(|c| c.origin == crate::catalog::Origin::Bundled)
+        .unwrap_or(out.len());
+    let broken: Vec<ShownCatalog> = config
+        .broken_catalogs
+        .iter()
+        .filter(|b| !config.home.hide.contains(&b.id))
+        .map(ShownCatalog::from_broken)
+        .collect();
+    out.splice(at..at, broken);
+    out
+}
+
+/// The row for one dataset of a catalog. Nothing is read to make it but a local path's
+/// own directory entry; a remote dataset is named by its URL alone.
+fn catalog_entry(
+    dataset: &ShownDataset,
     network_check: fn(&Path) -> bool,
     missing: &mut std::collections::HashSet<PathBuf>,
 ) -> Entry {
@@ -1002,19 +1034,17 @@ fn collection_entry(
         entry
     };
     entry.name = dataset.name.clone();
-    // A remote file is named, not stat'ed: its size is the collection's word for it.
-    entry.size = entry.size.or(dataset.size);
     entry
 }
 
-/// The codebook of the collection dataset `path` is, or is inside: the innermost when
-/// one dataset is inside another. Only datasets that carry one are considered.
+/// The column notes of the catalog dataset `path` is, or is inside: the innermost when
+/// one dataset is inside another. Only datasets that carry notes are considered.
 pub fn codebook_for(
-    collections: &[Collection],
+    catalogs: &[ShownCatalog],
     path: &Path,
 ) -> Option<std::sync::Arc<crate::codebook::Codebook>> {
     let text = path.to_string_lossy();
-    collections
+    catalogs
         .iter()
         .flat_map(|c| c.datasets.iter())
         .filter(|d| d.codebook.is_some())
@@ -1023,8 +1053,28 @@ pub fn codebook_for(
         .and_then(|d| d.codebook.clone())
 }
 
-/// The row for a place a collection suggests inside one of its datasets.
-fn suggested_entry(name: &str, place: &Path, network_check: fn(&Path) -> bool) -> Entry {
+/// The catalog entry `path` is, or is inside, with its catalog's label: the innermost
+/// when one is inside another, the first listed of two at one place.
+pub fn catalog_entry_for(
+    catalogs: &[ShownCatalog],
+    path: &Path,
+) -> Option<(String, std::sync::Arc<crate::catalog::Dataset>)> {
+    let text = path.to_string_lossy();
+    catalogs
+        .iter()
+        .flat_map(|c| c.datasets.iter().map(move |d| (c, d)))
+        .filter(|(_, d)| {
+            d.location == path
+                || same_place(&d.location, path)
+                || within(&text, &d.location.to_string_lossy())
+        })
+        .rev()
+        .max_by_key(|(_, d)| d.location.to_string_lossy().trim_end_matches('/').len())
+        .map(|(c, d)| (c.label.clone(), d.entry.clone()))
+}
+
+/// The row for a bookmark inside one of a catalog's datasets.
+fn bookmark_entry(name: &str, place: &Path, network_check: fn(&Path) -> bool) -> Entry {
     let local = matches!(
         crate::source::input_source(place),
         crate::source::InputSource::Local(_)
@@ -1038,36 +1088,32 @@ fn suggested_entry(name: &str, place: &Path, network_check: fn(&Path) -> bool) -
     entry
 }
 
-/// A collection's section.
-fn collection_section(
-    collection: &Collection,
+/// A catalog's section.
+fn catalog_section(
+    catalog: &ShownCatalog,
     network_check: fn(&Path) -> bool,
     missing: &mut std::collections::HashSet<PathBuf>,
 ) -> Section {
     Section {
-        title: collection.label.clone(),
+        title: catalog.label.clone(),
         subtitle: None,
-        origin: Some(if collection.builtin {
-            "built in"
-        } else {
-            "configured"
-        }),
+        origin: Some(catalog.origin_note()),
         root: None,
-        // Each dataset, and under it the places its collection suggests starting from.
-        rows: collection
+        unavailable: catalog.broken.is_some(),
+        unavailable_note: catalog.broken.clone(),
+        // Each dataset, and under it its bookmarks.
+        rows: catalog
             .datasets
             .iter()
             .flat_map(|dataset| {
-                std::iter::once(collection_entry(dataset, network_check, missing)).chain(
+                std::iter::once(catalog_entry(dataset, network_check, missing)).chain(
                     dataset
-                        .suggested
+                        .bookmarks
                         .iter()
-                        .map(|(name, place)| suggested_entry(name, place, network_check)),
+                        .map(|(name, place)| bookmark_entry(name, place, network_check)),
                 )
             })
             .collect(),
-        unavailable: false,
-        unavailable_note: None,
         folded_by_default: false,
         remote_root: None,
         waiting: false,
@@ -1377,9 +1423,11 @@ pub struct HomeState {
     /// buckets. Empty on a machine with no cloud credentials, which is the common case
     /// and not a failure.
     pub cloud: Vec<CloudSource>,
-    /// The `[[sources]]` collections shown, each a section of its own.
-    pub collections: Vec<Collection>,
-    /// Local datasets of a collection that the last listing found missing.
+    /// The catalogs shown, each a section of its own.
+    pub catalogs: Vec<ShownCatalog>,
+    /// HTTP(S) catalog files whose size was asked for this session (a HEAD).
+    pub sized: std::collections::HashSet<PathBuf>,
+    /// Local datasets of a catalog that the last listing found missing.
     pub missing: std::collections::HashSet<PathBuf>,
     /// When the current wait for a remote listing began, for the elapsed time on screen.
     pub waiting_since: Option<std::time::Instant>,
@@ -1512,7 +1560,8 @@ impl Default for HomeState {
         Self {
             sections: Vec::new(),
             cloud: Vec::new(),
-            collections: Vec::new(),
+            catalogs: Vec::new(),
+            sized: std::collections::HashSet::new(),
             missing: Default::default(),
             filter: String::new(),
             search_limit: crate::config::SearchConfig::default().max_results,
@@ -1568,9 +1617,6 @@ impl Default for HomeState {
 /// already has, so the worker never reaches back into the app.
 #[derive(Debug, Clone)]
 pub struct ListingRequest {
-    pub config_dirs: Vec<PathBuf>,
-    /// Directories kept with Ctrl+D, listed after the configured ones.
-    pub remembered_dirs: Vec<PathBuf>,
     pub recents: Vec<PathBuf>,
     pub desktop_dirs: Vec<PathBuf>,
     pub browsing: Option<PathBuf>,
@@ -1587,8 +1633,8 @@ pub struct ListingRequest {
     pub network_check: fn(&Path) -> bool,
     /// Cloud sources and the buckets already enumerated for them.
     pub cloud: Vec<CloudSource>,
-    /// The `[[sources]]` collections to list.
-    pub collections: Vec<Collection>,
+    /// The catalogs to list.
+    pub catalogs: Vec<ShownCatalog>,
     /// What datui measured on a previous run. A row whose size and modification time
     /// still match is filled in from here, so the screen has counts and column names
     /// before anything has been read this time.
@@ -1602,7 +1648,7 @@ pub struct ListingRequest {
 #[derive(Debug, Clone, Default)]
 pub struct Listing {
     pub sections: Vec<Section>,
-    /// Local datasets of a collection that do not exist.
+    /// Local datasets of a catalog that do not exist.
     pub missing: std::collections::HashSet<PathBuf>,
 }
 
@@ -1738,8 +1784,6 @@ pub struct Narrowed {
 
 pub fn build_listing(request: &ListingRequest) -> Listing {
     let ListingRequest {
-        config_dirs,
-        remembered_dirs,
         recents,
         desktop_dirs,
         browsing,
@@ -1751,7 +1795,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         probe_errors,
         network_check,
         cloud,
-        collections,
+        catalogs,
         known,
         formats,
     } = request;
@@ -1897,7 +1941,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             // account or container is titled by name, not by its long URL.
             title: {
                 let text = dir.to_string_lossy();
-                if let Some(dataset) = collections
+                if let Some(dataset) = catalogs
                     .iter()
                     .flat_map(|c| c.datasets.iter())
                     .find(|d| is_object_store_url(&d.location) && same_place(&d.location, &dir))
@@ -1971,15 +2015,14 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 return split;
             }
             let mut entry = entry_for_path(p, network_check(p));
-            // A dataset opened from a collection comes back under the collection's name
-            // for it, not its URL's last segment (#547 D12).
-            if let Some(dataset) = collections
+            // A dataset opened from a catalog comes back under the catalog's name for
+            // it, not its URL's last segment (#547 D12).
+            if let Some(dataset) = catalogs
                 .iter()
                 .flat_map(|c| &c.datasets)
                 .find(|d| d.location == *p)
             {
                 entry.name = dataset.name.clone();
-                entry.size = entry.size.or(dataset.size);
             }
             entry
         })
@@ -1988,7 +2031,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     // Desktop-derived places are collected rather than expanded — see below.
     let mut elsewhere: Vec<Entry> = Vec::new();
 
-    let roots = HomeState::roots_from(config_dirs, remembered_dirs, desktop_dirs, network_check);
+    let roots = HomeState::roots_with(desktop_dirs, network_check);
     let mut root_sections: Vec<(RootOrigin, Section)> = Vec::new();
     // What the current-directory section is about to show, for the RECENT dedupe
     // below: where it is, and the names it lists.
@@ -2153,13 +2196,10 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
 
     // The order is by why you came, not by where the rows come from: what you
     // opened last, where you are standing, the object stores your credentials
-    // reach, then the places you configured. Cloud sits high because credentials
+    // reach, then the catalogs. Cloud sits high because credentials
     // on a machine are a deliberate signal, and a bucket is the one place no
     // directory listing can ever reach.
-    let (cwd_sections, rest): (Vec<_>, Vec<_>) = root_sections
-        .into_iter()
-        .partition(|(origin, _)| *origin == RootOrigin::Cwd);
-    sections.extend(cwd_sections.into_iter().map(|(_, s)| s));
+    sections.extend(root_sections.into_iter().map(|(_, s)| s));
 
     // One section for every cloud source, each a row to step into. A section per
     // source stopped scaling at a handful: ten sources were ten headings, and the
@@ -2183,22 +2223,11 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         });
     }
 
-    // Collections from the config, in the order defined: named datasets rather than
-    // directories, so they sit with the stores, above the directories to look through.
+    // Catalogs in order: yours, the listed files, then the bundled one, which is for
+    // when there is nothing of your own yet.
     let mut missing = std::collections::HashSet::new();
-    let (builtin, configured): (Vec<&Collection>, Vec<&Collection>) =
-        collections.iter().partition(|c| c.builtin);
-    for collection in configured {
-        sections.push(collection_section(collection, network_check, &mut missing));
-    }
-
-    // Configured places in the order configured, then remembered ones in the order kept.
-    sections.extend(rest.into_iter().map(|(_, s)| s));
-
-    // The built-in catalog is for when there is nothing of your own yet, so it comes
-    // after everything that is.
-    for collection in builtin {
-        sections.push(collection_section(collection, network_check, &mut missing));
+    for catalog in catalogs {
+        sections.push(catalog_section(catalog, network_check, &mut missing));
     }
 
     if !elsewhere.is_empty() {
@@ -2588,34 +2617,17 @@ pub fn fuzzy_score(needle: &str, haystack: &str) -> Option<i32> {
 }
 
 impl HomeState {
-    /// Gather roots from the working directory, the config and the desktop.
+    /// Gather roots from the working directory and the desktop.
     ///
-    /// Order matters and is deliberate: where you are first, then the places you
-    /// configured, then the directories the desktop says you have opened data from.
-    /// Duplicates collapse to their highest-priority origin. Recents do not make
-    /// roots: the place a recent lives in is a row of `RECENT`.
-    pub fn roots(config_dirs: &[PathBuf], desktop_dirs: &[PathBuf]) -> Vec<Root> {
-        Self::roots_with(config_dirs, desktop_dirs, is_remote_path)
+    /// Where you are first, then the directories the desktop says you have opened data
+    /// from. Duplicates collapse to the first. Recents do not make roots: the place a
+    /// recent lives in is a row of `RECENT`.
+    pub fn roots(desktop_dirs: &[PathBuf]) -> Vec<Root> {
+        Self::roots_with(desktop_dirs, is_remote_path)
     }
 
     /// As [`HomeState::roots`], with the network test injected.
-    pub fn roots_with(
-        config_dirs: &[PathBuf],
-        desktop_dirs: &[PathBuf],
-        is_network: fn(&Path) -> bool,
-    ) -> Vec<Root> {
-        Self::roots_from(config_dirs, &[], desktop_dirs, is_network)
-    }
-
-    /// As [`HomeState::roots_with`], plus the directories kept with Ctrl+D. They come
-    /// after the configured ones: a place written into the config is the more
-    /// deliberate choice, and a directory in both is listed as configured.
-    pub fn roots_from(
-        config_dirs: &[PathBuf],
-        remembered_dirs: &[PathBuf],
-        desktop_dirs: &[PathBuf],
-        is_network: fn(&Path) -> bool,
-    ) -> Vec<Root> {
+    pub fn roots_with(desktop_dirs: &[PathBuf], is_network: fn(&Path) -> bool) -> Vec<Root> {
         let mut roots: Vec<Root> = Vec::new();
         let mut seen: Vec<PathBuf> = Vec::new();
 
@@ -2660,14 +2672,6 @@ impl HomeState {
             push(cwd, RootOrigin::Cwd, &mut roots, &mut seen);
         }
 
-        for dir in config_dirs {
-            push(dir.clone(), RootOrigin::Configured, &mut roots, &mut seen);
-        }
-
-        for dir in remembered_dirs {
-            push(dir.clone(), RootOrigin::Remembered, &mut roots, &mut seen);
-        }
-
         // Last, and weakest: places the desktop says you have opened data from. Only
         // useful before datui has recents of its own.
         for dir in desktop_dirs {
@@ -2681,21 +2685,14 @@ impl HomeState {
     ///
     /// Recents lead, because for data on a mount the thing you want is almost always
     /// something you have opened before. Roots follow, each scanned one level deep.
-    pub fn rebuild(&mut self, config_dirs: &[PathBuf], recents: &[PathBuf]) {
-        self.rebuild_with(config_dirs, recents, &[])
+    pub fn rebuild(&mut self, recents: &[PathBuf]) {
+        self.rebuild_with(recents, &[])
     }
 
     /// As [`HomeState::rebuild`], plus directories derived from the desktop's own
     /// recently-used list.
-    pub fn rebuild_with(
-        &mut self,
-        config_dirs: &[PathBuf],
-        recents: &[PathBuf],
-        desktop_dirs: &[PathBuf],
-    ) {
+    pub fn rebuild_with(&mut self, recents: &[PathBuf], desktop_dirs: &[PathBuf]) {
         let request = ListingRequest {
-            config_dirs: config_dirs.to_vec(),
-            remembered_dirs: Vec::new(),
             recents: recents.to_vec(),
             desktop_dirs: desktop_dirs.to_vec(),
             browsing: self.browsing.clone(),
@@ -2707,7 +2704,7 @@ impl HomeState {
             probe_errors: self.probe_errors.clone(),
             network_check: self.network_check,
             cloud: self.cloud.clone(),
-            collections: self.collections.clone(),
+            catalogs: self.catalogs.clone(),
             // The synchronous path is for tests and library callers; it consults no
             // cache, so what it produces is exactly what is on disk right now.
             known: Default::default(),
@@ -3103,7 +3100,7 @@ impl HomeState {
         if cloud_source_id(path).is_some() {
             return None;
         }
-        // Out of a remote dataset's root is back to the collection it is listed in, not
+        // Out of a remote dataset's root is back to the catalog it is listed in, not
         // up into a bucket that may not be listable at all.
         if let Some((_, dataset)) = self.remote_dataset_of(path) {
             let place = &dataset.location;
@@ -3165,14 +3162,14 @@ impl HomeState {
         parent_location(path)
     }
 
-    /// The remote collection dataset `path` is in: the innermost, when one dataset is
+    /// The remote catalog dataset `path` is in: the innermost, when one dataset is
     /// inside another, and the first listed of two that are the same place.
-    fn remote_dataset_of(&self, path: &Path) -> Option<(&Collection, &CollectionDataset)> {
+    fn remote_dataset_of(&self, path: &Path) -> Option<(&ShownCatalog, &ShownDataset)> {
         if !is_object_store_url(path) {
             return None;
         }
         let text = path.to_string_lossy();
-        self.collections
+        self.catalogs
             .iter()
             .flat_map(|c| c.datasets.iter().map(move |d| (c, d)))
             .filter(|(_, d)| {
@@ -3182,30 +3179,36 @@ impl HomeState {
             .max_by_key(|(_, d)| d.location.to_string_lossy().trim_end_matches('/').len())
     }
 
-    /// The collection dataset listed at `path` itself.
-    pub fn collection_dataset(&self, path: &Path) -> Option<(&Collection, &CollectionDataset)> {
-        self.collections
+    /// The catalog dataset listed at `path` itself.
+    pub fn catalog_dataset(&self, path: &Path) -> Option<(&ShownCatalog, &ShownDataset)> {
+        self.catalogs
             .iter()
             .flat_map(|c| c.datasets.iter().map(move |d| (c, d)))
             .find(|(_, d)| d.location == path || same_place(&d.location, path))
     }
 
-    /// The dataset a suggested place is listed under, and the suggestion's name.
-    pub fn suggestion(&self, path: &Path) -> Option<(&CollectionDataset, &str)> {
-        self.collections
+    /// The dataset a bookmark is listed under, and the bookmark's name.
+    pub fn bookmark(&self, path: &Path) -> Option<(&ShownDataset, &str)> {
+        self.catalogs
             .iter()
             .flat_map(|c| c.datasets.iter())
             .find_map(|d| {
-                d.suggested
+                d.bookmarks
                     .iter()
                     .find(|(_, place)| place == path || same_place(place, path))
                     .map(|(name, _)| (d, name.as_str()))
             })
     }
 
-    /// The codebook of the collection dataset `path` is, or is in.
+    /// The column notes of the catalog dataset `path` is, or is in.
     pub fn codebook_at(&self, path: &Path) -> Option<std::sync::Arc<crate::codebook::Codebook>> {
-        codebook_for(&self.collections, path)
+        codebook_for(&self.catalogs, path)
+    }
+
+    /// What a catalog says an HTTP(S) file at `path` weighs, while nothing has measured
+    /// it: shown as `~33 MB`.
+    pub fn size_hint(&self, path: &Path) -> Option<u64> {
+        self.catalog_dataset(path).and_then(|(_, d)| d.size)
     }
 
     /// The place of an Azure account, from whichever source lists it.
@@ -3246,8 +3249,8 @@ impl HomeState {
         }
     }
 
-    /// What to call a place a source or collection names itself: a remote dataset of a
-    /// collection, or a local one that is missing.
+    /// What to call a place a source or catalog names itself: a remote dataset of a
+    /// catalog, or a local one that is missing.
     pub fn place_kind(&self, path: &Path) -> Option<&'static str> {
         if self.missing.contains(path) {
             return Some("missing");
@@ -3259,12 +3262,12 @@ impl HomeState {
                 .any(|s| s.id == id && s.api == "gcs")
                 .then_some("project");
         }
-        // A place a collection suggests inside one opens whole, as a dataset does.
+        // A bookmark inside a catalog dataset opens whole, as a dataset does.
         (is_object_store_url(path)
             && (self
-                .collection_dataset(path)
+                .catalog_dataset(path)
                 .is_some_and(|(_, d)| is_object_store_url(&d.location))
-                || (self.browsing.is_none() && self.suggestion(path).is_some())))
+                || (self.browsing.is_none() && self.bookmark(path).is_some())))
         .then_some("dataset")
     }
 
@@ -3292,14 +3295,14 @@ impl HomeState {
         Some(PathBuf::from(format!("gs://{bucket}")))
     }
 
-    /// Details-pane lines for a place a cloud source listed or a collection names, when
+    /// Details-pane lines for a place a cloud source listed or a catalog names, when
     /// it has any.
     pub fn place_details(&self, path: &Path) -> Option<&[(String, String)]> {
         self.cloud
             .iter()
             .find_map(|s| s.place_details.get(path))
-            .or_else(|| self.collection_dataset(path).map(|(_, d)| &d.details))
-            .or_else(|| self.suggestion(path).map(|(d, _)| &d.details))
+            .or_else(|| self.catalog_dataset(path).map(|(_, d)| &d.details))
+            .or_else(|| self.bookmark(path).map(|(d, _)| &d.details))
             .map(Vec::as_slice)
     }
 
@@ -3308,12 +3311,12 @@ impl HomeState {
     /// something to show a person.
     pub fn location_label(&self, path: &Path) -> String {
         let sep = crate::glyphs::get().trail;
-        // Inside a remote dataset of a collection: the collection, the dataset's name,
+        // Inside a remote dataset of a catalog: the catalog, the dataset's name,
         // and the way down from it.
-        if let Some((collection, dataset)) = self.remote_dataset_of(path) {
+        if let Some((catalog, dataset)) = self.remote_dataset_of(path) {
             let text = path.to_string_lossy();
             let rest = within_rest(&text, &dataset.location.to_string_lossy());
-            let mut parts = vec![collection.label.clone(), dataset.name.clone()];
+            let mut parts = vec![catalog.label.clone(), dataset.name.clone()];
             parts.extend(
                 rest.split('/')
                     .filter(|p| !p.is_empty())
@@ -3795,20 +3798,16 @@ impl HomeState {
             if section.grouped_by_place {
                 out.extend(self.rows_by_place(si, section, &matched, capped));
             } else {
-                // A suggested place sits under its dataset while the rows keep the
-                // collection's order.
+                // A bookmark sits under its dataset while the rows keep the
+                // catalog's order.
                 let in_order = self.sort == SortMode::Natural && self.filter.is_empty();
-                out.extend(matched.into_iter().map(|(entry, _)| {
-                    Row::Entry {
-                        section: si,
-                        entry,
-                        nested: in_order
-                            && section
-                                .origin
-                                .is_some_and(|o| o == "built in" || o == "configured")
-                            && section.root.is_none()
-                            && self.suggestion(&entry.path).is_some(),
-                    }
+                out.extend(matched.into_iter().map(|(entry, _)| Row::Entry {
+                    section: si,
+                    entry,
+                    nested: in_order
+                        && section.origin.is_some_and(is_catalog_origin)
+                        && section.root.is_none()
+                        && self.bookmark(&entry.path).is_some(),
                 }));
             }
             if hidden > 0 {
@@ -3976,7 +3975,7 @@ impl HomeState {
         }
     }
 
-    /// Every URL the screen already knows: collections, buckets, what has been listed
+    /// Every URL the screen already knows: catalogs, buckets, what has been listed
     /// and what the index remembers. What `s3://` completes from.
     pub fn known_urls(&self) -> Vec<String> {
         let mut urls: Vec<String> = Vec::new();
@@ -3986,8 +3985,8 @@ impl HomeState {
                 urls.push(text.into_owned());
             }
         };
-        for collection in &self.collections {
-            for dataset in &collection.datasets {
+        for catalog in &self.catalogs {
+            for dataset in &catalog.datasets {
                 add(&dataset.location);
             }
         }
@@ -4210,11 +4209,11 @@ impl HomeState {
             if !matches!(entry.kind, EntryKind::Directory | EntryKind::Unknown) {
                 continue;
             }
-            // A collection's dataset, and a place it suggests, are listed by name at the
+            // A catalog dataset, and a bookmark in it, are listed by name at the
             // top, and nothing is asked of their store until one is opened or entered.
             if self.browsing.is_none()
-                && (self.collection_dataset(&entry.path).is_some()
-                    || self.suggestion(&entry.path).is_some())
+                && (self.catalog_dataset(&entry.path).is_some()
+                    || self.bookmark(&entry.path).is_some())
             {
                 continue;
             }
@@ -4812,7 +4811,7 @@ pub fn list_typed_dir(dir: &str) -> PathListing {
 
 /// The names one level below `dir` among `urls`: how `s3://`, `gs://` and `az://`
 /// complete, from buckets, prefixes and datasets datui has already listed, opened or
-/// been given by a collection. Nothing is asked of the store.
+/// been given by a catalog. Nothing is asked of the store.
 pub fn names_under(dir: &str, urls: impl IntoIterator<Item = String>) -> PathListing {
     let mut names: Vec<PathName> = Vec::new();
     for url in urls {
@@ -4969,7 +4968,7 @@ mod holds_flow_tests {
         let root = std::path::PathBuf::from("gs://pitscope");
         home.probe_ready(root.clone(), vec![row.clone()]);
         home.browsing = Some(root);
-        home.rebuild(&[], &[]);
+        home.rebuild(&[]);
         assert_eq!(
             home.cloud_directories_to_peek(4),
             std::slice::from_ref(&path)
@@ -5054,7 +5053,7 @@ mod holds_flow_tests {
             .collect();
         home.probe_ready(root.clone(), rows);
         home.browsing = Some(root.clone());
-        home.rebuild(&[], &[]);
+        home.rebuild(&[]);
         // One already answered, and one with a request already out.
         home.cloud_kinds
             .insert(root.join("b"), (EntryKind::MultiFile, counted(3)));
@@ -5334,9 +5333,9 @@ mod build_feature_tests {
     /// nor `http` the section is gone rather than a list of failures.
     #[test]
     fn the_builtin_catalog_lists_only_what_this_build_opens() {
-        let urls: Vec<String> = collections(&crate::config::AppConfig::default())
+        let urls: Vec<String> = catalogs(&crate::config::AppConfig::default())
             .into_iter()
-            .filter(|c| c.builtin)
+            .filter(|c| c.origin == crate::catalog::Origin::Bundled)
             .flat_map(|c| c.datasets)
             .map(|d| d.location.to_string_lossy().into_owned())
             .collect();
@@ -5350,27 +5349,29 @@ mod build_feature_tests {
         assert_eq!(stores > 0, cfg!(feature = "cloud"), "{urls:?}");
     }
 
-    /// A configured collection stays whole whatever the build: the user named it, and
+    /// A catalog of the user's stays whole whatever the build: the user named it, and
     /// opening a dataset it cannot read says why.
     #[test]
-    fn a_configured_collection_is_shown_whole() {
+    fn a_users_catalog_is_shown_whole() {
         let mut config = crate::config::AppConfig::default();
-        let mine: crate::config::SourceConfig = toml::from_str(
+        let mine = crate::catalog::parse(
             r#"
-            name = "mine"
-            label = "Mine"
-            [[datasets]]
+            [bucket]
             name = "Bucket"
             url = "s3://bucket/prefix/"
-            [[datasets]]
+            [web]
             name = "Web"
             url = "https://example.com/data.csv"
             "#,
+            crate::catalog::MINE,
+            crate::catalog::Origin::Mine,
+            None,
         )
         .unwrap();
-        config.sources = vec![mine];
-        let shown = collections(&config);
-        let mine = shown.iter().find(|c| c.name == "mine").unwrap();
+        config.read_catalogs = vec![mine];
+        let shown = catalogs(&config);
+        let mine = shown.iter().find(|c| c.id == "mine").unwrap();
         assert_eq!(mine.datasets.len(), 2);
+        assert_eq!(mine.label, crate::catalog::MINE_LABEL);
     }
 }

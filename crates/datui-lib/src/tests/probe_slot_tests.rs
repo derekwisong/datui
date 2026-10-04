@@ -35,7 +35,7 @@ fn rows_so_far_show_until_the_listing_lands() {
         root: dir.clone(),
         rows: vec![row("2009-01-03")],
     });
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
     let section = &app.home.sections[0];
     assert!(section.waiting);
     assert_eq!(section.subtitle.as_deref(), Some("1 so far"));
@@ -50,7 +50,7 @@ fn rows_so_far_show_until_the_listing_lands() {
         root: dir.clone(),
         rows: vec![row("late")],
     });
-    app.home.rebuild(&[], &[]);
+    app.home.rebuild(&[]);
     let section = &app.home.sections[0];
     assert!(!section.waiting);
     assert_eq!(section.rows.len(), 2);

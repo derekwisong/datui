@@ -1,42 +1,40 @@
 use crate::*;
 use polars::prelude::{IntoLazy, df};
 
-/// The codebook of a GHCN-like collection entry, as a config would carry it.
+/// The column notes of a GHCN-like catalog entry, as a catalog would carry them.
 fn codebook() -> codebook::Codebook {
-    let dataset: config::DatasetConfig = toml::from_str(
+    let catalog = catalog::parse(
         r#"
+[weather]
 name = "Weather"
 url = "s3://weather/ghcn/"
-codebook = "https://example.com/readme.txt"
+documentation = "https://example.com/readme.txt"
 
-[columns.ELEMENT]
-description = "Element type"
+columns.ELEMENT.description = "Element type"
+columns.DATA_VALUE = { description = "Data value for ELEMENT", unit = "per ELEMENT" }
+columns.Q_FLAG.description = "Quality flag; blank is normal"
 
-[columns.ELEMENT.values]
+[weather.columns.ELEMENT.values]
 AWDR = "Average daily wind direction (degrees)"
 TMAX = "Maximum temperature (tenths of degrees C)"
 
-[columns.DATA_VALUE]
-description = "Data value for ELEMENT"
-unit = "per ELEMENT"
-
-[columns.Q_FLAG]
-description = "Quality flag; blank is normal"
-
-[columns.Q_FLAG.values]
+[weather.columns.Q_FLAG.values]
 "" = "did not fail any quality assurance check"
 S = "failed spatial consistency check"
 "#,
+        "t",
+        catalog::Origin::Listed,
+        None,
     )
     .unwrap();
-    codebook::Codebook::of(&dataset).unwrap()
+    codebook::Codebook::of(&catalog.datasets[0]).unwrap()
 }
 
 /// The bundled NOAA entry keeps the readme's source flags under S_FLAG, where they
 /// belong, and only element codes under ELEMENT.
 #[test]
 fn the_noaa_source_flags_are_s_flags_not_elements() {
-    let catalog = config::builtin_catalog();
+    let catalog = catalog::bundled();
     let noaa = catalog
         .datasets
         .iter()

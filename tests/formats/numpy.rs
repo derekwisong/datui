@@ -393,7 +393,7 @@ fn the_home_screen_lists_an_archives_arrays() {
         browsing: Some(npz.clone()),
         ..HomeState::default()
     };
-    home.rebuild(&[], &[]);
+    home.rebuild(&[]);
     assert_eq!(listed(&home), ["prices", "grid", "trades"]);
     let mut entry = datui::discover::Entry::for_test(&npz, "run.npz");
     datui::discover::enrich(&mut entry);

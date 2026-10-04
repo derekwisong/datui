@@ -31,16 +31,14 @@ lists the rest.
 row_numbers = true
 number_format = "thousands"
 
-[home]
-directories = ["~/datasets"]
-
 [theme]
 mode = "light"
 ```
 
-This shows row numbers, groups digits, adds a directory to the home screen,
-and starts from the light palette. The file `datui config init` writes keeps
-the public-dataset collection active.
+This shows row numbers, groups digits, and starts from the light palette.
+Datasets and directories to list on the home screen are not here: they are in
+your [catalog](../reference/catalogs.md), `catalog.toml`, which
+`datui config init` writes empty beside the config file.
 
 ## Find a setting
 
@@ -51,8 +49,8 @@ the public-dataset collection active.
 | Number formatting, columns and row numbers | [Display](../reference/settings.md#display) |
 | Row buffers and the streaming engine | [Performance](../reference/settings.md#performance) |
 | Analysis sample size or chart rows | [Analysis](../reference/settings.md#analysis) |
-| Home directories and search | [Home](../reference/settings.md#home) · [Home search](../reference/settings.md#home-search) |
-| Named datasets, local or remote, and the public catalog | [Dataset collections](../reference/sources.md) |
+| The home screen and its search | [Home](../reference/settings.md#home) · [Home search](../reference/settings.md#home-search) |
+| Named datasets and directories, local or remote, and the public catalog | [Catalogs](../reference/catalogs.md) |
 | Cloud accounts and connections | [Cloud connections](../reference/cloud-sources.md) |
 | Clipboard over SSH | [Clipboard](../reference/settings.md#clipboard) |
 | Colors and symbols | [Colors](#colors) · [Glyph overrides](#glyph-overrides) |
@@ -102,10 +100,10 @@ row_numbers = true
 - A file changes only the keys it writes. One written as the built-in default
   still overrides an import: `notes_accent = true` undoes an imported `false`.
   Tables such as `[theme.colors]` or `[display.number_format]` merge key by key.
-- These lists add up across files: `[home] hide`, `[cloud] hide`,
-  `[cloud] env_files` and `[formats] path`. A `[[sources]]` collection or
-  `[[cloud.connections]]` entry replaces the earlier one of its name; two of
-  one name in one file are an error.
+- These lists add up across files: `catalogs`, `[home] hide`, `[cloud] hide`,
+  `[cloud] env_files` and `[formats] path`. A `[[cloud.connections]]` entry
+  replaces the earlier one of its name; two of one name in one file are an
+  error.
 - TOML cannot unset a key, so a key with no default, such as `sidebar_width`,
   stays set once an import sets it; set it to the value you want.
 - An imported file may itself `import`. Chains stop at 8 files; a cycle is an

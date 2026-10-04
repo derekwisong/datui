@@ -1272,7 +1272,7 @@ fn every_public_dataset_lists_and_opens() {
         datui::OpenOptions::default().effective_cloud(&datui::config::AppConfig::default().cloud);
     let runtime = common::test_runtime();
     let mut failures = Vec::new();
-    for dataset in datui::config::builtin_catalog().datasets {
+    for dataset in datui::catalog::bundled().datasets {
         let started = std::time::Instant::now();
         let url = dataset.url.as_deref().expect("the catalog is remote");
         // A web file opens as itself; an object-store root is searched for a file.
@@ -1302,11 +1302,10 @@ fn every_public_dataset_lists_and_opens() {
             Ok(_) => failures.push(format!("{}: {found} has no columns", dataset.name)),
             Err(e) => failures.push(format!("{}: {found}: {e}", dataset.name)),
         }
-        // Each suggested place opens whole, as Enter on its home row opens it.
-        for suggestion in &dataset.suggested {
+        // Each bookmark opens whole, as Enter on its home row opens it.
+        for (bookmark, path) in &dataset.bookmarks {
             let place = dataset
-                .suggested_location(suggestion)
-                .expect("a suggestion has a place")
+                .bookmark_location(path)
                 .to_string_lossy()
                 .into_owned();
             let started = std::time::Instant::now();
@@ -1318,18 +1317,12 @@ fn every_public_dataset_lists_and_opens() {
                 Ok(headers) if !headers.is_empty() => println!(
                     "ok   {} / {} ({:.1}s): {place}, {} columns",
                     dataset.name,
-                    suggestion.name,
+                    bookmark,
                     started.elapsed().as_secs_f32(),
                     headers.len()
                 ),
-                Ok(_) => failures.push(format!(
-                    "{} / {}: no columns",
-                    dataset.name, suggestion.name
-                )),
-                Err(e) => failures.push(format!(
-                    "{} / {}: {place}: {e}",
-                    dataset.name, suggestion.name
-                )),
+                Ok(_) => failures.push(format!("{} / {}: no columns", dataset.name, bookmark)),
+                Err(e) => failures.push(format!("{} / {}: {place}: {e}", dataset.name, bookmark)),
             }
         }
     }
@@ -1891,7 +1884,7 @@ fn partitioned_cloud_directories_are_hive_datasets() {
         return;
     }
     let (mut app, rx) = live_app();
-    // The built-in catalog is a collection on the home screen, its datasets its rows.
+    // The bundled catalog is a section of the home screen, its datasets its rows.
     assert!(pump_until(&mut app, &rx, 10, |app| section_named(
         app,
         "Public datasets"

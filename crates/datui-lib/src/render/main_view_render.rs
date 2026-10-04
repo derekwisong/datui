@@ -27,6 +27,9 @@ pub fn render_main_view(
         MainViewContent::ValueCounts => {
             crate::render::value_counts_view::render(main_area, buf, app, ctx);
         }
+        MainViewContent::Home if app.documentation.is_open() => {
+            crate::widgets::documentation::render_view(&mut app.documentation, main_area, buf, ctx);
+        }
         MainViewContent::Home => {
             crate::render::home_view::render(main_area, buf, app, ctx);
         }

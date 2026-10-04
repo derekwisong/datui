@@ -112,6 +112,7 @@ attributes go after the language, comma-separated:
 | `continue` | Runs in the directory the page's previous block ran in |
 | `expect=rows`, `screen` or `exit` | What its datui command must do: show rows (the default with a path), stay up (the home screen, the hex view), or print and exit |
 | `spec` | A TOML format spec, checked with `datui formats check` |
+| `catalog` | A catalog file, checked with `datui catalog check` |
 | `dataset=NAME` | A `sql` or `q` block's data, from `scripts/docs/doc_datasets.toml` |
 | `rows=N` | The rows a `sql` or `q` block returns |
 | `repo` | Run from a checkout of this repository; its `scripts/` paths must exist, and it is not run |

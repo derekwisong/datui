@@ -9,6 +9,8 @@ impl App {
     pub(crate) fn info_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let schema_tab = self.info_modal.active_tab == InfoTab::Schema;
         let notes_tab = self.info_modal.active_tab == InfoTab::Notes;
+        let documentation_tab = self.info_modal.active_tab == InfoTab::Documentation
+            && self.info_documentation.is_open();
         // The Metadata and the file's own tab scroll their lists the same way.
         let detail_tab = matches!(
             self.info_modal.active_tab,
@@ -64,6 +66,29 @@ impl App {
             }
             KeyCode::Up | KeyCode::Char('k') if event.is_press() && schema_tab => {
                 self.info_modal.schema_table_up(total_rows, visible);
+            }
+            KeyCode::Down | KeyCode::Char('j') if event.is_press() && documentation_tab => {
+                self.info_documentation.move_cursor(1);
+            }
+            KeyCode::Up | KeyCode::Char('k') if event.is_press() && documentation_tab => {
+                self.info_documentation.move_cursor(-1);
+            }
+            KeyCode::PageDown if event.is_press() && documentation_tab => {
+                let page = self.info_documentation.view_height.max(1) as isize;
+                self.info_documentation.move_cursor(page);
+            }
+            KeyCode::PageUp if event.is_press() && documentation_tab => {
+                let page = self.info_documentation.view_height.max(1) as isize;
+                self.info_documentation.move_cursor(-page);
+            }
+            KeyCode::Enter | KeyCode::Char(' ') if event.is_press() && documentation_tab => {
+                self.info_documentation.toggle_legend();
+            }
+            KeyCode::Char('y') if event.is_press() && documentation_tab => {
+                match self.info_documentation.copy_text() {
+                    Some(text) => self.copy_documentation_text(text),
+                    None => self.flash_note("Nothing to copy on this line".to_string()),
+                }
             }
             KeyCode::Down | KeyCode::Char('j') if event.is_press() && notes_tab => {
                 self.info_modal.notes_move(1, notes);

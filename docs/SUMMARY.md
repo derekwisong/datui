@@ -53,7 +53,7 @@
 - [Environment variables](reference/environment.md)
 - [Query syntax](reference/query-syntax.md)
 - [Format spec reference](reference/format-specs.md)
-- [Dataset collections](reference/sources.md)
+- [Catalogs](reference/catalogs.md)
 - [Cloud connections](reference/cloud-sources.md)
 - [Data quality metrics](reference/data-quality.md)
 - [Python API](reference/python-api.md)

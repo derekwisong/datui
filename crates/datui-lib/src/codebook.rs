@@ -1,10 +1,10 @@
-//! A catalog dataset's codebook: what its columns mean, in their publisher's words.
+//! A catalog dataset's documentation: what its columns mean, in their publisher's words.
 //!
 //! Long, coded datasets (weather stations, trip records) are unreadable without one.
-//! A collection entry carries it as `codebook` (the link) and `columns`; the Info
+//! A catalog entry carries it as `documentation` (the link) and `columns`; the Info
 //! panel, the inspector and the home screen's details read it from here.
 
-use crate::config::DatasetConfig;
+use crate::catalog::Dataset;
 use std::collections::BTreeMap;
 
 /// One column's note.
@@ -54,13 +54,13 @@ pub struct Codebook {
 }
 
 impl Codebook {
-    /// The codebook a collection entry carries, when it carries one.
-    pub fn of(dataset: &DatasetConfig) -> Option<Self> {
+    /// The column notes a catalog entry carries, when it carries any.
+    pub fn of(dataset: &Dataset) -> Option<Self> {
         if dataset.columns.is_empty() {
             return None;
         }
         Some(Self {
-            source: dataset.codebook.clone(),
+            source: dataset.documentation.clone(),
             columns: dataset
                 .columns
                 .iter()
@@ -68,9 +68,9 @@ impl Codebook {
                     (
                         name.clone(),
                         Column {
-                            description: note.description.trim().to_string(),
-                            unit: note.unit.trim().to_string(),
-                            values: note.values.clone(),
+                            description: note.description.clone(),
+                            unit: note.unit.clone(),
+                            values: note.values.iter().cloned().collect(),
                         },
                     )
                 })

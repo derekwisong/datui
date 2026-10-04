@@ -74,7 +74,7 @@ CURSOR_REPLY = b"\x1b[1;1R"
 DOWNLOAD_QUESTION = b"Continuewithdownload"
 CSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
-# Public catalog files (crates/datui-lib/src/public_datasets.toml).
+# Public catalog files (crates/datui-lib/src/public_catalog.toml).
 REMOTE = {
     "taxi-http": (
         "NYC yellow taxis, Jan 2025 (HTTPS, 59 MB Parquet)",

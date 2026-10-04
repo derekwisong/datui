@@ -246,7 +246,7 @@ pub const SECTIONS: &[Section] = &[
 pub const SETTINGS: &[Setting] = &[
     // Top level
     s("import", List, Value("[]"), "Config files merged in before this one, in order; this file's own values win. Paths may be relative to this file, or use ~ and $VAR."),
-    s("sources", Tables, Unset("[]"), "Named collections of datasets on the home screen; see Dataset collections."),
+    s("catalogs", Toml("list of path \\| { path, id, label }"), Value("[]"), "Catalog files elsewhere, listed on the home screen after catalog.toml and the config directory's catalogs/*.toml, each a section; see Catalogs. Each is a path, or { path, id, label } to give it another id or label. Paths may be relative to this file. Adds up across imports."),
     // [read]
     s("read.infer_types", Toml("bool \\| list of columns"), Value("true"), "Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON.").flag("infer-types").kwarg("infer_types"),
     s("read.parquet_schema", Choice(&["union", "first"]), Value("\"union\""), "A partitioned Parquet dataset's schema: union is every column any file has, from their footers; first lets Polars take one file's.").kwarg("parquet_schema"),
@@ -286,11 +286,9 @@ pub const SETTINGS: &[Setting] = &[
     s("analysis.chart_grid", Bool, Value("false"), "Start charts with a grid at the major ticks (g toggles)."),
     s("analysis.quality_local_copy", Size, Value("\"2GiB\""), "Most a Data Quality full scan of a remote dataset copies into the cache to read once; 0 never copies."),
     // [home]
-    s("home.directories", List, Value("[]"), "Directories the home screen always lists. ~ and $VAR expand."),
     s("home.desktop_recents", Bool, Value("true"), "Also list directories from the desktop's recently-used files; never the file names."),
     s("home.show_unreadable", Bool, Value("false"), "List files datui cannot read, dimmed (Ctrl+A toggles)."),
-    s("home.builtin_catalog", Bool, Value("true"), "Offer the built-in public collection of datasets."),
-    s("home.hide", List, Value("[]"), "Collections not shown, by name. Adds up across imports."),
+    s("home.hide", List, Value("[]"), "Catalogs not shown, by id: mine (catalog.toml), public, or a listed file's name; one entry as catalog/id, such as public/nyc-taxis. Adds up across imports."),
     s("home.preview_max", Size, Value("\"64MiB\""), "Largest local file whose first rows the home screen previews; 0 turns the preview off."),
     s("home.search.enabled", Bool, Value("true"), "Search below the working directory as you type."),
     s("home.search.max_depth", Count, Value("8"), "How many directories deep the search goes."),
@@ -938,9 +936,9 @@ mod tests {
         assert_eq!(o.value, toml::Value::Boolean(true));
         let o: Override = "csv.comment=#".parse().unwrap();
         assert_eq!(o.value, toml::Value::String("#".into()));
-        let o: Override = "home.directories=~/a, /b".parse().unwrap();
+        let o: Override = "cloud.env_files=a.env, b.env".parse().unwrap();
         assert_eq!(o.value.as_array().map(Vec::len), Some(2));
-        let o: Override = "home.directories=[\"x\"]".parse().unwrap();
+        let o: Override = "home.hide=[\"x\"]".parse().unwrap();
         assert_eq!(o.value.as_array().map(Vec::len), Some(1));
         let o: Override = "cloud.discover=s3,gcs".parse().unwrap();
         assert_eq!(o.value, toml::Value::String("s3,gcs".into()));
@@ -992,7 +990,7 @@ mod tests {
         assert!(e.contains("not true or false"), "{e}");
         let e = "display.unicode=sometimes".parse::<Override>().unwrap_err();
         assert!(e.contains("auto, always, never"), "{e}");
-        let e = "sources=x".parse::<Override>().unwrap_err();
+        let e = "cloud.connections=x".parse::<Override>().unwrap_err();
         assert!(e.contains("config file"), "{e}");
         let e = "display.mouse".parse::<Override>().unwrap_err();
         assert!(e.contains("KEY=VALUE"), "{e}");

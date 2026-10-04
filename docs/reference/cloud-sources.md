@@ -3,7 +3,7 @@
 The `[cloud]` settings and the `[[cloud.connections]]` tables: which stores the
 home screen lists and how each logs in. Logging in is in
 [Connect to cloud storage](../user-guide/remote-data.md); named lists of datasets
-are [dataset collections](sources.md); every `[cloud]` key and its default is in
+are [catalogs](catalogs.md); every `[cloud]` key and its default is in
 [Settings](settings.md#cloud).
 
 ```toml
@@ -19,7 +19,7 @@ connection below, never from keys in this file.
 ## Connections
 
 Add one `[[cloud.connections]]` table per account or endpoint. Each is a row under
-`CLOUD`, and a dataset in a [collection](sources.md) can name one with
+`CLOUD`, and a dataset in a [catalog](catalogs.md) can name one with
 `connection`. Replace `<ENDPOINT>` with your server's URL and `<BUCKET>` with a
 bucket the keys can read; the keys come from the variables named:
 

@@ -83,6 +83,9 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `datui config init` | Write the default config file, every key commented out at its default |
 | `datui config path` | Print the config files read, lowest precedence first |
 | `datui config keys` | List every key: its type, default, the value in effect and what set it |
+| `datui catalog` | Show the catalogs of named datasets on the home screen, or check a catalog file |
+| `datui catalog show [NAME]` | With NAME, print that catalog's file (public is the one datui ships); without, list the catalogs: id, label, datasets and file |
+| `datui catalog check FILE` | Check a catalog file and list its datasets; a mistake is named by its line, with the fix, and exits non-zero |
 | `datui cache` | Clear the cache: recents, history, schemas and copies |
 | `datui cache clear` | Delete the cache directory's contents, or with --recents only the recent datasets |
 | `datui views` | List or remove saved views |
@@ -110,3 +113,4 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `datui config init` | Write the config file, every key commented out at its default |
 | `datui formats` | List the format specs and dictionaries datui finds |
 | `datui man keys` | The keys of every screen, as a manual page |
+| `datui catalog show public` | Print the catalog datui ships, the worked example of the format |

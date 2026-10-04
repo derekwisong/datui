@@ -1,6 +1,6 @@
 name: Public datasets
 
-# The built-in `public` collection points at data other organisations host.
+# The bundled `public` catalog points at data other organisations host.
 # datui hosts none of it, so nothing tells us when a publisher moves or retires a
 # dataset except checking. Once a week, and on pull requests that touch the cloud code
 # or the list, list and open every entry with no credentials at all, the way a new
@@ -16,8 +16,9 @@ on:
   pull_request:
     branches: [ main ]
     paths:
-      - 'crates/datui-lib/src/public_datasets.toml'
+      - 'crates/datui-lib/src/public_catalog.toml'
       - 'crates/datui-lib/src/config.rs'
+      - 'crates/datui-lib/src/catalog.rs'
       - 'crates/datui-lib/src/cloud_sources.rs'
       - 'crates/datui-lib/src/cloud_browse.rs'
       - 'crates/datui-lib/src/azure.rs'
@@ -100,7 +101,7 @@ jobs:
           existing=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number')
           body="The weekly check of the built-in public datasets failed: $RUN_URL
 
-          A dataset may have moved, been retired, or changed its access. Update \`crates/datui-lib/src/public_datasets.toml\`, or fix whatever in datui stopped reading it."
+          A dataset may have moved, been retired, or changed its access. Update \`crates/datui-lib/src/public_catalog.toml\`, or fix whatever in datui stopped reading it."
           if [ -n "$existing" ]; then
             gh issue comment "$existing" --body "Failed again: $RUN_URL"
           else

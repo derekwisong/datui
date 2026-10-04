@@ -10,6 +10,7 @@ pub mod crosshair;
 pub mod data_quality;
 pub mod datatable;
 pub mod debug;
+pub mod documentation;
 pub mod export;
 pub mod info;
 pub mod inspector;

@@ -38,8 +38,8 @@ A path; \fB~\fR and \fB$VAR\fR expand.
 \fBimport\fR (\fIlist\fR)
 Config files merged in before this one, in order; this file's own values win. Paths may be relative to this file, or use ~ and $VAR. Default: \fB[]\fR.
 .TP
-\fBsources\fR (\fItables\fR)
-Named collections of datasets on the home screen; see Dataset collections. Unset by default.
+\fBcatalogs\fR (\fIlist of path | { path, id, label }\fR)
+Catalog files elsewhere, listed on the home screen after catalog.toml and the config directory's catalogs/*.toml, each a section; see Catalogs. Each is a path, or { path, id, label } to give it another id or label. Paths may be relative to this file. Adds up across imports. Default: \fB[]\fR.
 .SS "[read]"
 How files are read. A file's own layout (delimiter, header, rows to skip) is a flag for that file, not a setting.
 .TP
@@ -151,20 +151,14 @@ Most a Data Quality full scan of a remote dataset copies into the cache to read 
 .SS "[home]"
 The home screen.
 .TP
-\fBhome.directories\fR (\fIlist\fR)
-Directories the home screen always lists. ~ and $VAR expand. Default: \fB[]\fR.
-.TP
 \fBhome.desktop_recents\fR (\fIbool\fR)
 Also list directories from the desktop's recently-used files; never the file names. Default: \fBtrue\fR.
 .TP
 \fBhome.show_unreadable\fR (\fIbool\fR)
 List files datui cannot read, dimmed (Ctrl+A toggles). Default: \fBfalse\fR.
 .TP
-\fBhome.builtin_catalog\fR (\fIbool\fR)
-Offer the built-in public collection of datasets. Default: \fBtrue\fR.
-.TP
 \fBhome.hide\fR (\fIlist\fR)
-Collections not shown, by name. Adds up across imports. Default: \fB[]\fR.
+Catalogs not shown, by id: mine (catalog.toml), public, or a listed file's name; one entry as catalog/id, such as public/nyc-taxis. Adds up across imports. Default: \fB[]\fR.
 .TP
 \fBhome.preview_max\fR (\fIsize\fR)
 Largest local file whose first rows the home screen previews; 0 turns the preview off. Default: \fB"64MiB"\fR.
@@ -441,6 +435,12 @@ The log level: \fBerror\fR, \fBwarn\fR, \fBinfo\fR, \fBdebug\fR, \fBtrace\fR or 
 .TP
 \fICONFIG\fR/config.toml
 The config file: see datui-config(5). \fBdatui config path\fR prints the files read.
+.TP
+\fICONFIG\fR/catalog.toml
+Your catalog, which Ctrl+D on the home screen adds to: see datui-catalog(1).
+.TP
+\fICONFIG\fR/catalogs/
+More catalogs, one *.toml each, named by its file; public.toml replaces the bundled one.
 .TP
 \fICONFIG\fR/views/
 Saved views: see datui-views(1).

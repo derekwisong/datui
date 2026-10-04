@@ -1045,36 +1045,36 @@ impl CacheManager {
         .or_log("hide a cloud source");
     }
 
-    /// Directories kept on the home screen with Ctrl+D, in the order they were added.
-    ///
-    /// The one-keystroke twin of `[home] directories`. Kept here rather than written
-    /// into the config: that file is the user's, comments and all, and may be one of
-    /// several merged together.
+    /// The directories Ctrl+D kept here before 0.4.0, which keeps them in
+    /// `catalog.toml`, in the order they were added.
     pub fn load_remembered_places(&self) -> Vec<PathBuf> {
+        let file = self.cache_file(&format!("home_remembered{HISTORY_SUFFIX}"));
+        if !file.exists() {
+            return Vec::new();
+        }
         self.load_history_or_log("home_remembered")
             .into_iter()
             .map(PathBuf::from)
             .collect()
     }
 
-    /// Keep a directory on the home screen until it is forgotten or the cache cleared.
-    pub fn remember_place(&self, path: &std::path::Path) {
-        let target = path.to_string_lossy().into_owned();
-        self.update_history_file("home_remembered", |places| {
-            if !places.contains(&target) {
-                places.push(target.clone());
-            }
-        })
-        .or_log("remember a place");
+    /// Drop the list [`Self::load_remembered_places`] reads, once it is moved.
+    pub fn clear_remembered_places(&self) {
+        let file = self.cache_file(&format!("home_remembered{HISTORY_SUFFIX}"));
+        if let Err(e) = std::fs::remove_file(&file)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            log::warn!(target: "datui", "remove {}: {e}", file.display());
+        }
     }
 
-    /// Stop keeping a directory on the home screen.
-    pub fn forget_place(&self, path: &std::path::Path) {
-        let target = path.to_string_lossy().into_owned();
-        self.update_history_file("home_remembered", |places| {
-            places.retain(|p| p != &target);
-        })
-        .or_log("forget a place");
+    /// Write `places` where Ctrl+D kept them before 0.4.0, for the migration's tests.
+    pub fn save_remembered_places(&self, places: &[PathBuf]) -> Result<()> {
+        let places: Vec<String> = places
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        self.save_history_file("home_remembered", &places)
     }
 }
 

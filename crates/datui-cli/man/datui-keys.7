@@ -190,7 +190,7 @@ Previous or next section
 A screenful, stopping at the first and last
 .TP
 \fBHome / End\fR
-The first or last row
+The first or last row. The filter has no cursor to move: it is edited at its end
 .TP
 \fB\(<- / \(->\fR
 Fold or unfold a section; \(-> on a directory or a file of tables goes inside it
@@ -204,10 +204,10 @@ Cycle the sort; the control bar names the order in effect when it has room
 \fIGo\fR
 .TP
 \fBEnter\fR
-What the control bar says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A place a collection suggests, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them
+What the control bar says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them
 .TP
 \fBBackspace\fR
-Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a collection's remote dataset, back here)
+Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a catalog's remote dataset, back here)
 .TP
 \fBEsc\fR
 Back out one layer: the path prompt, the filter, the directory (back to the row it was entered from), then to the open table, which the control bar's chip names
@@ -235,10 +235,13 @@ Show or hide files datui cannot read; inside a SQLite database, its internal tab
 Show the local file under the cursor as bytes, in the hex view, whatever datui would read it as
 .TP
 \fBCtrl+D\fR
-Remember the directory under the cursor, so it stays listed; again to forget it. A file stands for the directory it is in, a heading for the one it lists
+Add the dataset or directory under the cursor to catalog.toml, listed under My datasets; on a row from catalog.toml, forget it. A heading stands for the directory it lists. Only catalog.toml is written; another catalog is hidden with home.hide
+.TP
+\fBCtrl+E\fR
+Open the Documentation view of a catalog row, or of a place inside one: publisher, license, links, columns with units and value legends, bookmarks. \(ua / \(da move, Enter opens a column's legend, y copies the line's link or value, Esc goes back. Ctrl+E here is not readline's end of line: the filter is edited at its end
 .TP
 \fBDelete\fR
-Forget the highlighted recent entry, or a whole place after confirming, or a remembered place on its heading, or hide a cloud source
+Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source
 .TP
 \fBShift+Delete\fR
 Forget every recent entry, after confirming
@@ -457,7 +460,7 @@ Copy the focused item: text as itself, a JSON object or array indented
 Previous or next tab, from anywhere in the panel; Shift+Tab and Tab do the same. The panel is a viewer, not a form: its body always has the keys
 .TP
 \fB\(ua / \(da (j/k)\fR
-Schema or Notes tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list
+Schema, Notes or Documentation tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list
 .TP
 \fBPgUp / PgDn\fR
 Model, Audio, MIDI, Metadata and format tabs: scroll the list a page
@@ -466,7 +469,10 @@ Model, Audio, MIDI, Metadata and format tabs: scroll the list a page
 Model, Audio, MIDI, Metadata and format tabs: the top or the end of the list
 .TP
 \fBEnter\fR
-Notes tab: take the offer on the note, where it has one
+Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor
+.TP
+\fBy\fR
+Documentation tab: copy the link or value on the cursor's line, whole, however it is cut on screen
 .TP
 \fBH\fR
 Schema tab, CSV, TSV, PSV: read the first row as data, under column_1, column_2, \[u2026]; again to read it as column names. Reads the file again, so the query, filters and sort are cleared, and the panel closes

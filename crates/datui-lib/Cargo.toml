@@ -101,6 +101,7 @@ rustc-demangle = "0.1.24"
 log = "0.4"
 # Where `polars_warn!` goes (`set_warning_function`); Polars' own error crate.
 polars-error = "0.55"
+toml_edit = { version = "0.25.15", default-features = false, features = ["parse", "display"] }
 
 # Pointing fd 2 at the log while the TUI owns the terminal. Already in the tree.
 [target.'cfg(unix)'.dependencies]

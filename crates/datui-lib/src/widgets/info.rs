@@ -340,6 +340,9 @@ pub enum InfoTab {
     Resources,
     Partitions,
     Notes,
+    /// What the catalog that lists the dataset says of it: the page `Ctrl+E` shows on
+    /// home.
+    Documentation,
 }
 
 /// Which of the optional tabs the dataset on screen offers.
@@ -351,6 +354,8 @@ pub struct TabsOffered {
     pub format: bool,
     pub partitions: bool,
     pub notes: bool,
+    /// A catalog lists the dataset. Not the state's to say: the App sets it.
+    pub documentation: bool,
 }
 
 impl TabsOffered {
@@ -367,6 +372,7 @@ impl TabsOffered {
                 .map(|v| !v.is_empty())
                 .unwrap_or(false),
             notes: state.has_notes(),
+            documentation: false,
         }
     }
 }
@@ -377,6 +383,9 @@ impl InfoTab {
     /// partitioned dataset; Notes only when datui has something to say about the data.
     pub fn visible(offered: TabsOffered) -> Vec<InfoTab> {
         let mut tabs = vec![InfoTab::Schema];
+        if offered.documentation {
+            tabs.push(InfoTab::Documentation);
+        }
         if offered.metadata {
             tabs.push(InfoTab::Metadata);
         }
@@ -401,6 +410,7 @@ impl InfoTab {
             InfoTab::Resources => "Resources",
             InfoTab::Partitions => "Partitions",
             InfoTab::Notes => "Notes",
+            InfoTab::Documentation => "Documentation",
         }
     }
 
@@ -734,8 +744,10 @@ pub struct DataTableInfo<'a> {
     pub hex: bool,
     /// The dataset is delimited text, whose first row `H` reads the other way.
     pub header_toggle: bool,
-    /// What the columns mean, from the collection that lists the dataset.
+    /// What the columns mean, from the catalog that lists the dataset.
     pub codebook: Option<&'a crate::codebook::Codebook>,
+    /// The Documentation tab's page, when a catalog lists the dataset.
+    pub documentation: Option<&'a mut crate::widgets::documentation::DocState>,
 }
 
 /// The Resources tab's `Read:` value: how the open reads the data, and that a remote
@@ -782,6 +794,7 @@ impl<'a> DataTableInfo<'a> {
             hex: false,
             header_toggle: false,
             codebook: None,
+            documentation: None,
         }
     }
 
@@ -1848,7 +1861,10 @@ fn columns_by_type(schema: &Schema) -> String {
 impl<'a> Widget for &mut DataTableInfo<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let ctx = self.theme;
-        let offered = TabsOffered::of(self.state, self.ctx.facts_tab);
+        let offered = TabsOffered {
+            documentation: self.documentation.is_some(),
+            ..TabsOffered::of(self.state, self.ctx.facts_tab)
+        };
         let tab = self.modal.active_tab;
 
         // The panel's own keys, said where they work and only while they work:
@@ -1859,11 +1875,17 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             InfoTab::Notes => offered.notes,
             InfoTab::Metadata => offered.metadata,
             InfoTab::Format => offered.format,
+            InfoTab::Documentation => offered.documentation,
             _ => false,
         };
         let mut footer = HintBar::from_ctx(ctx).hint_weighted(g.updown_lr, "Tabs", 3);
         if scrolls {
             footer = footer.hint_weighted(g.updown, "Scroll", 2);
+        }
+        if tab == InfoTab::Documentation && offered.documentation {
+            footer = footer
+                .hint_weighted("Enter", "Values", 1)
+                .hint_weighted("y", "Copy", 1);
         }
         if tab == InfoTab::Schema && self.header_toggle {
             footer = footer.hint_weighted("H", "Header", -1);
@@ -1942,9 +1964,16 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
                 self.render_partitioned_data_tab(body, buf)
             }
             InfoTab::Notes if offered.notes => self.render_notes_tab(body, buf),
-            InfoTab::Metadata | InfoTab::Format | InfoTab::Partitions | InfoTab::Notes => {
-                self.render_schema_tab(body, buf)
+            InfoTab::Documentation if offered.documentation => {
+                if let Some(page) = self.documentation.as_deref_mut() {
+                    crate::widgets::documentation::render_page(page, body, buf, ctx);
+                }
             }
+            InfoTab::Metadata
+            | InfoTab::Format
+            | InfoTab::Partitions
+            | InfoTab::Notes
+            | InfoTab::Documentation => self.render_schema_tab(body, buf),
         }
     }
 }
@@ -1960,6 +1989,7 @@ mod tests {
             format: false,
             partitions,
             notes,
+            documentation: false,
         }
     }
 

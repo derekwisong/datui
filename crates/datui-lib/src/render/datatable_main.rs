@@ -184,6 +184,10 @@ pub fn render(
                 info_widget.hex = hex;
                 info_widget.header_toggle = header_toggle;
                 info_widget.codebook = app.codebook.as_deref();
+                info_widget.documentation = app
+                    .info_documentation
+                    .is_open()
+                    .then_some(&mut app.info_documentation);
                 info_widget.render(sort_area, buf);
             }
         }

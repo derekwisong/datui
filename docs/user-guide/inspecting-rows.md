@@ -45,7 +45,7 @@ preview. The inspector shows what is stored:
 Exact means the value as Polars stored it, not the spelling in a CSV file: a
 `1.50` read from CSV is the float `1.5`.
 
-A dataset a [collection](../reference/sources.md#documentation) documents
+A dataset a [catalog](../reference/catalogs.md#columns) documents
 says more under the value: what the field means, and what the value stands
 for when the documentation lists it. In NOAA's weather data, `AWDR` under
 `ELEMENT` reads `AWDR = Average daily wind direction (degrees)`, and a blank

@@ -9,6 +9,7 @@ and `datui man --dir ~/.local/share/man` installs them where `man` finds them.
 |---|---|
 | [datui(1)](man/datui.1.html) | terminal UI for tabular data |
 | [datui-config(1)](man/datui-config.1.html) | write the default config file, list the files read, or list every key |
+| [datui-catalog(1)](man/datui-catalog.1.html) | show the catalogs of named datasets on the home screen, or check a catalog file |
 | [datui-cache(1)](man/datui-cache.1.html) | clear the cache |
 | [datui-views(1)](man/datui-views.1.html) | list or remove saved views |
 | [datui-formats(1)](man/datui-formats.1.html) | list the format specs and dictionaries (FIX, DBC) on the search path |

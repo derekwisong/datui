@@ -65,7 +65,10 @@ fn truncate_start(text: &str, width: usize) -> String {
 /// `unmeasured` puts an ellipsis where the shape would go: the row is a dataset
 /// nothing has read yet, and a blank there beside rows that have a shape reads as
 /// broken. The same admission the label makes for a directory nothing has looked into.
-fn meta_columns(entry: &Entry, unmeasured: bool) -> String {
+///
+/// `hint` is what a catalog says the file weighs, shown as `~33 MB` until something
+/// has measured it.
+fn meta_columns(entry: &Entry, unmeasured: bool, hint: Option<u64>) -> String {
     // A dataset too large to count still knows its width. Showing `? x 158` says more
     // than a blank, and the `?` is an admission rather than a guess.
     let times = glyphs::get().times;
@@ -84,7 +87,11 @@ fn meta_columns(entry: &Entry, unmeasured: bool) -> String {
         _ if unmeasured => glyphs::get().ellipsis.to_string(),
         _ => String::new(),
     };
-    let size = entry.size.map(discover::format_size).unwrap_or_default();
+    let size = match (entry.size, hint) {
+        (Some(size), _) => discover::format_size(size),
+        (None, Some(hint)) => format!("~{}", discover::format_size(hint)),
+        (None, None) => String::new(),
+    };
     let age = entry.modified.map(discover::format_age).unwrap_or_default();
     format!("{shape:>13}  {size:>9}  {age:>4}")
 }
@@ -647,7 +654,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
             Line::from(vec![
                 Span::styled("     ", Style::default()),
                 Span::styled(
-                    "or set [home] directories in your config",
+                    "or list datasets in catalog.toml",
                     Style::default().fg(ctx.dimmed),
                 ),
             ]),
@@ -746,6 +753,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                         place_kind: app.home.place_kind(&entry.path),
                         looking: looking_glyph(app, entry),
                         indent: if *nested { NEST_INDENT } else { 0 },
+                        size_hint: app.home.size_hint(&entry.path),
                     },
                     &list,
                 ));
@@ -1113,6 +1121,8 @@ struct EntryNotes<'a> {
     place_kind: Option<&'static str>,
     looking: Option<&'static str>,
     indent: usize,
+    /// What a catalog says the row's file weighs, until it is measured.
+    size_hint: Option<u64>,
 }
 
 /// Section headers carry the collapse marker and the provenance note, so the list
@@ -1159,7 +1169,12 @@ fn section_header<'a>(
     } else {
         width / 2
     };
-    let note = truncate_start(&note, note_room);
+    // A callout reads from its mark and its file; the end of its message gives way.
+    let note = if note.starts_with(g.warning) {
+        glyphs::fit_cells(&note, note_room, g.ellipsis).into_owned()
+    } else {
+        truncate_start(&note, note_room)
+    };
     // A title that names a place keeps its case; only the word-like headings —
     // "RECENT", "ELSEWHERE" — are shouted. A URL is a place, and uppercasing one turns
     // `s3://datui-sales` into `S3://DATUI-SALES`, which is not the bucket's name and in
@@ -1426,6 +1441,7 @@ fn entry_line<'a>(
         place_kind,
         looking,
         indent,
+        size_hint,
     } = notes;
     let ListDraw {
         ctx,
@@ -1462,7 +1478,7 @@ fn entry_line<'a>(
     let described = entry.label();
     // Whether the cell ends up holding the curated word rather than a label. Only one
     // arm below reaches for it, and a row whose *path* is curated but whose kind sends
-    // it elsewhere — a `multi` prefix in a collection — is carrying a label.
+    // it elsewhere — a `multi` prefix in a catalog — is carrying a label.
     let mut shows_curated = false;
     let kind = match entry.kind {
         // A count beats the word for a bucket or container. Not the *curated* word,
@@ -1483,7 +1499,7 @@ fn entry_line<'a>(
                 .or(looking)
                 .unwrap_or(described.as_ref()),
         },
-        // A collection's local dataset that is not there says so, rather than the
+        // A catalog's local dataset that is not there says so, rather than the
         // ellipsis of a row nothing has looked at yet.
         EntryKind::Unknown if place_kind.is_some() => {
             shows_curated = true;
@@ -1540,7 +1556,7 @@ fn entry_line<'a>(
         None if kind.is_empty() => String::new(),
         None if kind_is_chip => format!("  {kind} "),
         // Two cells between a name and what it is, on every row: a place row's
-        // label, a bucket's, a collection's and a file's read the same (#547 M7).
+        // label, a bucket's, a catalog's and a file's read the same (#547 M7).
         None => format!("  {kind}"),
     };
 
@@ -1574,7 +1590,7 @@ fn entry_line<'a>(
             locality,
             Some(crate::locality::Locality::Object | crate::locality::Locality::Network)
         );
-    let meta = show_meta.then(|| meta_columns(entry, unmeasured));
+    let meta = show_meta.then(|| meta_columns(entry, unmeasured, size_hint));
     // A row with nothing to say in the meta columns (a public dataset, a directory not
     // looked into) gives them to its name rather than cutting it beside blank cells
     // (#648).
@@ -1911,7 +1927,7 @@ fn pane_heading(text: &str, width: usize, ctx: &RenderContext) -> Line<'static> 
 /// The most columns of a codebook the details pane lists a line each.
 const CODEBOOK_ROWS: usize = 12;
 
-/// A collection dataset's codebook in the details pane: each column and what it means,
+/// A catalog dataset's column notes in the details pane: each column and what it means,
 /// wrapped when the pane has `room` rows for all of it, else a line a column cut to the
 /// pane. The Info panel and the inspector say the rest.
 fn codebook_block(
@@ -1928,12 +1944,18 @@ fn codebook_block(
         .iter()
         .flat_map(|(name, column)| fact_lines(name, column.about(), key_w, width, style, ctx))
         .collect();
-    if lines.len() + wrapped.len() <= room {
+    // Where the whole page is: the legends and links the pane has no room for.
+    let more = Line::from(vec![
+        Span::styled("^E", Style::default().fg(ctx.keybind_hints)),
+        Span::styled(" Documentation", Style::default().fg(ctx.dimmed)),
+    ]);
+    if lines.len() + wrapped.len() < room {
         lines.extend(wrapped);
+        lines.push(more);
         return lines;
     }
     let value_w = width.saturating_sub(key_w + 2);
-    let fits = room.saturating_sub(lines.len() + 1).clamp(1, CODEBOOK_ROWS);
+    let fits = room.saturating_sub(lines.len() + 2).clamp(1, CODEBOOK_ROWS);
     for (name, column) in book.columns.iter().take(fits) {
         let name = glyphs::fit_cells(name, key_w, glyphs::get().ellipsis);
         lines.push(Line::from(vec![
@@ -1954,6 +1976,7 @@ fn codebook_block(
             Style::default().fg(ctx.dimmed),
         )));
     }
+    lines.push(more);
     lines
 }
 
@@ -2147,7 +2170,7 @@ fn kind_words(
                 .unwrap_or("directory")
                 .to_string(),
         },
-        // A local dataset of a collection that is not there.
+        // A local dataset of a catalog that is not there.
         EntryKind::Unknown if place_kind == Some("missing") => "missing".to_string(),
         _ => String::new(),
     }
@@ -2454,7 +2477,7 @@ fn render_preview(
     }
     let g = glyphs::get();
     // What the source's listing said about this place: an Azure account's subscription,
-    // a collection dataset's publisher. Drawn below the facts, in their key column.
+    // a catalog dataset's publisher. Drawn below the facts, in their key column.
     let place_details = app.home.place_details(&entry.path).map(<[_]>::to_vec);
     let key_w = place_details
         .as_ref()
@@ -2487,9 +2510,8 @@ fn render_preview(
             lines.extend(fact_lines(&key, value, key_w, width, style, ctx));
         }
     }
-    // What the columns of a collection's dataset mean, from its codebook.
-    if (app.home.collection_dataset(&entry.path).is_some()
-        || app.home.suggestion(&entry.path).is_some())
+    // What the columns of a catalog dataset mean.
+    if (app.home.catalog_dataset(&entry.path).is_some() || app.home.bookmark(&entry.path).is_some())
         && let Some(book) = app.home.codebook_at(&entry.path)
     {
         let drawn: usize = lines.iter().map(|line| wrapped_rows(line, width)).sum();
@@ -2593,7 +2615,7 @@ fn render_preview(
                     vec![("Enter", step_in(INSIDE_AND_THE_DOOR))]
                 }
                 EntryKind::Directory => Vec::new(),
-                // A collection's local dataset that is not there: the kind line says so.
+                // A catalog's local dataset that is not there: the kind line says so.
                 EntryKind::Unknown if app.home.missing.contains(&entry.path) => Vec::new(),
                 EntryKind::Unknown => vec![("schema", "not read".to_string())],
                 EntryKind::Other => {
@@ -3040,7 +3062,7 @@ mod tests {
     }
 
     /// One grammar on every row: the name, a slash when it is a place to go into, two
-    /// cells, and what it is. Local, collection and bucket rows alike, a directory of
+    /// cells, and what it is. Local, catalog and bucket rows alike, a directory of
     /// directories counting them (#547 M7).
     #[test]
     fn every_row_reads_name_slash_two_spaces_label() {
@@ -3239,7 +3261,7 @@ mod tests {
     fn a_directory_of_separate_tables_shows_its_width_without_a_question_mark() {
         let mut directory = row("/data/consolidated", EntryKind::Directory);
         directory.cols = Some(72);
-        let shape = meta_columns(&directory, false);
+        let shape = meta_columns(&directory, false, None);
         assert!(shape.contains("72 cols"), "{shape}");
         assert!(!shape.contains('?'), "{shape}");
         assert!(
@@ -3250,7 +3272,7 @@ mod tests {
         let mut big = row("/data/events", EntryKind::Hive);
         big.cols = Some(72);
         assert!(
-            meta_columns(&big, false).contains('?'),
+            meta_columns(&big, false, None).contains('?'),
             "a hive dataset still says ?"
         );
     }
@@ -3330,7 +3352,7 @@ mod tests {
         // Where the meta columns begin: everything drawn before them. It must not
         // depend on how long a row's label is, or the columns stop lining up.
         let offset_of_meta = |line: Line<'_>, entry: &Entry| -> usize {
-            let meta = meta_columns(entry, false);
+            let meta = meta_columns(entry, false, None);
             let at = line
                 .spans
                 .iter()
@@ -3408,7 +3430,7 @@ mod tests {
 
         // And a row whose *path* is curated but whose kind never reaches for the word
         // is carrying a label, which gives way like any other. Only a `Directory` row
-        // consults `place_kind`; a `multi` prefix in a collection does not.
+        // consults `place_kind`; a `multi` prefix in a catalog does not.
         let mut curated_multi = row("s3://bucket/occurrence", EntryKind::MultiFile);
         curated_multi.size = Some(4096);
         curated_multi.rows = Some(12);
@@ -3705,7 +3727,7 @@ mod tests {
             .collect()
         };
         // Under a place, with nothing measured: the shape cell is an admission.
-        let meta = meta_columns(&entry, true);
+        let meta = meta_columns(&entry, true, None);
         assert!(text(&entry, NEST_INDENT).contains(&meta));
         assert!(meta.contains(g.ellipsis), "{meta:?}");
         // The same row in a directory listing, where the probe measures it, and a
@@ -3767,7 +3789,7 @@ mod tests {
             truncated: true,
             ..Default::default()
         };
-        let meta = meta_columns(&entry, false);
+        let meta = meta_columns(&entry, false, None);
         let meta_at = |indent: usize, width: usize| -> usize {
             let line = entry_line(
                 &entry,

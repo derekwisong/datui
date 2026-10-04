@@ -2,7 +2,8 @@
 # Invoked by the Release workflow at the end of its publish step, or run manually (Actions → Publish packages → Run workflow).
 # Manual run with no tag uses the latest GitHub release.
 # Prerequisites: repository secrets for CARGO_REGISTRY_TOKEN (crates.io), HOMEBREW_TAP_TOKEN, PYPI_API_TOKEN, AUR_*, WINGET_TOKEN, and for APT: GPG_PRIVATE_KEY, GPG_EMAIL, DATUI_APT_TOKEN.
-# WinGet: at least one version of derekwisong.datui must exist in winget-pkgs; fork microsoft/winget-pkgs; WINGET_TOKEN = classic PAT with public_repo scope.
+# WinGet: at least one version of derekwisong.datui must exist in winget-pkgs; fork microsoft/winget-pkgs; WINGET_TOKEN = classic PAT with public_repo scope;
+# WINGET_SYNC_TOKEN = fine-grained PAT on the fork only (Contents + Workflows: write), used to sync it.
 name: Publish packages
 
 on:
@@ -31,6 +32,8 @@ on:
       AUR_SSH_PRIVATE_KEY:
         required: false
       WINGET_TOKEN:
+        required: false
+      WINGET_SYNC_TOKEN:
         required: false
       GPG_PRIVATE_KEY:
         required: false
@@ -281,9 +284,13 @@ jobs:
       # which reads like an expired/invalid token and sends you rotating secrets.
       #
       # Adding `workflow` scope is not an option: GitHub's classic-PAT UI force-selects
-      # full `repo` (private repos included) alongside it. So do the sync here with the
-      # same token, and when it's blocked, fail immediately with the actual recovery
-      # steps instead of three retries of a misleading error.
+      # full `repo` (private repos included) alongside it. So the sync uses
+      # WINGET_SYNC_TOKEN, a fine-grained PAT limited to the fork with Contents and
+      # Workflows write, which can update workflow files and nothing else of ours.
+      # It cannot open the cross-fork PR, so komac keeps WINGET_TOKEN. Without the
+      # sync token, fall back to WINGET_TOKEN and, when that is blocked, fail
+      # immediately with the recovery steps instead of three retries of a misleading
+      # error. winget-fork-sync.yml also syncs weekly, so the fork rarely drifts.
       #
       # Fork distance is only the trigger, not the cause: the longer the gap between
       # releases, the likelier upstream touched a workflow file. Back-to-back releases
@@ -291,7 +298,8 @@ jobs:
       - name: Sync winget-pkgs fork (preflight)
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          GH_TOKEN: ${{ secrets.WINGET_SYNC_TOKEN || secrets.WINGET_TOKEN }}
+          HAS_SYNC_TOKEN: ${{ secrets.WINGET_SYNC_TOKEN != '' }}
           FORK: derekwisong/winget-pkgs
         run: |
           set -uo pipefail
@@ -303,7 +311,7 @@ jobs:
           fi
           echo "$out"
           if grep -qi 'without .workflow. scope' <<<"$out"; then
-            echo "::error title=winget fork sync blocked::WINGET_TOKEN lacks 'workflow' scope and upstream changed .github/workflows. RECOVER: open https://github.com/${FORK} and click 'Sync fork' -> 'Update branch', then re-run only the failed job with 'gh run rerun ${GITHUB_RUN_ID} --failed'. Do NOT rotate WINGET_TOKEN -- it is valid; this is a scope restriction, not an auth failure. Details: docs/for-developers/packaging.md#winget-releases"
+            echo "::error title=winget fork sync blocked::WINGET_TOKEN lacks 'workflow' scope and upstream changed .github/workflows. RECOVER: open https://github.com/${FORK} and click 'Sync fork' -> 'Update branch', then re-run only the failed job with 'gh run rerun ${GITHUB_RUN_ID} --failed'. Do NOT rotate WINGET_TOKEN -- it is valid; this is a scope restriction, not an auth failure. To stop this for good, add the WINGET_SYNC_TOKEN secret (sync token: $HAS_SYNC_TOKEN). Details: docs/for-developers/packaging.md#winget-releases"
             exit 1
           fi
           # Anything else (transient 5xx, rate limit, unexpected fork state) is not

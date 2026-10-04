@@ -1,0 +1,35 @@
+name: Sync winget-pkgs fork
+
+# The WinGet release step fast-forwards our winget-pkgs fork before komac opens its
+# PR, and fails when upstream has changed its own workflow files since the last sync
+# (see publish-packages.yml). Syncing every week keeps the fork close to upstream, so
+# a release rarely finds it far behind.
+#
+# Needs WINGET_SYNC_TOKEN: a fine-grained PAT limited to derekwisong/winget-pkgs with
+# Contents and Workflows write. Without it the job says so and does nothing.
+
+on:
+  schedule:
+    # Mondays at 07:00 UTC
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fast-forward the fork from microsoft/winget-pkgs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.WINGET_SYNC_TOKEN }}
+          FORK: derekwisong/winget-pkgs
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice title=winget fork not synced::WINGET_SYNC_TOKEN is not set. Details: docs/for-developers/packaging.md#winget-releases"
+            exit 0
+          fi
+          gh api "repos/$FORK/merge-upstream" -f branch=master

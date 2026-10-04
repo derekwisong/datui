@@ -538,6 +538,8 @@ struct GroupedView {
     /// the notes that explain them.
     drift: bool,
     drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
+    /// Whether `lf` numbers its rows itself (`#`).
+    view_numbered: bool,
     notes: Vec<crate::notes::Note>,
     group_source: Option<GroupSource>,
     /// Where the user was, so coming back puts the cursor on the group drilled into
@@ -3456,7 +3458,10 @@ impl DataTableState {
     /// Whether the view would number its rows itself with `#` on: it is sorted or
     /// filtered over the scan, and the scan's rows do not carry their place.
     fn wants_view_numbers(&self) -> bool {
+        // A followed file's view is read from a mark, where a row index would count
+        // from the mark rather than the file's start.
         self.scan_is_the_root()
+            && self.follow.is_none()
             && !self.drift_column_present
             && !self.source_rows_at_open
             && self.pushed_view().is_none()
@@ -5471,7 +5476,11 @@ impl DataTableState {
         if count_known {
             self.num_rows = num_rows;
             self.num_rows_valid = true;
-        } else if returned_rows < requested_rows && (buffer_start == 0 || returned_rows > 0) {
+        } else if returned_rows < requested_rows
+            && (buffer_start == 0 || returned_rows > 0)
+            // Lines still being indexed end where the indexing has got to, not the file.
+            && self.indexing().is_none()
+        {
             // Short read: the slice ran off the end, so we now know the exact total
             // without waiting for the background len() count. A slice deep in the
             // frame that found nothing may lie past the data entirely; only the count
@@ -5928,7 +5937,7 @@ impl DataTableState {
     pub fn counts_itself_later(&self) -> bool {
         // Lines still being indexed: any frame's count is of the lines so far, and the
         // indexing is bringing the rest.
-        if self.indexing.is_some() && !self.num_rows_valid {
+        if self.indexing().is_some() && !self.num_rows_valid {
             return true;
         }
         // Only while it does not have one, and only while the frame is the scan. What
@@ -5942,7 +5951,9 @@ impl DataTableState {
 
     /// The lines being indexed behind the first rows, if they still are.
     pub fn indexing(&self) -> Option<&Arc<crate::lines::Lines>> {
-        self.indexing.as_ref()
+        // Asked of the lines, so a dataset set aside while they finished (the quality
+        // evidence view) does not wait for them for good.
+        self.indexing.as_ref().filter(|lines| lines.indexing())
     }
 
     /// The dataset's row count from a sample of its footers, while the frame is the
@@ -5989,17 +6000,21 @@ impl DataTableState {
     /// Every line is indexed, `rows` of them: the count of the lines in order, and the
     /// notes that say what the whole file holds. The frames already read every line
     /// (their height waits for the indexing), so nothing read through them is stale.
-    pub(crate) fn lines_indexed(&mut self, rows: usize) {
+    /// Returns whether the dataset was waiting for them.
+    pub(crate) fn lines_indexed(&mut self, rows: usize) -> bool {
         let Some(lines) = self.indexing.take() else {
-            return;
+            return false;
         };
         let notes = crate::lines::notes(&lines, self.indexing_guessed);
         let opened = std::mem::take(&mut self.indexing_notes);
         self.open_notes.retain(|n| !opened.contains(n));
         self.open_notes.extend(notes);
+        // The "of" in `417 of 1,000` under a filter.
+        self.pristine_rows = Some(rows);
         if self.is_pristine() {
             self.set_num_rows(rows);
         }
+        true
     }
 
     /// Give up on the rest of the footers: the pass could not read them.
@@ -6278,7 +6293,11 @@ impl DataTableState {
     ) -> Option<Arc<dyn crate::pushdown::Windowed>> {
         use crate::data_quality::QualityScope;
         matches!(scope, QualityScope::WholeSource | QualityScope::CurrentView)
-            .then(|| self.fixed_window.clone().filter(|_| self.is_pristine()))
+            .then(|| {
+                self.fixed_window
+                    .clone()
+                    .filter(|_| self.is_pristine() && self.indexing().is_none())
+            })
             .flatten()
     }
 
@@ -6845,7 +6864,9 @@ impl DataTableState {
         ViewRows {
             lf: self.lf.clone(),
             files: self.files_window().cloned(),
-            records: self.window_now(),
+            // A find reads every row it can reach: lines still being indexed are read
+            // through the frame, which waits for them, not the window of those so far.
+            records: self.window_now().filter(|_| self.indexing().is_none()),
             read_as_text: self.read_as_text.clone(),
             buffer: self
                 .buffered_df
@@ -8954,6 +8975,7 @@ impl DataTableState {
             sort_ascending: self.sort_ascending,
             drift: self.drift_column_present,
             drift_groups: self.drift_groups.clone(),
+            view_numbered: self.view_numbered,
             notes: self.notes.clone(),
             group_source: self.group_source.take(),
             column_order: self.column_order.clone(),
@@ -9134,6 +9156,7 @@ impl DataTableState {
         self.sort_ascending = view.sort_ascending;
         self.drift_column_present = view.drift;
         self.drift_groups = view.drift_groups;
+        self.view_numbered = view.view_numbered;
         self.notes = view.notes;
         self.group_source = view.group_source;
         // The frame put back here already leaves out whatever its filter and sort left
@@ -9409,6 +9432,7 @@ impl DataTableState {
                 })
                 .flatten();
             self.view_notes = Vec::new();
+            self.view_numbered = false;
             self.invalidate_num_rows();
             self.lf = view.lf;
             self.restore_footer_count();

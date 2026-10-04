@@ -352,7 +352,11 @@ impl Lines {
             // in under the write lock: this is the only writer of a file not followed.
             let (bytes, mut step) = {
                 let mapped = f.mapped.read().unwrap_or_else(|e| e.into_inner());
-                if mapped.index.whole(mapped.bytes.as_slice()) {
+                // A file cut short meanwhile is not read past its end: the lines so far
+                // are what there is.
+                if mapped.index.whole(mapped.bytes.as_slice())
+                    || mapped.bytes.still_whole().is_err()
+                {
                     return true;
                 }
                 let bytes = mapped.bytes.clone();

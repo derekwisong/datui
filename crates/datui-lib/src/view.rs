@@ -182,7 +182,7 @@ pub struct BrokenView {
 
 /// How long a read or a write of the views waits for another instance. Long enough
 /// for a busy machine; it bounds the wait on a wedged peer, it is not meant to be met.
-const VIEWS_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const VIEWS_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub struct ViewManager {
     config: ConfigManager,

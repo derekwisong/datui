@@ -122,7 +122,13 @@ impl LenCount {
             meter: state.measurements().clone(),
             lf: state.lf_clone(),
             streaming: state.polars_streaming_enabled(),
-            progress: Arc::new(crate::schema_union::FooterProgress::counting()),
+            // A store's footers are round trips, many waited on at once; a disk's are
+            // read, a wave at a time.
+            progress: Arc::new(if state.is_remote_source() {
+                crate::schema_union::FooterProgress::counting()
+            } else {
+                crate::schema_union::FooterProgress::default()
+            }),
         }
     }
 

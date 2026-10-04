@@ -1198,9 +1198,12 @@ pub struct App {
     indexing_stop: Arc<std::sync::atomic::AtomicBool>,
     /// The last count started: what it has read of the footers, and its stop (Esc).
     count_progress: Arc<crate::schema_union::FooterProgress>,
-    /// The `len_generation` an exact count was asked for (`c` in the Info panel), for
-    /// a dataset of more files than the count reads unasked.
+    /// The dataset (`dataset_generation`) an exact count was asked for (`c` in the
+    /// Info panel), of more files than the count reads unasked.
     exact_count_asked: Option<u64>,
+    /// `c` was pressed while a stopped count was still winding down: count again when
+    /// its answer, for this `len_generation`, comes in.
+    count_after_stop: Option<u64>,
     /// What a dataset's footers found while the user was looking at a query, a pivot or
     /// a drill-down rather than at the data. Held rather than applied, because widening
     /// the scan under a query takes the query's own columns away, and offered again the
@@ -4716,7 +4719,8 @@ impl App {
         self.indexing_stop = stop.clone();
         let generation = self.dataset_generation;
         let tx = self.events.clone();
-        let _ = std::thread::Builder::new()
+        let waiting = lines.clone();
+        let spawned = std::thread::Builder::new()
             .name("datui-index".to_string())
             .spawn(move || {
                 loop {
@@ -4737,6 +4741,14 @@ impl App {
                     }
                 }
             });
+        // No thread to index them: the lines so far are what there is, and nothing
+        // waits for more.
+        if spawned.is_err() {
+            waiting.stop_indexing();
+            if let Some(state) = self.data_table_state.as_mut() {
+                state.lines_indexed(waiting.rows());
+            }
+        }
     }
 
     /// More of the dataset's lines are indexed: its frames take them, and once all are,
@@ -4748,10 +4760,9 @@ impl App {
         let Some(state) = self.data_table_state.as_mut() else {
             return;
         };
-        if state.indexing().is_none() {
+        if !state.lines_indexed(rows) {
             return;
         }
-        state.lines_indexed(rows);
         if self.end_when_indexed.take() == Some(generation) {
             self.take_down_the_counting_status();
             if let Some(next) = self.jump_key(AppEvent::DoScrollEnd) {
@@ -4772,7 +4783,7 @@ impl App {
         let limit = self.app_config.read.exact_count_files;
         limit > 0
             && state.files_to_count().is_some_and(|files| files > limit)
-            && self.exact_count_asked != Some(state.len_generation())
+            && self.exact_count_asked != Some(self.dataset_generation)
             && state.row_estimate(None).is_some()
     }
 
@@ -4803,10 +4814,20 @@ impl App {
             return;
         }
         let generation = state.len_generation();
-        self.exact_count_asked = Some(generation);
+        self.exact_count_asked = Some(self.dataset_generation);
+        // The footer pass is still bringing the count; the request holds for when it
+        // lands.
+        if state.counts_itself_later() {
+            return;
+        }
         // A count stopped before is asked again.
         if self.len_count_failed == Some(generation) {
             self.len_count_failed = None;
+        }
+        // One stopped and not yet wound down: again once it has.
+        if self.len_count_inflight == Some(generation) && self.count_progress.is_cancelled() {
+            self.count_after_stop = Some(generation);
+            return;
         }
         if self.len_count_inflight != Some(generation) {
             self.len_count_inflight = Some(generation);
@@ -5847,6 +5868,7 @@ impl App {
             indexing_stop: Arc::default(),
             count_progress: Arc::default(),
             exact_count_asked: None,
+            count_after_stop: None,
             len_count_inflight: None,
             count_after_paint: None,
             #[cfg(test)]
@@ -13699,6 +13721,10 @@ impl App {
             AppEvent::BackgroundLenFailed { len_generation } => {
                 if self.len_count_inflight == Some(*len_generation) {
                     self.len_count_inflight = None;
+                }
+                if self.count_after_stop.take() == Some(*len_generation) {
+                    self.count_exactly();
+                    return None;
                 }
                 if let Some(run) = self.query_running.as_mut()
                     && run.len_count_inflight == Some(*len_generation)

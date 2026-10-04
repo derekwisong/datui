@@ -64,6 +64,16 @@ impl ChartCache {
         self.get(request).and_then(|outcome| outcome.as_ref().ok())
     }
 
+    /// What stands in for `request` while it is prepared: the newest chart prepared of
+    /// the same columns, drawn under another option (sample size, bins, range).
+    pub(crate) fn standing_in(&self, request: &ChartRequest) -> Option<&ChartPrepared> {
+        self.entries
+            .iter()
+            .rev()
+            .filter(|(r, _)| r.same_columns(request))
+            .find_map(|(_, outcome)| outcome.as_ref().ok())
+    }
+
     /// Whether `request` has been prepared.
     pub(crate) fn satisfies(&self, request: &ChartRequest) -> bool {
         self.prepared(request).is_some()
@@ -201,6 +211,54 @@ impl ChartRequest {
                 },
             ) => a == b,
             _ => self == other,
+        }
+    }
+
+    /// Whether `other` is the same kind of chart of the same columns, whatever its
+    /// options.
+    pub(crate) fn same_columns(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::XY {
+                    x_column: a,
+                    y_columns: ay,
+                    ..
+                },
+                Self::XY {
+                    x_column: b,
+                    y_columns: by,
+                    ..
+                },
+            ) => a == b && ay == by,
+            (Self::XRange { x_column: a, .. }, Self::XRange { x_column: b, .. })
+            | (Self::Histogram { column: a, .. }, Self::Histogram { column: b, .. })
+            | (Self::BoxPlot { column: a, .. }, Self::BoxPlot { column: b, .. })
+            | (Self::Kde { column: a, .. }, Self::Kde { column: b, .. }) => a == b,
+            (
+                Self::Heatmap {
+                    x_column: a,
+                    y_column: ay,
+                    ..
+                },
+                Self::Heatmap {
+                    x_column: b,
+                    y_column: by,
+                    ..
+                },
+            ) => a == b && ay == by,
+            (
+                Self::Bar {
+                    category: a,
+                    value: av,
+                    ..
+                },
+                Self::Bar {
+                    category: b,
+                    value: bv,
+                    ..
+                },
+            ) => a == b && av == bv,
+            _ => false,
         }
     }
 

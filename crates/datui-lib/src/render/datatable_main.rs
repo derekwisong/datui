@@ -5,7 +5,7 @@ use crate::render::datatable_view::{ActiveSidebar, DatatableLayout};
 use crate::render::main_view::MainViewContent;
 use crate::widgets::datatable::DataTable;
 use crate::widgets::info::{DataTableInfo, InfoContext};
-use crate::widgets::ui::HintBar;
+use crate::widgets::ui::{HintBar, Working};
 use crate::widgets::{copy, export, pivot_melt};
 use ratatui::layout::Rect;
 use ratatui::prelude::StatefulWidget;
@@ -81,6 +81,8 @@ pub fn render(
         .is_some_and(|f| f.descriptor().declares_types);
     let find_cell = app.find_hit();
     let hex = app.hex_target().is_some();
+    let query_reading = app.query_reading().map(str::to_string);
+    let frame = app.throbber_frame as usize;
     match &mut app.data_table_state {
         Some(state) => {
             let mut table_area = data_area;
@@ -157,6 +159,16 @@ pub fn render(
                 );
             }
             StatefulWidget::render(dt, table_area, buf, state);
+            if let Some(status) = &query_reading {
+                // Drawn still, so the table keeps its size: the rows are the view the
+                // query replaces, under columns it may have changed. The control bar's
+                // words, so the two say one thing.
+                Working {
+                    text: status,
+                    frame,
+                }
+                .render_centered(table_area, buf, ctx);
+            }
             if app.info_modal.active {
                 let facts =
                     crate::App::facts_shown(&app.file_facts, app.dataset_generation, facts_reading);

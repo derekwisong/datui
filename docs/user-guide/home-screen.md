@@ -139,8 +139,8 @@ A file not read lazily says how, dim beside its name:
 
 | Marker | Opening it |
 |---|---|
-| `converts` | Reads it once into a temporary file |
-| `in memory` | Reads it whole into memory (a model file: its header) |
+| `converts` | Reads it once into a temporary file: an Arrow stream, NMEA, GPX, VCD, FIX, SDF, compressed text |
+| `in memory` | Reads it whole into memory: JSON, NDJSON, systemd journal, Avro, ORC, Excel, MIDI, ELF; SafeTensors and GGUF read only their header |
 | `downloads` | Downloads it first |
 
 The `… files with no reader` row, or <kbd>Ctrl</kbd>+<kbd>A</kbd>, shows files

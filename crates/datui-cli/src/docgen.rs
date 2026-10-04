@@ -116,7 +116,11 @@ pub fn read_help(root: &Path, name: &str) -> String {
     let path = root
         .join("crates/datui-lib/src/help-strings")
         .join(format!("{name}.txt"));
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        // A Windows checkout may turn line endings into CRLF, and the parser splits
+        // blocks on blank lines.
+        .replace("\r\n", "\n")
 }
 
 /// What each generated file should hold: the file and its text, every region filled.
@@ -327,9 +331,7 @@ mod tests {
                     .map(|t| t.replace("\r\n", "\n"))
                     .ok()
                     .as_deref()
-                    // The rendered text is built from help strings and docs that a
-                    // Windows checkout may hold with CRLF, so normalize both sides.
-                    != Some(text.replace("\r\n", "\n").as_str())
+                    != Some(text.as_str())
             })
             .map(|(path, _)| path.display().to_string())
             .collect();

@@ -2241,6 +2241,37 @@ mod tests {
         );
     }
 
+    /// `H` / `L` move a column and `+` / `-` filter on the cell: both change the
+    /// view, so at a busy table they are held, and replay in order once it is idle.
+    #[test]
+    fn column_moves_and_quick_filters_wait_while_busy() {
+        let (mut p, _dir) = loaded_pump();
+        p.app.busy = true;
+        for c in ['L', '+', 'H', '-'] {
+            assert!(!p.app.key_acts_while_busy(&plain(KeyCode::Char(c))), "{c}");
+        }
+        type_keys(&mut p, "L+");
+        assert_eq!(held(&p), [KeyCode::Char('L'), KeyCode::Char('+')]);
+        p.app.busy = false;
+        settle(&mut p);
+        rendered(&mut p.app);
+        assert!(held(&p).is_empty());
+        let state = p.app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.headers(), ["age", "name"], "L moved name right");
+        assert_eq!(
+            state.current_column(),
+            Some("name"),
+            "the cursor went with it"
+        );
+        let filters = state.view_filters();
+        assert_eq!(filters.len(), 1);
+        assert_eq!(
+            (filters[0].column.as_str(), filters[0].value.as_str()),
+            ("name", "ada"),
+            "+ filtered on the cell the cursor reached"
+        );
+    }
+
     /// Enter with nothing to drill into is Space at a busy table too: held, as Space,
     /// and replayed into the inspector. Where it would drill, a bare Enter is dropped.
     #[test]

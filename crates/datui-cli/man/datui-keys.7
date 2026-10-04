@@ -65,6 +65,9 @@ Open the Sort & Filter sidebar (tabs: Columns, Filters), on the cursor's column
 \fBF\fR
 Value counts of the cursor's column: each value's rows, percent and a bar, with a summary
 .TP
+\fB+ / \-\fR
+Filter on the cursor's cell: + keeps the rows with its value, \- drops them (a null cell: the nulls). Each adds a row to the Filters tab, joined with "and"; the value is the cell's exactly as stored
+.TP
 \fBa\fR
 Open Analysis. In a Data Quality evidence drill a is disabled; Esc returns to the observation
 .TP
@@ -92,7 +95,7 @@ Open the views list
 \fIDisplay\fR
 .TP
 \fBi\fR
-Open Info panel (tabs: Schema, Resources, Partitions, Notes)
+Open Info panel (tabs: Schema, Resources, Partitions, Notes). H on its Schema tab reads a CSV's first row as data, or as column names
 .TP
 \fB#\fR
 Toggle row numbers
@@ -112,11 +115,11 @@ Toggle the type row under the column headers
 \fBb\fR
 A binary file read through a format spec: read it again with another spec. Clears the query, filters and sort
 .TP
-\fBH\fR
-CSV, TSV, PSV: read the first row as data, under column_1, column_2, \[u2026]; again to read it as column names. Reads the file again, so the query, filters and sort are cleared
+\fBH / L\fR
+Move the cursor's column one place left or right, the cursor with it; a frozen column moves among the frozen ones. R puts the order back
 .TP
 \fBt\fR
-Follow the file as it grows (CSV, TSV, PSV, NDJSON). Reads it again, as H does; while following, t pauses and resumes, and Esc stops
+Follow the file as it grows (CSV, TSV, PSV, NDJSON). Reads it again, so the query, filters and sort are cleared; while following, t pauses and resumes, and Esc stops
 .TP
 \fB? / F1\fR
 Open this help (F1 works in text fields). Esc or ? to close.
@@ -472,6 +475,9 @@ Model, Audio, MIDI, Metadata and format tabs: the top or the end of the list
 \fBEnter\fR
 Notes tab: take the offer on the note, where it has one
 .TP
+\fBH\fR
+Schema tab, CSV, TSV, PSV: read the first row as data, under column_1, column_2, \[u2026]; again to read it as column names. Reads the file again, so the query, filters and sort are cleared, and the panel closes
+.TP
 \fB? / F1\fR
 Show this help
 .TP
@@ -590,6 +596,21 @@ Delete the row
 .TP
 \fBC\fR
 Clear every staged filter
+.TP
+Date
+2024-01-01
+.TP
+Date and time
+2024-01-01, 2024-01-01 05:30, 2024-01-01T05:30:00.25, a clock in the column's zone; +01:00 or Z names an instant
+.TP
+Time
+05:30, 05:30:00.25
+.TP
+Duration
+1d 2h 30m, 90s, 1500ms (d h m s ms us ns)
+.TP
+Decimal
+1.5, at the column's scale
 .SS "Pivot and melt"
 \fBp\fR at the table.
 .TP

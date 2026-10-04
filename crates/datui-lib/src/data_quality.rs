@@ -305,20 +305,18 @@ pub fn prepare_source_quality_scan(
 }
 
 /// The rows of one partition value, a list of them (`2019,2021`), or an inclusive
-/// range (`2020..2022`). A range compares in the column's own type, so years and
-/// dates order as numbers and dates, not as text; `∅` is the null partition.
+/// range (`2020..2022`). Each value is read as the column's own type, so years and
+/// dates compare as numbers and dates, `1.5` is a `Decimal(10, 2)` column's `1.50`,
+/// and the predicate stays one a file's statistics can answer; `∅` is the null
+/// partition. A value that does not read as the type says so.
 fn partition_predicate(column: &str, value: &str, schema: &Schema) -> Result<Expr> {
     let dtype = schema
         .get(column)
         .ok_or_else(|| color_eyre::eyre::eyre!("partition column {column:?} is unavailable"))?;
-    let one = |value: &str| {
-        if value == "∅" {
-            col(column).is_null()
-        } else {
-            col(column)
-                .cast(DataType::String)
-                .eq(lit(value.to_string()))
-        }
+    let read = |text: &str| {
+        crate::typed_value::parse(text, dtype)
+            .map(lit)
+            .map_err(|why| color_eyre::eyre::eyre!("{column}: {why}"))
     };
     if let Some((start, end)) = value.split_once("..") {
         let (start, end) = (start.trim(), end.trim());
@@ -327,18 +325,23 @@ fn partition_predicate(column: &str, value: &str, schema: &Schema) -> Result<Exp
                 "a partition range needs both ends, for example year=2020..2022"
             ));
         }
-        let bound = |text: &str| lit(text.to_string()).cast(dtype.clone());
         return Ok(col(column)
-            .gt_eq(bound(start))
-            .and(col(column).lt_eq(bound(end))));
+            .gt_eq(read(start)?)
+            .and(col(column).lt_eq(read(end)?)));
     }
     value
         .split(',')
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(one)
-        .reduce(Expr::or)
-        .ok_or_else(|| color_eyre::eyre::eyre!("name at least one partition value"))
+        .map(|value| {
+            Ok(if value == "∅" {
+                col(column).is_null()
+            } else {
+                col(column).eq(read(value)?)
+            })
+        })
+        .reduce(|all, one| Ok(all?.or(one?)))
+        .ok_or_else(|| color_eyre::eyre::eyre!("name at least one partition value"))?
 }
 
 pub fn apply_quality_scope(
@@ -2018,13 +2021,20 @@ impl TemporalLatencyProfile {
     /// than a stretch of rows or a file.
     pub fn segment_opens(&self, plan: &DataQualityPlan) -> bool {
         let grain = plan.interval_grain(&self.start_column, &self.end_column);
-        segment_predicate(plan, &grain, &self.segment).is_some()
+        segment_predicate(plan, &grain, &self.segment, None).is_some()
     }
 
     /// The rows behind `fact` in this interval's segment, as a predicate over the
     /// scope `plan` measured: `None` when a segment cannot be told by its values
     /// (row chunks, files) or the fact is not measured.
-    pub fn evidence_predicate(&self, fact: IntervalFact, plan: &DataQualityPlan) -> Option<Expr> {
+    /// `schema` is the data's, where known: with it a partition segment compares in
+    /// its column's type.
+    pub fn evidence_predicate(
+        &self,
+        fact: IntervalFact,
+        plan: &DataQualityPlan,
+        schema: Option<&Schema>,
+    ) -> Option<Expr> {
         self.count(fact, plan)?;
         let micros = || interval_micros(plan, &self.start_column, &self.end_column);
         let rows = match fact {
@@ -2039,10 +2049,12 @@ impl TemporalLatencyProfile {
             }
         };
         let grain = plan.interval_grain(&self.start_column, &self.end_column);
-        Some(match segment_predicate(plan, &grain, &self.segment)? {
-            Some(segment) => segment.and(rows),
-            None => rows,
-        })
+        Some(
+            match segment_predicate(plan, &grain, &self.segment, schema)? {
+                Some(segment) => segment.and(rows),
+                None => rows,
+            },
+        )
     }
 }
 
@@ -2125,10 +2137,39 @@ fn label_text(column: &str) -> Expr {
     )
 }
 
+/// The rows of a partition segment whose label writes `value`. Where the column's
+/// type writes each value one way (text, flags, whole numbers, dates, decimals) and
+/// `value` reads back as that very label, a plain comparison, which file statistics
+/// can answer; otherwise, such as a float the label rounds, the label of each row.
+fn partition_label_predicate(column: &str, value: &str, schema: Option<&Schema>) -> Expr {
+    let writes_each_once = |dtype: &&DataType| {
+        dtype.is_integer()
+            || matches!(
+                dtype,
+                DataType::String
+                    | DataType::Boolean
+                    | DataType::Date
+                    | DataType::Decimal(..)
+                    | DataType::Categorical(..)
+                    | DataType::Enum(..)
+            )
+    };
+    let native = schema
+        .and_then(|schema| schema.get(column))
+        .filter(writes_each_once)
+        .and_then(|dtype| crate::typed_value::parse(value, dtype).ok())
+        .filter(|scalar| crate::exact::str_value(scalar.value()) == value);
+    match native {
+        Some(scalar) => col(column).eq(lit(scalar)),
+        None => label_text(column).eq(lit(value.to_string())),
+    }
+}
+
 fn segment_predicate(
     plan: &DataQualityPlan,
     grain: &QualityGrain,
     label: &str,
+    schema: Option<&Schema>,
 ) -> Option<Option<Expr>> {
     match grain {
         QualityGrain::Dataset => Some(None),
@@ -2137,7 +2178,7 @@ fn segment_predicate(
             Some(Some(if value == "∅" {
                 col(column.as_str()).is_null()
             } else {
-                label_text(column).eq(lit(value.to_string()))
+                partition_label_predicate(column, value, schema)
             }))
         }
         QualityGrain::TimeWindows { column, every } => {
@@ -5877,17 +5918,55 @@ mod tests {
             } else {
                 assert_eq!(labels.len(), 2, "{grain:?}: {labels:?}");
             }
+            let schema = lf.clone().collect_schema().unwrap();
             for segment in &results.segments {
-                let predicate = segment_predicate(&plan, &grain, &segment.label)
-                    .unwrap()
-                    .unwrap();
-                let rows = lf.clone().filter(predicate).collect().unwrap().height();
-                assert_eq!(
-                    Some(rows),
-                    segment.total_rows,
-                    "{grain:?} {}",
-                    segment.label
-                );
+                // By the column's type, and by each row's label: the same rows.
+                for schema in [Some(schema.as_ref()), None] {
+                    let predicate = segment_predicate(&plan, &grain, &segment.label, schema)
+                        .unwrap()
+                        .unwrap();
+                    let rows = lf.clone().filter(predicate).collect().unwrap().height();
+                    assert_eq!(
+                        Some(rows),
+                        segment.total_rows,
+                        "{grain:?} {}",
+                        segment.label
+                    );
+                }
+            }
+        }
+    }
+
+    /// A partition segment's rows are the same found by the column's type as by each
+    /// row's label, for text, whole numbers, decimals and the floats a label rounds.
+    #[test]
+    fn partition_segments_find_the_same_rows_by_type_as_by_label() {
+        let lf = df!(
+            "region" => &[Some("west"), Some("east"), None, Some("west")],
+            "year" => &[2020i16, 2021, 2020, 2020],
+            "price" => &["1.50", "2.00", "1.50", "3.25"],
+            "share" => &[1.0 / 3.0, 0.333_333_3, 0.5, 1.0 / 3.0],
+        )
+        .unwrap()
+        .lazy()
+        .with_column(col("price").cast(DataType::Decimal(10, 2)));
+        let schema = lf.clone().collect_schema().unwrap();
+        for column in ["region", "year", "price", "share"] {
+            let grain = QualityGrain::Partition(column.into());
+            let plan = DataQualityPlan {
+                compute: QualityCompute::Full,
+                grain: grain.clone(),
+                ..DataQualityPlan::default()
+            };
+            let results = compute_data_quality(&lf, Some(4), &plan, None, false).unwrap();
+            for segment in &results.segments {
+                for schema in [Some(schema.as_ref()), None] {
+                    let predicate = segment_predicate(&plan, &grain, &segment.label, schema)
+                        .unwrap()
+                        .unwrap();
+                    let rows = lf.clone().filter(predicate).collect().unwrap().height();
+                    assert_eq!(Some(rows), segment.total_rows, "{}", segment.label);
+                }
             }
         }
     }
@@ -6684,6 +6763,57 @@ mod tests {
             ),
             vec![2, 3]
         );
+    }
+
+    /// A partition value compares in the column's own type, whatever the type, one
+    /// value or a list of them; a value the type cannot read says so.
+    #[test]
+    fn partition_values_compare_in_the_columns_type() {
+        let frame = df!(
+            "id" => &[1i32, 2, 3, 4],
+            "year" => &[2019i64, 2020, 2021, 2020],
+            "share" => &[0.5f64, 0.25, 0.5, 1.0],
+            "price" => &["1.50", "2.00", "1.50", "3.25"],
+            "day" => &[19723i32, 19724, 19723, -800_000],
+            "at" => &[0i64, 3_600_000_000, 0, 7_200_000_000],
+        )
+        .unwrap()
+        .lazy()
+        .with_columns([
+            col("price").cast(DataType::Decimal(10, 2)),
+            col("day").cast(DataType::Date),
+            col("at").cast(DataType::Datetime(TimeUnit::Microseconds, None)),
+        ]);
+        let schema = frame.clone().collect_schema().unwrap();
+        let ids = |column: &str, value: &str| -> Vec<i32> {
+            let predicate = partition_predicate(column, value, &schema).unwrap();
+            let df = frame.clone().filter(predicate).collect().unwrap();
+            df.column("id")
+                .unwrap()
+                .i32()
+                .unwrap()
+                .into_no_null_iter()
+                .collect()
+        };
+        assert_eq!(ids("year", "2020"), [2, 4]);
+        assert_eq!(ids("year", "2019, 2021"), [1, 3]);
+        assert_eq!(ids("year", "2020..2021"), [2, 3, 4]);
+        assert_eq!(ids("share", "0.5"), [1, 3]);
+        assert_eq!(ids("price", "1.5"), [1, 3], "1.5 is the column's 1.50");
+        assert_eq!(ids("day", "2024-01-01"), [1, 3]);
+        // A date past the calendar, as its label writes it.
+        assert_eq!(ids("day", "-800000 days since 1970-01-01"), [4]);
+        assert_eq!(ids("at", "1970-01-01 01:00"), [2]);
+        assert_eq!(
+            ids("at", "1970-01-01T00:00:00, 1970-01-01 02:00"),
+            [1, 3, 4]
+        );
+        let error = partition_predicate("day", "2024-13-01", &schema).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "day: \"2024-13-01\" is not a date written YYYY-MM-DD"
+        );
+        assert!(partition_predicate("year", "2020..soon", &schema).is_err());
     }
 
     #[test]
@@ -9343,11 +9473,11 @@ mod temporal_tests {
                 for latency in &results.temporal {
                     for fact in IntervalFact::ALL {
                         let Some((count, _)) = latency.count(fact, &plan) else {
-                            assert!(latency.evidence_predicate(fact, &plan).is_none());
+                            assert!(latency.evidence_predicate(fact, &plan, None).is_none());
                             continue;
                         };
                         let predicate = latency
-                            .evidence_predicate(fact, &plan)
+                            .evidence_predicate(fact, &plan, None)
                             .unwrap_or_else(|| panic!("{grain:?} {fact:?} opens nothing"));
                         let rows = frame.clone().filter(predicate).collect().unwrap().height();
                         assert_eq!(rows, count, "{grain:?} {} {fact:?}", latency.segment);
@@ -9367,7 +9497,7 @@ mod temporal_tests {
         let results = compute_data_quality(&frame, Some(8), &plan, None, false).unwrap();
         assert!(results.temporal.iter().all(|latency| {
             latency
-                .evidence_predicate(IntervalFact::Negative, &plan)
+                .evidence_predicate(IntervalFact::Negative, &plan, None)
                 .is_none()
         }));
     }
@@ -9447,7 +9577,7 @@ mod temporal_tests {
                             let Some((count, _)) = latency.count(fact, &plan) else {
                                 continue;
                             };
-                            let predicate = latency.evidence_predicate(fact, &plan).unwrap();
+                            let predicate = latency.evidence_predicate(fact, &plan, None).unwrap();
                             let rows = frame.clone().filter(predicate).collect().unwrap();
                             assert_eq!(
                                 rows.height(),

@@ -14,6 +14,8 @@ pub enum FilterOperator {
     LtEq,
     Contains,
     NotContains,
+    IsNull,
+    IsNotNull,
 }
 
 impl FilterOperator {
@@ -27,7 +29,14 @@ impl FilterOperator {
             FilterOperator::LtEq => "<=",
             FilterOperator::Contains => "contains",
             FilterOperator::NotContains => "!contains",
+            FilterOperator::IsNull => "is null",
+            FilterOperator::IsNotNull => "not null",
         }
+    }
+
+    /// Whether the statement compares with a value; the null tests take none.
+    pub fn takes_value(&self) -> bool {
+        !matches!(self, FilterOperator::IsNull | FilterOperator::IsNotNull)
     }
 
     pub fn iterator() -> impl Iterator<Item = FilterOperator> {
@@ -40,6 +49,8 @@ impl FilterOperator {
             FilterOperator::LtEq,
             FilterOperator::Contains,
             FilterOperator::NotContains,
+            FilterOperator::IsNull,
+            FilterOperator::IsNotNull,
         ]
         .iter()
         .copied()
@@ -213,7 +224,12 @@ impl FilterModal {
         let statement = FilterStatement {
             column: self.available_columns[column_idx].clone(),
             operator,
-            value: editor.value.value().to_string(),
+            // A null test keeps no stale value from an earlier operator.
+            value: if operator.takes_value() {
+                editor.value.value().to_string()
+            } else {
+                String::new()
+            },
             logical_op: editor.logical,
         };
         match editor.editing {
@@ -256,6 +272,26 @@ mod tests {
 
     fn theme() -> crate::config::Theme {
         crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap()
+    }
+
+    #[test]
+    fn a_null_test_keeps_no_value() {
+        let mut m = modal();
+        m.open_editor(&theme(), 10);
+        {
+            let editor = m.editor.as_mut().unwrap();
+            editor.operator.select_original(
+                FilterOperator::iterator()
+                    .position(|op| op == FilterOperator::IsNull)
+                    .unwrap(),
+            );
+            editor.value.set_value("left over");
+        }
+        m.commit_editor();
+        let s = &m.statements[0];
+        assert_eq!(s.operator, FilterOperator::IsNull);
+        assert!(!s.operator.takes_value());
+        assert_eq!(s.value, "");
     }
 
     #[test]

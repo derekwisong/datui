@@ -184,6 +184,7 @@ pub mod tee;
 mod terminal;
 pub mod terminal_input;
 pub mod text_formats;
+pub mod typed_value;
 pub mod ulog;
 mod unfinished;
 pub mod value_counts;
@@ -215,7 +216,7 @@ pub use error_display::{ErrorKindForPython, error_for_python};
 pub use export::{ExportOptions, ExportRequest};
 use export_modal::{ExportFocus, ExportFormat, ExportModal};
 pub use feedback::{ConfirmationModal, ErrorModal, Flash};
-use filter_modal::FilterStatement;
+use filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use jobs::{Answer, Job, Jobs, Outcome};
 pub use jobs::{JobKind, Progress, Ticket};
 use numfmt::NumberFormatSettings;
@@ -1229,7 +1230,10 @@ impl App {
     /// The rows an interval's count under the cursor counted: from the rows the run
     /// kept, or staged as a read when it kept none. Nothing opens for a count of none.
     fn open_interval_evidence(&mut self) -> Option<AppEvent> {
-        let (predicate, label, count) = self.analysis_modal.interval_evidence()?;
+        let schema = self.data_table_state.as_ref().map(|state| state.schema());
+        let (predicate, label, count) = self
+            .analysis_modal
+            .interval_evidence(schema.map(|schema| schema.as_ref()))?;
         let sampled = self
             .analysis_modal
             .data_quality_results
@@ -11433,20 +11437,11 @@ impl App {
             }
             KeyCode::Char('Q') => Some(AppEvent::Exit),
             KeyCode::Char('R') => Some(AppEvent::Reset),
-            // Read the dataset again with its first row the other way: as column names,
-            // or as data under `column_1`, `column_2`, …. Only delimited text has a
-            // header to turn off; anything else carries its own names, and this does
-            // nothing there.
-            KeyCode::Char('H') => {
-                let (paths, options) = self.opened.clone()?;
-                options.format.and_then(FileFormat::separator)?;
-                let options = OpenOptions {
-                    has_header: Some(!options.has_header.unwrap_or(true)),
-                    ..options
-                };
-                self.set_loading_phase("Scanning input", 10);
-                self.name_what_is_loading(paths[0].clone());
-                Some(AppEvent::Open(paths, options))
+            KeyCode::Char('H' | 'L') if event.is_press() => {
+                self.move_cursor_column(event.code == KeyCode::Char('L'))
+            }
+            KeyCode::Char('+' | '-') if event.is_press() => {
+                self.quick_filter(event.code == KeyCode::Char('+'))
             }
             KeyCode::Char('#') => {
                 if let Some(ref mut state) = self.data_table_state {
@@ -13857,6 +13852,128 @@ impl App {
         }
     }
 
+    /// Why one of the sidebar's filters cannot apply: its value does not read as its
+    /// column's type. The first such, said for the user.
+    fn filter_problem(&self) -> Option<String> {
+        let schema = self.data_table_state.as_ref()?.schema();
+        self.sort_filter_modal
+            .filter
+            .statements
+            .iter()
+            .find_map(|f| crate::python_script::SidebarFilter::problem(f, schema.get(&f.column)))
+    }
+
+    /// Whether the dataset on screen is delimited text, whose first row `H` on the
+    /// Info panel's Schema tab reads the other way.
+    pub fn header_toggle_offered(&self) -> bool {
+        self.opened
+            .as_ref()
+            .and_then(|(_, options)| options.format)
+            .and_then(FileFormat::separator)
+            .is_some()
+    }
+
+    /// Read the dataset again with its first row the other way: as column names, or
+    /// as data under `column_1`, `column_2`, …. Only delimited text has a header to
+    /// turn off; anything else carries its own names, and this does nothing there.
+    pub(crate) fn toggle_header(&mut self) -> Option<AppEvent> {
+        if !self.header_toggle_offered() {
+            return None;
+        }
+        let (paths, options) = self.opened.clone()?;
+        let options = OpenOptions {
+            has_header: Some(!options.has_header.unwrap_or(true)),
+            ..options
+        };
+        self.set_loading_phase("Scanning input", 10);
+        self.name_what_is_loading(paths[0].clone());
+        Some(AppEvent::Open(paths, options))
+    }
+
+    /// `H` / `L`: the column cursor's column one place left or right in the column
+    /// order the sidebar's `+` / `-` set, the cursor with it. A frozen column moves
+    /// among the frozen ones and a scrolling one among the scrolling ones; at an end,
+    /// nothing moves.
+    fn move_cursor_column(&mut self, right: bool) -> Option<AppEvent> {
+        let state = self.data_table_state.as_ref()?;
+        let at = state.current_column_index()?;
+        let mut order = state.headers();
+        let locked = state.locked_columns_count().min(order.len());
+        let to = if right { at + 1 } else { at.checked_sub(1)? };
+        if to >= order.len() || (at < locked) != (to < locked) {
+            return None;
+        }
+        // Held by name, so it lands on the column where the move puts it.
+        let moving = order[at].clone();
+        self.data_table_state.as_mut()?.set_current_column(&moving);
+        order.swap(at, to);
+        // The sidebar places hidden columns by the order it last applied; the two
+        // trade places there too, so that order still agrees with the table.
+        let applied = &mut self.sort_filter_modal.sort.applied_order;
+        if let (Some(i), Some(j)) = (
+            applied.iter().position(|c| *c == order[at]),
+            applied.iter().position(|c| *c == order[to]),
+        ) {
+            applied.swap(i, j);
+        }
+        Some(AppEvent::ColumnOrder(order, locked))
+    }
+
+    /// `+` / `-`: a filter on the cursor's cell, added to the sidebar's Filters list
+    /// and applied, so it shows there, joins the others with "and", and `R` clears
+    /// it. `+` keeps the rows with the cell's value and `-` drops them; a null cell
+    /// is "is null" or "not null". The value is the cell's exactly as stored.
+    fn quick_filter(&mut self, keep: bool) -> Option<AppEvent> {
+        let state = self.data_table_state.as_ref()?;
+        let column = state.current_column()?.to_string();
+        let row = state.copy_row_df()?;
+        let series = row.column(&column).ok()?.as_materialized_series().clone();
+        let value = series.get(0).ok()?;
+        // The schema's type, not the buffer's: binary is buffered as a stub.
+        let dtype = state.schema().get(&column)?.clone();
+        let (operator, text) = if value.is_null() {
+            let operator = if keep {
+                FilterOperator::IsNull
+            } else {
+                FilterOperator::IsNotNull
+            };
+            (operator, String::new())
+        } else {
+            let operator = if keep {
+                FilterOperator::Eq
+            } else {
+                FilterOperator::NotEq
+            };
+            // Text that reads back to this very value: a float exactly as stored,
+            // a date and time to its last digit, in its zone.
+            let text = crate::typed_value::text_of(&value, &dtype);
+            let Some(text) = text else {
+                let kind = match dtype {
+                    DataType::List(_) => "lists",
+                    DataType::Array(..) => "arrays",
+                    DataType::Struct(_) => "structs",
+                    DataType::Binary | DataType::BinaryOffset => "binary",
+                    _ => "this type",
+                };
+                self.flash_note(format!("+ and - filter on plain values, not {kind}"));
+                return None;
+            };
+            (operator, text)
+        };
+        let statement = FilterStatement {
+            column,
+            operator,
+            value: text,
+            logical_op: LogicalOperator::And,
+        };
+        let mut statements = state.view_filters().to_vec();
+        if statements.contains(&statement) {
+            return None;
+        }
+        statements.push(statement);
+        Some(AppEvent::Filter(statements))
+    }
+
     /// Bring the Sort & Filter sidebar in line with the state actually applied to the
     /// frame on screen: the real column order and hidden set, the applied sort, the
     /// active filters. Called on open, so an edit staged in the modal and then
@@ -13945,6 +14062,11 @@ impl App {
         // A row still under edit is committed, never silently dropped.
         if self.sort_filter_modal.filter.editor.is_some() {
             self.sort_filter_modal.filter.commit_editor();
+        }
+        // A value its column cannot compare with stays in the sidebar, which says why.
+        if let Some(why) = self.filter_problem() {
+            self.sort_filter_modal.sort.status = Some(why);
+            return None;
         }
         let (columns, descending) = self.sort_filter_modal.sort.sorted_columns_and_directions();
         let column_order = self.sort_filter_modal.sort.get_column_order();

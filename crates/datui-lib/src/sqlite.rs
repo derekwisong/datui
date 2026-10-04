@@ -977,6 +977,10 @@ mod read {
         /// One sidebar filter as a condition SQLite runs, where it means what Polars
         /// would make of it; `None` where Polars would compare across types or refuse.
         fn atom(&self, filter: &FilterStatement) -> Option<Atom> {
+            // A value SQLite holds that Polars reads as null is not NULL here.
+            if !filter.operator.takes_value() {
+                return None;
+            }
             let column = self.index_of(&filter.column)?;
             let kind = self.columns[column].kind;
             let contains = matches!(
@@ -1015,6 +1019,10 @@ mod read {
                 FilterOperator::LtEq => format!("{e} <= ?{collate}"),
                 FilterOperator::Contains => format!("instr({e}, ?) > 0"),
                 FilterOperator::NotContains => format!("instr({e}, ?) = 0"),
+                // Never an atom: see `atom`.
+                FilterOperator::IsNull | FilterOperator::IsNotNull => {
+                    unreachable!("a null test is not pushed down")
+                }
             }
         }
 

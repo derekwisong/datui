@@ -381,12 +381,10 @@ fn split_allowed(text: &str) -> std::result::Result<Vec<String>, String> {
 
 /// Whether `values` can be compared with a column of `dtype`, and few enough.
 fn check_allowed(dtype: &DataType, values: &[String]) -> std::result::Result<(), String> {
-    for value in values {
-        if dtype.is_integer() && value.parse::<i64>().is_err() {
-            return Err(format!("{value:?} is not a whole number"));
-        }
-        if matches!(dtype, DataType::Boolean) && !matches!(value.as_str(), "true" | "false") {
-            return Err(format!("{value:?} is not true or false"));
+    // Read as the set compares it, so what is accepted here is what matches.
+    if dtype.is_integer() || matches!(dtype, DataType::Boolean) {
+        for value in values {
+            crate::typed_value::parse(value, dtype)?;
         }
     }
     if values.len() > MAX_ALLOWED_VALUES {
@@ -556,7 +554,9 @@ impl Measured<'_> {
         }
     }
 
-    /// Stored values in the allowed set. Text is compared exactly, as stored.
+    /// Stored values in the allowed set, each compared at the column's own type: text
+    /// exactly as stored, a whole number as the width it is stored at, so a `u64`
+    /// past `i64::MAX` is still itself.
     fn in_set(&self) -> Option<Expr> {
         if self.intent.allowed.is_empty() || !allows_set(&self.dtype) {
             return None;
@@ -566,16 +566,8 @@ impl Measured<'_> {
             .allowed
             .iter()
             .filter_map(|value| {
-                Some(if is_text(&self.dtype) {
-                    stored.clone().cast(DataType::String).eq(lit(value.clone()))
-                } else if self.dtype.is_integer() {
-                    stored
-                        .clone()
-                        .cast(DataType::Int64)
-                        .eq(lit(value.parse::<i64>().ok()?))
-                } else {
-                    stored.clone().eq(lit(value == "true"))
-                })
+                let value = crate::typed_value::parse(value, &self.dtype).ok()?;
+                Some(stored.clone().eq(lit(value)))
             })
             .reduce(Expr::or)
     }
@@ -1597,6 +1589,53 @@ mod tests {
             .collect::<Vec<_>>()
             .join(",");
         assert!(parse_allowed(&DataType::String, &many).is_err());
+    }
+
+    /// An allowed set compares at the column's own type: a `u64` past `i64::MAX` is
+    /// itself, and a category is compared with its name.
+    #[test]
+    fn an_allowed_set_compares_at_the_columns_type() {
+        let mut df = df!(
+            "code" => &[u64::MAX, 1, u64::MAX - 1, 2],
+            "kind" => &["open", "closed", "open", "lost"],
+        )
+        .unwrap();
+        df = df
+            .lazy()
+            .with_column(col("kind").cast(DataType::from_categories(Categories::global())))
+            .collect()
+            .unwrap();
+        assert!(parse_allowed(&DataType::UInt64, &u64::MAX.to_string()).is_ok());
+        assert!(parse_allowed(&DataType::UInt64, "-1").is_err());
+        let plan = DataQualityPlan {
+            compute: QualityCompute::Full,
+            intent: DeclaredIntent {
+                key: Vec::new(),
+                columns: vec![
+                    ColumnIntent {
+                        allowed: vec![u64::MAX.to_string(), "1".into()],
+                        ..ColumnIntent::new("code")
+                    },
+                    ColumnIntent {
+                        allowed: vec!["open".into(), "closed".into()],
+                        ..ColumnIntent::new("kind")
+                    },
+                ],
+            },
+            ..DataQualityPlan::default()
+        };
+        let results = run(&df, &plan);
+        let intent = results.intent.as_ref().unwrap();
+        assert_eq!(intent.column("code").unwrap().outside, Some(2));
+        assert_eq!(intent.column("kind").unwrap().outside, Some(1));
+        assert_eq!(
+            matching(&df, &results, ObservationKind::NotAllowed, "code"),
+            2
+        );
+        assert_eq!(
+            matching(&df, &results, ObservationKind::NotAllowed, "kind"),
+            1
+        );
     }
 
     /// A quoted value keeps its commas, spaces and doubled quotes, and is written

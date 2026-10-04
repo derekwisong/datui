@@ -1125,7 +1125,12 @@ impl AnalysisModal {
     /// The rows behind the count under the cursor in an interval's detail, when it
     /// has any and they can be told by their values: a predicate over the rows the
     /// run read, with what to call them.
-    pub fn interval_evidence(&self) -> Option<(polars::prelude::Expr, String, usize)> {
+    /// `schema`, the data's where known, lets a partition segment compare in its
+    /// column's type.
+    pub fn interval_evidence(
+        &self,
+        schema: Option<&polars::prelude::Schema>,
+    ) -> Option<(polars::prelude::Expr, String, usize)> {
         let results = self.data_quality_results.as_ref()?;
         if !matches!(
             results.precision,
@@ -1141,7 +1146,7 @@ impl AnalysisModal {
         if count == 0 {
             return None;
         }
-        let predicate = profile.evidence_predicate(fact, plan)?;
+        let predicate = profile.evidence_predicate(fact, plan, schema)?;
         Some((
             predicate,
             format!(

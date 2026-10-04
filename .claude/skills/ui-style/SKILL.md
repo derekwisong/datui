@@ -246,12 +246,15 @@ leaving:
   surfaces (chart deliberately has no quit key); `Ctrl+O` home. (#320
   landed the approved `q` evolution.)
 - `?` and F1 for help, including home's empty-filter `?`.
-- The feature keys: `/ f n N s c a p e i v V r R # F , D H`, Enter-to-drill
-  (where there is no group to drill into, Enter inspects the row, as Space
-  does; #542).
+- The feature keys: `/ f n N s c a p e i v V r R # F , D H L + -`,
+  Enter-to-drill (where there is no group to drill into, Enter inspects the
+  row, as Space does; #542).
   (#317 moved the views list from `t`/`T` to `v`/`V` with the rename;
   #559 moved row numbers from `N` to `#` for find's `f`, `n` and `N`;
-  #558 gave `F` to value counts and moved digit grouping to `,`.)
+  #558 gave `F` to value counts and moved digit grouping to `,`;
+  #737 gave `H`/`L` to moving the cursor's column and `+`/`-` to filtering
+  on its cell, and moved the CSV header toggle to `H` on the Info panel's
+  Schema tab.)
 - Text fields keep their readline bindings.
 - Home's type-to-filter: every printable except `?` and Space (empty filter
   only) and `~` goes to the filter. Never assign a letter key on the home

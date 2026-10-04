@@ -97,34 +97,26 @@ pub(crate) fn sort_call(columns: &[String], descending: &[bool]) -> String {
     format!(".sort({by}, {descending}nulls_last=True, maintain_order=True)")
 }
 
-/// The value a sidebar filter compares with, typed as the column is: a number for a
-/// numeric column when the text reads as one, text otherwise.
+/// The value a sidebar filter compares with: a literal of the column's type, read by
+/// [`crate::typed_value::parse`], or the text as typed where it does not read as one
+/// (Polars then refuses the comparison, which the sidebar says before it applies).
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilterValue {
-    Float(f64),
-    Int(i64),
-    UInt(u64),
-    Bool(bool),
+    Typed(Scalar),
     Str(String),
 }
 
 impl FilterValue {
     fn lit(&self) -> Expr {
         match self {
-            FilterValue::Float(f) => lit(*f),
-            FilterValue::Int(i) => lit(*i),
-            FilterValue::UInt(u) => lit(*u),
-            FilterValue::Bool(b) => lit(*b),
+            FilterValue::Typed(scalar) => lit(scalar.clone()),
             FilterValue::Str(s) => lit(s.as_str()),
         }
     }
 
     fn python(&self) -> String {
         match self {
-            FilterValue::Float(f) => py_float(*f),
-            FilterValue::Int(i) => i.to_string(),
-            FilterValue::UInt(u) => u.to_string(),
-            FilterValue::Bool(b) => py_bool(*b).to_string(),
+            FilterValue::Typed(scalar) => crate::typed_value::python(scalar),
             FilterValue::Str(s) => py_str(s),
         }
     }
@@ -145,25 +137,11 @@ pub struct SidebarFilter {
 impl SidebarFilter {
     pub fn typed(statement: &FilterStatement, dtype: Option<&DataType>) -> Self {
         let text = statement.value.as_str();
-        let as_text = || FilterValue::Str(text.to_string());
         let value = match dtype {
-            Some(DataType::Float32 | DataType::Float64) => text
-                .parse()
-                .map(FilterValue::Float)
-                .unwrap_or_else(|_| as_text()),
-            Some(DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64) => text
-                .parse()
-                .map(FilterValue::Int)
-                .unwrap_or_else(|_| as_text()),
-            Some(DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64) => text
-                .parse()
-                .map(FilterValue::UInt)
-                .unwrap_or_else(|_| as_text()),
-            Some(DataType::Boolean) => text
-                .parse()
-                .map(FilterValue::Bool)
-                .unwrap_or_else(|_| as_text()),
-            _ => as_text(),
+            None | Some(DataType::String) => FilterValue::Str(text.to_string()),
+            Some(dtype) => crate::typed_value::parse(text, dtype)
+                .map(FilterValue::Typed)
+                .unwrap_or_else(|_| FilterValue::Str(text.to_string())),
         };
         Self {
             column: statement.column.clone(),
@@ -172,6 +150,21 @@ impl SidebarFilter {
             text: statement.value.clone(),
             logical_op: statement.logical_op,
         }
+    }
+
+    /// Why `statement` cannot compare with a column of `dtype`, said for the user:
+    /// its value does not read as the column's type. `None` when it can, and for
+    /// `contains` and the null tests, which read no value of the column's type.
+    pub fn problem(statement: &FilterStatement, dtype: Option<&DataType>) -> Option<String> {
+        let compares = statement.operator.takes_value()
+            && !matches!(
+                statement.operator,
+                FilterOperator::Contains | FilterOperator::NotContains
+            );
+        let dtype = dtype.filter(|_| compares)?;
+        crate::typed_value::parse(&statement.value, dtype)
+            .err()
+            .map(|why| format!("{}: {why}", statement.column))
     }
 
     fn expr(&self) -> Expr {
@@ -190,6 +183,8 @@ impl SidebarFilter {
             FilterOperator::LtEq => column.lt_eq(self.value.lit()),
             FilterOperator::Contains => contains(),
             FilterOperator::NotContains => contains().not(),
+            FilterOperator::IsNull => column.is_null(),
+            FilterOperator::IsNotNull => column.is_not_null(),
         }
     }
 
@@ -213,6 +208,8 @@ impl SidebarFilter {
                     py_str(&self.text)
                 );
             }
+            FilterOperator::IsNull => return format!("{column}.is_null()"),
+            FilterOperator::IsNotNull => return format!("{column}.is_not_null()"),
         };
         format!("{column} {op} {}", self.value.python())
     }
@@ -1459,6 +1456,137 @@ mod tests {
             steps,
         }
         .render()
+    }
+
+    /// Six dates, times, durations, decimals and floats, a null in each.
+    fn typed_frame() -> DataFrame {
+        let tz = TimeZone::opt_try_new(Some("Europe/Paris")).unwrap();
+        let us = |h: i64| 1_704_067_200_000_000 + h * 3_600_000_000;
+        df!(
+            "d" => &[Some(19723i32), Some(19724), Some(19725), None],
+            "t" => &[Some(us(0)), Some(us(5)), Some(us(24)), None],
+            "c" => &[Some(5 * 3_600_000_000_000i64), Some(6 * 3_600_000_000_000 + 500_000_000), Some(7 * 3_600_000_000_000), None],
+            "du" => &[Some(1_000i64), Some(90_000), Some(3_600_000), None],
+            "m" => &[Some("1.50"), Some("2.00"), Some("3.25"), None],
+            "f" => &[Some(0.1f32), Some(0.2), Some(0.1), None],
+            "x" => &[Some(0.1 + 0.2), Some(0.3), Some(1.0), None],
+        )
+        .unwrap()
+        .lazy()
+        .with_columns([
+            col("d").cast(DataType::Date),
+            col("t").cast(DataType::Datetime(TimeUnit::Microseconds, None)),
+            col("t")
+                .cast(DataType::Datetime(TimeUnit::Microseconds, tz))
+                .alias("z"),
+            col("c").cast(DataType::Time),
+            col("du").cast(DataType::Duration(TimeUnit::Milliseconds)),
+            col("m").cast(DataType::Decimal(10, 2)),
+        ])
+        .collect()
+        .unwrap()
+    }
+
+    #[test]
+    fn every_operator_compares_in_the_columns_own_type() {
+        use FilterOperator::*;
+        let frame = typed_frame();
+        let schema = frame.schema().clone();
+        let rows = |column: &str, operator, value: &str| {
+            let statement = statement(column, operator, value);
+            assert_eq!(SidebarFilter::problem(&statement, schema.get(column)), None);
+            let typed = SidebarFilter::typed(&statement, schema.get(column));
+            frame
+                .clone()
+                .lazy()
+                .filter(filters_expr(&[typed]).unwrap())
+                .collect()
+                .unwrap_or_else(|e| panic!("{column} {operator:?} {value}: {e}"))
+                .height()
+        };
+        for (column, value, counts) in [
+            ("d", "2024-01-02", [1, 2, 1, 1, 2, 2]),
+            // A date alone is its midnight.
+            ("t", "2024-01-01", [1, 2, 2, 0, 3, 1]),
+            ("t", "2024-01-01 05:00", [1, 2, 1, 1, 2, 2]),
+            ("t", "2024-01-01T05:00:00.000", [1, 2, 1, 1, 2, 2]),
+            // A clock in the column's zone: 06:00 in Paris is 05:00 UTC.
+            ("z", "2024-01-01 06:00", [1, 2, 1, 1, 2, 2]),
+            ("z", "2024-01-01 05:00+00:00", [1, 2, 1, 1, 2, 2]),
+            ("c", "06:00:00.5", [1, 2, 1, 1, 2, 2]),
+            ("du", "1m 30s", [1, 2, 1, 1, 2, 2]),
+            ("m", "2", [1, 2, 1, 1, 2, 2]),
+            ("m", "1.5", [1, 2, 2, 0, 3, 1]),
+            // Exact: 0.1 + 0.2 is not 0.3.
+            ("x", "0.3", [1, 2, 2, 0, 3, 1]),
+        ] {
+            let got = [Eq, NotEq, Gt, Lt, GtEq, LtEq].map(|op| rows(column, op, value));
+            assert_eq!(got, counts, "{column} {value}");
+        }
+        // A float32 column reads the value as a float32.
+        assert_eq!(rows("f", Eq, "0.1"), 2);
+        assert_eq!(rows("x", IsNull, ""), 1);
+        assert_eq!(rows("x", IsNotNull, ""), 3);
+    }
+
+    #[test]
+    fn a_value_that_does_not_read_as_the_column_says_so() {
+        let frame = typed_frame();
+        let schema = frame.schema();
+        let problem = |column: &str, operator, value: &str| {
+            SidebarFilter::problem(&statement(column, operator, value), schema.get(column))
+        };
+        assert_eq!(
+            problem("d", FilterOperator::Eq, "2024-13-01").as_deref(),
+            Some("d: \"2024-13-01\" is not a date written YYYY-MM-DD")
+        );
+        assert!(problem("t", FilterOperator::Gt, "soon").is_some());
+        assert!(problem("x", FilterOperator::Lt, "abc").is_some());
+        // Text matching and null tests read no value of the column's type.
+        assert_eq!(problem("d", FilterOperator::Contains, "2024"), None);
+        assert_eq!(problem("d", FilterOperator::IsNull, ""), None);
+    }
+
+    #[test]
+    fn typed_filters_read_back_in_python() {
+        let frame = typed_frame();
+        let schema = frame.schema();
+        let python = |column: &str, operator, value: &str| {
+            SidebarFilter::typed(&statement(column, operator, value), schema.get(column)).python()
+        };
+        assert_eq!(
+            python("d", FilterOperator::Eq, "2024-01-02"),
+            "pl.col(\"d\") == pl.date(2024, 1, 2)"
+        );
+        assert_eq!(
+            python("t", FilterOperator::Gt, "2024-01-01 05:00"),
+            "pl.col(\"t\") > pl.datetime(2024, 1, 1, 5, 0, 0, 0, time_unit=\"us\")"
+        );
+        assert_eq!(
+            python("z", FilterOperator::LtEq, "2024-01-01 06:00"),
+            "pl.col(\"z\") <= pl.datetime(2024, 1, 1, 5, 0, 0, 0, time_unit=\"us\", \
+             time_zone=\"UTC\").dt.convert_time_zone(\"Europe/Paris\")"
+        );
+        assert_eq!(
+            python("c", FilterOperator::Eq, "06:00:00.5"),
+            "pl.col(\"c\") == pl.time(6, 0, 0, 500000)"
+        );
+        assert_eq!(
+            python("du", FilterOperator::Lt, "1h"),
+            "pl.col(\"du\") < pl.duration(milliseconds=3600000, time_unit=\"ms\")"
+        );
+        assert_eq!(
+            python("m", FilterOperator::NotEq, "1.5"),
+            "pl.col(\"m\") != pl.lit(\"1.50\").cast(pl.Decimal(10, 2))"
+        );
+        assert_eq!(
+            python("x", FilterOperator::Eq, "0.3"),
+            "pl.col(\"x\") == 0.3"
+        );
+        assert_eq!(
+            python("x", FilterOperator::IsNull, ""),
+            "pl.col(\"x\").is_null()"
+        );
     }
 
     #[test]

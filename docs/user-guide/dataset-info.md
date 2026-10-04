@@ -67,6 +67,11 @@ Every key of the panel is in the
 count is the dataset's, not the page's; <kbd>D</kbd> at the table shows the
 column types in a second header row.
 
+On a CSV, TSV or PSV file, <kbd>H</kbd> on the Schema tab reads the first row
+as data, under `column_1`, `column_2`, …, and again as column names. It reads
+the file again, so the query, filters and sort are cleared, and the panel
+closes. The footer offers it only for those files.
+
 ## Model
 
 For a [SafeTensors or GGUF file](../formats/model-files.md), <kbd>i</kbd>

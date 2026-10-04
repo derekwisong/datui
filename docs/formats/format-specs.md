@@ -262,8 +262,8 @@ column, and its unit. There is no expression language: anything more is a
 
 A delimited spec matches a file whose name says no format datui reads, or says
 `.csv`, `.tsv` or `.psv`, compressed or not. A directory is read through the
-spec its first file matches. <kbd>H</kbd> reads the file without a header, and
-without its derived columns.
+spec its first file matches. <kbd>H</kbd> on the Info panel's Schema tab reads
+the file without a header, and without its derived columns.
 
 ## Checks
 

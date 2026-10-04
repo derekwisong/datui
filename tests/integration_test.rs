@@ -16678,8 +16678,25 @@ fn column_names(app: &App) -> Vec<String> {
         .collect()
 }
 
-/// `H` reads a headerless CSV's first row as data, under generated names, and back.
-/// The Info notes say so first: every column name a number is a first row of data.
+/// `H` on the Info panel's Schema tab: the first row the other way. The panel opens
+/// on Notes while there are unread ones, so this walks to Schema first.
+fn header_from_schema_tab(app: &mut App, rx: &mpsc::Receiver<AppEvent>) {
+    use datui::widgets::info::InfoTab;
+    assert!(app.event(&key(KeyCode::Char('i'))).is_none());
+    assert_eq!(app.input_mode, InputMode::Info);
+    for _ in 0..16 {
+        if app.info_modal.active_tab == InfoTab::Schema {
+            break;
+        }
+        app.event(&key(KeyCode::Right));
+    }
+    assert_eq!(app.info_modal.active_tab, InfoTab::Schema);
+    settle_from(app, rx, key(KeyCode::Char('H')));
+}
+
+/// `H` on the Schema tab reads a headerless CSV's first row as data, under generated
+/// names, and back. The Info notes say so first: every column name a number is a
+/// first row of data.
 #[test]
 fn h_turns_a_csv_header_off_and_on() {
     common::isolate_cache();
@@ -16700,7 +16717,12 @@ fn h_turns_a_csv_header_off_and_on() {
         "{notes:?}"
     );
 
-    settle_from(&mut app, &rx, key(KeyCode::Char('H')));
+    header_from_schema_tab(&mut app, &rx);
+    assert_eq!(
+        app.input_mode,
+        InputMode::Normal,
+        "the read takes the screen"
+    );
     assert_eq!(column_names(&app), ["column_1", "column_2"]);
     let notes = app.data_table_state.as_ref().unwrap().notes();
     assert!(
@@ -16708,11 +16730,19 @@ fn h_turns_a_csv_header_off_and_on() {
         "read as data, there is nothing to say: {notes:?}"
     );
 
-    settle_from(&mut app, &rx, key(KeyCode::Char('H')));
+    header_from_schema_tab(&mut app, &rx);
     assert_eq!(column_names(&app), ["39", "77516"]);
+
+    // At the table, H moves a column now; it reads nothing again.
+    settle_from(&mut app, &rx, key(KeyCode::Char('l')));
+    settle_from(&mut app, &rx, key(KeyCode::Char('H')));
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.headers(), ["77516", "39"]);
+    assert_eq!(column_names(&app), ["39", "77516"], "the schema is as read");
 }
 
-/// A format that carries its own column names has no header to turn off.
+/// A format that carries its own column names has no header to turn off: the Schema
+/// tab's `H` does nothing and its footer does not offer it.
 #[test]
 fn h_does_nothing_on_parquet() {
     common::ensure_sample_data();
@@ -16725,8 +16755,15 @@ fn h_does_nothing_on_parquet() {
         AppEvent::Open(vec![path], OpenOptions::default()),
     );
     let before = column_names(&app);
+    assert!(!app.header_toggle_offered());
+    assert!(app.event(&key(KeyCode::Char('i'))).is_none());
     assert!(app.event(&key(KeyCode::Char('H'))).is_none());
     assert!(!app.is_busy());
+    assert_eq!(
+        app.input_mode,
+        InputMode::Info,
+        "nothing to read, the panel stays"
+    );
     assert_eq!(column_names(&app), before);
 }
 
@@ -16994,7 +17031,7 @@ fn h_rereads_a_download_from_the_copy_on_hand() {
     let downloads = fetched.load(Ordering::SeqCst);
     assert!(downloads >= 1, "it was downloaded");
 
-    settle_from(&mut app, &rx, key(KeyCode::Char('H')));
+    header_from_schema_tab(&mut app, &rx);
     assert_eq!(column_names(&app), ["column_1", "column_2"]);
     assert_eq!(
         fetched.load(Ordering::SeqCst),
@@ -17026,7 +17063,7 @@ fn a_compressed_csv_over_http_is_its_url() {
     assert_eq!(app.open_path(), Some(Path::new(&url)));
 
     // Reread from the copy on hand, still under the URL.
-    settle_from(&mut app, &rx, key(KeyCode::Char('H')));
+    header_from_schema_tab(&mut app, &rx);
     assert_eq!(column_names(&app), ["column_1", "column_2"]);
     assert_eq!(app.open_path(), Some(Path::new(&url)));
 
@@ -22168,6 +22205,333 @@ fn test_the_column_cursor_drives_the_per_column_keys() {
     press_and_send(&mut app, &tx, KeyCode::Esc);
 }
 
+/// Six rows of every kind of value `+` and `-` filter on, and a list they do not.
+fn open_quick_filter_table(name: &str) -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    let mut df = df!(
+        "name" => &[Some("north"), Some("south"), None, Some("north"), Some("east"), Some("south")],
+        "n" => &[1i64, 2, 3, 2, 2, 1],
+        // 0.1 + 0.2 and 0.3 are both drawn 0.3, and are not equal.
+        "x" => &[Some(0.1 + 0.2), Some(0.3), Some(1.0 / 3.0), Some(1.0 / 3.0), None, Some(2.5)],
+        "day" => &[Some(19723i32), Some(19724), Some(19723), None, Some(19725), Some(19723)],
+    )
+    .unwrap()
+    .lazy()
+    .with_column(col("day").cast(DataType::Date))
+    .collect()
+    .unwrap();
+    let tags: Vec<Series> = (0..6i64).map(|i| Series::new("".into(), &[i, i])).collect();
+    df.with_column(Series::new("tags".into(), tags).into_column())
+        .unwrap();
+    let path = common::fixture_dir().join(name);
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    draw_sized(&mut app, (100, 24));
+    (app, rx, tx)
+}
+
+/// A key at the table, and everything it sets off, to the frame after.
+fn table_key(app: &mut App, rx: &mpsc::Receiver<AppEvent>, tx: &mpsc::Sender<AppEvent>, c: char) {
+    run_and_settle(app, key(KeyCode::Char(c)), rx, tx);
+    draw_sized(app, (100, 24));
+}
+
+/// `H` / `L` move the column cursor's column through the column order, the cursor
+/// with it; a frozen column stays among the frozen ones; `R` puts the order back.
+#[test]
+fn h_and_l_move_the_cursors_column() {
+    let (mut app, rx, tx) = open_quick_filter_table("move_columns.parquet");
+    let state = |app: &App| {
+        let s = app.data_table_state.as_ref().unwrap();
+        (s.headers(), s.current_column().unwrap().to_string())
+    };
+    let original = state(&app).0;
+    assert_eq!(original, ["name", "n", "x", "day", "tags"]);
+
+    table_key(&mut app, &rx, &tx, 'L');
+    assert_eq!(
+        state(&app),
+        (strings(&["n", "name", "x", "day", "tags"]), "name".into())
+    );
+    table_key(&mut app, &rx, &tx, 'L');
+    assert_eq!(state(&app).0, ["n", "x", "name", "day", "tags"]);
+    assert_eq!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .current_column_index(),
+        Some(2),
+        "the cursor went with it"
+    );
+    table_key(&mut app, &rx, &tx, 'H');
+    assert_eq!(
+        state(&app),
+        (strings(&["n", "name", "x", "day", "tags"]), "name".into())
+    );
+    // At an end, nothing moves.
+    table_key(&mut app, &rx, &tx, '{');
+    assert!(press(&mut app, KeyCode::Char('H')).is_none());
+    table_key(&mut app, &rx, &tx, '}');
+    assert!(press(&mut app, KeyCode::Char('L')).is_none());
+    // The sidebar shows the order H and L made.
+    press(&mut app, KeyCode::Char('s'));
+    let names: Vec<String> = app.sort_filter_modal.sort.get_column_order();
+    assert_eq!(names, ["n", "name", "x", "day", "tags"]);
+    press(&mut app, KeyCode::Esc);
+
+    table_key(&mut app, &rx, &tx, 'R');
+    assert_eq!(state(&app).0, original, "R resets the order");
+
+    // Frozen: `name` alone; it cannot leave the frozen block, nor `n` enter it.
+    run_and_settle(
+        &mut app,
+        AppEvent::ColumnOrder(original.clone(), 1),
+        &rx,
+        &tx,
+    );
+    draw_sized(&mut app, (100, 24));
+    table_key(&mut app, &rx, &tx, '{');
+    assert_eq!(state(&app).1, "name");
+    assert!(press(&mut app, KeyCode::Char('L')).is_none());
+    table_key(&mut app, &rx, &tx, 'l');
+    assert_eq!(state(&app).1, "n");
+    assert!(press(&mut app, KeyCode::Char('H')).is_none());
+    table_key(&mut app, &rx, &tx, 'L');
+    assert_eq!(state(&app).0, ["name", "x", "n", "day", "tags"]);
+    assert_eq!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .locked_columns_count(),
+        1
+    );
+}
+
+fn strings(names: &[&str]) -> Vec<String> {
+    names.iter().map(|n| n.to_string()).collect()
+}
+
+/// The rows the view holds, and its filters as `column op value`.
+fn quick_view(app: &App) -> (usize, Vec<String>) {
+    let state = app.data_table_state.as_ref().unwrap();
+    let rows = state.lf().clone().collect().unwrap().height();
+    let filters = state
+        .view_filters()
+        .iter()
+        .map(|f| {
+            format!("{} {} {}", f.column, f.operator.as_str(), f.value)
+                .trim_end()
+                .to_string()
+        })
+        .collect();
+    (rows, filters)
+}
+
+/// `+` keeps the rows with the cursor's cell's value and `-` drops them, each a
+/// filter in the sidebar's list that joins the others with "and"; a null cell is a
+/// null test, a float matches as drawn, a date by its text; `R` clears them all.
+#[test]
+fn plus_and_minus_filter_on_the_cursors_cell() {
+    let (mut app, rx, tx) = open_quick_filter_table("quick_filter.parquet");
+
+    table_key(&mut app, &rx, &tx, '+');
+    assert_eq!(quick_view(&app), (2, strings(&["name = north"])));
+    // In the Filters tab, where it can be edited.
+    press(&mut app, KeyCode::Char('s'));
+    let listed = &app.sort_filter_modal.filter.statements;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(
+        (listed[0].column.as_str(), listed[0].value.as_str()),
+        ("name", "north")
+    );
+    press(&mut app, KeyCode::Esc);
+    // Joined with "and": north rows with n other than 1.
+    table_key(&mut app, &rx, &tx, 'l');
+    table_key(&mut app, &rx, &tx, '-');
+    assert_eq!(quick_view(&app), (1, strings(&["name = north", "n != 1"])));
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().view_filters()[1].logical_op,
+        datui::filter_modal::LogicalOperator::And
+    );
+    table_key(&mut app, &rx, &tx, 'R');
+    run_and_settle(&mut app, key(KeyCode::Home), &rx, &tx);
+    assert_eq!(quick_view(&app), (6, vec![]), "R clears them");
+
+    // A float, exactly as stored: 0.1 + 0.2 is drawn 0.3 beside 0.3, and is not it.
+    let to_x = |app: &mut App| {
+        for c in ['{', 'l', 'l'] {
+            table_key(app, &rx, &tx, c);
+        }
+        assert_eq!(
+            app.data_table_state.as_ref().unwrap().current_column(),
+            Some("x")
+        );
+    };
+    to_x(&mut app);
+    table_key(&mut app, &rx, &tx, '+');
+    assert_eq!(quick_view(&app), (1, strings(&["x = 0.30000000000000004"])));
+    table_key(&mut app, &rx, &tx, 'R');
+    run_and_settle(&mut app, key(KeyCode::Home), &rx, &tx);
+    to_x(&mut app);
+    table_key(&mut app, &rx, &tx, 'j');
+    table_key(&mut app, &rx, &tx, '+');
+    assert_eq!(quick_view(&app), (1, strings(&["x = 0.3"])));
+    table_key(&mut app, &rx, &tx, 'R');
+    run_and_settle(&mut app, key(KeyCode::Home), &rx, &tx);
+    // A third twice: + keeps both, - drops exactly those (and the null).
+    to_x(&mut app);
+    table_key(&mut app, &rx, &tx, 'j');
+    table_key(&mut app, &rx, &tx, 'j');
+    table_key(&mut app, &rx, &tx, '+');
+    assert_eq!(quick_view(&app).0, 2);
+    table_key(&mut app, &rx, &tx, 'R');
+    run_and_settle(&mut app, key(KeyCode::Home), &rx, &tx);
+    to_x(&mut app);
+    table_key(&mut app, &rx, &tx, 'j');
+    table_key(&mut app, &rx, &tx, 'j');
+    table_key(&mut app, &rx, &tx, '-');
+    assert_eq!(quick_view(&app), (3, strings(&["x != 0.3333333333333333"])));
+    table_key(&mut app, &rx, &tx, 'R');
+    run_and_settle(&mut app, key(KeyCode::Home), &rx, &tx);
+
+    // A null cell: is null, not null.
+    table_key(&mut app, &rx, &tx, '{');
+    table_key(&mut app, &rx, &tx, 'j');
+    table_key(&mut app, &rx, &tx, 'j');
+    table_key(&mut app, &rx, &tx, '+');
+    assert_eq!(quick_view(&app), (1, strings(&["name is null"])));
+    table_key(&mut app, &rx, &tx, 'R');
+    run_and_settle(&mut app, key(KeyCode::Home), &rx, &tx);
+    table_key(&mut app, &rx, &tx, 'j');
+    table_key(&mut app, &rx, &tx, 'j');
+    table_key(&mut app, &rx, &tx, '-');
+    assert_eq!(quick_view(&app), (5, strings(&["name not null"])));
+    table_key(&mut app, &rx, &tx, 'R');
+    run_and_settle(&mut app, key(KeyCode::Home), &rx, &tx);
+
+    // A date.
+    table_key(&mut app, &rx, &tx, '{');
+    for c in ['l', 'l', 'l'] {
+        table_key(&mut app, &rx, &tx, c);
+    }
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().current_column(),
+        Some("day")
+    );
+    table_key(&mut app, &rx, &tx, '+');
+    assert_eq!(quick_view(&app), (3, strings(&["day = 2024-01-01"])));
+    table_key(&mut app, &rx, &tx, 'R');
+    run_and_settle(&mut app, key(KeyCode::Home), &rx, &tx);
+
+    // A list: a flash, and nothing filtered.
+    table_key(&mut app, &rx, &tx, '}');
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().current_column(),
+        Some("tags")
+    );
+    assert!(press(&mut app, KeyCode::Char('+')).is_none());
+    assert_eq!(quick_view(&app), (6, vec![]));
+    assert_eq!(
+        app.flash_message(),
+        Some("+ and - filter on plain values, not lists")
+    );
+}
+
+/// `+` and `-` on a cell of every type keep or drop exactly the rows with its value:
+/// the filter's text reads back to the very value, to the last fraction of a second,
+/// in the column's zone, at the column's scale.
+#[test]
+fn plus_and_minus_keep_the_exact_value_of_every_type() {
+    // Each column: the first row's value three times, two others, a null.
+    let paris = TimeZone::opt_try_new(Some("Europe/Paris")).unwrap();
+    // 02:30:00.123456 on the night Paris falls back, the second time.
+    let ambiguous = 1_729_992_600_123_456i64;
+    let pattern = |a: i64, b: i64, c: i64| [Some(a), Some(b), Some(a), None, Some(c), Some(a)];
+    let mut df = df!(
+        "f" => &[Some(0.1f32), Some(0.2), Some(0.1), None, Some(0.3), Some(0.1)],
+        "day" => &[Some(19723i32), Some(19724), Some(19723), None, Some(19725), Some(19723)],
+        "ts" => &pattern(1_704_085_200_123_456, 1_704_085_200_123_457, 0),
+        "tz" => &pattern(ambiguous, ambiguous - 3_600_000_000, 0),
+        "clock" => &pattern(18_367_123_456_789, 18_367_123_456_788, 0),
+        "dur" => &pattern(93_784_000_005, 93_784_000_006, -90_000_000),
+        "dec" => &[Some("1.50"), Some("2.00"), Some("1.5"), None, Some("3.25"), Some("1.50")],
+    )
+    .unwrap()
+    .lazy()
+    .with_columns([
+        col("day").cast(DataType::Date),
+        col("ts").cast(DataType::Datetime(TimeUnit::Microseconds, None)),
+        col("tz").cast(DataType::Datetime(TimeUnit::Microseconds, paris)),
+        col("clock").cast(DataType::Time),
+        col("dur").cast(DataType::Duration(TimeUnit::Microseconds)),
+        col("dec").cast(DataType::Decimal(10, 2)),
+    ])
+    .collect()
+    .unwrap();
+    let path = common::fixture_dir().join("quick_filter_types.parquet");
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    draw_sized(&mut app, (160, 24));
+
+    for column in ["f", "day", "ts", "tz", "clock", "dur", "dec"] {
+        for (pressed, rows) in [('+', 3), ('-', 2)] {
+            app.data_table_state
+                .as_mut()
+                .unwrap()
+                .set_current_column(column);
+            run_and_settle(&mut app, key_event(pressed), &rx, &tx);
+            draw_sized(&mut app, (160, 24));
+            let (got, filters) = quick_view(&app);
+            assert_eq!(got, rows, "{column} {pressed}: {filters:?}");
+            run_and_settle(&mut app, key_event('R'), &rx, &tx);
+            run_and_settle(&mut app, key(KeyCode::Home), &rx, &tx);
+            draw_sized(&mut app, (160, 24));
+        }
+    }
+}
+
+fn key_event(c: char) -> AppEvent {
+    key(KeyCode::Char(c))
+}
+
+/// A filter value its column cannot read stays in the sidebar, which says why, and
+/// applies nothing.
+#[test]
+fn a_filter_value_its_column_cannot_read_is_refused_with_a_reason() {
+    let (mut app, rx, tx) = open_quick_filter_table("quick_filter_refused.parquet");
+    press(&mut app, KeyCode::Char('s'));
+    app.sort_filter_modal
+        .filter
+        .statements
+        .push(datui::filter_modal::FilterStatement {
+            column: "day".into(),
+            operator: datui::filter_modal::FilterOperator::Gt,
+            value: "2024-13-01".into(),
+            logical_op: datui::filter_modal::LogicalOperator::And,
+        });
+    run_and_settle(&mut app, key(KeyCode::Enter), &rx, &tx);
+    assert_eq!(app.input_mode, InputMode::SortFilter, "the sidebar stays");
+    assert_eq!(
+        app.sort_filter_modal.sort.status.as_deref(),
+        Some("day: \"2024-13-01\" is not a date written YYYY-MM-DD")
+    );
+    assert_eq!(quick_view(&app), (6, vec![]), "nothing applied");
+    // Fixed, it applies.
+    app.sort_filter_modal.filter.statements[0].value = "2024-01-01".into();
+    run_and_settle(&mut app, key(KeyCode::Enter), &rx, &tx);
+    assert_eq!(app.input_mode, InputMode::Normal);
+    assert_eq!(quick_view(&app), (2, strings(&["day > 2024-01-01"])));
+}
+
 /// The theme's style for the column cursor's header and the current cell.
 fn cell_cursor_style() -> ratatui::style::Style {
     datui::config::Theme::from_config(&datui::config::ThemeConfig::default())
@@ -22864,10 +23228,10 @@ fn h_reads_header_rows_as_data_and_back() {
         ),
     );
     assert_eq!(column_names(&app), ["station", "temp degC", "pressure hPa"]);
-    settle_from(&mut app, &rx, key(KeyCode::Char('H')));
+    header_from_schema_tab(&mut app, &rx);
     assert_eq!(column_names(&app), ["column_1", "column_2", "column_3"]);
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 5);
-    settle_from(&mut app, &rx, key(KeyCode::Char('H')));
+    header_from_schema_tab(&mut app, &rx);
     assert_eq!(column_names(&app), ["station", "temp degC", "pressure hPa"]);
 }
 

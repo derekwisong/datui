@@ -21,7 +21,7 @@ that explains it.
 | datui asks before reading a file into memory | JSON, Avro, ORC, Excel and some others are read whole; past `read.memory_warning` (1 GiB) datui asks first. [How each format is read](../formats/index.md#how-each-format-is-read) says which; Parquet, CSV and Arrow IPC are read lazily |
 | datui asks before downloading | A web file, and a bucket object of a format not read in place, is copied to the temp directory first: [How each format is read](../formats/index.md#how-each-format-is-read) |
 | A sort, query or analysis is slow on a large file | It reads every row the operation needs, not just the screen: [Large datasets](../user-guide/large-datasets.md) |
-| The first row of a CSV is data, or the header is | `--no-header`, or <kbd>H</kbd> on the table: [Delimited text](../formats/delimited-text.md) |
+| The first row of a CSV is data, or the header is | `--no-header`, or <kbd>H</kbd> on the Info panel's Schema tab: [Delimited text](../formats/delimited-text.md) |
 | A file has no extension, or the wrong one | `--format NAME`; `datui --help` lists the names: [Formats](../formats/index.md) |
 | A file datui cannot read opens as bytes | No reader and no format spec takes it: [Hex view](../user-guide/hex-view.md), and [Format specs](../formats/format-specs.md) to describe it |
 

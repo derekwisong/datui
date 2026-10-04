@@ -115,6 +115,13 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
     } else {
         let filters_focused = modal.focus == SortFilterFocus::Body;
         render_filters_tab(body, buf, &mut modal.filter, filters_focused, ctx);
+        // A value that does not read as its column's type, until the next key.
+        if let Some(status) = &modal.sort.status {
+            Paragraph::new(status.as_str())
+                .style(Style::default().fg(ctx.warning))
+                .render(hints_area, buf);
+            return;
+        }
         match modal.filter.editor.as_ref().map(|editor| editor.step) {
             None => HintBar::from_ctx(ctx)
                 .hint_weighted("Enter", "Add/Edit", 5)

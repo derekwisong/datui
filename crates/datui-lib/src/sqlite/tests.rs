@@ -801,6 +801,8 @@ fn filters_and_sorts_run_in_sqlite_as_polars_would() {
             vec![("u".to_string(), true)],
         ),
         (vec![filter("s", NotEq, "Apple", And)], vec![]),
+        (vec![filter("x", Eq, "2.5", And)], vec![]),
+        (vec![filter("x", NotEq, "2.5", And)], vec![]),
         (
             vec![],
             vec![("s".to_string(), true), ("x".to_string(), false)],
@@ -809,30 +811,11 @@ fn filters_and_sorts_run_in_sqlite_as_polars_would() {
     for (filters, sort) in cases {
         let view = opened.pushdown.view(&filters, &sort, false).unwrap();
         // What Polars makes of the same, as the sidebar builds it.
-        let mut predicate: Option<Expr> = None;
-        for f in &filters {
-            let value = match whole.schema().get(f.column.as_str()).unwrap() {
-                DataType::Int64 => lit(f.value.parse::<i64>().unwrap()),
-                DataType::Float64 => lit(f.value.parse::<f64>().unwrap()),
-                _ => lit(f.value.clone()),
-            };
-            let c = col(f.column.as_str());
-            let atom = match f.operator {
-                Eq => c.eq(value),
-                NotEq => c.neq(value),
-                Gt => c.gt(value),
-                Lt => c.lt(value),
-                GtEq => c.gt_eq(value),
-                LtEq => c.lt_eq(value),
-                Contains => c.str().contains_literal(lit(f.value.clone())),
-                NotContains => c.str().contains_literal(lit(f.value.clone())).not(),
-            };
-            predicate = Some(match (predicate, f.logical_op) {
-                (None, _) => atom,
-                (Some(p), And) => p.and(atom),
-                (Some(p), Or) => p.or(atom),
-            });
-        }
+        let typed: Vec<_> = filters
+            .iter()
+            .map(|f| crate::python_script::SidebarFilter::typed(f, whole.schema().get(&f.column)))
+            .collect();
+        let predicate = crate::python_script::filters_expr(&typed);
         let mut lf = whole.clone().lazy();
         if let Some(p) = predicate {
             lf = lf.filter(p);
@@ -869,6 +852,14 @@ fn filters_and_sorts_run_in_sqlite_as_polars_would() {
     let back = opened.pushdown.view(&[], &[], true).unwrap();
     let got = back.lf.collect().unwrap();
     assert!(got.equals_missing(&whole.reverse()));
+    // A value SQLite holds that Polars reads as null is not NULL there, so a null
+    // test is left to Polars.
+    assert!(
+        opened
+            .pushdown
+            .view(&[filter("n", IsNull, "", And)], &[], false)
+            .is_none()
+    );
     // Polars would refuse these, and so are left to it.
     assert!(
         opened

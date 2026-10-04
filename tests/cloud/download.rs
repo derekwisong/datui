@@ -132,9 +132,9 @@ fn a_download_lands_whole_and_lives_with_its_dataset() {
     );
 }
 
-/// The dataset on screen holds its file, not just the app: `H` reads the same copy
-/// again, and an open that fails after the app let go leaves the dataset, and the
-/// file it scans lazily, in place.
+/// The dataset on screen holds its file, not just the app: `H` on the Schema tab
+/// reads the same copy again, and an open that fails after the app let go leaves the
+/// dataset, and the file it scans lazily, in place.
 #[test]
 fn a_failed_open_keeps_the_file_the_dataset_scans() {
     let s3 = serve(csv(1_000));
@@ -144,6 +144,12 @@ fn a_failed_open_keeps_the_file_the_dataset_scans() {
     settle(&mut app, &rx);
     let file = files_in(dir.path()).pop().expect("the download");
 
+    // `H` on the Info panel's Schema tab.
+    chain(
+        &mut app,
+        AppEvent::Key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE)),
+    );
+    app.info_modal.active_tab = datui::widgets::info::InfoTab::Schema;
     chain(
         &mut app,
         AppEvent::Key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::NONE)),

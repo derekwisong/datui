@@ -103,13 +103,15 @@ and automounts.
 | Field | Says |
 |---|---|
 | Kind, storage | The format, and the file system or object store |
-| Read | How a file opens: `lazy`, `converted once`, `in memory`, or `downloaded, then` one of those ([formats](../formats/index.md#how-each-format-is-read)) |
+| Read | How a file opens: `lazy scan`, `decompressed copy`, `converted to Arrow`, `in memory`, or `download →` one of those ([formats](../formats/index.md#how-each-format-is-read)) |
 | Contains | Files by format, directories and partitions |
 | Rows × columns | Known counts; blank when finding them would read the data. Parquet counts come from footers, up to 64 files; past that, `? × 39+` |
 | On disk, in memory | The stored size; Parquet's uncompressed size |
 | Row groups | Parquet's read units |
 | Partitions | Keys and values from the directory names |
-| Schema | The known columns and types |
+| Schema | The known columns and types; `on open` when only opening the file reads them |
+| `▲ footer unreadable` | A Parquet file whose footer could not be read; opening it will most likely fail too |
+| Enter, `→` | What <kbd>Enter</kbd> does on a directory, a door or a file of tables: `all partitions as one table`, `step in · first row opens all`, `its tables` |
 | `ROWS` | The first eight rows of a local CSV, TSV, PSV, NDJSON, Arrow IPC or Parquet file, read when the row is selected. <kbd>Enter</kbd> opens the file on those rows, so they are read once. `[home] preview_max` sets the largest file read; `0` turns it off. Network shares and object stores are not read before opening |
 
 Below about 100 columns the pane hides, and the first rows show in a strip at
@@ -139,7 +141,8 @@ A file not read lazily says how, dim beside its name:
 
 | Marker | Opening it |
 |---|---|
-| `converts` | Reads it once into a temporary file: an Arrow stream, NMEA, GPX, VCD, FIX, SDF, compressed text |
+| `decompresses` | Decompresses it whole into a temporary file, then scans that: compressed text |
+| `converts` | Converts it whole into a temporary Arrow file, then scans that: an Arrow stream, NMEA, GPX, VCD, FIX, SDF |
 | `in memory` | Reads it whole into memory: JSON, NDJSON, systemd journal, Avro, ORC, Excel, MIDI, ELF; SafeTensors and GGUF read only their header |
 | `downloads` | Downloads it first |
 
@@ -238,8 +241,8 @@ with no login, listed after your own. datui ships none of the data.
 - The pane gives the publisher, license and homepage; check the license
   before you use the data.
 - NYC flights, NOAA daily weather, NYC yellow taxis and Earthquakes carry
-  a codebook from their publisher's documentation: the pane lists what the
-  columns mean, and the [Info panel](dataset-info.md) and the
+  their publisher's documentation: the pane lists what the columns mean
+  under `DOCUMENTATION`, and the [Info panel](dataset-info.md) and the
   [inspector](inspecting-rows.md) explain them once the data is open.
 - NOAA daily weather lists two places to start from under it, `Daily highs,
   2024` and `Central Park, NY`. <kbd>Enter</kbd> opens one whole;

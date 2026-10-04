@@ -8,7 +8,7 @@ format records, how it is stored and read, and what datui noticed about it.
 
 | Tab | Shows |
 |---|---|
-| **Schema** | Row and column counts, column types, schema source, file coverage, and a Parquet file's per-column compression. A dataset a [collection](../reference/sources.md#codebooks) lists with a codebook adds what each column means (`About`), the selected column's note and codes below, and the codebook's link |
+| **Schema** | Row and column counts, column types, schema source, file coverage, and a Parquet file's per-column compression. A dataset a [collection](../reference/sources.md#documentation) documents adds what each column means (`About`), the selected column's note and codes below, and the documentation's link |
 | Format's own | What the file says besides its rows, named for its format; see [the table below](#tabs-by-format) |
 | **Metadata** | The metadata line a [delimited format spec](../formats/format-specs.md#delimited-text) names, as key and value; appears for files read through one |
 | **Resources** | File size, how the file is read, buffered memory, and loading measurements |

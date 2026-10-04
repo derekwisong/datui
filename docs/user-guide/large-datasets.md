@@ -18,7 +18,7 @@ datui --sample-rows 50000 https://d37ci6vzurychx.cloudfront.net/trip-data/yellow
 | Chart many rows | Charts read `[analysis] chart_rows` rows, 10,000 by default, spread across the table; aggregate a long time series first to chart every step |
 | Pivot a large table | Filter first: a pivot reads every row it covers to find its columns |
 | Open compressed CSV, TSV or PSV | Put `--temp-dir` on a disk with room for the uncompressed file |
-| See what a format reads | The [formats table](../formats/index.md#how-each-format-is-read): lazy, converted once, or in memory. Past `[read] memory_warning` (1 GiB by default), datui asks before reading a file into memory |
+| See what a format reads | The [formats table](../formats/index.md#how-each-format-is-read): lazy scan, decompressed copy, converted to Arrow, or in memory. Past `[read] memory_warning` (1 GiB by default), datui asks before reading a file into memory |
 | See what was read | <kbd>i</kbd> → **Resources** for the buffer and the loading measurements; **Notes** for row groups and small files |
 
 `[performance] streaming` (on by default) runs what Polars can in batches; it

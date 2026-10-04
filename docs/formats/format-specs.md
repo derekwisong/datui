@@ -297,8 +297,8 @@ and magic is read from the decompressed bytes.
 
 ## Large files
 
-A spec's file is read [lazy](index.md#how-each-format-is-read), or converted
-once when compressed. It is memory-mapped, and only the columns and rows on screen are decoded.
+A spec's file is read as a [lazy scan](index.md#how-each-format-is-read), or
+from a decompressed copy when compressed. It is memory-mapped, and only the columns and rows on screen are decoded.
 Records that are not all one size, and blocks, are indexed by one pass when the
 file opens. That pass keeps where each record starts (5 bytes a record, up to
 64M records), so a query reads every column from there rather than walking the

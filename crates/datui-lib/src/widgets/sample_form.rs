@@ -96,14 +96,14 @@ pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ct
             SampleField::RangeTo => {
                 if let Some(rows) = form.context.view_rows {
                     items.push(Item::Context(Line::styled(
-                        format!("The table has {} rows", crate::numfmt::group_chrome(rows)),
+                        format!("Table: {} rows", crate::numfmt::group_chrome(rows)),
                         dimmed,
                     )));
                 }
             }
             SampleField::TimeBefore => {
                 items.push(Item::Context(Line::styled(
-                    "Dates like 2024-01-31; Before is not included",
+                    format!("Dates as 2024-01-31 {} Before excluded", g.middot),
                     dimmed,
                 )));
             }

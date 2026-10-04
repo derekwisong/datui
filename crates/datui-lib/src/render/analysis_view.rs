@@ -330,7 +330,7 @@ pub fn help_title_and_text(modal: &AnalysisModal) -> (String, String) {
             ),
             None => (
                 "Analysis Help".to_string(),
-                "Select an analysis tool from the sidebar.".to_string(),
+                "Pick a tool in the sidebar".to_string(),
             ),
         },
     }

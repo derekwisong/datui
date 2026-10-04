@@ -427,7 +427,7 @@ path = "by_year/YEAR=2024/ELEMENT=TMAX/"
                 + "\n"
         })
         .collect();
-    assert!(screen.contains("CODEBOOK"), "{screen}");
+    assert!(screen.contains("DOCUMENTATION"), "{screen}");
     assert!(screen.contains("Quality flag"), "{screen}");
     assert!(
         screen.contains("https://example.com/readme.txt"),

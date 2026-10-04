@@ -123,15 +123,18 @@ fn render_list(
     }
 
     if modal.rows.is_empty() && modal.broken_views.is_empty() {
-        Paragraph::new("No saved views. s saves what the table shows now.")
-            .style(Style::default().fg(ctx.dimmed))
-            .render(
-                Rect {
-                    height: 1,
-                    ..content
-                },
-                buf,
-            );
+        Paragraph::new(format!(
+            "No saved views {} s saves one",
+            crate::glyphs::get().middot
+        ))
+        .style(Style::default().fg(ctx.dimmed))
+        .render(
+            Rect {
+                height: 1,
+                ..content
+            },
+            buf,
+        );
         return;
     }
 

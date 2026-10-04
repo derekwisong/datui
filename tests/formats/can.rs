@@ -174,7 +174,7 @@ fn a_log_opens_as_its_frames() {
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.format_detail().map(|d| d.tab), Some("CAN"));
     let notes: Vec<String> = state.notes().iter().map(|n| n.summary.clone()).collect();
-    assert!(notes.iter().any(|n| n.contains("not frames")), "{notes:?}");
+    assert!(notes.iter().any(|n| n.contains("non-frame")), "{notes:?}");
 }
 
 /// The form candump prints reads to the same frames.

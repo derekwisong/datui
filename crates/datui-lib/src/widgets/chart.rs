@@ -848,7 +848,7 @@ fn render_xy_chart(
             return Some(place);
         }
     } else {
-        Paragraph::new("Select X and Y columns in the sidebar.")
+        Paragraph::new("Pick X and Y in the sidebar")
             .style(Style::default().fg(text_secondary))
             .centered()
             .render(area, buf);
@@ -1194,7 +1194,7 @@ fn render_heatmap_chart(
     g: &Glyphs,
 ) {
     let Some(data) = data else {
-        Paragraph::new("Select X and Y columns for heatmap")
+        Paragraph::new("Pick X and Y in the sidebar")
             .style(Style::default().fg(text_secondary))
             .centered()
             .render(area, buf);

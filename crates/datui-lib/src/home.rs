@@ -903,7 +903,7 @@ impl Collection {
                         ("publisher", &dataset.publisher),
                         ("license", &dataset.license),
                         ("homepage", &dataset.homepage),
-                        ("codebook", &dataset.codebook),
+                        ("documentation", &dataset.codebook),
                     ]
                     .into_iter()
                     .filter(|(_, value)| !value.is_empty())

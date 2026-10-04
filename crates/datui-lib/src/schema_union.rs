@@ -3266,7 +3266,7 @@ mod tests {
             let dataset = union_file_schemas(&files, SchemaOrigin::AllFooters(files.len()));
             crate::notes::from_dataset(&dataset)
                 .into_iter()
-                .find(|note| note.summary.starts_with("the middle row group"))
+                .find(|note| note.summary.starts_with("median row group"))
                 .map(|note| note.summary)
         };
 
@@ -3278,7 +3278,7 @@ mod tests {
         );
         assert_eq!(
             note(&[&[65 * MIB]]).as_deref(),
-            Some("the middle row group is 65.0 MiB, and rows are read a row group at a time"),
+            Some("median row group 65.0 MiB, each read whole"),
         );
         assert_eq!(
             note(&[&[MIB, MIB, 4096 * MIB]]),
@@ -3287,19 +3287,19 @@ mod tests {
         );
         assert_eq!(
             note(&[&[100 * MIB, 100 * MIB], &[MIB]]).as_deref(),
-            Some("the middle row group is 100.0 MiB, and rows are read a row group at a time"),
+            Some("median row group 100.0 MiB, each read whole"),
             "the middle of every row group of every file, not the middle of the files"
         );
         assert_eq!(
             note(&[&[MIB], &[100 * MIB, 100 * MIB]]).as_deref(),
-            Some("the middle row group is 100.0 MiB, and rows are read a row group at a time"),
+            Some("median row group 100.0 MiB, each read whole"),
             "including when the large ones are not in the first file"
         );
         // Row groups arrive in file order, which is no order at all by size: a middle
         // partition rewritten by another job puts a big one between two small ones.
         assert_eq!(
             note(&[&[100 * MIB], &[MIB], &[100 * MIB]]).as_deref(),
-            Some("the middle row group is 100.0 MiB, and rows are read a row group at a time"),
+            Some("median row group 100.0 MiB, each read whole"),
             "and when they arrive out of order"
         );
         assert_eq!(
@@ -3317,7 +3317,7 @@ mod tests {
         );
         assert_eq!(
             note(&[&[65 * MIB, 66 * MIB]]).as_deref(),
-            Some("the middle row group is 65.0 MiB, and rows are read a row group at a time"),
+            Some("median row group 65.0 MiB, each read whole"),
             "and when it decides the other way it is still the lower one"
         );
     }
@@ -3400,7 +3400,7 @@ mod tests {
             };
             crate::notes::from_dataset(&union_file_schemas(&footers, origin))
                 .into_iter()
-                .find(|note| note.summary.starts_with("there are"))
+                .find(|note| note.summary.contains("files, median"))
                 .map(|note| note.summary)
         };
 
@@ -3411,9 +3411,7 @@ mod tests {
         );
         assert_eq!(
             note(10_001, 10_001, &[40 * KIB]).as_deref(),
-            Some(
-                "there are 10,001 files and the middle one is 40.0 KiB; each was opened for its footer before a row was"
-            ),
+            Some("10,001 files, median 40.0 KiB; every footer read before any row"),
             "one more is not"
         );
         assert_eq!(
@@ -3427,9 +3425,7 @@ mod tests {
         );
         assert_eq!(
             note(50_000, 50_000, &[40 * KIB, 40 * KIB, 900 * MIB]).as_deref(),
-            Some(
-                "there are 50,000 files and the middle one is 40.0 KiB; each was opened for its footer before a row was"
-            ),
+            Some("50,000 files, median 40.0 KiB; every footer read before any row"),
             "a large minority does not move the middle"
         );
         // Sampled: the count is every file the listing found, the middle size is over
@@ -3437,9 +3433,7 @@ mod tests {
         // the middle to read as a fact about all of them.
         assert_eq!(
             note(500_000, 2, &[40 * KIB, 40 * KIB]).as_deref(),
-            Some(
-                "there are 500,000 files and the middle one is 40.0 KiB; 2 were opened for their footers before a row was"
-            ),
+            Some("500,000 files, median 40.0 KiB; 2 footers read before any row"),
             "the count is the listing's; the footers read are their own number"
         );
         assert_eq!(note(50_000, 0, &[]), None, "no footer read, nothing to say");
@@ -3470,7 +3464,7 @@ mod tests {
         );
         let sampled_note = crate::notes::from_dataset(&sampled)
             .into_iter()
-            .find(|note| note.summary.starts_with("there are"))
+            .find(|note| note.summary.contains("files, median"))
             .expect("the note is made");
         assert_eq!(sampled_note.scope, "in 2 of 500,000 footers (sample)");
         assert_eq!(
@@ -3560,7 +3554,7 @@ mod tests {
                 .with_partition_layouts(root, &owned);
             crate::notes::from_dataset(&dataset)
                 .into_iter()
-                .find(|note| note.summary.contains("partition by the same keys"))
+                .find(|note| note.summary.contains("mixed partition keys"))
         };
 
         assert_eq!(
@@ -3613,7 +3607,7 @@ mod tests {
         .expect("the directories disagree");
         assert_eq!(
             renamed.summary,
-            "the directories do not all partition by the same keys: 3 files by date, \
+            "mixed partition keys: 3 files by date, \
              1 file by dt"
         );
         assert_eq!(
@@ -3635,7 +3629,7 @@ mod tests {
         .expect("the directories disagree");
         assert_eq!(
             loose.summary,
-            "the directories do not all partition by the same keys: 2 files by m/y, \
+            "mixed partition keys: 2 files by m/y, \
              1 file by date"
         );
         assert_eq!(
@@ -3669,7 +3663,7 @@ mod tests {
                 .with_partition_layouts("d", &owned);
             crate::notes::from_dataset(&dataset)
                 .into_iter()
-                .find(|note| note.summary.contains("partition by the same keys"))
+                .find(|note| note.summary.contains("mixed partition keys"))
                 .expect("the directories disagree")
                 .summary
         };
@@ -3711,12 +3705,12 @@ mod tests {
                 "d/cc=1/c.parquet",
                 "d/dd=1/e.parquet",
             ]),
-            "the directories do not all partition by the same keys: 1 file by aa, \
+            "mixed partition keys: 1 file by aa, \
              1 file by bb, 2 files by 2 other ways"
         );
         assert_eq!(
             note(&["d/aa=1/a.parquet", "d/bb=1/b.parquet", "d/cc=1/c.parquet"]),
-            "the directories do not all partition by the same keys: 1 file by aa, \
+            "mixed partition keys: 1 file by aa, \
              1 file by bb, 1 file by 1 other way",
             "and one of them is one way, not one ways"
         );
@@ -3730,7 +3724,7 @@ mod tests {
         let many: Vec<&str> = many.iter().map(String::as_str).collect();
         assert_eq!(
             note(&many),
-            "the directories do not all partition by the same keys: 1 file by k000, \
+            "mixed partition keys: 1 file by k000, \
              1 file by k001, 98 files by 98 other ways"
         );
         let owned: Vec<String> = many.iter().map(|p| p.to_string()).collect();

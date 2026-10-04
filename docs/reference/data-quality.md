@@ -174,30 +174,30 @@ Setup's Read line says what Run will read before it reads:
 
 | Read | When |
 |---|---|
-| No read: the report is already here | The setup is the report's, or the session cache holds it |
-| Only Compare or Expected changed: no read | The setup differs from the report on screen only in its comparison or expected windows; Run compares the segments the report holds, and checks the windows against its counts, after a full scan too |
-| Uses the rows a run already read | A sampled setup whose sample (scope, method, size, seed), dataset and view match rows a run read this session; any grain, role or format |
+| Report on screen: this setup · no read; Session cache: this setup · no read | The setup is the report's, or the session cache holds it |
+| Changed: Compare, Expected · no read | The setup differs from the report on screen only in its comparison or expected windows; Run compares the segments the report holds, and checks the windows against its counts, after a full scan too |
+| Rows: from an earlier run · no source read | A sampled setup whose sample (scope, method, size, seed), dataset and view match rows a run read this session; any grain, role or format |
 | Seeded runs of the file | A random sample of one Parquet or IPC file: the whole source, or a view with no filter, query or reshape (a sort is fine); a few dozen short reads |
-| One pass that streams every eligible row | Any other random or equal-per-value sample; the pass counts the scope too |
-| Read before and released since | Those rows were read this session and released, by <kbd>d</kbd> or the memory budget: Run reads them again |
-| Counts every row by the grain's column in that pass | A partition or time-window grain on a streamed sample: exact segment totals from the one pass |
-| Segment totals from a count already read | The same grain was counted before, with these rows |
-| Segment totals summed from the hourly or daily counts | A coarser window of the same column: hours sum into days, weeks and months, days into weeks and months |
-| Plus one count of the grain's column | A partition or time-window grain that nothing has counted: seeded runs or first rows, a new grain on rows already read, or a finer window; kept for later runs |
+| 1 streaming pass over every eligible row | Any other random or equal-per-value sample; the pass counts the scope too |
+| Released since last read · read again | Those rows were read this session and released, by <kbd>d</kbd> or the memory budget: Run reads them again |
+| Segment totals: exact, counted by the grain's column in that pass | A partition or time-window grain on a streamed sample: exact segment totals from the one pass |
+| Segment totals: from an earlier count · no read | The same grain was counted before, with these rows |
+| Segment totals: summed from earlier hourly or daily counts | A coarser window of the same column: hours sum into days, weeks and months, days into weeks and months |
+| +1 count of the grain's column · exact segment totals, kept | A partition or time-window grain that nothing has counted: seeded runs or first rows, a new grain on rows already read, or a finer window; kept for later runs |
 | Too many segments … to count | The grain had more than 1,000,000 keys; a coarser grain is needed |
-| Every eligible row, in up to N passes over the scope | A full scan of a local source: one collect per check, and one more to count an unknown scope |
-| One fetch of N objects (size) into a local copy, then up to N passes over it | A full scan of a remote dataset that can be copied: see [Local copy of a remote source](#local-copy-of-a-remote-source) |
-| The copy stays for later full scans until d releases it | Said with the fetch |
-| Copied before; released, so fetched again | The copy was released by <kbd>d</kbd>: Run fetches it again |
-| Every eligible row, in up to N passes over the local copy: no source read | A full scan of a dataset whose copy a run fetched this session |
-| Every eligible row, in up to N passes over the source | A full scan of a remote dataset with no copy, with the reason on the next line: too large to keep a local copy (size over the limit), more than the free disk, free disk unknown, the scope reads part of the source, object sizes unknown when it opened, a copy fetched this session that did not read as the source, or local copies off |
-| Window by each interval's start or end: N of those passes | A full scan whose intervals start or end on more than one column: one grouping each |
+| Every eligible row · up to N passes over the scope, 1 per check | A full scan of a local source: one collect per check, and one more to count an unknown scope |
+| 1 fetch of N objects (size) to a local copy · up to N passes over it | A full scan of a remote dataset that can be copied: see [Local copy of a remote source](#local-copy-of-a-remote-source) |
+| Local copy kept for later full scans · d releases | Said with the fetch |
+| Released since last copy · fetched again | The copy was released by <kbd>d</kbd>: Run fetches it again |
+| Every eligible row · up to N passes over the local copy (size) · no source read | A full scan of a dataset whose copy a run fetched this session |
+| Every eligible row · up to N passes over the source | A full scan of a remote dataset with no copy, with the reason on the next line, `No local copy:` and one of: size over the limit, more than the free disk, free disk unknown, the scope reads part of the source, object sizes unknown when it opened, a copy fetched this session that did not read as the source, or local copies off |
+| Window by each interval's start or end: N of those passes, 1 per column | A full scan whose intervals start or end on more than one column: one grouping each |
 | File metadata only | Values set to metadata only |
-| Column intent: checked on the rows read, no extra read | Intent declared on a sampled run: measured on the sample's rows in memory |
-| Key: finds repeats among the N sampled rows only | A declared key on a sample smaller than the scope |
-| Column intent: counted in the profile pass; the key adds one pass over its columns | A full scan with a declared key: one more pass, counted among the passes |
-| Column intent needs values: not checked | Intent declared with Values set to metadata only |
-| Expected windows: checked against the segment counts, no read | Expected is set: gaps come from the counts the run takes anyway |
+| Column intent: on the rows read · no extra read | Intent declared on a sampled run: measured on the sample's rows in memory |
+| Key: repeats among the N sampled rows only | A declared key on a sample smaller than the scope |
+| Column intent: in the profile pass · key adds 1 pass | A full scan with a declared key: one more pass, counted among the passes |
+| Column intent: not checked, needs values | Intent declared with Values set to metadata only |
+| Expected windows: from the segment counts · no read | Expected is set: gaps come from the counts the run takes anyway |
 
 ### Local copy of a remote source
 

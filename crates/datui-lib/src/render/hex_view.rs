@@ -540,9 +540,9 @@ fn status(area: Rect, buf: &mut Buffer, view: &HexView, has_specs: bool, ctx: &R
     let mut text = parts.join(&format!(" {dot} "));
     if view.fallback {
         let said = if has_specs {
-            "No reader or spec matched; B reads it with a spec"
+            "format unknown, B reads it with a spec"
         } else {
-            "No reader matched this file"
+            "format unknown"
         };
         if text.is_empty() {
             text = said.to_string();

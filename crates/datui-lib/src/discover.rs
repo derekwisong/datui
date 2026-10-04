@@ -2611,7 +2611,7 @@ mod classification_tests {
         };
         at("/d/a.parquet", Lazy, false);
         at("/d/a.csv", Lazy, false);
-        at("/d/a.csv.gz", Converted, false);
+        at("/d/a.csv.gz", Decompressed, false);
         at("/d/a.json", InMemory, false);
         at("/d/a.gpx", Converted, false);
         at("/d/a.arrow", Lazy, false);
@@ -2629,7 +2629,7 @@ mod classification_tests {
         assert_eq!(how_read(&stream).map(|h| h.mode), Some(Converted));
         let mut spec = Entry::for_test(Path::new("/d/day.l2.zst"), "day.l2.zst");
         spec.format_spec = Some("acme.l2feed".into());
-        assert_eq!(how_read(&spec).map(|h| h.mode), Some(Converted));
+        assert_eq!(how_read(&spec).map(|h| h.mode), Some(Decompressed));
         at("/d/shop.db", Lazy, false);
         at("s3://b/shop.sqlite", Lazy, true);
         let mut table = Entry::for_test(Path::new("/d/shop.db/orders"), "orders");

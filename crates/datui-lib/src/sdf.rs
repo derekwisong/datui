@@ -518,8 +518,8 @@ fn notes(stats: &Stats) -> Vec<Note> {
     if stats.long_lines > 0 {
         notes.push(note(
             format!(
-                "{} longer than {} MiB, cut there",
-                count(stats.long_lines, "line is", "lines are"),
+                "{} cut at {} MiB",
+                count(stats.long_lines, "line", "lines"),
                 MAX_LINE >> 20
             ),
             "in the whole file".to_string(),
@@ -528,8 +528,8 @@ fn notes(stats: &Stats) -> Vec<Note> {
     if stats.long_values > 0 {
         notes.push(note(
             format!(
-                "{} longer than {} MiB, cut there",
-                count(stats.long_values, "value is", "values are"),
+                "{} cut at {} MiB",
+                count(stats.long_values, "value", "values"),
                 MAX_VALUE >> 20
             ),
             of_records.clone(),
@@ -538,8 +538,9 @@ fn notes(stats: &Stats) -> Vec<Note> {
     if stats.repeated > 0 {
         notes.push(note(
             format!(
-                "{} a field its record already had; the first is kept",
-                count(stats.repeated, "data item repeats", "data items repeat")
+                "repeated field: {} {} first kept",
+                count(stats.repeated, "data item", "data items"),
+                crate::glyphs::get().middot
             ),
             of_records.clone(),
         ));
@@ -547,7 +548,7 @@ fn notes(stats: &Stats) -> Vec<Note> {
     if stats.fields_dropped > 0 {
         notes.push(note(
             format!(
-                "{} of fields past the first {MAX_FIELDS} left out",
+                "{} left out: past the first {MAX_FIELDS} fields",
                 count(stats.fields_dropped, "data item", "data items")
             ),
             of_records.clone(),
@@ -555,7 +556,10 @@ fn notes(stats: &Stats) -> Vec<Note> {
     }
     if stats.unterminated {
         notes.push(note(
-            "The last record has no $$$$; it is read as it stands".to_string(),
+            format!(
+                "last record has no $$$$ {} read as is",
+                crate::glyphs::get().middot
+            ),
             of_records,
         ));
     }

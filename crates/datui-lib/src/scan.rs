@@ -92,7 +92,7 @@ impl Scan {
             Scan::ReadInto { format, .. } => format.read_mode(Stored::Plain),
             Scan::DecompressSpec { .. } => spec_read(Stored::Compressed { in_memory: false }),
             Scan::Tables { format, .. } => format.read_mode(Stored::Plain),
-            Scan::Unpack { .. } => Some(crate::ReadMode::Converted),
+            Scan::Unpack { .. } => Some(crate::ReadMode::Decompressed),
             Scan::Hex { .. } => None,
         }
     }

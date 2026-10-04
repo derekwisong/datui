@@ -79,7 +79,7 @@ fn info_says_what_each_column_means_and_where_that_comes_from() {
     press(&mut app, KeyCode::Char('i'));
     let screen = draw(&mut app);
     assert!(
-        screen.contains("Codebook: https://example.com/readme.txt"),
+        screen.contains("Documentation: https://example.com/readme.txt"),
         "{screen}"
     );
     assert!(screen.contains("About"), "{screen}");
@@ -104,7 +104,7 @@ fn info_without_a_codebook_has_no_about_column() {
     press(&mut app, KeyCode::Char('i'));
     let screen = draw(&mut app);
     assert!(!screen.contains("About"), "{screen}");
-    assert!(!screen.contains("Codebook:"), "{screen}");
+    assert!(!screen.contains("Documentation:"), "{screen}");
 }
 
 #[test]

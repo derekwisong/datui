@@ -1484,10 +1484,8 @@ mod read {
                 .collect();
             if !mixed.is_empty() {
                 notes.push(note(format!(
-                    "{} {} values of several types and {} read as text",
-                    mixed.join(", "),
-                    if mixed.len() == 1 { "holds" } else { "hold" },
-                    if mixed.len() == 1 { "is" } else { "are" },
+                    "{}: mixed types, read as text",
+                    mixed.join(", ")
                 )));
             }
             for (i, column) in self.columns.iter().enumerate() {

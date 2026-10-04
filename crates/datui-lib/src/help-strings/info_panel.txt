@@ -30,7 +30,7 @@ Tabs:
   Schema:      Every column, its type, and which footers the schema came from.
                A column's unit too, when a delimited format spec read a unit row
                or the file names one (DataFlash, a DBC dictionary). For a
-               dataset a collection lists with a codebook, what each column
+               dataset a collection documents, what each column
                means (About), and below, the selected column's note and codes
   Model:       A SafeTensors or GGUF file's parameter count, size, dtype or
                quantization mix, and its header metadata, each value whole up
@@ -76,7 +76,7 @@ Tabs:
   GPS:         What an NMEA log or GPX file holds: rows, sentences or points,
                the time span and the bounds. Only for GPS logs
   Resources:   What the data costs to hold and to read, and how it is read:
-               lazy, converted once, or in memory
+               lazy scan, decompressed copy, converted to Arrow, or in memory
   Partitions:  The layout of a partitioned dataset. Only when it has one
   Notes:       What datui noticed about the data while reading it. Only when
                there is something to say

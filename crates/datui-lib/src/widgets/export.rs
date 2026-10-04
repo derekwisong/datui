@@ -16,10 +16,10 @@ const LABEL_WIDTH: u16 = 17;
 const FORMAT_WIDTH: u16 = 12;
 
 /// Shown under the rows of a format that cannot hold lists or structs.
-const NESTED_NOTE: &str = "Lists and structs are written as JSON.";
+const NESTED_NOTE: &str = "Lists and structs written as JSON";
 
 /// Shown under the rows of an Avro export whose view has a name Avro refuses.
-const AVRO_NAMES_NOTE: &str = "Column names are made valid for Avro.";
+const AVRO_NAMES_NOTE: &str = "Column names made valid for Avro";
 
 fn compression_name(compression: Option<CompressionFormat>) -> &'static str {
     match compression {

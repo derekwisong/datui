@@ -691,42 +691,42 @@ pub fn notes(index: &Index) -> Vec<String> {
     let mut notes = Vec::new();
     if index.damaged > 0 {
         notes.push(format!(
-            "{} damaged stretches, {} bytes, were passed over to the next sync marker.",
+            "{} damaged stretches skipped ({} bytes)",
             group(index.damaged),
             group(index.skipped)
         ));
     }
     if index.cut_short {
-        notes.push("The log ends partway through a message: it was cut short.".to_string());
+        notes.push("log cut short mid-message".to_string());
     }
     if index.short > 0 {
         notes.push(format!(
-            "{} data messages too short for their topic's fields are left out.",
+            "{} data messages left out: too short for their topic",
             group(index.short)
         ));
     }
     if index.unsubscribed > 0 {
         notes.push(format!(
-            "{} data messages name no subscription and are left out.",
+            "{} data messages left out: no subscription",
             group(index.unsubscribed)
         ));
     }
     if index.past_limit > 0 {
         notes.push(format!(
-            "{} messages past the first {} are left out.",
+            "{} messages left out: past the first {}",
             group(index.past_limit),
             group(crate::indexed::MAX_RECORDS)
         ));
     }
     if index.logged_left_out > 0 {
         notes.push(format!(
-            "{} logged messages past the first {} are left out.",
+            "{} logged messages left out: past the first {}",
             group(index.logged_left_out),
             group(MAX_LOGGED)
         ));
     }
     for (topic, why) in &index.unread {
-        notes.push(format!("The topic {topic} is not read: {why}."));
+        notes.push(format!("topic {topic} not read: {why}"));
     }
     notes
 }

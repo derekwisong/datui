@@ -22,7 +22,7 @@ Parquet
 .br
 Extensions: \fB.parquet\fR
 .br
-Read: lazy
+Read: lazy scan
 .br
 Compressed: no
 .br
@@ -37,9 +37,9 @@ CSV
 .br
 Extensions: \fB.csv\fR
 .br
-Read: lazy
+Read: lazy scan
 .br
-Compressed: converted once
+Compressed: decompressed copy
 .br
 HTTP(S): downloaded
 .br
@@ -52,9 +52,9 @@ TSV
 .br
 Extensions: \fB.tsv\fR
 .br
-Read: lazy
+Read: lazy scan
 .br
-Compressed: converted once
+Compressed: decompressed copy
 .br
 HTTP(S): downloaded
 .br
@@ -67,9 +67,9 @@ PSV
 .br
 Extensions: \fB.psv\fR
 .br
-Read: lazy
+Read: lazy scan
 .br
-Compressed: converted once
+Compressed: decompressed copy
 .br
 HTTP(S): downloaded
 .br
@@ -112,7 +112,7 @@ Arrow IPC
 .br
 Extensions: \fB.arrow\fR, \fB.arrows\fR, \fB.ipc\fR, \fB.feather\fR
 .br
-Read: lazy
+Read: lazy scan
 .br
 Compressed: no
 .br
@@ -202,9 +202,9 @@ NMEA
 .br
 Extensions: \fB.nmea\fR
 .br
-Read: converted once
+Read: converted to Arrow
 .br
-Compressed: converted once
+Compressed: converted to Arrow
 .br
 HTTP(S): downloaded
 .br
@@ -217,9 +217,9 @@ GPX
 .br
 Extensions: \fB.gpx\fR
 .br
-Read: converted once
+Read: converted to Arrow
 .br
-Compressed: converted once
+Compressed: converted to Arrow
 .br
 HTTP(S): downloaded
 .br
@@ -232,7 +232,7 @@ WAV, BWF, RF64, AIFF
 .br
 Extensions: \fB.wav\fR, \fB.wave\fR, \fB.bwf\fR, \fB.rf64\fR, \fB.aif\fR, \fB.aiff\fR, \fB.aifc\fR
 .br
-Read: lazy
+Read: lazy scan
 .br
 Compressed: no
 .br
@@ -262,7 +262,7 @@ SQLite
 .br
 Extensions: \fB.db\fR, \fB.db3\fR, \fB.sqlite\fR, \fB.sqlite3\fR
 .br
-Read: lazy
+Read: lazy scan
 .br
 Compressed: no
 .br
@@ -277,9 +277,9 @@ VCD
 .br
 Extensions: \fB.vcd\fR
 .br
-Read: converted once
+Read: converted to Arrow
 .br
-Compressed: converted once
+Compressed: converted to Arrow
 .br
 HTTP(S): downloaded
 .br
@@ -292,9 +292,9 @@ FIX
 .br
 Extensions: none: by content
 .br
-Read: converted once
+Read: converted to Arrow
 .br
-Compressed: converted once
+Compressed: converted to Arrow
 .br
 HTTP(S): downloaded
 .br
@@ -307,9 +307,9 @@ SDF
 .br
 Extensions: \fB.sdf\fR, \fB.sd\fR
 .br
-Read: converted once
+Read: converted to Arrow
 .br
-Compressed: converted once
+Compressed: converted to Arrow
 .br
 HTTP(S): downloaded
 .br
@@ -322,7 +322,7 @@ NumPy
 .br
 Extensions: \fB.npy\fR, \fB.npz\fR
 .br
-Read: lazy
+Read: lazy scan
 .br
 Compressed: no
 .br
@@ -352,7 +352,7 @@ ULog
 .br
 Extensions: \fB.ulg\fR
 .br
-Read: lazy
+Read: lazy scan
 .br
 Compressed: no
 .br
@@ -367,7 +367,7 @@ DataFlash
 .br
 Extensions: none: by content
 .br
-Read: lazy
+Read: lazy scan
 .br
 Compressed: no
 .br
@@ -382,7 +382,7 @@ candump
 .br
 Extensions: none: by content
 .br
-Read: lazy
+Read: lazy scan
 .br
 Compressed: no
 .br
@@ -397,9 +397,9 @@ Text
 .br
 Extensions: \fB.log\fR, \fB.txt\fR
 .br
-Read: lazy
+Read: lazy scan
 .br
-Compressed: converted once
+Compressed: decompressed copy
 .br
 HTTP(S): downloaded
 .br
@@ -427,7 +427,7 @@ Arrow IPC stream
 .br
 Extensions: as Arrow IPC
 .br
-Read: converted once
+Read: converted to Arrow
 .br
 Compressed: no
 .br
@@ -442,9 +442,9 @@ Format spec
 .br
 Extensions: its \fBmatch\fR
 .br
-Read: lazy
+Read: lazy scan
 .br
-Compressed: converted once
+Compressed: decompressed copy
 .br
 HTTP(S): downloaded
 .br
@@ -452,11 +452,14 @@ In a bucket: downloaded
 .br
 Bucket prefix: no
 .TP
-lazy
+lazy scan
 Scanned where it is. Browsing reads a buffer of rows; queries, sorting and analysis may read the whole input
 .TP
-converted once
-Read through once into a temporary file in the temp directory (\fB\-\-temp\-dir\fR), which is then scanned lazily. The file is removed on quit (temporary files)
+decompressed copy
+Decompressed whole into a temporary file of the same format in the temp directory (\fB\-\-temp\-dir\fR), which is then scanned lazily. The file is removed on quit (temporary files)
+.TP
+converted to Arrow
+Read through whole into a temporary Arrow IPC file in the temp directory, which is then scanned lazily. Removed on quit, like a decompressed copy; nothing is cached between sessions
 .TP
 in memory
 Read whole into memory before the table appears. Past \fBmemory_warning\fR in \fB[read]\fR (\fB"1GiB"\fR by default; 0 never asks), datui asks first: \fBbig.json: JSON reads 2.10 GB into memory\fR. A model file's table is one row per tensor, from the header, so it is small however large the model, and is never asked about; a MIDI file is at most 64 MiB
@@ -471,7 +474,7 @@ Read whole into memory before the table appears. Past \fBmemory_warning\fR in \f
 .IP \(bu 4
 Standard input is written to a temporary file first, then read as \fBRead\fR says.
 .PP
-The home screen marks a file row that is not read lazily where it is: \fBconverts\fR, \fBin memory\fR or \fBdownloads\fR. The details pane and the Info panel's Resources tab say how it is read.
+The home screen marks a file row that is not read lazily where it is: \fBdecompresses\fR, \fBconverts\fR, \fBin memory\fR or \fBdownloads\fR. The details pane and the Info panel's Resources tab say how it is read.
 .SH "DETECTED BY CONTENT"
 The format comes from the first bytes, unless \fB\-\-format\fR or \fB\-\-compression\fR names it:
 .TP
@@ -856,7 +859,7 @@ A record checksum covers the bytes from the \fBfrom\fR field (default: the recor
 .SS "Compressed files"
 \fBday.l2.zst\fR, \fB.gz\fR, \fB.bz2\fR and \fB.xz\fR are decompressed to a temporary file before they are read: the loading screen says \fBDecompressing\fR, then \fBReading records\fR, and Esc stops either. The glob matches the name without the compression suffix, and magic is read from the decompressed bytes.
 .SS "Large files"
-A spec's file is read lazy, or converted once when compressed. It is memory-mapped, and only the columns and rows on screen are decoded. Records that are not all one size, and blocks, are indexed by one pass when the file opens. That pass keeps where each record starts (5 bytes a record, up to 64M records), so a query reads every column from there rather than walking the records again, and a file opened again with the same spec is not walked again. Scrolling to the last row of a gigabyte file reads only the rows shown. A sort, filter, query, chart or analysis reads every row of the columns it uses, a batch at a time on the streaming engine (\fB[performance] streaming\fR, on by default). A table holds at most 4,294,967,295 rows; records past that are not shown, and the dataset's notes say so.
+A spec's file is read as a lazy scan, or from a decompressed copy when compressed. It is memory-mapped, and only the columns and rows on screen are decoded. Records that are not all one size, and blocks, are indexed by one pass when the file opens. That pass keeps where each record starts (5 bytes a record, up to 64M records), so a query reads every column from there rather than walking the records again, and a file opened again with the same spec is not walked again. Scrolling to the last row of a gigabyte file reads only the rows shown. A sort, filter, query, chart or analysis reads every row of the columns it uses, a batch at a time on the streaming engine (\fB[performance] streaming\fR, on by default). A table holds at most 4,294,967,295 rows; records past that are not shown, and the dataset's notes say so.
 .PP
 A file that grows while it is open keeps the rows it had; open it again to read the rest. A file cut short by another program is refused at the next read rather than read past its end.
 .SH "FORMAT SPEC REFERENCE"

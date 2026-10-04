@@ -848,8 +848,8 @@ fn notes(reader: &FixReader) -> Vec<Note> {
     if stats.skipped_lines > 0 {
         notes.push(note(
             format!(
-                "{} no FIX message and left out",
-                count(stats.skipped_lines, "line holds", "lines hold")
+                "{} left out: no FIX message",
+                count(stats.skipped_lines, "line", "lines")
             ),
             "in the whole file".to_string(),
         ));
@@ -857,8 +857,9 @@ fn notes(reader: &FixReader) -> Vec<Note> {
     if stats.incomplete > 0 {
         notes.push(note(
             format!(
-                "{} before tag 10; its checks are null",
-                count(stats.incomplete, "message ends", "messages end")
+                "ended before tag 10: {} {} checks null",
+                count(stats.incomplete, "message", "messages"),
+                crate::glyphs::get().middot
             ),
             of_messages.clone(),
         ));
@@ -866,12 +867,9 @@ fn notes(reader: &FixReader) -> Vec<Note> {
     if stats.body_length_failed > 0 {
         notes.push(note(
             format!(
-                "{} BodyLength (9); body_length_ok is false",
-                count(
-                    stats.body_length_failed,
-                    "message fails its",
-                    "messages fail their"
-                )
+                "BodyLength (9) failed: {} {} body_length_ok false",
+                count(stats.body_length_failed, "message", "messages"),
+                crate::glyphs::get().middot
             ),
             of_messages.clone(),
         ));
@@ -879,12 +877,9 @@ fn notes(reader: &FixReader) -> Vec<Note> {
     if stats.checksum_failed > 0 {
         notes.push(note(
             format!(
-                "{} CheckSum (10); checksum_ok is false",
-                count(
-                    stats.checksum_failed,
-                    "message fails its",
-                    "messages fail their"
-                )
+                "CheckSum (10) failed: {} {} checksum_ok false",
+                count(stats.checksum_failed, "message", "messages"),
+                crate::glyphs::get().middot
             ),
             of_messages.clone(),
         ));
@@ -892,7 +887,7 @@ fn notes(reader: &FixReader) -> Vec<Note> {
     if stats.tags_dropped > 0 || stats.fields_dropped > 0 {
         notes.push(note(
             format!(
-                "{} past datui's limits ({MAX_TAGS} tags, {MAX_FIELDS} fields a message) left out",
+                "{} left out: past limits ({MAX_TAGS} tags, {MAX_FIELDS} fields a message)",
                 count(stats.tags_dropped + stats.fields_dropped, "value", "values")
             ),
             of_messages.clone(),
@@ -901,8 +896,8 @@ fn notes(reader: &FixReader) -> Vec<Note> {
     if stats.cut > 0 {
         notes.push(note(
             format!(
-                "{} longer than {} MiB, cut there",
-                count(stats.cut, "message is", "messages are"),
+                "{} cut at {} MiB",
+                count(stats.cut, "message", "messages"),
                 MAX_MESSAGE >> 20
             ),
             of_messages.clone(),
@@ -917,9 +912,9 @@ fn notes(reader: &FixReader) -> Vec<Note> {
     if !differ.is_empty() {
         notes.push(note(
             format!(
-                "Dictionaries name {} differently; {} by number (the Info panel's FIX tab has the names)",
+                "dictionaries disagree on {} {} named by number (FIX tab has the names)",
                 count(differ.len() as u64, "tag", "tags"),
-                if differ.len() == 1 { "its column goes" } else { "their columns go" }
+                crate::glyphs::get().middot
             ),
             format!("tags {}", differ.join(", ")),
         ));
@@ -1332,7 +1327,7 @@ mod tests {
         assert!(
             notes(&reader)
                 .iter()
-                .any(|n| n.summary.contains("differently"))
+                .any(|n| n.summary.contains("disagree"))
         );
     }
 

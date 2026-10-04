@@ -708,7 +708,7 @@ impl FileFormat {
                 Compressed::Refused => None,
                 Compressed::ReadThrough => Some(ReadMode::Converted),
                 Compressed::Decompressed if in_memory => Some(ReadMode::InMemory),
-                Compressed::Decompressed => Some(ReadMode::Converted),
+                Compressed::Decompressed => Some(ReadMode::Decompressed),
             },
         }
     }
@@ -841,7 +841,10 @@ pub fn one_table(format: Option<FileFormat>) -> String {
 pub enum ReadMode {
     /// Scanned where it is: only the rows shown, and what a query needs, are read.
     Lazy,
-    /// Read through once into a temporary file, which is then scanned lazily.
+    /// Decompressed whole into a temporary file of the same format, which is then
+    /// scanned lazily.
+    Decompressed,
+    /// Read through whole into a temporary Arrow IPC file, which is then scanned lazily.
     Converted,
     /// Read whole into memory before the table appears.
     InMemory,
@@ -851,17 +854,19 @@ impl ReadMode {
     /// The words for it, as the docs' table and the Info panel say them.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Lazy => "lazy",
-            Self::Converted => "converted once",
+            Self::Lazy => "lazy scan",
+            Self::Decompressed => "decompressed copy",
+            Self::Converted => "converted to Arrow",
             Self::InMemory => "in memory",
         }
     }
 
-    /// The word a home screen row carries for it, short beside a name: `converts`,
-    /// `in memory`; `None` for a lazy read, which most are.
+    /// The word a home screen row carries for it, short beside a name: `decompresses`,
+    /// `converts`, `in memory`; `None` for a lazy read, which most are.
     pub fn marker(self) -> Option<&'static str> {
         match self {
             Self::Lazy => None,
+            Self::Decompressed => Some("decompresses"),
             Self::Converted => Some("converts"),
             Self::InMemory => Some("in memory"),
         }

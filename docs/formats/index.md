@@ -17,41 +17,42 @@ datui --format csv export.txt
 <!-- generated: formats -->
 | Format | `--format` | Extensions | Read | Compressed | HTTP(S) | In a bucket | Bucket prefix |
 |---|---|---|---|---|---|---|---|
-| [Parquet](columnar-and-json.md#parquet) | `parquet` | `.parquet` | lazy | no | downloaded | in place | in place |
-| [CSV](delimited-text.md#csv-tsv-and-psv) | `csv` | `.csv` | lazy | converted once | downloaded | downloaded | in place |
-| [TSV](delimited-text.md#csv-tsv-and-psv) | `tsv` | `.tsv` | lazy | converted once | downloaded | downloaded | no |
-| [PSV](delimited-text.md#csv-tsv-and-psv) | `psv` | `.psv` | lazy | converted once | downloaded | downloaded | no |
+| [Parquet](columnar-and-json.md#parquet) | `parquet` | `.parquet` | lazy scan | no | downloaded | in place | in place |
+| [CSV](delimited-text.md#csv-tsv-and-psv) | `csv` | `.csv` | lazy scan | decompressed copy | downloaded | downloaded | in place |
+| [TSV](delimited-text.md#csv-tsv-and-psv) | `tsv` | `.tsv` | lazy scan | decompressed copy | downloaded | downloaded | no |
+| [PSV](delimited-text.md#csv-tsv-and-psv) | `psv` | `.psv` | lazy scan | decompressed copy | downloaded | downloaded | no |
 | [JSON](columnar-and-json.md#json-and-ndjson) | `json` | `.json` | in memory | no | downloaded | downloaded | no |
 | [NDJSON](columnar-and-json.md#json-and-ndjson) | `jsonl` | `.jsonl`, `.ndjson` | in memory | no | downloaded | downloaded | in place |
-| [Arrow IPC](columnar-and-json.md#arrow-ipc) | `arrow` | `.arrow`, `.arrows`, `.ipc`, `.feather` | lazy | no | downloaded | in place | in place |
+| [Arrow IPC](columnar-and-json.md#arrow-ipc) | `arrow` | `.arrow`, `.arrows`, `.ipc`, `.feather` | lazy scan | no | downloaded | in place | in place |
 | [Avro](columnar-and-json.md#avro-and-orc) | `avro` | `.avro` | in memory | no | downloaded | downloaded | no |
 | [ORC](columnar-and-json.md#avro-and-orc) | `orc` | `.orc` | in memory | no | downloaded | downloaded | no |
 | [Excel](columnar-and-json.md#excel) | `excel` | `.xls`, `.xlsx`, `.xlsm`, `.xlsb` | in memory | no | downloaded | downloaded | no |
 | [SafeTensors](model-files.md) | `safetensors` | `.safetensors`, `.safetensors.index.json` | in memory | no | in place | in place | in place |
 | [GGUF](model-files.md) | `gguf` | `.gguf` | in memory | no | in place | in place | in place |
-| [NMEA](signals-and-logs.md#gps-logs) | `nmea` | `.nmea` | converted once | converted once | downloaded | downloaded | no |
-| [GPX](signals-and-logs.md#gps-logs) | `gpx` | `.gpx` | converted once | converted once | downloaded | downloaded | no |
-| [WAV, BWF, RF64, AIFF](signals-and-logs.md#audio) | `audio` | `.wav`, `.wave`, `.bwf`, `.rf64`, `.aif`, `.aiff`, `.aifc` | lazy | no | downloaded | downloaded | no |
+| [NMEA](signals-and-logs.md#gps-logs) | `nmea` | `.nmea` | converted to Arrow | converted to Arrow | downloaded | downloaded | no |
+| [GPX](signals-and-logs.md#gps-logs) | `gpx` | `.gpx` | converted to Arrow | converted to Arrow | downloaded | downloaded | no |
+| [WAV, BWF, RF64, AIFF](signals-and-logs.md#audio) | `audio` | `.wav`, `.wave`, `.bwf`, `.rf64`, `.aif`, `.aiff`, `.aifc` | lazy scan | no | downloaded | downloaded | no |
 | [MIDI](signals-and-logs.md#midi) | `midi` | `.mid`, `.midi`, `.smf`, `.kar`, `.rmi` | in memory | no | downloaded | downloaded | no |
-| [SQLite](databases-and-arrays.md#sqlite) | `sqlite` | `.db`, `.db3`, `.sqlite`, `.sqlite3` | lazy | no | downloaded | downloaded | no |
-| [VCD](signals-and-logs.md#vcd) | `vcd` | `.vcd` | converted once | converted once | downloaded | downloaded | no |
-| [FIX](signals-and-logs.md#fix-logs) | `fix` | none: by content | converted once | converted once | downloaded | downloaded | no |
-| [SDF](signals-and-logs.md#sdf) | `sdf` | `.sdf`, `.sd` | converted once | converted once | downloaded | downloaded | no |
-| [NumPy](databases-and-arrays.md#numpy) | `numpy` | `.npy`, `.npz` | lazy | no | downloaded | downloaded | no |
+| [SQLite](databases-and-arrays.md#sqlite) | `sqlite` | `.db`, `.db3`, `.sqlite`, `.sqlite3` | lazy scan | no | downloaded | downloaded | no |
+| [VCD](signals-and-logs.md#vcd) | `vcd` | `.vcd` | converted to Arrow | converted to Arrow | downloaded | downloaded | no |
+| [FIX](signals-and-logs.md#fix-logs) | `fix` | none: by content | converted to Arrow | converted to Arrow | downloaded | downloaded | no |
+| [SDF](signals-and-logs.md#sdf) | `sdf` | `.sdf`, `.sd` | converted to Arrow | converted to Arrow | downloaded | downloaded | no |
+| [NumPy](databases-and-arrays.md#numpy) | `numpy` | `.npy`, `.npz` | lazy scan | no | downloaded | downloaded | no |
 | [ELF](signals-and-logs.md#elf) | `elf` | `.elf`, `.axf` | in memory | no | downloaded | downloaded | no |
-| [ULog](signals-and-logs.md#flight-logs) | `ulog` | `.ulg` | lazy | no | downloaded | downloaded | no |
-| [DataFlash](signals-and-logs.md#flight-logs) | `dataflash` | none: by content | lazy | no | downloaded | downloaded | no |
-| [candump](signals-and-logs.md#can-logs) | `candump` | none: by content | lazy | no | downloaded | downloaded | no |
-| [Text](delimited-text.md#text-and-logs) | `text` | `.log`, `.txt` | lazy | converted once | downloaded | downloaded | no |
+| [ULog](signals-and-logs.md#flight-logs) | `ulog` | `.ulg` | lazy scan | no | downloaded | downloaded | no |
+| [DataFlash](signals-and-logs.md#flight-logs) | `dataflash` | none: by content | lazy scan | no | downloaded | downloaded | no |
+| [candump](signals-and-logs.md#can-logs) | `candump` | none: by content | lazy scan | no | downloaded | downloaded | no |
+| [Text](delimited-text.md#text-and-logs) | `text` | `.log`, `.txt` | lazy scan | decompressed copy | downloaded | downloaded | no |
 | [systemd journal](signals-and-logs.md#systemd-journal) | `journal` | none: by content | in memory | no | downloaded | downloaded | no |
-| [Arrow IPC stream](columnar-and-json.md#arrow-ipc) | `arrow` | as Arrow IPC | converted once | no | downloaded | downloaded | downloaded |
-| [Format spec](format-specs.md) | its name | its `match` | lazy | converted once | downloaded | downloaded | no |
+| [Arrow IPC stream](columnar-and-json.md#arrow-ipc) | `arrow` | as Arrow IPC | converted to Arrow | no | downloaded | downloaded | downloaded |
+| [Format spec](format-specs.md) | its name | its `match` | lazy scan | decompressed copy | downloaded | downloaded | no |
 <!-- end generated: formats -->
 
 | Read | What it means |
 |---|---|
-| lazy | Scanned where it is. Browsing reads a buffer of rows; queries, sorting and analysis may read the whole input |
-| converted once | Read through once into a temporary file in the temp directory (`--temp-dir`), which is then scanned lazily. The file is removed on quit ([temporary files](../user-guide/open-files.md#temporary-files)) |
+| lazy scan | Scanned where it is. Browsing reads a buffer of rows; queries, sorting and analysis may read the whole input |
+| decompressed copy | Decompressed whole into a temporary file of the same format in the temp directory (`--temp-dir`), which is then scanned lazily. The file is removed on quit ([temporary files](../user-guide/open-files.md#temporary-files)) |
+| converted to Arrow | Read through whole into a temporary Arrow IPC file in the temp directory, which is then scanned lazily. Removed on quit, like a decompressed copy; nothing is cached between sessions |
 | in memory | Read whole into memory before the table appears. Past `memory_warning` in `[read]` (`"1GiB"` by default; 0 never asks), datui asks first: `big.json: JSON reads 2.10 GB into memory`. A model file's table is one row per tensor, from the header, so it is small however large the model, and is never asked about; a MIDI file is at most 64 MiB |
 
 - **Compressed** is a `.gz`, `.zst`, `.bz2` or `.xz` file; `no` means it does not
@@ -76,7 +77,7 @@ datui --format csv export.txt
   read as **Read** says.
 
 The home screen marks a file row that is not read lazily where it is:
-`converts`, `in memory` or `downloads`. The details pane and the Info panel's
+`decompresses`, `converts`, `in memory` or `downloads`. The details pane and the Info panel's
 Resources tab say how it is read.
 
 ## Detected by content

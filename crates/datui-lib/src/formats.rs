@@ -3960,7 +3960,7 @@ fn past_limit(notes: &mut Vec<String>, rows: u64, records: &FixedRecords) {
     let past = rows.saturating_sub(records.rows() as u64);
     if past > 0 {
         notes.push(format!(
-            "the last {past} records are past the most a table holds and are not shown"
+            "last {past} records not shown: past the table limit"
         ));
     }
 }
@@ -3976,7 +3976,7 @@ pub(crate) fn trailing_note(what: &str, bytes: &[u8]) -> String {
         ""
     };
     format!(
-        "{what} ends with {} {} that are not a whole record, left out: {}{more}",
+        "{what}: {} trailing {} left out, not a whole record: {}{more}",
         bytes.len(),
         if bytes.len() == 1 { "byte" } else { "bytes" },
         crate::fixed_records::hex(shown),
@@ -4220,7 +4220,8 @@ impl Spec {
                 let count = header.resolve(amount, "count")?;
                 if count > whole {
                     notes.push(format!(
-                        "the header says {count} records; the file holds {whole} whole ones, which are shown"
+                        "header says {count} records {} {whole} whole ones shown",
+                        crate::glyphs::get().middot
                     ));
                     whole
                 } else {
@@ -4312,8 +4313,9 @@ impl Spec {
                 .map(|(name, n)| format!("{name} {n}"))
                 .collect();
             notes.push(format!(
-                "the column files hold different numbers of values ({}); the first {fewest} rows are shown",
-                said.join(", ")
+                "column files differ in length ({}) {} first {fewest} rows shown",
+                said.join(", "),
+                crate::glyphs::get().middot
             ));
         }
         let mut rows = fewest;
@@ -4321,7 +4323,8 @@ impl Spec {
             let count = header.resolve(amount, "count")?;
             if count > fewest {
                 notes.push(format!(
-                    "the header says {count} records; the files hold {fewest}, which are shown"
+                    "header says {count} records {} {fewest} shown",
+                    crate::glyphs::get().middot
                 ));
             }
             rows = rows.min(count);
@@ -4375,7 +4378,8 @@ impl Spec {
             let count = header.resolve_any(amount, "count")?;
             if count > rows {
                 notes.push(format!(
-                    "the header says {count} records; the columns have room for {rows}, which are shown"
+                    "header says {count} records {} room for {rows} shown",
+                    crate::glyphs::get().middot
                 ));
             }
             rows = rows.min(count);
@@ -5796,10 +5800,7 @@ fields = [
         past_limit(&mut notes, 4, &records);
         assert!(notes.is_empty());
         past_limit(&mut notes, 9, &records);
-        assert_eq!(
-            notes,
-            ["the last 5 records are past the most a table holds and are not shown"]
-        );
+        assert_eq!(notes, ["last 5 records not shown: past the table limit"]);
     }
 
     fn collect(opened: &Opened) -> DataFrame {
@@ -6055,7 +6056,7 @@ fields = [{ name = "ts", type = "u6be", time = "ns", of_day = true, date = "head
         assert_eq!(collect(&opened).height(), 2);
         assert_eq!(
             opened.notes,
-            ["x.bin ends with 2 bytes that are not a whole record, left out: ab cd"]
+            ["x.bin: 2 trailing bytes left out, not a whole record: ab cd"]
         );
         // The header's count says more than is there: the whole records are shown.
         let spec = Spec::parse(L2, None).unwrap();

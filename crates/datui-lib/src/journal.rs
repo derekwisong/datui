@@ -124,8 +124,9 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
     if bytes > 0 {
         notes.push(crate::text_formats::note(
             format!(
-                "{} came as bytes, not text; shown as text, with bytes that are not UTF-8 as \u{fffd}.",
-                crate::text_formats::count(bytes as u64, "message", "messages")
+                "{} stored as bytes {} shown as text, invalid UTF-8 as \u{fffd}",
+                crate::text_formats::count(bytes as u64, "message", "messages"),
+                crate::glyphs::get().middot
             ),
             "the journal".to_string(),
         ));

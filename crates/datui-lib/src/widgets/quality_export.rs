@@ -2,7 +2,7 @@
 //! a form, and a line saying what the form holds or why Enter did not write.
 
 use crate::quality_export::ExportForm;
-use crate::widgets::data_quality::{DataQualityWidgetConfig, centered_rect, fit};
+use crate::widgets::data_quality::{DataQualityWidgetConfig, centered_rect, dotted, fit};
 use crate::widgets::ui::{FormRow, FormValue, Surface};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -47,10 +47,10 @@ pub fn render(
     .render(line(1), buf, ctx);
     let (status, warn) = match &form.error {
         Some(error) => (error.clone(), true),
-        None => (format!("{}; nothing is read", form.format.holds()), false),
+        None => (format!("{} · no read", form.format.holds()), false),
     };
     Paragraph::new(Line::styled(
-        fit(&status, content.width as usize),
+        fit(&dotted(&status), content.width as usize),
         Style::default().fg(if warn { ctx.warning } else { ctx.dimmed }),
     ))
     .render(line(content.height - 1), buf);

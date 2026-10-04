@@ -468,7 +468,7 @@ impl FormatChoice {
             Self::Builtin(format) => format.read_mode(stored),
             Self::Spec(_) | Self::File(_) => match stored {
                 Stored::Plain => Some(ReadMode::Lazy),
-                Stored::Compressed { .. } => Some(ReadMode::Converted),
+                Stored::Compressed { .. } => Some(ReadMode::Decompressed),
                 Stored::Stream => None,
             },
         }
@@ -1414,7 +1414,7 @@ mod format_tests {
         // a GPS log is decompressed as it is converted; nothing else opens compressed.
         let compressed = |f: FileFormat, in_memory| f.read_mode(Stored::Compressed { in_memory });
         for f in [FileFormat::Csv, FileFormat::Tsv, FileFormat::Psv] {
-            assert_eq!(compressed(f, false), Some(Converted));
+            assert_eq!(compressed(f, false), Some(Decompressed));
             assert_eq!(compressed(f, true), Some(InMemory));
         }
         assert_eq!(compressed(FileFormat::Nmea, true), Some(Converted));
@@ -1427,7 +1427,7 @@ mod format_tests {
         assert_eq!(spec.read_mode(Stored::Plain), Some(Lazy));
         assert_eq!(
             spec.read_mode(Stored::Compressed { in_memory: true }),
-            Some(Converted)
+            Some(Decompressed)
         );
         assert_eq!(spec.bucket_object(Stored::Plain), RemoteRead::Downloaded);
 

@@ -146,13 +146,13 @@ fn an_nmea_log_opens_as_its_fixes() {
 
     let notes = summaries(&app);
     assert!(
-        notes.iter().any(|n| n == "1 line is not NMEA and left out"),
+        notes.iter().any(|n| n == "1 line left out: not NMEA"),
         "{notes:?}"
     );
     assert!(
         notes
             .iter()
-            .any(|n| n.starts_with("1 sentence fails its checksum")),
+            .any(|n| n.starts_with("checksum failed: 1 sentence")),
         "{notes:?}"
     );
     assert_eq!(notes.len(), 2, "the other tables are not a note: {notes:?}");

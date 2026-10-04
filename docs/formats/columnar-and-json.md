@@ -12,7 +12,7 @@ datui https://raw.githubusercontent.com/apache/parquet-testing/master/data/allty
 | [Parquet](#parquet) | `.parquet` | lazy | yes | Parquet |
 | [JSON](#json-and-ndjson) | `.json` | in memory | yes | none |
 | [NDJSON](#json-and-ndjson) | `.jsonl`, `.ndjson` | in memory | yes | none |
-| [Arrow IPC](#arrow-ipc) | `.arrow`, `.arrows`, `.ipc`, `.feather` | lazy; a stream converted once | yes | Arrow |
+| [Arrow IPC](#arrow-ipc) | `.arrow`, `.arrows`, `.ipc`, `.feather` | lazy scan; a stream converted to Arrow | yes | Arrow |
 | [Avro](#avro-and-orc) | `.avro` | in memory | yes | Avro |
 | [ORC](#avro-and-orc) | `.orc` | in memory | yes | ORC |
 | [Excel](#excel) | `.xlsx`, `.xlsm`, `.xlsb`, `.xls` | in memory | no | Excel |
@@ -67,7 +67,7 @@ datui https://raw.githubusercontent.com/apache/arrow-testing/master/data/arrow-i
 
 An IPC file (Feather v2) is scanned in place, from its footer. An IPC stream,
 the format of a Hugging Face `datasets` cache, has no footer: it is told from a
-file by its first bytes and converted once to an IPC file in the temp
+file by its first bytes and converted to an IPC file in the temp
 directory, then scanned. The loading screen shows how far the conversion has
 got; <kbd>Ctrl</kbd>+<kbd>O</kbd> stops it. A stream larger than the temp
 directory's free space is refused before it is written. LZ4 and ZSTD buffers

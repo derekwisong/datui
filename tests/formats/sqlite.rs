@@ -184,9 +184,7 @@ fn table_opens_one_of_several() {
     assert_eq!(state.other_tables(), ["customers", "big_orders"]);
     let notes: Vec<String> = state.notes().into_iter().map(|n| n.summary).collect();
     assert!(
-        notes
-            .iter()
-            .any(|n| n.starts_with("note holds values of several types")),
+        notes.iter().any(|n| n.starts_with("note: mixed types")),
         "{notes:?}"
     );
 

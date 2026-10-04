@@ -81,7 +81,7 @@ fn a_file_no_reader_takes_opens_as_hex_rather_than_failing() {
     let s = screen(&mut app, 80, 24);
     assert!(s.contains("Hex · hex_fallback.weird"), "{s}");
     assert!(s.contains("00000000  53 59 4e 43"), "{s}");
-    assert!(s.contains("No reader matched this file"), "{s}");
+    assert!(s.contains("format unknown"), "{s}");
     // `q` quits from a view the command line opened.
     assert!(matches!(
         press(&mut app, KeyCode::Char('q')),

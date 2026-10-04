@@ -349,7 +349,7 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<(LazyFrame, crate::memb
     if elf.left_out > 0 {
         notes.push(crate::text_formats::note(
             format!(
-                "{} symbols past the first {} are left out.",
+                "{} symbols left out: past the first {}",
                 crate::numfmt::group_chrome(elf.left_out),
                 crate::numfmt::group_chrome(MAX_SYMBOLS)
             ),

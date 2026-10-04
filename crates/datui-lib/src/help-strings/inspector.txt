@@ -58,8 +58,8 @@ What it shows:
   Lists and structs show one item per line, with text quoted.
   On a wide terminal the fields and the value sit side by side, and the
   fields flow into columns.
-  For a dataset a collection lists with a codebook, the lines under the
-  value say what the field means and, when the codebook lists the value,
+  For a dataset a collection documents, the lines under the value say
+  what the field means and, when the documentation lists the value,
   what it stands for: AWDR = Average daily wind direction (degrees). A blank
   flag reads its blank entry.
 

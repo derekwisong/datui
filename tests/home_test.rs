@@ -5911,8 +5911,8 @@ mod coming_back {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(screen.contains("Its footer could not be read"), "{screen}");
-        assert!(!screen.contains("Columns are read when opened"), "{screen}");
+        assert!(screen.contains("footer unreadable"), "{screen}");
+        assert!(!screen.contains("on open"), "{screen}");
 
         let Some(AppEvent::Open(paths, options)) = press(&mut app, KeyCode::Enter) else {
             panic!("Enter on a file opens it");
@@ -7272,7 +7272,7 @@ fn test_a_file_row_says_how_it_will_be_read() {
         };
         for (name, marker) in [
             ("events.json", Some("in memory")),
-            ("log.csv.gz", Some("converts")),
+            ("log.csv.gz", Some("decompresses")),
             ("ride.gpx", Some("converts")),
             ("stream.arrow", Some("converts")),
             ("notes.csv", None),
@@ -7282,7 +7282,7 @@ fn test_a_file_row_says_how_it_will_be_read() {
             let line = row(name);
             // The list's half of the line: the pane beside it at 200 is not the row.
             let list: String = line.chars().take(width as usize * 5 / 8).collect();
-            for word in ["in memory", "converts", "downloads"] {
+            for word in ["in memory", "decompresses", "converts", "downloads"] {
                 assert_eq!(
                     list.contains(word),
                     marker == Some(word),

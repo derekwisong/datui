@@ -475,26 +475,32 @@ pub fn notes(index: &Index) -> Vec<String> {
     let mut notes = Vec::new();
     if index.damaged > 0 {
         notes.push(format!(
-            "{} stretches, {} bytes, that start no record were passed over.",
+            "{} damaged stretches skipped ({} bytes)",
             group(index.damaged),
             group(index.skipped)
         ));
     }
     if index.cut_short {
-        notes.push("The log ends partway through a record: it was cut short.".to_string());
+        notes.push("log cut short mid-record".to_string());
     }
     if index.past_limit > 0 {
         notes.push(format!(
-            "{} records past the first {} are left out.",
+            "{} records left out: past the first {}",
             group(index.past_limit),
             group(crate::indexed::MAX_RECORDS)
         ));
     }
     if !index.bad_formats.is_empty() {
         notes.push(format!(
-            "{} message types are not read: their format does not add up to their length or has a character datui does not know: {}.",
+            "{} message types not read, format unreadable: {}",
             index.bad_formats.len(),
-            index.bad_formats.iter().take(10).cloned().collect::<Vec<_>>().join(", ")
+            index
+                .bad_formats
+                .iter()
+                .take(10)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     notes

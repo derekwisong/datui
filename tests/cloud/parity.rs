@@ -110,9 +110,13 @@ fn both(bucket: &str, objects: &[(String, Vec<u8>)]) -> (Outcome, Outcome) {
 fn same(bucket: &str, objects: &[(String, Vec<u8>)]) -> Outcome {
     let (mut local, cloud) = both(bucket, objects);
     // The one difference: within a wave a directory's footers cost one round of reads,
-    // as a stat of every file would, so it is not fingerprinted and a reopen reads them
-    // again. A bucket's listing carries what the fingerprint needs; what its reopen read
-    // is then the bucket's to say, and each test says it.
+    // as a stat of every file would, so it is not stat'ed. A reopen reads them again,
+    // and an empty file is found by trying its footer, where a bucket's listing gives
+    // its size. What the bucket read is then the test's to say.
+    let empty = objects
+        .iter()
+        .filter(|(key, bytes)| bytes.is_empty() && key.ends_with(".parquet"))
+        .count();
     if local
         .footers_read
         .is_some_and(|n| n <= datui::schema_union::FOOTERS_AT_ONCE)
@@ -121,7 +125,13 @@ fn same(bucket: &str, objects: &[(String, Vec<u8>)]) -> Outcome {
             local.reopen_footers_read, local.footers_read,
             "a small directory is read again"
         );
+        assert_eq!(
+            local.footers_read,
+            cloud.footers_read.map(|n| n + empty),
+            "and tries the footer of each empty file once"
+        );
         local.reopen_footers_read = cloud.reopen_footers_read;
+        local.footers_read = cloud.footers_read;
     }
     assert_eq!(local, cloud, "a directory and a bucket open the same");
     local
@@ -199,7 +209,15 @@ fn a_dataset_past_one_wave_opens_the_same_from_a_disk_or_a_bucket() {
         })
         .collect();
 
+    // Past a wave the directory is stat'ed, which finds the empty file the listing does.
+    let mut objects = objects;
+    objects.push(("region=1/part-empty.parquet".into(), Vec::new()));
     let outcome = same("wave", &objects);
+    assert!(
+        outcome.notes.iter().any(|n| n.contains("1 file is empty")),
+        "{:?}",
+        outcome.notes
+    );
     assert_eq!(outcome.rows, Some(files * 3));
     assert_eq!(outcome.partitions, ["region"]);
     assert!(outcome.columns.iter().any(|(n, _)| n == "oops"), "joined");
@@ -213,14 +231,16 @@ fn a_dataset_past_one_wave_opens_the_same_from_a_disk_or_a_bucket() {
     assert!(outcome.reopen_whole);
 }
 
-/// A file that will not read is left out the same way, noted the same way, and a
-/// dataset with one is not remembered as though it were whole.
+/// A file that will not read, and one with nothing in it, are left out the same way
+/// and noted the same way, and a dataset with one is not remembered as though whole.
 #[test]
 fn a_dataset_with_a_broken_file_opens_the_same_from_a_disk_or_a_bucket() {
     let mut objects: Vec<(String, Vec<u8>)> = (0..3)
         .map(|i| (format!("part-{i}.parquet"), parquet(rows(i, 5))))
         .collect();
     objects.push(("part-9.parquet".into(), b"not parquet at all".to_vec()));
+    // A write that stopped: a data file's name over nothing.
+    objects.push(("part-8.parquet".into(), Vec::new()));
 
     let outcome = same("broken", &objects);
     assert_eq!(outcome.rows, Some(15), "the readable files' rows");
@@ -234,7 +254,12 @@ fn a_dataset_with_a_broken_file_opens_the_same_from_a_disk_or_a_bucket() {
         outcome
             .notes
             .iter()
-            .any(|n| n.contains("could not be read")),
+            .any(|n| n.contains("1 file could not be read")),
+        "{:?}",
+        outcome.notes
+    );
+    assert!(
+        outcome.notes.iter().any(|n| n.contains("1 file is empty")),
         "{:?}",
         outcome.notes
     );

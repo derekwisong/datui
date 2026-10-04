@@ -1375,6 +1375,7 @@ mod tests {
                 progress: progress.clone(),
                 meter: Arc::new(crate::measurements::Meter::default()),
                 remembered: None,
+                writes: Default::default(),
             },
         );
 
@@ -1602,6 +1603,7 @@ mod tests {
             progress: Arc::new(crate::schema_union::FooterProgress::default()),
             meter: Arc::new(crate::measurements::Meter::default()),
             remembered: Some(cache.clone()),
+            writes: Default::default(),
         };
         let open = || {
             let r = report();
@@ -1693,6 +1695,7 @@ mod tests {
                     progress: Arc::new(crate::schema_union::FooterProgress::default()),
                     meter: meter.clone(),
                     remembered: Some(cache.clone()),
+                    writes: Default::default(),
                 },
             );
             meter
@@ -1760,6 +1763,7 @@ mod tests {
                     progress: Arc::new(crate::schema_union::FooterProgress::default()),
                     meter: meter.clone(),
                     remembered: Some(cache.clone()),
+                    writes: Default::default(),
                 },
             );
             meter
@@ -1848,6 +1852,7 @@ mod tests {
                 progress: Arc::new(crate::schema_union::FooterProgress::default()),
                 meter: meter.clone(),
                 remembered: None,
+                writes: Default::default(),
             },
         );
 
@@ -2068,6 +2073,7 @@ mod tests {
             progress: Arc::new(crate::schema_union::FooterProgress::default()),
             meter: Arc::new(crate::measurements::Meter::default()),
             remembered: None,
+            writes: Default::default(),
         };
         let (local, _) = crate::App::schema_state_from_local_hive(
             Some(dir.path()),
@@ -2166,6 +2172,7 @@ mod tests {
                 progress: Arc::new(crate::schema_union::FooterProgress::default()),
                 meter: meter.clone(),
                 remembered: None,
+                writes: Default::default(),
             },
         );
 
@@ -2262,6 +2269,7 @@ mod tests {
                 progress: progress.clone(),
                 meter: Arc::new(crate::measurements::Meter::default()),
                 remembered: None,
+                writes: Default::default(),
             },
         )
         // As `build_schema_state` marks a prefix that is scanned where it lies.
@@ -2423,6 +2431,7 @@ mod tests {
                 progress: progress.clone(),
                 meter: Arc::new(crate::measurements::Meter::default()),
                 remembered: None,
+                writes: Default::default(),
             },
         )
         .map(|(state, facts)| state.with_open(facts))
@@ -2505,6 +2514,7 @@ mod tests {
                 progress: progress.clone(),
                 meter: Arc::new(crate::measurements::Meter::default()),
                 remembered: None,
+                writes: Default::default(),
             },
         )
         .map(|(state, facts)| state.with_open(facts))
@@ -2919,6 +2929,7 @@ mod tests {
                 progress: progress.clone(),
                 meter: reopen.clone(),
                 remembered: Some(cache),
+                writes: Default::default(),
             },
         )
         .expect("the reopen opens");
@@ -2978,6 +2989,7 @@ mod tests {
                 progress: progress.clone(),
                 meter: Arc::new(crate::measurements::Meter::default()),
                 remembered: None,
+                writes: Default::default(),
             },
         )
         .map(|(state, facts)| state.with_open(facts))
@@ -3144,6 +3156,7 @@ mod tests {
                 progress: progress.clone(),
                 meter: Arc::new(crate::measurements::Meter::default()),
                 remembered: None,
+                writes: Default::default(),
             },
         )
         .map(|(state, facts)| state.with_open(facts))

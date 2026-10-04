@@ -430,9 +430,8 @@ pub struct SkippedFiles {
     /// Objects with nothing in them, whose name says they are data. Not a file anyone
     /// left on purpose: a write that stopped, which is the skip most worth saying.
     ///
-    /// Only ever counted from a store listing, which knows a size. The same file on
-    /// disk is opened and turns up as a footer that would not read, which says the same
-    /// thing in another note's words.
+    /// A store's listing knows each size; a directory knows it from the stat past one
+    /// wave, or from the footer that would not read within one.
     pub empty: usize,
 }
 

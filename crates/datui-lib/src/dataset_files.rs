@@ -82,6 +82,11 @@ pub trait DatasetFiles: Send + Sync {
     }
     /// The modification time the dataset index records for the dataset.
     fn modified(&self, files: &[DatasetFile]) -> u64;
+    /// Whether `file`, whose footer would not read, holds nothing at all. Asked only of
+    /// such a file, where the listing did not already say its size.
+    fn is_empty(&self, _file: &DatasetFile) -> bool {
+        false
+    }
     /// Whether the listing is the one object the path names rather than a directory.
     fn is_one_object(&self, _files: &[DatasetFile]) -> bool {
         false
@@ -105,6 +110,10 @@ struct Listed {
     /// The open's meter, which the pass's and the count's reads are tallied into.
     meter: Arc<Meter>,
     remembered: Option<crate::cache::CacheManager>,
+    /// Where the home screen's record is written, off the open's path. One write at a
+    /// time, so a sample's record never lands after the whole one it would not replace.
+    writes: crate::background::CacheWrites,
+    writing: Arc<std::sync::Mutex<()>>,
 }
 
 /// A dataset as some set of its footers describes it, and the scan that reads it.
@@ -137,15 +146,18 @@ pub(crate) fn open(
     if report.progress.is_cancelled() || files.is_empty() {
         return None;
     }
-    let listed = Arc::new(Listed::new(
-        source,
-        files,
-        skipped,
-        fingerprint,
-        report.meter.clone(),
-        report.remembered.clone(),
-    )?);
-    let files = listed.files.clone();
+    let mut listed = Listed {
+        writes: report.writes.clone(),
+        ..Listed::new(
+            source,
+            files,
+            skipped,
+            fingerprint,
+            report.meter.clone(),
+            report.remembered.clone(),
+        )?
+    };
+    let mut files = listed.files.clone();
     let remembered = listed.shape();
     let from_cache = remembered.is_some();
     let staged = !from_cache && files.len() > FOOTERS_AT_ONCE;
@@ -158,12 +170,57 @@ pub(crate) fn open(
     } else {
         footers_to_read(files.len())
     };
-    let footers = match remembered {
+    let mut footers = match remembered {
         Some(footers) => footers,
         None => listed
             .source
             .read_footers(&files, &read, &report.progress, &report.meter)?,
     };
+    // Within a wave a directory is not stat'ed, so an empty file is found only by the
+    // footer that would not read: asked of those alone, and left out as the stat
+    // would have.
+    if !staged && !from_cache {
+        let empty: Vec<bool> = footers
+            .iter()
+            .zip(files.iter())
+            .map(|(footer, file)| footer.is_none() && listed.source.is_empty(file))
+            .collect();
+        if empty.contains(&true) {
+            let mut kept = Vec::new();
+            let mut skipped = listed.skipped;
+            footers = footers
+                .into_iter()
+                .zip(files.iter())
+                .zip(&empty)
+                .filter_map(|((footer, file), &empty)| {
+                    if empty {
+                        skipped.empty += 1;
+                        return None;
+                    }
+                    kept.push(file.clone());
+                    Some(footer)
+                })
+                .collect();
+            listed = Listed {
+                writes: listed.writes.clone(),
+                ..Listed::new(
+                    listed.source.clone(),
+                    kept,
+                    skipped,
+                    listed.fingerprint.clone(),
+                    listed.meter.clone(),
+                    listed.remembered.clone(),
+                )?
+            };
+            files = listed.files.clone();
+        }
+    }
+    let read: Vec<usize> = if read.len() == footers.len() {
+        read
+    } else {
+        (0..files.len()).collect()
+    };
+    let listed = Arc::new(listed);
     log::debug!(
         target: "datui",
         "dataset of {} files: {} footers {}",
@@ -256,14 +313,21 @@ fn list(
     // and an abandoned open stops both.
     let listing = progress.listing();
     let began = std::time::Instant::now();
-    let (mut files, skipped) = source.list(&listing)?;
+    let (mut files, mut skipped) = source.list(&listing)?;
     // After the sort: the files are not found until they are in the order the scan
     // will read them in.
     meter.listed(began.elapsed(), Some(files.len()), false);
     // Taking it costs nothing in a store, whose listing carries every file's size and
     // tag; on a disk it costs a stat a file, which within a wave is not worth it.
-    let fingerprint = (source.fingerprints(files.len()) && source.stat(&mut files, progress))
-        .then(|| fingerprint_of(&files));
+    let stated = source.fingerprints(files.len()) && source.stat(&mut files, progress);
+    if stated {
+        // A name that says data over nothing at all is a write that stopped, which a
+        // bucket's listing leaves out by its size: the same here once the stat has one.
+        let listed = files.len();
+        files.retain(|f| f.size > 0);
+        skipped.empty += listed - files.len();
+    }
+    let fingerprint = stated.then(|| fingerprint_of(&files));
     Some((files, skipped, fingerprint))
 }
 
@@ -308,6 +372,8 @@ impl Listed {
             fingerprint,
             meter,
             remembered,
+            writes: Default::default(),
+            writing: Default::default(),
         })
     }
 
@@ -349,35 +415,38 @@ impl Listed {
         let Some(cache) = self.remembered.as_ref() else {
             return;
         };
-        // What the home screen reads. Written before the shape, because a sampled read
-        // still says what the columns are, and the shape below wants every footer. A
-        // sampled read does not replace a whole one, though: the shape cache is the
-        // smaller of the two and forgets a dataset long before the index does.
+        // What the home screen reads, written behind the open: a sampled read still says
+        // what the columns are, where the shape below wants every footer. A sampled read
+        // does not replace a whole one, though: the shape cache is the smaller of the two
+        // and forgets a dataset long before the index does.
         let path = PathBuf::from(self.source.key());
         if let Some(facts) = self.facts(read, footers, schema) {
-            let existing = cache.dataset_facts(&path);
-            // A reopen learns what it knew: the write, which waits on the disk, is
-            // skipped.
-            let same = existing.as_ref().is_some_and(|old| {
-                (
-                    old.rows,
-                    old.cols,
-                    old.size,
-                    old.mtime,
-                    &old.columns,
-                    old.kind,
-                ) == (
-                    facts.rows,
-                    facts.cols,
-                    facts.size,
-                    facts.mtime,
-                    &facts.columns,
-                    facts.kind,
-                ) && old.classified_by == facts.classified_by
+            let (cache, writing) = (cache.clone(), self.writing.clone());
+            self.writes.spawn(move || {
+                let _one = writing.lock().unwrap_or_else(|e| e.into_inner());
+                let existing = cache.dataset_facts(&path);
+                // A reopen learns what it knew: no write.
+                let same = existing.as_ref().is_some_and(|old| {
+                    (
+                        old.rows,
+                        old.cols,
+                        old.size,
+                        old.mtime,
+                        &old.columns,
+                        old.kind,
+                    ) == (
+                        facts.rows,
+                        facts.cols,
+                        facts.size,
+                        facts.mtime,
+                        &facts.columns,
+                        facts.kind,
+                    ) && old.classified_by == facts.classified_by
+                });
+                if !same && facts_worth_recording(existing.as_ref(), &facts) {
+                    cache.record_dataset_facts(&[(path, facts)]);
+                }
             });
-            if !same && facts_worth_recording(existing.as_ref(), &facts) {
-                cache.record_dataset_facts(&[(path, facts)]);
-            }
         }
         let Some(fingerprint) = self.fingerprint.as_ref().filter(|_| shape) else {
             return;
@@ -914,6 +983,10 @@ impl DatasetFiles for LocalFiles {
 
     fn name_of(&self, file: &DatasetFile) -> Option<String> {
         Some(file.key.clone())
+    }
+
+    fn is_empty(&self, file: &DatasetFile) -> bool {
+        std::fs::metadata(&file.key).is_ok_and(|m| m.len() == 0)
     }
 
     fn partition_path(&self, file: &DatasetFile) -> String {
@@ -1666,6 +1739,7 @@ mod tests {
             progress: progress.clone(),
             meter: Arc::new(Meter::default()),
             remembered: Some(cache.clone()),
+            writes: Default::default(),
         };
         let options = crate::OpenOptions {
             hive: true,
@@ -1675,6 +1749,7 @@ mod tests {
         if let Some(join) = facts.footers_pending {
             join(&progress).expect("the pass reads the rest");
         }
+        report.writes.settle();
     }
 
     /// A local open records what the home screen shows, as a cloud one does, under the

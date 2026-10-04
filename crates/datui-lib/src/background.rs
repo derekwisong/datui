@@ -333,6 +333,12 @@ impl CacheWrites {
     }
 }
 
+impl std::fmt::Debug for CacheWrites {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CacheWrites")
+    }
+}
+
 struct WriteDone(CacheWrites);
 
 impl Drop for WriteDone {

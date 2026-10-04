@@ -5690,6 +5690,7 @@ impl App {
         let formats = self.formats.clone();
         let runtime = self.runtime.clone();
         let cache = self.cache.clone();
+        let writes = self.cache_writes.clone();
         // The table's rows: the screen less the title, the header and the control bar.
         let visible = (screen_height as usize).saturating_sub(3).max(1);
         let owed = self.owed_answer(AppEvent::HomePreviewReady {
@@ -5703,8 +5704,9 @@ impl App {
             owed.run(|| {
                 let began = std::time::Instant::now();
                 let read_at = crate::home_preview::Stamp::of_file(&path);
-                let read =
-                    Self::read_home_preview(&path, &cloud, &formats, &runtime, cache, visible);
+                let read = Self::read_home_preview(
+                    &path, &cloud, &formats, &runtime, cache, writes, visible,
+                );
                 log::debug!(
                     target: "datui",
                     "home preview of {}: {:.1?}",
@@ -5736,6 +5738,7 @@ impl App {
         formats: &crate::formats::Registry,
         runtime: &tokio::runtime::Handle,
         cache: CacheManager,
+        writes: CacheWrites,
         visible: usize,
     ) -> Option<(
         crate::home_preview::PreviewRows,
@@ -5758,6 +5761,7 @@ impl App {
             progress: progress.clone(),
             meter: Arc::new(crate::measurements::Meter::default()),
             remembered: Some(cache),
+            writes,
         };
         let read = Self::read_schema_for_open(
             *lf,
@@ -9100,6 +9104,7 @@ impl App {
                     progress,
                     meter: Arc::new(crate::measurements::Meter::default()),
                     remembered: Some(self.cache.clone()),
+                    writes: self.cache_writes.clone(),
                 };
                 self.spawn_job(job, Some("Reading schema..."), move |_| {
                     Self::read_schema_for_open(*lf, path, options, &cloud, &runtime, &report, made)
@@ -9764,6 +9769,7 @@ impl App {
             progress: report.progress.clone(),
             meter: Arc::new(crate::measurements::Meter::default()),
             remembered: report.remembered.clone(),
+            writes: report.writes.clone(),
         };
 
         let local = attempt(report);

@@ -219,6 +219,9 @@ pub struct OpenReport {
     /// reports what it is doing, records what it cost, and remembers what it found, and
     /// all three are handed down the same routes.
     pub remembered: Option<crate::cache::CacheManager>,
+    /// Where what is remembered for the home screen is written, off the open's path:
+    /// the app's, which the home listing settles before it reads.
+    pub(crate) writes: crate::background::CacheWrites,
 }
 
 /// What the open on screen cost, as it is measured.

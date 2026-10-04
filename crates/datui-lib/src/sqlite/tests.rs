@@ -345,6 +345,32 @@ fn an_empty_table_keeps_its_columns() {
     assert_eq!(df.height(), 0);
     assert_eq!(df.schema().get("a"), Some(&DataType::Int64));
     assert_eq!(df.schema().get("b"), Some(&DataType::String));
+
+    // No declared type and no rows: text, as an untyped column of text reads.
+    let db = database(dir.path(), "u.db", "CREATE TABLE t (a);");
+    let (df, _) = read_table(&db, "t");
+    assert_eq!(df.height(), 0);
+    assert_eq!(df.schema().get("a"), Some(&DataType::String));
+    let db = database(
+        dir.path(),
+        "r.db",
+        "CREATE TABLE t (a); INSERT INTO t VALUES ('x'), ('y');",
+    );
+    let (df, _) = read_table(&db, "t");
+    assert_eq!(df.height(), 2);
+    assert_eq!(df.schema().get("a"), Some(&DataType::String));
+
+    // An empty table beside one with rows.
+    let db = database(
+        dir.path(),
+        "m.db",
+        "CREATE TABLE full (a INTEGER); INSERT INTO full VALUES (1), (2);
+         CREATE TABLE empty (b);",
+    );
+    let (df, _) = read_table(&db, "empty");
+    assert_eq!(df.height(), 0);
+    assert_eq!(df.schema().get("b"), Some(&DataType::String));
+    assert_eq!(read_table(&db, "full").0.height(), 2);
 }
 
 /// Nothing is written beside or into the database: its bytes and its directory are as

@@ -9595,6 +9595,57 @@ fn main_area_text(buf: &Buffer, area: Rect) -> String {
         .collect()
 }
 
+/// The table area's rows, trimmed, once `path` is open and known to hold no rows.
+fn empty_table_lines(path: PathBuf, options: OpenOptions) -> Vec<String> {
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], options);
+    assert_eq!(app.error_message(), None);
+    let area = Rect::new(0, 0, 60, 8);
+    let mut buffer = Buffer::empty(area);
+    // The first frame sizes the table, which asks for its rows again.
+    for _ in 0..2 {
+        buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        pump_until(&mut app, &rx, &tx, |app| {
+            !app.is_busy()
+                && app
+                    .data_table_state
+                    .as_ref()
+                    .and_then(|s| s.num_rows_if_valid())
+                    == Some(0)
+        });
+    }
+    app.render(area, &mut buffer);
+    main_area_text(&buffer, area)
+        .chars()
+        .collect::<Vec<_>>()
+        .chunks(area.width as usize)
+        .map(|row| row.iter().collect::<String>().trim().to_string())
+        .collect()
+}
+
+/// A table of no rows draws its header, each column typed, and says it is empty.
+#[test]
+fn an_empty_table_shows_its_header_and_says_so() {
+    common::ensure_sample_data();
+    let dir = common::fixture_dir();
+    let csv = dir.join("empty_table_header.csv");
+    std::fs::write(&csv, "x,y\n").unwrap();
+    let lines = empty_table_lines(csv, OpenOptions::default());
+    assert_eq!(&lines[..3], ["x    y", "str  str", "No rows"], "{lines:#?}");
+
+    let lines = empty_table_lines(
+        PathBuf::from("tests/sample-data/empty.parquet"),
+        OpenOptions::default(),
+    );
+    assert_eq!(lines[2], "No rows", "{lines:#?}");
+    assert!(
+        lines[0].contains("id") && lines[0].contains("name"),
+        "{lines:#?}"
+    );
+}
+
 /// Ctrl+O at any point during a load must abandon it: whatever is on screen when the
 /// user goes home is what is still there afterwards. The load runs to completion in
 /// the background and its results are dropped.

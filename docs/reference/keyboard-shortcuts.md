@@ -369,22 +369,23 @@ Where a dataset opens.
 
 ## Pivot and melt
 
-<kbd>p</kbd> at the table.
+<kbd>p</kbd> at the table: the form on the left, a live preview of the result on the right (above and below on a narrow terminal).
 
 ### Pivot and melt · Form
 
 | Key | Action |
 |---|---|
-| `Tab / Shift+Tab (↑ / ↓)` | Next or previous field, wrapping; a field the form does not offer right now is skipped. The arrows move from the moment the dialog opens |
-| `← / →` | On the tab bar: switch Pivot and Melt. On the aggregation, strategy or type: the previous or next value. On a single column row: the previous or next column. In a text field: move the cursor. h/l too, outside text fields |
-| `Space` | On a choice: its next value, wrapping. On a column row: open its picker, scoped to that row; typing narrows it |
-| `Enter` | Apply the spec echoed above the footer |
-| `Esc` | Close without applying; while a pivot is computed, stop it and keep the form |
+| `Tab / Shift+Tab (↑ / ↓)` | Next or previous field, wrapping; a field the form does not offer right now is skipped. The arrows move from the moment the builder opens |
+| `← / →` | On the first row: switch Pivot and Melt. On the aggregation, strategy or type: the previous or next value. On a single column row: the previous or next column. In a text field: move the cursor. h/l too, outside text fields. The preview follows each change |
+| `Space` | On a column row: open its picker, scoped to that row; typing narrows it. On a choice: its next value, wrapping |
+| `Enter` | Apply the reshape the preview shows, to the whole view, from any field |
+| `Esc` | Close without applying; while a pivot is computed, stop it and keep the builder |
 
 ### Pivot and melt · Picker
 
 | Key | Action |
 |---|---|
+| `(type)` | Narrow the column list |
 | `↑ / ↓` | Move; typing narrows |
 | `Enter` | Choose; on a several-choice row, done |
 | `Space` | Choose; toggle a column on a several-choice row |

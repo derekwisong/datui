@@ -67,6 +67,7 @@ pub enum JobKind {
     SampleRows,
     Pivot,
     ViewPivot,
+    ReshapePreview,
     DrillRow,
     InspectRow,
     InspectJson,
@@ -130,11 +131,14 @@ pub(crate) enum Job {
     Analysis(AnalysisRun),
     /// The sample, or the rows behind a finding, read to show as a table.
     SampleRows,
-    /// A pivot from the Pivot & Melt form.
+    /// A pivot from the Pivot & Melt builder.
     Pivot,
     /// A view's pivot, read before the view's rows: the view it is for, and why it
     /// was applied when it was for a match.
     ViewPivot(Box<(crate::view::SavedView, Option<crate::view::MatchReason>)>),
+    /// The Pivot & Melt builder's preview: request `token` of the builder's opening
+    /// `epoch`. Judged by those, not the generation; nobody waits on it.
+    ReshapePreview { epoch: u64, token: u64 },
     /// The group row Enter drills into, when the buffer did not hold it.
     DrillRow,
     /// The inspector's fields of one row that the buffer does not hold: row `row` of
@@ -219,6 +223,7 @@ impl Job {
             Job::SampleRows => JobKind::SampleRows,
             Job::Pivot => JobKind::Pivot,
             Job::ViewPivot(_) => JobKind::ViewPivot,
+            Job::ReshapePreview { .. } => JobKind::ReshapePreview,
             Job::DrillRow => JobKind::DrillRow,
             Job::InspectRow { .. } => JobKind::InspectRow,
             Job::InspectJson { .. } => JobKind::InspectJson,
@@ -258,7 +263,8 @@ impl Job {
     /// - the looks at a path named on the command line, whose answers are meant to be
     ///   thrown away when the user moves on (Ctrl+O out of a long look must not hold
     ///   the next dataset's rows behind it);
-    /// - the Info panel's file facts, judged by the dataset rather than the generation.
+    /// - the Info panel's file facts, judged by the dataset rather than the generation;
+    /// - the Pivot & Melt preview, judged by the builder's request.
     ///
     /// A page that is owed has nothing running to strand.
     fn leased(&self) -> bool {
@@ -269,16 +275,21 @@ impl Job {
                 | Job::OpenNamed(_)
                 | Job::LookAtDirectory { .. }
                 | Job::FileFacts { .. }
+                | Job::ReshapePreview { .. }
         )
     }
 
     /// Whether advancing the generation makes this job's answer stale. The Info
-    /// panel's facts belong to a dataset, a chart export to the chart view, and an
-    /// owed page to the dataset it was owed to, each put down by its own owner.
+    /// panel's facts belong to a dataset, a chart export to the chart view, an owed
+    /// page to the dataset it was owed to, and a preview to the builder's request,
+    /// each put down by its own owner.
     fn follows_the_generation(&self) -> bool {
         !matches!(
             self,
-            Job::FileFacts { .. } | Job::ChartExport { .. } | Job::OwedRows { .. }
+            Job::FileFacts { .. }
+                | Job::ChartExport { .. }
+                | Job::OwedRows { .. }
+                | Job::ReshapePreview { .. }
         )
     }
 }
@@ -336,6 +347,12 @@ pub(crate) enum Answer {
     },
     /// [`Job::ViewPivot`]: the view's pivot.
     ViewPivoted(DataFrame),
+    /// [`Job::ReshapePreview`]: the head it read, when it read one, and the preview
+    /// or why the reshape failed on it.
+    ReshapePreviewed {
+        input: Option<crate::pivot_melt_modal::PreviewInput>,
+        result: Result<crate::pivot_melt_modal::PreviewFrame, String>,
+    },
     /// [`Job::DrillRow`]: the group row.
     DrillRow { group_index: usize, row: DataFrame },
     /// [`Job::InspectRow`]: the fields read.

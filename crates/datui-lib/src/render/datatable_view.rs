@@ -7,25 +7,17 @@ pub enum ActiveSidebar {
     Info,
     SortFilter,
     Views,
-    PivotMelt,
 }
 
 impl ActiveSidebar {
     /// Determine which sidebar is active from modal states.
-    pub fn from_modals(
-        info_active: bool,
-        sort_filter_active: bool,
-        view_active: bool,
-        pivot_melt_active: bool,
-    ) -> Self {
+    pub fn from_modals(info_active: bool, sort_filter_active: bool, view_active: bool) -> Self {
         if info_active {
             ActiveSidebar::Info
         } else if sort_filter_active {
             ActiveSidebar::SortFilter
         } else if view_active {
             ActiveSidebar::Views
-        } else if pivot_melt_active {
-            ActiveSidebar::PivotMelt
         } else {
             ActiveSidebar::None
         }
@@ -42,7 +34,6 @@ impl ActiveSidebar {
             ActiveSidebar::Info => 72,
             ActiveSidebar::SortFilter => 50,
             ActiveSidebar::Views => 80,
-            ActiveSidebar::PivotMelt => 50,
         }
     }
 }
@@ -105,7 +96,7 @@ mod tests {
     #[test]
     fn test_active_sidebar_from_modals_none() {
         assert_eq!(
-            ActiveSidebar::from_modals(false, false, false, false),
+            ActiveSidebar::from_modals(false, false, false),
             ActiveSidebar::None
         );
     }
@@ -113,7 +104,7 @@ mod tests {
     #[test]
     fn test_active_sidebar_from_modals_info() {
         assert_eq!(
-            ActiveSidebar::from_modals(true, false, false, false),
+            ActiveSidebar::from_modals(true, false, false),
             ActiveSidebar::Info
         );
     }
@@ -121,20 +112,16 @@ mod tests {
     #[test]
     fn test_active_sidebar_from_modals_priority() {
         assert_eq!(
-            ActiveSidebar::from_modals(true, true, true, true),
+            ActiveSidebar::from_modals(true, true, true),
             ActiveSidebar::Info
         );
         assert_eq!(
-            ActiveSidebar::from_modals(false, true, true, true),
+            ActiveSidebar::from_modals(false, true, true),
             ActiveSidebar::SortFilter
         );
         assert_eq!(
-            ActiveSidebar::from_modals(false, false, true, true),
+            ActiveSidebar::from_modals(false, false, true),
             ActiveSidebar::Views
-        );
-        assert_eq!(
-            ActiveSidebar::from_modals(false, false, false, true),
-            ActiveSidebar::PivotMelt
         );
     }
 
@@ -144,7 +131,6 @@ mod tests {
         assert_eq!(ActiveSidebar::Info.width(None), 72);
         assert_eq!(ActiveSidebar::SortFilter.width(None), 50);
         assert_eq!(ActiveSidebar::Views.width(None), 80);
-        assert_eq!(ActiveSidebar::PivotMelt.width(None), 50);
         assert_eq!(ActiveSidebar::Info.width(Some(70)), 70);
         assert_eq!(ActiveSidebar::SortFilter.width(Some(60)), 60);
     }
@@ -175,7 +161,6 @@ mod tests {
             ActiveSidebar::Info,
             ActiveSidebar::SortFilter,
             ActiveSidebar::Views,
-            ActiveSidebar::PivotMelt,
         ] {
             for (width, height) in [(60u16, 20u16), (80, 24), (160, 40)] {
                 for config in [None, Some(100u16)] {

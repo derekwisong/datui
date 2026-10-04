@@ -1,14 +1,144 @@
-//! The pivot and melt modal's keys: the shared form keys (`crate::form`), then what
-//! each row does with them.
+//! The Pivot & Melt builder's keys: the shared form keys (`crate::form`), then what
+//! each row does with them; and its live preview, rerun as the spec changes.
 
 use crate::form::{FormKey, PickerKey};
-use crate::pivot_melt_modal::{PivotMeltFocus, PivotMeltTab};
+use crate::jobs::{Answer, Job};
+use crate::pivot_melt_modal::{
+    PREVIEW_INPUT_ROWS, PivotMeltFocus, PivotMeltTab, PreviewFrame, PreviewInput,
+};
 use crate::{App, AppEvent, InputMode};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 impl App {
-    /// Keys in the pivot and melt modal.
+    /// Open the builder over the view's columns, and preview what it stages.
+    pub(crate) fn open_pivot_builder(&mut self) {
+        let Some(state) = &self.data_table_state else {
+            return;
+        };
+        let modal = &mut self.pivot_melt_modal;
+        modal.available_columns = state.schema().iter_names().map(|s| s.to_string()).collect();
+        modal.column_dtypes = state
+            .schema()
+            .iter()
+            .map(|(n, d)| (n.to_string(), d.clone()))
+            .collect();
+        let view_rows = state.num_rows_if_valid();
+        let sorted = state.is_sorted();
+        modal.open(self.history_limit, &self.theme);
+        modal.preview.view_rows = view_rows;
+        modal.preview.sorted = sorted;
+        self.input_mode = InputMode::PivotMelt;
+        self.request_reshape_preview();
+    }
+
+    /// Keys in the Pivot & Melt builder. Whatever the key changed, the preview
+    /// follows the spec it leaves staged.
     pub(crate) fn pivot_melt_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+        let out = self.pivot_melt_form_key(event);
+        if self.pivot_melt_modal.active {
+            self.request_reshape_preview();
+        }
+        out
+    }
+
+    /// Ask for a preview of the staged spec, unless it is the one already asked for.
+    /// One worker runs at a time: an edit made while it runs is previewed when it
+    /// ends.
+    pub fn request_reshape_preview(&mut self) {
+        let modal = &mut self.pivot_melt_modal;
+        let wanted = modal.staged_spec();
+        let preview = &mut modal.preview;
+        if wanted == preview.wanted {
+            return;
+        }
+        preview.token = preview.token.wrapping_add(1);
+        preview.wanted = wanted;
+        if preview.running.is_none() {
+            self.spawn_reshape_preview();
+        }
+    }
+
+    /// Run the preview of the staged spec over the view's head, reading the head
+    /// first if this opening of the builder has not yet.
+    fn spawn_reshape_preview(&mut self) {
+        let preview = &self.pivot_melt_modal.preview;
+        let Some(spec) = preview.wanted.clone() else {
+            return;
+        };
+        let (epoch, token) = (preview.epoch, preview.token);
+        let input = preview.input.clone();
+        let read = match &input {
+            Some(_) => None,
+            None => {
+                let Some(state) = self.data_table_state.as_ref() else {
+                    return;
+                };
+                Some((state.preview_lf(), state.polars_streaming()))
+            }
+        };
+        self.pivot_melt_modal.preview.running = Some(token);
+        self.spawn_job(Job::ReshapePreview { epoch, token }, None, move |_| {
+            let (input, read) = match (input, read) {
+                (Some(input), _) => (input, None),
+                (None, Some((lf, streaming))) => {
+                    // One more than the preview takes says whether there is more.
+                    let head = crate::statistics::collect_lazy(
+                        lf.slice(0, PREVIEW_INPUT_ROWS as u32 + 1),
+                        streaming,
+                    )
+                    .map_err(|e| crate::error_display::user_message_from_polars(&e))?;
+                    let input = PreviewInput {
+                        whole: head.height() <= PREVIEW_INPUT_ROWS,
+                        rows: std::sync::Arc::new(head.head(Some(PREVIEW_INPUT_ROWS))),
+                    };
+                    (input.clone(), Some(input))
+                }
+                (None, None) => return Err("Nothing to preview".to_string()),
+            };
+            let result = crate::pivot_melt_modal::run_preview(&input.rows, &spec);
+            Ok(Answer::ReshapePreviewed {
+                input: read,
+                result,
+            })
+        });
+    }
+
+    /// A preview's worker ended, with the head it read and its result, or `Err` with
+    /// why the head could not be read. An answer for an earlier opening is dropped.
+    pub(crate) fn reshape_preview_ended(
+        &mut self,
+        epoch: u64,
+        token: u64,
+        input: Option<PreviewInput>,
+        result: Result<PreviewFrame, String>,
+    ) {
+        let preview = &mut self.pivot_melt_modal.preview;
+        if !self.pivot_melt_modal.active || preview.epoch != epoch {
+            return;
+        }
+        if preview.running == Some(token) {
+            preview.running = None;
+        }
+        if preview.input.is_none() {
+            preview.input = input;
+        }
+        if token == preview.token {
+            if let Some(spec) = preview.wanted.clone() {
+                preview.shown = Some((spec, result));
+            }
+        } else if preview.running.is_none() && preview.stale() {
+            // The spec changed while this one ran: preview what is staged now.
+            self.spawn_reshape_preview();
+        }
+    }
+
+    /// Whether the builder's preview has an answer still to come.
+    pub fn reshape_preview_pending(&self) -> bool {
+        self.pivot_melt_modal.active && self.pivot_melt_modal.preview.running.is_some()
+    }
+
+    /// Keys in the builder's form.
+    fn pivot_melt_form_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         // Acts at once (see `hard_escape_while_busy`), ahead of the keys held
         // behind the pivot; a second Esc closes the form.
         if event.code == KeyCode::Esc && self.pivot_computing() {

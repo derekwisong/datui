@@ -23,7 +23,6 @@ pub fn render(
         app.info_modal.active,
         app.sort_filter_modal.active,
         app.view_modal.active,
-        app.pivot_melt_modal.active,
     );
 
     let datatable_layout = DatatableLayout::compute(
@@ -177,8 +176,9 @@ pub fn render(
         );
     }
 
+    // A takeover: the form beside a preview of the reshaped rows.
     if app.pivot_melt_modal.active {
-        pivot_melt::render(sort_area, buf, &mut app.pivot_melt_modal, ctx);
+        pivot_melt::render(main_area, buf, &mut app.pivot_melt_modal, ctx);
     }
 
     if app.export_modal.active {

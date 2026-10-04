@@ -10994,15 +10994,16 @@ impl App {
         }
     }
 
-    /// A format spec reads a local file (or a downloaded copy); an object store path
-    /// that is scanned in place would otherwise open without it and say nothing.
+    /// A format spec reads a local file, or the downloaded copy of one remote object
+    /// (`loading::remote_download`). What reaches here remote is a prefix or a glob,
+    /// which would otherwise be scanned in place without the spec and say nothing.
     fn refuse_spec_in_place(path: &Path, options: &OpenOptions) -> Result<()> {
         if source::is_remote_url(path)
             && (options.spec_file.is_some() || options.spec_name.is_some())
         {
             return Err(crate::error_display::FileError::new(
                 path,
-                "format specs read local files; download it first",
+                "a format spec reads one remote object at a time, not a prefix or a glob; name the object",
             )
             .into());
         }

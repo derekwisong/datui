@@ -1,12 +1,14 @@
 use crate::*;
 
-/// A spec asked for on an object store path scanned in place is refused, saying
-/// why, rather than dropped; a local path and a plain remote open are not.
+/// A spec asked for on an object store prefix or glob, which is scanned in place, is
+/// refused, saying why, rather than dropped; a local path and a plain remote open are
+/// not. One object a spec reads is downloaded before it gets here
+/// (`loading::tests::a_remote_object_a_spec_reads_is_downloaded_first`).
 #[test]
-fn a_spec_on_a_remote_path_is_refused() {
+fn a_spec_on_a_remote_prefix_is_refused() {
     let asked = [
         OpenOptions {
-            spec_name: Some("acme.l2feed".into()),
+            spec_name: Some("vendor.feed".into()),
             ..OpenOptions::default()
         },
         OpenOptions {
@@ -14,7 +16,11 @@ fn a_spec_on_a_remote_path_is_refused() {
             ..OpenOptions::default()
         },
     ];
-    for url in ["s3://bucket/day.l2", "gs://bucket/day.l2", "az://c/day.l2"] {
+    for url in [
+        "s3://bucket/days/",
+        "gs://bucket/days/*.l2",
+        "abfss://c@acct.dfs.core.windows.net/days/",
+    ] {
         for options in &asked {
             let e = App::build_lazyframe_from_paths_with(
                 &crate::config::CloudConfig::default(),
@@ -26,7 +32,8 @@ fn a_spec_on_a_remote_path_is_refused() {
             .err()
             .unwrap_or_else(|| panic!("{url} opened"));
             assert!(
-                e.to_string().contains("Format specs read local files"),
+                e.to_string()
+                    .contains("not a prefix or a glob; name the object"),
                 "{url}: {e}"
             );
         }

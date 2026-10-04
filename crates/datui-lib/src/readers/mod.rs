@@ -420,7 +420,7 @@ pub(crate) fn sniff_open(
 }
 
 /// The first [`HEAD`] bytes of the file at `path`, or all of a shorter one.
-fn head_of(path: &Path) -> Option<Vec<u8>> {
+pub(crate) fn head_of(path: &Path) -> Option<Vec<u8>> {
     use std::io::Read;
     let mut head = Vec::with_capacity(HEAD);
     std::fs::File::open(path)

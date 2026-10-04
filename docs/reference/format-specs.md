@@ -133,8 +133,8 @@ a type no variant names shows as `?X` when its size is known
 `datui --table add day.ord` opens one variant as its own table: only its
 records and its columns.
 
-On the home screen, a file a spec's glob names that holds several variants
-counts them as tables ("2 tables" in its details). Enter opens every record; →
+On the home screen, a file a spec reads that holds several variants counts them
+as tables ("2 tables" in its details, and each variant's column count). Enter opens every record; →
 lists the tables inside it, one row each at `day.ord/add`, and Enter on one
 opens it alone. That path opens the table on the command line too, and is
 what recents record.

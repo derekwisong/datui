@@ -2185,7 +2185,7 @@ fn preview_head(
     width: usize,
     ctx: &RenderContext,
 ) -> Vec<Line<'static>> {
-    preview_head_keyed(entry, place_kind, looking, width, 0, ctx).0
+    preview_head_keyed(entry, place_kind, looking, None, width, 0, ctx).0
 }
 
 /// The name, the path, and everything known about the dataset, its key column at least
@@ -2196,6 +2196,7 @@ fn preview_head_keyed(
     entry: &Entry,
     place_kind: Option<&'static str>,
     looking: Option<crate::home::CloudLook>,
+    spec: Option<&crate::formats::Spec>,
     width: usize,
     key_w: usize,
     ctx: &RenderContext,
@@ -2224,6 +2225,16 @@ fn preview_head_keyed(
     let kind = kind_words(entry, place_kind, looking);
     if !kind.is_empty() {
         facts.push(("kind", kind, plain));
+    }
+    // The spec that reads it, and what about the file says so.
+    if let Some(spec) = spec {
+        if let Some(path) = &spec.path {
+            facts.push(("spec", crate::home::display_path(path), plain));
+        }
+        let said = spec.match_summary();
+        if !said.is_empty() {
+            facts.push(("match", said, plain));
+        }
     }
     if let Some(how) = discover::how_read(entry) {
         facts.push(("read", read_words(how), plain));
@@ -2483,10 +2494,18 @@ fn render_preview(
         .as_ref()
         .map(|details| key_column(details.iter().map(|(k, _)| k.as_str())))
         .unwrap_or(0);
+    // The spec that reads a file, which the spec alone describes without reading it.
+    let spec = entry
+        .format_spec
+        .as_deref()
+        .filter(|_| entry.kind == EntryKind::File && entry.table.is_none())
+        .and_then(|name| app.home.formats.get(name))
+        .cloned();
     let (mut lines, key_w) = preview_head_keyed(
         &entry,
         app.home.place_kind(&entry.path),
         app.home.cloud_look(&entry),
+        spec.as_deref(),
         width,
         key_w,
         ctx,
@@ -2589,6 +2608,15 @@ fn render_preview(
                 .and_then(|f| f.descriptor().tables.as_ref())
                 .and_then(|t| t.opens);
             let tables = (g.arrow_right, "its tables".to_string());
+            // What the spec says the file holds: its variants, or its columns.
+            let variants = spec
+                .as_deref()
+                .filter(|s| s.lists_variants())
+                .map(crate::members::variant_tables);
+            let spec_columns = spec
+                .as_deref()
+                .and_then(crate::formats::Spec::static_columns)
+                .filter(|c| !c.is_empty());
             let step_in = |then: &str| format!("step in {} {then}", g.middot);
             let notes: Vec<(&str, String)> = match entry.kind {
                 // The door itself. It is the row the other notes point at, so it says
@@ -2626,10 +2654,14 @@ fn render_preview(
                 }
                 EntryKind::File if entry.cost.tables.is_some_and(|n| n > 1) => {
                     let opens = opens.filter(|_| entry.cost.opens_one);
-                    vec![
+                    let mut notes = vec![
                         ("Enter", opens.unwrap_or("every record").to_string()),
                         tables,
-                    ]
+                    ];
+                    if let Some(variants) = &variants {
+                        notes.push(("schema", format!("{} variants (spec)", variants.len())));
+                    }
+                    notes
                 }
                 // The log says which files are live, and datui does not read it.
                 k if k.is_lake_table() && door_in_there => {
@@ -2646,6 +2678,11 @@ fn render_preview(
                     )));
                     Vec::new()
                 }
+                _ if spec_columns.is_some() => {
+                    let n = spec_columns.as_ref().map_or(0, Vec::len);
+                    let what = if n == 1 { "column" } else { "columns" };
+                    vec![("schema", format!("{n} {what} (spec)"))]
+                }
                 _ if reading => vec![("schema", "reading...".to_string())],
                 // Only Parquet says its columns without being read; everything else is
                 // read when it is opened, which is nothing to warn about.
@@ -2653,8 +2690,20 @@ fn render_preview(
             };
             let note_w = key_column(notes.iter().map(|(k, _)| *k)).max(key_w);
             let style = Style::default().fg(ctx.text_secondary);
+            let said_spec = notes.iter().any(|(_, v)| v.ends_with("(spec)"));
             for (key, value) in notes {
                 lines.extend(fact_lines(key, value, note_w, width, style, ctx));
+            }
+            if said_spec {
+                let drawn: usize = lines.iter().map(|line| wrapped_rows(line, width)).sum();
+                let room = (area.height as usize).saturating_sub(drawn + 1);
+                lines.extend(spec_schema_lines(
+                    variants.as_deref(),
+                    spec_columns.as_deref(),
+                    width,
+                    room,
+                    ctx,
+                ));
             }
         }
     }
@@ -2662,6 +2711,63 @@ fn render_preview(
     Paragraph::new(lines)
         .wrap(ratatui::widgets::Wrap { trim: false })
         .render(area, buf);
+}
+
+/// What a spec says a file holds, under its `schema` line: each variant and its column
+/// count, or each column and its type, as many as `room` rows hold.
+fn spec_schema_lines(
+    variants: Option<&[crate::members::Table]>,
+    columns: Option<&[(String, polars::prelude::DataType)]>,
+    width: usize,
+    room: usize,
+    ctx: &RenderContext,
+) -> Vec<Line<'static>> {
+    let g = glyphs::get();
+    let (total, mut lines) = match (variants, columns) {
+        (Some(variants), _) => {
+            let name_w = variants
+                .iter()
+                .map(|v| v.name.chars().count())
+                .max()
+                .unwrap_or(0)
+                .min(22);
+            let mut lines = Vec::new();
+            for variant in variants.iter().take(room) {
+                let name = glyphs::fit_cells(&variant.name, name_w, g.ellipsis);
+                let n = variant.columns.len();
+                let what = if n == 1 { "column" } else { "columns" };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{name:<name_w$}  "),
+                        Style::default().fg(ctx.text_secondary),
+                    ),
+                    Span::styled(format!("{n} {what}"), Style::default().fg(ctx.dimmed)),
+                ]));
+            }
+            (variants.len(), lines)
+        }
+        (None, Some(columns)) => {
+            let name_w = columns
+                .iter()
+                .map(|(n, _)| n.chars().count())
+                .max()
+                .unwrap_or(0)
+                .min(22);
+            let (_, lines) = schema_lines(columns, name_w, width, room, ctx);
+            (columns.len(), lines)
+        }
+        (None, None) => return Vec::new(),
+    };
+    if total > lines.len() {
+        if lines.len() == room && !lines.is_empty() {
+            lines.pop();
+        }
+        lines.push(Line::from(Span::styled(
+            format!("{} {} more", g.ellipsis, total - lines.len()),
+            Style::default().fg(ctx.dimmed),
+        )));
+    }
+    lines
 }
 
 /// The callout on a Parquet file whose footer could not be read, after the warning glyph.

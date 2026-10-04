@@ -78,8 +78,42 @@ where
     walk_up_to(root, config, MAX_INDEXED, emit)
 }
 
+/// [`walk`], keeping the files `formats` reads as well, as the listing names them: by a
+/// spec's glob, or by its magic in the first bytes of a file whose name says nothing,
+/// at most [`crate::discover::MAX_SNIFFS_PER_DIR`] of them a directory.
+pub fn walk_with_specs<F>(
+    root: &Path,
+    config: &SearchConfig,
+    formats: &crate::formats::Registry,
+    emit: F,
+) -> Outcome
+where
+    F: FnMut(Vec<Entry>, Outcome) -> bool,
+{
+    walk_inner(root, config, MAX_INDEXED, formats, emit)
+}
+
 /// [`walk`], keeping at most `cap` files.
-pub fn walk_up_to<F>(root: &Path, config: &SearchConfig, cap: usize, mut emit: F) -> Outcome
+pub fn walk_up_to<F>(root: &Path, config: &SearchConfig, cap: usize, emit: F) -> Outcome
+where
+    F: FnMut(Vec<Entry>, Outcome) -> bool,
+{
+    walk_inner(
+        root,
+        config,
+        cap,
+        &crate::formats::Registry::default(),
+        emit,
+    )
+}
+
+fn walk_inner<F>(
+    root: &Path,
+    config: &SearchConfig,
+    cap: usize,
+    formats: &crate::formats::Registry,
+    mut emit: F,
+) -> Outcome
 where
     F: FnMut(Vec<Entry>, Outcome) -> bool,
 {
@@ -142,6 +176,10 @@ where
     // may cross into others, and then asked per file.
     let mounts = crate::locality::Mounts::cached();
     let root_source = mounts.describe(root).fstype;
+    // Specs name files only when no extension filter narrows the search.
+    let specs = extensions.is_empty() && !formats.is_empty();
+    // The directory being walked and how many of its files have been looked inside.
+    let mut sniffed_in: (PathBuf, usize) = (PathBuf::new(), 0);
 
     for result in builder.build() {
         outcome.scanned += 1;
@@ -178,11 +216,21 @@ where
         }
 
         let path = dir_entry.path();
+        let mut spec = None;
         if !matches_extension(path, &extensions) {
-            continue;
+            if !specs {
+                continue;
+            }
+            spec = spec_of(path, formats, &mut sniffed_in);
+            if spec.is_none() {
+                continue;
+            }
         }
 
         let mut entry = Entry::new(path.to_path_buf(), EntryKind::File);
+        if let Some(spec) = spec {
+            crate::discover::name_spec_file(&mut entry, &spec);
+        }
         if let Ok(meta) = dir_entry.metadata() {
             entry = entry.with_fs_metadata(&meta);
         }
@@ -217,6 +265,34 @@ where
 
     emit(batch, outcome);
     outcome
+}
+
+/// The spec that reads `path`, a file no extension names, as the listing finds it: by
+/// glob, else by its first bytes when its name says nothing, within the per-directory
+/// cap `sniffed_in` counts.
+fn spec_of(
+    path: &Path,
+    formats: &crate::formats::Registry,
+    sniffed_in: &mut (PathBuf, usize),
+) -> Option<Arc<crate::formats::Spec>> {
+    if let Some(spec) = formats.by_glob(path, false).into_iter().next() {
+        return Some(spec);
+    }
+    if !crate::discover::worth_sniffing(path) {
+        return None;
+    }
+    let dir = path.parent().unwrap_or(path);
+    if sniffed_in.0 != dir {
+        *sniffed_in = (dir.to_path_buf(), 0);
+    }
+    if sniffed_in.1 >= crate::discover::MAX_SNIFFS_PER_DIR {
+        return None;
+    }
+    sniffed_in.1 += 1;
+    match crate::discover::sniff_listed(path, formats)? {
+        crate::discover::Sniffed::Spec(spec) => Some(spec),
+        crate::discover::Sniffed::Format(_) => None,
+    }
 }
 
 /// Whether `path` is a format the search is looking for.

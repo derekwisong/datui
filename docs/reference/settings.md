@@ -1,4 +1,4 @@
-# Settings reference
+# Settings
 
 <!-- Generated from crates/datui-cli/src/settings.rs by `gen_docs settings`. Do not edit. -->
 
@@ -6,7 +6,7 @@ Set these in `config.toml` (`datui config init` writes one with every key
 commented out), or for one run with `-c KEY=VALUE`:
 
 ```bash
-datui -c display.row_numbers=true data.csv
+printf 'a,b\n1,2\n' | datui -c display.row_numbers=true
 ```
 
 A flag beats `-c`, which beats the config files, which beat the defaults.
@@ -44,7 +44,7 @@ lives, imports, the theme and troubleshooting.
 
 ## CSV
 
-`[csv]` CSV, TSV and PSV. A [delimited format spec](../user-guide/binary-formats.md#delimited-text) takes these keys too.
+`[csv]` CSV, TSV and PSV. A [delimited format spec](../formats/format-specs.md#delimited-text) takes these keys too.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
@@ -168,7 +168,7 @@ lives, imports, the theme and troubleshooting.
 
 ## Formats
 
-`[formats]` Where [format specs](../user-guide/binary-formats.md) and dictionaries are found.
+`[formats]` Where [format specs](../formats/format-specs.md) and dictionaries are found.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
@@ -261,16 +261,5 @@ lives, imports, the theme and troubleshooting.
 |---|---|---|---|---|
 | `glyphs.*` | string \| list | unset |  | A glyph slot from glyphs.rs, replaced when the Unicode set is active. Keeps the width of the glyph it replaces. |
 
-## Environment variables
-
-| Variable | What it does |
-|---|---|
-| `DATUI_CONFIG_DIR` | The config directory, in place of the platform's (`~/.config/datui` on Linux). Saved views live there too |
-| `DATUI_CACHE_DIR` | The cache directory, in place of the platform's (`~/.cache/datui` on Linux) |
-| `DATUI_FORMATS_PATH` | Directories of format specs and dictionaries, separated as `PATH` is, searched before `[formats] path` |
-| `DATUI_LOG` | The log level: `error`, `warn`, `info`, `debug`, `trace` or `off`. Beats `log.level` in a file; `-c` and `--log-level` beat it |
-| `DATUI_DEBUG` | `1` shows the debug overlay |
-| `DATUI_GCP_PROJECT` | The Google Cloud project to list when projects cannot be searched, as `GOOGLE_CLOUD_PROJECT` |
-
-Cloud logins read their own variables (`AWS_*`, `GOOGLE_*`, `AZURE_*`); see
-[Connect to cloud storage](../user-guide/remote-data.md).
+The environment variables datui reads are in
+[Environment variables](environment.md).

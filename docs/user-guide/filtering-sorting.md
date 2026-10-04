@@ -1,8 +1,10 @@
 # Sort, filter and arrange columns
 
-Press <kbd>s</kbd> to open the **Sort & Filter** sidebar. It has two tabs,
-**Columns** and **Filters**; <kbd>←</kbd> <kbd>→</kbd> switch them, and
-<kbd>Tab</kbd> moves between the tab bar and the body.
+<kbd>s</kbd> opens the **Sort & Filter** sidebar, where you sort, filter,
+hide, move, freeze and size columns.
+
+It has two tabs, **Columns** and **Filters**; <kbd>←</kbd> <kbd>→</kbd> switch
+them, and <kbd>Tab</kbd> moves between the tab bar and the body.
 
 ## Filter, sort and hide columns
 
@@ -44,7 +46,7 @@ is actually applied.
 
 ## Columns tab
 
-![Sorting Demo](../demos/06-sorting.gif)
+![Sorting columns in the sidebar](../demos/06-sorting.gif)
 
 One row per column, with its lock, its place and direction in the sort
 (`1▲`, `2▼`), a width set by hand, and a `⊘` when it is hidden. Each sorted column's header in the
@@ -161,7 +163,7 @@ hidden columns are not counted.
 
 ## Filters tab
 
-![Filtering Demo](../demos/07-filtering.gif)
+![Adding filters in the sidebar](../demos/07-filtering.gif)
 
 Each filter is one row: column, operator, value, and how it joins the row
 above (**and**/**or**). The cursor walks the rows plus a trailing

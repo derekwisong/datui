@@ -1,47 +1,46 @@
-# For Developers
+# Development overview
 
-Datui is written in [Rust](https://www.rust-lang.org/). The UI is
-[Ratatui](https://github.com/ratatui/ratatui), the data engine is
-[Polars](https://github.com/pola-rs/polars), the docs are
+datui is Rust: [Ratatui](https://github.com/ratatui/ratatui) draws it,
+[Polars](https://github.com/pola-rs/polars) reads and computes, the book is
 [mdBook](https://rust-lang.github.io/mdBook) and the demos are recorded with
-[vhs](https://github.com/charmbracelet/vhs).
+[VHS](https://github.com/charmbracelet/vhs).
 
-## Build
-
-Install Rust with [rustup](https://rustup.rs/), then:
-
-```bash
+```bash,repo
 git clone https://github.com/derekwisong/datui.git
 cd datui
-cargo build              # debug binary at target/debug/datui
-cargo build --release    # the binary that gets installed and packaged
-cargo run -- data.csv    # build and run
+cargo build
+cargo run -- --help
 ```
 
-The release build takes much longer and produces a much smaller, faster binary.
+`cargo build` writes the debug binary to `target/debug/datui`;
+`cargo build --release` builds the one that is packaged, slower to build and
+faster to run. Install Rust with [rustup](https://rustup.rs/).
 
 ## Workspace
 
 | Package | Path | Role |
 |---|---|---|
-| `datui` | repository root | The CLI binary. `cargo build` and `cargo run` build and run it |
-| `datui-lib` | `crates/datui-lib` | Everything else: UI, data handling, config |
-| `datui-cli` | `crates/datui-cli` | Shared CLI definitions, and `gen_docs`, which writes the command-line reference |
-| `datui-pyo3` | `crates/datui-pyo3` | Python bindings. Not a workspace member; see [Python Bindings](for-developers/python-bindings.md) |
+| `datui` | repository root | The binary: `src/main.rs` parses the arguments and runs `datui_lib::run` |
+| `datui-lib` | `crates/datui-lib` | Everything else: the app, its screens, the readers, config |
+| `datui-cli` | `crates/datui-cli` | The clap `Args`, the option registry, the format descriptors, and `gen_docs`, which writes the generated docs |
+| `datui-pyo3` | `crates/datui-pyo3` | The Python bindings. Not a workspace member; see [Build Python bindings](for-developers/python-bindings.md) |
 
 `cargo build --workspace` and `cargo test --workspace` cover the first three.
 
 ## Guides
 
-| Page | What it covers |
+| Page | Covers |
 |---|---|
-| [Tests](for-developers/tests.md) | Running the tests and generating the fixtures they need |
-| [Contributing](for-developers/contributing.md) | Pre-commit hooks and how changes land |
-| [Security Checks](for-developers/security-checks.md) | cargo-deny and zizmor, locally and in CI |
-| [Fuzzing](for-developers/fuzzing.md) | The fuzz targets and how to run them |
-| [Adding Configuration Options](for-developers/adding-configuration-options.md) | The six places a new option touches |
-| [Glyphs](for-developers/glyph-audit.md) | Adding symbols with ASCII fallbacks |
-| [Documentation](for-developers/documentation.md) | Building this site |
-| [Generating the Demos](for-developers/demos.md) | Re-recording the GIFs |
-| [Build and publish packages](for-developers/packaging.md) | deb, rpm, AUR and winget |
-| [Python Bindings](for-developers/python-bindings.md) | Building and testing the extension |
+| [Set up and contribute](for-developers/contributing.md) | The setup script, pre-commit hooks, what a pull request needs |
+| [Run tests](for-developers/tests.md) | Choosing tests, fixtures, the heavy-run queue |
+| [Build documentation](for-developers/documentation.md) | The book, its generated pages and its checked code blocks |
+| [Check the examples](for-developers/examples.md) | The numbers the guides quote |
+| [Record demos](for-developers/demos.md) | The GIFs |
+| [Add configuration options](for-developers/adding-configuration-options.md) | The option registry |
+| [Add a format](for-developers/adding-a-format.md) | A descriptor and a reader |
+| [Run benchmarks](for-developers/benchmarks.md) | Time to first rows and peak memory |
+| [Build Python bindings](for-developers/python-bindings.md) | The extension and its tests |
+| [Build and publish packages](for-developers/packaging.md) | deb, rpm, AUR, PyPI, WinGet |
+| [Security checks](for-developers/security-checks.md) | cargo-deny and zizmor |
+| [Fuzzing](for-developers/fuzzing.md) | The fuzz targets |
+| [Check glyph coverage](for-developers/glyph-audit.md) | Symbols and their ASCII twins |

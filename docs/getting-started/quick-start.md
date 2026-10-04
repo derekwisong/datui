@@ -10,16 +10,17 @@ datui
 ```
 
 Type `penguins` to narrow the home screen, select **Palmer penguins** under
-**Public datasets**, and press <kbd>Enter</kbd>. datui shows the file's size and
-asks before it downloads; press <kbd>Enter</kbd> for **Yes**.
+**Public datasets**, and press <kbd>Enter</kbd>. A catalog file this small
+downloads without a question.
 
 The table has 344 penguins. Empty fields in the file are null, shown as `∅`;
 `rownames` is the row number the host, Rdatasets, adds. The data is CC0, from
 Palmer Station LTER; credit Horst, Hill and Gorman (2020).
 
-To skip the home screen, give the URL:
+To skip the home screen, give the URL; datui asks before it downloads a URL
+you type, and <kbd>Enter</kbd> says yes:
 
-```bash
+```bash,network
 datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv
 ```
 
@@ -39,7 +40,7 @@ datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins
 Which species is heaviest? Press <kbd>/</kbd>; the prompt opens on **SQL**.
 Type this, then press <kbd>Enter</kbd>:
 
-```sql
+```sql,dataset=penguins,network,rows=3
 SELECT species, AVG(body_mass_g) AS mean_mass_g, COUNT(*) AS penguins
 FROM df
 GROUP BY species
@@ -61,7 +62,7 @@ and <kbd>Esc</kbd> to come back.
 The same summary is one line in **q**, a subset of q that evaluates right
 to left. Press <kbd>/</kbd>, then <kbd>Ctrl</kbd>+<kbd>T</kbd> twice:
 
-```text
+```q,dataset=penguins,network,rows=3
 select mean_mass_g: avg body_mass_g by species
 ```
 
@@ -104,13 +105,16 @@ input file unless you export to that path and confirm.
 
 ## Use your own data
 
-```bash
-datui sales.parquet
-datui ./exports/
-datui s3://bucket/events/
-datui                        # start at the home screen
+Replace `<FILE>`, `<DIRECTORY>` and `<BUCKET>/<PREFIX>` with your own:
+
+```bash,template
+datui <FILE>
+datui <DIRECTORY>/
+datui s3://<BUCKET>/<PREFIX>/
 ```
 
-Next: [file formats](../user-guide/loading-data.md),
+`datui` alone starts at the home screen.
+
+Next: [open files and directories](../user-guide/open-files.md), [formats](../formats/index.md),
 [cloud access](../user-guide/remote-data.md), or
 [all keyboard shortcuts](../reference/keyboard-shortcuts.md).

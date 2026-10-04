@@ -28,6 +28,7 @@ Datui fuzzes the hand-written parsers and matchers that run on untrusted input, 
 | `elf_symbols` | `elf::read`, `elf::demangle` | ELF headers, section headers and symbol tables read by the `object` crate at offsets and sizes the file gives, and the rows and Info tab built from them. A corrupt file must be an error, never a panic or an allocation sized by the file; a file that reads gives its two tables. |
 | `flight_log` | `ulog::index`, `dataflash::index`, `indexed::IndexedRecords` | ULog and DataFlash logs walked by the sizes and type ids they give, their message types defined by their own format records; the first byte picks the reader. A corrupt log must be passed over or end the pass, never a panic or an allocation sized by the file, and every message the index records decodes. |
 | `numpy_header` | `numpy::parse_literal`, `numpy::parse_header`, `numpy::open_in` | The `.npy` header's Python dict literal, parsed by hand, and the structured types in it, whose offsets, itemsizes and subarray shapes come from the file. A corrupt header must be an error, never a panic or an allocation sized by the file; a header that parses must give columns inside the bytes on hand, and its rows must decode. |
+| `hex_input` | `hex_view::parse_offset`, `hex_view::parse_pattern`, `hex_view::find` | The hex view's offset and byte-pattern parsers and its search, on what was typed (up to the first NUL) and the file after it. An offset that parses is inside the file, a pattern that parses fits its bound, every match reported is one and the first is the one a plain scan finds, and the byte inspector reads any bytes without a panic. |
 
 ## Layout
 
@@ -47,19 +48,19 @@ a line in the test, which fails until its corpus is replayed.
 
 Replay every committed corpus input, without building the fuzzers:
 
-```bash
+```bash,repo
 ./scripts/dev/test.sh integration fuzz_corpus_test
 ```
 
 To fuzz, install the tool once:
 
-```bash
+```bash,repo
 cargo install cargo-fuzz --locked
 ```
 
 Then, from the repository root:
 
-```bash
+```bash,repo
 ./scripts/code/fuzz.sh list                       # the target names
 ./scripts/code/fuzz.sh build                      # build them all
 ./scripts/code/fuzz.sh replay                     # replay the committed corpus and exit
@@ -98,7 +99,7 @@ independently of Nightly. Failed replays upload crashing inputs as build artifac
 The four targets that take text are seeded with inputs a person can read: `parse_query`
 from the parser's own unit tests and the query examples throughout `docs/`,
 `sql_group_plan` from the planner's unit tests, `config_parse` from the TOML blocks in
-`docs/`, and `format_spec` from the specs in the user guide, each with a file after it. Anything named `regression-*` is an
+`docs/`, and `format_spec` from the specs in the format spec pages, each with a file after it. Anything named `regression-*` is an
 input that once crashed a target, kept so the replay test notices if it ever crashes
 again.
 
@@ -135,17 +136,18 @@ AIFF-C (`sowt`, `fl32`) with a marker.
 Commit a `regression-*` input for each fixed crash. Keep routine coverage inputs
 in the fuzzing cache. Minimize any additional seeds before committing them:
 
-```bash
+```bash,repo
 ./scripts/code/fuzz.sh cmin parse_query
 ```
 
 ## When a target fails
 
 libFuzzer writes the offending input to `fuzz/artifacts/<target>/`. Reproduce it by
-passing that file instead of a corpus directory:
+passing that file instead of a corpus directory, replacing `<HASH>` with the
+file's:
 
-```bash
-./scripts/code/fuzz.sh run parse_query fuzz/artifacts/parse_query/crash-<hash>
+```bash,template
+./scripts/code/fuzz.sh run parse_query fuzz/artifacts/parse_query/crash-<HASH>
 ```
 
 Fix the bug, then copy the input into `fuzz/corpus/<target>/` so the replay test keeps it
@@ -156,7 +158,7 @@ fixed. A minimal reproducer usually deserves a unit test next to the code as wel
 Local runs omit the sanitizer by default. Enable AddressSanitizer when
 checking dependency memory errors or running a longer fuzzing session:
 
-```bash
+```bash,repo
 DATUI_FUZZ_SANITIZER=address ./scripts/code/fuzz.sh run parse_query
 ```
 
@@ -165,7 +167,7 @@ The Nightly and Release workflows run this configuration; pull requests do not.
 Sanitizer builds use substantial memory. Nightly and Release limit parallel
 compilation to two jobs; use the same limit if your build is killed:
 
-```bash
+```bash,repo
 CARGO_BUILD_JOBS=2 DATUI_FUZZ_SANITIZER=address ./scripts/code/fuzz.sh run parse_query
 ```
 

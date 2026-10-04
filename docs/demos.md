@@ -8,7 +8,7 @@ and the publisher-hosted datasets in datui's public cloud catalog.
 
 | Watch | Guide |
 |---|---|
-| [Home and cloud](#home-and-cloud) | [Home](user-guide/home-screen.md) · [Cloud sources](user-guide/cloud-browser.md) |
+| [Home and cloud](#home-and-cloud) | [Home](user-guide/home-screen.md) · [Cloud sources](user-guide/home-screen.md#cloud-sources) |
 | [Querying](#querying) | [Queries](user-guide/querying-data.md) |
 | [Sorting](#sorting) · [Filtering](#filtering) | [Table controls](user-guide/filtering-sorting.md) |
 | [Pivot](#pivot) · [Melt](#melt) | [Reshaping](user-guide/reshaping.md) |
@@ -31,7 +31,7 @@ datasets and their details, then descends into BigQuery sample data.
 
 The local-first cut starts with populated recents and Central Park weather,
 then moves from the same home screen into NOAA's public Parquet directories. See
-[The Home Screen](user-guide/home-screen.md).
+[Home screen](user-guide/home-screen.md).
 
 ![Local and Cloud Demo](demos/16-cloud-home-local.gif)
 

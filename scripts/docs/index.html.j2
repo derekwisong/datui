@@ -149,7 +149,7 @@ ORDER BY mean_mass_g DESC</pre>
       <p class="formats">Parquet · CSV / TSV / PSV · JSON / JSONL · Arrow / Feather · Avro · ORC · Excel</p>
       <section aria-label="What you can do">
         <div class="features">
-          <div><h2>Find your data</h2><p>Browse recent files, directories and cloud buckets. Open S3, GCS, Azure or HTTP URLs, or start from the built-in catalog of public datasets that need no login.</p><a href="{{ guide('user-guide/loading-data') }}">Files and cloud storage →</a></div>
+          <div><h2>Find your data</h2><p>Browse recent files, directories and cloud buckets. Open S3, GCS, Azure or HTTP URLs, or start from the built-in catalog of public datasets that need no login.</p><a href="{{ guide('user-guide/open-files') }}">Files and cloud storage →</a></div>
           <div><h2>Query and analyze</h2><p>Query in SQL, q or plain text. Sort and filter rows, run an analysis, and chart the result.</p><a href="{{ guide('user-guide/querying-data') }}">Querying data →</a></div>
           <div><h2>Save and reuse</h2><p>Copy a table into a note. Export data or a chart. Save a view to repeat the same steps on the next file.</p><a href="{{ guide('user-guide/exporting-data') }}">Exporting data →</a></div>
         </div>
@@ -189,7 +189,7 @@ import polars as pl
 url = "https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv"
 datui.view(pl.scan_csv(url))</code></pre><p><a href="{{ guide('user-guide/python-module') }}">Explore a frame and capture your view</a></p></div>
         </div>
-        <p class="small">Powered by Polars. Scanned formats load rows as needed; sorting, aggregation and analysis may read the full input. <a href="{{ guide('advanced/performance-tips') }}">Working with large datasets</a>.</p>
+        <p class="small">Powered by Polars. Scanned formats load rows as needed; sorting, aggregation and analysis may read the full input. <a href="{{ guide('user-guide/large-datasets') }}">Working with large datasets</a>.</p>
       </section>
       <section class="versions" id="versions">
         <h2>Documentation</h2>

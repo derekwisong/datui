@@ -1,7 +1,7 @@
 # Check data quality
 
-Press <kbd>a</kbd>, choose **Data Quality**, and press <kbd>Enter</kbd>.
-Use it to find missing values, repeated values and changes across files or time.
+Data Quality reports missing values, repeated values and changes across files
+or time: <kbd>a</kbd>, **Data Quality**, <kbd>Enter</kbd>.
 
 The pane is **Setup**: every setting a run takes, before anything is read.
 Press <kbd>Enter</kbd> to run it as it stands, or change it first. Nothing in
@@ -124,8 +124,7 @@ costs, often nothing, since days sum into weeks; <kbd>Enter</kbd> runs it and
 
 ## Find gaps in time windows
 
-A window with no rows is a gap only when you say rows belong in it: a quiet
-weekend is not a defect unless you expect weekend rows.
+A window with no rows is a gap only once you say rows belong in it:
 
 1. With a time-window grain, move to **Expected** in Setup and press
    <kbd>Space</kbd>.
@@ -194,9 +193,7 @@ grain on text with no format is named in Setup before you run.
 
 ## Declare what a column must hold
 
-The checks above say what looks wrong. To check what you know is wrong, declare
-it: a repeated ID is a defect, a repeated category is not, and only you know
-which column is which.
+Declare what a column must hold, and the run reports the rows that break it:
 
 1. In Setup, move to **Column intent** and press <kbd>Space</kbd>.
 2. Choose a column and press <kbd>Space</kbd> for its form.
@@ -284,15 +281,15 @@ Rows    100,000 of 36,839,175 sampled (0.27%) · 36,839,175 traversed
 Limits  Nearly unique: needs every row checked
 ```
 
-`No problems found` on a sample is not the same as on every row: **Checks**
-counts what ran and over what, and what could not run; **Limits** says why, and
-names thin segments and unread footers. **Rows** gives the rows behind the
-numbers, and the rows the run's reads passed through to get them.
+**Checks** counts what ran, over what, and what could not run; **Limits** says
+why, and names thin segments and unread footers. **Rows** gives the rows behind
+the numbers, and the rows the run's reads passed through to get them.
 
 The header says what each result was measured on:
 `Data Quality · sample of 100,000 of 36,839,175 rows`. Missing-column and
 type-conflict findings describe the loaded source's footers, whatever rows the
 sample covers.
 
-See the [reference](../reference/data-quality.md) for Setup, keys, metric
-formulas and sampling, or the [key list](../reference/keyboard-shortcuts.md#analysis).
+See the [reference](../reference/data-quality.md) for the metric definitions,
+and [Keyboard shortcuts](../reference/keyboard-shortcuts.md#analysis-data-quality)
+for every key.

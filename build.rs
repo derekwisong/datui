@@ -16,7 +16,7 @@ fn roff_text(text: &str) -> String {
     }
 }
 
-/// An EXAMPLES section in place of clap_mangen's EXTRA, which prints `examples.txt`
+/// An EXAMPLES section in place of clap_mangen's EXTRA, which prints the examples
 /// as one block of text under a heading no manpage uses.
 fn render_examples(w: &mut dyn Write) -> io::Result<()> {
     writeln!(w, ".SH EXAMPLES")?;

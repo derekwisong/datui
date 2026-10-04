@@ -1,7 +1,7 @@
 # Export data
 
-Press <kbd>e</kbd> to write the current view to a file: the rows and columns
-as queried, filtered and sorted.
+<kbd>e</kbd> writes the view to a file: every row and column as queried,
+filtered and sorted.
 
 ## Export a CSV
 
@@ -191,7 +191,7 @@ For a dataset with missing columns or conflicting types, **Source file** adds
 the original file path to each exported row. This helps trace empty values
 back to the files that produced them.
 
-The `∅`, `·` and `≠` [cell markers](loading-data.md#files-that-disagree) all
+The `∅`, `·` and `≠` [cell markers](open-files.md#files-that-disagree) all
 export as null. Use the source path with the original file's schema to
 distinguish their causes.
 

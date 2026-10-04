@@ -1,15 +1,15 @@
 # Dataset collections
 
 A collection is a named list of datasets, local or remote, that the home screen
-shows as one section. For credentials, see [Cloud sources](cloud-sources.md); for
-directories to browse, see [Home](settings.md#home).
+shows as one section. Logins are in [Cloud connections](cloud-sources.md);
+directories to browse are `[home] directories` in [Settings](settings.md#home).
 
-`[[sources]]` names a collection of datasets. The home screen lists each
-collection under its label, one row per dataset, wherever the data lives:
+`[[sources]]` in `config.toml` names a collection; the home screen lists its
+datasets under its label, one row each, wherever the data lives:
 
 ```toml
 [[sources]]
-name = "my-datasets"                  # lowercase letters, digits and -
+name = "my-datasets"
 label = "My datasets"
 
 [[sources.datasets]]
@@ -26,16 +26,24 @@ description = "Daily weather observations"
 [[sources.datasets]]
 name = "Penguins"
 url = "https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv"
+```
+
+A dataset in a private store names the [connection](cloud-sources.md#connections)
+that reads it; replace `<BUCKET>` and `<CONNECTION>` with yours:
+
+```toml,template
+[[sources]]
+name = "team"
 
 [[sources.datasets]]
 name = "Orders"
-url = "s3://orders/2024/"
-connection = "onprem"                 # a [[cloud.connections]] name
+url = "s3://<BUCKET>/orders/"
+connection = "<CONNECTION>"
 ```
 
 | Collection field | Meaning |
 |---|---|
-| `name` | Required. Lowercase letters, digits and `-`, at most 40 characters. What `hide_sources` and a later file name it by |
+| `name` | Required. Lowercase letters, digits and `-`, at most 40 characters. What `[home] hide` and a later file name it by |
 | `label` | The section title. Default: the name |
 
 | Dataset field | Meaning |
@@ -89,20 +97,10 @@ to keep.
 
 Across [imported files](../user-guide/configuration.md#importing-other-config-files), collections are listed in
 the order defined, imports first. A later collection with the same name replaces
-the earlier one whole; datasets are never merged. `hide_sources` adds up across
+the earlier one whole; datasets are never merged. `[home] hide` adds up across
 files, and the last file that sets `builtin_catalog` decides it. Two
 collections with one name in one file are an error.
 
 Collections are apart from `[home] directories`, remembered directories and
 `RECENT`. A directory there is a place to look through, and whatever you open goes
 into `RECENT` whether or not a collection names it.
-
-This replaces the public-data settings of earlier 0.4 development builds, which
-are no longer read:
-
-| Before | Now |
-|---|---|
-| `[[cloud.sources]]` | `[[cloud.connections]]`, the same fields less `public` and `datasets` |
-| `public = true` with `buckets` or `[[cloud.sources.datasets]]` | `[[sources]]` with `[[sources.datasets]]` and `auth = "anonymous"` |
-| `[cloud] public_datasets = false` | `[home] builtin_catalog = false` |
-| `[cloud] hide = ["public"]` | `[home] hide = ["public"]` |

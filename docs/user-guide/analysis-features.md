@@ -1,7 +1,9 @@
 # Analysis
 
-Press <kbd>a</kbd> to open the analysis view on the current data. A list of
-tools sits on the right; <kbd>Tab</kbd> moves focus between the list and the
+<kbd>a</kbd> opens Analysis: Describe, Distribution, Correlation Matrix and
+Data Quality, over a sample of the table.
+
+A list of tools sits on the right; <kbd>Tab</kbd> moves focus between the list and the
 result, <kbd>↑</kbd> <kbd>↓</kbd> pick a tool, <kbd>Enter</kbd> runs it.
 <kbd>Esc</kbd> returns to the table.
 
@@ -99,9 +101,9 @@ how many, and the seed. The first tool you run on a dataset shows the
 <kbd>Enter</kbd> to run with the form as it stands; <kbd>Esc</kbd> goes back to
 the tool list. After that, every tool you pick runs at once on the same sample. A
 value the data does not hold, or rows that match nothing, is refused with what
-the data does hold. After that,
-<kbd>s</kbd> opens the form from any tool; <kbd>Enter</kbd> applies it and runs
-the tool on screen again, and <kbd>Esc</kbd> discards the edit. The other tools' results go with the old
+the data does hold. <kbd>s</kbd> opens the form again from any tool;
+<kbd>Enter</kbd> applies it and runs the tool on screen again, and
+<kbd>Esc</kbd> discards the edit. The other tools' results go with the old
 sample, so switching tools compares like with like. The header says what was
 read: `Describe · sample of 100,000 of 36,839,175 rows · source year=2020..2022`.
 
@@ -146,16 +148,15 @@ How a spread sample is read depends on the source:
 | One Parquet or IPC file, unfiltered | 50 runs of rows at seeded places across it | The row groups those runs fall in |
 | Anything else: a directory or hive table, a filter, a query, CSV | A seeded uniform sample, kept while the rows stream past | Every row once, holding only the sample |
 
-A directory of many files is streamed because a run in it opens the footer of
-every file before it; on a 135-file table in S3, one streamed pass over 37
-million rows took 3 seconds against 6 for fifty runs. The sort is left out of
-an analysis read: no statistic depends on it. While a cancelled run is still
-finishing, no tool starts another read: <kbd>a</kbd>, <kbd>r</kbd>, <kbd>v</kbd> and a new run wait.
+The sort is left out of an analysis read: no statistic depends on it. While a
+cancelled run is still finishing, no tool starts another read: <kbd>a</kbd>,
+<kbd>r</kbd>, <kbd>v</kbd> and a new run wait. Data Quality reads the same
+sample, at the same size, as every other tool.
+
+The sample's starting size is [`analysis.sample_rows`](../reference/settings.md#analysis);
+`0` starts at every row. For one run, `--sample-rows N`:
 
 ```toml
 [analysis]
-sample_rows = 100000   # the sample's starting size; 0 starts at every row
+sample_rows = 100000
 ```
-
-or `--sample-rows N` for one run. Data Quality reads the same sample, at the
-same size, as every other tool.

@@ -1,77 +1,70 @@
 # Set up and contribute
 
-## Setup
+<a id="setup"></a>
 
-From a checkout with Rust and Python installed, run:
+From a checkout, with Rust and Python installed:
 
-```bash
+```bash,repo
 python scripts/setup_dev.py
 ```
 
-The script creates `.venv`, installs script and wheel-building dependencies,
-installs pre-commit hooks, prepares test data and builds the documentation.
-It can be rerun. To prepare only the fixtures needed by Rust tests, use
-`./scripts/dev/setup-test-data.sh` instead.
+It creates `.venv`, installs `scripts/requirements.txt` (and the wheel-building
+tools on Linux and macOS), installs the pre-commit hooks and the mdBook version
+CI uses, generates the test fixtures and builds the docs. It can be rerun. For
+the Rust tests' fixtures alone, run `./scripts/dev/setup-test-data.sh`.
 
-For manual setup, use the commands below.
+## Set up by hand
 
-## Python environment
-
-The scripts in `scripts/` generate test data, build the docs and record the
-demos. They need a virtual environment with `scripts/requirements.txt`:
-
-```bash
+```bash,repo
 python -m venv .venv
-source .venv/bin/activate
-pip install -r scripts/requirements.txt
+.venv/bin/pip install -r scripts/requirements.txt
+.venv/bin/pre-commit install
 ```
 
-`.venv/` is gitignored, and the test harness finds `.venv/bin/python` on its
-own, so activating is optional after this.
+`.venv/` is gitignored, and the test harness and scripts find
+`.venv/bin/python` on their own, so it need not be activated.
 
 ## Pre-commit hooks
 
-CI rejects code that is not formatted or that has clippy warnings. The
-[pre-commit](https://pre-commit.com/) hooks run the same checks before each
-commit to catch those problems locally:
-
-```bash
-pre-commit install          # pre-commit is in scripts/requirements.txt
-pre-commit run --all-files  # run them by hand
-```
+CI rejects unformatted code and any clippy warning; the hooks run the same
+checks before each commit. `.venv/bin/pre-commit run --all-files` runs them by
+hand.
 
 | Hook | Runs | On failure |
 |---|---|---|
-| `cargo-fmt` | `cargo fmt --check` | Run `cargo fmt`, then stage the changes |
-| `cargo-clippy` | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Fix the warnings and commit again |
-
-The hooks also check trailing whitespace and unexpectedly large files.
+| `cargo-fmt` | `cargo fmt --check` | Run `cargo fmt`, stage the changes |
+| `cargo-clippy` | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Fix the warnings; never add an `#[allow]` |
+| `check-added-large-files`, `trailing-whitespace` | pre-commit's own | As it says |
 
 ## Before opening a pull request
 
-```bash
+```bash,repo
 cargo fmt
-cargo clippy --workspace --all-targets --locked -- -D warnings
-./scripts/dev/test.sh integration TARGET FILTER  # select the changed behavior's tests
-./scripts/dev/test.sh integration fuzz_corpus_test  # if you touched a parser or matcher
+./scripts/dev/test.sh preflight
 ```
 
-Use the [test selection policy](tests.md#select-the-checks) to broaden related
-tests. Run `./scripts/dev/test.sh full` for cross-cutting changes, shared test
-infrastructure or test reorganization. Isolated changes can use scoped local
-tests with the full workspace covered by CI; state the checks run in the PR.
+`preflight` checks formatting and runs workspace clippy, as CI does. Then:
 
-Keep commits and pull request text terse. If you add a feature, update the
-in-app help strings in `crates/datui-lib/src/help-strings/` and the relevant
-page in `docs/`. If you add a config option, follow
-[Adding Configuration Options](adding-configuration-options.md).
+| Changed | Also |
+|---|---|
+| A behavior | Its tests, chosen as [Run tests](tests.md#select-the-checks) says |
+| A parser or matcher | `./scripts/dev/test.sh integration fuzz_corpus_test` |
+| Keys or a screen | The help string in `crates/datui-lib/src/help-strings/`, then `cargo run -p datui-cli --bin gen_docs -- write` |
+| A flag, setting, format or environment variable | `gen_docs write`, which rewrites the reference pages ([Build documentation](documentation.md#generated-pages)) |
+| A config option | [Add configuration options](adding-configuration-options.md) |
+| The docs | `scripts/docs/doc_examples.py` and `lint_docs.py` ([Build documentation](documentation.md#run-the-checks)) |
+| Something users should hear about | A line in `release-notes/v<next>.md` |
+
+Run `./scripts/dev/test.sh full` for cross-cutting changes. Otherwise run the
+scoped checks, let CI cover the workspace, and say in the PR what ran. Keep
+commit and PR text terse.
 
 ## Workflow timeouts
 
-Every job sets `timeout-minutes`, and every apt step its own 5-minute limit, so a
-hang fails fast instead of holding a required check. Size a job's limit at 1.5×
-its slowest recent run or more (`gh run list --workflow FILE --limit 50`, then
-`gh run view RUN_ID --json jobs`).
+Every job sets `timeout-minutes`, and every apt step its own 5-minute limit, so
+a hang fails fast instead of holding a required check. Size a job's limit at
+1.5× its slowest recent run or more (`gh run list --workflow FILE --limit 50`,
+then `gh run view RUN_ID --json jobs`).
 
 ## Reporting
 
@@ -80,4 +73,4 @@ Bugs and feature requests go to the
 vulnerability does not: see
 [SECURITY.md](https://github.com/derekwisong/datui/blob/main/SECURITY.md).
 
-Datui is MIT licensed and contributions are accepted under the same terms.
+datui is MIT licensed, and contributions are accepted under the same terms.

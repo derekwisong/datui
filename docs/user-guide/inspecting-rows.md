@@ -49,25 +49,17 @@ Exact means the value as Polars stored it, not the spelling in a CSV file: a
 
 | Key | Action |
 |---|---|
-| <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>j</kbd> <kbd>k</kbd> | Move between fields |
-| <kbd>Home</kbd> <kbd>End</kbd> | First and last field |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | A page of fields |
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Previous and next row; the table's cursor moves with it |
-| <kbd>Tab</kbd> | Move into the value ([below](#read-a-long-value)) |
-| <kbd>Enter</kbd> | On a row of a `by` query or `GROUP BY`, drill down to its rows, as at the table. Else open a struct, a list or JSON text ([below](#drill-down-into-nested-values)), or read a field the table's rows do not hold |
-| <kbd>r</kbd> | On a group's row, read a field the table's rows do not hold |
-| <kbd>y</kbd> | Copy the focused value as its view shows it |
-| <kbd>Y</kbd> | Copy the whole row as one JSON object |
-| <kbd>e</kbd> | The value's next view, where it has more than one ([below](#views)) |
-| <kbd>w</kbd> | Word wrap or hard wrap for long text |
-| <kbd>o</kbd> | Open the value in another program ([below](#open-a-value-elsewhere)) |
-| <kbd>f</kbd> | Only the fields with a value; while comparing, only the fields that differ |
-| <kbd>s</kbd> | Order the fields: the table's order, A-Z, or filled first |
-| <kbd>c</kbd> | Compare with the next row, or the pinned one ([below](#compare-two-rows)) |
-| <kbd>m</kbd> | Pin this row for Compare; again on the same row to unpin |
-| <kbd>/</kbd> | Find a field by name, then by value: type to narrow; <kbd>Enter</kbd> keeps the list narrowed, <kbd>Esc</kbd> clears it |
-| <kbd>?</kbd> <kbd>F1</kbd> | Help |
-| <kbd>Esc</kbd> <kbd>Space</kbd> | Close; <kbd>Esc</kbd> clears a find first |
+| <kbd>Tab</kbd> | Into the value ([below](#read-a-long-value)) |
+| <kbd>Enter</kbd> | Open a struct, a list or JSON text ([below](#drill-down-into-nested-values)), read a field the table's rows do not hold, or on a group's row drill down |
+| <kbd>y</kbd> <kbd>Y</kbd> | Copy the value; copy the row as JSON ([below](#copy-a-field-or-the-row)) |
+| <kbd>e</kbd> <kbd>w</kbd> | The value's next [view](#views); word or hard wrap |
+| <kbd>c</kbd> <kbd>m</kbd> | [Compare](#compare-two-rows) with the next row; pin this one |
+| <kbd>o</kbd> | [Open the value elsewhere](#open-a-value-elsewhere) |
+| <kbd>f</kbd> <kbd>s</kbd> <kbd>/</kbd> | Only filled fields; field order; find a field |
+
+The [keyboard reference](../reference/keyboard-shortcuts.md#inspector) has
+every key.
 
 ## Read a long value
 

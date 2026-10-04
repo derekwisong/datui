@@ -1,8 +1,8 @@
 # Value counts
 
-Press <kbd>F</kbd> at the table to see how many rows hold each value of the
-column under the column cursor, with a summary of the column above them.
-<kbd>Esc</kbd> goes back.
+<kbd>F</kbd> at the table counts the rows holding each value of the column
+cursor's column, with a summary of the column above them. <kbd>Esc</kbd> goes
+back.
 
 Move the cursor with <kbd>h</kbd> <kbd>l</kbd> or <kbd>g</kbd>. <kbd>←</kbd>
 <kbd>→</kbd> on the counts move to the previous or next column, and the
@@ -73,7 +73,7 @@ another column stops it.
 
 A remote view, or one over 100 times the sample size (10,000,000 rows at the
 default), held in one Parquet or IPC file, is
-[sampled](analysis-features.md) first instead: a few of its row groups are
+[sampled](analysis-features.md#sampling) first instead: a few of its row groups are
 read, and the header says `sample of`. <kbd>a</kbd> then counts every row. A
 view the sampler would have to read whole anyway, such as a directory of
 files or a CSV, is counted exactly from the start. The sample size is

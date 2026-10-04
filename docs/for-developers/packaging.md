@@ -1,49 +1,28 @@
 # Build and publish packages
 
-Datui can be packaged for Debian/Ubuntu (`.deb`), Fedora/RHEL (`.rpm`), and Arch Linux (AUR).
+`scripts/packaging/build_package.py` builds a Debian/Ubuntu `.deb`, a
+Fedora/RHEL `.rpm` or an Arch Linux AUR package, from the repository root:
 
-## Prerequisites
-
-- **Rust**: Install via [rustup](https://rustup.rs/)
-- **Python 3**: For running the build script
-- **Cargo packaging tools**: Install as needed:
-
-```bash
-cargo install cargo-deb           # For .deb packages
-cargo install cargo-generate-rpm  # For .rpm packages
-cargo install cargo-aur           # For AUR packages
-```
-
-## Building Packages
-
-Run from the repository root:
-
-```bash
-# Build a .deb package (Debian/Ubuntu)
+```bash,repo
 python3 scripts/packaging/build_package.py deb
-
-# Build a .rpm package (Fedora/RHEL)
 python3 scripts/packaging/build_package.py rpm
-
-# Build AUR package (Arch Linux)
 python3 scripts/packaging/build_package.py aur
 ```
 
-The script automatically:
-1. Runs `cargo build --release`
-2. Generates and compresses the manpage
-3. Invokes the appropriate cargo packaging tool
-4. Reports the output file locations
+It runs `cargo build --release`, gzips the manpage the build writes
+(`target/release/datui.1`), runs the packaging tool and prints where the
+package went. Install the tools as needed:
 
-### Options
-
-- `--no-build`: Skip `cargo build --release` (use when artifacts already exist)
-- `--repo-root PATH`: Specify repository root (default: auto-detected via git)
-
-```bash
-# Example: build .deb without rebuilding (artifacts must exist)
-python3 scripts/packaging/build_package.py deb --no-build
+```bash,repo
+cargo install cargo-deb
+cargo install cargo-generate-rpm
+cargo install cargo-aur
 ```
+
+| Option | Effect |
+|---|---|
+| `--no-build` | Skip `cargo build --release`; the release artifacts must exist |
+| `--repo-root PATH` | The repository root, when not the one `git` finds |
 
 ## License and metadata
 
@@ -58,7 +37,7 @@ All packages include the MIT license as required:
   checks it is wired into every packager.
 - **Python wheel**: `python/pyproject.toml` uses `license = { file = "LICENSE" }` and `sdist-include = ["LICENSE"]`. CI and release workflows copy the root `LICENSE` into `python/LICENSE`.
 
-## Output Locations
+## Output locations
 
 | Package | Output Directory | Example Filename |
 |---------|-----------------|------------------|
@@ -66,11 +45,12 @@ All packages include the MIT license as required:
 | rpm | `target/generate-rpm/` | `datui-X.Y.Z-1.x86_64.rpm` |
 | aur | `target/cargo-aur/` | `PKGBUILD`, `datui-X.Y.Z-x86_64.tar.gz` |
 
-## CI and Releases
+## CI and releases
 
-The same script is used in GitHub Actions:
-- **CI** (`ci.yml`): Builds and uploads dev packages (`.deb`, `.rpm`, `.tar.gz`) on push to `main`
-- **Release** (`release.yml`): Attaches `.deb`, `.rpm`, and Arch `.tar.gz` to GitHub releases
+| Workflow | Packages |
+|---|---|
+| Nightly (`nightly.yml`) | Builds the `.deb`, `.rpm`, AUR tarball and wheel from `main`, kept as the run's artifacts |
+| Release (`release.yml`) | Attaches the `.deb`, `.rpm` and Arch `.tar.gz` to the GitHub release |
 
 Release publishing requires every committed fuzz corpus to pass an AddressSanitizer
 replay on the tagged commit, regardless of the latest Nightly result.
@@ -91,40 +71,28 @@ wiring in CI, which runs on the release commit before the tag is pushed, and the
 winget job refuses to run komac against an empty release body. See
 [the release-notes guide](https://github.com/derekwisong/datui/blob/main/release-notes/README.md).
 
-### Arch Linux Installation
+### AUR by hand
 
-See [Installation](../getting-started/installation.md#package-managers) for
-installing from the AUR. The steps below are for package maintainers.
+The release does this itself (below). To do it by hand, from the release tag,
+replacing `<VERSION>` and `<AUR_REPO>` (a clone of `datui-bin` from the AUR):
 
-### AUR Release Workflow
+```bash,template
+git checkout v<VERSION>
+cargo build --release --locked
+python3 scripts/packaging/build_package.py aur --no-build
+cd target/cargo-aur
+makepkg --printsrcinfo > .SRCINFO
+cp PKGBUILD .SRCINFO <AUR_REPO>/
+cd <AUR_REPO>
+git add PKGBUILD .SRCINFO
+git commit -m "Upstream update: <VERSION>"
+git push
+```
 
-To update the AUR package when you release a new version:
+Use stable release tags only (`v0.3.2`): the package fetches the tarball from
+the GitHub release.
 
-1. Checkout the release tag and build the AUR package:
-   ```bash
-   git checkout vX.Y.Z
-   cargo build --release --locked
-   python3 scripts/packaging/build_package.py aur --no-build
-   ```
-
-2. Generate `.SRCINFO` and copy to your AUR repo:
-   ```bash
-   cd target/cargo-aur
-   makepkg --printsrcinfo > .SRCINFO
-   cp PKGBUILD .SRCINFO /path/to/aur-datui-bin/
-   ```
-
-3. Commit and push to the AUR:
-   ```bash
-   cd /path/to/aur-datui-bin
-   git add PKGBUILD .SRCINFO
-   git commit -m "Upstream update: X.Y.Z"
-   git push
-   ```
-
-Use **stable** release tags only (e.g. `v0.3.2`); the AUR package fetches the tarball from the GitHub release. Dev builds are available from the `dev` release tag.
-
-### Automated AUR updates (GitHub Actions)
+### Automated AUR updates
 
 The release workflow calls `publish-packages.yml` to push PKGBUILD and .SRCINFO to the AUR after creating the release. It publishes to the **datui-bin** AUR package (per AUR convention for pre-built binaries). It uses [KSXGitHub/github-actions-deploy-aur](https://github.com/KSXGitHub/github-actions-deploy-aur): the action clones the AUR repo, copies our PKGBUILD and tarball, runs `makepkg --printsrcinfo > .SRCINFO`, then commits and pushes via SSH.
 
@@ -184,14 +152,10 @@ steps in the job log:
 
 1. Open <https://github.com/derekwisong/winget-pkgs> and click **Sync fork** →
    **Update branch**. A browser session has permissions the PAT doesn't.
-2. Re-run just the failed job:
-   ```bash
-   gh run rerun <run-id> --failed
-   ```
+2. Re-run just the failed job, replacing `<RUN_ID>` with the run's id:
+   `gh run rerun <RUN_ID> --failed`.
 3. Confirm the PR opened:
-   ```bash
-   gh pr list --repo microsoft/winget-pkgs --author derekwisong
-   ```
+   `gh pr list --repo microsoft/winget-pkgs --author derekwisong`.
 
 Being a few commits behind upstream at job start is harmless — winget-pkgs merges
 manifest PRs constantly and those never touch workflow files.

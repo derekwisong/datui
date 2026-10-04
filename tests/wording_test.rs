@@ -65,24 +65,29 @@ const ALLOWED: &[(&str, &str)] = &[
     ("docs/reference/glossary.md", "| "),
     // Omarchy's own word for the theme file its tooling fills in.
     (
-        "docs/user-guide/system-theming.md",
+        "docs/user-guide/configuration.md",
         "renders per-app theme files from templates",
     ),
     (
-        "docs/user-guide/system-theming.md",
+        "docs/user-guide/configuration.md",
         "Install the template from the repository",
     ),
     (
-        "docs/user-guide/system-theming.md",
+        "docs/user-guide/configuration.md",
         "The template sets `theme.mode`",
     ),
     (
-        "docs/user-guide/system-theming.md",
+        "docs/user-guide/configuration.md",
         "before rendering templates",
     ),
     // The Excel reader: the workbook XML's own tag, and Excel's kinds of sheet that
     // are not worksheets (chart sheet, dialog sheet, macro sheet).
     ("crates/datui-lib/src/excel.rs", "sheet"),
+    // The doc-example runner's fence attribute, in the docs on writing docs.
+    (
+        "docs/for-developers/documentation.md",
+        "| Shape to fill in | `bash,template`",
+    ),
     // The check describing itself.
     ("docs/for-developers/tests.md", "\"opens anything\" claims"),
     // GGUF's own key.
@@ -153,12 +158,25 @@ struct Text {
 fn whole_file(path: &Path) -> Text {
     let body = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("{} should be readable: {e}", path.display()));
+    let markdown = path.extension().is_some_and(|e| e == "md");
     Text {
         origin: relative(path),
         lines: body
             .lines()
             .enumerate()
-            .map(|(i, l)| (i + 1, l.to_string()))
+            .map(|(i, l)| {
+                // A fence's info string (`bash,template`) labels the block for the
+                // doc-example runner; readers never see it.
+                let fence = markdown && l.trim_start().starts_with("```");
+                (
+                    i + 1,
+                    if fence {
+                        "```".to_string()
+                    } else {
+                        l.to_string()
+                    },
+                )
+            })
             .collect(),
     }
 }
@@ -337,7 +355,7 @@ fn texts() -> Vec<Text> {
         "python/pyproject.toml",
         "crates/datui-cli/README.md",
         "crates/datui-cli/long_about.txt",
-        "crates/datui-cli/examples.txt",
+        "crates/datui-cli/examples.toml",
         "crates/datui-lib/README.md",
         "scripts/docs/index.html.j2",
     ] {

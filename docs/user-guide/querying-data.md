@@ -1,7 +1,7 @@
 # Query data
 
-Press <kbd>/</kbd> to open the query prompt. It opens on **SQL**, or on the
-active query's mode when you edit one.
+<kbd>/</kbd> opens the query prompt: SQL, Text or q over the table.
+It opens on **SQL**, or on the active query's mode when you edit one.
 <kbd>Ctrl</kbd>+<kbd>T</kbd> switches mode without leaving the input;
 <kbd>Shift</kbd>+<kbd>Tab</kbd> moves to the tab bar, where <kbd>←</kbd>
 <kbd>→</kbd> switch too.
@@ -12,20 +12,23 @@ active query's mode when you edit one.
 | **Text** | Words; each word's letters in order, in any text column | `jfk sea` (2,092 flights) |
 | **q** | Datui's short language, a subset of q, described below | `select flights: count flight by carrier` |
 
-<kbd>Enter</kbd> runs the query, <kbd>Esc</kbd> cancels, <kbd>↑</kbd> <kbd>↓</kbd>
-walk the history of the current mode. Submit an empty query to return to the
-full table. Running a query — or clearing one — starts a fresh view: sidebar
-filters, sort, frozen columns and pivot/melt are dropped. Apply sidebar settings after the query.
+| Key | Action |
+|---|---|
+| <kbd>Enter</kbd> | Run the query; an empty query returns to the full table |
+| <kbd>Esc</kbd> | Cancel |
+| <kbd>↑</kbd> <kbd>↓</kbd> | The current mode's history |
 
-The prompt stays open until the query's first rows are in. A query that fails
-on the data is not applied: the reason shows under it, the table keeps what it
-showed, and the query is still there to fix.
+Running a query, or clearing one, starts a fresh view: sidebar filters, sort,
+frozen columns and pivot/melt are dropped. Apply them after the query. The
+prompt stays open until the query's first rows are in. A query that fails on
+the data is not applied: the reason shows under it, the table keeps what it
+showed, and the query stays to fix.
 
-To open on another mode, set it in the [config](../reference/settings.md#query):
+To open on q, or on Text, set [`query.default_mode`](../reference/settings.md#query):
 
 ```toml
 [query]
-default_mode = "q"   # "sql" (default), "text" or "q"
+default_mode = "q"
 ```
 
 A build without the `sql` [feature](../getting-started/installation.md#from-source)
@@ -37,7 +40,7 @@ Open **NYC flights (2013)** from **Public datasets** on the home screen: 336,776
 departures from JFK, LaGuardia and Newark, delays in minutes. When does a JFK
 departure leave late? On the **SQL** tab:
 
-```sql
+```sql,dataset=flights,network,rows=19
 SELECT hour, AVG(dep_delay) AS mean_delay, COUNT(dep_delay) AS flights
 FROM df
 WHERE origin = 'JFK'
@@ -50,13 +53,13 @@ Statements are split over lines here to read; type them on one line, or press
 hour. The mean delay climbs from 0.5 minutes at 5:00 to 26.1 at 21:00. In
 q the same query is one line:
 
-```text
+```q,dataset=flights,network,rows=19
 select mean_delay: avg dep_delay, flights: count dep_delay by hour where origin = "JFK"
 ```
 
 Which airlines arrive late?
 
-```sql
+```sql,dataset=flights,network,rows=16
 SELECT carrier, AVG(arr_delay) AS delay, COUNT(*) AS flights
 FROM df
 GROUP BY carrier
@@ -122,7 +125,7 @@ Otherwise it says "At least N", from the rows read so far.
 postponed matches as `Tue Jan 12 2021(P)`. Scores are text such as `4–3`, with
 an en dash. SQL takes both apart:
 
-```sql
+```sql,dataset=football,network,rows=380
 SELECT Round,
        CAST(STRPTIME(SUBSTR(Date, 1, 15), '%a %b %d %Y') AS DATE) AS match_date,
        "Team 1" AS home, "Team 2" AS away,
@@ -137,7 +140,7 @@ Liverpool on 2020-10-04 and Manchester Utd 9–0 Southampton on 2021-02-02.
 NYC flights has a `time_hour` timestamp, but it is in UTC, so a late-evening
 departure lands on the next day. The local date is in `year`, `month` and `day`:
 
-```sql
+```sql,dataset=flights,network,rows=365
 SELECT DATE(CONCAT_WS('-', year, month, day)) AS flight_date,
        COUNT(*) AS flights, AVG(dep_delay) AS delay
 FROM df
@@ -181,7 +184,7 @@ they were.
 On **NYC yellow taxis (January 2025)**, 3.5 million trips, group by a
 computed key:
 
-```sql
+```sql,dataset=taxis,network,rows=24
 SELECT EXTRACT(HOUR FROM tpep_pickup_datetime) AS pickup_hour,
        COUNT(*) AS trips, AVG(tip_amount) AS avg_tip, AVG(fare_amount) AS avg_fare
 FROM df
@@ -220,9 +223,8 @@ letters need not be adjacent, `Three Cheese Steak Sandwich`. On NYC flights,
 
 ## q
 
-q is a scoped option for people who know q: a subset of the q
-language, not a complete q or q-sql, and it **evaluates right to left**.
-Use it where it is shorter than the SQL:
+q is a subset of the q language, not a complete q or q-sql, and it
+**evaluates right to left**. Use it where it is shorter than the SQL:
 
 | Dataset | q | SQL |
 |---|---|---|
@@ -243,7 +245,7 @@ A group without aggregates shows the columns you selected; an aggregated one sho
 every column of the rows behind it, after the query's `where`, key columns first.
 The cursor, frozen columns and column order come back with <kbd>Esc</kbd>.
 
-## Saving a query
+## Save a query
 
-The active query is saved with a [view](views.md), in its own mode, along with
-filters and sort, so it can be replayed on the next file of the same shape.
+A [view](views.md) saves the active query, in its mode, with the filters and
+sort, to replay on the next file of the same shape.

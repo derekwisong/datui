@@ -1,44 +1,28 @@
-# Datui
+# datui
 
-Explore Polars DataFrames in the terminal.
+Explore Polars DataFrames, files and URLs in the terminal.
 
-To learn more, see the [full documentation](https://derekwisong.github.io/datui/).
-
-## Installation
-
-Install Datui with `pip`:
-
-```
+```bash,install
 pip install datui
 ```
 
-## Usage
+The package installs the `datui` command and the `datui` module.
 
-**View a LazyFrame or DataFrame**
-
-```python
+```python,network
 import polars as pl
 import datui
 
-# From a LazyFrame (e.g. scan)
 url = "https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv"
-lf = pl.scan_csv(url)
-datui.view(lf)
+datui.view(pl.scan_csv(url))           # a LazyFrame, a DataFrame, a path or a URL
+
+result = datui.view(pl.scan_csv(url), capture=True)
+if result is not None:
+    print(result.collect())            # the query, filters and sort you left on screen
 ```
 
-Press `q` to exit Datui and return to Python.
+Press `q` or `Ctrl+Q` to return to Python. With `capture=True`, `view()` returns
+the final view as a LazyFrame, or `None` when no dataset was open.
 
-## Run at the Command Line
-
-Run the `datui` command line application:
-
-```bash
-datui                          # home screen, with a catalog of public datasets
-datui /path/to/data.parquet
-```
-
-For help:
-
-```bash
-datui --help
-```
+[Python API](https://derekwisong.github.io/datui/latest/reference/python-api.html) ·
+[Documentation](https://derekwisong.github.io/datui/latest/) ·
+`datui --help` for the command line.

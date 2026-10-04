@@ -1,0 +1,81 @@
+# The examples `datui --help`, the manpage, the command-line reference and the
+# README show, in order. Each runs exactly as written, on a fresh install.
+#
+# command      What to type.
+# description  What it does, in one line.
+# test         How scripts/docs/doc_examples.py runs it:
+#                run          locally, in an empty directory, on every pull request
+#                network      in the nightly job: it reads public data
+#                interactive  locally; its producer never ends and is stopped once
+#                             the first rows show
+# expect       What counts as working, when it is not the default: `rows` (the
+#              table shows rows; the default when it opens something), `screen`
+#              (a screen that stays up, such as the home screen), `exit` (a command
+#              that prints and exits 0; the default for subcommands)
+
+[[example]]
+command = "datui"
+description = "Open the home screen. Public datasets lists the built-in catalog"
+test = "run"
+
+[[example]]
+command = "datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv"
+description = "Palmer penguins from the web"
+test = "network"
+
+[[example]]
+command = "datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/"
+description = "NOAA daily highs for 2024, one table from public S3"
+test = "network"
+
+[[example]]
+command = "datui --hive 's3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=T*/*.parquet'"
+description = "A glob, read as one partitioned table: every 2024 element starting with T"
+test = "network"
+
+[[example]]
+command = "datui abfss://release@overturemapswestus2.dfs.core.windows.net/"
+description = "Overture Maps releases in public Azure storage, listed on the home screen"
+test = "network"
+expect = "screen"
+
+[[example]]
+command = "datui https://huggingface.co/openai-community/gpt2/resolve/main/model.safetensors"
+description = "A model's tensors, read from its header without downloading the weights"
+test = "network"
+
+[[example]]
+command = "printf 'id,amount\\n1,9.50\\n2,3.25\\n' | datui"
+description = "Data piped in; the format is read from its first bytes"
+test = "run"
+
+[[example]]
+command = "journalctl -o json -n 1000 | datui"
+description = "The last 1,000 systemd journal entries, a column per field"
+test = "run"
+
+[[example]]
+command = "(echo time,value; while sleep 0.2; do echo \"$(date +%s),$RANDOM\"; done) | datui -f -"
+description = "Rows as they arrive; t pauses, Esc stops following"
+test = "interactive"
+
+[[example]]
+command = "datui --hex /bin/sh"
+description = "A file's bytes in the hex view"
+test = "run"
+expect = "screen"
+
+[[example]]
+command = "datui -c display.row_numbers=true https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv"
+description = "Any config key, for this run"
+test = "network"
+
+[[example]]
+command = "datui config init"
+description = "Write the config file, every key commented out at its default"
+test = "run"
+
+[[example]]
+command = "datui formats"
+description = "List the format specs and dictionaries datui finds"
+test = "run"

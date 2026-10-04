@@ -69,7 +69,7 @@ are opt-in. Put new integration cases in an existing domain target rather than
 adding a top-level test executable for each feature. Use small in-memory data
 for logic tests and preserve regression coverage. See
 `docs/for-developers/tests.md` for selection and
-`docs/for-developers/test-organization-review.md` for the reorganization plan.
+`tests/ORGANIZATION.md` for the reorganization plan.
 
 Tests that drive an `App` wait on the work with the helpers in `tests/common/`
 (`pump_open_until_loaded`, `drain_events`, `next_event`, `work_pending`), never
@@ -85,7 +85,7 @@ on a sleep or a quiet channel.
 | `crates/datui-pyo3/`, `python/` | Python bindings and wheel. Not a workspace member; see `docs/for-developers/python-bindings.md` |
 | `fuzz/` | cargo-fuzz targets, own workspace; `docs/for-developers/fuzzing.md` |
 | `crates/datui-lib/src/help-strings/*.txt` | The text shown by `?` on each screen. Update it when keys change |
-| `docs/` | mdBook source. `docs/reference/command-line-options.md` is generated; do not edit it |
+| `docs/` | mdBook source. Pages generated from the code (`GENERATED` in `crates/datui-cli/src/docgen.rs`) are written by `gen_docs write`; do not edit them |
 | `release-notes/vX.Y.Z.md` | Optional per-release notes, copied verbatim into the GitHub release and winget |
 | `scripts/` | Python tooling: `bump_version.py`, `docs/`, `demos/`, `packaging/`, `dev/` |
 
@@ -224,13 +224,17 @@ work. The short version:
 ## When you add or change a feature
 
 1. Update the help string for the screen in `help-strings/`.
-2. Update the page in `docs/user-guide/` and the key table in
-   `docs/reference/keyboard-shortcuts.md`.
+2. Update the page in `docs/user-guide/` or `docs/formats/`.
 3. Add a test. Integration tests in `tests/` build an `App` and pump events;
    look at `tests/common/` and the existing tests for the pattern.
-4. If the CLI changed, regenerate the reference:
-   `.venv/bin/python scripts/docs/generate_command_line_options.py -o docs/reference/command-line-options.md`.
-5. If it is worth telling users, add a line to `release-notes/v<next>.md`,
+4. Run `cargo run -p datui-cli --bin gen_docs -- write`: it rewrites the
+   generated references (options, settings, environment, keys, formats).
+5. Every code block you add is runnable, and runs under
+   `scripts/docs/doc_examples.py`, or is labeled `,template` with
+   `<PLACEHOLDER>`s. See `docs/for-developers/documentation.md`.
+   Files an example needs are titled file blocks, never heredocs; sample-data
+   generators are readable scripts.
+6. If it is worth telling users, add a line to `release-notes/v<next>.md`,
    most important first, one plain sentence each.
 
 ## Releasing

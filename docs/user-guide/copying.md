@@ -1,14 +1,16 @@
 # Copy to the clipboard
 
-Press <kbd>y</kbd> to copy from the current view to the system clipboard. The
-dialog picks a scope and a format; the last choices are kept, so repeating a
-copy is <kbd>y</kbd> <kbd>Enter</kbd>.
+<kbd>y</kbd> copies a cell, a row, the view, the table or a Python script
+that rebuilds it to the system clipboard.
+
+The dialog picks a scope and a format; the last choices are kept, so repeating
+a copy is <kbd>y</kbd> <kbd>Enter</kbd>.
 
 ## Copy a table into a note
 
 On **Food nutrition (fast food)**, summarize each chain:
 
-```sql
+```sql,dataset=food,network,rows=8
 SELECT restaurant, ROUND(AVG(calories), 0) AS avg_calories,
        ROUND(AVG(protein), 1) AS avg_protein, COUNT(*) AS items
 FROM df
@@ -88,7 +90,7 @@ Press <kbd>y</kbd>, choose **Python (Polars)** on **Scope** and press
 <kbd>Enter</kbd>. The clipboard gets a script that builds the view with
 [Polars](https://pola.rs):
 
-```python
+```python,output
 import polars as pl
 
 df = (
@@ -162,7 +164,7 @@ file and the table on screen (`flight.bin --table GPS`):
 - Data piped in on standard input; recorded with `--tee FILE`, it is read
   from FILE instead
 - A format with `df = ...` above, or a read through a
-  [format spec](binary-formats.md)
+  [format spec](../formats/format-specs.md)
 - A file compressed with bzip2 or xz
 - A CSV read with `--header-rows`, `--skip-initial-space`, or a
   `--comment` longer than five characters

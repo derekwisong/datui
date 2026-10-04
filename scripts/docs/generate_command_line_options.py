@@ -3,7 +3,8 @@
 
 Runs the gen_docs binary (emits markdown to stdout). With -o/--output, writes
 to that path; otherwise prints to the terminal. With --settings, writes the
-settings reference from the option registry instead.
+settings reference from the option registry instead. With --all, writes every
+generated page and region of the docs in place (`gen_docs write`).
 
 Usage:
     python3 scripts/docs/generate_command_line_options.py [REPO_ROOT] [-o PATH]
@@ -56,8 +57,13 @@ def main() -> int:
         action="store_true",
         help="Generate docs/reference/settings.md (the option registry) instead",
     )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Write every generated page and region of the docs in place (gen_docs write)",
+    )
     args = parser.parse_args()
-    page = ["--", "settings"] if args.settings else []
+    page = ["--", "write"] if args.all else ["--", "settings"] if args.settings else []
 
     repo_root = Path(args.repo_root).resolve() if args.repo_root else find_repo_root()
     repo_root = repo_root.resolve()

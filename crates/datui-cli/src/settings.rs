@@ -168,7 +168,7 @@ pub const SECTIONS: &[Section] = &[
     Section {
         name: "csv",
         title: "CSV",
-        intro: "CSV, TSV and PSV. A [delimited format spec](../user-guide/binary-formats.md#delimited-text) takes these keys too.",
+        intro: "CSV, TSV and PSV. A [delimited format spec](../formats/format-specs.md#delimited-text) takes these keys too.",
     },
     Section {
         name: "display",
@@ -218,7 +218,7 @@ pub const SECTIONS: &[Section] = &[
     Section {
         name: "formats",
         title: "Formats",
-        intro: "Where [format specs](../user-guide/binary-formats.md) and dictionaries are found.",
+        intro: "Where [format specs](../formats/format-specs.md) and dictionaries are found.",
     },
     Section {
         name: "log",
@@ -439,30 +439,225 @@ pub const OPEN: &[OpenOption] = &[
     open_spec("skip-lines", "skip_lines", Count, "skip_lines"),
 ];
 
-/// The environment variables datui reads, for the reference.
-pub const ENVIRONMENT: &[(&str, &str)] = &[
-    (
-        "DATUI_CONFIG_DIR",
-        "The config directory, in place of the platform's (`~/.config/datui` on Linux). Saved views live there too",
+/// Who an environment variable belongs to, as the reference groups them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvGroup {
+    /// datui's own.
+    Datui,
+    /// The terminal's: color, glyphs.
+    Terminal,
+    /// The programs datui hands a value to.
+    Programs,
+    /// The cloud logins, as each provider's own tools read them.
+    Cloud,
+}
+
+impl EnvGroup {
+    /// The group's heading in the reference.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Datui => "datui",
+            Self::Terminal => "Terminal",
+            Self::Programs => "Programs datui starts",
+            Self::Cloud => "Cloud logins",
+        }
+    }
+}
+
+/// One environment variable datui reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnvVar {
+    /// The name, or names read as one (`AWS_REGION`, `AWS_DEFAULT_REGION`).
+    pub names: &'static [&'static str],
+    pub group: EnvGroup,
+    /// What it does, as markdown.
+    pub doc: &'static str,
+}
+
+const fn env(names: &'static [&'static str], group: EnvGroup, doc: &'static str) -> EnvVar {
+    EnvVar { names, group, doc }
+}
+
+/// The environment variables datui reads, for the reference and the manpage.
+pub const ENVIRONMENT: &[EnvVar] = &[
+    env(
+        &["DATUI_CONFIG_DIR"],
+        EnvGroup::Datui,
+        "The config directory, in place of the platform's (`~/.config/datui` on Linux). Saved views and format specs live there too",
     ),
-    (
-        "DATUI_CACHE_DIR",
+    env(
+        &["DATUI_CACHE_DIR"],
+        EnvGroup::Datui,
         "The cache directory, in place of the platform's (`~/.cache/datui` on Linux)",
     ),
-    (
-        "DATUI_FORMATS_PATH",
+    env(
+        &["DATUI_FORMATS_PATH"],
+        EnvGroup::Datui,
         "Directories of format specs and dictionaries, separated as `PATH` is, searched before `[formats] path`",
     ),
-    (
-        "DATUI_LOG",
+    env(
+        &["DATUI_LOG"],
+        EnvGroup::Datui,
         "The log level: `error`, `warn`, `info`, `debug`, `trace` or `off`. Beats `log.level` in a file; `-c` and `--log-level` beat it",
     ),
-    ("DATUI_DEBUG", "`1` shows the debug overlay"),
-    (
-        "DATUI_GCP_PROJECT",
+    env(
+        &["DATUI_DEBUG"],
+        EnvGroup::Datui,
+        "`1` shows the debug overlay",
+    ),
+    env(
+        &["DATUI_GCP_PROJECT"],
+        EnvGroup::Datui,
         "The Google Cloud project to list when projects cannot be searched, as `GOOGLE_CLOUD_PROJECT`",
     ),
+    env(
+        &["DATUI_TRACE_FIRST_ROWS"],
+        EnvGroup::Datui,
+        "A file to write the time to, in Unix nanoseconds, once the first rows are drawn. For benchmarks",
+    ),
+    env(
+        &["NO_COLOR"],
+        EnvGroup::Terminal,
+        "Set to anything: no colors, the terminal's own for everything",
+    ),
+    env(
+        &["COLORTERM", "TERM", "FORCE_COLOR"],
+        EnvGroup::Terminal,
+        "How many colors the terminal draws: 24-bit, 256 or 16. Theme colors are brought down to fit",
+    ),
+    env(
+        &["COLORFGBG"],
+        EnvGroup::Terminal,
+        "With `theme.mode = \"auto\"`, says whether the background is light or dark",
+    ),
+    env(
+        &["LC_ALL", "LC_CTYPE", "LANG"],
+        EnvGroup::Terminal,
+        "With `display.unicode = \"auto\"`, the first one set says whether the terminal takes UTF-8; when it does not, glyphs are ASCII",
+    ),
+    env(
+        &["WT_SESSION", "TERM_PROGRAM"],
+        EnvGroup::Terminal,
+        "Windows only: Windows Terminal, or VS Code's terminal (`TERM_PROGRAM=vscode`), draws Unicode glyphs whatever the code page",
+    ),
+    env(
+        &["VISUAL", "EDITOR", "PAGER"],
+        EnvGroup::Programs,
+        "The inspector's `o` opens text in the first one set, else `less` (on Windows, the system's opener)",
+    ),
+    env(
+        &["AWS_PROFILE"],
+        EnvGroup::Cloud,
+        "The AWS profile for `s3://`, else `default`",
+    ),
+    env(
+        &[
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+        ],
+        EnvGroup::Cloud,
+        "AWS keys, and the token of temporary ones",
+    ),
+    env(
+        &["AWS_REGION", "AWS_DEFAULT_REGION"],
+        EnvGroup::Cloud,
+        "The AWS region",
+    ),
+    env(
+        &["AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT_URL", "AWS_ENDPOINT"],
+        EnvGroup::Cloud,
+        "An S3-compatible endpoint (MinIO, R2, Ceph); the first one set",
+    ),
+    env(
+        &["AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE"],
+        EnvGroup::Cloud,
+        "The AWS config and credentials files, in place of `~/.aws/config` and `~/.aws/credentials`",
+    ),
+    env(
+        &[
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "GOOGLE_SERVICE_ACCOUNT",
+            "GOOGLE_SERVICE_ACCOUNT_PATH",
+            "GOOGLE_SERVICE_ACCOUNT_KEY",
+        ],
+        EnvGroup::Cloud,
+        "A Google Cloud service account or credentials file for `gs://`",
+    ),
+    env(
+        &[
+            "GOOGLE_CLOUD_PROJECT",
+            "GCLOUD_PROJECT",
+            "CLOUDSDK_CORE_PROJECT",
+            "GCP_PROJECT",
+        ],
+        EnvGroup::Cloud,
+        "The Google Cloud project to list buckets in, after `DATUI_GCP_PROJECT`; the first one set",
+    ),
+    env(
+        &["CLOUDSDK_CONFIG"],
+        EnvGroup::Cloud,
+        "The `gcloud` configuration directory, in place of `~/.config/gcloud`",
+    ),
+    env(
+        &["AZURE_STORAGE_CONNECTION_STRING"],
+        EnvGroup::Cloud,
+        "An Azure storage connection string, with `AccountKey` or `SharedAccessSignature`",
+    ),
+    env(
+        &[
+            "AZURE_STORAGE_ACCOUNT_NAME",
+            "AZURE_STORAGE_ACCOUNT_KEY",
+            "AZURE_STORAGE_SAS_TOKEN",
+        ],
+        EnvGroup::Cloud,
+        "An Azure storage account and its key or SAS token",
+    ),
+    env(
+        &[
+            "AZURE_TENANT_ID",
+            "AZURE_CLIENT_ID",
+            "AZURE_CLIENT_SECRET",
+            "AZURE_FEDERATED_TOKEN_FILE",
+        ],
+        EnvGroup::Cloud,
+        "An Azure service principal, or AKS workload identity",
+    ),
+    env(
+        &["AZURE_CONFIG_DIR"],
+        EnvGroup::Cloud,
+        "The Azure CLI's directory, in place of `~/.azure`",
+    ),
 ];
+
+/// `docs/reference/environment.md`: every variable in [`ENVIRONMENT`], by group.
+pub fn render_environment_markdown() -> String {
+    let cell = |s: &str| s.replace('|', "\\|").replace('\n', " ");
+    let mut out = String::from(
+        "# Environment variables\n\n\
+         <!-- Generated from crates/datui-cli/src/settings.rs by `gen_docs`. Do not edit. -->\n\n\
+         The variables datui reads.\n",
+    );
+    for group in [
+        EnvGroup::Datui,
+        EnvGroup::Terminal,
+        EnvGroup::Programs,
+        EnvGroup::Cloud,
+    ] {
+        out.push_str(&format!("\n## {}\n\n", group.title()));
+        if group == EnvGroup::Cloud {
+            out.push_str(
+                "Read as each provider's own tools read them; a variable set but empty counts as unset. [Connect to cloud storage](../user-guide/remote-data.md) says which login wins, and `[cloud] env_files` can read them from `.env` files.\n\n",
+            );
+        }
+        out.push_str("| Variable | What it does |\n|---|---|\n");
+        for var in ENVIRONMENT.iter().filter(|v| v.group == group) {
+            let names: Vec<String> = var.names.iter().map(|n| format!("`{n}`")).collect();
+            out.push_str(&format!("| {} | {} |\n", names.join(", "), cell(var.doc)));
+        }
+    }
+    out
+}
 
 /// The setting `key` names, if any.
 pub fn find(key: &str) -> Option<&'static Setting> {
@@ -496,12 +691,12 @@ pub fn in_section(section: &str) -> impl Iterator<Item = &'static Setting> + '_ 
 pub fn render_settings_markdown() -> String {
     let cell = |s: &str| s.replace('|', "\\|").replace('\n', " ");
     let mut out = String::from(
-        "# Settings reference\n\n\
+        "# Settings\n\n\
          <!-- Generated from crates/datui-cli/src/settings.rs by `gen_docs settings`. Do not edit. -->\n\n\
          Set these in `config.toml` (`datui config init` writes one with every key\n\
          commented out), or for one run with `-c KEY=VALUE`:\n\n\
          ```bash\n\
-         datui -c display.row_numbers=true data.csv\n\
+         printf 'a,b\\n1,2\\n' | datui -c display.row_numbers=true\n\
          ```\n\n\
          A flag beats `-c`, which beats the config files, which beat the defaults.\n\
          `datui config keys` lists every key with its value in effect and where it was\n\
@@ -559,13 +754,9 @@ pub fn render_settings_markdown() -> String {
             }
         }
     }
-    out.push_str("\n## Environment variables\n\n| Variable | What it does |\n|---|---|\n");
-    for (name, what) in ENVIRONMENT {
-        out.push_str(&format!("| `{name}` | {} |\n", cell(what)));
-    }
     out.push_str(
-        "\nCloud logins read their own variables (`AWS_*`, `GOOGLE_*`, `AZURE_*`); see\n\
-         [Connect to cloud storage](../user-guide/remote-data.md).\n",
+        "\nThe environment variables datui reads are in\n\
+         [Environment variables](environment.md).\n",
     );
     out
 }
@@ -807,21 +998,6 @@ mod tests {
             );
             assert!(!setting.doc.is_empty(), "{} has no doc", setting.key);
         }
-    }
-
-    /// The committed reference is what the registry renders.
-    #[test]
-    fn the_settings_reference_is_current() {
-        let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/reference/settings.md");
-        // A Windows checkout may turn line endings into CRLF.
-        let committed = std::fs::read_to_string(&page)
-            .expect("the settings reference")
-            .replace("\r\n", "\n");
-        assert!(
-            committed == render_settings_markdown(),
-            "docs/reference/settings.md is stale: run .venv/bin/python scripts/docs/generate_command_line_options.py --settings -o docs/reference/settings.md"
-        );
     }
 
     #[test]

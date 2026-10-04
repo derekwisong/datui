@@ -358,3 +358,15 @@ def test_a_saved_view_applies_to_a_frame_by_its_columns(tmp_path):
         {"a": 2, "b": "y"},
         {"a": 1, "b": "x"},
     ]
+
+
+def test_python_api_reference_lists_every_option():
+    """docs/reference/python-api.md names every keyword datui.view() takes."""
+    from pathlib import Path
+
+    import datui
+
+    page = Path(__file__).resolve().parents[2] / "docs" / "reference" / "python-api.md"
+    text = page.read_text(encoding="utf-8")
+    missing = [name for name in datui.OPTION_NAMES if f"| `{name}` |" not in text]
+    assert not missing, f"python-api.md lacks {missing}; run gen_docs write"

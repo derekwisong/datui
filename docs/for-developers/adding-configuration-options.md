@@ -1,6 +1,6 @@
 # Add configuration options
 
-Add a registry entry. Every config key is one entry in `SETTINGS` in
+Every config key is one entry in `SETTINGS` in
 `crates/datui-cli/src/settings.rs`:
 
 ```rust
@@ -14,6 +14,7 @@ s("display.notes_accent", Bool, Value("true"), "Accent the i key when datui has 
 | Default | `Value("…")` as TOML; `Unset("example")` when there is none; `Color { dark, light }` for a theme slot |
 | Doc | One or two sentences. It is the generated config's comment, the reference's description and the flag's help |
 | `.flag("name")` | The dedicated flag, only when one invocation needs it. Anything else is reachable with `-c` |
+| `.kwarg("name")` | The keyword Python's `datui.view()` takes for it, when it has one |
 
 Then add the field it fills to the section's struct in
 `crates/datui-lib/src/config.rs`, with its value in the section's `Default`, and
@@ -26,11 +27,13 @@ From the entry, without more code:
 | `-c KEY=VALUE` | `Override` parses the value for the kind; unknown keys get the nearest ones |
 | `datui config init` | `generate_default_config` writes every entry, commented, at its default |
 | `docs/reference/settings.md` | `render_settings_markdown` |
+| The keyword table of `docs/reference/python-api.md` | `render_python_options_markdown` in `docgen.rs` |
 
-Regenerate the reference, which a test compares with the registry:
+Write the generated pages, which `the_generated_docs_are_current` compares with
+the registry:
 
-```bash
-.venv/bin/python scripts/docs/generate_command_line_options.py --settings -o docs/reference/settings.md
+```bash,repo
+cargo run -p datui-cli --bin gen_docs -- write
 ```
 
 `the_registry_and_the_config_structs_agree` in `config.rs` fails when a key the
@@ -62,11 +65,8 @@ A flag exists when one invocation needs it: what to open, how to read this
 file, what to do at start. Give the entry `.flag("name")`, add the field to `Args`
 in `crates/datui-cli/src/lib.rs`, apply it after config loading in
 `startup::apply_args` or `OpenOptions::from_args_and_config`, and test that it
-beats `-c`. Regenerate the CLI reference:
-
-```bash
-.venv/bin/python scripts/docs/generate_command_line_options.py -o docs/reference/command-line-options.md
-```
+beats `-c`. `gen_docs write`, as above, rewrites the command-line reference
+too.
 
 ## Add a color
 
@@ -77,7 +77,7 @@ color in a widget. Name it for its purpose, such as `modal_border_active`.
 
 ## Check the change
 
-```bash
+```bash,repo
 scripts/dev/test.sh cli
 scripts/dev/test.sh unit config::
 scripts/dev/test.sh integration config_test

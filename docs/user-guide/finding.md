@@ -1,9 +1,12 @@
 # Find in the table
 
-Press <kbd>f</kbd>, type what to find, press <kbd>Enter</kbd>. The cursor goes
-to the first cell at or after its row that holds the text, the column cursor
-with it, and that cell is highlighted until the cursor leaves it. Find reads the view as it stands — query, filters, sort, the
-columns shown — and never changes it.
+<kbd>f</kbd> moves the cursor to a cell holding text or a regex, without
+changing the rows.
+
+Type what to find and press <kbd>Enter</kbd>. The cursor, column cursor and
+all, goes to the first matching cell at or after its row, highlighted until the
+cursor leaves it. Find reads the view as it stands (query, filters, sort, the
+columns shown) and never changes it.
 
 | Key | Action |
 |---|---|
@@ -52,4 +55,4 @@ in one pass, and <kbd>n</kbd> from deep in the view reads windows no smaller tha
 the rows above them. The order of a sorted view, a SQL result included, is the order on
 screen, so <kbd>n</kbd> never skips or repeats a row.
 
-A [Text query](querying-data.md#text) in the query prompt filters rows instead.
+To keep only the matching rows, use a [Text query](querying-data.md#text).

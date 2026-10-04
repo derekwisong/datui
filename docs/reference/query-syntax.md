@@ -1,14 +1,17 @@
-# Query Syntax
+# Query syntax
 
-The grammar of the q mode of the query prompt: a subset of the q
-language, evaluated right to left. For a walkthrough with
-examples, see [Querying Data](../user-guide/querying-data.md).
+The grammar of the q mode of the query prompt (<kbd>/</kbd>): a subset of the
+q language, evaluated right to left. [Query data](../user-guide/querying-data.md)
+walks through it. Every example below runs on the public dataset its block
+names; open that dataset from **Public datasets** on the home screen.
 
 q and kdb+ are trademarks of KX Systems. datui is not affiliated with or endorsed by KX.
 
 ## Structure of a query
 
-```
+Each part in brackets is optional; replace it with a list of expressions:
+
+```q,template
 select [columns] [by group_columns] [where conditions]
 ```
 
@@ -27,10 +30,10 @@ clauses and extra tokens after an expression are errors.
 group name, an identifier (`total`) or `col["name with spaces"]`; the right
 side is any expression (column reference, literal, arithmetic, function call).
 
-```
-select a, b, sum_ab: a + b
-select renamed: col["Original Name"]
-by region_name: region, total: sales + tax
+```q,dataset=flights,network
+select carrier, flight, gain: dep_delay - arr_delay
+select route: dest, flight
+select flights: count flight by airline: carrier, long: distance > 1000
 ```
 
 Assignment works in both select and by. In by it defines computed group keys
@@ -42,9 +45,9 @@ Identifiers cannot contain spaces. For columns (or aliases) with spaces, use
 `col["..."]` with a quoted string, or `col[identifier]` for a name without
 spaces. The same syntax works in select, by and where.
 
-```
-select col["First Name"], col["Last Name"]
-select no_spaces: col["name with spaces"]
+```q,dataset=football,network
+select col["Team 1"], col["Team 2"], FT
+select home: col["Team 1"]
 ```
 
 A column named like a function (`count`, `log`, `var`) is read as the
@@ -65,9 +68,9 @@ first as a unit.
 Put the operation you want done first on the right, or use `()` to override
 grouping:
 
-```
-select (a + b) * c
-select a, b where (x > 1) | (y < 0)
+```q,dataset=flights,network
+select gain: (dep_delay - arr_delay) * 60
+select carrier, flight where (dep_delay > 60) | (arr_delay > 60)
 ```
 
 Parentheses also matter for `,` and `|` in where: splitting on comma and pipe
@@ -85,9 +88,9 @@ See [Where clause](#where-clause--and-).
 
 ## By clause (grouping and aggregation)
 
-- `by col1, col2` — group by those columns; non-group columns become list columns, and the UI supports drill-down
-- `by region, total: sales + tax` — group by a column and a computed expression
-- `select avg salary, min id by department` — aggregations per group; <kbd>Enter</kbd> on a row drills down to the rows behind it
+- `by origin, dest` — group by those columns; non-group columns become list columns, and the UI supports drill-down
+- `by carrier, long: distance > 1000` — group by a column and a computed expression
+- `select avg dep_delay, min dep_delay by carrier` — aggregations per group; <kbd>Enter</kbd> on a row drills down to the rows behind it
 
 By uses the same comma-separated list and `name : expression` rules as
 select. Aggregation functions (`avg`, `min`, `max`, `count`, `sum`, `std`,
@@ -95,8 +98,8 @@ select. Aggregation functions (`avg`, `min`, `max`, `count`, `sum`, `std`,
 brackets are optional. `wavg` goes between its operands: `w wavg x`.
 
 An unaliased aggregate of a single column is named `{fn}_{column}`, so
-`select avg salary, max salary by department` yields `avg_salary` and
-`max_salary`; an explicit alias (`total: sum[price]`) overrides it.
+`select avg dep_delay, max dep_delay by carrier` yields `avg_dep_delay` and
+`max_dep_delay`; an explicit alias (`total: sum[distance]`) overrides it.
 
 ## Where clause: `,` and `|`
 
@@ -131,6 +134,10 @@ inside one AND term — and separate the groups with `,`.
 | Strings | `"hello"`, `\"` for an embedded quote |
 | Date literals | `2021.01.01` (YYYY.MM.DD) |
 | Timestamp literals | `2021.01.15T14:30:00.123456` (YYYY.MM.DDTHH:MM:SS[.fff...]); fractional-second digits set precision: 1–3 = ms, 4–6 = μs, 7–9 = ns |
+
+A timestamp literal compared with a column that has a time zone is read as a
+clock time in that zone. A clock time repeated when clocks fall back means its
+first instant.
 
 Either side of a comparison can be a column, a literal or an expression:
 `where a = 10`, `where created_at.date > other_date_col`.
@@ -221,20 +228,26 @@ An accessor result is automatically aliased to `{column}_{accessor}`, so
 
 ### Examples
 
+`time_hour` in NYC flights is a UTC datetime:
+
+```q,dataset=flights,network
+select day: time_hour.date
+select time_hour.date, time_hour.year
+select flight, time_hour.time
+select time_hour, time_hour.month, time_hour.dow by time_hour.year
+select delay: arr_delay^dep_delay
+select tailnum.len, tailnum.upper, time_hour.format["%Y-%m"]
+select where time_hour.date > 2013.06.30
+select where time_hour.month = 12, time_hour.dow = 1
+select where dest.ends_with["A"]
+select where null dep_time
+select where not null dep_time
 ```
-select event_date: timestamp.date
-select col["Created At"].date, col["Created At"].year
-select name, event_time.time
-select order_date, order_date.month, order_date.dow by order_date.year
-select a: coln^cola^colb
-select name.len, name.upper, dt_col.format["%Y-%m"]
-select where created_at.date > other_date_col
-select where dt_col.date > 2021.01.01
-select where ts_col > 2021.01.15T14:30:00.123456
-select where event_ts.month = 12, event_ts.dow = 1
-select where city_name.ends_with["lanta"]
-select where null col1
-select where not null col1
+
+`tpep_pickup_datetime` in NYC yellow taxis is a datetime with no time zone:
+
+```q,dataset=taxis,network
+select where tpep_pickup_datetime > 2025.01.15T14:30:00.123456
 ```
 
 ## Functions
@@ -246,61 +259,90 @@ logic in where. Write `fn[expr]` or `fn expr`; brackets are optional.
 
 | Function | Aliases | Description | Example |
 |---|---|---|---|
-| `avg` | `mean` | Average | `select avg[price] by category` |
-| `min` | — | Minimum | `select min[qty] by region` |
-| `max` | — | Maximum | `select max[amount] by id` |
-| `count` | — | Count of non-null values | `select count[id] by status` |
-| `sum` | — | Sum | `select sum[amount] by year` |
-| `first` | — | First value in group | `select first[value] by group` |
-| `last` | — | Last value in group | `select last[value] by group` |
+| `avg` | `mean` | Average | `select avg[dep_delay] by carrier` |
+| `min` | — | Minimum | `select min[dep_delay] by origin` |
+| `max` | — | Maximum | `select max[distance] by carrier` |
+| `count` | — | Count of non-null values | `select count[dep_time] by origin` |
+| `sum` | — | Sum | `select sum[distance] by month` |
+| `first` | — | First value in group | `select first[dep_time] by day` |
+| `last` | — | Last value in group | `select last[dep_time] by day` |
 | `std` | `stddev`, `dev` | Standard deviation (sample) | `select dev dep_delay by origin` |
 | `var` | — | Variance (sample) | `select var dep_delay by origin` |
-| `nunique` | — | Count of distinct values | `select stations: nunique ID by ELEMENT` |
+| `nunique` | — | Count of distinct values | `select planes: nunique tailnum by carrier` |
 | `wavg` | — | Weighted average, written `w wavg x` | `select delay: distance wavg arr_delay by carrier` |
-| `med` | `median` | Median | `select med[price] by type` |
-| `len` | `length` | String length (chars) | `select len[name] by category` |
+| `med` | `median` | Median | `select med[air_time] by dest` |
+| `len` | `length` | String length (chars) | `select len[tailnum]` |
 
 ### Logic functions
 
 | Function | Description | Example |
 |---|---|---|
-| `not` | Logical negation | `where not[a = b]`, `where not x > 10` |
-| `null` | Is null | `where null col1`, `where null[col1]` |
-| `not null` | Is not null | `where not null col1` |
+| `not` | Logical negation | `where not[origin = "JFK"]`, `where not dep_delay > 10` |
+| `null` | Is null | `where null dep_time`, `where null[dep_time]` |
+| `not null` | Is not null | `where not null dep_time` |
 
 ### Scalar functions
 
 | Function | Description | Example |
 |---|---|---|
-| `len` / `length` | String length | `select len[name]`, `where len[name] > 5` |
-| `upper` | Uppercase string | `select upper[name]`, `where upper[city] = "ATLANTA"` |
-| `lower` | Lowercase string | `select lower[name]` |
-| `abs` | Absolute value | `select abs[x]` |
-| `floor` | Numeric floor | `select floor[price]` |
-| `ceil` / `ceiling` | Numeric ceiling | `select ceil[score]` |
+| `len` / `length` | String length | `select len[tailnum]`, `where len[tailnum] > 5` |
+| `upper` | Uppercase string | `select upper[tailnum]`, `where lower[origin] = "jfk"` |
+| `lower` | Lowercase string | `select lower[carrier]` |
+| `abs` | Absolute value | `select abs[dep_delay]` |
+| `floor` | Numeric floor | `select floor[distance % 100]` |
+| `ceil` / `ceiling` | Numeric ceiling | `select ceil[distance % 100]` |
 | `sqrt` | Square root | `select sd: sqrt var dep_delay by origin` |
 | `log` | Natural logarithm | `select year, log_n: (log n).round[2] where name = "Emma"` |
-| `exp` | e raised to the value | `select exp[x]` |
+| `exp` | e raised to the value | `select exp[1]` |
 
 `var`, `dev` and `std` divide by n − 1, where q's `var` and `dev` divide by n.
 
 ## Examples on the built-in datasets
 
-Each runs as written on the public dataset of that name on the home screen.
+NYC yellow taxis:
 
-| Dataset | Query |
-|---|---|
-| NYC yellow taxis | `select trips: count VendorID by tpep_pickup_datetime.hour` |
-| NYC yellow taxis | `select trips: count fare_amount by b: 5 xbar fare_amount where fare_amount > 0, fare_amount < 100` |
-| Premier League | `select home: FT.part["–", 0].int, away: FT.part["–", 1].int` |
-| Premier League | `select d: Date.replace["(P)", ""].to_date["%a %b %d %Y"]` |
-| Premier League | `select matches: count Round by m: Date.replace["(P)", ""].to_date["%a %b %d %Y"].month` |
-| NOAA weather (`by_year/YEAR=2024`) | `select day: DATE.to_date["%Y%m%d"], high: DATA_VALUE / 10 where ID = "USW00094728", ELEMENT = "TMAX"` |
-| NOAA weather (`by_year/YEAR=2024`) | `select stations: nunique ID by ELEMENT` |
-| NOAA weather (`by_year/YEAR=2024`) | `select stations: nunique ID by country: ID.slice[0, 2] where ELEMENT = "TMAX"` |
-| Baby names | `select total: sum n by name where name in ["Emma", "Jennifer", "Olivia"]` |
-| Baby names | `select total: sum n by decade: 10 xbar year where name = "Jennifer"` |
-| NYC flights | `select mean_delay: (avg dep_delay).round[1] by hour` |
-| NYC flights | `select distinct carrier, origin` |
-| NYC flights | `select planes: nunique tailnum by carrier` |
-| Food nutrition | `select items: count item by restaurant where item like "*Chicken*"` |
+```q,dataset=taxis,network
+select trips: count VendorID by tpep_pickup_datetime.hour
+select trips: count fare_amount by b: 5 xbar fare_amount where fare_amount > 0, fare_amount < 100
+```
+
+Premier League:
+
+```q,dataset=football,network
+select home: FT.part["–", 0].int, away: FT.part["–", 1].int
+select d: Date.replace["(P)", ""].strip.to_date["%a %b %d %Y"]
+select matches: count Round by m: Date.replace["(P)", ""].strip.to_date["%a %b %d %Y"].month
+```
+
+US baby names:
+
+```q,dataset=names,network
+select total: sum n by name where name in ["Emma", "Jennifer", "Olivia"]
+select total: sum n by decade: 10 xbar year where name = "Jennifer"
+select year, log_n: (log n).round[2] where name = "Emma"
+```
+
+NYC flights:
+
+```q,dataset=flights,network
+select mean_delay: (avg dep_delay).round[1] by hour
+select distinct carrier, origin
+select planes: nunique tailnum by carrier
+select delay: distance wavg arr_delay by carrier
+select dep_time, minute: dep_time mod 100
+select sd: sqrt var dep_delay by origin
+```
+
+Food nutrition:
+
+```q,dataset=food,network
+select items: count item by restaurant where item like "*Chicken*"
+select restaurant, item where item like "*Chicken*"
+```
+
+Palmer penguins:
+
+```q,dataset=penguins,network
+select mean_mass_g: avg body_mass_g by species
+select species, island, bill_ratio: (bill_length_mm % bill_depth_mm).round[2] where not null bill_length_mm
+```

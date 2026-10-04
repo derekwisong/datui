@@ -1095,3 +1095,45 @@ fn a_pivot_past_the_column_limit_is_refused() {
             .is_none()
     );
 }
+
+/// On a sorted view small enough to read whole, the preview reads it in its order,
+/// so its rows are the ones Enter makes.
+#[test]
+fn a_small_sorted_view_previews_in_its_order() {
+    ensure_sample_data();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    load_file(
+        &mut app,
+        &rx,
+        PathBuf::from("tests/sample-data/pivot_long.parquet"),
+    );
+    drain_events(&mut app, &rx);
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .sort_by(vec!["value".to_string()], vec![true]);
+    drain_events(&mut app, &rx);
+    stage_pivot_by_keys(&mut app, &rx);
+    let frame = shown_preview(&app);
+    assert!(
+        datui::widgets::pivot_melt::input_line(&app.pivot_melt_modal.preview).starts_with("all ")
+    );
+
+    send_key(&mut app, KeyCode::Enter);
+    drain_events(&mut app, &rx);
+    assert!(!app.pivot_melt_modal.active);
+    let applied = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .lf()
+        .clone()
+        .collect()
+        .unwrap();
+    assert!(
+        applied.equals_missing(&frame.head),
+        "applied {applied}\npreviewed {}",
+        frame.head
+    );
+}

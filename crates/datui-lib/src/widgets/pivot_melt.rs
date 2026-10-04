@@ -308,15 +308,11 @@ pub fn input_line(preview: &ReshapePreview) -> String {
     if let Some(rows) = whole {
         return format!("all {} rows", n(rows));
     }
-    let first = if preview.sorted {
-        format!("{} rows, unsorted", n(PREVIEW_INPUT_ROWS))
-    } else {
-        format!("first {} rows", n(PREVIEW_INPUT_ROWS))
-    };
-    match preview.view_rows {
-        Some(rows) => format!("{first} of {}", n(rows)),
-        None => first,
-    }
+    let of = preview
+        .view_rows
+        .map_or(String::new(), |rows| format!(" of {}", n(rows)));
+    let unsorted = if preview.sorted { ", unsorted" } else { "" };
+    format!("first {} rows{of}{unsorted}", n(PREVIEW_INPUT_ROWS))
 }
 
 /// The result's shape, `rows × columns`: exact when the head is the whole view;
@@ -388,9 +384,13 @@ fn render_preview(area: Rect, buf: &mut Buffer, modal: &PivotMeltModal, ctx: &Re
             shape_line(preview, frame),
             wide_pivot_callout(preview, frame).map(|text| (text, Style::default().fg(ctx.warning))),
         ),
+        // One line: a message's own line breaks become spaces.
         Some((_, Err(message))) => (
             "-".to_string(),
-            Some((message.clone(), Style::default().fg(ctx.warning))),
+            Some((
+                message.split_whitespace().collect::<Vec<_>>().join(" "),
+                Style::default().fg(ctx.warning),
+            )),
         ),
     };
 
@@ -462,11 +462,17 @@ struct GridColumn {
     width: usize,
 }
 
-fn grid_columns(head: &DataFrame, rows: usize, ctx: &RenderContext) -> Vec<GridColumn> {
+fn grid_columns(
+    head: &DataFrame,
+    rows: usize,
+    limit: usize,
+    ctx: &RenderContext,
+) -> Vec<GridColumn> {
     let g = crate::glyphs::get();
     let mut scratch = String::new();
     head.columns()
         .iter()
+        .take(limit)
         .map(|column| {
             let name = column.name().to_string();
             let dtype = column.dtype();
@@ -514,14 +520,16 @@ fn render_grid(area: Rect, buf: &mut Buffer, head: &DataFrame, stale: bool, ctx:
     let g = crate::glyphs::get();
     let header_rows = if ctx.dtype_row { 2 } else { 1 };
     let body_rows = (area.height as usize).saturating_sub(header_rows);
-    let columns = grid_columns(head, body_rows, ctx);
     let total = area.width as usize;
+    // Each column takes a cell and a gap at least: only those that could fit are
+    // formatted.
+    let columns = grid_columns(head, body_rows, total / 3 + 1, ctx);
 
     // Which columns fit, keeping room to say how many do not.
     let mut shown = 0;
     let mut used = 0;
     for (i, column) in columns.iter().enumerate() {
-        let left = columns.len() - i - 1;
+        let left = head.width() - i - 1;
         let more = if left > 0 {
             format!("  +{left}").len()
         } else {
@@ -534,7 +542,7 @@ fn render_grid(area: Rect, buf: &mut Buffer, head: &DataFrame, stale: bool, ctx:
         used = needed.min(total);
         shown += 1;
     }
-    let hidden = columns.len() - shown;
+    let hidden = head.width() - shown;
 
     let style_for = |color| {
         if stale {
@@ -783,6 +791,12 @@ mod tests {
             format!("? rows {} 3+ columns", g.times)
         );
         assert_eq!(input_line(&m.preview), "first 1,000 rows of 1,939,184");
+        let mut m = m;
+        m.preview.sorted = true;
+        assert_eq!(
+            input_line(&m.preview),
+            "first 1,000 rows of 1,939,184, unsorted"
+        );
     }
 
     /// Many new columns: the callout says so, before anything is applied.

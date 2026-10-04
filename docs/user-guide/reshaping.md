@@ -9,7 +9,7 @@ the form.
 
 | Preview line | Says |
 |---|---|
-| Input | The rows the preview ran over: `all 376 rows`, or the `first 1,000 rows` of a larger view (`1,000 rows, unsorted` when the view is sorted) |
+| Input | The rows the preview ran over: `all 376 rows`, or the `first 1,000 rows of 1,939,184` of a larger view, `unsorted` when the view is sorted (a small sorted view is read in its order) |
 | Result | The shape, `rows × columns`. `?` is what the first rows cannot tell; a pivot's columns read `12+` until applied |
 | `▲` | A pivot with 100 or more new columns, or why the reshape fails on these rows |
 
@@ -69,7 +69,7 @@ The result has 138 rows, one per year, and the columns `year`, `Emma`,
 Output columns are sorted alphabetically. Pivot reads the rows once, in the
 background, and keeps one value per index and column pair in memory; filter
 large datasets first. A pivot that would make more than 10,000 columns is
-refused, with the count it would make.
+refused, with the count it would make; so is a [view](views.md) whose pivot would.
 
 A date or datetime past the calendar's range, such as a sentinel of
 `i64::MIN + 1` microseconds, names its column by its stored number, as the

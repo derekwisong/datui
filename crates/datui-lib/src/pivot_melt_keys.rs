@@ -71,22 +71,48 @@ impl App {
             Some(_) => None,
             None => {
                 let Some(state) = self.data_table_state.as_ref() else {
+                    // Nothing to read: say so rather than wait on an answer.
+                    self.pivot_melt_modal.preview.shown =
+                        Some((spec, Err("Nothing to preview".to_string())));
                     return;
                 };
-                Some((state.preview_lf(), state.polars_streaming()))
+                // A small view is read in its order: sorting it costs nothing, and
+                // the preview's rows are then the ones Enter makes.
+                let small = state
+                    .num_rows_if_valid()
+                    .is_some_and(|rows| rows <= PREVIEW_INPUT_ROWS);
+                let sorted = (state.is_sorted() && !small).then(|| state.visible_lf());
+                let lf = if small {
+                    state.visible_lf()
+                } else {
+                    state.preview_lf()
+                };
+                Some((lf, sorted, state.polars_streaming()))
             }
         };
         self.pivot_melt_modal.preview.running = Some(token);
         self.spawn_job(Job::ReshapePreview { epoch, token }, None, move |_| {
             let (input, read) = match (input, read) {
                 (Some(input), _) => (input, None),
-                (None, Some((lf, streaming))) => {
+                (None, Some((lf, sorted, streaming))) => {
+                    let message = |e: polars::prelude::PolarsError| {
+                        crate::error_display::user_message_from_polars(&e)
+                    };
                     // One more than the preview takes says whether there is more.
-                    let head = crate::statistics::collect_lazy(
-                        lf.slice(0, PREVIEW_INPUT_ROWS as u32 + 1),
-                        streaming,
-                    )
-                    .map_err(|e| crate::error_display::user_message_from_polars(&e))?;
+                    let head_of = |lf: polars::prelude::LazyFrame| {
+                        crate::statistics::collect_lazy(
+                            lf.slice(0, PREVIEW_INPUT_ROWS as u32 + 1),
+                            streaming,
+                        )
+                    };
+                    let mut head = head_of(lf).map_err(message)?;
+                    // The unsorted head turned out to be the whole view: small enough
+                    // to read again in the view's order.
+                    if head.height() <= PREVIEW_INPUT_ROWS
+                        && let Some(sorted) = sorted
+                    {
+                        head = head_of(sorted).map_err(message)?;
+                    }
                     let input = PreviewInput {
                         whole: head.height() <= PREVIEW_INPUT_ROWS,
                         rows: std::sync::Arc::new(head.head(Some(PREVIEW_INPUT_ROWS))),

@@ -152,6 +152,8 @@ Timestamp literals
 .PP
 A timestamp literal compared with a column that has a time zone is read as a clock time in that zone. A clock time repeated when clocks fall back means its first instant.
 .PP
+Quoted text is a string, never a date: \fBwhere d = "2024.01.01"\fR on a date column is an error that names the literal to write, here \fB2024.01.01\fR. Time and duration columns have no literal; compare \fBt.hour\fR, \fBt.minute\fR or \fBt.second\fR with a number.
+.PP
 Either side of a comparison can be a column, a literal or an expression: \fBwhere a = 10\fR, \fBwhere created_at.date > other_date_col\fR.
 .SH "WORD OPERATORS"
 q's infix words, parsed right-to-left like every other operator.

@@ -18551,6 +18551,50 @@ fn the_preferred_query_mode_is_where_the_prompt_opens() {
     assert!(state.get_active_sql_query().is_empty());
 }
 
+/// Quoted text against a date column is a string, as in q: the prompt says so in q's
+/// words, with the literal to write, and stays open to fix it.
+#[test]
+fn a_quoted_date_in_a_q_query_is_explained_in_the_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dated.csv");
+    std::fs::write(&path, "id,d\n0,2024-01-01\n1,2024-01-02\n").unwrap();
+    let config: datui::AppConfig = toml::from_str("[query]\ndefault_mode = \"q\"\n").unwrap();
+    let theme = datui::Theme::from_config(&config.theme).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new_with_config(tx.clone(), common::test_runtime(), theme, config);
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().schema().get("d"),
+        Some(&DataType::Date),
+        "the repro needs d read as a date"
+    );
+
+    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Q));
+    type_text(&mut app, "select where d = \"2024.01.01\"");
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Q));
+    assert!(!app.modal_showing(), "no modal over the prompt");
+    assert_eq!(
+        app.query_prompt_error().as_deref(),
+        Some("d is a date; \"2024.01.01\" is a string. A date is 2024.01.01")
+    );
+    let screen = screen_at(&mut app, 100, 24);
+    assert!(screen.contains("A date is 2024.01.01"), "{screen}");
+    assert_eq!(current_rows(&app), 2, "the table is as it was");
+
+    // Unquoted, it runs.
+    press_key(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+    type_text(&mut app, "select where d = 2024.01.01");
+    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(app.query_prompt_mode(), None);
+    assert_eq!(current_rows(&app), 1);
+}
+
 /// Editing an active query reopens its own mode, whatever the preference:
 /// q text is never offered up as SQL, or the other way round.
 #[test]
@@ -18627,7 +18671,6 @@ fn type_text(app: &mut App, text: &str) {
     }
 }
 
-#[cfg(feature = "sql")]
 fn screen_at(app: &mut App, width: u16, height: u16) -> String {
     let area = Rect::new(0, 0, width, height);
     let mut buf = Buffer::empty(area);

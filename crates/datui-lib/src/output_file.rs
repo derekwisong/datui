@@ -99,7 +99,7 @@ impl OutputFile {
         };
         // Hidden, named for datui and the destination, and ending in the
         // destination's extension, which a writer that picks its encoding from
-        // the path (plotters' PNG) needs. Created 0600 on Unix.
+        // the path needs. Created 0600 on Unix.
         let temp = tempfile::Builder::new()
             .prefix(".datui-")
             .suffix(&temp_suffix(&target))
@@ -438,7 +438,7 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
     }
 
-    /// A writer that opens the path itself, such as plotters', writes in place,
+    /// A writer that opens the path itself writes in place,
     /// and the extension it reads its encoding from is the destination's.
     #[test]
     fn the_temporary_path_keeps_the_extension() {

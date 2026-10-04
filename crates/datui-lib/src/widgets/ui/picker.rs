@@ -147,6 +147,8 @@ pub struct Picker<'a> {
     selected: Option<usize>,
     focused: bool,
     marks: Option<Vec<bool>>,
+    /// Beside each item, right-aligned and dimmed: a count.
+    details: Option<Vec<String>>,
 }
 
 impl<'a> Picker<'a> {
@@ -156,6 +158,7 @@ impl<'a> Picker<'a> {
             selected,
             focused,
             marks: None,
+            details: None,
         }
     }
 
@@ -166,12 +169,19 @@ impl<'a> Picker<'a> {
             selected: Some(state.visible_selection()),
             focused,
             marks: None,
+            details: None,
         }
     }
 
     /// Checkbox states, one per visible item in order.
     pub fn marks(mut self, marks: Vec<bool>) -> Self {
         self.marks = Some(marks);
+        self
+    }
+
+    /// A note per visible item in order, right-aligned beside it.
+    pub fn details(mut self, details: Vec<String>) -> Self {
+        self.details = Some(details);
         self
     }
 
@@ -226,6 +236,14 @@ impl<'a> Picker<'a> {
             Paragraph::new(format!("{}{}{}", marker, mark, self.items[i]))
                 .style(style)
                 .render(row_area, buf);
+            if let Some(detail) = self.details.as_ref().and_then(|d| d.get(i)) {
+                let w = crate::glyphs::display_width(detail) as u16;
+                if w + 2 < row_area.width {
+                    let x = row_area.right() - w;
+                    buf.set_string(x - 1, row_area.y, " ", style);
+                    buf.set_string(x, row_area.y, detail, style.fg(ctx.dimmed));
+                }
+            }
         }
     }
 }

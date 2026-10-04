@@ -1,113 +1,277 @@
-//! Chart view state: chart type, axis columns, and options.
+//! Chart view state: the chart's spec and the panel that edits it.
 //!
-//! The options form is a flat list of rows per chart kind; column rows are
-//! edited through the one shared Picker, so the state here is the choices
-//! themselves plus which row holds focus.
+//! The spec is a set of shelves, named as Vega-Lite names them so a later version
+//! can save it: `mark` (the Type shelf), `encoding.x.field` with its `timeUnit`,
+//! `encoding.y.field` with its `aggregate`, and `encoding.color.field`. Every chart
+//! type shows the same shelves; a shelf a type does not use is dimmed, never
+//! hidden ([`ChartModal::shelf`]). Options that are not part of what is charted
+//! (bins, ranges, the grid, the sample size) sit beside the spec.
+//!
+//! The panel is one form of the shared focus model (`crate::form`); column and
+//! value rows are edited through the one shared Picker.
 
-use crate::chart_data::{BarOrder, BarValue, ValueRange};
+use crate::chart_data::{BarOrder, ValueRange};
 use crate::widgets::ui::PickerState;
+use polars::prelude::DataType;
+use serde::{Deserialize, Serialize};
 
-/// Chart kind: full chart category shown as tabs, switched with 1-6 or [ ].
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum ChartKind {
-    #[default]
-    XY,
-    Histogram,
-    BoxPlot,
-    Kde,
-    Heatmap,
-    /// One horizontal bar per category.
-    Bar,
-}
-
-impl ChartKind {
-    pub const ALL: [Self; 6] = [
-        Self::XY,
-        Self::Histogram,
-        Self::BoxPlot,
-        Self::Kde,
-        Self::Heatmap,
-        Self::Bar,
-    ];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::XY => "XY",
-            Self::Histogram => "Histogram",
-            Self::BoxPlot => "Box Plot",
-            Self::Kde => "KDE",
-            Self::Heatmap => "Heatmap",
-            Self::Bar => "Bar",
-        }
-    }
-}
-
-/// XY chart type: Line, Scatter, or Bar (maps to ratatui GraphType).
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum ChartType {
+/// The Type shelf: what marks the chart draws.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mark {
     #[default]
     Line,
     Scatter,
     Bar,
+    Histogram,
+    Box,
+    Kde,
+    Heatmap,
 }
 
-impl ChartType {
-    pub const ALL: [Self; 3] = [Self::Line, Self::Scatter, Self::Bar];
+impl Mark {
+    pub const ALL: [Self; 7] = [
+        Self::Line,
+        Self::Scatter,
+        Self::Bar,
+        Self::Histogram,
+        Self::Box,
+        Self::Kde,
+        Self::Heatmap,
+    ];
 
-    pub fn as_str(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Self::Line => "Line",
             Self::Scatter => "Scatter",
             Self::Bar => "Bar",
+            Self::Histogram => "Histogram",
+            Self::Box => "Box",
+            Self::Kde => "KDE",
+            Self::Heatmap => "Heatmap",
+        }
+    }
+
+    /// The Vega-Lite mark that draws it.
+    pub fn vega_lite(self) -> &'static str {
+        match self {
+            Self::Line | Self::Kde => "line",
+            Self::Scatter => "point",
+            Self::Bar | Self::Histogram => "bar",
+            Self::Box => "boxplot",
+            Self::Heatmap => "rect",
+        }
+    }
+
+    /// Line and scatter: X against one or more Y columns.
+    pub fn is_xy(self) -> bool {
+        matches!(self, Self::Line | Self::Scatter)
+    }
+}
+
+/// How a temporal X is bucketed before Y is aggregated.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TimeUnit {
+    #[default]
+    None,
+    Day,
+    Week,
+    Month,
+    Quarter,
+    Year,
+}
+
+impl TimeUnit {
+    pub const ALL: [Self; 6] = [
+        Self::None,
+        Self::Day,
+        Self::Week,
+        Self::Month,
+        Self::Quarter,
+        Self::Year,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Day => "day",
+            Self::Week => "week",
+            Self::Month => "month",
+            Self::Quarter => "quarter",
+            Self::Year => "year",
+        }
+    }
+
+    /// The Polars duration a date is truncated to.
+    pub fn every(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Day => Some("1d"),
+            Self::Week => Some("1w"),
+            Self::Month => Some("1mo"),
+            Self::Quarter => Some("1q"),
+            Self::Year => Some("1y"),
+        }
+    }
+
+    /// The Vega-Lite `timeUnit`.
+    pub fn vega_lite(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Day => Some("yearmonthdate"),
+            Self::Week => Some("yearweek"),
+            Self::Month => Some("yearmonth"),
+            Self::Quarter => Some("yearquarter"),
+            Self::Year => Some("year"),
         }
     }
 }
 
-/// Focus: one row of the active chart kind's options form. The tab bar is not
-/// focusable — the chart kind switches from anywhere with 1-6 and [ ].
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum ChartFocus {
-    /// XY plot style: Line / Scatter / Bar, cycled in place.
+/// What a Y value is, per X (and color): the column as it is, or an aggregate of
+/// the rows that share it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Aggregate {
     #[default]
-    Style,
-    /// XY x-axis column (single pick).
-    XColumn,
-    /// XY y-axis series (toggle up to `Y_SERIES_MAX`).
-    YColumns,
-    YStartsAtZero,
-    LogScale,
-    ShowLegend,
-    /// The grid at the major ticks: XY, Histogram, Box Plot and KDE.
-    Grid,
-    /// The value column of the Histogram, Box Plot, or KDE on screen.
-    Column,
-    /// Heatmap axis columns (single pick each).
-    HeatmapX,
-    HeatmapY,
-    /// Bin count of the Histogram or Heatmap on screen.
-    Bins,
-    /// KDE bandwidth multiplier.
-    Bandwidth,
-    /// Which values the Histogram, Box Plot, or KDE draws: all, or a percentile range.
-    Range,
-    /// Bar chart: the category column, one bar per value (single pick).
-    Category,
-    /// Bar chart: what sets each bar's length, the rows per category or a numeric
-    /// column (single pick).
-    Value,
-    /// Bar chart: bars by value or by label.
-    Order,
-    /// Sample size shared by every chart kind; the last row of each form.
-    LimitRows,
+    None,
+    Count,
+    Sum,
+    Mean,
+    Median,
+    Min,
+    Max,
 }
 
-/// Maximum number of y-axis series that can be selected (remembered).
+impl Aggregate {
+    pub const ALL: [Self; 7] = [
+        Self::None,
+        Self::Count,
+        Self::Sum,
+        Self::Mean,
+        Self::Median,
+        Self::Min,
+        Self::Max,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Count => "count",
+            Self::Sum => "sum",
+            Self::Mean => "mean",
+            Self::Median => "median",
+            Self::Min => "min",
+            Self::Max => "max",
+        }
+    }
+
+    pub fn vega_lite(self) -> Option<&'static str> {
+        (self != Self::None).then(|| self.label())
+    }
+}
+
+/// A running total of the aggregated Y, along X.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Cumulative {
+    #[default]
+    Off,
+    /// The values added up.
+    Sum,
+    /// Returns compounded: each value is a rate, and the line is what 1 grew to,
+    /// less 1 (`(1 + a)(1 + b)... - 1`).
+    Compound,
+}
+
+impl Cumulative {
+    pub const ALL: [Self; 3] = [Self::Off, Self::Sum, Self::Compound];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Sum => "running sum",
+            Self::Compound => "compound",
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XEncoding {
+    pub field: Option<String>,
+    pub time_unit: TimeUnit,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct YEncoding {
+    /// One column, or several on a line or scatter chart (one series each).
+    pub field: Vec<String>,
+    pub aggregate: Aggregate,
+    pub cumulative: Cumulative,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColorEncoding {
+    pub field: Option<String>,
+    /// The values given a series each, in color order. Empty: the largest
+    /// [`COLOR_MAX`] by rows. `None` is the rows with no value.
+    pub values: Vec<Option<String>>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Encoding {
+    pub x: XEncoding,
+    pub y: YEncoding,
+    pub color: ColorEncoding,
+}
+
+/// What is charted.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChartSpec {
+    pub mark: Mark,
+    pub encoding: Encoding,
+}
+
+impl ChartSpec {
+    /// The spec as a Vega-Lite fragment: `mark` and the three encodings.
+    pub fn to_vega_lite(&self) -> serde_json::Value {
+        let mut x = serde_json::Map::new();
+        if let Some(field) = &self.encoding.x.field {
+            x.insert("field".into(), field.clone().into());
+        }
+        if let Some(unit) = self.encoding.x.time_unit.vega_lite() {
+            x.insert("timeUnit".into(), unit.into());
+        }
+        let mut y = serde_json::Map::new();
+        if let Some(field) = self.encoding.y.field.first() {
+            y.insert("field".into(), field.clone().into());
+        }
+        if let Some(aggregate) = self.encoding.y.aggregate.vega_lite() {
+            y.insert("aggregate".into(), aggregate.into());
+        }
+        let mut encoding = serde_json::Map::new();
+        encoding.insert("x".into(), x.into());
+        encoding.insert("y".into(), y.into());
+        if let Some(field) = &self.encoding.color.field {
+            encoding.insert("color".into(), serde_json::json!({ "field": field }));
+        }
+        serde_json::json!({ "mark": self.mark.vega_lite(), "encoding": encoding })
+    }
+}
+
+/// Series a color splits a chart into, at most: one per palette color.
+pub const COLOR_MAX: usize = 7;
+
+/// Most Y columns a line or scatter chart draws at once.
 pub const Y_SERIES_MAX: usize = 7;
 
 /// Default histogram bin count.
-pub const HISTOGRAM_DEFAULT_BINS: usize = 20;
+pub const HISTOGRAM_DEFAULT_BINS: usize = 40;
 pub const HISTOGRAM_MIN_BINS: usize = 5;
-pub const HISTOGRAM_MAX_BINS: usize = 80;
+pub const HISTOGRAM_MAX_BINS: usize = 100;
 
 /// Default heatmap bin count (applies to both axes).
 pub const HEATMAP_DEFAULT_BINS: usize = 20;
@@ -119,11 +283,11 @@ pub const KDE_BANDWIDTH_MIN: f64 = 0.2;
 pub const KDE_BANDWIDTH_MAX: f64 = 5.0;
 pub const KDE_BANDWIDTH_STEP: f64 = 0.1;
 
-/// Chart sample size bounds (the Sample size row). User can go down to 0; 0 becomes every row (None).
+/// Chart sample size bounds (the Rows row). Down to 0, which is every row (None).
 pub const CHART_ROW_LIMIT_MIN: usize = 0;
 /// Maximum applicable limit (Polars slice takes u32).
 pub const CHART_ROW_LIMIT_MAX: usize = u32::MAX as usize;
-/// PgUp/PgDown step for Sample size.
+/// PgUp/PgDown step for the sample size.
 pub const CHART_ROW_LIMIT_PAGE_STEP: usize = 100_000;
 /// Default numeric limit when switching from every row with + or PgUp.
 pub const DEFAULT_CHART_ROW_LIMIT: usize = 10_000;
@@ -132,20 +296,47 @@ pub const CHART_ROW_LIMIT_STEP_THRESHOLD: usize = 20_000;
 pub const CHART_ROW_LIMIT_STEP_SMALL: i32 = 1_000;
 pub const CHART_ROW_LIMIT_STEP_LARGE: i32 = 5_000;
 
-fn format_usize_with_commas(n: usize) -> String {
-    let s = n.to_string();
-    let len = s.len();
-    if len <= 3 {
-        return s;
-    }
-    let first_len = len % 3;
-    let first_len = if first_len == 0 { 3 } else { first_len };
-    let mut out = s[..first_len].to_string();
-    for i in (first_len..len).step_by(3) {
-        out.push(',');
-        out.push_str(&s[i..i + 3]);
-    }
-    out
+/// One row of the panel: a shelf, the line under it, or an option.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ChartFocus {
+    /// The Type shelf: ←/→ step the chart type.
+    #[default]
+    Type,
+    /// The X shelf's column.
+    X,
+    /// Under X: the time bucket of a temporal X.
+    TimeUnit,
+    /// Under X on a bar chart: bars by value or by label.
+    Order,
+    /// Under X on a histogram; an option on a heatmap.
+    Bins,
+    /// The Y shelf's column (or columns); on a histogram, count or share.
+    Y,
+    /// Under Y: the aggregate.
+    Aggregate,
+    /// The Color shelf's column.
+    Color,
+    /// Under Color: which values get a series.
+    ColorValues,
+    /// Options.
+    Cumulative,
+    Bandwidth,
+    Range,
+    YStartsAtZero,
+    LogScale,
+    ShowLegend,
+    Grid,
+    /// Sample size, for charts that sample.
+    LimitRows,
+}
+
+/// Whether a shelf takes part in the chart on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShelfUse {
+    /// Edited and charted.
+    Used,
+    /// Shown dimmed with why: `density`, `same as X`.
+    Dimmed(&'static str),
 }
 
 /// The view's columns a chart can take, by role.
@@ -153,72 +344,97 @@ fn format_usize_with_commas(n: usize) -> String {
 pub struct ChartColumns<'a> {
     pub numeric: &'a [String],
     pub datetime: &'a [String],
-    /// Bar chart categories (see `chart_data::is_category_dtype`).
+    /// Dates and datetimes, which a time bucket truncates (not times of day).
+    pub bucketable: &'a [String],
+    /// Categories: text, categorical, boolean and integer columns
+    /// (see `chart_data::is_category_dtype`).
     pub category: &'a [String],
 }
 
-/// Chart view state: chart kind, axes/columns, and options.
+/// The values of the Color column, most rows first, as the chart's last count
+/// found them: what the value picker lists.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ColorCounts {
+    pub column: String,
+    pub values: Vec<(Option<String>, u64)>,
+}
+
+/// What the open Picker edits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerFor {
+    X,
+    Y,
+    Color,
+    ColorValues,
+}
+
+/// The item a Picker offers for "nothing": no Color, no category on a box plot.
+pub const NONE_ITEM: &str = "none";
+
+fn format_usize_with_commas(n: usize) -> String {
+    crate::numfmt::group_chrome(n)
+}
+
+/// Chart view state: the spec, the options, and the panel's focus.
 #[derive(Default)]
 pub struct ChartModal {
     pub active: bool,
-    pub chart_kind: ChartKind,
-    pub chart_type: ChartType,
-    /// Remembered x-axis column (single).
-    pub x_column: Option<String>,
-    /// Remembered y-axis column names (order = series order; max Y_SERIES_MAX).
-    pub y_columns: Vec<String>,
+    pub spec: ChartSpec,
+    /// The cursor column's type when `c` chose the chart (`f64`), shown under Type
+    /// until the type is changed.
+    pub suggested: Option<String>,
     pub y_starts_at_zero: bool,
     pub log_scale: bool,
     pub show_legend: bool,
     /// The grid at the major ticks, on the kinds with axes (`g`).
     pub grid: bool,
-    pub focus: ChartFocus,
-    /// The one Picker, open for the focused column row; None while the form
-    /// has the keys.
-    pub picker: Option<PickerState>,
-    /// X-axis candidates: datetime first, then numeric.
-    pub x_candidates: Vec<String>,
-    /// Numeric columns: the pool for every other column row.
-    pub numeric_candidates: Vec<String>,
-    /// Bar chart categories: text, categorical, boolean and integer columns.
-    pub category_candidates: Vec<String>,
-    /// Histogram: remembered column (single selection).
-    pub hist_column: Option<String>,
+    /// Histogram: each bin's share of its group's rows rather than its count.
+    pub share: bool,
     pub hist_bins: usize,
-    /// Box plot: remembered column (single selection).
-    pub box_column: Option<String>,
-    /// KDE: remembered column (single selection).
-    pub kde_column: Option<String>,
-    pub kde_bandwidth_factor: f64,
-    /// Heatmap: remembered x/y columns (single selection each).
-    pub heatmap_x_column: Option<String>,
-    pub heatmap_y_column: Option<String>,
     pub heatmap_bins: usize,
-    /// Histogram, Box Plot and KDE: which values are drawn.
+    pub kde_bandwidth_factor: f64,
+    /// Histogram, Box and KDE: which values are drawn.
     pub value_range: ValueRange,
-    /// Bar chart: remembered category and value columns, and the bar order.
-    pub bar_category: Option<String>,
-    pub bar_value: Option<BarValue>,
     pub bar_order: BarOrder,
-    /// Rows a chart reads: up to this many, sampled across the table. None = every row.
+    /// Rows a chart that samples reads: up to this many, spread across the table.
+    /// None = every row.
     pub row_limit: Option<usize>,
-    /// The dataset the choices were made on (`App::dataset_generation`). Reopening the
-    /// chart on the same dataset — after a sort or a filter — keeps them.
+    pub focus: ChartFocus,
+    /// The one Picker, open for the focused row; None while the form has the keys.
+    pub picker: Option<PickerState>,
+    pub picker_for: Option<PickerFor>,
+    /// Per item of the value picker: its rows, shown beside it.
+    pub picker_details: Vec<String>,
+    pub numeric_candidates: Vec<String>,
+    pub temporal_candidates: Vec<String>,
+    /// Dates and datetimes: the X columns a time bucket truncates.
+    pub bucketable_candidates: Vec<String>,
+    pub category_candidates: Vec<String>,
+    /// The Color column's values by rows, once a chart counted them.
+    pub color_counts: Option<ColorCounts>,
+    /// The dataset the choices were made on (`App::dataset_generation`), and the
+    /// column the table's cursor was on: `c` again from the same column on the
+    /// same dataset brings the chart back as it was left.
     pub dataset: Option<u64>,
+    pub opened_on: Option<String>,
     /// Each column's unit, from a delimited spec's unit row: the axis titles name
     /// them. Set as the chart is drawn.
     pub units: Vec<(String, String)>,
-    /// The plot has the keys rather than the options (`x`): ←→ move the crosshair.
+    /// The plot has the keys rather than the panel (`x`): ←→ move the crosshair.
     pub plot_focus: bool,
-    /// The x of the point the crosshair stands on, kept while the options have the
+    /// The x of the point the crosshair stands on, kept while the panel has the
     /// keys so it comes back where it was.
     pub cursor_x: Option<f64>,
-    /// Where the XY plot was last drawn, for the crosshair and a click; `None` when
-    /// it has no points on screen.
+    /// Where the line or scatter plot was last drawn, for the crosshair and a
+    /// click; `None` when it has no points on screen.
     pub plot: Option<crate::widgets::crosshair::PlotPlace>,
 }
 
 impl ChartModal {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// An axis title for `column`: its name, and its unit when it has one.
     pub fn axis_title(&self, column: &str) -> String {
         match self.units.iter().find(|(name, _)| name == column) {
@@ -227,51 +443,63 @@ impl ChartModal {
         }
     }
 
-    pub fn new() -> Self {
-        Self::default()
+    pub fn mark(&self) -> Mark {
+        self.spec.mark
     }
 
-    /// Open the chart view. On a dataset seen before, the chart comes back as it was
-    /// left, less any column the view no longer has; otherwise it starts with no
-    /// columns picked. `default_row_limit` is the initial Sample size (e.g. from
-    /// config); None = every row. `grid` is whether a new chart starts with its grid.
+    pub fn x(&self) -> Option<&String> {
+        self.spec.encoding.x.field.as_ref()
+    }
+
+    pub fn y(&self) -> &[String] {
+        &self.spec.encoding.y.field
+    }
+
+    pub fn aggregate(&self) -> Aggregate {
+        self.spec.encoding.y.aggregate
+    }
+
+    pub fn color(&self) -> Option<&String> {
+        self.spec.encoding.color.field.as_ref()
+    }
+
+    /// Open the chart view. From the column it was left on, on the same dataset,
+    /// the chart comes back as it was, less any column the view no longer has.
+    /// Otherwise the chart is chosen from the cursor column's type (`cursor`): a
+    /// histogram of a number, a bar of a category's counts, a line over a date.
     pub fn open(
         &mut self,
         columns: ChartColumns<'_>,
+        cursor: Option<(&str, &DataType)>,
         default_row_limit: Option<usize>,
         grid: bool,
         dataset: u64,
     ) {
-        let ChartColumns {
-            numeric: numeric_columns,
-            datetime: datetime_columns,
-            category: category_columns,
-        } = columns;
         self.active = true;
-        self.picker = None;
-        // x_candidates: datetime first, then numeric (for list order).
-        self.x_candidates = datetime_columns.to_vec();
-        for c in numeric_columns {
-            if !self.x_candidates.contains(c) {
-                self.x_candidates.push(c.clone());
-            }
-        }
-        self.numeric_candidates = numeric_columns.to_vec();
-        self.category_candidates = category_columns.to_vec();
+        self.close_picker();
+        self.temporal_candidates = columns.datetime.to_vec();
+        self.bucketable_candidates = columns.bucketable.to_vec();
+        self.numeric_candidates = columns.numeric.to_vec();
+        self.category_candidates = columns.category.to_vec();
         self.plot_focus = false;
-        if self.dataset == Some(dataset) {
+        let opened_on = cursor.map(|(name, _)| name.to_string());
+        if self.dataset == Some(dataset) && self.opened_on == opened_on {
             self.keep_existing_choices();
-            self.focus = self.row_order()[0];
+            self.settle();
+            self.focus = ChartFocus::Type;
             return;
         }
         self.dataset = Some(dataset);
+        self.opened_on = opened_on;
         self.cursor_x = None;
-        self.chart_kind = ChartKind::XY;
-        self.chart_type = ChartType::Line;
+        self.color_counts = None;
+        self.spec = ChartSpec::default();
+        self.suggested = None;
         self.y_starts_at_zero = false;
         self.log_scale = false;
         self.show_legend = true;
         self.grid = grid;
+        self.share = false;
         self.value_range = ValueRange::All;
         self.row_limit = default_row_limit.and_then(|n| {
             if n == 0 {
@@ -280,134 +508,674 @@ impl ChartModal {
                 Some(n.clamp(1, CHART_ROW_LIMIT_MAX))
             }
         });
-        self.x_column = None;
-        self.y_columns.clear();
-        self.hist_column = None;
         self.hist_bins = HISTOGRAM_DEFAULT_BINS;
-        self.box_column = None;
-        self.kde_column = None;
         self.kde_bandwidth_factor = 1.0;
-        self.heatmap_x_column = None;
-        self.heatmap_y_column = None;
         self.heatmap_bins = HEATMAP_DEFAULT_BINS;
-        self.bar_category = None;
-        self.bar_value = None;
         self.bar_order = BarOrder::Value;
-        self.focus = self.row_order()[0];
+        if let Some((name, dtype)) = cursor {
+            self.suggest(name, dtype);
+        }
+        self.focus = ChartFocus::Type;
+    }
+
+    /// Show Me: the chart a column's type suggests. A number: its histogram. A
+    /// category: a bar of its counts. A date or time: a line over it, of the
+    /// first numeric column, with Y left to pick when there is none.
+    fn suggest(&mut self, name: &str, dtype: &DataType) {
+        let name = name.to_string();
+        let encoding = &mut self.spec.encoding;
+        if self.temporal_candidates.contains(&name) {
+            self.spec.mark = Mark::Line;
+            encoding.x.field = Some(name);
+            if let Some(y) = self.numeric_candidates.first() {
+                encoding.y.field = vec![y.clone()];
+            }
+        } else if dtype.is_float() || (dtype.is_numeric() && !dtype.is_integer()) {
+            self.spec.mark = Mark::Histogram;
+            encoding.x.field = Some(name);
+        } else if self.category_candidates.contains(&name) && !dtype.is_integer() {
+            self.spec.mark = Mark::Bar;
+            encoding.x.field = Some(name);
+            encoding.y.aggregate = Aggregate::Count;
+        } else if self.numeric_candidates.contains(&name) {
+            // An integer: a measure more often than a code.
+            self.spec.mark = Mark::Histogram;
+            encoding.x.field = Some(name);
+        } else {
+            return;
+        }
+        self.suggested = Some(crate::widgets::datatable::dtype_label(dtype));
     }
 
     /// Close the chart view. The choices stay for the next open on this dataset.
     pub fn close(&mut self) {
         self.active = false;
-        self.picker = None;
+        self.close_picker();
         self.plot_focus = false;
     }
 
-    /// Whether the crosshair can take the keys: an XY plot with points on screen.
+    pub fn close_picker(&mut self) {
+        self.picker = None;
+        self.picker_for = None;
+        self.picker_details.clear();
+    }
+
+    /// Whether the crosshair can take the keys: a line or scatter plot with points
+    /// on screen.
     pub fn has_crosshair(&self) -> bool {
-        self.chart_kind == ChartKind::XY && self.plot.is_some()
+        self.spec.mark.is_xy() && self.plot.is_some()
     }
 
-    /// Drop the choices whose columns the view no longer offers, and a Y series that
-    /// is the X column.
+    /// Drop the choices whose columns the view no longer offers.
     fn keep_existing_choices(&mut self) {
-        let keep = |choice: &mut Option<String>, pool: &[String]| {
-            if choice.as_ref().is_some_and(|c| !pool.contains(c)) {
-                *choice = None;
-            }
-        };
-        keep(&mut self.x_column, &self.x_candidates);
-        keep(&mut self.hist_column, &self.numeric_candidates);
-        keep(&mut self.box_column, &self.numeric_candidates);
-        keep(&mut self.kde_column, &self.numeric_candidates);
-        keep(&mut self.heatmap_x_column, &self.numeric_candidates);
-        keep(&mut self.heatmap_y_column, &self.numeric_candidates);
-        keep(&mut self.bar_category, &self.category_candidates);
-        if let Some(BarValue::Column(c)) = &self.bar_value
-            && (!self.numeric_candidates.contains(c) || Some(c) == self.bar_category.as_ref())
-        {
-            self.bar_value = None;
+        let mut all: Vec<&String> = self.numeric_candidates.iter().collect();
+        all.extend(self.temporal_candidates.iter());
+        all.extend(self.category_candidates.iter());
+        let has = |c: &String| all.contains(&c);
+        let encoding = &mut self.spec.encoding;
+        if encoding.x.field.as_ref().is_some_and(|c| !has(c)) {
+            encoding.x.field = None;
         }
-        let (numeric, x) = (&self.numeric_candidates, &self.x_column);
-        self.y_columns
-            .retain(|c| numeric.contains(c) && Some(c) != x.as_ref());
+        encoding.y.field.retain(|c| has(c));
+        if encoding.color.field.as_ref().is_some_and(|c| !has(c)) {
+            encoding.color.field = None;
+            encoding.color.values.clear();
+        }
     }
 
-    // ----- Focus -----
+    // ----- What applies -----
 
-    /// The active chart kind's rows, in Tab order.
-    pub fn row_order(&self) -> &'static [ChartFocus] {
+    fn is_temporal(&self, column: &str) -> bool {
+        self.temporal_candidates.iter().any(|c| c == column)
+    }
+
+    /// Whether X is a date or a time, which a line can bucket.
+    pub fn x_is_temporal(&self) -> bool {
+        self.x().is_some_and(|x| self.is_temporal(x))
+    }
+
+    /// Whether X is a date or a datetime, which a time bucket truncates; a time of
+    /// day is not.
+    pub fn x_is_bucketable(&self) -> bool {
+        self.x()
+            .is_some_and(|x| self.bucketable_candidates.iter().any(|c| c == x))
+    }
+
+    /// The columns a shelf takes on the chart on screen.
+    fn pool(&self, shelf: PickerFor) -> Vec<String> {
+        let mark = self.spec.mark;
+        let x = self.x();
+        match shelf {
+            PickerFor::X => match mark {
+                Mark::Line | Mark::Scatter => {
+                    let mut out = self.temporal_candidates.clone();
+                    for c in &self.numeric_candidates {
+                        if !out.contains(c) {
+                            out.push(c.clone());
+                        }
+                    }
+                    out
+                }
+                Mark::Bar | Mark::Box => self.category_candidates.clone(),
+                Mark::Histogram | Mark::Kde | Mark::Heatmap => self.numeric_candidates.clone(),
+            },
+            // The X column against itself is only a diagonal.
+            PickerFor::Y => self
+                .numeric_candidates
+                .iter()
+                .filter(|c| Some(*c) != x || mark == Mark::Box)
+                .cloned()
+                .collect(),
+            PickerFor::Color => self
+                .category_candidates
+                .iter()
+                .filter(|c| Some(*c) != x)
+                .cloned()
+                .collect(),
+            PickerFor::ColorValues => Vec::new(),
+        }
+    }
+
+    /// Whether the Y shelf takes several columns: a line or scatter chart draws one
+    /// series each.
+    pub fn y_is_multi(&self) -> bool {
+        self.spec.mark.is_xy()
+    }
+
+    /// How the Y shelf is used on the chart on screen.
+    pub fn y_use(&self) -> ShelfUse {
+        match self.spec.mark {
+            Mark::Kde => ShelfUse::Dimmed("density"),
+            _ => ShelfUse::Used,
+        }
+    }
+
+    /// How the Color shelf is used on the chart on screen.
+    pub fn color_use(&self) -> ShelfUse {
+        Self::color_use_in(&self.spec)
+    }
+
+    /// How `spec` uses its Color shelf.
+    pub fn color_use_in(spec: &ChartSpec) -> ShelfUse {
+        let y = &spec.encoding.y;
+        match spec.mark {
+            Mark::Box => ShelfUse::Dimmed("same as X"),
+            Mark::Heatmap => ShelfUse::Dimmed("density"),
+            Mark::Line | Mark::Scatter if y.field.len() > 1 => ShelfUse::Dimmed("one per Y column"),
+            Mark::Bar if y.aggregate == Aggregate::None => ShelfUse::Dimmed("needs an aggregate"),
+            _ => ShelfUse::Used,
+        }
+    }
+
+    /// Whether `spec`'s color splits its chart into series.
+    pub fn colored_in(spec: &ChartSpec) -> bool {
+        spec.encoding.color.field.is_some() && Self::color_use_in(spec) == ShelfUse::Used
+    }
+
+    /// Whether the chart takes an aggregate: a line, a scatter, a bar.
+    pub fn takes_aggregate(&self) -> bool {
+        matches!(self.spec.mark, Mark::Line | Mark::Scatter | Mark::Bar)
+    }
+
+    /// Whether the chart reads every row (an aggregate over the whole view) rather
+    /// than a sample.
+    pub fn aggregates(&self) -> bool {
+        self.takes_aggregate() && self.aggregate() != Aggregate::None
+    }
+
+    /// Whether the color splits the chart into series.
+    pub fn colored(&self) -> bool {
+        Self::colored_in(&self.spec)
+    }
+
+    /// The panel's rows for the chart on screen, in Tab order. A dimmed shelf is
+    /// left out: focus passes over it.
+    pub fn row_order(&self) -> Vec<ChartFocus> {
         use ChartFocus::*;
-        match self.chart_kind {
-            ChartKind::XY => &[
-                Style,
-                XColumn,
-                YColumns,
-                YStartsAtZero,
-                LogScale,
-                ShowLegend,
-                Grid,
-                LimitRows,
-            ],
-            ChartKind::Histogram => &[Column, Bins, Range, Grid, LimitRows],
-            ChartKind::BoxPlot => &[Column, Range, Grid, LimitRows],
-            ChartKind::Kde => &[Column, Bandwidth, Range, Grid, LimitRows],
-            ChartKind::Heatmap => &[HeatmapX, HeatmapY, Bins, LimitRows],
-            ChartKind::Bar => &[Category, Value, Order, LimitRows],
+        let mark = self.spec.mark;
+        let mut rows = vec![Type, X];
+        match mark {
+            Mark::Line | Mark::Scatter if self.x_is_bucketable() => rows.push(TimeUnit),
+            Mark::Bar => rows.push(Order),
+            Mark::Histogram => rows.push(Bins),
+            _ => {}
         }
+        if self.y_use() == ShelfUse::Used {
+            rows.push(Y);
+        }
+        if self.takes_aggregate() {
+            rows.push(Aggregate);
+        }
+        if self.color_use() == ShelfUse::Used {
+            rows.push(Color);
+            if self.color().is_some() {
+                rows.push(ColorValues);
+            }
+        }
+        // Options.
+        match mark {
+            Mark::Line | Mark::Scatter => {
+                if self.aggregates() {
+                    rows.push(Cumulative);
+                }
+                rows.extend([YStartsAtZero, LogScale, ShowLegend, Grid]);
+            }
+            Mark::Bar => rows.push(ShowLegend),
+            Mark::Histogram => rows.extend([Range, ShowLegend, Grid]),
+            Mark::Kde => rows.extend([Bandwidth, Range, ShowLegend, Grid]),
+            Mark::Box => rows.extend([Range, Grid]),
+            Mark::Heatmap => rows.push(Bins),
+        }
+        if !self.aggregates() {
+            rows.push(LimitRows);
+        }
+        rows
     }
 
-    /// Switch the chart kind directly (the 1-6 keys). Focus lands on the new
-    /// form's first row; a Picker open for the old form dies with it.
-    pub fn set_chart_kind(&mut self, kind: ChartKind) {
-        if kind != ChartKind::XY {
+    /// Whether the chart on screen has axes to draw a grid on: the heatmap's cells
+    /// and the bar chart's rows have none.
+    pub fn has_grid(&self) -> bool {
+        self.row_order().contains(&ChartFocus::Grid)
+    }
+
+    // ----- Type -----
+
+    /// Switch the chart type. The shelves carry over where the new type takes
+    /// what they hold; a column it cannot take moves to where it can, or goes.
+    pub fn set_mark(&mut self, mark: Mark) {
+        if mark == self.spec.mark {
+            return;
+        }
+        let old = self.spec.mark;
+        self.spec.mark = mark;
+        self.suggested = None;
+        self.close_picker();
+        if !mark.is_xy() {
             self.plot_focus = false;
         }
-        self.chart_kind = kind;
-        self.picker = None;
-        self.focus = self.row_order()[0];
+        let encoding = &mut self.spec.encoding;
+        // A number charted against something becomes the value of a one-column
+        // chart, and the other way round.
+        let numeric = |c: &String| self.numeric_candidates.contains(c);
+        let category = |c: &String| self.category_candidates.contains(c);
+        match mark {
+            Mark::Histogram | Mark::Kde => {
+                if !encoding.x.field.as_ref().is_some_and(numeric) {
+                    encoding.x.field = encoding.y.field.first().cloned();
+                }
+            }
+            Mark::Box => {
+                if encoding.y.field.is_empty()
+                    && let Some(x) = encoding.x.field.clone().filter(numeric)
+                {
+                    encoding.y.field = vec![x];
+                    encoding.x.field = None;
+                }
+                if !encoding.x.field.as_ref().is_some_and(category) {
+                    encoding.x.field = None;
+                }
+            }
+            Mark::Bar => {
+                if !encoding.x.field.as_ref().is_some_and(category) {
+                    encoding.x.field = encoding.color.field.take();
+                    encoding.color.values.clear();
+                }
+                if encoding.y.field.is_empty() && encoding.y.aggregate == Aggregate::None {
+                    encoding.y.aggregate = Aggregate::Count;
+                }
+            }
+            Mark::Heatmap => {
+                if !encoding.x.field.as_ref().is_some_and(numeric) {
+                    encoding.x.field = None;
+                }
+            }
+            Mark::Line | Mark::Scatter => {
+                if matches!(old, Mark::Histogram | Mark::Kde | Mark::Box)
+                    && encoding.y.field.is_empty()
+                    && let Some(x) = encoding.x.field.take()
+                {
+                    encoding.y.field = vec![x];
+                }
+            }
+        }
+        self.settle();
+        if !self.row_order().contains(&self.focus) {
+            self.focus = ChartFocus::Type;
+        }
     }
 
-    pub fn next_chart_kind(&mut self) {
-        let idx = ChartKind::ALL
-            .iter()
-            .position(|&k| k == self.chart_kind)
-            .unwrap_or(0);
-        self.set_chart_kind(ChartKind::ALL[(idx + 1) % ChartKind::ALL.len()]);
+    /// Keep the spec within what the chart on screen takes.
+    fn settle(&mut self) {
+        let x_pool = self.pool(PickerFor::X);
+        let y_pool = self.pool(PickerFor::Y);
+        let color_pool = self.pool(PickerFor::Color);
+        let mark = self.spec.mark;
+        let x_temporal = self.x_is_bucketable();
+        let encoding = &mut self.spec.encoding;
+        if encoding
+            .x
+            .field
+            .as_ref()
+            .is_some_and(|x| !x_pool.contains(x))
+        {
+            encoding.x.field = None;
+        }
+        encoding.y.field.retain(|y| y_pool.contains(y));
+        if !mark.is_xy() {
+            encoding.y.field.truncate(1);
+        }
+        // A bucket holds many rows: without an aggregate there is nothing to bucket.
+        if !x_temporal || !mark.is_xy() || encoding.y.aggregate == Aggregate::None {
+            encoding.x.time_unit = TimeUnit::None;
+        }
+        if encoding
+            .color
+            .field
+            .as_ref()
+            .is_some_and(|c| !color_pool.contains(c))
+        {
+            encoding.color.field = None;
+            encoding.color.values.clear();
+        }
+        if !matches!(mark, Mark::Line | Mark::Scatter | Mark::Bar) {
+            encoding.y.aggregate = Aggregate::None;
+        }
+        if encoding.y.aggregate == Aggregate::None || !mark.is_xy() {
+            encoding.y.cumulative = Cumulative::Off;
+        }
     }
 
-    pub fn prev_chart_kind(&mut self) {
-        let idx = ChartKind::ALL
-            .iter()
-            .position(|&k| k == self.chart_kind)
-            .unwrap_or(0);
-        let prev = if idx == 0 {
-            ChartKind::ALL.len() - 1
-        } else {
-            idx - 1
+    pub fn step_mark(&mut self, delta: i8) {
+        let mark = crate::form::step_value(&Mark::ALL, self.spec.mark, delta);
+        self.set_mark(mark);
+    }
+
+    // ----- Picker -----
+
+    /// Which picker the focused row opens, if it opens one.
+    pub fn picker_for(&self, focus: ChartFocus) -> Option<PickerFor> {
+        match focus {
+            ChartFocus::X => Some(PickerFor::X),
+            ChartFocus::Y if self.spec.mark != Mark::Histogram => Some(PickerFor::Y),
+            ChartFocus::Color => Some(PickerFor::Color),
+            ChartFocus::ColorValues => Some(PickerFor::ColorValues),
+            _ => None,
+        }
+    }
+
+    /// Whether the focused row's picker toggles several items.
+    pub fn picker_is_multi(&self, which: PickerFor) -> bool {
+        match which {
+            PickerFor::Y => self.y_is_multi(),
+            PickerFor::ColorValues => true,
+            PickerFor::X | PickerFor::Color => false,
+        }
+    }
+
+    /// Whether a shelf's picker offers "none" first.
+    fn offers_none(&self, which: PickerFor) -> bool {
+        which == PickerFor::Color || (which == PickerFor::X && self.spec.mark == Mark::Box)
+    }
+
+    /// What a picker offers, and what goes beside each item.
+    fn picker_items(&self, which: PickerFor) -> (Vec<String>, Vec<String>) {
+        if which == PickerFor::ColorValues {
+            let null = crate::glyphs::get().null;
+            let Some(counts) = &self.color_counts else {
+                return (Vec::new(), Vec::new());
+            };
+            return counts
+                .values
+                .iter()
+                .map(|(value, rows)| {
+                    (
+                        value.clone().unwrap_or_else(|| null.to_string()),
+                        crate::numfmt::group_chrome(*rows as usize),
+                    )
+                })
+                .unzip();
+        }
+        let mut items = Vec::new();
+        if self.offers_none(which) {
+            items.push(NONE_ITEM.to_string());
+        }
+        items.extend(self.pool(which));
+        (items, Vec::new())
+    }
+
+    /// The value at `i` of the value picker.
+    fn color_value_at(&self, i: usize) -> Option<Option<String>> {
+        self.color_counts
+            .as_ref()?
+            .values
+            .get(i)
+            .map(|(value, _)| value.clone())
+    }
+
+    /// Where the row's current choice sits among `items`.
+    fn current_index(&self, which: PickerFor, items: &[String]) -> Option<usize> {
+        let encoding = &self.spec.encoding;
+        let current = match which {
+            PickerFor::X => encoding.x.field.as_deref(),
+            PickerFor::Y => encoding.y.field.first().map(String::as_str),
+            PickerFor::Color => encoding.color.field.as_deref(),
+            PickerFor::ColorValues => return Some(0),
         };
-        self.set_chart_kind(ChartKind::ALL[prev]);
+        match current {
+            Some(current) => items.iter().position(|i| i == current),
+            None if self.offers_none(which) => Some(0),
+            None => None,
+        }
     }
 
-    // ----- Rows -----
-
-    /// Rows edited through the Picker.
-    pub fn is_picker_row(&self, focus: ChartFocus) -> bool {
-        matches!(
-            focus,
-            ChartFocus::XColumn
-                | ChartFocus::YColumns
-                | ChartFocus::Column
-                | ChartFocus::HeatmapX
-                | ChartFocus::HeatmapY
-                | ChartFocus::Category
-                | ChartFocus::Value
-        )
+    /// Open the Picker for the focused row, cursor on the current choice. The value
+    /// picker opens only once the chart has counted the values.
+    pub fn open_picker(&mut self) {
+        let Some(which) = self.picker_for(self.focus) else {
+            return;
+        };
+        if which == PickerFor::ColorValues && !self.has_color_counts() {
+            return;
+        }
+        let (items, details) = self.picker_items(which);
+        let mut state = PickerState::new(items.clone());
+        if let Some(i) = self.current_index(which, &items) {
+            state.select_original(i);
+        }
+        self.picker = Some(state);
+        self.picker_for = Some(which);
+        self.picker_details = details;
     }
 
-    /// Rows where the Picker toggles several choices rather than picking one.
-    pub fn is_multi_row(&self, focus: ChartFocus) -> bool {
-        focus == ChartFocus::YColumns
+    /// Whether the value picker has values to list: the chart has counted the
+    /// Color column on screen.
+    pub fn has_color_counts(&self) -> bool {
+        self.color_counts
+            .as_ref()
+            .is_some_and(|c| Some(&c.column) == self.color())
+    }
+
+    /// ←/→ on a pick-one column row: the next or previous column, chosen at once.
+    pub fn step_picker_row(&mut self, delta: i8) {
+        let Some(which) = self.picker_for(self.focus) else {
+            return;
+        };
+        if self.picker_is_multi(which) {
+            return;
+        }
+        let (items, _) = self.picker_items(which);
+        if items.is_empty() {
+            return;
+        }
+        let next = match self.current_index(which, &items) {
+            Some(at) => crate::form::step_index(at, items.len(), delta),
+            None if delta < 0 => items.len() - 1,
+            None => 0,
+        };
+        self.choose(which, &items[next], next);
+    }
+
+    /// The original index under the open Picker's cursor.
+    fn picker_cursor(&self) -> Option<usize> {
+        self.picker.as_ref()?.selected_original()
+    }
+
+    /// Enter in the Picker: a pick-one row takes the cursor's item; a row of
+    /// several keeps its toggles, or adopts the cursor's item when none are
+    /// toggled, so Enter on a fresh list still charts something. The Picker closes.
+    pub fn picker_choose(&mut self) {
+        let (Some(which), Some(i)) = (self.picker_for, self.picker_cursor()) else {
+            self.close_picker();
+            return;
+        };
+        let item = self.picker.as_ref().and_then(|p| p.items().get(i).cloned());
+        self.close_picker();
+        let Some(item) = item else {
+            return;
+        };
+        match which {
+            PickerFor::Y if self.y_is_multi() => {
+                if self.spec.encoding.y.field.is_empty() {
+                    self.spec.encoding.y.field.push(item);
+                }
+            }
+            PickerFor::ColorValues => {
+                if self.spec.encoding.color.values.is_empty()
+                    && let Some(value) = self.color_value_at(i)
+                {
+                    self.spec.encoding.color.values.push(value);
+                }
+            }
+            _ => self.choose(which, &item, i),
+        }
+        self.settle();
+    }
+
+    /// Take `item` (at `i` in the row's items) as the row's one choice.
+    fn choose(&mut self, which: PickerFor, item: &str, i: usize) {
+        let none = self.offers_none(which) && i == 0;
+        let encoding = &mut self.spec.encoding;
+        match which {
+            PickerFor::X => {
+                encoding.x.field = (!none).then(|| item.to_string());
+                // A series cannot be the X axis too, nor a color.
+                encoding.y.field.retain(|y| y != item);
+                if encoding.color.field.as_deref() == Some(item) {
+                    encoding.color.field = None;
+                    encoding.color.values.clear();
+                }
+                encoding.x.time_unit = TimeUnit::None;
+            }
+            PickerFor::Y => encoding.y.field = vec![item.to_string()],
+            PickerFor::Color => {
+                let field = (!none).then(|| item.to_string());
+                if field != encoding.color.field {
+                    encoding.color.values.clear();
+                }
+                encoding.color.field = field;
+            }
+            PickerFor::ColorValues => {}
+        }
+        self.settle();
+        if !self.row_order().contains(&self.focus) {
+            self.focus = ChartFocus::Type;
+        }
+    }
+
+    /// Space in a picker of several: flip the cursor's item in or out, up to the
+    /// palette's colors.
+    pub fn picker_toggle(&mut self) {
+        let (Some(which), Some(i)) = (self.picker_for, self.picker_cursor()) else {
+            return;
+        };
+        match which {
+            PickerFor::Y if self.y_is_multi() => {
+                let Some(item) = self.picker.as_ref().and_then(|p| p.items().get(i).cloned())
+                else {
+                    return;
+                };
+                let field = &mut self.spec.encoding.y.field;
+                if let Some(pos) = field.iter().position(|c| *c == item) {
+                    field.remove(pos);
+                } else if field.len() < Y_SERIES_MAX {
+                    field.push(item);
+                }
+            }
+            PickerFor::ColorValues => {
+                let Some(value) = self.color_value_at(i) else {
+                    return;
+                };
+                let values = &mut self.spec.encoding.color.values;
+                if let Some(pos) = values.iter().position(|v| *v == value) {
+                    values.remove(pos);
+                } else if values.len() < COLOR_MAX {
+                    values.push(value);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether the item at `i` of the open picker is toggled on.
+    pub fn is_marked(&self, i: usize) -> bool {
+        match self.picker_for {
+            Some(PickerFor::Y) => self
+                .picker
+                .as_ref()
+                .and_then(|p| p.items().get(i))
+                .is_some_and(|item| self.y().contains(item)),
+            Some(PickerFor::ColorValues) => self
+                .color_value_at(i)
+                .is_some_and(|v| self.spec.encoding.color.values.contains(&v)),
+            _ => false,
+        }
+    }
+
+    /// Whether the open picker toggles several items.
+    pub fn picker_multi(&self) -> bool {
+        self.picker_for.is_some_and(|w| self.picker_is_multi(w))
+    }
+
+    // ----- What is charted right now -----
+
+    /// The spec to chart: the one chosen, with an open Picker's cursor previewed on
+    /// the Y shelf (and on X, except for a line or scatter, whose X re-reads
+    /// everything).
+    pub fn effective_spec(&self) -> ChartSpec {
+        let mut spec = self.spec.clone();
+        let (Some(which), Some(i)) = (self.picker_for, self.picker_cursor()) else {
+            return spec;
+        };
+        let Some(item) = self.picker.as_ref().and_then(|p| p.items().get(i).cloned()) else {
+            return spec;
+        };
+        match which {
+            PickerFor::Y if self.y_is_multi() => {
+                if !spec.encoding.y.field.contains(&item) {
+                    spec.encoding.y.field.push(item);
+                }
+            }
+            PickerFor::Y => spec.encoding.y.field = vec![item],
+            PickerFor::X if !spec.mark.is_xy() => {
+                spec.encoding.x.field = (!(self.offers_none(which) && i == 0)).then_some(item);
+            }
+            _ => {}
+        }
+        spec
+    }
+
+    // ----- Stepping -----
+
+    /// ←/→ (and Space, on a choice) on the focused row.
+    pub fn step(&mut self, focus: ChartFocus, delta: i8) {
+        match focus {
+            ChartFocus::Type => self.step_mark(delta),
+            ChartFocus::TimeUnit => {
+                let encoding = &mut self.spec.encoding;
+                encoding.x.time_unit =
+                    crate::form::step_value(&TimeUnit::ALL, encoding.x.time_unit, delta);
+                // A bucket holds many rows, so it needs something to make of them.
+                if encoding.x.time_unit != TimeUnit::None && encoding.y.aggregate == Aggregate::None
+                {
+                    encoding.y.aggregate = Aggregate::Mean;
+                }
+            }
+            ChartFocus::Aggregate => {
+                let encoding = &mut self.spec.encoding;
+                encoding.y.aggregate =
+                    crate::form::step_value(&Aggregate::ALL, encoding.y.aggregate, delta);
+                self.settle();
+            }
+            ChartFocus::Cumulative => {
+                let y = &mut self.spec.encoding.y;
+                y.cumulative = crate::form::step_value(&Cumulative::ALL, y.cumulative, delta);
+            }
+            ChartFocus::Y if self.spec.mark == Mark::Histogram => self.share = !self.share,
+            ChartFocus::Order => {
+                self.bar_order = crate::form::step_value(&BarOrder::ALL, self.bar_order, delta);
+            }
+            ChartFocus::Range => {
+                self.value_range =
+                    crate::form::step_value(&ValueRange::ALL, self.value_range, delta);
+            }
+            ChartFocus::Bins => self.adjust_bins(delta.into()),
+            ChartFocus::Bandwidth => {
+                self.adjust_kde_bandwidth_factor(f64::from(delta) * KDE_BANDWIDTH_STEP)
+            }
+            ChartFocus::LimitRows => self.adjust_row_limit(delta.into()),
+            ChartFocus::YStartsAtZero => self.y_starts_at_zero = !self.y_starts_at_zero,
+            ChartFocus::LogScale => self.log_scale = !self.log_scale,
+            ChartFocus::ShowLegend => self.show_legend = !self.show_legend,
+            ChartFocus::Grid => self.grid = !self.grid,
+            focus => {
+                if self.picker_for(focus).is_some() {
+                    self.step_picker_row(delta);
+                }
+            }
+        }
+        if !self.row_order().contains(&self.focus) {
+            self.focus = ChartFocus::Type;
+        }
     }
 
     pub fn is_toggle_row(&self, focus: ChartFocus) -> bool {
@@ -420,346 +1188,20 @@ impl ChartModal {
         )
     }
 
-    /// Whether the chart on screen has axes to draw a grid on: the heatmap's cells
-    /// and the bar chart's rows have none.
-    pub fn has_grid(&self) -> bool {
-        self.row_order().contains(&ChartFocus::Grid)
-    }
-
-    pub fn is_number_row(&self, focus: ChartFocus) -> bool {
-        matches!(
-            focus,
-            ChartFocus::Bins | ChartFocus::Bandwidth | ChartFocus::LimitRows
-        )
-    }
-
-    // ----- Picker -----
-
-    /// What the focused row's Picker offers. The Y series leave out the X column:
-    /// charted against itself it is only a diagonal. The bar value offers Count first,
-    /// then the numeric columns less the category, for the same reason.
-    pub fn picker_items(&self) -> Vec<String> {
-        match self.focus {
-            ChartFocus::XColumn => self.x_candidates.clone(),
-            ChartFocus::YColumns => self
-                .numeric_candidates
-                .iter()
-                .filter(|c| Some(*c) != self.x_column.as_ref())
-                .cloned()
-                .collect(),
-            ChartFocus::Column | ChartFocus::HeatmapX | ChartFocus::HeatmapY => {
-                self.numeric_candidates.clone()
-            }
-            ChartFocus::Category => self.category_candidates.clone(),
-            ChartFocus::Value => std::iter::once(BarValue::Count.label().to_string())
-                .chain(
-                    self.numeric_candidates
-                        .iter()
-                        .filter(|c| Some(*c) != self.bar_category.as_ref())
-                        .cloned(),
-                )
-                .collect(),
-            _ => Vec::new(),
-        }
-    }
-
-    /// The current single choice of the focused row, for opening the Picker on it.
-    fn focused_row_choice(&self) -> Option<&str> {
-        match self.focus {
-            ChartFocus::XColumn => self.x_column.as_deref(),
-            ChartFocus::YColumns => self.y_columns.first().map(|s| s.as_str()),
-            ChartFocus::Column => match self.chart_kind {
-                ChartKind::Histogram => self.hist_column.as_deref(),
-                ChartKind::BoxPlot => self.box_column.as_deref(),
-                ChartKind::Kde => self.kde_column.as_deref(),
-                _ => None,
-            },
-            ChartFocus::HeatmapX => self.heatmap_x_column.as_deref(),
-            ChartFocus::HeatmapY => self.heatmap_y_column.as_deref(),
-            ChartFocus::Category => self.bar_category.as_deref(),
-            _ => None,
-        }
-    }
-
-    /// Where the focused row's current choice sits in `items`, the Picker's list.
-    fn focused_row_index(&self, items: &[String]) -> Option<usize> {
-        if self.focus == ChartFocus::Value {
-            // By place, not name: Count is first, whatever the columns are called.
-            return match self.bar_value.as_ref()? {
-                BarValue::Count => Some(0),
-                BarValue::Column(c) => items.iter().skip(1).position(|i| i == c).map(|i| i + 1),
-            };
-        }
-        let current = self.focused_row_choice()?;
-        items.iter().position(|item| item == current)
-    }
-
-    /// Open the Picker for the focused row, cursor on the current choice.
-    pub fn open_picker(&mut self) {
-        if !self.is_picker_row(self.focus) {
-            return;
-        }
-        let items = self.picker_items();
-        let mut state = PickerState::new(items.clone());
-        if let Some(i) = self.focused_row_index(&items) {
-            state.select_original(i);
-        }
-        self.picker = Some(state);
-    }
-
-    /// ←/→ on a pick-one column row: the next or previous column, chosen at once.
-    /// A row with nothing chosen yet starts at the first (→) or the last (←).
-    pub fn step_picker_row(&mut self, delta: i8) {
-        if !self.is_picker_row(self.focus) || self.is_multi_row(self.focus) {
-            return;
-        }
-        let chosen = self.focused_row_index(&self.picker_items()).is_some();
-        self.open_picker();
-        if let Some(picker) = self.picker.as_mut() {
-            if delta < 0 {
-                picker.move_up();
-            } else if chosen {
-                picker.move_down();
-            }
-        }
-        self.picker_choose();
-    }
-
-    /// The item under the open Picker's cursor.
-    fn picker_cursor_item(&self) -> Option<String> {
-        let i = self.picker.as_ref()?.selected_original()?;
-        self.picker_items().get(i).cloned()
-    }
-
-    /// The bar value under the open Value Picker's cursor: Count is its first item.
-    fn picker_cursor_bar_value(&self) -> Option<BarValue> {
-        if self.focus != ChartFocus::Value {
-            return None;
-        }
-        let i = self.picker.as_ref()?.selected_original()?;
-        if i == 0 {
-            return Some(BarValue::Count);
-        }
-        self.picker_items().get(i).cloned().map(BarValue::Column)
-    }
-
-    /// Enter in the Picker: a pick-one row takes the cursor's item; the Y row
-    /// keeps its toggled choices, or adopts the cursor's item when none are
-    /// toggled, so Enter on a fresh list still charts something. Either way
-    /// the Picker closes.
-    pub fn picker_choose(&mut self) {
-        let bar_value = self.picker_cursor_bar_value();
-        let Some(item) = self.picker_cursor_item() else {
-            self.picker = None;
-            return;
-        };
-        self.picker = None;
-        match self.focus {
-            ChartFocus::XColumn => {
-                // A series cannot be the X axis too.
-                self.y_columns.retain(|c| *c != item);
-                self.x_column = Some(item);
-            }
-            ChartFocus::YColumns => {
-                if self.y_columns.is_empty() {
-                    self.y_columns.push(item);
-                }
-            }
-            ChartFocus::Column => match self.chart_kind {
-                ChartKind::Histogram => self.hist_column = Some(item),
-                ChartKind::BoxPlot => self.box_column = Some(item),
-                ChartKind::Kde => self.kde_column = Some(item),
-                _ => {}
-            },
-            ChartFocus::HeatmapX => self.heatmap_x_column = Some(item),
-            ChartFocus::HeatmapY => self.heatmap_y_column = Some(item),
-            ChartFocus::Category => {
-                // The value cannot be the category too.
-                if matches!(&self.bar_value, Some(BarValue::Column(c)) if *c == item) {
-                    self.bar_value = None;
-                }
-                self.bar_category = Some(item);
-            }
-            ChartFocus::Value => self.bar_value = bar_value,
-            _ => {}
-        }
-    }
-
-    /// Space in the Y row's Picker: flip the cursor's series in or out, up to
-    /// `Y_SERIES_MAX`.
-    pub fn picker_toggle(&mut self) {
-        if !self.is_multi_row(self.focus) {
-            return;
-        }
-        let Some(item) = self.picker_cursor_item() else {
-            return;
-        };
-        if let Some(pos) = self.y_columns.iter().position(|c| *c == item) {
-            self.y_columns.remove(pos);
-        } else if self.y_columns.len() < Y_SERIES_MAX {
-            self.y_columns.push(item);
-        }
-    }
-
-    /// Whether an item in the Y row's Picker is currently a series.
-    pub fn is_marked(&self, item: &str) -> bool {
-        self.focus == ChartFocus::YColumns && self.y_columns.iter().any(|c| c == item)
-    }
-
-    // ----- Effective selections (what gets charted right now) -----
-
-    /// Effective x column for chart/export: the remembered x (no preview on scroll).
-    pub fn effective_x_column(&self) -> Option<&String> {
-        self.x_column.as_ref()
-    }
-
-    /// Effective y columns: the toggled series, plus the Y Picker cursor's
-    /// item as a preview while that Picker is open.
-    pub fn effective_y_columns(&self) -> Vec<String> {
-        let mut out = self.y_columns.clone();
-        if self.focus == ChartFocus::YColumns
-            && let Some(item) = self.picker_cursor_item()
-            && !out.contains(&item)
-        {
-            out.push(item);
-        }
-        out
-    }
-
-    /// The value column a single-column kind would chart right now: the open
-    /// Picker's cursor previews; otherwise the remembered choice.
-    fn effective_single(&self, kind: ChartKind, remembered: &Option<String>) -> Option<String> {
-        if self.chart_kind == kind
-            && self.focus == ChartFocus::Column
-            && let Some(item) = self.picker_cursor_item()
-        {
-            return Some(item);
-        }
-        remembered.clone()
-    }
-
-    pub fn effective_hist_column(&self) -> Option<String> {
-        self.effective_single(ChartKind::Histogram, &self.hist_column)
-    }
-
-    pub fn effective_box_column(&self) -> Option<String> {
-        self.effective_single(ChartKind::BoxPlot, &self.box_column)
-    }
-
-    pub fn effective_kde_column(&self) -> Option<String> {
-        self.effective_single(ChartKind::Kde, &self.kde_column)
-    }
-
-    pub fn effective_heatmap_x_column(&self) -> Option<String> {
-        if self.focus == ChartFocus::HeatmapX
-            && let Some(item) = self.picker_cursor_item()
-        {
-            return Some(item);
-        }
-        self.heatmap_x_column.clone()
-    }
-
-    pub fn effective_heatmap_y_column(&self) -> Option<String> {
-        if self.focus == ChartFocus::HeatmapY
-            && let Some(item) = self.picker_cursor_item()
-        {
-            return Some(item);
-        }
-        self.heatmap_y_column.clone()
-    }
-
-    /// The bar chart's category: the open Picker's cursor previews.
-    pub fn effective_bar_category(&self) -> Option<String> {
-        if self.focus == ChartFocus::Category
-            && let Some(item) = self.picker_cursor_item()
-        {
-            return Some(item);
-        }
-        self.bar_category.clone()
-    }
-
-    /// The bar chart's value: the open Picker's cursor previews, and a value column
-    /// that is the category is none.
-    pub fn effective_bar_value(&self) -> Option<BarValue> {
-        if let Some(value) = self.picker_cursor_bar_value() {
-            return Some(value);
-        }
-        let category = self.effective_bar_category();
-        self.bar_value.clone().filter(|v| match v {
-            BarValue::Count => true,
-            BarValue::Column(c) => Some(c) != category.as_ref(),
-        })
-    }
-
-    // ----- Toggles and numbers -----
-
-    pub fn toggle_y_starts_at_zero(&mut self) {
-        self.y_starts_at_zero = !self.y_starts_at_zero;
-    }
-
-    pub fn toggle_log_scale(&mut self) {
-        self.log_scale = !self.log_scale;
-    }
-
-    pub fn toggle_show_legend(&mut self) {
-        self.show_legend = !self.show_legend;
-    }
-
     pub fn toggle_grid(&mut self) {
         self.grid = !self.grid;
     }
 
-    /// Cycle chart type: Line -> Scatter -> Bar -> Line.
-    pub fn next_chart_type(&mut self) {
-        self.chart_type = match self.chart_type {
-            ChartType::Line => ChartType::Scatter,
-            ChartType::Scatter => ChartType::Bar,
-            ChartType::Bar => ChartType::Line,
-        };
-    }
-
-    pub fn prev_chart_type(&mut self) {
-        self.chart_type = match self.chart_type {
-            ChartType::Line => ChartType::Bar,
-            ChartType::Scatter => ChartType::Line,
-            ChartType::Bar => ChartType::Scatter,
-        };
-    }
-
-    /// Step the bar order (the Order row) forward or back.
-    pub fn cycle_bar_order(&mut self, delta: i32) {
-        let all = BarOrder::ALL;
-        let i = all.iter().position(|&o| o == self.bar_order).unwrap_or(0) as i32;
-        let n = all.len() as i32;
-        self.bar_order = all[(i + delta).rem_euclid(n) as usize];
-    }
-
-    /// Step the value range (the Range row) forward or back.
-    pub fn cycle_value_range(&mut self, delta: i32) {
-        let all = ValueRange::ALL;
-        let i = all.iter().position(|&r| r == self.value_range).unwrap_or(0) as i32;
-        let n = all.len() as i32;
-        self.value_range = all[(i + delta).rem_euclid(n) as usize];
-    }
-
-    /// Display string for Sample size: "Every row" or number with commas.
-    pub fn row_limit_display(&self) -> String {
-        match self.row_limit {
-            None => "Every row".to_string(),
-            Some(n) => format_usize_with_commas(n),
+    fn adjust_bins(&mut self, delta: i32) {
+        if self.spec.mark == Mark::Heatmap {
+            self.heatmap_bins = (self.heatmap_bins as i32 + delta)
+                .clamp(HEATMAP_MIN_BINS as i32, HEATMAP_MAX_BINS as i32)
+                as usize;
+        } else {
+            self.hist_bins = (self.hist_bins as i32 + delta)
+                .clamp(HISTOGRAM_MIN_BINS as i32, HISTOGRAM_MAX_BINS as i32)
+                as usize;
         }
-    }
-
-    pub fn adjust_hist_bins(&mut self, delta: i32) {
-        let next = (self.hist_bins as i32 + delta)
-            .clamp(HISTOGRAM_MIN_BINS as i32, HISTOGRAM_MAX_BINS as i32);
-        self.hist_bins = next as usize;
-    }
-
-    pub fn adjust_heatmap_bins(&mut self, delta: i32) {
-        let next = (self.heatmap_bins as i32 + delta)
-            .clamp(HEATMAP_MIN_BINS as i32, HEATMAP_MAX_BINS as i32);
-        self.heatmap_bins = next as usize;
     }
 
     pub fn adjust_kde_bandwidth_factor(&mut self, delta: f64) {
@@ -767,27 +1209,27 @@ impl ChartModal {
         self.kde_bandwidth_factor = (next * 10.0).round() / 10.0;
     }
 
-    /// Adjust the focused number row: bins, bandwidth, or the row limit,
-    /// whichever the active form shows.
+    /// `+`/`-`: step the focused number row.
     pub fn adjust_number_row(&mut self, delta: i32) {
         match self.focus {
-            ChartFocus::Bins if self.chart_kind == ChartKind::Histogram => {
-                self.adjust_hist_bins(delta)
-            }
-            ChartFocus::Bins if self.chart_kind == ChartKind::Heatmap => {
-                self.adjust_heatmap_bins(delta)
-            }
+            ChartFocus::Bins => self.adjust_bins(delta),
             ChartFocus::Bandwidth => {
                 self.adjust_kde_bandwidth_factor(delta as f64 * KDE_BANDWIDTH_STEP)
             }
-            ChartFocus::Range => self.cycle_value_range(delta),
-            ChartFocus::Order => self.cycle_bar_order(delta),
             ChartFocus::LimitRows => self.adjust_row_limit(delta),
             _ => {}
         }
     }
 
-    /// Adjust row limit by delta (+/-). Step size depends on current value. None = unlimited.
+    /// Display string for the sample size: "every row" or a number with commas.
+    pub fn row_limit_display(&self) -> String {
+        match self.row_limit {
+            None => "every row".to_string(),
+            Some(n) => format_usize_with_commas(n),
+        }
+    }
+
+    /// Adjust row limit by delta (+/-). Step size depends on current value. None = every row.
     pub fn adjust_row_limit(&mut self, delta: i32) {
         let current = match self.row_limit {
             None if delta > 0 => {
@@ -810,7 +1252,7 @@ impl ChartModal {
         self.row_limit = if next == 0 { None } else { Some(next) };
     }
 
-    /// Adjust row limit by 100,000 (PgUp / PgDown). None = unlimited.
+    /// Adjust row limit by 100,000 (PgUp / PgDown). None = every row.
     pub fn adjust_row_limit_page(&mut self, delta: i32) {
         let current = match self.row_limit {
             None if delta > 0 => {
@@ -820,31 +1262,102 @@ impl ChartModal {
             None => return,
             Some(n) => n,
         };
-        let step = CHART_ROW_LIMIT_PAGE_STEP;
         let next = match delta.cmp(&0) {
-            std::cmp::Ordering::Greater => current.saturating_add(step).min(CHART_ROW_LIMIT_MAX),
-            std::cmp::Ordering::Less => current.saturating_sub(step),
+            std::cmp::Ordering::Greater => current
+                .saturating_add(CHART_ROW_LIMIT_PAGE_STEP)
+                .min(CHART_ROW_LIMIT_MAX),
+            std::cmp::Ordering::Less => current.saturating_sub(CHART_ROW_LIMIT_PAGE_STEP),
             std::cmp::Ordering::Equal => current,
         };
         self.row_limit = if next == 0 { None } else { Some(next) };
     }
 
-    pub fn can_export(&self) -> bool {
-        match self.chart_kind {
-            ChartKind::XY => {
-                self.effective_x_column().is_some() && !self.effective_y_columns().is_empty()
-            }
-            ChartKind::Histogram => self.effective_hist_column().is_some(),
-            ChartKind::BoxPlot => self.effective_box_column().is_some(),
-            ChartKind::Kde => self.effective_kde_column().is_some(),
-            ChartKind::Heatmap => {
-                self.effective_heatmap_x_column().is_some()
-                    && self.effective_heatmap_y_column().is_some()
-            }
-            ChartKind::Bar => {
-                self.effective_bar_category().is_some() && self.effective_bar_value().is_some()
-            }
+    /// Whether the spec names everything its chart needs.
+    pub fn is_complete(spec: &ChartSpec) -> bool {
+        let encoding = &spec.encoding;
+        let x = encoding.x.field.is_some();
+        let y = !encoding.y.field.is_empty();
+        match spec.mark {
+            Mark::Line | Mark::Scatter => x && (y || encoding.y.aggregate == Aggregate::Count),
+            Mark::Bar => x && (y || encoding.y.aggregate == Aggregate::Count),
+            Mark::Histogram | Mark::Kde => x,
+            Mark::Box => y,
+            Mark::Heatmap => x && y,
         }
+    }
+
+    pub fn can_export(&self) -> bool {
+        Self::is_complete(&self.effective_spec())
+    }
+
+    /// What the chart says it is: the measure, and how it was made of the rows.
+    /// `(arr_delay, "mean by month, cumulative, by symbol")`.
+    pub fn title(&self) -> (String, String) {
+        let spec = self.effective_spec();
+        let encoding = &spec.encoding;
+        let x = encoding.x.field.clone().unwrap_or_default();
+        let y = encoding.y.field.join(", ");
+        let mut parts: Vec<String> = Vec::new();
+        let by_color = self
+            .colored()
+            .then(|| format!("by {}", self.color().unwrap()));
+        let main = match spec.mark {
+            Mark::Histogram => {
+                parts.push(if self.share {
+                    "share per bin".to_string()
+                } else {
+                    "count per bin".to_string()
+                });
+                x
+            }
+            Mark::Kde => {
+                parts.push("density".to_string());
+                x
+            }
+            Mark::Box => {
+                if !x.is_empty() {
+                    parts.push(format!("by {x}"));
+                }
+                y
+            }
+            Mark::Heatmap => {
+                parts.push(format!("against {x}"));
+                y
+            }
+            Mark::Line | Mark::Scatter | Mark::Bar => {
+                let aggregate = encoding.y.aggregate;
+                let main = if aggregate == Aggregate::Count {
+                    "rows".to_string()
+                } else {
+                    y
+                };
+                let mut how = String::new();
+                if !matches!(aggregate, Aggregate::None | Aggregate::Count) {
+                    how.push_str(aggregate.label());
+                    how.push(' ');
+                }
+                let unit = encoding.x.time_unit;
+                if unit != TimeUnit::None {
+                    how.push_str(&format!("by {}", unit.label()));
+                } else if aggregate != Aggregate::None || spec.mark == Mark::Bar {
+                    how.push_str(&format!("by {x}"));
+                }
+                if !how.trim().is_empty() {
+                    parts.push(how.trim().to_string());
+                }
+                if encoding.y.cumulative != Cumulative::Off {
+                    parts.push(match encoding.y.cumulative {
+                        Cumulative::Compound => "compounded".to_string(),
+                        _ => "cumulative".to_string(),
+                    });
+                }
+                main
+            }
+        };
+        if let Some(by) = by_color {
+            parts.push(by);
+        }
+        (main, parts.join(", "))
     }
 }
 
@@ -854,17 +1367,15 @@ impl crate::form::Form for ChartModal {
     fn fields(&self) -> Vec<(ChartFocus, crate::form::FieldKind)> {
         use crate::form::FieldKind;
         self.row_order()
-            .iter()
-            .map(|&row| {
-                let kind = if self.is_multi_row(row) {
-                    FieldKind::Picker { multi: true }
-                } else if self.is_picker_row(row) {
-                    FieldKind::Picker { multi: false }
-                } else if self.is_toggle_row(row) {
-                    FieldKind::Checkbox
-                } else {
-                    // The style, the ranges and the numbers step.
-                    FieldKind::Choice
+            .into_iter()
+            .map(|row| {
+                let kind = match self.picker_for(row) {
+                    Some(which) => FieldKind::Picker {
+                        multi: self.picker_is_multi(which),
+                    },
+                    None if self.is_toggle_row(row) => FieldKind::Checkbox,
+                    // Type, the buckets, the aggregates and the numbers step.
+                    None => FieldKind::Choice,
                 };
                 (row, kind)
             })
@@ -882,395 +1393,376 @@ impl crate::form::Form for ChartModal {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::form::Form;
 
-    /// An axis is titled with its column's unit, when a delimited spec read one.
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    struct Cols {
+        numeric: Vec<String>,
+        datetime: Vec<String>,
+        category: Vec<String>,
+    }
+
+    fn cols() -> Cols {
+        Cols {
+            numeric: s(&["delay", "distance", "year"]),
+            datetime: s(&["date"]),
+            category: s(&["carrier", "origin", "year"]),
+        }
+    }
+
+    fn open_on(cursor: Option<(&str, &DataType)>) -> ChartModal {
+        let c = cols();
+        let mut modal = ChartModal::new();
+        modal.open(
+            ChartColumns {
+                numeric: &c.numeric,
+                datetime: &c.datetime,
+                bucketable: &c.datetime,
+                category: &c.category,
+            },
+            cursor,
+            Some(10_000),
+            false,
+            1,
+        );
+        modal
+    }
+
     #[test]
     fn an_axis_title_names_the_unit() {
         let mut modal = ChartModal::default();
         assert_eq!(modal.axis_title("cht1"), "cht1");
         modal.units = vec![("cht1".to_string(), "deg F".to_string())];
         assert_eq!(modal.axis_title("cht1"), "cht1 (deg F)");
-        assert_eq!(modal.axis_title("volts"), "volts");
     }
 
-    use super::{ChartColumns, ChartFocus, ChartKind, ChartModal, ChartType, Y_SERIES_MAX};
-    use crate::chart_data::{BarOrder, BarValue};
-    use crate::form::Form;
+    /// `c` picks the chart from the cursor column's type and says so under Type.
+    #[test]
+    fn quick_chart_follows_the_cursor_column_type() {
+        let modal = open_on(Some(("delay", &DataType::Float64)));
+        assert_eq!(modal.mark(), Mark::Histogram);
+        assert_eq!(modal.x().map(String::as_str), Some("delay"));
+        assert_eq!(modal.suggested.as_deref(), Some("f64"));
 
-    fn columns<'a>(numeric: &'a [String], datetime: &'a [String]) -> ChartColumns<'a> {
-        ChartColumns {
-            numeric,
-            datetime,
-            category: &[],
-        }
-    }
+        let modal = open_on(Some(("carrier", &DataType::String)));
+        assert_eq!(modal.mark(), Mark::Bar);
+        assert_eq!(modal.aggregate(), Aggregate::Count);
+        assert!(ChartModal::is_complete(&modal.spec), "counts need no Y");
 
-    fn open_modal() -> ChartModal {
-        let numeric = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        let datetime = vec!["date".to_string()];
-        let mut modal = ChartModal::new();
-        modal.open(columns(&numeric, &datetime), Some(10_000), false, 1);
-        modal
+        let modal = open_on(Some(("date", &DataType::Date)));
+        assert_eq!(modal.mark(), Mark::Line);
+        assert_eq!(modal.x().map(String::as_str), Some("date"));
+        assert_eq!(modal.y(), ["delay"], "the first numeric column");
+
+        let modal = open_on(Some(("year", &DataType::Int64)));
+        assert_eq!(modal.mark(), Mark::Histogram, "an integer is a measure");
+
+        let modal = open_on(None);
+        assert_eq!(modal.mark(), Mark::Line);
+        assert!(modal.x().is_none() && modal.suggested.is_none());
     }
 
     #[test]
-    fn open_no_default_columns() {
-        let modal = open_modal();
-        assert!(modal.active);
-        assert_eq!(modal.chart_kind, ChartKind::XY);
-        assert_eq!(modal.chart_type, ChartType::Line);
-        assert!(modal.x_column.is_none());
-        assert!(modal.y_columns.is_empty());
-        assert!(!modal.y_starts_at_zero);
-        assert!(!modal.log_scale);
-        assert!(modal.show_legend);
-        assert!(modal.picker.is_none());
-        assert_eq!(modal.focus, ChartFocus::Style);
-        assert_eq!(modal.row_limit, Some(10_000));
-        assert_eq!(modal.x_candidates, ["date", "a", "b", "c"]);
-        assert_eq!(modal.numeric_candidates, ["a", "b", "c"]);
+    fn changing_the_type_clears_the_suggestion() {
+        let mut modal = open_on(Some(("delay", &DataType::Float64)));
+        modal.step(ChartFocus::Type, 1);
+        assert_eq!(modal.mark(), Mark::Box);
+        assert!(modal.suggested.is_none());
+        assert_eq!(modal.y(), ["delay"], "the histogram's value is the box's");
+        assert!(modal.x().is_none(), "a box's X is a category or none");
+    }
+
+    /// Every type shows the same shelves; one it does not use is dimmed and
+    /// focus passes over it.
+    #[test]
+    fn shelves_dim_by_type() {
+        let mut modal = open_on(None);
+        let rows = |m: &ChartModal| m.row_order();
+        assert!(rows(&modal).contains(&ChartFocus::Color));
+        modal.set_mark(Mark::Kde);
+        assert_eq!(modal.y_use(), ShelfUse::Dimmed("density"));
+        assert!(!rows(&modal).contains(&ChartFocus::Y));
+        modal.set_mark(Mark::Box);
+        assert_eq!(modal.color_use(), ShelfUse::Dimmed("same as X"));
+        assert!(!rows(&modal).contains(&ChartFocus::Color));
+        modal.set_mark(Mark::Heatmap);
+        assert_eq!(modal.color_use(), ShelfUse::Dimmed("density"));
+        modal.set_mark(Mark::Line);
+        modal.spec.encoding.y.field = s(&["delay", "distance"]);
+        assert_eq!(modal.color_use(), ShelfUse::Dimmed("one per Y column"));
+        modal.set_mark(Mark::Bar);
+        modal.spec.encoding.y.aggregate = Aggregate::None;
+        assert_eq!(modal.color_use(), ShelfUse::Dimmed("needs an aggregate"));
+    }
+
+    /// The panel's rows follow the type: a bucket under a date X, the order under
+    /// a bar's X, the bins under a histogram's; the sample size only where the
+    /// chart samples.
+    #[test]
+    fn rows_follow_the_type() {
+        use ChartFocus::*;
+        let mut modal = open_on(Some(("date", &DataType::Date)));
+        assert_eq!(
+            modal.fields().iter().map(|(f, _)| *f).collect::<Vec<_>>(),
+            [
+                Type,
+                X,
+                TimeUnit,
+                Y,
+                Aggregate,
+                Color,
+                YStartsAtZero,
+                LogScale,
+                ShowLegend,
+                Grid,
+                LimitRows
+            ]
+        );
+        modal.step(TimeUnit, 1);
+        assert_eq!(modal.spec.encoding.x.time_unit, super::TimeUnit::Day);
+        assert_eq!(
+            modal.aggregate(),
+            super::Aggregate::Mean,
+            "a bucket needs one"
+        );
+        let rows = modal.row_order();
+        assert!(rows.contains(&Cumulative) && !rows.contains(&LimitRows));
+
+        modal.set_mark(Mark::Bar);
+        assert_eq!(modal.spec.encoding.x.time_unit, super::TimeUnit::None);
+        assert!(modal.row_order().contains(&Order));
+        modal.set_mark(Mark::Histogram);
+        assert!(modal.row_order().contains(&Bins));
     }
 
     #[test]
-    fn toggles_persist() {
-        let mut modal = open_modal();
-        assert!(!modal.y_starts_at_zero);
-        modal.toggle_y_starts_at_zero();
-        assert!(modal.y_starts_at_zero);
-        modal.toggle_log_scale();
-        assert!(modal.log_scale);
-        modal.toggle_show_legend();
-        assert!(!modal.show_legend);
-    }
-
-    #[test]
-    fn tab_walks_the_xy_rows_and_wraps() {
-        let mut modal = open_modal();
-        let walked: Vec<ChartFocus> = (0..8)
+    fn the_aggregate_steps_through_every_one() {
+        let mut modal = open_on(Some(("date", &DataType::Date)));
+        let labels: Vec<&str> = (0..7)
             .map(|_| {
-                modal.focus_next();
-                modal.focus
+                modal.step(ChartFocus::Aggregate, 1);
+                modal.aggregate().label()
             })
             .collect();
         assert_eq!(
-            walked,
-            vec![
-                ChartFocus::XColumn,
-                ChartFocus::YColumns,
-                ChartFocus::YStartsAtZero,
-                ChartFocus::LogScale,
-                ChartFocus::ShowLegend,
-                ChartFocus::Grid,
-                ChartFocus::LimitRows,
-                ChartFocus::Style,
-            ]
+            labels,
+            ["count", "sum", "mean", "median", "min", "max", "none"]
         );
-        modal.focus_prev();
-        assert_eq!(modal.focus, ChartFocus::LimitRows);
+        modal.step(ChartFocus::Aggregate, -1);
+        assert_eq!(modal.aggregate(), Aggregate::Max);
     }
 
-    /// Switching the chart kind lands focus on the new form's first row and
-    /// closes any Picker — the row it was scoped to is gone.
     #[test]
-    fn switching_kind_resets_focus_and_closes_the_picker() {
-        let mut modal = open_modal();
-        modal.focus = ChartFocus::XColumn;
+    fn cumulative_goes_with_the_aggregate() {
+        let mut modal = open_on(Some(("date", &DataType::Date)));
+        modal.spec.encoding.y.aggregate = Aggregate::Sum;
+        modal.step(ChartFocus::Cumulative, 1);
+        assert_eq!(modal.spec.encoding.y.cumulative, Cumulative::Sum);
+        modal.step(ChartFocus::Cumulative, 1);
+        assert_eq!(modal.spec.encoding.y.cumulative, Cumulative::Compound);
+        modal.step(ChartFocus::Aggregate, -2);
+        assert_eq!(modal.aggregate(), Aggregate::None);
+        assert_eq!(modal.spec.encoding.y.cumulative, Cumulative::Off);
+    }
+
+    #[test]
+    fn color_picks_a_category_then_values_by_count() {
+        let mut modal = open_on(Some(("delay", &DataType::Float64)));
+        modal.focus = ChartFocus::Color;
         modal.open_picker();
-        assert!(modal.picker.is_some());
-        modal.set_chart_kind(ChartKind::Kde);
+        let items = modal.picker.as_ref().unwrap().items().to_vec();
+        assert_eq!(items, ["none", "carrier", "origin", "year"]);
+        modal.picker.as_mut().unwrap().select_original(1);
+        modal.picker_choose();
+        assert_eq!(modal.color().map(String::as_str), Some("carrier"));
+        assert!(modal.row_order().contains(&ChartFocus::ColorValues));
+
+        // Nothing to pick until a chart has counted the values.
+        modal.focus = ChartFocus::ColorValues;
+        modal.open_picker();
         assert!(modal.picker.is_none());
-        assert_eq!(modal.focus, ChartFocus::Column);
-        modal.next_chart_kind();
-        assert_eq!(modal.chart_kind, ChartKind::Heatmap);
-        assert_eq!(modal.focus, ChartFocus::HeatmapX);
-        modal.next_chart_kind();
-        assert_eq!(modal.chart_kind, ChartKind::Bar);
-        assert_eq!(modal.focus, ChartFocus::Category);
-        modal.next_chart_kind();
-        assert_eq!(modal.chart_kind, ChartKind::XY, "wraps");
-        modal.prev_chart_kind();
-        modal.prev_chart_kind();
-        modal.prev_chart_kind();
-        assert_eq!(modal.chart_kind, ChartKind::Kde);
-    }
-
-    /// Each kind keeps its own column choice while the tabs change.
-    #[test]
-    fn choices_survive_kind_switches() {
-        let mut modal = open_modal();
-        modal.set_chart_kind(ChartKind::Histogram);
+        modal.color_counts = Some(ColorCounts {
+            column: "carrier".to_string(),
+            values: (0..10)
+                .map(|i| (Some(format!("C{i}")), 100 - i as u64))
+                .chain([(None, 1)])
+                .collect(),
+        });
         modal.open_picker();
-        modal.picker_choose(); // "a", the cursor's initial item
-        assert_eq!(modal.hist_column.as_deref(), Some("a"));
-        modal.set_chart_kind(ChartKind::Kde);
-        assert!(modal.kde_column.is_none());
-        modal.set_chart_kind(ChartKind::Histogram);
-        assert_eq!(modal.hist_column.as_deref(), Some("a"));
-    }
-
-    #[test]
-    fn the_picker_opens_on_the_current_choice() {
-        let mut modal = open_modal();
-        modal.x_column = Some("b".to_string());
-        modal.focus = ChartFocus::XColumn;
-        modal.open_picker();
-        // x candidates are [date, a, b, c]; the cursor sits on the choice.
-        assert_eq!(modal.picker.as_ref().unwrap().selected_original(), Some(2));
-    }
-
-    #[test]
-    fn y_picker_toggles_and_caps_at_the_series_max() {
-        let cols: Vec<String> = (0..10).map(|i| format!("col_{}", i)).collect();
-        let mut modal = ChartModal::new();
-        modal.open(columns(&cols, &[]), Some(10_000), false, 1);
-        modal.focus = ChartFocus::YColumns;
-        modal.open_picker();
-        for _ in 0..=Y_SERIES_MAX {
+        assert_eq!(modal.picker_details[0], "100");
+        for _ in 0..9 {
             modal.picker_toggle();
-            if let Some(p) = modal.picker.as_mut() {
-                p.move_down();
-            }
+            modal.picker.as_mut().unwrap().move_down();
         }
-        assert_eq!(modal.y_columns.len(), Y_SERIES_MAX, "capped");
-        // Toggling a chosen series off works.
+        assert_eq!(modal.spec.encoding.color.values.len(), COLOR_MAX, "capped");
+        assert!(modal.is_marked(0));
         modal.picker.as_mut().unwrap().select_original(0);
         modal.picker_toggle();
-        assert_eq!(modal.y_columns.len(), Y_SERIES_MAX - 1);
-    }
-
-    /// Enter on a fresh Y Picker adopts the cursor's item, so the first
-    /// series never has to be toggled explicitly.
-    #[test]
-    fn choosing_on_an_empty_y_row_takes_the_cursor_item() {
-        let mut modal = open_modal();
-        modal.focus = ChartFocus::YColumns;
-        modal.open_picker();
+        assert!(!modal.is_marked(0));
         modal.picker_choose();
-        assert_eq!(modal.y_columns, ["a"]);
-        assert!(modal.picker.is_none());
-        // With series already chosen, Enter just closes.
-        modal.open_picker();
-        modal.picker.as_mut().unwrap().move_down();
-        modal.picker_choose();
-        assert_eq!(modal.y_columns, ["a"]);
+        assert_eq!(modal.spec.encoding.color.values.len(), COLOR_MAX - 1);
+
+        // Another column starts from the top values again.
+        modal.focus = ChartFocus::Color;
+        modal.step(ChartFocus::Color, 1);
+        assert_eq!(modal.color().map(String::as_str), Some("origin"));
+        assert!(modal.spec.encoding.color.values.is_empty());
+        modal.step(ChartFocus::Color, -1);
+        modal.step(ChartFocus::Color, -1);
+        assert!(modal.color().is_none(), "none is the first choice");
     }
 
-    /// The open Picker's cursor previews: the chart is prepared for what the
-    /// cursor is on, before anything is committed.
     #[test]
-    fn the_picker_cursor_previews_the_selection() {
-        let mut modal = open_modal();
-        modal.focus = ChartFocus::YColumns;
-        modal.open_picker();
-        assert_eq!(modal.effective_y_columns(), ["a"]);
-        modal.picker.as_mut().unwrap().move_down();
-        assert_eq!(modal.effective_y_columns(), ["b"]);
-        modal.picker = None;
-        assert!(modal.effective_y_columns().is_empty(), "no preview closed");
-
-        modal.set_chart_kind(ChartKind::Histogram);
-        assert_eq!(modal.effective_hist_column(), None);
-        modal.open_picker();
-        assert_eq!(modal.effective_hist_column().as_deref(), Some("a"));
-        // The x column never previews: only the remembered choice charts.
-        modal.set_chart_kind(ChartKind::XY);
-        modal.focus = ChartFocus::XColumn;
-        modal.open_picker();
-        assert_eq!(modal.effective_x_column(), None);
+    fn the_spec_reads_as_vega_lite() {
+        let mut modal = open_on(Some(("date", &DataType::Date)));
+        modal.step(ChartFocus::TimeUnit, 3);
+        modal.spec.encoding.color.field = Some("carrier".to_string());
+        assert_eq!(
+            modal.spec.to_vega_lite(),
+            serde_json::json!({
+                "mark": "line",
+                "encoding": {
+                    "x": {"field": "date", "timeUnit": "yearmonth"},
+                    "y": {"field": "delay", "aggregate": "mean"},
+                    "color": {"field": "carrier"},
+                }
+            })
+        );
+        let saved = serde_json::to_value(&modal.spec).unwrap();
+        assert_eq!(saved["encoding"]["x"]["timeUnit"], "month");
+        assert_eq!(saved["encoding"]["y"]["aggregate"], "mean");
     }
 
-    /// The X column is not offered as a Y series, and picking a series as X takes
-    /// it out of the series.
     #[test]
-    fn the_x_column_is_not_a_y_choice() {
-        let mut modal = open_modal();
-        modal.x_column = Some("a".to_string());
-        modal.focus = ChartFocus::YColumns;
-        assert_eq!(modal.picker_items(), ["b", "c"]);
-
-        modal.y_columns = vec!["b".to_string(), "c".to_string()];
-        modal.focus = ChartFocus::XColumn;
-        modal.open_picker();
-        modal.picker.as_mut().unwrap().select_original(2); // b
-        modal.picker_choose();
-        assert_eq!(modal.x_column.as_deref(), Some("b"));
-        assert_eq!(modal.y_columns, ["c"]);
+    fn the_title_says_how_the_rows_were_made() {
+        let mut modal = open_on(Some(("date", &DataType::Date)));
+        modal.step(ChartFocus::TimeUnit, 3);
+        modal.spec.encoding.y.cumulative = Cumulative::Sum;
+        modal.spec.encoding.color.field = Some("carrier".to_string());
+        assert_eq!(
+            modal.title(),
+            (
+                "delay".to_string(),
+                "mean by month, cumulative, by carrier".to_string()
+            )
+        );
     }
 
-    /// Reopening on the same dataset keeps the chart as it was left, less columns
-    /// the view no longer has; another dataset starts clean.
+    /// Reopening from the same column on the same dataset keeps the chart; another
+    /// column suggests again.
     #[test]
-    fn reopening_keeps_choices_while_their_columns_exist() {
-        let mut modal = open_modal();
-        modal.set_chart_kind(ChartKind::Histogram);
-        modal.x_column = Some("date".to_string());
-        modal.y_columns = vec!["a".to_string(), "b".to_string()];
-        modal.hist_column = Some("c".to_string());
-        modal.value_range = crate::chart_data::ValueRange::Percentile1To99;
+    fn reopening_from_the_same_column_keeps_the_chart() {
+        let mut modal = open_on(Some(("delay", &DataType::Float64)));
+        modal.set_mark(Mark::Kde);
         modal.toggle_grid();
         modal.close();
-
-        let numeric = vec!["a".to_string(), "c".to_string()];
-        let datetime = vec!["date".to_string()];
-        modal.open(columns(&numeric, &datetime), Some(10_000), false, 1);
-        assert_eq!(modal.chart_kind, ChartKind::Histogram);
-        assert_eq!(modal.x_column.as_deref(), Some("date"));
-        assert_eq!(modal.y_columns, ["a"], "b is gone from the view");
-        assert_eq!(modal.hist_column.as_deref(), Some("c"));
-        assert_eq!(
-            modal.value_range,
-            crate::chart_data::ValueRange::Percentile1To99
-        );
-        assert!(modal.grid, "the grid stays as it was left");
-        modal.close();
-
-        modal.open(columns(&numeric, &datetime), Some(10_000), false, 2);
-        assert!(!modal.grid, "a new dataset starts from the config");
-        modal.open(columns(&numeric, &datetime), Some(10_000), true, 3);
+        let c = cols();
+        let columns = ChartColumns {
+            numeric: &c.numeric,
+            datetime: &c.datetime,
+            bucketable: &c.datetime,
+            category: &c.category,
+        };
+        modal.open(columns, Some(("delay", &DataType::Float64)), None, false, 1);
+        assert_eq!(modal.mark(), Mark::Kde);
         assert!(modal.grid);
-        assert_eq!(modal.chart_kind, ChartKind::XY);
-        assert!(modal.x_column.is_none() && modal.y_columns.is_empty());
-        assert!(modal.hist_column.is_none());
-    }
-
-    #[test]
-    fn the_range_row_cycles() {
-        use crate::chart_data::ValueRange;
-        let mut modal = open_modal();
-        modal.set_chart_kind(ChartKind::BoxPlot);
-        assert_eq!(
-            modal.row_order(),
-            [
-                ChartFocus::Column,
-                ChartFocus::Range,
-                ChartFocus::Grid,
-                ChartFocus::LimitRows
-            ]
+        modal.open(
+            columns,
+            Some(("carrier", &DataType::String)),
+            None,
+            false,
+            1,
         );
-        modal.focus = ChartFocus::Range;
-        modal.adjust_number_row(1);
-        assert_eq!(modal.value_range, ValueRange::Percentile1To99);
-        modal.adjust_number_row(1);
-        assert_eq!(modal.value_range, ValueRange::All);
-        modal.adjust_number_row(-1);
-        assert_eq!(modal.value_range, ValueRange::Percentile1To99);
+        assert_eq!(modal.mark(), Mark::Bar);
+        assert!(!modal.grid);
     }
 
     #[test]
-    fn adjust_number_row_routes_by_the_visible_form() {
-        let mut modal = open_modal();
-        modal.set_chart_kind(ChartKind::Histogram);
+    fn the_y_picker_leaves_out_x_and_caps_its_series() {
+        let mut modal = open_on(Some(("date", &DataType::Date)));
+        modal.spec.encoding.x.field = Some("delay".to_string());
+        modal.spec.encoding.y.field.clear();
+        modal.focus = ChartFocus::Y;
+        modal.open_picker();
+        assert_eq!(modal.picker.as_ref().unwrap().items(), ["distance", "year"]);
+        assert!(modal.picker_multi());
+        modal.picker_choose();
+        assert_eq!(
+            modal.y(),
+            ["distance"],
+            "Enter on a fresh list takes the cursor"
+        );
+    }
+
+    #[test]
+    fn number_rows_route_by_the_type() {
+        let mut modal = open_on(Some(("delay", &DataType::Float64)));
         modal.focus = ChartFocus::Bins;
         modal.adjust_number_row(1);
-        assert_eq!(modal.hist_bins, super::HISTOGRAM_DEFAULT_BINS + 1);
-        assert_eq!(modal.heatmap_bins, super::HEATMAP_DEFAULT_BINS);
-        modal.set_chart_kind(ChartKind::Heatmap);
+        assert_eq!(modal.hist_bins, HISTOGRAM_DEFAULT_BINS + 1);
+        modal.set_mark(Mark::Heatmap);
         modal.focus = ChartFocus::Bins;
         modal.adjust_number_row(-1);
-        assert_eq!(modal.heatmap_bins, super::HEATMAP_DEFAULT_BINS - 1);
-        modal.set_chart_kind(ChartKind::Kde);
-        modal.focus = ChartFocus::Bandwidth;
-        modal.adjust_number_row(1);
-        assert_eq!(modal.kde_bandwidth_factor, 1.1);
+        assert_eq!(modal.heatmap_bins, HEATMAP_DEFAULT_BINS - 1);
         modal.focus = ChartFocus::LimitRows;
         modal.adjust_number_row(-1);
         assert_eq!(modal.row_limit, Some(9_000));
     }
 
-    /// The bar form: a category from the category pool, a value from the numeric pool
-    /// less the category, and the order cycling by value or label.
+    /// A bucket goes with its aggregate: none takes the bucket away. A time of day
+    /// has no bucket to pick.
     #[test]
-    fn the_bar_form_picks_a_category_and_a_value() {
-        let numeric = vec!["year".to_string(), "delay".to_string()];
-        let category = vec!["carrier".to_string(), "year".to_string()];
+    fn a_bucket_needs_an_aggregate_and_a_date() {
+        let mut modal = open_on(Some(("date", &DataType::Date)));
+        modal.step(ChartFocus::TimeUnit, 3);
+        assert_eq!(modal.spec.encoding.x.time_unit, TimeUnit::Month);
+        modal.spec.encoding.y.aggregate = Aggregate::Sum;
+        modal.step(ChartFocus::Aggregate, -2);
+        assert_eq!(modal.aggregate(), Aggregate::None);
+        assert_eq!(modal.spec.encoding.x.time_unit, TimeUnit::None);
+
+        let numeric = s(&["delay"]);
+        let datetime = s(&["date", "clock"]);
         let mut modal = ChartModal::new();
         modal.open(
             ChartColumns {
                 numeric: &numeric,
-                datetime: &[],
-                category: &category,
+                datetime: &datetime,
+                bucketable: &datetime[..1],
+                category: &[],
             },
-            Some(10_000),
-            false,
-            1,
-        );
-        modal.set_chart_kind(ChartKind::Bar);
-        assert_eq!(
-            modal.row_order(),
-            [
-                ChartFocus::Category,
-                ChartFocus::Value,
-                ChartFocus::Order,
-                ChartFocus::LimitRows
-            ]
-        );
-        assert!(!modal.can_export());
-        assert_eq!(modal.picker_items(), ["carrier", "year"]);
-        modal.open_picker();
-        assert_eq!(modal.effective_bar_category().as_deref(), Some("carrier"));
-        modal.picker.as_mut().unwrap().select_original(1);
-        modal.picker_choose();
-        assert_eq!(modal.bar_category.as_deref(), Some("year"));
-
-        modal.focus_next();
-        assert_eq!(
-            modal.picker_items(),
-            ["Count", "delay"],
-            "Count first; the category is not a value"
-        );
-        modal.open_picker();
-        assert_eq!(modal.effective_bar_value(), Some(BarValue::Count));
-        modal.picker_choose();
-        assert_eq!(modal.bar_value, Some(BarValue::Count));
-        assert!(modal.can_export());
-        modal.open_picker();
-        modal.picker.as_mut().unwrap().select_original(1);
-        modal.picker_choose();
-        assert_eq!(modal.bar_value, Some(BarValue::Column("delay".to_string())));
-        modal.open_picker();
-        assert_eq!(
-            modal.picker.as_ref().unwrap().selected_original(),
-            Some(1),
-            "the Picker opens on the value chosen"
-        );
-        modal.picker = None;
-        assert!(modal.can_export());
-
-        modal.focus_next();
-        assert_eq!(modal.bar_order, BarOrder::Value);
-        modal.adjust_number_row(1);
-        assert_eq!(modal.bar_order, BarOrder::Label);
-        modal.adjust_number_row(1);
-        assert_eq!(modal.bar_order, BarOrder::Value);
-    }
-
-    /// Picking the value column as the category takes it out of the value.
-    #[test]
-    fn a_value_picked_as_the_category_is_cleared() {
-        let numeric = vec!["year".to_string(), "delay".to_string()];
-        let category = vec!["year".to_string()];
-        let mut modal = ChartModal::new();
-        modal.open(
-            ChartColumns {
-                numeric: &numeric,
-                datetime: &[],
-                category: &category,
-            },
+            Some(("clock", &DataType::Time)),
             None,
             false,
             1,
         );
-        modal.set_chart_kind(ChartKind::Bar);
-        modal.bar_value = Some(BarValue::Column("year".to_string()));
-        modal.open_picker();
-        modal.picker_choose();
-        assert_eq!(modal.bar_category.as_deref(), Some("year"));
-        assert!(modal.bar_value.is_none());
+        assert_eq!(modal.mark(), Mark::Line);
+        assert!(!modal.row_order().contains(&ChartFocus::TimeUnit));
+    }
 
-        // Count counts any category.
-        modal.bar_value = Some(BarValue::Count);
-        modal.open_picker();
-        modal.picker_choose();
-        assert_eq!(modal.bar_value, Some(BarValue::Count));
+    /// An integer histogram turned into a box: its column is the box's value, and
+    /// not also its category.
+    #[test]
+    fn a_box_from_an_integer_histogram_has_no_category() {
+        let mut modal = open_on(Some(("year", &DataType::Int64)));
+        modal.set_mark(Mark::Box);
+        assert_eq!(modal.y(), ["year"]);
+        assert!(modal.x().is_none());
+    }
+
+    /// Whether color splits a chart reads the spec charted: a second Y previewed in
+    /// the picker dims the color.
+    #[test]
+    fn color_use_reads_the_spec_charted() {
+        let mut modal = open_on(Some(("date", &DataType::Date)));
+        modal.spec.encoding.color.field = Some("carrier".to_string());
+        assert!(modal.colored());
+        let mut spec = modal.spec.clone();
+        spec.encoding.y.field.push("distance".to_string());
+        assert!(!ChartModal::colored_in(&spec));
     }
 }

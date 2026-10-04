@@ -2090,10 +2090,11 @@ mod tests {
                 ..Default::default()
             },
             None,
+            None,
             false,
             0,
         );
-        p2.app.chart_modal.focus = ChartFocus::XColumn;
+        p2.app.chart_modal.focus = ChartFocus::X;
         p2.app.chart_modal.open_picker();
         assert!(
             p2.app.text_field_focused(),
@@ -3265,7 +3266,8 @@ mod tests {
             ),
             // On the tab bar, a choice, for ← / → to step.
             (Context::PivotMelt, vec![ch('p')], &["Form"]),
-            (Context::Chart, vec![ch('c')], &["Options", "Plot"]),
+            // From a number column: its histogram, which has a grid and bins.
+            (Context::Chart, vec![ch('l'), ch('c')], &["Shelves", "Plot"]),
             // Back from the path to the format, a choice, for ← / → to step.
             (
                 Context::Export,
@@ -3307,8 +3309,9 @@ mod tests {
             (Context::Info, "Enter"),
             // The Documentation tab: a dataset no catalog lists has none.
             (Context::Info, "y"),
-            // A sample, a followed file.
+            // A sample, a followed file, a number column.
             (Context::ValueCounts, "a"),
+            (Context::ValueCounts, "c"),
             (Context::ValueCounts, "t"),
             // Nothing in effect: the sidebar opens on "add sort", which has no value
             // to step, and there is nothing to remove or clear.
@@ -3319,9 +3322,11 @@ mod tests {
             (Context::Export, "Ctrl+P / Ctrl+N"),
             // A range: Enter in the help presses its first.
             (Context::SortFilter, "1-9"),
-            (Context::Chart, "1-6"),
-            // The Sample size row; columns picked; a followed file.
+            (Context::Chart, "1-7"),
+            // The Sample size row and the number rows; columns picked; a followed
+            // file.
             (Context::Chart, "PgUp / PgDn"),
+            (Context::Chart, "+ / -"),
             (Context::Chart, "x"),
             (Context::Chart, "e"),
             (Context::Chart, "t"),

@@ -3478,12 +3478,11 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
             Some(app.hold_the_generation())
         }),
         ("a chart", |app: &mut App| {
+            let mut modal = crate::chart_modal::ChartModal::new();
+            modal.spec.encoding.x.field = Some("id".to_string());
             app.chart_inflight = Some(crate::ChartInflight {
                 dataset: None,
-                request: crate::ChartRequest::XRange {
-                    x_column: "id".to_string(),
-                    row_limit: None,
-                },
+                request: crate::ChartRequest::from_modal(&modal).expect("an x range"),
                 stale: false,
                 cancel: Default::default(),
             });

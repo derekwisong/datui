@@ -1,20 +1,28 @@
 use crate::chart_jobs::ChartCacheXY;
+use crate::chart_modal::{Aggregate, ChartFocus, Mark};
 use crate::*;
 use std::sync::mpsc;
 
+/// A histogram of `column` on `modal`: 10 bins, every row.
+fn histogram_modal(modal: &mut ChartModal, column: &str) {
+    modal.spec.mark = Mark::Histogram;
+    modal.spec.encoding.x.field = Some(column.to_string());
+    modal.hist_bins = 10;
+    modal.row_limit = None;
+}
+
 fn histogram_request(column: &str) -> ChartRequest {
-    ChartRequest::Histogram {
-        column: column.to_string(),
-        bins: 10,
-        range: chart_data::ValueRange::All,
-        row_limit: None,
-    }
+    let mut modal = ChartModal::new();
+    histogram_modal(&mut modal, column);
+    ChartRequest::from_modal(&modal).unwrap()
 }
 
 fn prepared_histogram(column: &str) -> ChartPrepared {
     ChartPrepared::Histogram(chart_data::HistogramData {
         column: column.to_string(),
         bins: Vec::new(),
+        groups: Vec::new(),
+        share: false,
         x_min: 0.0,
         x_max: 1.0,
         max_count: 0.0,
@@ -44,7 +52,7 @@ fn a_result_for_another_dataset_is_dropped() {
         ..inflight(&request)
     });
 
-    *app.pending_chart_result.lock().unwrap() = Some(Ok(prepared_histogram("a")));
+    *app.pending_chart_result.lock().unwrap() = Some(Ok((prepared_histogram("a"), None)));
     app.event(&AppEvent::BackgroundChartReady);
     assert!(!app.chart_cache.satisfies(&request));
     assert!(app.chart_inflight.is_none());
@@ -54,9 +62,7 @@ fn chart_request(path: &str) -> ChartExportRequest {
     ChartExportRequest {
         path: PathBuf::from(path),
         format: ChartExportFormat::Png,
-        title: String::new(),
-        width: 1,
-        height: 1,
+        options: chart_export::ExportOptions::default(),
         overwrite: Overwrite::Forbid,
     }
 }
@@ -84,7 +90,7 @@ fn leaving_the_dataset_resets_chart_state() {
     assert!(app.chart_export_waiting.is_none());
     assert!(!app.is_busy());
 
-    *app.pending_chart_result.lock().unwrap() = Some(Ok(prepared_histogram("a")));
+    *app.pending_chart_result.lock().unwrap() = Some(Ok((prepared_histogram("a"), None)));
     app.event(&AppEvent::BackgroundChartReady);
     assert!(
         !app.chart_cache.satisfies(&request),
@@ -242,10 +248,7 @@ fn a_failed_preparation_is_remembered_not_retried() {
     // With that selection on screen, nothing more is wanted.
     app.input_mode = InputMode::Chart;
     app.chart_modal.active = true;
-    app.chart_modal.chart_kind = ChartKind::Histogram;
-    app.chart_modal.hist_column = Some("a".to_string());
-    app.chart_modal.hist_bins = 10;
-    app.chart_modal.row_limit = None;
+    histogram_modal(&mut app.chart_modal, "a");
     assert_eq!(ChartRequest::from_modal(&app.chart_modal), Some(request));
     assert!(!app.chart_request_pending(), "not asked for again");
 }
@@ -260,10 +263,7 @@ fn moving_on_cancels_the_preparation_in_flight() {
     let a = histogram_request("a");
     app.input_mode = InputMode::Chart;
     app.chart_modal.active = true;
-    app.chart_modal.chart_kind = ChartKind::Histogram;
-    app.chart_modal.hist_column = Some("a".to_string());
-    app.chart_modal.hist_bins = 10;
-    app.chart_modal.row_limit = None;
+    histogram_modal(&mut app.chart_modal, "a");
     app.chart_inflight = Some(inflight(&a));
     let cancelled = |app: &App| {
         app.chart_inflight
@@ -275,7 +275,7 @@ fn moving_on_cancels_the_preparation_in_flight() {
 
     app.ensure_chart_data();
     assert!(!cancelled(&app), "still the selection on screen");
-    app.chart_modal.hist_column = Some("b".to_string());
+    app.chart_modal.spec.encoding.x.field = Some("b".to_string());
     app.ensure_chart_data();
     assert!(cancelled(&app), "moved past");
 
@@ -288,22 +288,22 @@ fn moving_on_cancels_the_preparation_in_flight() {
 
     app.chart_inflight = Some(inflight(&a));
     app.ensure_chart_data();
-    *app.pending_chart_result.lock().unwrap() = Some(Ok(prepared_histogram("a")));
+    *app.pending_chart_result.lock().unwrap() = Some(Ok((prepared_histogram("a"), None)));
     app.event(&AppEvent::BackgroundChartReady);
     assert!(app.chart_cache.satisfies(&a), "a finished read is kept");
 
     // A count is of the whole view: another order or sample size of the same
     // category waits for the pass rather than starting it over.
-    app.chart_modal.chart_kind = ChartKind::Bar;
-    app.chart_modal.bar_category = Some("carrier".to_string());
-    app.chart_modal.bar_value = Some(chart_data::BarValue::Count);
+    app.chart_modal.spec.mark = Mark::Bar;
+    app.chart_modal.spec.encoding.x.field = Some("carrier".to_string());
+    app.chart_modal.spec.encoding.y.aggregate = Aggregate::Count;
     let count = ChartRequest::from_modal(&app.chart_modal).unwrap();
     app.chart_inflight = Some(inflight(&count));
     app.chart_modal.bar_order = chart_data::BarOrder::Label;
     app.chart_modal.row_limit = Some(100);
     app.ensure_chart_data();
     assert!(!cancelled(&app), "the same count");
-    app.chart_modal.bar_category = Some("origin".to_string());
+    app.chart_modal.spec.encoding.x.field = Some("origin".to_string());
     app.ensure_chart_data();
     assert!(cancelled(&app), "another category");
 }
@@ -340,23 +340,23 @@ fn alternating_selections_keep_their_entries() {
 }
 
 fn xy_request(x: &str) -> ChartRequest {
-    ChartRequest::XY {
-        x_column: x.to_string(),
-        y_columns: vec!["y".to_string()],
-        row_limit: None,
-        envelope: true,
-    }
+    let mut modal = ChartModal::new();
+    modal.spec.encoding.x.field = Some(x.to_string());
+    modal.spec.encoding.y.field = vec!["y".to_string()];
+    modal.row_limit = None;
+    ChartRequest::from_modal(&modal).unwrap()
 }
 
 fn prepared_xy(x: &str) -> ChartPrepared {
     ChartPrepared::XY(ChartCacheXY {
         x_column: x.to_string(),
-        y_columns: vec!["y".to_string()],
+        names: vec!["y".to_string()],
         series: vec![vec![(0.0, 1.0)]],
         breaks: vec![Vec::new()],
         series_log: None,
         x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
         rows: chart_data::RowsRead::default(),
+        aggregate: None,
     })
 }
 
@@ -464,8 +464,9 @@ fn select_xy(app: &mut App) {
         KeyModifiers::NONE,
     )));
     assert_eq!(app.input_mode, InputMode::Chart);
-    app.chart_modal.x_column = Some("x".to_string());
-    app.chart_modal.y_columns = vec!["y".to_string()];
+    app.chart_modal.set_mark(Mark::Line);
+    app.chart_modal.spec.encoding.x.field = Some("x".to_string());
+    app.chart_modal.spec.encoding.y.field = vec!["y".to_string()];
     app.event(&AppEvent::Resize(80, 24));
 }
 
@@ -550,8 +551,8 @@ fn a_sort_or_filter_keeps_the_chart_columns() {
     pump(&mut app, &rx, &tx, |a| !a.is_busy());
     key(&mut app, KeyCode::Char('c'));
     assert_eq!(app.input_mode, InputMode::Chart);
-    assert_eq!(app.chart_modal.x_column.as_deref(), Some("x"));
-    assert_eq!(app.chart_modal.y_columns, ["y"]);
+    assert_eq!(app.chart_modal.x().map(String::as_str), Some("x"));
+    assert_eq!(app.chart_modal.y(), ["y"]);
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
     let request = ChartRequest::from_modal(&app.chart_modal).unwrap();
     let Some(ChartPrepared::XY(xy)) = app.chart_cache.prepared(&request) else {
@@ -580,8 +581,8 @@ fn a_sort_or_filter_keeps_the_chart_columns() {
     }]));
     pump(&mut app, &rx, &tx, |a| !a.is_busy());
     key(&mut app, KeyCode::Char('c'));
-    assert_eq!(app.chart_modal.x_column.as_deref(), Some("x"));
-    assert_eq!(app.chart_modal.y_columns, ["y"]);
+    assert_eq!(app.chart_modal.x().map(String::as_str), Some("x"));
+    assert_eq!(app.chart_modal.y(), ["y"]);
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
     let request = ChartRequest::from_modal(&app.chart_modal).unwrap();
     let Some(ChartPrepared::XY(xy)) = app.chart_cache.prepared(&request) else {
@@ -601,7 +602,7 @@ fn a_failed_preparation_shows_its_error() {
     let mut app = App::new(tx.clone(), crate::tests::test_runtime());
     open(&mut app, &rx, &tx, path);
     select_xy(&mut app);
-    app.chart_modal.y_columns = vec!["gone".to_string()];
+    app.chart_modal.spec.encoding.y.field = vec!["gone".to_string()];
     app.event(&AppEvent::Resize(100, 24));
     let request = ChartRequest::from_modal(&app.chart_modal).unwrap();
     pump(&mut app, &rx, &tx, |a| {
@@ -647,26 +648,23 @@ fn a_bar_chart_draws_a_grouped_string_column() {
                 .is_some_and(|s| s.schema().get("delay").is_some())
     });
 
+    // `c` on carrier, text: a bar of its counts. Y takes delay, as it is.
     key(&mut app, KeyCode::Char('c'));
-    key(&mut app, KeyCode::Char('6'));
-    assert_eq!(app.chart_modal.chart_kind, ChartKind::Bar);
+    assert_eq!(app.chart_modal.mark(), Mark::Bar);
+    assert_eq!(app.chart_modal.x().map(String::as_str), Some("carrier"));
+    app.chart_modal.focus = ChartFocus::Y;
     key(&mut app, KeyCode::Enter);
     assert_eq!(
-        app.chart_modal.picker_items(),
-        ["carrier"],
-        "text is a category"
+        app.chart_modal.picker.as_ref().unwrap().items(),
+        ["delay"],
+        "a number to measure"
     );
     key(&mut app, KeyCode::Enter);
     key(&mut app, KeyCode::Tab);
-    key(&mut app, KeyCode::Enter);
-    assert_eq!(app.chart_modal.picker_items(), ["Count", "delay"]);
-    key(&mut app, KeyCode::Down);
-    key(&mut app, KeyCode::Enter);
-    assert_eq!(app.chart_modal.bar_category.as_deref(), Some("carrier"));
-    assert_eq!(
-        app.chart_modal.bar_value,
-        Some(chart_data::BarValue::Column("delay".to_string()))
-    );
+    assert_eq!(app.chart_modal.focus, ChartFocus::Aggregate);
+    key(&mut app, KeyCode::Left);
+    assert_eq!(app.chart_modal.aggregate(), Aggregate::None);
+    assert_eq!(app.chart_modal.y(), ["delay"]);
     app.event(&AppEvent::Resize(100, 24));
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
 
@@ -712,7 +710,7 @@ fn a_bar_chart_draws_a_grouped_string_column() {
         "the largest bar is long: {f9:?}"
     );
 
-    key(&mut app, KeyCode::Tab);
+    app.chart_modal.focus = ChartFocus::Order;
     key(&mut app, KeyCode::Right);
     assert_eq!(app.chart_modal.bar_order, chart_data::BarOrder::Label);
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
@@ -721,8 +719,8 @@ fn a_bar_chart_draws_a_grouped_string_column() {
         ["AA 0.50", "AS -9.50", "F9 22.00", "UA 3.50"]
     );
 
-    // At 80 columns the footer keeps the chart switch and what the focused row
-    // takes, beside help.
+    // At 80 columns the footer keeps what the focused row takes and export,
+    // beside help.
     let bar = |app: &mut App| -> String {
         let area = ratatui::layout::Rect::new(0, 0, 80, 24);
         let mut buf = ratatui::buffer::Buffer::empty(area);
@@ -730,12 +728,12 @@ fn a_bar_chart_draws_a_grouped_string_column() {
         (0..80).map(|x| buf[(x, 23)].symbol()).collect()
     };
     let order = bar(&mut app);
-    for chip in ["1-6", "Chart", "Order", "? keys"] {
+    for chip in ["Order", "Export", "? keys"] {
         assert!(order.contains(chip), "{chip} in {order:?}");
     }
     key(&mut app, KeyCode::Up);
     let value = bar(&mut app);
-    for chip in ["1-6", "Chart", "Space", "Edit", "? keys"] {
+    for chip in ["Space", "Pick", "Export", "? keys"] {
         assert!(value.contains(chip), "{chip} in {value:?}");
     }
 }
@@ -760,21 +758,11 @@ fn a_bar_chart_counts_rows_per_category() {
     let mut app = App::new(tx.clone(), crate::tests::test_runtime());
     open(&mut app, &rx, &tx, path);
 
+    // `c` on species, text: a bar of its counts, exact whatever the sample size.
     key(&mut app, KeyCode::Char('c'));
-    key(&mut app, KeyCode::Char('6'));
+    assert_eq!(app.chart_modal.mark(), Mark::Bar);
+    assert_eq!(app.chart_modal.aggregate(), Aggregate::Count);
     app.chart_modal.row_limit = Some(100);
-    key(&mut app, KeyCode::Enter);
-    assert_eq!(app.chart_modal.picker_items(), ["species", "island"]);
-    key(&mut app, KeyCode::Enter);
-    key(&mut app, KeyCode::Tab);
-    key(&mut app, KeyCode::Enter);
-    assert_eq!(
-        app.chart_modal.picker_items(),
-        ["Count"],
-        "no numeric column, and still a value to chart"
-    );
-    key(&mut app, KeyCode::Enter);
-    assert_eq!(app.chart_modal.bar_value, Some(chart_data::BarValue::Count));
     app.event(&AppEvent::Resize(100, 24));
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
 
@@ -801,7 +789,7 @@ fn a_bar_chart_counts_rows_per_category() {
         "{drawn:#?}"
     );
     assert!(
-        drawn.iter().any(|r| r.contains("counts of 345 rows")),
+        drawn.iter().any(|r| r.contains("all 345 rows")),
         "{drawn:#?}"
     );
     assert!(!drawn.iter().any(|r| r.contains("sample of")), "{drawn:#?}");

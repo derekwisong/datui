@@ -28,6 +28,8 @@ pub struct ValueCountsModal {
     pub offset: usize,
     /// Lines the last frame drew: what PgUp and PgDn move.
     pub page: usize,
+    /// Where the last frame's listing (or histogram) began, under the summary.
+    pub body_top: u16,
     pub computing: Option<Computing>,
     /// Why the column on screen could not be counted.
     pub failed: Option<(String, String)>,
@@ -37,6 +39,16 @@ pub struct ValueCountsModal {
     held: HashMap<String, Arc<ValueCounts>>,
     /// Set by a drill from this screen: Esc out of that drill comes back here.
     pub drill_return: bool,
+    /// The histogram or the listing, as chosen with `c`; `None` until then, which
+    /// shows a number column's histogram and anything else's listing.
+    pub view: Option<CountsView>,
+}
+
+/// What the screen shows of the counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CountsView {
+    Listing,
+    Histogram,
 }
 
 impl ValueCountsModal {
@@ -52,6 +64,7 @@ impl ValueCountsModal {
         self.computing = None;
         self.failed = None;
         self.drill_return = false;
+        self.view = None;
         self.reset_cursor();
     }
 
@@ -88,8 +101,27 @@ impl ValueCountsModal {
         }
         self.at = to;
         self.failed = None;
+        self.view = None;
         self.reset_cursor();
         true
+    }
+
+    /// Whether the counts on screen show as a histogram: a number column's do, until
+    /// `c` turns to the listing.
+    pub fn shows_histogram(&self) -> bool {
+        let has = self.current().is_some_and(|c| c.histogram.is_some());
+        has && self.view != Some(CountsView::Listing)
+    }
+
+    /// `c`: between the histogram and the listing, where the column has both.
+    pub fn toggle_view(&mut self) {
+        if self.current().is_some_and(|c| c.histogram.is_some()) {
+            self.view = Some(if self.shows_histogram() {
+                CountsView::Listing
+            } else {
+                CountsView::Histogram
+            });
+        }
     }
 
     pub fn toggle_order(&mut self) {
@@ -178,6 +210,45 @@ mod tests {
         assert!(modal.current().is_some(), "the same view keeps its counts");
         modal.open(columns, 0, 2);
         assert!(modal.current().is_none(), "another view's counts go");
+    }
+
+    /// A number column opens as its histogram; `c` turns to the listing and back,
+    /// and the next column starts from its own type again.
+    #[test]
+    fn numbers_open_as_a_histogram_and_c_toggles() {
+        let mut modal = ValueCountsModal::default();
+        modal.open(vec!["n".to_string(), "s".to_string()], 0, 1);
+        modal.hold(counts("n", &[1, 1, 2, 3, 3, 3]));
+        assert!(modal.shows_histogram());
+        let histogram = modal.current().unwrap().histogram.clone().unwrap();
+        assert_eq!(
+            histogram.bins.iter().map(|b| b.count).collect::<Vec<_>>(),
+            [2.0, 1.0, 3.0],
+            "a bin per value of a short integer range"
+        );
+        modal.toggle_view();
+        assert!(!modal.shows_histogram());
+        modal.toggle_view();
+        assert!(modal.shows_histogram());
+        modal.toggle_view();
+        assert!(modal.step(1));
+        let text = crate::value_counts::Plan {
+            lf: DataFrame::new_infer_height(vec![Column::new("s".into(), ["a", "b"])])
+                .unwrap()
+                .lazy(),
+            column: "s".to_string(),
+            read: crate::value_counts::Read::Exact,
+            known_total: None,
+            streaming: false,
+        }
+        .run(&ReadWatch::default())
+        .unwrap();
+        modal.hold(text);
+        assert!(!modal.shows_histogram(), "text has no histogram");
+        modal.toggle_view();
+        assert!(!modal.shows_histogram());
+        assert!(modal.step(-1));
+        assert!(modal.shows_histogram(), "back to the number's default");
     }
 
     #[test]

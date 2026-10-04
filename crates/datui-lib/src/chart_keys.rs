@@ -1,9 +1,9 @@
-//! The chart view's keys. The options sidebar and the export dialog take the shared
-//! form keys (`crate::form`); the chart's own keys come after them.
+//! The chart view's keys. The panel and the export dialog take the shared form keys
+//! (`crate::form`); the chart's own keys come after them.
 
-use crate::chart_export::ChartExportRequest;
-use crate::chart_export_modal::ChartExportFocus;
-use crate::chart_modal::{ChartFocus, ChartKind};
+use crate::chart_export::{ChartExportFormat, ChartExportRequest};
+use crate::chart_export_modal::{ChartExportFocus, ExportDefaults};
+use crate::chart_modal::{ChartFocus, Mark};
 use crate::form::{FormKey, PickerKey};
 use crate::logging::LogFailure;
 use crate::output_file::Overwrite;
@@ -22,10 +22,10 @@ impl App {
             return self.chart_export_key(event);
         }
 
-        let multi = self.chart_modal.is_multi_row(self.chart_modal.focus);
+        let multi = self.chart_modal.picker_multi();
         if let Some(picker) = self.chart_modal.picker.as_mut() {
             match crate::form::picker_key(picker, multi, event) {
-                PickerKey::Close => self.chart_modal.picker = None,
+                PickerKey::Close => self.chart_modal.close_picker(),
                 PickerKey::Choose => self.chart_modal.picker_choose(),
                 PickerKey::Toggle => self.chart_modal.picker_toggle(),
                 PickerKey::ChooseAndMove(forward) => {
@@ -41,9 +41,9 @@ impl App {
         }
 
         // The plot has the keys: ←→ step the crosshair, Home and End go to the ends,
-        // and x, Tab, Shift+Tab or Esc hand the keys back to the option rows. The keys
-        // that act from anywhere still do; the rest would edit a row with no rail on
-        // it, so they do nothing.
+        // and x, Tab, Shift+Tab or Esc hand the keys back to the panel. The keys that
+        // act from anywhere still do; the rest would edit a row with no rail on it, so
+        // they do nothing.
         if self.chart_modal.plot_focus {
             let to = match event.code {
                 KeyCode::Left | KeyCode::Char('h') => Some(Move::Left),
@@ -61,13 +61,13 @@ impl App {
                     self.chart_modal.plot_focus = false;
                     return None;
                 }
-                KeyCode::Char('1'..='6' | '[' | ']' | 'g' | 'e' | 't' | '?') => {}
+                KeyCode::Char('1'..='7' | '[' | ']' | 'g' | 'e' | 't' | '?') => {}
                 _ => return None,
             }
         }
 
-        // The options are a form, but one that applies as it changes: Enter acts on
-        // the focused row as Space does, since there is nothing left to submit.
+        // The panel is a form, but one that applies as it changes: Enter acts on the
+        // focused row as Space does, since there is nothing left to submit.
         match crate::form::key(&mut self.chart_modal, event) {
             FormKey::Cancel => {
                 self.chart_modal.close();
@@ -79,20 +79,8 @@ impl App {
                 self.chart_act(self.chart_modal.focus);
                 return None;
             }
-            FormKey::Step(ChartFocus::Style, delta) => {
-                if delta < 0 {
-                    self.chart_modal.prev_chart_type();
-                } else {
-                    self.chart_modal.next_chart_type();
-                }
-                return None;
-            }
             FormKey::Step(row, delta) => {
-                if self.chart_modal.is_picker_row(row) {
-                    self.chart_modal.step_picker_row(delta);
-                } else {
-                    self.chart_modal.adjust_number_row(delta.into());
-                }
+                self.chart_modal.step(row, delta);
                 return None;
             }
             FormKey::Moved | FormKey::Text(_) => return None,
@@ -105,24 +93,21 @@ impl App {
                 self.chart_modal.plot_focus = true;
                 self.move_crosshair_to(None);
             }
-            // The chart kind switches from anywhere: 1-6 name a tab in
-            // order, [ and ] cycle. Safe as plain keys — with the Picker
-            // closed, nothing on this screen types.
-            KeyCode::Char(c @ '1'..='6') => {
+            // The type switches from anywhere: 1-7 name one in order, [ and ] step.
+            // Safe as plain keys: with the Picker closed, nothing on this screen types.
+            KeyCode::Char(c @ '1'..='7') => {
                 let idx = c as usize - '1' as usize;
-                self.chart_modal.set_chart_kind(ChartKind::ALL[idx]);
+                self.chart_modal.set_mark(Mark::ALL[idx]);
             }
-            KeyCode::Char('[') => self.chart_modal.prev_chart_kind(),
-            KeyCode::Char(']') => self.chart_modal.next_chart_kind(),
+            KeyCode::Char('[') => self.chart_modal.step_mark(-1),
+            KeyCode::Char(']') => self.chart_modal.step_mark(1),
             // The grid at the major ticks, on the kinds that have axes.
             KeyCode::Char('g') if self.chart_modal.has_grid() => {
                 self.chart_modal.toggle_grid();
             }
             KeyCode::Char('e') => {
-                // Open chart export modal when there is something visible to export
                 if self.data_table_state.is_some() && self.chart_modal.can_export() {
-                    self.chart_export_modal
-                        .open(&self.theme, self.history_limit);
+                    self.open_chart_export();
                 }
             }
             // The chart keeps the rows it was drawn from; `t` draws the new ones
@@ -146,20 +131,38 @@ impl App {
         None
     }
 
-    /// Space (or Enter) on an option row: a column row opens its Picker, a toggle
-    /// flips, a stepped row takes its next value.
+    /// Space (or Enter) on a panel row: a shelf opens its Picker, a toggle flips, a
+    /// stepped row takes its next value.
     fn chart_act(&mut self, focus: ChartFocus) {
-        match focus {
-            ChartFocus::YStartsAtZero => self.chart_modal.toggle_y_starts_at_zero(),
-            ChartFocus::LogScale => self.chart_modal.toggle_log_scale(),
-            ChartFocus::ShowLegend => self.chart_modal.toggle_show_legend(),
-            ChartFocus::Grid => self.chart_modal.toggle_grid(),
-            ChartFocus::Style => self.chart_modal.next_chart_type(),
-            ChartFocus::Range => self.chart_modal.cycle_value_range(1),
-            ChartFocus::Order => self.chart_modal.cycle_bar_order(1),
-            focus if self.chart_modal.is_picker_row(focus) => self.chart_modal.open_picker(),
-            _ => {}
+        if self.chart_modal.picker_for(focus).is_some() {
+            self.chart_modal.open_picker();
+        } else {
+            self.chart_modal.step(focus, 1);
         }
+    }
+
+    /// Open the export dialog, its words started from the chart: what it is, and
+    /// where its data comes from.
+    fn open_chart_export(&mut self) {
+        let (main, sub) = self.chart_modal.title();
+        let description = if sub.is_empty() {
+            main
+        } else {
+            format!("{main}, {sub}")
+        };
+        self.chart_export_modal.open(
+            &self.theme,
+            self.history_limit,
+            ExportDefaults {
+                description,
+                source: self
+                    .catalog_entry
+                    .as_ref()
+                    .map(|(_, entry)| entry.credit())
+                    .unwrap_or_default(),
+                legend: self.chart_modal.show_legend,
+            },
+        );
     }
 
     /// Keys in the chart's export dialog.
@@ -167,9 +170,7 @@ impl App {
         match crate::form::key(&mut self.chart_export_modal, event) {
             FormKey::Cancel => self.chart_export_modal.close(),
             FormKey::Submit => return self.submit_chart_export(),
-            FormKey::Step(ChartExportFocus::FormatSelector, delta) => {
-                self.chart_export_modal.step_format(delta);
-            }
+            FormKey::Step(field, delta) => self.chart_export_modal.step(field, delta),
             FormKey::Text(field) => {
                 // The size takes digits and the keys that move through them.
                 let size = matches!(
@@ -189,6 +190,9 @@ impl App {
                     };
                 if allowed && let Some(input) = self.chart_export_modal.focused_input_mut() {
                     let _ = input.handle_key(event, Some(&self.cache));
+                    if size {
+                        self.chart_export_modal.size_typed();
+                    }
                 }
             }
             _ => {}
@@ -199,26 +203,42 @@ impl App {
     /// Enter, from any field of the chart's export dialog: build the export from the
     /// state every row already echoes. A blank path exports nothing.
     fn submit_chart_export(&mut self) -> Option<AppEvent> {
-        let path_str = self.chart_export_modal.path_input.value().trim();
+        let modal = &self.chart_export_modal;
+        let path_str = modal.path_input.value().trim();
         if path_str.is_empty() {
             crate::form::Form::focus(&mut self.chart_export_modal, ChartExportFocus::PathInput);
             return None;
         }
-        let title = self
-            .chart_export_modal
-            .title_input
-            .value()
-            .trim()
-            .to_string();
-        let (width, height) = self.chart_export_modal.export_dimensions();
-        // `~` and `$VAR` expand as everywhere else a path is typed; unexpanded, the
-        // PNG/EPS writer fails with NotFound on the literal `~` directory.
+        // `~` and `$VAR` expand as everywhere else a path is typed.
         let mut path = home::expand_user_path(path_str);
-        let format = self.chart_export_modal.selected_format;
-        // Only add default extension when user did not provide one
-        if path.extension().is_none() {
-            path.set_extension(format.extension());
-        }
+        // A path that names a format takes it; one that names none takes the
+        // format's extension.
+        let format = match ChartExportFormat::from_extension(&path) {
+            Some(format) => format,
+            None => {
+                let format = modal.format;
+                if path.extension().is_none() {
+                    path.set_extension(format.extension());
+                }
+                format
+            }
+        };
+        let (width, height) = modal.export_dimensions();
+        let options = crate::chart_export::ExportOptions {
+            width,
+            height,
+            dpi: modal.size.dpi(),
+            palette: crate::chart_export::Palette::for_style(
+                modal.style,
+                &self.app_config.theme.colors,
+            ),
+            legend: modal.legend,
+            title: modal.title_input.value().trim().to_string(),
+            description: modal.description_input.value().trim().to_string(),
+            notes: modal.notes_input.value().trim().to_string(),
+            source: modal.source_input.value().trim().to_string(),
+            byline: modal.byline_input.value().trim().to_string(),
+        };
         self.chart_export_modal
             .path_input
             .save_to_history(&self.cache)
@@ -227,9 +247,7 @@ impl App {
         let request = ChartExportRequest {
             path,
             format,
-            title,
-            width,
-            height,
+            options,
             overwrite: Overwrite::Forbid,
         };
         if request.path.exists() {
@@ -243,11 +261,11 @@ impl App {
             );
             return None;
         }
-        self.chart_export_modal.close();
+        self.chart_export_modal.suspend();
         Some(AppEvent::ChartExport(request))
     }
 
-    /// The XY series on screen, before any log.
+    /// The line or scatter series on screen, before any log.
     fn chart_xy_series(&self) -> Option<&Vec<Vec<(f64, f64)>>> {
         let request = ChartRequest::from_modal(&self.chart_modal)?;
         match self.chart_cache.prepared(&request)? {

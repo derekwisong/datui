@@ -279,7 +279,7 @@ impl App {
                 } else if self.is_busy() {
                     self.status_message.clone()
                 } else if self.chart_preparing() {
-                    Some("Preparing chart...".to_string())
+                    Some(self.chart_status())
                 } else if content == MainViewContent::Datatable {
                     // Whatever is on the line, busy or not: an End waiting on a remote
                     // count parks without setting `busy`, and keys go on working. Only

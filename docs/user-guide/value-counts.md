@@ -28,13 +28,26 @@ Four carriers fly almost two thirds of the flights. <kbd>Enter</kbd> on `B6`
 shows its 54,635 flights as a drill-down, `Group: carrier=B6`; <kbd>Esc</kbd>
 comes back to the counts.
 
-<kbd>→</kbd> moves to `flight`, a number, and the summary answers whether
-the column can be added up:
+<kbd>→</kbd> moves to `flight`, a number: it opens as a histogram of its
+counts, under a summary that answers whether the column can be added up:
 
 ```text
  Rows 336776   Distinct 3844   Nulls 0   Sum 664096549   Mean 1971.9236   Min 1
  Max 8500
 ```
+
+<kbd>c</kbd> turns a number's histogram into the listing of its values, and
+back.
+
+## Histogram
+
+A number column's counts show as a histogram: 40 bins from the least value to
+the greatest, or a bin per value when an integer column spans fewer than 40.
+When the tails reach ten times past the 1st to 99th percentile, the bins span
+that range instead and the values outside it are counted under the plot:
+`1,207 values outside p1-p99`. The bins are made from the counts, so they are
+exact wherever the counts are. <kbd>c</kbd> shows the listing; another column
+opens as its own type says.
 
 ## What the screen shows
 
@@ -59,6 +72,7 @@ here too.
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Previous or next column; a column counted before shows at once |
 | <kbd>Enter</kbd> | The rows holding the value, as a drill-down. <kbd>Esc</kbd> there comes back |
 | <kbd>s</kbd> | Sort by count or by value; the header's mark says which |
+| <kbd>c</kbd> | A number's histogram, or the listing of its values |
 | <kbd>a</kbd> | Count every row, when the counts are of a sample |
 | <kbd>y</kbd> | [Copy](copying.md) the counts as TSV: every value with its count, percent and cumulative percent |
 | <kbd>e</kbd> | [Export](exporting-data.md) the same table to a file |

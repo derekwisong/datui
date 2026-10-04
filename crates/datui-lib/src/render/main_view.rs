@@ -151,7 +151,7 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
             keys
         }
         MainViewContent::Analysis => followed(app, screen_hints(analysis_control_keys(app))),
-        MainViewContent::Chart => followed(app, screen_hints(chart_control_keys(app))),
+        MainViewContent::Chart => followed(app, chart_hints(app)),
         MainViewContent::ValueCounts => followed(app, screen_hints(value_counts_control_keys(app))),
         MainViewContent::Hex => screen_hints(hex_control_keys(app)),
         MainViewContent::Loading => vec![Hint::new("^O", "Home")],
@@ -792,10 +792,12 @@ fn value_counts_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
     let counts = modal.current();
     let mut keys = Vec::new();
     if let Some(counts) = counts {
-        if !matches!(
-            modal.selected_kind(),
-            Some(crate::value_counts::LineKind::Other(_)) | None
-        ) {
+        if !modal.shows_histogram()
+            && !matches!(
+                modal.selected_kind(),
+                Some(crate::value_counts::LineKind::Other(_)) | None
+            )
+        {
             keys.push(("Enter", "Rows"));
         }
         // A sample's way to the exact counts comes first: it says the counts are
@@ -803,7 +805,19 @@ fn value_counts_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         if counts.is_sample() && !modal.counting() {
             keys.push(("a", "All rows"));
         }
-        keys.push(("s", "Sort"));
+        if counts.histogram.is_some() {
+            keys.push((
+                "c",
+                if modal.shows_histogram() {
+                    "Counts"
+                } else {
+                    "Histogram"
+                },
+            ));
+        }
+        if !modal.shows_histogram() {
+            keys.push(("s", "Sort"));
+        }
         keys.push((g.updown_lr, "Column"));
         keys.push(("y", "Copy"));
         keys.push(("e", "Export"));
@@ -823,73 +837,71 @@ fn value_counts_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
     keys
 }
 
-fn chart_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
+/// The chart screen's keys in the footer: what the focused row takes, then the
+/// crosshair and export; a picker's or the plot's keys while they have them.
+fn chart_hints(app: &crate::App) -> Vec<Hint> {
+    use datui_cli::keys::Context;
     let g = crate::glyphs::get();
     if app.chart_export_modal.active {
         return vec![
-            ("Enter", "Export"),
-            ("Tab", "Next"),
-            ("Esc", "Cancel"),
-            ("?", "Help"),
+            Hint::new("Enter", "Export"),
+            Hint::new("Tab", "Next"),
+            Hint::new("Esc", "Cancel"),
         ];
     }
     let modal = &app.chart_modal;
     if modal.picker.is_some() {
-        let mut keys = vec![("type", "Narrow"), (g.updown, "Move")];
-        if modal.is_multi_row(modal.focus) {
-            keys.push(("Space", "Toggle"));
-            keys.push(("Enter", "Done"));
+        return if modal.picker_multi() {
+            vec![
+                Hint::new("Space", "Toggle"),
+                Hint::new("Enter", "Done"),
+                Hint::new("Esc", "Back"),
+            ]
         } else {
-            keys.push(("Enter", "Choose"));
-        }
-        keys.push(("Esc", "Back"));
-        return keys;
+            vec![
+                Hint::new(g.updown, "Move"),
+                Hint::new("Enter", "Choose"),
+                Hint::new("Esc", "Back"),
+            ]
+        };
     }
-    // "Chart", not "Type": this bar also spells the key name "type" (the
-    // picker's narrow chip), and the label names what 1-6 switch — the same
-    // word as the `c Chart` chip that opened this screen.
-    //
-    // At 80 columns the row count leaves room for two chips beside Help and Esc:
-    // the chart switch and what the focused row takes. Export is `e`, as at the
-    // table; Tab is one of several ways down a form whose rail shows the rows.
-    use crate::chart_modal::ChartFocus;
-    let mut keys = vec![("1-6", "Chart")];
     // The plot has the keys: the arrows move the crosshair, Tab hands them back.
     if modal.plot_focus {
-        keys.extend([
-            (g.updown_lr, "Cursor"),
-            ("e", "Export"),
-            ("g", "Grid"),
-            ("Tab", "Options"),
-            ("?", "Help"),
-            ("Esc", "Back"),
-        ]);
-        return keys;
+        return vec![
+            Hint::new(g.updown_lr, "Cursor"),
+            Hint::new("Tab", "Panel"),
+            Hint::new("Esc", "Back"),
+        ];
     }
-    if modal.is_picker_row(modal.focus) {
-        keys.push(("Space", "Edit"));
-    } else if modal.is_toggle_row(modal.focus) {
-        keys.push(("Space", "Toggle"));
-    } else if modal.is_number_row(modal.focus) {
-        keys.push((g.updown_lr, "Adjust"));
+    use crate::chart_modal::ChartFocus;
+    let focus = modal.focus;
+    let row = if modal.picker_for(focus).is_some() {
+        Hint::new("Space", "Pick")
+    } else if modal.is_toggle_row(focus) {
+        Hint::new("Space", "Toggle")
     } else {
-        match modal.focus {
-            ChartFocus::Style => keys.push((g.updown_lr, "Style")),
-            ChartFocus::Range => keys.push((g.updown_lr, "Range")),
-            ChartFocus::Order => keys.push((g.updown_lr, "Order")),
-            _ => {}
-        }
-    }
-    keys.push(("e", "Export"));
-    if modal.has_grid() {
-        keys.push(("g", "Grid"));
-    }
+        Hint::new(
+            g.updown_lr,
+            match focus {
+                ChartFocus::Type => "Type",
+                ChartFocus::TimeUnit => "Bucket",
+                ChartFocus::Aggregate => "Aggregate",
+                ChartFocus::Bins | ChartFocus::Bandwidth | ChartFocus::LimitRows => "Adjust",
+                ChartFocus::Order => "Order",
+                ChartFocus::Range => "Range",
+                ChartFocus::Cumulative => "Cumulative",
+                _ => "Change",
+            },
+        )
+    };
+    let mut keys = vec![row];
     if modal.has_crosshair() {
-        keys.push(("x", "Cursor"));
+        keys.push(registry_hint(Context::Chart, "x"));
     }
-    keys.push(("Tab", "Options"));
-    keys.push(("?", "Help"));
-    keys.push(("Esc", "Back"));
+    keys.push(registry_hint(Context::Chart, "e"));
+    if keys.len() < 3 {
+        keys.push(registry_hint(Context::Chart, "Esc"));
+    }
     keys
 }
 

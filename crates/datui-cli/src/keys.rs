@@ -729,6 +729,8 @@ pub const SCREENS: &[Screen] = &[
                     k("Enter", "Drill", "The rows holding the value")
                         .more("The rows holding the value, as a drill-down; Esc there comes back here"),
                     k("s", "Sort", "Sort by count or by value"),
+                    k("c", "Histogram", "A number's histogram, or its counts")
+                        .more("Between a number column's histogram, binned from the counts, and the listing of its values. A number opens as its histogram"),
                     k("a", "All rows", "Count every row, when the counts are of a sample"),
                     k("t", "New rows", "Count again with the rows that arrived")
                         .more("While following a file, count again with the rows that arrived since; the bar says how many"),
@@ -850,34 +852,35 @@ pub const SCREENS: &[Screen] = &[
     Screen {
         context: Context::Chart,
         title: "Chart",
-        reached: "<kbd>c</kbd> at the table.",
+        reached: "<kbd>c</kbd> at the table: a chart chosen from the cursor column's type.",
         groups: &[
             Group {
-                name: "Options",
+                name: "Shelves",
                 keys: &[
-                    k("1-6", "Type", "Chart type: XY, Histogram, Box, KDE, Heatmap, Bar")
-                        .more("Switch chart type directly: XY, Histogram, Box Plot, KDE, Heatmap, Bar ([ / ] cycle)")
+                    k("1-7", "Type", "Chart type, in order: Line to Heatmap")
+                        .more("Switch the chart type directly: Line, Scatter, Bar, Histogram, Box, KDE, Heatmap ([ / ] step). The shelves keep what the new type takes")
                         .run("1"),
                     k("[ / ]", "Type", "Previous or next chart type"),
-                    k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous option row")
-                        .more("Next or previous option row, wrapping (j/k too)"),
-                    k("Space / Enter", "Act", "Open a picker, toggle, or step the row")
-                        .more("Open a column row's picker, toggle an option, or take the next plot style, range, order or number. The options apply as they change, so Enter acts as Space does"),
-                    k("← / → (h/l)", "Change", "Step a choice, a number or a column")
-                        .more("Step the plot style, range or order; adjust bins, bandwidth, or Sample size (+ / - too); on a single column row, the previous or next column; flip a toggle"),
-                    k("PgUp / PgDn", "Step", "Adjust Sample size in bigger steps"),
+                    k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous row")
+                        .more("Next or previous row of the panel, wrapping (j/k too). A shelf the type does not use is dimmed and skipped"),
+                    k("Space / Enter", "Act", "Open a shelf's picker, toggle, or step the row")
+                        .more("On X, Y or Color: open its picker. On the line under Color: pick the values that get a series, by rows. On an option: toggle it or take its next value. The panel applies as it changes, so Enter acts as Space does"),
+                    k("← / → (h/l)", "Change", "Step the type, bucket, aggregate or option")
+                        .more("Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, sum, mean, median, min, max), cumulative, bins, range, order or sample size; on a shelf that takes one column, the previous or next column; flip a toggle"),
+                    k("+ / -", "Adjust", "Bins, bandwidth or sample size"),
+                    k("PgUp / PgDn", "Step", "Adjust the sample size in bigger steps"),
                     k("g", "Grid", "Grid on or off")
-                        .more("Grid on or off at the labeled ticks: XY, Histogram, Box Plot and KDE. [analysis] chart_grid sets where it starts"),
+                        .more("Grid on or off at the labeled ticks: Line, Scatter, Histogram, Box and KDE. [analysis] chart_grid sets where it starts"),
                     k("Esc", "Back", "Back to the table"),
                 ],
             },
             Group {
                 name: "Plot",
                 keys: &[
-                    k("x", "Crosshair", "XY: a crosshair reads out the values")
-                        .more("XY: the plot takes the keys, and a crosshair reads out x and every series' value under the plot. ← / → (h/l) step to the next point or column, Home/End go to the ends; x, Tab or Esc hand the keys back to the option rows. A click on the plot puts the crosshair there"),
-                    k("e", "Export", "Export the chart to PNG or EPS")
-                        .more("Export the chart to PNG or EPS. Needs the chart's required columns picked first"),
+                    k("x", "Crosshair", "Line, Scatter: a crosshair reads out the values")
+                        .more("Line and Scatter: the plot takes the keys, and a crosshair reads out x and every series' value under the plot. ← / → (h/l) step to the next point or column, Home/End go to the ends; x, Tab or Esc hand the keys back to the panel. A click on the plot puts the crosshair there"),
+                    k("e", "Export", "Export the chart to PNG, SVG or PDF")
+                        .more("Export the chart to PNG, SVG or PDF, with a title, notes and source. Needs the chart's shelves filled first"),
                     k("t", "New rows", "Draw again with the rows that arrived")
                         .more("While following a file, draw again with the rows that arrived since; the bar says how many"),
                 ],
@@ -886,8 +889,8 @@ pub const SCREENS: &[Screen] = &[
                 name: "Picker",
                 keys: &[
                     k("↑ / ↓", "Move", "Move; typing narrows"),
-                    k("Enter / Space", "Choose", "Choose (Y series: Space toggles one)")
-                        .more("Choose; on the Y series row Space toggles a series in or out"),
+                    k("Enter / Space", "Choose", "Choose (Y, Color values: Space toggles one)")
+                        .more("Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 7)"),
                     k("Tab / Shift+Tab", "Next", "Choose and move to the next or previous row"),
                     k("Esc", "Back", "Back out of the picker alone"),
                 ],
@@ -895,11 +898,13 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Export dialog",
                 keys: &[
-                    k("Tab / Shift+Tab (↑ / ↓)", "Next", "Format, Path, Title, Width, Height"),
-                    k("← / →", "Format", "Change the format, on its row"),
+                    k("Tab / Shift+Tab (↑ / ↓)", "Next", "Path, format, style, size, legend, words")
+                        .more("Next or previous field: Path, Format, Style, Size, Width, Height, Legend, Title, Description, Notes, Source, Byline"),
+                    k("← / →", "Change", "Step the format, style, size or legend")
+                        .more("Step the format (PNG, SVG, PDF), the style (Light, Dark, Transparent), the size (Slide 16:9, Document, Square, Single column, Double column, Custom) or the legend (line ends, a corner, off). Typing a width or height makes the size Custom"),
                     k("Ctrl+P / Ctrl+N", "History", "Earlier or later paths in the path field"),
                     k("Enter", "Export", "Export, from anywhere in the dialog")
-                        .more("Export, from anywhere in the dialog. An existing file asks Overwrite / No, starting on No; ←/→ (h/l) or Tab pick, Enter confirms, and declining returns to the filled dialog"),
+                        .more("Export, from anywhere in the dialog. A path ending .png, .svg or .pdf takes that format. An existing file asks Overwrite / No, starting on No; ←/→ (h/l) or Tab pick, Enter confirms, and declining returns to the filled dialog"),
                     k("Esc", "Back", "Back to the chart"),
                 ],
             },

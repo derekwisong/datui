@@ -1,1903 +1,1934 @@
-//! Chart export to PNG (plotters bitmap) and EPS (minimal PostScript, no deps).
+//! Chart export: the chart is drawn once as SVG, in the bundled font (IBM Plex Sans,
+//! under the SIL Open Font License, in `assets/fonts`), then written as SVG with
+//! its text as outlines, rasterized to PNG, or written as PDF from the same
+//! outlines (`chart_pdf`). The same figure comes out the same on every machine;
+//! text the bundled font lacks falls back to a system font.
+
+use std::sync::{Arc, OnceLock};
 
 use color_eyre::Result;
-use std::fs::File;
-use std::io::Write;
-use std::path::Path;
+use resvg::{tiny_skia, usvg};
 
 use crate::chart_data::{
-    AxisFormat, AxisNumbers, Bar, BarData, BoxPlotData, HeatmapData, XAxisTemporalKind,
-    x_axis_label_at,
+    AxisFormat, AxisNumbers, BarData, BoxPlotData, HeatmapData, HistogramData, KdeData,
+    XAxisTemporalKind, segments, x_axis_label_at,
 };
-use crate::chart_modal::ChartType;
-use crate::numfmt::NumberFormat;
+use crate::widgets::ticks;
 
-/// Escape a string for PostScript ( and ) and \.
-fn ps_escape(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('(', "\\(")
-        .replace(')', "\\)")
-}
+const FONT_REGULAR: &[u8] = include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf");
+const FONT_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/IBMPlexSans-SemiBold.ttf");
+const FONT_FAMILY: &str = "IBM Plex Sans";
 
-/// The chart's notes on its input (a sample, values a range left out), small and gray
-/// under the plot, right-aligned to its edge at `right`: an exported chart says what
-/// the chart view says.
-fn write_eps_notes(f: &mut File, notes: &[String], right: f64) -> Result<()> {
-    if notes.is_empty() {
-        return Ok(());
-    }
-    writeln!(f, "0.4 setgray")?;
-    writeln!(f, "/Helvetica findfont 7 scalefont setfont")?;
-    for (i, note) in notes.iter().rev().enumerate() {
-        writeln!(
-            f,
-            "({}) dup stringwidth pop {} exch sub {} moveto show",
-            ps_escape(note),
-            right,
-            2.0 + i as f64 * 8.0
-        )?;
-    }
-    writeln!(f, "0 setgray")?;
-    Ok(())
-}
-
-/// [`write_eps_notes`] for a PNG: in the bottom margin, right-aligned to the plot.
-fn draw_png_notes(
-    root: &plotters::drawing::DrawingArea<
-        plotters::prelude::BitMapBackend<'_>,
-        plotters::coord::Shift,
-    >,
-    notes: &[String],
-    margin: i32,
-) -> Result<()> {
-    use plotters::prelude::*;
-    use plotters::style::text_anchor::{HPos, Pos, VPos};
-    let (width, height) = root.dim_in_pixel();
-    let style = ("sans-serif", 13)
-        .into_font()
-        .color(&RGBColor(100, 100, 100))
-        .pos(Pos::new(HPos::Right, VPos::Bottom));
-    for (i, note) in notes.iter().rev().enumerate() {
-        root.draw(&Text::new(
-            note.as_str(),
-            (width as i32 - margin, height as i32 - 4 - i as i32 * 14),
-            style.clone(),
-        ))?;
-    }
-    Ok(())
-}
-
-/// Generate "nice" tick values in [min, max] with roughly max_ticks steps.
-fn nice_ticks(min: f64, max: f64, max_ticks: usize) -> Vec<f64> {
-    let range = if max > min { max - min } else { 1.0 };
-    if range <= 0.0 || max_ticks == 0 {
-        return vec![min];
-    }
-    let raw_step = range / (max_ticks as f64).max(1.0);
-    let mag = 10.0_f64.powf(raw_step.log10().floor());
-    let norm = if mag > 0.0 { raw_step / mag } else { raw_step };
-    let step = if norm <= 1.0 {
-        1.0 * mag
-    } else if norm <= 2.0 {
-        2.0 * mag
-    } else if norm <= 5.0 {
-        5.0 * mag
-    } else {
-        10.0 * mag
-    };
-    let step = step.max(f64::EPSILON);
-    let start = (min / step).floor() * step;
-    let mut ticks = Vec::new();
-    let mut v = start;
-    while v <= max + step * 0.001 {
-        if v >= min - step * 0.001 {
-            ticks.push(v);
-        }
-        v += step;
-        if ticks.len() > max_ticks + 2 {
-            break;
-        }
-    }
-    if ticks.is_empty() {
-        ticks.push(min);
-    }
-    ticks
-}
-
-/// Bounds and options for rendering the chart to a file.
-pub struct ChartExportBounds {
-    pub x_min: f64,
-    pub x_max: f64,
-    pub y_min: f64,
-    pub y_max: f64,
-    /// X-axis column name (for axis title).
-    pub x_label: String,
-    /// Y-axis column name(s), e.g. "col" or "a, b" (for axis title).
-    pub y_label: String,
-    /// How to format x-axis tick labels (date/datetime/time vs numeric).
-    pub x_axis_kind: XAxisTemporalKind,
-    /// If true, y values in data/bounds are ln(1+y); y-axis labels must be shown in linear space (exp_m1).
-    pub log_scale: bool,
-    /// Optional chart title shown on export. None or empty = no title.
-    pub chart_title: Option<String>,
-    /// What the chart says under the plot about its input (`chart_data::chart_notes`).
-    pub notes: Vec<String>,
-    /// What the x axis holds, so its ticks print as the table prints the column.
-    pub x_numbers: AxisNumbers,
-    /// The same for the y axis: counts, or the y columns.
-    pub y_numbers: AxisNumbers,
-}
-
-impl ChartExportBounds {
-    /// The x axis, ticked at `ticks`.
-    fn x_axis(&self, ticks: &[f64]) -> TickLabels {
-        TickLabels::new(ticks, &self.x_numbers, false, self.x_axis_kind)
-    }
-
-    /// The y axis, ticked at `ticks`: in linear space on a log scale.
-    fn y_axis(&self, ticks: &[f64]) -> TickLabels {
-        TickLabels::new(
-            ticks,
-            &self.y_numbers,
-            self.log_scale,
-            XAxisTemporalKind::Numeric,
-        )
-    }
-
-    fn x_whole(&self) -> bool {
-        self.x_numbers.whole
-    }
-
-    fn y_whole(&self) -> bool {
-        self.y_numbers.whole && !self.log_scale
-    }
-}
-
-/// Bounds and options for rendering a box plot export.
-pub struct BoxPlotExportBounds {
-    pub y_min: f64,
-    pub y_max: f64,
-    pub x_labels: Vec<String>,
-    pub x_label: String,
-    pub y_label: String,
-    pub chart_title: Option<String>,
-    pub notes: Vec<String>,
-    /// What the columns hold, so the y ticks print as the table prints them.
-    pub y_numbers: AxisNumbers,
-}
-
-/// One series: name and (x, y) points (y already log-transformed if log scale).
-pub struct ChartExportSeries {
-    pub name: String,
-    pub points: Vec<(f64, f64)>,
-    /// Where a line starts again after a gap (see `chart_data::segments`).
-    pub breaks: Vec<usize>,
-}
-
-/// Export format for chart: PNG or EPS.
+/// Export format for a chart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChartExportFormat {
     Png,
-    Eps,
+    Svg,
+    Pdf,
 }
 
 impl ChartExportFormat {
-    pub const ALL: [Self; 2] = [Self::Png, Self::Eps];
+    pub const ALL: [Self; 3] = [Self::Png, Self::Svg, Self::Pdf];
 
     pub fn extension(self) -> &'static str {
         match self {
             Self::Png => "png",
-            Self::Eps => "eps",
+            Self::Svg => "svg",
+            Self::Pdf => "pdf",
         }
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Png => "PNG",
-            Self::Eps => "EPS",
+            Self::Svg => "SVG",
+            Self::Pdf => "PDF",
+        }
+    }
+
+    /// The format a path's extension names, if it names one.
+    pub fn from_extension(path: &std::path::Path) -> Option<Self> {
+        let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+        Self::ALL.into_iter().find(|f| f.extension() == ext)
+    }
+}
+
+/// The colors an export is drawn in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportStyle {
+    /// White, with a print-safe palette that stays apart for color-blind readers.
+    Light,
+    /// The terminal theme's colors.
+    Dark,
+    /// The light palette with no background, for a slide or page of any color.
+    Transparent,
+}
+
+impl ExportStyle {
+    pub const ALL: [Self; 3] = [Self::Light, Self::Dark, Self::Transparent];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Light => "Light",
+            Self::Dark => "Dark",
+            Self::Transparent => "Transparent",
         }
     }
 }
 
-/// One chart export: the file, its form and size, and whether it may replace a
-/// file already there.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A size an export is made at: pixels, and the resolution that makes them a
+/// physical size (a PDF's page, an SVG's inches, the text's points).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SizePreset {
+    Slide,
+    Document,
+    Square,
+    /// One column of a two-column journal page, about 3.5 in at 300 dpi.
+    SingleColumn,
+    /// The width of a journal page, about 7 in at 300 dpi.
+    DoubleColumn,
+    Custom,
+}
+
+impl SizePreset {
+    pub const ALL: [Self; 6] = [
+        Self::Slide,
+        Self::Document,
+        Self::Square,
+        Self::SingleColumn,
+        Self::DoubleColumn,
+        Self::Custom,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Slide => "Slide 16:9",
+            Self::Document => "Document",
+            Self::Square => "Square",
+            Self::SingleColumn => "Single column",
+            Self::DoubleColumn => "Double column",
+            Self::Custom => "Custom",
+        }
+    }
+
+    /// Width and height in pixels; `None` for a custom size.
+    pub fn size(self) -> Option<(u32, u32)> {
+        match self {
+            Self::Slide => Some((1920, 1080)),
+            Self::Document => Some((1600, 1000)),
+            Self::Square => Some((1200, 1200)),
+            Self::SingleColumn => Some((1050, 788)),
+            Self::DoubleColumn => Some((2100, 1300)),
+            Self::Custom => None,
+        }
+    }
+
+    /// Pixels per inch: print presets at 300, screen sizes as a 10 in wide page
+    /// at twice a screen's density.
+    pub fn dpi(self) -> f32 {
+        match self {
+            Self::SingleColumn | Self::DoubleColumn => 300.0,
+            Self::Slide => 192.0,
+            Self::Document => 160.0,
+            Self::Square => 150.0,
+            Self::Custom => 96.0,
+        }
+    }
+}
+
+/// Where the series are named.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegendPlace {
+    /// Each line named at its right end; a chart without lines takes a box at the
+    /// top right.
+    LineEnds,
+    TopRight,
+    TopLeft,
+    BottomRight,
+    BottomLeft,
+    Off,
+}
+
+impl LegendPlace {
+    pub const ALL: [Self; 6] = [
+        Self::LineEnds,
+        Self::TopRight,
+        Self::TopLeft,
+        Self::BottomRight,
+        Self::BottomLeft,
+        Self::Off,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::LineEnds => "Line ends",
+            Self::TopRight => "Top right",
+            Self::TopLeft => "Top left",
+            Self::BottomRight => "Bottom right",
+            Self::BottomLeft => "Bottom left",
+            Self::Off => "Off",
+        }
+    }
+}
+
+/// An sRGB color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rgb(pub u8, pub u8, pub u8);
+
+impl Rgb {
+    fn hex(self) -> String {
+        format!("#{:02x}{:02x}{:02x}", self.0, self.1, self.2)
+    }
+
+    /// A ratatui color as sRGB: true colors as they are, the 256 and 16 colors as
+    /// xterm draws them. `None` for the terminal's own default.
+    pub fn of(color: ratatui::style::Color) -> Option<Self> {
+        use ratatui::style::Color;
+        const ANSI: [(u8, u8, u8); 16] = [
+            (0, 0, 0),
+            (205, 0, 0),
+            (0, 205, 0),
+            (205, 205, 0),
+            (0, 0, 238),
+            (205, 0, 205),
+            (0, 205, 205),
+            (229, 229, 229),
+            (127, 127, 127),
+            (255, 0, 0),
+            (0, 255, 0),
+            (255, 255, 0),
+            (92, 92, 255),
+            (255, 0, 255),
+            (0, 255, 255),
+            (255, 255, 255),
+        ];
+        let ansi = |i: usize| {
+            let (r, g, b) = ANSI[i];
+            Some(Rgb(r, g, b))
+        };
+        match color {
+            Color::Rgb(r, g, b) => Some(Rgb(r, g, b)),
+            Color::Reset => None,
+            Color::Black => ansi(0),
+            Color::Red => ansi(1),
+            Color::Green => ansi(2),
+            Color::Yellow => ansi(3),
+            Color::Blue => ansi(4),
+            Color::Magenta => ansi(5),
+            Color::Cyan => ansi(6),
+            Color::Gray => ansi(7),
+            Color::DarkGray => ansi(8),
+            Color::LightRed => ansi(9),
+            Color::LightGreen => ansi(10),
+            Color::LightYellow => ansi(11),
+            Color::LightBlue => ansi(12),
+            Color::LightMagenta => ansi(13),
+            Color::LightCyan => ansi(14),
+            Color::White => ansi(15),
+            Color::Indexed(i) if i < 16 => ansi(i as usize),
+            Color::Indexed(i) if i < 232 => {
+                let i = i - 16;
+                let level = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
+                Some(Rgb(level(i / 36), level((i / 6) % 6), level(i % 6)))
+            }
+            Color::Indexed(i) => {
+                let v = 8 + (i - 232) * 10;
+                Some(Rgb(v, v, v))
+            }
+        }
+    }
+}
+
+/// The colors a figure is drawn in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Palette {
+    /// `None` leaves the background transparent.
+    pub background: Option<Rgb>,
+    pub text: Rgb,
+    pub text_secondary: Rgb,
+    pub grid: Rgb,
+    pub series: [Rgb; 7],
+    /// A heatmap's cells, from the fewest rows to the most.
+    pub ramp: [Rgb; 7],
+    /// Whether the background is dark: the ramp then starts dark.
+    pub dark: bool,
+}
+
+/// The light style's series colors: a categorical order whose neighbors stay
+/// apart under the common color-vision deficiencies (checked with a CVD
+/// simulation: worst adjacent pair 9.1 ΔE). Three of them sit under 3:1 on white,
+/// so lines are named at their ends and bars carry a legend.
+const LIGHT_SERIES: [Rgb; 7] = [
+    Rgb(0x2a, 0x78, 0xd6),
+    Rgb(0xeb, 0x68, 0x34),
+    Rgb(0x1b, 0xaf, 0x7a),
+    Rgb(0xed, 0xa1, 0x00),
+    Rgb(0xe8, 0x7b, 0xa4),
+    Rgb(0x00, 0x83, 0x00),
+    Rgb(0x4a, 0x3a, 0xa7),
+];
+
+/// One blue, light to dark.
+const BLUE_RAMP: [Rgb; 7] = [
+    Rgb(0xcd, 0xe2, 0xfb),
+    Rgb(0x9e, 0xc5, 0xf4),
+    Rgb(0x6d, 0xa7, 0xec),
+    Rgb(0x39, 0x87, 0xe5),
+    Rgb(0x25, 0x6a, 0xbf),
+    Rgb(0x18, 0x4f, 0x95),
+    Rgb(0x0d, 0x36, 0x6b),
+];
+
+impl Palette {
+    pub fn light() -> Self {
+        Self {
+            background: Some(Rgb(0xff, 0xff, 0xff)),
+            text: Rgb(0x1f, 0x24, 0x30),
+            text_secondary: Rgb(0x5b, 0x61, 0x70),
+            grid: Rgb(0xe3, 0xe5, 0xea),
+            series: LIGHT_SERIES,
+            ramp: BLUE_RAMP,
+            dark: false,
+        }
+    }
+
+    pub fn transparent() -> Self {
+        Self {
+            background: None,
+            ..Self::light()
+        }
+    }
+
+    /// The terminal theme's colors as configured (before any terminal's fewer
+    /// colors): its background (or a dark surface where the theme leaves it to the
+    /// terminal), text, grid and chart series.
+    pub fn dark(colors: &crate::config::ColorConfig) -> Self {
+        let parser = crate::config::ColorParser::new();
+        // A hex value as written, whatever the terminal shows of it; a name or an
+        // index as xterm draws it.
+        let get = |value: &str, fallback: Rgb| {
+            let value = value.trim();
+            let hex = value
+                .strip_prefix('#')
+                .filter(|h| h.len() == 6)
+                .and_then(|h| u32::from_str_radix(h, 16).ok())
+                .map(|n| Rgb((n >> 16) as u8, (n >> 8) as u8, n as u8));
+            hex.or_else(|| parser.parse(value).ok().and_then(Rgb::of))
+                .unwrap_or(fallback)
+        };
+        let defaults = [
+            Rgb(0x7d, 0xcf, 0xff),
+            Rgb(0xbb, 0x9a, 0xf7),
+            Rgb(0x9e, 0xce, 0x6a),
+            Rgb(0xe0, 0xaf, 0x68),
+            Rgb(0x7a, 0xa2, 0xf7),
+            Rgb(0xf7, 0x76, 0x8e),
+            Rgb(0xff, 0x9e, 0x64),
+        ];
+        let configured = [
+            &colors.chart_1,
+            &colors.chart_2,
+            &colors.chart_3,
+            &colors.chart_4,
+            &colors.chart_5,
+            &colors.chart_6,
+            &colors.chart_7,
+        ];
+        let mut series = defaults;
+        for (slot, value) in series.iter_mut().zip(configured) {
+            *slot = get(value, *slot);
+        }
+        let mut ramp = BLUE_RAMP;
+        ramp.reverse();
+        Self {
+            background: Some(get(&colors.background, Rgb(0x1a, 0x1b, 0x26))),
+            text: get(&colors.text_primary, Rgb(0xc0, 0xca, 0xf5)),
+            text_secondary: get(&colors.text_secondary, Rgb(0x9a, 0xa5, 0xce)),
+            grid: get(&colors.chart_grid, Rgb(0x3d, 0x47, 0x85)),
+            series,
+            ramp,
+            dark: true,
+        }
+    }
+
+    pub fn for_style(style: ExportStyle, colors: &crate::config::ColorConfig) -> Self {
+        match style {
+            ExportStyle::Light => Self::light(),
+            ExportStyle::Dark => Self::dark(colors),
+            ExportStyle::Transparent => Self::transparent(),
+        }
+    }
+}
+
+/// How an export is made: its size, colors, legend and words.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExportOptions {
+    pub width: u32,
+    pub height: u32,
+    pub dpi: f32,
+    pub palette: Palette,
+    pub legend: LegendPlace,
+    pub title: String,
+    pub description: String,
+    pub notes: String,
+    pub source: String,
+    pub byline: String,
+}
+
+impl Default for ExportOptions {
+    fn default() -> Self {
+        let preset = SizePreset::Document;
+        let (width, height) = preset.size().unwrap_or((1600, 1000));
+        Self {
+            width,
+            height,
+            dpi: preset.dpi(),
+            palette: Palette::light(),
+            legend: LegendPlace::LineEnds,
+            title: String::new(),
+            description: String::new(),
+            notes: String::new(),
+            source: String::new(),
+            byline: String::new(),
+        }
+    }
+}
+
+/// What a chart export asks for: where, in what format, how.
+#[derive(Debug, Clone)]
 pub struct ChartExportRequest {
     pub path: std::path::PathBuf,
     pub format: ChartExportFormat,
-    pub title: String,
-    pub width: u32,
-    pub height: u32,
+    pub options: ExportOptions,
+    /// Whether an existing file may be replaced (asked before the export started).
     pub overwrite: crate::output_file::Overwrite,
 }
 
-/// Write chart to EPS (Encapsulated PostScript). No external dependencies.
-pub fn write_chart_eps(
-    path: &Path,
-    series: &[ChartExportSeries],
-    chart_type: ChartType,
-    bounds: &ChartExportBounds,
-) -> Result<()> {
-    if series.is_empty() || series.iter().all(|s| s.points.is_empty()) {
-        return Err(color_eyre::eyre::eyre!("No data to export"));
-    }
-
-    const W: f64 = 400.0;
-    const H: f64 = 300.0;
-    const MARGIN_LEFT: f64 = 50.0;
-    const MARGIN_BOTTOM: f64 = 40.0;
-    const PLOT_W: f64 = W - MARGIN_LEFT - 40.0;
-    const PLOT_H: f64 = H - MARGIN_BOTTOM - 30.0;
-
-    let x_min = bounds.x_min;
-    let x_max = bounds.x_max;
-    let y_min = bounds.y_min;
-    let y_max = bounds.y_max;
-    let x_range = if x_max > x_min { x_max - x_min } else { 1.0 };
-    let y_range = if y_max > y_min { y_max - y_min } else { 1.0 };
-
-    let to_x = |x: f64| MARGIN_LEFT + (x - x_min) / x_range * PLOT_W;
-    let to_y = |y: f64| MARGIN_BOTTOM + (y - y_min) / y_range * PLOT_H;
-
-    let mut f = File::create(path)?;
-
-    writeln!(f, "%!PS-Adobe-3.0 EPSF-3.0")?;
-    writeln!(
-        f,
-        "%%BoundingBox: 0 0 {} {}",
-        W.ceil() as i32,
-        H.ceil() as i32
-    )?;
-    writeln!(f, "%%Creator: datui")?;
-    writeln!(f, "%%EndComments")?;
-    writeln!(f, "gsave")?;
-    writeln!(f, "1 setlinewidth")?;
-
-    // Optional chart title at top center
-    if let Some(ref title) = bounds.chart_title
-        && !title.is_empty()
-    {
-        const CHAR_W: f64 = 6.0;
-        writeln!(f, "/Helvetica findfont 12 scalefont setfont")?;
-        let title_w = title.len() as f64 * CHAR_W;
-        let tx = (W / 2.0 - title_w / 2.0).max(4.0).min(W - title_w - 4.0);
-        writeln!(f, "{} {} moveto ({}) show", tx, H - 15.0, ps_escape(title))?;
-        writeln!(f, "/Helvetica findfont 9 scalefont setfont")?;
-    }
-
-    // Tick positions for grid, ticks, and labels
-    const MAX_TICKS: usize = 8;
-    let x_axis = bounds.x_axis(&nice_ticks(x_min, x_max, MAX_TICKS));
-    let y_axis = bounds.y_axis(&nice_ticks(y_min, y_max, MAX_TICKS));
-    let x_ticks = x_axis.ticks();
-    let y_ticks = y_axis.ticks();
-
-    // Grid (light gray, behind plot)
-    writeln!(f, "0.9 setgray")?;
-    writeln!(f, "0.5 setlinewidth")?;
-    for &v in &x_ticks {
-        let px = to_x(v);
-        if (MARGIN_LEFT..=MARGIN_LEFT + PLOT_W).contains(&px) {
-            writeln!(
-                f,
-                "{} {} moveto 0 {} rlineto stroke",
-                px, MARGIN_BOTTOM, PLOT_H
-            )?;
-        }
-    }
-    for &v in &y_ticks {
-        let py = to_y(v);
-        if (MARGIN_BOTTOM..=MARGIN_BOTTOM + PLOT_H).contains(&py) {
-            writeln!(
-                f,
-                "{} {} moveto {} 0 rlineto stroke",
-                MARGIN_LEFT, py, PLOT_W
-            )?;
-        }
-    }
-    writeln!(f, "1 setlinewidth")?;
-    writeln!(f, "0 setgray")?;
-
-    // Axis box
-    writeln!(f, "{} {} moveto", MARGIN_LEFT, MARGIN_BOTTOM)?;
-    writeln!(f, "{} 0 rlineto", PLOT_W)?;
-    writeln!(f, "0 {} rlineto", PLOT_H)?;
-    writeln!(f, "{} 0 rlineto", -PLOT_W)?;
-    writeln!(f, "closepath stroke")?;
-
-    // Tick marks (short lines on axes)
-    const TICK_LEN: f64 = 4.0;
-    for &v in &x_ticks {
-        let px = to_x(v);
-        if (MARGIN_LEFT..=MARGIN_LEFT + PLOT_W).contains(&px) {
-            writeln!(
-                f,
-                "{} {} moveto 0 {} rlineto stroke",
-                px, MARGIN_BOTTOM, -TICK_LEN
-            )?;
-        }
-    }
-    for &v in &y_ticks {
-        let py = to_y(v);
-        if (MARGIN_BOTTOM..=MARGIN_BOTTOM + PLOT_H).contains(&py) {
-            writeln!(
-                f,
-                "{} {} moveto {} 0 rlineto stroke",
-                MARGIN_LEFT, py, -TICK_LEN
-            )?;
-        }
-    }
-
-    // Tick labels and axis titles (text)
-    writeln!(f, "/Helvetica findfont 9 scalefont setfont")?;
-    let char_w: f64 = 5.0;
-    for &v in &x_ticks {
-        let px = to_x(v);
-        if (MARGIN_LEFT..=MARGIN_LEFT + PLOT_W).contains(&px) {
-            let s = x_axis.label(v).unwrap_or_default();
-            let label_w = s.len() as f64 * char_w;
-            let tx = (px - label_w / 2.0)
-                .max(MARGIN_LEFT)
-                .min(MARGIN_LEFT + PLOT_W - label_w);
-            writeln!(
-                f,
-                "{} {} moveto ({}) show",
-                tx,
-                MARGIN_BOTTOM - 12.0,
-                ps_escape(&s)
-            )?;
-        }
-    }
-    for &v in &y_ticks {
-        let py = to_y(v);
-        if (MARGIN_BOTTOM..=MARGIN_BOTTOM + PLOT_H).contains(&py) {
-            let s = y_axis.label(v).unwrap_or_default();
-            let label_w = s.len() as f64 * char_w;
-            let tx = (MARGIN_LEFT - label_w - 4.0).max(2.0);
-            writeln!(f, "{} {} moveto ({}) show", tx, py - 3.0, ps_escape(&s))?;
-        }
-    }
-
-    // Axis titles (x_label below tick labels, y_label left of plot)
-    writeln!(f, "/Helvetica findfont 10 scalefont setfont")?;
-    let x_label = &bounds.x_label;
-    let y_label = &bounds.y_label;
-    if !x_label.is_empty() {
-        let x_center = MARGIN_LEFT + PLOT_W / 2.0;
-        let x_str_approx_len = x_label.len() as f64 * char_w;
-        writeln!(
-            f,
-            "{} {} moveto ({}) show",
-            (x_center - x_str_approx_len / 2.0).max(MARGIN_LEFT),
-            MARGIN_BOTTOM - 24.0,
-            ps_escape(x_label)
-        )?;
-    }
-    if !y_label.is_empty() {
-        writeln!(f, "gsave")?;
-        writeln!(
-            f,
-            "12 {} translate -90 rotate",
-            MARGIN_BOTTOM + PLOT_H / 2.0
-        )?;
-        let y_str_approx_len = y_label.len() as f64 * char_w;
-        writeln!(
-            f,
-            "{} 0 moveto ({}) show",
-            -y_str_approx_len / 2.0,
-            ps_escape(y_label)
-        )?;
-        writeln!(f, "grestore")?;
-    }
-
-    // Fixed palette (RGB 0–1)
-    let palette: [(f64, f64, f64); 7] = [
-        (0.0, 0.7, 0.9), // cyan
-        (0.9, 0.0, 0.5), // magenta
-        (0.0, 0.7, 0.0), // green
-        (0.9, 0.8, 0.0), // yellow
-        (0.0, 0.0, 0.9), // blue
-        (0.9, 0.0, 0.0), // red
-        (0.5, 0.9, 0.9), // light cyan
-    ];
-
-    for (idx, s) in series.iter().enumerate() {
-        if s.points.is_empty() {
-            continue;
-        }
-        let (r, g, b) = palette[idx % palette.len()];
-        writeln!(f, "{} {} {} setrgbcolor", r, g, b)?;
-
-        match chart_type {
-            ChartType::Line => {
-                for segment in crate::chart_data::segments(&s.points, &s.breaks) {
-                    let (px, py) = segment[0];
-                    writeln!(f, "{} {} moveto", to_x(px), to_y(py))?;
-                    for &(px, py) in &segment[1..] {
-                        writeln!(f, "{} {} lineto", to_x(px), to_y(py))?;
-                    }
-                    writeln!(f, "stroke")?;
-                }
-            }
-            ChartType::Scatter => {
-                let rad = 3.0;
-                for &(px, py) in &s.points {
-                    writeln!(f, "{} {} {} 0 360 arc fill", to_x(px), to_y(py), rad)?;
-                }
-            }
-            ChartType::Bar => {
-                let n = s.points.len() as f64;
-                let bar_w = (PLOT_W / n).clamp(1.0, 20.0) * 0.7;
-                for &(px, py) in &s.points {
-                    let cx = to_x(px) - bar_w / 2.0;
-                    let cy = to_y(0.0_f64.max(y_min));
-                    let h = to_y(py) - cy;
-                    writeln!(f, "{} {} {} {} rectfill", cx, cy, bar_w, h)?;
-                }
-            }
-        }
-    }
-
-    write_eps_notes(&mut f, &bounds.notes, MARGIN_LEFT + PLOT_W)?;
-    writeln!(f, "grestore")?;
-    writeln!(f, "%%EOF")?;
-    f.sync_all()?;
-    Ok(())
+/// One axis: its title, what its numbers are, and whether they are dates.
+#[derive(Debug, Clone, Default)]
+pub struct Axis {
+    pub title: String,
+    pub numbers: AxisNumbers,
+    pub kind: XAxisTemporalKind,
+    /// Values are `ln(1 + y)`; ticks name `y`.
+    pub log: bool,
 }
 
-/// Write chart to PNG using plotters bitmap backend. Size is (width, height) in pixels.
-pub fn write_chart_png(
-    path: &Path,
-    series: &[ChartExportSeries],
-    chart_type: ChartType,
-    bounds: &ChartExportBounds,
-    (width, height): (u32, u32),
-) -> Result<()> {
-    use plotters::prelude::*;
-
-    if series.is_empty() || series.iter().all(|s| s.points.is_empty()) {
-        return Err(color_eyre::eyre::eyre!("No data to export"));
-    }
-
-    let root = BitMapBackend::new(path, (width, height)).into_drawing_area();
-    root.fill(&WHITE)?;
-
-    let x_min = bounds.x_min;
-    let x_max = bounds.x_max;
-    let y_min = bounds.y_min;
-    let y_max = bounds.y_max;
-
-    let mut binding = ChartBuilder::on(&root);
-    let builder = binding.margin(30);
-    let builder = if let Some(t) = bounds.chart_title.as_ref().filter(|s| !s.is_empty()) {
-        builder.caption(t.as_str(), ("sans-serif", 20))
-    } else {
-        builder
-    };
-    let mut chart = builder
-        .x_label_area_size(40)
-        .y_label_area_size(50)
-        .build_cartesian_2d(x_min..x_max, y_min..y_max)?;
-
-    let x_count = tick_count(x_min, x_max, bounds.x_whole());
-    let y_count = tick_count(y_min, y_max, bounds.y_whole());
-    let x_axis = bounds.x_axis(&png_ticks(x_min, x_max, x_count));
-    let y_axis = bounds.y_axis(&png_ticks(y_min, y_max, y_count));
-    let x_formatter = |v: &f64| x_axis.label(*v).unwrap_or_default();
-    let y_formatter = |v: &f64| y_axis.label(*v).unwrap_or_default();
-    chart
-        .configure_mesh()
-        .x_labels(x_count)
-        .y_labels(y_count)
-        .x_desc(bounds.x_label.as_str())
-        .y_desc(bounds.y_label.as_str())
-        .x_label_formatter(&x_formatter)
-        .y_label_formatter(&y_formatter)
-        .draw()?;
-
-    let colors = [
-        CYAN,
-        MAGENTA,
-        GREEN,
-        YELLOW,
-        BLUE,
-        RED,
-        RGBColor(128, 255, 255),
-    ];
-
-    for (idx, s) in series.iter().enumerate() {
-        if s.points.is_empty() {
-            continue;
-        }
-        let color = colors[idx % colors.len()];
-        match chart_type {
-            ChartType::Line => {
-                // One line per run between gaps; the legend names the first.
-                let segments = crate::chart_data::segments(&s.points, &s.breaks);
-                for (i, segment) in segments.into_iter().enumerate() {
-                    let drawn =
-                        chart.draw_series(LineSeries::new(segment.iter().copied(), color))?;
-                    if i == 0 {
-                        drawn.label(s.name.as_str()).legend(move |(x, y)| {
-                            PathElement::new(vec![(x, y), (x + 20, y)], color)
-                        });
-                    }
-                }
-            }
-            ChartType::Scatter => {
-                chart.draw_series(PointSeries::of_element(
-                    s.points.iter().copied(),
-                    3,
-                    color,
-                    &|c, s, _| EmptyElement::at(c) + Circle::new((0, 0), s, color.filled()),
-                ))?;
-            }
-            ChartType::Bar => {
-                chart.draw_series(s.points.iter().map(|&(x, y)| {
-                    let x0 = x - 0.3;
-                    let x1 = x + 0.3;
-                    Rectangle::new([(x0, 0.0), (x1, y)], color.filled())
-                }))?;
-            }
-        }
-    }
-
-    chart
-        .configure_series_labels()
-        .background_style(WHITE.mix(0.8))
-        .border_style(BLACK)
-        .draw()?;
-
-    draw_png_notes(&root, &bounds.notes, 30)?;
-    root.present()?;
-    Ok(())
+/// One line or scatter series.
+#[derive(Debug, Clone)]
+pub struct Series {
+    pub name: String,
+    pub points: Vec<(f64, f64)>,
+    /// Where a line starts again after a gap (see `chart_data::segments`).
+    pub breaks: Vec<usize>,
 }
 
-/// Write box plot to PNG using plotters bitmap backend. Size is (width, height) in pixels.
-pub fn write_box_plot_png(
-    path: &Path,
-    data: &BoxPlotData,
-    bounds: &BoxPlotExportBounds,
-    (width, height): (u32, u32),
-) -> Result<()> {
-    use plotters::prelude::*;
+/// What a figure plots.
+#[derive(Debug, Clone)]
+pub enum Plot {
+    Lines {
+        series: Vec<Series>,
+        scatter: bool,
+        x: Axis,
+        y: Axis,
+        y_from_zero: bool,
+    },
+    Bars {
+        data: BarData,
+        value: Axis,
+    },
+    Histogram {
+        data: HistogramData,
+        x: Axis,
+        y: Axis,
+    },
+    Kde {
+        data: KdeData,
+        x: Axis,
+        y: Axis,
+    },
+    Box {
+        data: BoxPlotData,
+        x_title: String,
+        y: Axis,
+    },
+    Heatmap {
+        data: HeatmapData,
+        x: Axis,
+        y: Axis,
+    },
+}
 
-    if data.stats.is_empty() {
-        return Err(color_eyre::eyre::eyre!("No data to export"));
+/// A chart ready to draw: what it plots, and what it says about its rows (a
+/// sample, values a range left out).
+#[derive(Debug, Clone)]
+pub struct Figure {
+    pub plot: Plot,
+    pub chart_notes: Vec<String>,
+    pub grid: bool,
+}
+
+/// The figure in `format`, as the bytes of the file.
+pub fn render(
+    figure: &Figure,
+    options: &ExportOptions,
+    format: ChartExportFormat,
+) -> Result<Vec<u8>> {
+    let tree = tree(&svg(figure, options)?)?;
+    Ok(match format {
+        // usvg writes the size in pixels; the page's inches say how large it prints.
+        ChartExportFormat::Svg => tree
+            .to_string(&usvg::WriteOptions::default())
+            .replacen(
+                &format!("width=\"{}\" height=\"{}\"", options.width, options.height),
+                &format!(
+                    "width=\"{:.3}in\" height=\"{:.3}in\" viewBox=\"0 0 {} {}\"",
+                    f64::from(options.width) / f64::from(options.dpi),
+                    f64::from(options.height) / f64::from(options.dpi),
+                    options.width,
+                    options.height,
+                ),
+                1,
+            )
+            .into_bytes(),
+        ChartExportFormat::Png => {
+            let mut pixmap = tiny_skia::Pixmap::new(options.width, options.height)
+                .ok_or_else(|| color_eyre::eyre::eyre!("cannot draw a chart of that size"))?;
+            resvg::render(
+                &tree,
+                tiny_skia::Transform::identity(),
+                &mut pixmap.as_mut(),
+            );
+            let png = pixmap
+                .encode_png()
+                .map_err(|e| color_eyre::eyre::eyre!("PNG: {e}"))?;
+            with_resolution(png, options.dpi)
+        }
+        ChartExportFormat::Pdf => {
+            crate::chart_pdf::write(&tree, options.width, options.height, options.dpi)?
+        }
+    })
+}
+
+/// `png` with its resolution recorded (a `pHYs` chunk after `IHDR`), so a column
+/// figure prints at its inches.
+fn with_resolution(mut png: Vec<u8>, dpi: f32) -> Vec<u8> {
+    // The signature, then IHDR: its length, type, 13 bytes and checksum.
+    const AFTER_IHDR: usize = 8 + 4 + 4 + 13 + 4;
+    if png.len() < AFTER_IHDR || &png[12..16] != b"IHDR" {
+        return png;
     }
+    let per_meter = (f64::from(dpi) / 0.0254).round() as u32;
+    let mut chunk = b"pHYs".to_vec();
+    chunk.extend_from_slice(&per_meter.to_be_bytes());
+    chunk.extend_from_slice(&per_meter.to_be_bytes());
+    chunk.push(1); // the unit is the meter
+    let crc = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC).checksum(&chunk);
+    let mut bytes = 9u32.to_be_bytes().to_vec();
+    bytes.extend_from_slice(&chunk);
+    bytes.extend_from_slice(&crc.to_be_bytes());
+    png.splice(AFTER_IHDR..AFTER_IHDR, bytes);
+    png
+}
 
-    let root = BitMapBackend::new(path, (width, height)).into_drawing_area();
-    root.fill(&WHITE)?;
+/// The fonts an export draws with: the bundled family, then the system's for what it
+/// lacks. Read once.
+fn fonts() -> Arc<usvg::fontdb::Database> {
+    static FONTS: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
+    FONTS
+        .get_or_init(|| {
+            let mut db = usvg::fontdb::Database::new();
+            db.load_font_data(FONT_REGULAR.to_vec());
+            db.load_font_data(FONT_SEMIBOLD.to_vec());
+            db.load_system_fonts();
+            db.set_sans_serif_family(FONT_FAMILY);
+            Arc::new(db)
+        })
+        .clone()
+}
 
-    let x_min = -0.5;
-    let x_max = (data.stats.len() as f64 - 1.0).max(0.0) + 0.5;
-    let mut binding = ChartBuilder::on(&root);
-    let builder = binding.margin(30);
-    let builder = if let Some(t) = bounds.chart_title.as_ref().filter(|s| !s.is_empty()) {
-        builder.caption(t.as_str(), ("sans-serif", 20))
-    } else {
-        builder
+/// The SVG read with the bundled fonts.
+fn tree(svg: &str) -> Result<usvg::Tree> {
+    let options = usvg::Options {
+        font_family: FONT_FAMILY.to_string(),
+        fontdb: fonts(),
+        ..Default::default()
     };
-    let mut chart = builder
-        .x_label_area_size(40)
-        .y_label_area_size(50)
-        .build_cartesian_2d(x_min..x_max, bounds.y_min..bounds.y_max)?;
+    usvg::Tree::from_str(svg, &options).map_err(|e| color_eyre::eyre::eyre!("chart SVG: {e}"))
+}
 
-    let labels = bounds.x_labels.clone();
-    let label_span = (x_max - x_min).max(f64::EPSILON);
-    let y_count = tick_count(bounds.y_min, bounds.y_max, bounds.y_numbers.whole);
-    let y_axis = TickLabels::numbers(
-        &png_ticks(bounds.y_min, bounds.y_max, y_count),
-        &bounds.y_numbers,
-    );
-    chart
-        .configure_mesh()
-        .x_labels(labels.len())
-        .y_labels(y_count)
-        .y_label_formatter(&|v: &f64| y_axis.label(*v).unwrap_or_default())
-        .x_desc(bounds.x_label.as_str())
-        .y_desc(bounds.y_label.as_str())
-        .x_label_formatter(&move |v: &f64| {
-            let label_count = labels.len().saturating_sub(1) as f64;
-            let idx = if label_count > 0.0 {
-                ((v - x_min) / label_span * label_count).round() as isize
+/// Text in SVG.
+fn esc(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            // Control characters are not allowed in XML.
+            c if c.is_control() => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// About how wide `text` sets at `size` px: the bundled face's average advance.
+fn text_width(text: &str, size: f64) -> f64 {
+    text.chars()
+        .map(|c| match c {
+            'i' | 'l' | 'j' | '.' | ',' | ':' | ';' | '\'' | '|' | '!' | ' ' => 0.3,
+            'm' | 'w' | 'M' | 'W' => 0.85,
+            c if c.is_ascii_uppercase() || c.is_ascii_digit() => 0.62,
+            c if c.is_ascii() => 0.53,
+            // Wide scripts set about square.
+            _ => 0.95,
+        })
+        .sum::<f64>()
+        * size
+}
+
+/// `text` broken into lines no wider than `width` at `size`, at spaces.
+fn wrap(text: &str, size: f64, width: f64) -> Vec<String> {
+    let mut lines = Vec::new();
+    for paragraph in text.lines() {
+        let mut line = String::new();
+        for word in paragraph.split_whitespace() {
+            let candidate = if line.is_empty() {
+                word.to_string()
             } else {
-                0
+                format!("{line} {word}")
             };
-            if idx >= 0 && (idx as usize) < labels.len() {
-                labels[idx as usize].clone()
+            if !line.is_empty() && text_width(&candidate, size) > width {
+                lines.push(std::mem::take(&mut line));
+                line = word.to_string();
             } else {
-                String::new()
+                line = candidate;
+            }
+        }
+        if !line.is_empty() {
+            lines.push(line);
+        }
+    }
+    lines
+}
+
+/// The SVG being written, with the sizes it is set in.
+struct Canvas<'a> {
+    out: String,
+    palette: &'a Palette,
+    /// Pixels per point.
+    pt: f64,
+    /// Body text size in px.
+    body: f64,
+}
+
+impl Canvas<'_> {
+    /// `text` at `(x, y)`, anchored `start`, `middle` or `end`, in `weight`.
+    fn text(
+        &mut self,
+        (x, y): (f64, f64),
+        size: f64,
+        color: Rgb,
+        (anchor, weight): (&str, u16),
+        text: &str,
+    ) {
+        self.out.push_str(&format!(
+            "<text x=\"{x:.1}\" y=\"{y:.1}\" font-size=\"{size:.1}\" font-weight=\"{weight}\" \
+             text-anchor=\"{anchor}\" fill=\"{}\">{}</text>\n",
+            color.hex(),
+            esc(text)
+        ));
+    }
+
+    fn line(&mut self, (x1, y1): (f64, f64), (x2, y2): (f64, f64), color: Rgb, width: f64) {
+        self.out.push_str(&format!(
+            "<line x1=\"{x1:.1}\" y1=\"{y1:.1}\" x2=\"{x2:.1}\" y2=\"{y2:.1}\" stroke=\"{}\" \
+             stroke-width=\"{width:.2}\"/>\n",
+            color.hex()
+        ));
+    }
+
+    fn rect(&mut self, x: f64, y: f64, w: f64, h: f64, fill: Rgb, opacity: f64) {
+        if w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        self.out.push_str(&format!(
+            "<rect x=\"{x:.2}\" y=\"{y:.2}\" width=\"{w:.2}\" height=\"{h:.2}\" fill=\"{}\" \
+             fill-opacity=\"{opacity:.2}\"/>\n",
+            fill.hex()
+        ));
+    }
+
+    fn polyline(&mut self, points: &[(f64, f64)], color: Rgb, width: f64) {
+        if points.len() < 2 {
+            if let Some(&(x, y)) = points.first() {
+                self.dot(x, y, width, color);
+            }
+            return;
+        }
+        let pts: Vec<String> = points
+            .iter()
+            .map(|(x, y)| format!("{x:.1},{y:.1}"))
+            .collect();
+        self.out.push_str(&format!(
+            "<polyline points=\"{}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{width:.2}\" \
+             stroke-linejoin=\"round\" stroke-linecap=\"round\"/>\n",
+            pts.join(" "),
+            color.hex()
+        ));
+    }
+
+    fn dot(&mut self, x: f64, y: f64, r: f64, color: Rgb) {
+        self.out.push_str(&format!(
+            "<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"{r:.2}\" fill=\"{}\"/>\n",
+            color.hex()
+        ));
+    }
+
+    fn color(&self, i: usize) -> Rgb {
+        self.palette.series[i % self.palette.series.len()]
+    }
+}
+
+/// Where the plot is drawn, in px.
+#[derive(Clone, Copy, Debug)]
+struct Area {
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+}
+
+impl Area {
+    fn width(&self) -> f64 {
+        self.right - self.left
+    }
+    fn height(&self) -> f64 {
+        self.bottom - self.top
+    }
+}
+
+/// A linear scale from data to px.
+#[derive(Clone, Copy, Debug)]
+struct Scale {
+    lo: f64,
+    hi: f64,
+    from: f64,
+    to: f64,
+}
+
+impl Scale {
+    fn at(&self, v: f64) -> f64 {
+        let span = self.hi - self.lo;
+        if span.abs() < f64::EPSILON {
+            return (self.from + self.to) / 2.0;
+        }
+        self.from + (v - self.lo) / span * (self.to - self.from)
+    }
+}
+
+/// An axis's ticks and their labels from `lo` to `hi`, at most `most` of them: on
+/// nice numbers, or on calendar boundaries for dates.
+fn axis_ticks(lo: f64, hi: f64, axis: &Axis, most: usize) -> Vec<(f64, String)> {
+    let most = most.max(2);
+    if axis.kind != XAxisTemporalKind::Numeric
+        && axis.kind != XAxisTemporalKind::Time
+        && let (Some(a), Some(b)) = (
+            ticks::to_datetime(lo, axis.kind),
+            ticks::to_datetime(hi, axis.kind),
+        )
+    {
+        for step in ticks::calendar_steps(axis.kind) {
+            let at = ticks::calendar_ticks(a, b, step);
+            if at.is_empty() || at.len() > most {
+                continue;
+            }
+            let labels = ticks::calendar_labels(&at, step.unit, axis.kind, true);
+            return at
+                .iter()
+                .zip(labels)
+                .filter_map(|(t, label)| Some((ticks::from_datetime(*t, axis.kind)?, label)))
+                .collect();
+        }
+    }
+    let (show_lo, show_hi) = if axis.log {
+        (lo.exp_m1(), hi.exp_m1())
+    } else {
+        (lo, hi)
+    };
+    let whole = axis.numbers.whole && !axis.log;
+    let steps = ticks::nice_steps(show_lo, show_hi, 0.0, whole);
+    let step = steps
+        .iter()
+        .copied()
+        .find(|s| (((show_hi - show_lo) / s) as usize) < most)
+        .or_else(|| steps.last().copied());
+    let values = match step {
+        Some(step) => ticks::multiples(show_lo, show_hi, step),
+        None => vec![show_lo],
+    };
+    let format = AxisFormat::new(&values, &axis.numbers);
+    values
+        .iter()
+        .filter_map(|&v| {
+            let label = x_axis_label_at(v, axis.kind, (show_lo, show_hi), 0, &format)?;
+            let at = if axis.log { v.max(0.0).ln_1p() } else { v };
+            Some((at, label))
+        })
+        .collect()
+}
+
+/// `lo..hi` padded so a flat series or a single point still has room.
+fn span(lo: f64, hi: f64) -> (f64, f64) {
+    if !(lo.is_finite() && hi.is_finite()) {
+        return (0.0, 1.0);
+    }
+    if hi > lo {
+        (lo, hi)
+    } else {
+        (lo - 0.5, hi + 0.5)
+    }
+}
+
+/// The SVG for `figure`, before its text is set.
+pub fn svg(figure: &Figure, options: &ExportOptions) -> Result<String> {
+    let (w, h) = (f64::from(options.width), f64::from(options.height));
+    if options.width == 0 || options.height == 0 {
+        return Err(color_eyre::eyre::eyre!(
+            "a chart needs a width and a height"
+        ));
+    }
+    let palette = &options.palette;
+    let pt = f64::from(options.dpi) / 72.0;
+    // Text size follows the page: small on a journal column, larger on a slide.
+    let width_in = w / f64::from(options.dpi);
+    let base_pt = (width_in * 1.25).clamp(7.0, 13.0);
+    let body = base_pt * pt;
+    let mut c = Canvas {
+        out: String::new(),
+        palette,
+        pt,
+        body,
+    };
+    let margin = (body * 2.0).min(w / 10.0);
+    if let Some(bg) = palette.background {
+        c.rect(0.0, 0.0, w, h, bg, 1.0);
+    }
+
+    // Header: title, then the description under it.
+    let title_size = body * 1.45;
+    let small = body * 0.82;
+    let text_width_max = w - 2.0 * margin;
+    let mut y = margin;
+    for line in wrap(&options.title, title_size, text_width_max) {
+        y += title_size;
+        c.text((margin, y), title_size, palette.text, ("start", 600), &line);
+        y += title_size * 0.25;
+    }
+    for line in wrap(&options.description, body, text_width_max) {
+        y += body * 1.1;
+        c.text(
+            (margin, y),
+            body,
+            palette.text_secondary,
+            ("start", 400),
+            &line,
+        );
+    }
+    if y > margin {
+        y += body * 0.9;
+    }
+
+    // Footer, from the bottom up: the source and byline, notes, what the chart
+    // says about its rows.
+    let mut footer: Vec<(String, Rgb)> = Vec::new();
+    if !figure.chart_notes.is_empty() {
+        footer.push((figure.chart_notes.join(" · "), palette.text_secondary));
+    }
+    for line in wrap(&options.notes, small, text_width_max) {
+        footer.push((line, palette.text_secondary));
+    }
+    let mut credit = Vec::new();
+    if !options.source.trim().is_empty() {
+        credit.push(format!("Source: {}", options.source.trim()));
+    }
+    if !options.byline.trim().is_empty() {
+        credit.push(options.byline.trim().to_string());
+    }
+    if !credit.is_empty() {
+        for line in wrap(&credit.join(" · "), small, text_width_max) {
+            footer.push((line, palette.text_secondary));
+        }
+    }
+    let line_h = small * 1.35;
+    let footer_top = h - margin - footer.len() as f64 * line_h;
+    for (i, (line, color)) in footer.iter().enumerate() {
+        let baseline = footer_top + (i as f64 + 1.0) * line_h - small * 0.3;
+        c.text((margin, baseline), small, *color, ("start", 400), line);
+    }
+    let bottom = if footer.is_empty() {
+        h - margin
+    } else {
+        footer_top - body * 0.8
+    };
+    let frame = Area {
+        left: margin,
+        top: y,
+        right: w - margin,
+        bottom,
+    };
+    if frame.height() < body * 4.0 || frame.width() < body * 6.0 {
+        return Err(color_eyre::eyre::eyre!(
+            "the chart does not fit at {}x{}: make it larger or the text shorter",
+            options.width,
+            options.height
+        ));
+    }
+    draw_plot(&mut c, figure, options, frame);
+    Ok(format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" height=\"{h}\" \
+         viewBox=\"0 0 {w} {h}\" font-family=\"{FONT_FAMILY}\">\n{}</svg>\n",
+        c.out,
+    ))
+}
+
+/// The names a legend lists, with each one's color index.
+fn legend_names(figure: &Figure) -> Vec<String> {
+    match &figure.plot {
+        Plot::Lines { series, .. } => series.iter().map(|s| s.name.clone()).collect(),
+        Plot::Bars { data, .. } => data.groups.clone(),
+        Plot::Histogram { data, .. } => data.groups.iter().map(|g| g.name.clone()).collect(),
+        Plot::Kde { data, .. } => data.series.iter().map(|s| s.name.clone()).collect(),
+        Plot::Box { .. } | Plot::Heatmap { .. } => Vec::new(),
+    }
+}
+
+/// The plot in `frame`: axes, grid, marks, and the legend.
+fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame: Area) {
+    let names = legend_names(figure);
+    let is_lines = matches!(
+        figure.plot,
+        Plot::Lines { scatter: false, .. } | Plot::Kde { .. }
+    );
+    // A single series is named by the axis title; two or more get a legend.
+    let legend = if names.len() < 2 {
+        LegendPlace::Off
+    } else if options.legend == LegendPlace::LineEnds && !is_lines {
+        LegendPlace::TopRight
+    } else {
+        options.legend
+    };
+    let tick = c.body * 0.9;
+    let mut frame = frame;
+    if legend == LegendPlace::LineEnds {
+        let widest = names
+            .iter()
+            .map(|n| text_width(n, tick))
+            .fold(0.0, f64::max);
+        frame.right -= (widest + tick).min(frame.width() / 3.0);
+    }
+    match &figure.plot {
+        Plot::Lines {
+            series,
+            scatter,
+            x,
+            y,
+            y_from_zero,
+        } => {
+            let all = series.iter().flat_map(|s| s.points.iter());
+            let (x_lo, x_hi) = all
+                .clone()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
+                    (a.min(p.0), b.max(p.0))
+                });
+            let (mut y_lo, y_hi) = all.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
+                (a.min(p.1), b.max(p.1))
+            });
+            if *y_from_zero {
+                y_lo = y_lo.min(0.0);
+            }
+            let (sx, sy, plot) = axes(
+                c,
+                frame,
+                span(x_lo, x_hi),
+                span(y_lo, y_hi),
+                x,
+                y,
+                figure.grid,
+            );
+            let width = 1.5 * c.pt;
+            let mut ends = Vec::new();
+            for (i, s) in series.iter().enumerate() {
+                let color = c.color(i);
+                if *scatter {
+                    for &(px, py) in &s.points {
+                        c.dot(sx.at(px), sy.at(py), 2.4 * c.pt, color);
+                    }
+                } else {
+                    for run in segments(&s.points, &s.breaks) {
+                        let pts: Vec<(f64, f64)> =
+                            run.iter().map(|&(px, py)| (sx.at(px), sy.at(py))).collect();
+                        c.polyline(&pts, color, width);
+                    }
+                }
+                if let Some(&(px, py)) = s.points.last() {
+                    ends.push((sy.at(py), sx.at(px), i));
+                }
+            }
+            if legend == LegendPlace::LineEnds {
+                line_end_labels(c, &names, ends, plot);
+            }
+        }
+        Plot::Kde { data, x, y } => {
+            let (sx, sy, plot) = axes(
+                c,
+                frame,
+                span(data.x_min, data.x_max),
+                (0.0, data.y_max),
+                x,
+                y,
+                figure.grid,
+            );
+            let mut ends = Vec::new();
+            for (i, s) in data.series.iter().enumerate() {
+                let pts: Vec<(f64, f64)> = s
+                    .points
+                    .iter()
+                    .map(|&(px, py)| (sx.at(px), sy.at(py)))
+                    .collect();
+                if let Some(&(px, py)) = pts.last() {
+                    ends.push((py, px, i));
+                }
+                c.polyline(&pts, c.color(i), 1.5 * c.pt);
+            }
+            if legend == LegendPlace::LineEnds {
+                line_end_labels(c, &names, ends, plot);
+            }
+        }
+        Plot::Histogram { data, x, y } => {
+            let max = if data.max_count > 0.0 {
+                data.max_count
+            } else {
+                1.0
+            };
+            let (sx, sy, _) = axes(
+                c,
+                frame,
+                span(data.x_min, data.x_max),
+                (0.0, max),
+                x,
+                y,
+                figure.grid,
+            );
+            let n = data.bins.len().max(1);
+            let bin = (data.x_max - data.x_min) / n as f64;
+            if data.groups.is_empty() {
+                // Filled bars, a hairline of the background between them.
+                let gap = 1.0 * c.pt;
+                for (i, b) in data.bins.iter().enumerate() {
+                    let x0 = sx.at(data.x_min + i as f64 * bin);
+                    let x1 = sx.at(data.x_min + (i + 1) as f64 * bin);
+                    let top = sy.at(b.count);
+                    c.rect(
+                        x0 + gap / 2.0,
+                        top,
+                        (x1 - x0 - gap).max(0.5),
+                        sy.at(0.0) - top,
+                        c.color(0),
+                        1.0,
+                    );
+                }
+            } else {
+                // Groups overlaid as step outlines: filled bars would hide each other.
+                for (g, group) in data.groups.iter().enumerate() {
+                    let mut pts = vec![(sx.at(data.x_min), sy.at(0.0))];
+                    for (i, &count) in group.counts.iter().enumerate() {
+                        let x0 = sx.at(data.x_min + i as f64 * bin);
+                        let x1 = sx.at(data.x_min + (i + 1) as f64 * bin);
+                        pts.push((x0, sy.at(count)));
+                        pts.push((x1, sy.at(count)));
+                    }
+                    pts.push((sx.at(data.x_max), sy.at(0.0)));
+                    c.polyline(&pts, c.color(g), 1.5 * c.pt);
+                }
+            }
+        }
+        Plot::Box { data, x_title, y } => {
+            let n = data.stats.len().max(1);
+            let x_axis = Axis {
+                title: x_title.clone(),
+                ..Default::default()
+            };
+            let (lo, hi) = span(data.y_min, data.y_max);
+            let pad = (hi - lo) * 0.04;
+            let (_, sy, plot) = category_axes(
+                c,
+                frame,
+                &data
+                    .stats
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect::<Vec<_>>(),
+                (lo - pad, hi + pad),
+                &x_axis,
+                y,
+                figure.grid,
+            );
+            let slot = plot.width() / n as f64;
+            for (i, s) in data.stats.iter().enumerate() {
+                let color = c.color(i);
+                let mid = plot.left + slot * (i as f64 + 0.5);
+                let half = (slot * 0.3).min(c.body * 3.0);
+                let stroke = 1.25 * c.pt;
+                c.line((mid, sy.at(s.max)), (mid, sy.at(s.q3)), color, stroke);
+                c.line((mid, sy.at(s.q1)), (mid, sy.at(s.min)), color, stroke);
+                c.line(
+                    (mid - half / 2.0, sy.at(s.max)),
+                    (mid + half / 2.0, sy.at(s.max)),
+                    color,
+                    stroke,
+                );
+                c.line(
+                    (mid - half / 2.0, sy.at(s.min)),
+                    (mid + half / 2.0, sy.at(s.min)),
+                    color,
+                    stroke,
+                );
+                let top = sy.at(s.q3);
+                c.rect(mid - half, top, half * 2.0, sy.at(s.q1) - top, color, 0.18);
+                c.out.push_str(&format!(
+                    "<rect x=\"{:.2}\" y=\"{top:.2}\" width=\"{:.2}\" height=\"{:.2}\" \
+                     fill=\"none\" stroke=\"{}\" stroke-width=\"{stroke:.2}\"/>\n",
+                    mid - half,
+                    half * 2.0,
+                    (sy.at(s.q1) - top).max(0.0),
+                    color.hex()
+                ));
+                c.line(
+                    (mid - half, sy.at(s.median)),
+                    (mid + half, sy.at(s.median)),
+                    color,
+                    stroke * 2.0,
+                );
+            }
+        }
+        Plot::Heatmap { data, x, y } => {
+            let (sx, sy, _) = axes(
+                c,
+                frame,
+                span(data.x_min, data.x_max),
+                span(data.y_min, data.y_max),
+                x,
+                y,
+                false,
+            );
+            let xw = (data.x_max - data.x_min) / data.x_bins.max(1) as f64;
+            let yh = (data.y_max - data.y_min) / data.y_bins.max(1) as f64;
+            let ramp = c.palette.ramp;
+            for (yi, row) in data.counts.iter().enumerate() {
+                for (xi, &count) in row.iter().enumerate() {
+                    if count <= 0.0 || data.max_count <= 0.0 {
+                        continue;
+                    }
+                    let level =
+                        ((count / data.max_count) * (ramp.len() - 1) as f64).round() as usize;
+                    let x0 = sx.at(data.x_min + xi as f64 * xw);
+                    let x1 = sx.at(data.x_min + (xi + 1) as f64 * xw);
+                    let y0 = sy.at(data.y_min + (yi + 1) as f64 * yh);
+                    let y1 = sy.at(data.y_min + yi as f64 * yh);
+                    c.rect(
+                        x0,
+                        y0,
+                        x1 - x0,
+                        y1 - y0,
+                        ramp[level.min(ramp.len() - 1)],
+                        1.0,
+                    );
+                }
+            }
+        }
+        Plot::Bars { data, value } => draw_bars(c, frame, data, value, figure.grid),
+    }
+    match legend {
+        LegendPlace::Off | LegendPlace::LineEnds => {}
+        // Above the plot, on the axis title's row, where it covers nothing.
+        LegendPlace::TopRight | LegendPlace::TopLeft => {
+            legend_row(c, &names, legend, frame, axis_title(figure), is_lines)
+        }
+        LegendPlace::BottomRight | LegendPlace::BottomLeft => {
+            legend_box(c, &names, legend, frame, is_lines)
+        }
+    }
+}
+
+/// The title written over the plot's left edge: the Y axis's, or a bar chart's
+/// category.
+fn axis_title(figure: &Figure) -> &str {
+    match &figure.plot {
+        Plot::Lines { y, .. }
+        | Plot::Histogram { y, .. }
+        | Plot::Kde { y, .. }
+        | Plot::Box { y, .. }
+        | Plot::Heatmap { y, .. } => &y.title,
+        Plot::Bars { data, .. } => &data.category,
+    }
+}
+
+/// The legend as one row over the plot: a swatch and a name per series, at the
+/// right edge, or after the axis title at the left.
+fn legend_row(
+    c: &mut Canvas<'_>,
+    names: &[String],
+    place: LegendPlace,
+    frame: Area,
+    title: &str,
+    lines: bool,
+) {
+    let tick = c.body * 0.85;
+    let swatch = tick * 1.2;
+    let gap = tick * 1.2;
+    let item = |name: &str| swatch + tick * 0.4 + text_width(name, tick);
+    let width: f64 =
+        names.iter().map(|n| item(n)).sum::<f64>() + gap * names.len().saturating_sub(1) as f64;
+    let mut x = match place {
+        LegendPlace::TopLeft => frame.left + text_width(title, c.body * 0.9) + gap * 1.5,
+        _ => (frame.right - width).max(frame.left),
+    };
+    let baseline = frame.top + c.body * 0.9;
+    let middle = baseline - tick * 0.35;
+    for (i, name) in names.iter().enumerate() {
+        let color = c.color(i);
+        if lines {
+            c.line((x, middle), (x + swatch, middle), color, 1.75 * c.pt);
+        } else {
+            c.rect(x, middle - tick * 0.35, swatch, tick * 0.7, color, 1.0);
+        }
+        c.text(
+            (x + swatch + tick * 0.4, baseline),
+            tick,
+            c.palette.text,
+            ("start", 400),
+            name,
+        );
+        x += item(name) + gap;
+    }
+}
+
+/// Axes in `frame` for X over `xs` and Y over `ys`: ticks, labels, the grid, the
+/// baseline, and the titles. Returns the scales and the plot's own area.
+fn axes(
+    c: &mut Canvas<'_>,
+    frame: Area,
+    xs: (f64, f64),
+    ys: (f64, f64),
+    x: &Axis,
+    y: &Axis,
+    grid: bool,
+) -> (Scale, Scale, Area) {
+    axes_with(c, frame, xs, ys, (x, true), y, grid)
+}
+
+/// [`axes`], with X's ticks left out when `x.1` is false (a category axis names its
+/// slots itself).
+fn axes_with(
+    c: &mut Canvas<'_>,
+    frame: Area,
+    xs: (f64, f64),
+    ys: (f64, f64),
+    (x, x_ticked): (&Axis, bool),
+    y: &Axis,
+    grid: bool,
+) -> (Scale, Scale, Area) {
+    let tick = c.body * 0.9;
+    let palette = c.palette.clone();
+    // The Y title sits over the axis, not turned on its side.
+    let top = frame.top + tick * 2.2;
+    let x_title_h = if x.title.is_empty() { 0.0 } else { tick * 1.5 };
+    let bottom = frame.bottom - tick * 1.6 - x_title_h;
+    let y_ticks = axis_ticks(ys.0, ys.1, y, ((bottom - top) / (tick * 3.0)) as usize);
+    let y_label_w = y_ticks
+        .iter()
+        .map(|(_, l)| text_width(l, tick))
+        .fold(0.0, f64::max);
+    let plot = Area {
+        left: frame.left + y_label_w + tick * 0.8,
+        top,
+        right: frame.right,
+        bottom,
+    };
+    let sx = Scale {
+        lo: xs.0,
+        hi: xs.1,
+        from: plot.left,
+        to: plot.right,
+    };
+    let sy = Scale {
+        lo: ys.0,
+        hi: ys.1,
+        from: plot.bottom,
+        to: plot.top,
+    };
+    let widest_x = |labels: &[(f64, String)]| {
+        labels
+            .iter()
+            .map(|(_, l)| text_width(l, tick))
+            .fold(0.0, f64::max)
+    };
+    let mut most = (plot.width() / (tick * 6.0)) as usize;
+    let mut x_ticks = if x_ticked {
+        axis_ticks(xs.0, xs.1, x, most)
+    } else {
+        Vec::new()
+    };
+    while x_ticked && most > 2 && widest_x(&x_ticks) * x_ticks.len() as f64 * 1.4 > plot.width() {
+        most -= 1;
+        x_ticks = axis_ticks(xs.0, xs.1, x, most);
+    }
+    let hair = 0.6 * c.pt;
+    for (v, label) in &y_ticks {
+        let py = sy.at(*v);
+        if grid {
+            c.line((plot.left, py), (plot.right, py), palette.grid, hair);
+        }
+        c.text(
+            (plot.left - tick * 0.5, py + tick * 0.35),
+            tick,
+            palette.text_secondary,
+            ("end", 400),
+            label,
+        );
+    }
+    for (v, label) in &x_ticks {
+        let px = sx.at(*v);
+        if grid {
+            c.line((px, plot.top), (px, plot.bottom), palette.grid, hair);
+        }
+        c.line(
+            (px, plot.bottom),
+            (px, plot.bottom + tick * 0.35),
+            palette.text_secondary,
+            hair,
+        );
+        c.text(
+            (px, plot.bottom + tick * 1.35),
+            tick,
+            palette.text_secondary,
+            ("middle", 400),
+            label,
+        );
+    }
+    c.line(
+        (plot.left, plot.bottom),
+        (plot.right, plot.bottom),
+        palette.text_secondary,
+        hair,
+    );
+    if !y.title.is_empty() {
+        c.text(
+            (frame.left, frame.top + tick),
+            tick,
+            palette.text,
+            ("start", 600),
+            &y.title,
+        );
+    }
+    if !x.title.is_empty() {
+        c.text(
+            ((plot.left + plot.right) / 2.0, frame.bottom - tick * 0.2),
+            tick,
+            palette.text,
+            ("middle", 600),
+            &x.title,
+        );
+    }
+    (sx, sy, plot)
+}
+
+/// Axes with a category on X, one slot per name, and Y as `axes` draws it.
+fn category_axes(
+    c: &mut Canvas<'_>,
+    frame: Area,
+    names: &[String],
+    ys: (f64, f64),
+    x: &Axis,
+    y: &Axis,
+    grid: bool,
+) -> (Scale, Scale, Area) {
+    let n = names.len().max(1) as f64;
+    // The names go under their slots, in place of ticks.
+    let (sx, sy, plot) = axes_with(c, frame, (0.0, n), ys, (x, false), y, grid);
+    let tick = c.body * 0.9;
+    let slot = plot.width() / n;
+    let max_chars = (slot / (tick * 0.55)).max(3.0) as usize;
+    for (i, name) in names.iter().enumerate() {
+        let label = if name.chars().count() > max_chars {
+            let kept: String = name.chars().take(max_chars.saturating_sub(1)).collect();
+            format!("{kept}…")
+        } else {
+            name.clone()
+        };
+        c.text(
+            (
+                plot.left + slot * (i as f64 + 0.5),
+                plot.bottom + tick * 1.35,
+            ),
+            tick,
+            c.palette.text_secondary,
+            ("middle", 400),
+            &label,
+        );
+    }
+    (sx, sy, plot)
+}
+
+/// Each line named at its right end, in its color, nudged apart so no two names
+/// overlap.
+fn line_end_labels(
+    c: &mut Canvas<'_>,
+    names: &[String],
+    mut ends: Vec<(f64, f64, usize)>,
+    plot: Area,
+) {
+    let tick = c.body * 0.9;
+    ends.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut last = f64::NEG_INFINITY;
+    for (y, _, _) in &mut ends {
+        *y = y.max(last + tick * 1.15).max(plot.top);
+        last = *y;
+    }
+    // Pushed past the bottom: shift the whole stack back up.
+    if let Some(over) = ends
+        .last()
+        .map(|(y, _, _)| *y - plot.bottom)
+        .filter(|o| *o > 0.0)
+    {
+        for (y, _, _) in &mut ends {
+            *y -= over;
+        }
+    }
+    for (y, _, i) in ends {
+        c.text(
+            (plot.right + tick * 0.5, y + tick * 0.35),
+            tick,
+            c.color(i),
+            ("start", 600),
+            &names[i],
+        );
+    }
+}
+
+/// A legend box in a corner of the plot: a swatch and a name per series, on the
+/// background so marks under it do not show through.
+fn legend_box(c: &mut Canvas<'_>, names: &[String], place: LegendPlace, frame: Area, lines: bool) {
+    let tick = c.body * 0.85;
+    let row = tick * 1.4;
+    let swatch = tick * 1.2;
+    let width = names
+        .iter()
+        .map(|n| text_width(n, tick))
+        .fold(0.0, f64::max)
+        + swatch
+        + tick * 1.5;
+    let height = row * names.len() as f64 + tick * 0.6;
+    let pad = tick * 0.6;
+    let plot_top = frame.top + tick * 2.4;
+    let plot_bottom = frame.bottom - tick * 3.3;
+    let (x, y) = match place {
+        LegendPlace::TopLeft => (frame.left + tick * 4.0, plot_top + pad),
+        LegendPlace::BottomRight => (frame.right - width - pad, plot_bottom - height - pad),
+        LegendPlace::BottomLeft => (frame.left + tick * 4.0, plot_bottom - height - pad),
+        _ => (frame.right - width - pad, plot_top + pad),
+    };
+    if let Some(bg) = c.palette.background {
+        c.rect(x, y, width, height, bg, 0.9);
+    }
+    for (i, name) in names.iter().enumerate() {
+        let cy = y + tick * 0.3 + row * (i as f64 + 0.5);
+        let color = c.color(i);
+        if lines {
+            c.line((x + pad, cy), (x + pad + swatch, cy), color, 1.75 * c.pt);
+        } else {
+            c.rect(x + pad, cy - tick * 0.35, swatch, tick * 0.7, color, 1.0);
+        }
+        c.text(
+            (x + pad + swatch + tick * 0.5, cy + tick * 0.35),
+            tick,
+            c.palette.text,
+            ("start", 400),
+            name,
+        );
+    }
+}
+
+/// Horizontal bars: a row per category, its name on the left, the value axis under
+/// them; split by a color, a thin bar per group in each row.
+fn draw_bars(c: &mut Canvas<'_>, frame: Area, data: &BarData, value: &Axis, grid: bool) {
+    let tick = c.body * 0.9;
+    let palette = c.palette.clone();
+    let top = frame.top + tick * 2.2;
+    let x_title_h = if value.title.is_empty() {
+        0.0
+    } else {
+        tick * 1.5
+    };
+    let bottom = frame.bottom - tick * 1.6 - x_title_h;
+    let groups = data.groups.len().max(1);
+    // Rows no thinner than the text, so a long chart is cut and counted rather
+    // than squeezed.
+    let row_min = (tick * 1.3).max(tick * 0.5 * groups as f64);
+    let fits = (((bottom - top) / row_min) as usize).max(1);
+    let mut bars: Vec<&crate::chart_data::Bar> = data.bars.iter().collect();
+    let mut more = data.more;
+    if bars.len() > fits {
+        more += bars.len() - (fits - 1);
+        bars.truncate(fits - 1);
+    }
+    let null = "null".to_string();
+    let label_of = |b: &crate::chart_data::Bar| b.label.clone().unwrap_or_else(|| null.clone());
+    let more_label = format!("+ {} more", crate::numfmt::group_chrome(more));
+    let label_w = bars
+        .iter()
+        .map(|b| text_width(&label_of(b), tick))
+        .chain((more > 0).then(|| text_width(&more_label, tick)))
+        .fold(0.0, f64::max)
+        .min(frame.width() * 0.35);
+    let values = || {
+        bars.iter().flat_map(|b| {
+            if b.by_group.is_empty() {
+                vec![b.value]
+            } else {
+                b.by_group.iter().flatten().copied().collect()
             }
         })
-        .draw()?;
-
-    let colors = [
-        CYAN,
-        MAGENTA,
-        GREEN,
-        YELLOW,
-        BLUE,
-        RED,
-        RGBColor(128, 255, 255),
-    ];
-    let box_half = 0.3;
-    let cap_half = 0.2;
-
-    for (idx, stat) in data.stats.iter().enumerate() {
-        let x = idx as f64;
-        let color = colors[idx % colors.len()];
-        let outline = ShapeStyle::from(&color).stroke_width(1);
-        chart.draw_series(std::iter::once(Rectangle::new(
-            [(x - box_half, stat.q1), (x + box_half, stat.q3)],
-            outline,
-        )))?;
-        chart.draw_series(std::iter::once(PathElement::new(
-            vec![(x - box_half, stat.median), (x + box_half, stat.median)],
-            color,
-        )))?;
-        chart.draw_series(std::iter::once(PathElement::new(
-            vec![(x, stat.min), (x, stat.q1)],
-            color,
-        )))?;
-        chart.draw_series(std::iter::once(PathElement::new(
-            vec![(x, stat.q3), (x, stat.max)],
-            color,
-        )))?;
-        chart.draw_series(std::iter::once(PathElement::new(
-            vec![(x - cap_half, stat.min), (x + cap_half, stat.min)],
-            color,
-        )))?;
-        chart.draw_series(std::iter::once(PathElement::new(
-            vec![(x - cap_half, stat.max), (x + cap_half, stat.max)],
-            color,
-        )))?;
-    }
-
-    draw_png_notes(&root, &bounds.notes, 30)?;
-    root.present()?;
-    Ok(())
-}
-
-/// Write heatmap to PNG using plotters bitmap backend. Size is (width, height) in pixels.
-pub fn write_heatmap_png(
-    path: &Path,
-    data: &HeatmapData,
-    bounds: &ChartExportBounds,
-    (width, height): (u32, u32),
-) -> Result<()> {
-    use plotters::prelude::*;
-
-    if data.counts.is_empty() || data.max_count <= 0.0 {
-        return Err(color_eyre::eyre::eyre!("No data to export"));
-    }
-
-    let root = BitMapBackend::new(path, (width, height)).into_drawing_area();
-    root.fill(&WHITE)?;
-
-    let mut binding = ChartBuilder::on(&root);
-    let builder = binding.margin(30);
-    let builder = if let Some(t) = bounds.chart_title.as_ref().filter(|s| !s.is_empty()) {
-        builder.caption(t.as_str(), ("sans-serif", 20))
-    } else {
-        builder
     };
-    let mut chart = builder
-        .x_label_area_size(40)
-        .y_label_area_size(50)
-        .build_cartesian_2d(bounds.x_min..bounds.x_max, bounds.y_min..bounds.y_max)?;
-
-    let x_step = (bounds.x_max - bounds.x_min) / data.x_bins.max(1) as f64;
-    let y_step = (bounds.y_max - bounds.y_min) / data.y_bins.max(1) as f64;
-    for y in 0..data.y_bins {
-        for x in 0..data.x_bins {
-            let count = data.counts[y][x];
-            let intensity = (count / data.max_count).clamp(0.0, 1.0);
-            let shade = (255.0 * (1.0 - intensity)) as u8;
-            let color = RGBColor(shade, shade, 255);
-            let x0 = bounds.x_min + x as f64 * x_step;
-            let x1 = x0 + x_step;
-            let y0 = bounds.y_min + y as f64 * y_step;
-            let y1 = y0 + y_step;
-            chart.draw_series(std::iter::once(Rectangle::new(
-                [(x0, y0), (x1, y1)],
-                color.filled(),
-            )))?;
-        }
-    }
-
-    let x_count = tick_count(bounds.x_min, bounds.x_max, bounds.x_whole());
-    let y_count = tick_count(bounds.y_min, bounds.y_max, bounds.y_whole());
-    let x_axis = bounds.x_axis(&png_ticks(bounds.x_min, bounds.x_max, x_count));
-    let y_axis = bounds.y_axis(&png_ticks(bounds.y_min, bounds.y_max, y_count));
-    chart
-        .configure_mesh()
-        .x_desc(bounds.x_label.as_str())
-        .y_desc(bounds.y_label.as_str())
-        .x_labels(x_count)
-        .y_labels(y_count)
-        .x_label_formatter(&|v| x_axis.label(*v).unwrap_or_default())
-        .y_label_formatter(&|v| y_axis.label(*v).unwrap_or_default())
-        .draw()?;
-
-    draw_png_notes(&root, &bounds.notes, 30)?;
-    root.present()?;
-    Ok(())
-}
-
-/// Write box plot to EPS (Encapsulated PostScript). No external dependencies.
-pub fn write_box_plot_eps(
-    path: &Path,
-    data: &BoxPlotData,
-    bounds: &BoxPlotExportBounds,
-) -> Result<()> {
-    if data.stats.is_empty() {
-        return Err(color_eyre::eyre::eyre!("No data to export"));
-    }
-
-    const W: f64 = 400.0;
-    const H: f64 = 300.0;
-    const MARGIN_LEFT: f64 = 50.0;
-    const MARGIN_BOTTOM: f64 = 40.0;
-    const PLOT_W: f64 = W - MARGIN_LEFT - 40.0;
-    const PLOT_H: f64 = H - MARGIN_BOTTOM - 30.0;
-
-    let x_min = -0.5;
-    let x_max = (data.stats.len() as f64 - 1.0).max(0.0) + 0.5;
-    let y_min = bounds.y_min;
-    let y_max = bounds.y_max;
-    let x_range = if x_max > x_min { x_max - x_min } else { 1.0 };
-    let y_range = if y_max > y_min { y_max - y_min } else { 1.0 };
-
-    let to_x = |x: f64| MARGIN_LEFT + (x - x_min) / x_range * PLOT_W;
-    let to_y = |y: f64| MARGIN_BOTTOM + (y - y_min) / y_range * PLOT_H;
-
-    let mut f = File::create(path)?;
-    writeln!(f, "%!PS-Adobe-3.0 EPSF-3.0")?;
-    writeln!(
-        f,
-        "%%BoundingBox: 0 0 {} {}",
-        W.ceil() as i32,
-        H.ceil() as i32
-    )?;
-    writeln!(f, "%%Creator: datui")?;
-    writeln!(f, "%%EndComments")?;
-    writeln!(f, "gsave")?;
-    writeln!(f, "1 setlinewidth")?;
-
-    if let Some(ref title) = bounds.chart_title
-        && !title.is_empty()
-    {
-        const CHAR_W: f64 = 6.0;
-        writeln!(f, "/Helvetica findfont 12 scalefont setfont")?;
-        let title_w = title.len() as f64 * CHAR_W;
-        let tx = (W / 2.0 - title_w / 2.0).max(4.0).min(W - title_w - 4.0);
-        writeln!(f, "{} {} moveto ({}) show", tx, H - 15.0, ps_escape(title))?;
-        writeln!(f, "/Helvetica findfont 9 scalefont setfont")?;
-    }
-
-    const MAX_TICKS: usize = 8;
-    let y_axis = TickLabels::numbers(&nice_ticks(y_min, y_max, MAX_TICKS), &bounds.y_numbers);
-    let y_ticks = y_axis.ticks();
-    let x_ticks: Vec<f64> = (0..data.stats.len()).map(|i| i as f64).collect();
-
-    writeln!(f, "0.9 setgray")?;
-    writeln!(f, "0.5 setlinewidth")?;
-    for &v in &x_ticks {
-        let px = to_x(v);
-        if (MARGIN_LEFT..=MARGIN_LEFT + PLOT_W).contains(&px) {
-            writeln!(
-                f,
-                "{} {} moveto 0 {} rlineto stroke",
-                px, MARGIN_BOTTOM, PLOT_H
-            )?;
-        }
-    }
-    for &v in &y_ticks {
-        let py = to_y(v);
-        if (MARGIN_BOTTOM..=MARGIN_BOTTOM + PLOT_H).contains(&py) {
-            writeln!(
-                f,
-                "{} {} moveto {} 0 rlineto stroke",
-                MARGIN_LEFT, py, PLOT_W
-            )?;
-        }
-    }
-    writeln!(f, "1 setlinewidth")?;
-    writeln!(f, "0 setgray")?;
-
-    writeln!(f, "{} {} moveto", MARGIN_LEFT, MARGIN_BOTTOM)?;
-    writeln!(f, "{} 0 rlineto", PLOT_W)?;
-    writeln!(f, "0 {} rlineto", PLOT_H)?;
-    writeln!(f, "{} 0 rlineto", -PLOT_W)?;
-    writeln!(f, "closepath stroke")?;
-
-    const TICK_LEN: f64 = 4.0;
-    for &v in &x_ticks {
-        let px = to_x(v);
-        if (MARGIN_LEFT..=MARGIN_LEFT + PLOT_W).contains(&px) {
-            writeln!(
-                f,
-                "{} {} moveto 0 {} rlineto stroke",
-                px, MARGIN_BOTTOM, -TICK_LEN
-            )?;
-        }
-    }
-    for &v in &y_ticks {
-        let py = to_y(v);
-        if (MARGIN_BOTTOM..=MARGIN_BOTTOM + PLOT_H).contains(&py) {
-            writeln!(
-                f,
-                "{} {} moveto {} 0 rlineto stroke",
-                MARGIN_LEFT, py, -TICK_LEN
-            )?;
-        }
-    }
-
-    writeln!(f, "/Helvetica findfont 9 scalefont setfont")?;
-    let char_w: f64 = 5.0;
-    for (i, &v) in x_ticks.iter().enumerate() {
-        let px = to_x(v);
-        if (MARGIN_LEFT..=MARGIN_LEFT + PLOT_W).contains(&px) {
-            let label = bounds.x_labels.get(i).map(|s| s.as_str()).unwrap_or("");
-            let label_w = label.len() as f64 * char_w;
-            let tx = (px - label_w / 2.0)
-                .max(MARGIN_LEFT)
-                .min(MARGIN_LEFT + PLOT_W - label_w);
-            writeln!(
-                f,
-                "{} {} moveto ({}) show",
-                tx,
-                MARGIN_BOTTOM - 12.0,
-                ps_escape(label)
-            )?;
-        }
-    }
-    for &v in &y_ticks {
-        let py = to_y(v);
-        if (MARGIN_BOTTOM..=MARGIN_BOTTOM + PLOT_H).contains(&py) {
-            let s = y_axis.label(v).unwrap_or_default();
-            let label_w = s.len() as f64 * char_w;
-            let tx = (MARGIN_LEFT - label_w - 4.0).max(2.0);
-            writeln!(f, "{} {} moveto ({}) show", tx, py - 3.0, ps_escape(&s))?;
-        }
-    }
-
-    writeln!(f, "/Helvetica findfont 10 scalefont setfont")?;
-    if !bounds.x_label.is_empty() {
-        let x_center = MARGIN_LEFT + PLOT_W / 2.0;
-        let x_str_approx_len = bounds.x_label.len() as f64 * char_w;
-        writeln!(
-            f,
-            "{} {} moveto ({}) show",
-            (x_center - x_str_approx_len / 2.0).max(MARGIN_LEFT),
-            MARGIN_BOTTOM - 24.0,
-            ps_escape(&bounds.x_label)
-        )?;
-    }
-    if !bounds.y_label.is_empty() {
-        writeln!(f, "gsave")?;
-        writeln!(
-            f,
-            "12 {} translate -90 rotate",
-            MARGIN_BOTTOM + PLOT_H / 2.0
-        )?;
-        let y_str_approx_len = bounds.y_label.len() as f64 * char_w;
-        writeln!(
-            f,
-            "{} 0 moveto ({}) show",
-            -y_str_approx_len / 2.0,
-            ps_escape(&bounds.y_label)
-        )?;
-        writeln!(f, "grestore")?;
-    }
-
-    let palette: [(f64, f64, f64); 7] = [
-        (0.0, 0.7, 0.9),
-        (0.9, 0.0, 0.5),
-        (0.0, 0.7, 0.0),
-        (0.9, 0.8, 0.0),
-        (0.0, 0.0, 0.9),
-        (0.9, 0.0, 0.0),
-        (0.5, 0.9, 0.9),
-    ];
-    let box_half = 0.3;
-    let cap_half = 0.2;
-
-    for (idx, stat) in data.stats.iter().enumerate() {
-        let (r, g, b) = palette[idx % palette.len()];
-        writeln!(f, "{} {} {} setrgbcolor", r, g, b)?;
-        let x = idx as f64;
-        let x_left = to_x(x - box_half);
-        let x_right = to_x(x + box_half);
-        let y_q1 = to_y(stat.q1);
-        let y_q3 = to_y(stat.q3);
-        writeln!(f, "{} {} moveto", x_left, y_q1)?;
-        writeln!(f, "{} {} lineto", x_right, y_q1)?;
-        writeln!(f, "{} {} lineto", x_right, y_q3)?;
-        writeln!(f, "{} {} lineto", x_left, y_q3)?;
-        writeln!(f, "closepath stroke")?;
-        writeln!(f, "{} {} moveto", x_left, to_y(stat.median))?;
-        writeln!(f, "{} {} lineto stroke", x_right, to_y(stat.median))?;
-        writeln!(f, "{} {} moveto", to_x(x), to_y(stat.min))?;
-        writeln!(f, "{} {} lineto stroke", to_x(x), to_y(stat.q1))?;
-        writeln!(f, "{} {} moveto", to_x(x), to_y(stat.q3))?;
-        writeln!(f, "{} {} lineto stroke", to_x(x), to_y(stat.max))?;
-        writeln!(f, "{} {} moveto", to_x(x - cap_half), to_y(stat.min))?;
-        writeln!(f, "{} {} lineto stroke", to_x(x + cap_half), to_y(stat.min))?;
-        writeln!(f, "{} {} moveto", to_x(x - cap_half), to_y(stat.max))?;
-        writeln!(f, "{} {} lineto stroke", to_x(x + cap_half), to_y(stat.max))?;
-    }
-
-    write_eps_notes(&mut f, &bounds.notes, MARGIN_LEFT + PLOT_W)?;
-    writeln!(f, "grestore")?;
-    writeln!(f, "%%EOF")?;
-    f.sync_all()?;
-    Ok(())
-}
-
-/// Write heatmap to EPS (Encapsulated PostScript). No external dependencies.
-pub fn write_heatmap_eps(
-    path: &Path,
-    data: &HeatmapData,
-    bounds: &ChartExportBounds,
-) -> Result<()> {
-    if data.counts.is_empty() || data.max_count <= 0.0 {
-        return Err(color_eyre::eyre::eyre!("No data to export"));
-    }
-
-    const W: f64 = 400.0;
-    const H: f64 = 300.0;
-    const MARGIN_LEFT: f64 = 50.0;
-    const MARGIN_BOTTOM: f64 = 40.0;
-    const PLOT_W: f64 = W - MARGIN_LEFT - 40.0;
-    const PLOT_H: f64 = H - MARGIN_BOTTOM - 30.0;
-
-    let x_min = bounds.x_min;
-    let x_max = bounds.x_max;
-    let y_min = bounds.y_min;
-    let y_max = bounds.y_max;
-    let x_range = if x_max > x_min { x_max - x_min } else { 1.0 };
-    let y_range = if y_max > y_min { y_max - y_min } else { 1.0 };
-    let to_x = |x: f64| MARGIN_LEFT + (x - x_min) / x_range * PLOT_W;
-    let to_y = |y: f64| MARGIN_BOTTOM + (y - y_min) / y_range * PLOT_H;
-
-    let mut f = File::create(path)?;
-    writeln!(f, "%!PS-Adobe-3.0 EPSF-3.0")?;
-    writeln!(
-        f,
-        "%%BoundingBox: 0 0 {} {}",
-        W.ceil() as i32,
-        H.ceil() as i32
-    )?;
-    writeln!(f, "%%Creator: datui")?;
-    writeln!(f, "%%EndComments")?;
-    writeln!(f, "gsave")?;
-    writeln!(f, "1 setlinewidth")?;
-
-    if let Some(ref title) = bounds.chart_title
-        && !title.is_empty()
-    {
-        const CHAR_W: f64 = 6.0;
-        writeln!(f, "/Helvetica findfont 12 scalefont setfont")?;
-        let title_w = title.len() as f64 * CHAR_W;
-        let tx = (W / 2.0 - title_w / 2.0).max(4.0).min(W - title_w - 4.0);
-        writeln!(f, "{} {} moveto ({}) show", tx, H - 15.0, ps_escape(title))?;
-        writeln!(f, "/Helvetica findfont 9 scalefont setfont")?;
-    }
-
-    const MAX_TICKS: usize = 8;
-    let x_axis = bounds.x_axis(&nice_ticks(x_min, x_max, MAX_TICKS));
-    let y_axis = bounds.y_axis(&nice_ticks(y_min, y_max, MAX_TICKS));
-    let x_ticks = x_axis.ticks();
-    let y_ticks = y_axis.ticks();
-
-    writeln!(f, "0.9 setgray")?;
-    writeln!(f, "0.5 setlinewidth")?;
-    for &v in &x_ticks {
-        let px = to_x(v);
-        if (MARGIN_LEFT..=MARGIN_LEFT + PLOT_W).contains(&px) {
-            writeln!(
-                f,
-                "{} {} moveto 0 {} rlineto stroke",
-                px, MARGIN_BOTTOM, PLOT_H
-            )?;
-        }
-    }
-    for &v in &y_ticks {
-        let py = to_y(v);
-        if (MARGIN_BOTTOM..=MARGIN_BOTTOM + PLOT_H).contains(&py) {
-            writeln!(
-                f,
-                "{} {} moveto {} 0 rlineto stroke",
-                MARGIN_LEFT, py, PLOT_W
-            )?;
-        }
-    }
-    writeln!(f, "1 setlinewidth")?;
-    writeln!(f, "0 setgray")?;
-
-    writeln!(f, "{} {} moveto", MARGIN_LEFT, MARGIN_BOTTOM)?;
-    writeln!(f, "{} 0 rlineto", PLOT_W)?;
-    writeln!(f, "0 {} rlineto", PLOT_H)?;
-    writeln!(f, "{} 0 rlineto", -PLOT_W)?;
-    writeln!(f, "closepath stroke")?;
-
-    let x_step = (x_max - x_min) / data.x_bins.max(1) as f64;
-    let y_step = (y_max - y_min) / data.y_bins.max(1) as f64;
-    for y in 0..data.y_bins {
-        for x in 0..data.x_bins {
-            let count = data.counts[y][x];
-            let intensity = (count / data.max_count).clamp(0.0, 1.0);
-            let shade = 1.0 - intensity;
-            writeln!(f, "{} {} {} setrgbcolor", shade, shade, 1.0)?;
-            let x0 = to_x(x_min + x as f64 * x_step);
-            let x1 = to_x(x_min + (x + 1) as f64 * x_step);
-            let y0 = to_y(y_min + y as f64 * y_step);
-            let y1 = to_y(y_min + (y + 1) as f64 * y_step);
-            writeln!(f, "{} {} {} {} rectfill", x0, y0, x1 - x0, y1 - y0)?;
-        }
-    }
-    writeln!(f, "0 setgray")?;
-
-    const TICK_LEN: f64 = 4.0;
-    for &v in &x_ticks {
-        let px = to_x(v);
-        if (MARGIN_LEFT..=MARGIN_LEFT + PLOT_W).contains(&px) {
-            writeln!(
-                f,
-                "{} {} moveto 0 {} rlineto stroke",
-                px, MARGIN_BOTTOM, -TICK_LEN
-            )?;
-        }
-    }
-    for &v in &y_ticks {
-        let py = to_y(v);
-        if (MARGIN_BOTTOM..=MARGIN_BOTTOM + PLOT_H).contains(&py) {
-            writeln!(
-                f,
-                "{} {} moveto {} 0 rlineto stroke",
-                MARGIN_LEFT, py, -TICK_LEN
-            )?;
-        }
-    }
-
-    writeln!(f, "/Helvetica findfont 9 scalefont setfont")?;
-    let char_w: f64 = 5.0;
-    for &v in &x_ticks {
-        let px = to_x(v);
-        if (MARGIN_LEFT..=MARGIN_LEFT + PLOT_W).contains(&px) {
-            let s = x_axis.label(v).unwrap_or_default();
-            let label_w = s.len() as f64 * char_w;
-            let tx = (px - label_w / 2.0)
-                .max(MARGIN_LEFT)
-                .min(MARGIN_LEFT + PLOT_W - label_w);
-            writeln!(
-                f,
-                "{} {} moveto ({}) show",
-                tx,
-                MARGIN_BOTTOM - 12.0,
-                ps_escape(&s)
-            )?;
-        }
-    }
-    for &v in &y_ticks {
-        let py = to_y(v);
-        if (MARGIN_BOTTOM..=MARGIN_BOTTOM + PLOT_H).contains(&py) {
-            let s = y_axis.label(v).unwrap_or_default();
-            let label_w = s.len() as f64 * char_w;
-            let tx = (MARGIN_LEFT - label_w - 4.0).max(2.0);
-            writeln!(f, "{} {} moveto ({}) show", tx, py - 3.0, ps_escape(&s))?;
-        }
-    }
-
-    writeln!(f, "/Helvetica findfont 10 scalefont setfont")?;
-    if !bounds.x_label.is_empty() {
-        let x_center = MARGIN_LEFT + PLOT_W / 2.0;
-        let x_str_approx_len = bounds.x_label.len() as f64 * char_w;
-        writeln!(
-            f,
-            "{} {} moveto ({}) show",
-            (x_center - x_str_approx_len / 2.0).max(MARGIN_LEFT),
-            MARGIN_BOTTOM - 24.0,
-            ps_escape(&bounds.x_label)
-        )?;
-    }
-    if !bounds.y_label.is_empty() {
-        writeln!(f, "gsave")?;
-        writeln!(
-            f,
-            "12 {} translate -90 rotate",
-            MARGIN_BOTTOM + PLOT_H / 2.0
-        )?;
-        let y_str_approx_len = bounds.y_label.len() as f64 * char_w;
-        writeln!(
-            f,
-            "{} 0 moveto ({}) show",
-            -y_str_approx_len / 2.0,
-            ps_escape(&bounds.y_label)
-        )?;
-        writeln!(f, "grestore")?;
-    }
-
-    write_eps_notes(&mut f, &bounds.notes, MARGIN_LEFT + PLOT_W)?;
-    writeln!(f, "grestore")?;
-    writeln!(f, "%%EOF")?;
-    f.sync_all()?;
-    Ok(())
-}
-
-/// A bar chart's value axis: from zero, or from the most negative value, to the
-/// largest.
-fn bar_bounds(data: &BarData) -> (f64, f64) {
-    let lo = data.bars.iter().map(|b| b.value).fold(0.0_f64, f64::min);
-    let hi = data.bars.iter().map(|b| b.value).fold(0.0_f64, f64::max);
-    if hi > lo { (lo, hi) } else { (lo, lo + 1.0) }
-}
-
-/// What a bar chart's value axis holds: the value column's numbers in `format`, whole
-/// for an integer column or a count.
-fn bar_numbers(data: &BarData, format: &NumberFormat) -> AxisNumbers {
-    AxisNumbers {
-        format: format.clone(),
-        whole: data.value_dtype.is_integer(),
-    }
-}
-
-/// A bar's category as the export writes it, cut to `max` characters.
-fn bar_label(bar: &Bar, max: usize) -> String {
-    let label = bar.label.as_deref().unwrap_or("null");
-    if label.chars().count() <= max {
-        return label.to_string();
-    }
-    let kept: String = label.chars().take(max.saturating_sub(3)).collect();
-    format!("{kept}...")
-}
-
-/// An export axis's tick labels, all in one format chosen from its ticks, in the
-/// table's number style. A whole-number axis (counts, an integer column) has no tick
-/// between two whole numbers.
-struct TickLabels {
-    ticks: Vec<f64>,
-    format: AxisFormat,
-    whole: bool,
-    /// A log scale's, where a tick at `v` stands for `exp_m1(v)`.
-    log: bool,
-    kind: XAxisTemporalKind,
-}
-
-impl TickLabels {
-    /// Labels for the ticks among `ticks` an axis holding `numbers` keeps.
-    fn new(ticks: &[f64], numbers: &AxisNumbers, log: bool, kind: XAxisTemporalKind) -> Self {
-        let whole = numbers.whole && !log;
-        let ticks: Vec<f64> = ticks
-            .iter()
-            .copied()
-            .filter(|&v| !whole || is_whole(v))
-            .collect();
-        let shown: Vec<f64> = ticks
-            .iter()
-            .map(|&v| if log { v.exp_m1() } else { v })
-            .collect();
-        Self {
-            format: AxisFormat::new(&shown, numbers),
-            ticks,
-            whole,
-            log,
-            kind,
-        }
-    }
-
-    /// A plain numeric axis's.
-    fn numbers(ticks: &[f64], numbers: &AxisNumbers) -> Self {
-        Self::new(ticks, numbers, false, XAxisTemporalKind::Numeric)
-    }
-
-    /// The ticks kept.
-    fn ticks(&self) -> Vec<f64> {
-        self.ticks.clone()
-    }
-
-    /// The tick at `v`'s label, or `None` where the axis has no tick.
-    fn label(&self, v: f64) -> Option<String> {
-        if self.whole && !is_whole(v) {
-            return None;
-        }
-        let v = if self.log { v.exp_m1() } else { v };
-        x_axis_label_at(v, self.kind, (v, v), 0, &self.format)
-    }
-}
-
-/// Whether `v` is a whole number: ticks are stepped in floating point, so a whole one
-/// can be a hair off.
-fn is_whole(v: f64) -> bool {
-    (v - v.round()).abs() <= 1e-9 * v.round().abs().max(1.0)
-}
-
-/// The ticks plotters puts on an axis from `lo` to `hi` for `count` labels, so the
-/// labels' format is chosen from the ticks it draws.
-fn png_ticks(lo: f64, hi: f64, count: usize) -> Vec<f64> {
-    use plotters::coord::ranged1d::Ranged;
-    plotters::coord::types::RangedCoordf64::from(lo..hi).key_points(count)
-}
-
-/// Ticks plotters puts on an axis from `lo` to `hi`: on a whole-number axis no more
-/// than the whole numbers in the range, so each tick can be one.
-fn tick_count(lo: f64, hi: f64, whole: bool) -> usize {
-    if whole {
-        ((hi - lo).floor() as usize + 1).clamp(2, 10)
-    } else {
-        10
-    }
-}
-
-/// Longest category label an export writes, so a long one cannot run into the bars.
-const BAR_LABEL_MAX: usize = 30;
-
-/// The category axis title, with the categories past the cap counted.
-fn bar_category_title(data: &BarData) -> String {
-    if data.more > 0 {
-        format!(
-            "{} (+ {} more)",
-            data.category,
-            crate::numfmt::group_chrome(data.more)
-        )
-    } else {
-        data.category.clone()
-    }
-}
-
-/// Write a bar chart to PNG: one horizontal bar per category, top to bottom in the
-/// chart's order, and the chart's notes under it. Size is (width, height) in pixels.
-pub fn write_bar_png(
-    path: &Path,
-    data: &BarData,
-    format: &NumberFormat,
-    title: Option<&str>,
-    notes: &[String],
-    (width, height): (u32, u32),
-) -> Result<()> {
-    use plotters::prelude::*;
-
-    if data.bars.is_empty() {
-        return Err(color_eyre::eyre::eyre!("No data to export"));
-    }
-    let n = data.bars.len();
-    let labels: Vec<String> = data
-        .bars
-        .iter()
-        .map(|b| bar_label(b, BAR_LABEL_MAX))
-        .collect();
-    let longest = labels.iter().map(|l| l.chars().count()).max().unwrap_or(1) as u32;
-    let (lo, hi) = bar_bounds(data);
-    // Air past the longest bars, so none runs into the frame.
-    let pad = (hi - lo) * 0.04;
-    let lo = if lo < 0.0 { lo - pad } else { lo };
-    let hi = if hi > 0.0 { hi + pad } else { hi };
-
-    let root = BitMapBackend::new(path, (width, height)).into_drawing_area();
-    root.fill(&WHITE)?;
-    let mut binding = ChartBuilder::on(&root);
-    let builder = binding.margin(30);
-    let builder = match title.filter(|t| !t.is_empty()) {
-        Some(t) => builder.caption(t, ("sans-serif", 20)),
-        None => builder,
+    let lo = values().fold(0.0_f64, f64::min);
+    let hi = values().fold(0.0_f64, f64::max);
+    let (lo, hi) = if hi > lo { (lo, hi) } else { (lo, lo + 1.0) };
+    let plot = Area {
+        left: frame.left + label_w + tick,
+        top,
+        right: frame.right,
+        bottom,
     };
-    let mut chart = builder
-        .x_label_area_size(40)
-        .y_label_area_size((longest * 7 + 30).clamp(50, width / 3))
-        // An i32 range holds both ends, so n segments are 0..n-1.
-        .build_cartesian_2d(lo..hi, (0..n as i32 - 1).into_segmented())?;
-
-    // The first bar sits in the top segment, as on screen.
-    let key_label = |v: &SegmentValue<i32>| match v {
-        SegmentValue::CenterOf(k) => labels
-            .get(n.wrapping_sub(1).wrapping_sub(*k as usize))
-            .cloned()
-            .unwrap_or_default(),
-        _ => String::new(),
+    let sx = Scale {
+        lo,
+        hi,
+        from: plot.left,
+        to: plot.right,
     };
-    let category_title = bar_category_title(data);
-    let numbers = bar_numbers(data, format);
-    let ticks = tick_count(lo, hi, numbers.whole);
-    let value_axis = TickLabels::numbers(&png_ticks(lo, hi, ticks), &numbers);
-    let value_tick = |v: &f64| value_axis.label(*v).unwrap_or_default();
-    chart
-        .configure_mesh()
-        .disable_y_mesh()
-        .y_labels(n)
-        .x_labels(ticks)
-        .x_desc(data.value_column.as_str())
-        .y_desc(category_title.as_str())
-        .x_label_formatter(&value_tick)
-        .y_label_formatter(&key_label)
-        .draw()?;
-
-    chart.draw_series(data.bars.iter().enumerate().map(|(i, bar)| {
-        let key = (n - 1 - i) as i32;
-        let mut rect = Rectangle::new(
-            [
-                (0.0, SegmentValue::Exact(key)),
-                (bar.value, SegmentValue::Exact(key + 1)),
-            ],
-            CYAN.filled(),
+    let x_ticks = axis_ticks(lo, hi, value, (plot.width() / (tick * 6.0)) as usize);
+    let hair = 0.6 * c.pt;
+    for (v, label) in &x_ticks {
+        let px = sx.at(*v);
+        if grid {
+            c.line((px, plot.top), (px, plot.bottom), palette.grid, hair);
+        }
+        c.text(
+            (px, plot.bottom + tick * 1.35),
+            tick,
+            palette.text_secondary,
+            ("middle", 400),
+            label,
         );
-        rect.set_margin(2, 2, 0, 0);
-        rect
-    }))?;
-
-    draw_png_notes(&root, notes, 30)?;
-    root.present()?;
-    Ok(())
-}
-
-/// Write a bar chart to EPS: one horizontal bar per category, the value past its end
-/// (right of the zero line for a negative bar, clear of the labels).
-/// The page grows with the number of bars. No external dependencies.
-pub fn write_bar_eps(
-    path: &Path,
-    data: &BarData,
-    format: &NumberFormat,
-    title: Option<&str>,
-    notes: &[String],
-) -> Result<()> {
-    if data.bars.is_empty() {
-        return Err(color_eyre::eyre::eyre!("No data to export"));
     }
-    let values = data.labels_in(format);
-    const W: f64 = 500.0;
-    const ROW_H: f64 = 14.0;
-    const CHAR_W: f64 = 5.0;
-    // Room for the longest value past the longest bar.
-    let longest_value = values.iter().map(|v| v.chars().count()).max().unwrap_or(0) as f64;
-    let margin_right = (longest_value * CHAR_W + 10.0).max(50.0);
-    // Ticks, the axis titles, and the notes below them.
-    const MARGIN_BOTTOM: f64 = 48.0;
-    let title = title.filter(|t| !t.is_empty());
-    let margin_top = if title.is_some() { 30.0 } else { 12.0 };
-
-    let labels: Vec<String> = data
-        .bars
-        .iter()
-        .map(|b| bar_label(b, BAR_LABEL_MAX))
-        .collect();
-    let longest = labels.iter().map(|l| l.chars().count()).max().unwrap_or(1) as f64;
-    let margin_left = (longest * CHAR_W + 16.0).clamp(40.0, W / 3.0);
-    let plot_w = W - margin_left - margin_right;
-    let plot_h = data.bars.len() as f64 * ROW_H;
-    let h = margin_top + plot_h + MARGIN_BOTTOM;
-    let (lo, hi) = bar_bounds(data);
-    let to_x = |v: f64| margin_left + (v - lo) / (hi - lo) * plot_w;
-
-    let mut f = File::create(path)?;
-    writeln!(f, "%!PS-Adobe-3.0 EPSF-3.0")?;
-    writeln!(
-        f,
-        "%%BoundingBox: 0 0 {} {}",
-        W.ceil() as i32,
-        h.ceil() as i32
-    )?;
-    writeln!(f, "%%Creator: datui")?;
-    writeln!(f, "%%EndComments")?;
-    writeln!(f, "gsave")?;
-    writeln!(f, "1 setlinewidth")?;
-
-    if let Some(title) = title {
-        writeln!(f, "/Helvetica findfont 12 scalefont setfont")?;
-        let title_w = title.len() as f64 * 6.0;
-        let tx = (W / 2.0 - title_w / 2.0).max(4.0);
-        writeln!(f, "{} {} moveto ({}) show", tx, h - 18.0, ps_escape(title))?;
+    if !value.title.is_empty() {
+        c.text(
+            ((plot.left + plot.right) / 2.0, frame.bottom - tick * 0.2),
+            tick,
+            palette.text,
+            ("middle", 600),
+            &value.title,
+        );
     }
-
-    // Value grid and ticks.
-    writeln!(f, "/Helvetica findfont 9 scalefont setfont")?;
-    let value_axis = TickLabels::numbers(&nice_ticks(lo, hi, 6), &bar_numbers(data, format));
-    for v in value_axis.ticks() {
-        let px = to_x(v);
-        let Some(s) = value_axis.label(v) else {
-            continue;
+    c.text(
+        (frame.left, frame.top + tick),
+        tick,
+        palette.text,
+        ("start", 600),
+        &data.category,
+    );
+    let rows = bars.len() + usize::from(more > 0);
+    let row_h = (plot.height() / rows.max(1) as f64).min(tick * 2.5 * groups as f64);
+    let zero = sx.at(0.0);
+    let gap = 1.0 * c.pt;
+    for (i, bar) in bars.iter().enumerate() {
+        let y0 = plot.top + row_h * i as f64;
+        let label = label_of(bar);
+        let max_chars = (label_w / (tick * 0.5)).max(3.0) as usize;
+        let label = if label.chars().count() > max_chars {
+            let kept: String = label.chars().take(max_chars.saturating_sub(1)).collect();
+            format!("{kept}…")
+        } else {
+            label
         };
-        if !(margin_left..=margin_left + plot_w).contains(&px) {
-            continue;
+        c.text(
+            (plot.left - tick * 0.5, y0 + row_h / 2.0 + tick * 0.35),
+            tick,
+            palette.text,
+            ("end", 400),
+            &label,
+        );
+        let body = row_h * 0.75;
+        let pieces: Vec<(usize, f64)> = if bar.by_group.is_empty() {
+            vec![(0, bar.value)]
+        } else {
+            bar.by_group
+                .iter()
+                .enumerate()
+                .filter_map(|(g, v)| v.map(|v| (g, v)))
+                .collect()
+        };
+        let each = body / groups as f64;
+        for (g, v) in pieces {
+            let slot = if bar.by_group.is_empty() { 0 } else { g };
+            let y = y0 + (row_h - body) / 2.0 + each * slot as f64;
+            let end = sx.at(v);
+            let (x, w) = if end >= zero {
+                (zero, end - zero)
+            } else {
+                (end, zero - end)
+            };
+            c.rect(
+                x,
+                y + gap / 2.0,
+                w.max(hair),
+                (each - gap).max(hair),
+                c.color(g),
+                1.0,
+            );
         }
-        writeln!(f, "0.9 setgray 0.5 setlinewidth")?;
-        writeln!(
-            f,
-            "{} {} moveto 0 {} rlineto stroke",
-            px, MARGIN_BOTTOM, plot_h
-        )?;
-        writeln!(f, "0 setgray 1 setlinewidth")?;
-        let label_w = s.len() as f64 * CHAR_W;
-        writeln!(
-            f,
-            "{} {} moveto ({}) show",
-            px - label_w / 2.0,
-            MARGIN_BOTTOM - 12.0,
-            ps_escape(&s)
-        )?;
     }
-
-    // Bars, first at the top, each with its category left of the plot and its value
-    // past its end.
-    for (i, ((bar, label), value)) in data.bars.iter().zip(&labels).zip(&values).enumerate() {
-        let top = MARGIN_BOTTOM + plot_h - i as f64 * ROW_H;
-        let (x0, x1) = (to_x(bar.value.min(0.0)), to_x(bar.value.max(0.0)));
-        writeln!(f, "0.0 0.7 0.9 setrgbcolor")?;
-        writeln!(
-            f,
-            "{} {} {} {} rectfill",
-            x0,
-            top - ROW_H + 2.0,
-            x1 - x0,
-            ROW_H - 4.0
-        )?;
-        writeln!(f, "0 setgray")?;
-        let baseline = top - ROW_H / 2.0 - 3.0;
-        let label_w = label.chars().count() as f64 * CHAR_W;
-        writeln!(
-            f,
-            "{} {} moveto ({}) show",
-            (margin_left - 6.0 - label_w).max(2.0),
-            baseline,
-            ps_escape(label)
-        )?;
-        let value_x = x1 + 4.0;
-        writeln!(
-            f,
-            "{} {} moveto ({}) show",
-            value_x,
-            baseline,
-            ps_escape(value)
-        )?;
+    if more > 0 {
+        let y0 = plot.top + row_h * bars.len() as f64;
+        c.text(
+            (plot.left - tick * 0.5, y0 + row_h / 2.0 + tick * 0.35),
+            tick,
+            palette.text_secondary,
+            ("end", 400),
+            &more_label,
+        );
     }
-
-    // The zero line and the plot's bottom edge.
-    writeln!(
-        f,
-        "{} {} moveto 0 {} rlineto stroke",
-        to_x(0.0),
-        MARGIN_BOTTOM,
-        plot_h
-    )?;
-    writeln!(
-        f,
-        "{} {} moveto {} 0 rlineto stroke",
-        margin_left, MARGIN_BOTTOM, plot_w
-    )?;
-
-    writeln!(f, "/Helvetica findfont 10 scalefont setfont")?;
-    let value_title = &data.value_column;
-    writeln!(
-        f,
-        "{} {} moveto ({}) show",
-        margin_left + plot_w / 2.0 - value_title.len() as f64 * CHAR_W / 2.0,
-        MARGIN_BOTTOM - 26.0,
-        ps_escape(value_title)
-    )?;
-    writeln!(
-        f,
-        "4 {} moveto ({}) show",
-        MARGIN_BOTTOM - 26.0,
-        ps_escape(&bar_category_title(data))
-    )?;
-
-    write_eps_notes(&mut f, notes, margin_left + plot_w)?;
-    writeln!(f, "grestore")?;
-    writeln!(f, "%%EOF")?;
-    f.sync_all()?;
-    Ok(())
+    c.line(
+        (zero, plot.top),
+        (zero, plot.bottom),
+        palette.text_secondary,
+        hair,
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chart_modal::ChartType;
-    use std::io::Read;
+    use crate::chart_data::{Bar, BoxPlotStats, HistogramBin, HistogramGroup, RowsRead};
 
-    /// Verifies that EPS output contains expected structural elements: header, grid, axis box,
-    /// tick marks, tick labels, axis titles, and series data.
+    fn lines(names: &[&str]) -> Figure {
+        Figure {
+            plot: Plot::Lines {
+                series: names
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| Series {
+                        name: n.to_string(),
+                        points: (0..10).map(|x| (x as f64, (x * (i + 1)) as f64)).collect(),
+                        breaks: Vec::new(),
+                    })
+                    .collect(),
+                scatter: false,
+                x: Axis {
+                    title: "x".to_string(),
+                    ..Default::default()
+                },
+                y: Axis {
+                    title: "value".to_string(),
+                    ..Default::default()
+                },
+                y_from_zero: false,
+            },
+            chart_notes: vec!["sample of 1,000 of 50k rows".to_string()],
+            grid: true,
+        }
+    }
+
+    fn options() -> ExportOptions {
+        ExportOptions {
+            title: "Cumulative return by symbol".to_string(),
+            description: "Mean monthly return, compounded".to_string(),
+            notes: "Illustrative values".to_string(),
+            source: "NYC flights, public domain".to_string(),
+            byline: "Chart: datui".to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// Every word of the dialog lands in the file, and lines are named at their ends
+    /// by default.
     #[test]
-    fn eps_contains_desired_elements() {
-        let series = vec![ChartExportSeries {
-            name: "s1".to_string(),
-            points: vec![(0.0, 1.0), (1.0, 2.0), (2.0, 1.5)],
-            breaks: Vec::new(),
-        }];
-        let bounds = ChartExportBounds {
-            x_min: 0.0,
-            x_max: 2.0,
-            y_min: 0.0,
-            y_max: 2.5,
-            x_label: "x_col".to_string(),
-            y_label: "y_col".to_string(),
-            x_axis_kind: XAxisTemporalKind::Numeric,
-            log_scale: false,
-            chart_title: None,
-            notes: vec![
-                "sample of 1,000 of 50k rows".to_string(),
-                "4 values outside p1-p99".to_string(),
-            ],
-            x_numbers: AxisNumbers::default(),
-            y_numbers: AxisNumbers::default(),
+    fn the_svg_carries_the_words_and_names_line_ends() {
+        let svg = svg(&lines(&["AAPL", "MSFT"]), &options()).unwrap();
+        for text in [
+            "Cumulative return by symbol",
+            "Mean monthly return, compounded",
+            "Illustrative values",
+            "Source: NYC flights, public domain · Chart: datui",
+            "sample of 1,000 of 50k rows",
+            ">AAPL<",
+            ">MSFT<",
+        ] {
+            assert!(svg.contains(text), "{text} missing:\n{svg}");
+        }
+        assert!(svg.contains("fill=\"#2a78d6\""), "light palette: {svg}");
+        assert!(svg.contains("fill=\"#ffffff\""), "a white background");
+        roxmltree_ok(&svg);
+    }
+
+    fn roxmltree_ok(svg: &str) {
+        tree(svg).expect("usvg reads the SVG");
+    }
+
+    /// Legend off draws no names; a box legend draws them once, at the corner.
+    #[test]
+    fn legend_off_draws_no_legend() {
+        let figure = lines(&["AAPL", "MSFT"]);
+        let off = svg(
+            &figure,
+            &ExportOptions {
+                legend: LegendPlace::Off,
+                ..options()
+            },
+        )
+        .unwrap();
+        assert!(!off.contains(">AAPL<") && !off.contains(">MSFT<"), "{off}");
+        let boxed = svg(
+            &figure,
+            &ExportOptions {
+                legend: LegendPlace::BottomLeft,
+                ..options()
+            },
+        )
+        .unwrap();
+        assert_eq!(boxed.matches(">AAPL<").count(), 1);
+        // One series is named by its axis.
+        let one = svg(&lines(&["AAPL"]), &options()).unwrap();
+        assert!(!one.contains(">AAPL<"));
+    }
+
+    #[test]
+    fn transparent_has_no_background_and_dark_uses_the_theme() {
+        let clear = svg(
+            &lines(&["a", "b"]),
+            &ExportOptions {
+                palette: Palette::transparent(),
+                ..options()
+            },
+        )
+        .unwrap();
+        assert!(!clear.contains("fill=\"#ffffff\" fill-opacity=\"1.00\"/>\n<text"));
+        assert!(!clear.contains("width=\"1600.00\""), "no full-page rect");
+        let config = crate::config::AppConfig::default();
+        let dark = Palette::dark(&config.theme.colors);
+        assert_eq!(dark.series[0], Rgb(0x7d, 0xcf, 0xff), "chart_1");
+        assert!(dark.dark);
+    }
+
+    /// The three formats come out as what they say: a PNG of the size asked, an
+    /// SVG whose text is outlines, a PDF.
+    #[test]
+    fn png_svg_and_pdf_are_what_they_say() {
+        let figure = lines(&["AAPL", "MSFT"]);
+        let options = ExportOptions {
+            width: 600,
+            height: 400,
+            dpi: 96.0,
+            ..options()
         };
+        let png = render(&figure, &options, ChartExportFormat::Png).unwrap();
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        // IHDR: width and height, big-endian, at bytes 16..24.
+        assert_eq!(&png[16..20], &600u32.to_be_bytes());
+        assert_eq!(&png[20..24], &400u32.to_be_bytes());
+        // pHYs: 96 dpi is 3,780 pixels a meter.
+        assert_eq!(&png[37..41], b"pHYs");
+        assert_eq!(&png[41..45], &3780u32.to_be_bytes());
+        let decoded = resvg::tiny_skia::Pixmap::decode_png(&png).expect("a valid PNG");
+        assert_eq!((decoded.width(), decoded.height()), (600, 400));
 
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("chart.eps");
-        write_chart_eps(&path, &series, ChartType::Line, &bounds).expect("write_chart_eps");
+        let svg =
+            String::from_utf8(render(&figure, &options, ChartExportFormat::Svg).unwrap()).unwrap();
+        assert!(svg.starts_with("<svg"), "{svg}");
+        assert!(svg.contains("width=\"6.250in\""), "printed size: {svg}");
+        assert!(!svg.contains("<text"), "text set as outlines");
+        usvg::Tree::from_str(&svg, &usvg::Options::default()).expect("valid SVG");
 
-        let mut content = String::new();
-        std::fs::File::open(&path)
-            .expect("open")
-            .read_to_string(&mut content)
-            .expect("read");
-
-        // Header and bounding box
-        assert!(content.contains("%!PS-Adobe-3.0 EPSF-3.0"), "EPS header");
-        assert!(content.contains("%%BoundingBox:"), "BoundingBox");
-        assert!(content.contains("%%Creator: datui"), "Creator");
-
-        // Grid (light gray lines)
-        assert!(content.contains("0.9 setgray"), "grid color");
-        assert!(
-            content.contains("rlineto stroke") && content.matches("rlineto stroke").count() > 2,
-            "grid/axis lines"
-        );
-
-        // Axis box
-        assert!(content.contains("closepath stroke"), "axis box");
-
-        // Tick marks (short outward lines; we draw moveto then rlineto then stroke)
-        assert!(content.contains("moveto"), "tick/line moveto");
-        assert!(content.contains("stroke"), "stroke");
-
-        // Tick labels (numeric text)
-        assert!(content.contains(") show"), "tick or axis label show");
-
-        // Axis titles (column names)
-        assert!(content.contains("(x_col)"), "x axis title");
-        assert!(content.contains("(y_col)"), "y axis title");
-
-        // Series data (color and drawing)
-        assert!(content.contains("setrgbcolor"), "series color");
-        assert!(content.contains("lineto"), "line series");
-
-        // The notes on the chart's input, as the chart view shows them
-        assert!(
-            content.contains("(sample of 1,000 of 50k rows)"),
-            "sample note"
-        );
-        assert!(content.contains("(4 values outside p1-p99)"), "range note");
-    }
-
-    /// Walks a PostScript line and returns the text that sits *outside* string
-    /// literals, which is the part a interpreter executes as code.
-    ///
-    /// Deliberately a real scanner rather than a substring search: the whole
-    /// question is whether a `)` in the data terminates a literal early, and
-    /// only tracking `\` escaping answers that.
-    fn code_outside_strings(line: &str) -> String {
-        let mut out = String::new();
-        let mut chars = line.chars();
-        let mut in_string = false;
-        while let Some(c) = chars.next() {
-            match c {
-                // A backslash escapes the next character, inside a string or not.
-                '\\' => {
-                    chars.next();
-                }
-                '(' if !in_string => in_string = true,
-                ')' if in_string => in_string = false,
-                _ if !in_string => out.push(c),
-                _ => {}
-            }
-        }
-        out
-    }
-
-    /// Chart labels come from column names and cell values, so they are
-    /// untrusted. PostScript is a programming language, and an exported chart
-    /// gets opened by other people in a viewer, so a label that escapes its
-    /// string literal becomes code running on someone else's machine.
-    ///
-    /// `ps_escape` handles this today. This test exists so that a future `show`
-    /// call added without it fails here rather than shipping.
-    #[test]
-    fn chart_labels_cannot_escape_postscript_string_literals() {
-        // Each payload closes the literal and leaves the marker as a bare
-        // token, which is where an interpreter would read it as code. The
-        // marker deliberately sits *outside* any parentheses: text inside a
-        // literal is inert no matter what surrounds it, so a payload shaped
-        // like `) (INJECTED) show (` would pass this test while still being a
-        // real injection.
-        let payloads = [
-            ") INJECTED 0 0 moveto (",
-            "\\) INJECTED (",
-            "a) INJECTED (b",
-            "trailing backslash \\",
-            "unbalanced ( open",
-            "unbalanced ) close",
-        ];
-
-        for payload in payloads {
-            let series = vec![ChartExportSeries {
-                name: payload.to_string(),
-                points: vec![(0.0, 1.0), (1.0, 2.0)],
-                breaks: Vec::new(),
-            }];
-            let bounds = ChartExportBounds {
-                x_min: 0.0,
-                x_max: 2.0,
-                y_min: 0.0,
-                y_max: 2.5,
-                x_label: payload.to_string(),
-                y_label: payload.to_string(),
-                x_axis_kind: XAxisTemporalKind::Numeric,
-                log_scale: false,
-                chart_title: Some(payload.to_string()),
-                notes: vec![payload.to_string()],
-                x_numbers: AxisNumbers::default(),
-                y_numbers: AxisNumbers::default(),
-            };
-
-            let dir = tempfile::tempdir().expect("temp dir");
-            let path = dir.path().join("chart.eps");
-            write_chart_eps(&path, &series, ChartType::Line, &bounds).expect("write_chart_eps");
-
-            let mut content = String::new();
-            std::fs::File::open(&path)
-                .expect("open")
-                .read_to_string(&mut content)
-                .expect("read");
-
-            for (i, line) in content.lines().enumerate() {
-                // DSC comments are not executed, and carry no data anyway.
-                if line.starts_with('%') {
-                    continue;
-                }
-                let code = code_outside_strings(line);
-                assert!(
-                    !code.contains("INJECTED"),
-                    "payload {:?} escaped its string literal on line {}: {:?}",
-                    payload,
-                    i + 1,
-                    line
-                );
-            }
-        }
+        let pdf = render(&figure, &options, ChartExportFormat::Pdf).unwrap();
+        assert!(pdf.starts_with(b"%PDF-"));
+        // 600 x 400 px at 96 dpi: 450 x 300 pt.
+        assert!(String::from_utf8_lossy(&pdf).contains("/MediaBox [0 0 450 300]"));
     }
 
     #[test]
-    fn ps_escape_neutralises_literal_delimiters() {
-        // Backslash must be escaped first, or escaping the parens would
-        // introduce backslashes that then get doubled and stop escaping.
-        assert_eq!(ps_escape("a(b)c"), "a\\(b\\)c");
-        assert_eq!(ps_escape("back\\slash"), "back\\\\slash");
-        assert_eq!(ps_escape("\\)"), "\\\\\\)");
-        assert_eq!(ps_escape("plain"), "plain");
+    fn presets_set_sizes() {
+        assert_eq!(SizePreset::Slide.size(), Some((1920, 1080)));
+        assert_eq!(SizePreset::Document.size(), Some((1600, 1000)));
+        assert_eq!(SizePreset::Square.size(), Some((1200, 1200)));
+        // 3.5 in and 7 in at 300 dpi.
+        let (w, _) = SizePreset::SingleColumn.size().unwrap();
+        assert_eq!(
+            f64::from(w) / f64::from(SizePreset::SingleColumn.dpi()),
+            3.5
+        );
+        let (w, _) = SizePreset::DoubleColumn.size().unwrap();
+        assert_eq!(
+            f64::from(w) / f64::from(SizePreset::DoubleColumn.dpi()),
+            7.0
+        );
+        assert_eq!(SizePreset::Custom.size(), None);
     }
 
-    fn bar_data() -> BarData {
-        BarData {
+    /// Every plot draws into a valid SVG, at the smallest preset too.
+    #[test]
+    fn every_plot_draws() {
+        let rows = RowsRead::default();
+        let bars = BarData {
             category: "carrier".to_string(),
-            value_column: "delay".to_string(),
+            value_column: "mean delay".to_string(),
             bars: vec![
                 Bar {
-                    label: Some("F9".to_string()),
-                    value: 21.92,
+                    label: Some("UA".to_string()),
+                    value: 12.0,
+                    by_group: vec![Some(5.0), Some(7.0)],
                 },
                 Bar {
                     label: None,
-                    value: 3.0,
-                },
-                Bar {
-                    label: Some("AS) INJECTED (".to_string()),
-                    value: -9.93,
+                    value: -3.0,
+                    by_group: vec![Some(-3.0), None],
                 },
             ],
-            more: 12,
+            more: 3,
             no_value: 0,
-            rows: Default::default(),
+            rows,
             value_dtype: polars::prelude::DataType::Float64,
             counted: None,
-        }
-    }
-
-    /// A bar chart exports to both formats: every category and value in the EPS, the
-    /// categories past the cap counted, a label unable to escape its string.
-    #[test]
-    fn bar_charts_export_to_png_and_eps() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let data = bar_data();
-        let png = dir.path().join("bars.png");
-        let notes = ["sample of 10,000 of 50k rows".to_string()];
-        let format = NumberFormat::preset("european").unwrap();
-        write_bar_png(
-            &png,
-            &data,
-            &format,
-            Some("Delay by carrier"),
-            &notes,
-            (640, 480),
-        )
-        .expect("png");
-        assert!(std::fs::metadata(&png).unwrap().len() > 0);
-
-        let eps = dir.path().join("bars.eps");
-        write_bar_eps(&eps, &data, &format, Some("Delay by carrier"), &notes).expect("eps");
-        let content = std::fs::read_to_string(&eps).unwrap();
-        for text in [
-            "(sample of 10,000 of 50k rows)",
-            "(F9)",
-            "(null)",
-            "(21,92)",
-            "(-9,93)",
-            "(delay)",
-            "(carrier (+ 12 more))",
-        ] {
-            let text = text.replace("carrier (+ 12 more)", "carrier \\(+ 12 more\\)");
-            assert!(content.contains(&text), "{text} in {content}");
-        }
-        for line in content.lines().filter(|l| !l.starts_with('%')) {
-            assert!(!code_outside_strings(line).contains("INJECTED"), "{line}");
-        }
-    }
-
-    /// Counts, and an integer column's values, tick in whole numbers in the table's
-    /// format: `5,000`, never `5000.00`, and no tick between two whole numbers.
-    #[test]
-    fn a_whole_number_value_axis_has_whole_ticks() {
-        let format = NumberFormat::preset("thousands").unwrap();
-        let whole = AxisNumbers {
-            format: format.clone(),
-            whole: true,
+            groups: vec!["EWR".to_string(), "JFK".to_string()],
         };
-        let axis = TickLabels::numbers(&[0.0, 5_000.0, 10_000.0], &whole);
-        assert_eq!(axis.label(10_000.0).as_deref(), Some("10,000"));
-        assert_eq!(axis.label(2.000_000_000_000_4).as_deref(), Some("2"));
-        assert_eq!(axis.label(0.5), None);
-        let axis = TickLabels::numbers(&[0.0, 0.5, 1.0], &AxisNumbers::default());
-        assert_eq!(axis.label(0.5).as_deref(), Some("0.5"));
-
-        let dir = tempfile::tempdir().expect("temp dir");
-        let counts = |values: &[f64]| BarData {
-            category: "carrier".to_string(),
-            value_column: "count".to_string(),
-            bars: values
-                .iter()
-                .map(|&value| Bar {
-                    label: Some("UA".to_string()),
-                    value,
+        let histogram = HistogramData {
+            column: "delay".to_string(),
+            bins: (0..4)
+                .map(|i| HistogramBin {
+                    center: i as f64 + 0.5,
+                    count: i as f64,
                 })
                 .collect(),
-            more: 0,
-            no_value: 0,
-            rows: Default::default(),
-            value_dtype: polars::prelude::DataType::UInt64,
-            counted: None,
-        };
-        for (values, ticks) in [
-            (
-                &[30_000.0, 15_000.0][..],
-                &["(0)", "(10,000)", "(30,000)"][..],
-            ),
-            (&[3.0, 1.0][..], &["(0)", "(1)", "(2)", "(3)"][..]),
-        ] {
-            let data = counts(values);
-            let eps = dir.path().join("counts.eps");
-            write_bar_eps(&eps, &data, &format, None, &[]).expect("eps");
-            let content = std::fs::read_to_string(&eps).unwrap();
-            for tick in ticks {
-                assert!(content.contains(tick), "{tick} in {content}");
-            }
-            assert!(!content.contains(".5)"), "{content}");
-            assert!(!content.contains(".00)"), "{content}");
-            let png = dir.path().join("counts.png");
-            write_bar_png(&png, &data, &format, None, &[], (640, 480)).expect("png");
-        }
-    }
-
-    /// Any whole-number axis, not only a bar chart's: a histogram's counts and an
-    /// integer x column tick whole in the table's format, in PNG and EPS alike.
-    #[test]
-    fn whole_number_axes_have_whole_ticks_on_every_chart() {
-        let format = NumberFormat::preset("thousands").unwrap();
-        let series = vec![ChartExportSeries {
-            name: "count".to_string(),
-            points: vec![(0.0, 30_000.0), (1.5, 12_000.0), (3.0, 0.0)],
-            breaks: Vec::new(),
-        }];
-        let bounds = ChartExportBounds {
+            groups: vec![
+                HistogramGroup {
+                    name: "a".to_string(),
+                    counts: vec![0.1, 0.2, 0.3, 0.4],
+                },
+                HistogramGroup {
+                    name: "b".to_string(),
+                    counts: vec![0.4, 0.3, 0.2, 0.1],
+                },
+            ],
+            share: true,
             x_min: 0.0,
-            x_max: 3.0,
-            y_min: 0.0,
-            y_max: 30_000.0,
-            x_label: "passengers".to_string(),
-            y_label: "Count".to_string(),
-            x_axis_kind: XAxisTemporalKind::Numeric,
-            log_scale: false,
-            chart_title: None,
-            notes: Vec::new(),
-            x_numbers: AxisNumbers {
-                format: format.clone(),
-                whole: true,
-            },
-            y_numbers: AxisNumbers {
-                format,
-                whole: true,
-            },
+            x_max: 4.0,
+            max_count: 0.4,
+            rows,
+            clipped: None,
         };
-        let dir = tempfile::tempdir().expect("temp dir");
-        let eps = dir.path().join("whole.eps");
-        write_chart_eps(&eps, &series, ChartType::Bar, &bounds).expect("eps");
-        let content = std::fs::read_to_string(&eps).unwrap();
-        for tick in ["(0)", "(1)", "(3)", "(10,000)", "(30,000)"] {
-            assert!(content.contains(tick), "{tick} in {content}");
-        }
-        assert!(!content.contains(".5)"), "{content}");
-        assert!(!content.contains(".00)"), "{content}");
-        let png = dir.path().join("whole.png");
-        write_chart_png(&png, &series, ChartType::Bar, &bounds, (640, 480)).expect("png");
-
-        let y_axis = bounds.y_axis(&[0.0, 15_000.0, 30_000.0]);
-        assert_eq!(y_axis.label(15_000.0).as_deref(), Some("15,000"));
-        assert_eq!(bounds.x_axis(&[0.0, 0.5, 1.0]).label(0.5), None);
-    }
-
-    /// An export's axis takes one format from its ticks, in the table's number
-    /// style: densities around 0.01 keep their places all the way up, never switching
-    /// to scientific notation, and counts group as the table groups them.
-    #[test]
-    fn export_axes_keep_one_format_in_the_table_style() {
-        let european = NumberFormat::preset("european").unwrap();
-        let series = vec![ChartExportSeries {
-            name: "price".to_string(),
-            points: vec![(0.0, 0.0), (6_000.0, 0.012), (12_000.0, 0.0)],
-            breaks: Vec::new(),
-        }];
-        let bounds = ChartExportBounds {
+        let boxes = BoxPlotData {
+            stats: vec![BoxPlotStats {
+                name: "UA".to_string(),
+                min: 0.0,
+                q1: 1.0,
+                median: 2.0,
+                q3: 3.0,
+                max: 4.0,
+            }],
+            y_min: 0.0,
+            y_max: 4.0,
+            rows,
+            clipped: None,
+            of: 0,
+        };
+        let heatmap = HeatmapData {
+            x_column: "a".to_string(),
+            y_column: "b".to_string(),
             x_min: 0.0,
-            x_max: 12_000.0,
+            x_max: 1.0,
             y_min: 0.0,
-            y_max: 0.012,
-            x_label: "price".to_string(),
-            y_label: "Density".to_string(),
-            x_axis_kind: XAxisTemporalKind::Numeric,
-            log_scale: false,
-            chart_title: None,
-            notes: Vec::new(),
-            x_numbers: AxisNumbers {
-                format: european,
-                whole: false,
-            },
-            y_numbers: AxisNumbers::default(),
+            y_max: 1.0,
+            x_bins: 2,
+            y_bins: 2,
+            counts: vec![vec![1.0, 2.0], vec![0.0, 4.0]],
+            max_count: 4.0,
+            rows,
         };
-        let dir = tempfile::tempdir().expect("temp dir");
-        let eps = dir.path().join("kde.eps");
-        write_chart_eps(&eps, &series, ChartType::Line, &bounds).expect("eps");
-        let content = std::fs::read_to_string(&eps).unwrap();
-        for tick in ["(0.000)", "(0.006)", "(0.012)", "(6.000)", "(12.000)"] {
-            assert!(content.contains(tick), "{tick} in {content}");
+        let plots = [
+            Plot::Bars {
+                data: bars,
+                value: Axis::default(),
+            },
+            Plot::Histogram {
+                data: histogram,
+                x: Axis::default(),
+                y: Axis::default(),
+            },
+            Plot::Box {
+                data: boxes,
+                x_title: "carrier".to_string(),
+                y: Axis::default(),
+            },
+            Plot::Heatmap {
+                data: heatmap,
+                x: Axis::default(),
+                y: Axis::default(),
+            },
+        ];
+        let (w, h) = SizePreset::SingleColumn.size().unwrap();
+        for plot in plots {
+            let figure = Figure {
+                plot,
+                chart_notes: Vec::new(),
+                grid: true,
+            };
+            let options = ExportOptions {
+                width: w,
+                height: h,
+                dpi: SizePreset::SingleColumn.dpi(),
+                ..options()
+            };
+            let svg = svg(&figure, &options).unwrap();
+            roxmltree_ok(&svg);
         }
-        // Per tick, the lower ones read `(2.00e-3)`.
-        assert!(!content.contains("e-3)"), "{content}");
-        let png = dir.path().join("kde.png");
-        write_chart_png(&png, &series, ChartType::Line, &bounds, (640, 480)).expect("png");
-
-        // plotters ticks where these say, so its labels are chosen from its ticks.
-        assert_eq!(png_ticks(0.0, 0.012, 10).len(), 7);
-        let y_axis = bounds.y_axis(&png_ticks(0.0, 0.012, 10));
-        assert_eq!(y_axis.label(0.002).as_deref(), Some("0.002"));
     }
 
-    /// A long category is cut rather than run into the bars.
     #[test]
-    fn a_long_bar_label_is_cut() {
-        let long = Bar {
-            label: Some("x".repeat(80)),
-            value: 1.0,
+    fn dates_tick_on_the_calendar() {
+        // 2024-01-01 to 2026-01-01, as days since the epoch.
+        let axis = Axis {
+            kind: XAxisTemporalKind::Date,
+            ..Default::default()
         };
-        let cut = bar_label(&long, BAR_LABEL_MAX);
-        assert_eq!(cut.chars().count(), BAR_LABEL_MAX);
-        assert!(cut.ends_with("..."), "{cut}");
+        let ticks = axis_ticks(19723.0, 20454.0, &axis, 6);
+        let labels: Vec<&str> = ticks.iter().map(|(_, l)| l.as_str()).collect();
+        assert!(labels.contains(&"2025"), "{labels:?}");
+        assert!(ticks.len() <= 6);
+    }
+
+    #[test]
+    fn too_small_says_so() {
+        let err = svg(
+            &lines(&["a"]),
+            &ExportOptions {
+                width: 60,
+                height: 40,
+                dpi: 96.0,
+                ..options()
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("does not fit"), "{err}");
     }
 }

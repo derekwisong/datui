@@ -26,6 +26,10 @@ pub const MAX_DISTINCT: usize = 2_000_000;
 /// reads less of it: 10,000,000 rows at the default sample size.
 pub const LARGE_SAMPLES: usize = 100;
 
+/// Bins of the histogram view. An integer column spanning fewer values than this
+/// takes a bin per value instead.
+pub const HISTOGRAM_BINS: usize = 40;
+
 /// Which way the values are listed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Order {
@@ -254,6 +258,91 @@ fn weighted_sum(values: &Series, counts: &[u64]) -> PolarsResult<Number> {
     Ok(Number::Float(total))
 }
 
+/// A number column's counts in bins: every value with its rows. The bins span the
+/// values, or the 1st to the 99th percentile when the tails reach ten times past
+/// it, and the values outside are counted. An integer column of few values has a
+/// bin per value.
+fn histogram_of(
+    column: &str,
+    values: &Series,
+    rows: &[u64],
+) -> Option<crate::chart_data::HistogramData> {
+    use crate::chart_data::{Clipped, HistogramBin, HistogramData, RowsRead, ValueRange};
+    let dtype = values.dtype();
+    if !dtype.is_primitive_numeric() {
+        return None;
+    }
+    let as_f64 = values.cast(&DataType::Float64).ok()?;
+    let mut pairs: Vec<(f64, u64)> = as_f64
+        .f64()
+        .ok()?
+        .iter()
+        .zip(rows)
+        .filter_map(|(v, n)| Some((v.filter(|v| v.is_finite())?, *n)))
+        .collect();
+    pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (min, max) = (pairs.first()?.0, pairs.last()?.0);
+    let total: u64 = pairs.iter().map(|p| p.1).sum();
+    // The value at quantile `q`, weighted by rows.
+    let at = |q: f64| {
+        let wanted = ((q * total as f64).ceil() as u64).max(1);
+        let mut seen = 0;
+        for (v, n) in &pairs {
+            seen += n;
+            if seen >= wanted {
+                return *v;
+            }
+        }
+        max
+    };
+    let (p1, p99) = (at(0.01), at(0.99));
+    let clip = p99 > p1 && (max - min) > 10.0 * (p99 - p1);
+    let (lo, hi) = if clip { (p1, p99) } else { (min, max) };
+    let (bins, width, x_min) = if dtype.is_integer() && hi - lo < HISTOGRAM_BINS as f64 {
+        ((hi - lo) as usize + 1, 1.0, lo - 0.5)
+    } else if hi > lo {
+        (HISTOGRAM_BINS, (hi - lo) / HISTOGRAM_BINS as f64, lo)
+    } else {
+        (1, 1.0, lo - 0.5)
+    };
+    let mut counts = vec![0.0_f64; bins];
+    let mut outside = 0;
+    for (v, n) in pairs {
+        if v < lo || v > hi {
+            outside += n as usize;
+            continue;
+        }
+        let bin = (((v - x_min) / width).floor().max(0.0) as usize).min(bins - 1);
+        counts[bin] += n as f64;
+    }
+    let max_count = counts.iter().copied().fold(0.0, f64::max);
+    Some(HistogramData {
+        column: column.to_string(),
+        bins: counts
+            .into_iter()
+            .enumerate()
+            .map(|(i, count)| HistogramBin {
+                center: x_min + (i as f64 + 0.5) * width,
+                count,
+            })
+            .collect(),
+        groups: Vec::new(),
+        share: false,
+        x_min,
+        x_max: x_min + bins as f64 * width,
+        max_count,
+        rows: RowsRead {
+            total_rows: total as usize,
+            sample_size: None,
+            envelope_steps: None,
+        },
+        clipped: clip.then_some(Clipped {
+            range: ValueRange::Percentile1To99,
+            outside,
+        }),
+    })
+}
+
 /// What one line of the listing stands for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
@@ -292,6 +381,9 @@ pub struct ValueCounts {
     pub summary: Summary,
     count_lines: Vec<Line>,
     value_lines: Vec<Line>,
+    /// A number column's counts in bins, for the histogram view; made with the
+    /// counts, off the UI thread.
+    pub histogram: Option<crate::chart_data::HistogramData>,
 }
 
 impl ValueCounts {
@@ -341,7 +433,9 @@ impl ValueCounts {
         let mut by_count = by_value.clone();
         by_count.sort_by(|&a, &b| rows[b].cmp(&rows[a]));
         let null_rows = summary.nulls as u64;
+        let histogram = histogram_of(column, &values, &rows);
         Ok(Self {
+            histogram,
             column: column.to_string(),
             dtype,
             count_lines: listing(&by_count, &rows, null_rows, true),

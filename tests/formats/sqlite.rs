@@ -457,3 +457,69 @@ fn the_sqlite_tab_lists_the_databases_tables() {
     let names: Vec<&str> = detail.list.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(names, ["customers", "orders", "big_orders"]);
 }
+
+/// A database at `dir/name` built by `sql`, through Python's `sqlite3`.
+fn database(dir: &Path, name: &str, sql: &str) -> PathBuf {
+    let path = dir.join(name);
+    let _ = std::fs::remove_file(&path);
+    let python = if Path::new(".venv/bin/python").exists() {
+        ".venv/bin/python"
+    } else {
+        "python3"
+    };
+    let status = std::process::Command::new(python)
+        .args([
+            "-c",
+            "import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.executescript(sys.argv[2]); c.commit()",
+        ])
+        .arg(&path)
+        .arg(sql)
+        .status()
+        .expect("python runs");
+    assert!(status.success());
+    path
+}
+
+/// A table of no rows shows its header and says it is empty, whether its columns
+/// declare a type or not, and as one of several tables.
+#[test]
+fn an_empty_table_shows_its_header() {
+    let (options, dir) = scratch();
+    let untyped = database(&dir, "untyped.db", "CREATE TABLE t(a)");
+    let lines = crate::empty_table_lines(untyped, options.clone());
+    assert_eq!(&lines[..3], ["a", "str", "No rows"], "{lines:#?}");
+
+    let typed = database(&dir, "typed.db", "CREATE TABLE t(a INTEGER, b TEXT)");
+    let lines = crate::empty_table_lines(typed, options.clone());
+    assert_eq!(&lines[..3], ["a  b", "i64  str", "No rows"], "{lines:#?}");
+
+    let several = database(
+        &dir,
+        "several.db",
+        "CREATE TABLE full(a INTEGER); INSERT INTO full VALUES (1), (2); CREATE TABLE empty(b)",
+    );
+    let lines = crate::empty_table_lines(
+        several,
+        OpenOptions {
+            table: Some("empty".into()),
+            ..options
+        },
+    );
+    assert_eq!(&lines[..3], ["b", "str", "No rows"], "{lines:#?}");
+}
+
+/// An untyped column with rows reads as text, as the empty one does.
+#[test]
+fn an_untyped_column_with_rows_is_text() {
+    let (options, dir) = scratch();
+    let db = database(
+        &dir,
+        "rows.db",
+        "CREATE TABLE t(a); INSERT INTO t VALUES ('x'), ('y')",
+    );
+    let (app, _rx) = open_with(db, options);
+    assert_eq!(app.error_message(), None);
+    let df = frame(&app);
+    assert_eq!(types(&df), [("a".to_string(), DataType::String)]);
+    assert_eq!(df.height(), 2);
+}

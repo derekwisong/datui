@@ -10080,6 +10080,15 @@ fn cell_line(mut spans: Vec<Span<'static>>, width: u16, right: bool) -> Line<'st
 }
 
 /// The rows of `df` on screen: `len` of them from `offset`, or `None` past its end.
+/// As [`visible_slice`], or the frame's columns with no rows when none of its rows is
+/// on screen, so a table of no rows still draws its header.
+fn visible_or_header(df: &DataFrame, offset: usize, len: usize) -> Option<DataFrame> {
+    if df.width() == 0 {
+        return None;
+    }
+    Some(visible_slice(df, offset, len).unwrap_or_else(|| df.clear()))
+}
+
 fn visible_slice(df: &DataFrame, offset: usize, len: usize) -> Option<DataFrame> {
     let len = len.min(df.height().saturating_sub(offset));
     (offset < df.height() && len > 0).then(|| df.slice(offset as i64, len))
@@ -11098,7 +11107,7 @@ impl StatefulWidget for DataTable {
         let locked_slice = state
             .locked_df
             .as_ref()
-            .and_then(|df| visible_slice(df, offset, state.visible_rows));
+            .and_then(|df| visible_or_header(df, offset, state.visible_rows));
         self.fit_pending(state, offset, state.visible_rows.min(rows_room), cap);
 
         if state.df.is_some() || state.locked_df.is_some() {
@@ -11180,7 +11189,7 @@ impl StatefulWidget for DataTable {
             if let Some(sliced_df) = state
                 .df
                 .as_ref()
-                .and_then(|df| visible_slice(df, offset, state.visible_rows))
+                .and_then(|df| visible_or_header(df, offset, state.visible_rows))
             {
                 let total_cols = sliced_df.width();
                 let (shown, columns, rows) = self.render_scrolling(
@@ -11238,11 +11247,18 @@ impl StatefulWidget for DataTable {
                 columns: drawn_columns,
             });
         } else if !state.column_order.is_empty() {
-            // Empty result (0 rows) but we have a schema - show empty table with header, no rows
+            // No rows on hand, but a schema: the header alone, each column its own type.
             let empty_columns: Vec<_> = state
                 .column_order
                 .iter()
-                .map(|name| Series::new(name.as_str().into(), Vec::<String>::new()).into())
+                .map(|name| {
+                    let dtype = state
+                        .schema
+                        .get(name.as_str())
+                        .cloned()
+                        .unwrap_or(DataType::String);
+                    Series::new_empty(name.as_str().into(), &dtype).into()
+                })
                 .collect();
             match DataFrame::new_infer_height(empty_columns) {
                 Ok(empty_df) => {
@@ -11271,6 +11287,19 @@ impl StatefulWidget for DataTable {
             Paragraph::new("No data").render(area, buf);
         }
 
+        // A table known to hold no rows says so under its header.
+        let empty = state.num_rows_valid && state.num_rows == 0 && !state.column_order.is_empty();
+        if empty && area.height > header_h && data_area.width > 0 {
+            let line = Rect {
+                y: area.y + header_h,
+                height: 1,
+                ..data_area
+            };
+            Paragraph::new("No rows")
+                .style(Style::default().fg(self.dimmed))
+                .render(line, buf);
+        }
+
         // The rail: the header rows take the header fill so the bar runs edge to edge,
         // and the selected row gets the accent mark.
         if rail_area.width > 0 && rail_area.height > 0 {
@@ -11286,6 +11315,7 @@ impl StatefulWidget for DataTable {
                 cell.set_style(header_style);
             }
             if state.df.is_some()
+                && !empty
                 && let Some(sel) = state.table_state.selected()
             {
                 let y = rail_area.y + header_h + sel as u16;

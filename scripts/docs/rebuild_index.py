@@ -114,7 +114,7 @@ def collect_versions(output_dir: Path) -> Tuple[List[Dict], List[Dict], Optional
       via build_single_version_docs.py <branch>.
     recent_versions: development dirs first (main first, then alphabetical), then 5 most recent tags.
     older_versions: remaining tags, sorted newest first.
-    latest_stable_path: path of the newest tag (for demo image); same content as "latest" when present.
+    latest_stable_path: path of the newest tag; same content as "latest" when present.
     """
     recent: List[Dict] = []
     older: List[Dict] = []
@@ -218,18 +218,20 @@ def main():
     docs_path = LATEST_RELEASE_DIR if alias_exists else latest_stable_path
     if docs_path is None and recent_versions:
         docs_path = recent_versions[0]["path"]
-    demo_path = None
+    # The teaser (#356): a GIF behind its poster, both from the docs build's demos.
+    teaser = None
     if docs_path:
-        candidate = Path(docs_path) / "demos" / "02-querying.gif"
-        if (output_dir / candidate).is_file():
-            demo_path = candidate.as_posix()
+        gif = Path(docs_path) / "demos" / "teaser.gif"
+        poster = Path(docs_path) / "demos" / "teaser.png"
+        if (output_dir / gif).is_file() and (output_dir / poster).is_file():
+            teaser = {"gif": gif.as_posix(), "poster": poster.as_posix()}
 
     output_html = template.render(
         recent_versions=recent_versions,
         older_versions=older_versions,
         docs_path=docs_path,
         has_stable=alias_exists or latest_stable_path is not None,
-        demo_path=demo_path,
+        teaser=teaser,
     )
 
     # Write the output file

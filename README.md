@@ -1,46 +1,57 @@
 # datui
 
-**A terminal UI for tabular data.**
-
-Browse, filter, query, chart and export tables from local disk or cloud storage,
-or from Polars DataFrames in Python.
+**Explore tabular data in your terminal.**
 
 <!-- generated: format-count -->
 datui reads 27 formats: Parquet, CSV, TSV, PSV, JSON, NDJSON, Arrow IPC, Avro, ORC, Excel, SafeTensors, GGUF, NMEA, GPX, WAV/AIFF audio, MIDI, SQLite, VCD, FIX, SDF, NumPy, ELF, ULog, DataFlash, candump, plain text, systemd journal, and binary formats you describe in a format spec.
 <!-- end generated: format-count -->
 
+Sort, filter and query with SQL, chart, analyze and export, from local disk, S3,
+GCS, Azure or HTTP(S), or from Polars frames in Python.
+
 [![Release](https://img.shields.io/github/v/release/derekwisong/datui?style=flat-square)](https://github.com/derekwisong/datui/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/derekwisong/datui/ci.yml?branch=main&style=flat-square)](https://github.com/derekwisong/datui/actions)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 
-[Website][site] · [Documentation][docs] · [Quick start][quick-start] · [All demos][demos]
+[Website][site] · [Documentation][docs] · [Quick start][quick-start] · [Formats][formats]
+
+<!-- CAPTURE PLACEHOLDER (#356): the teaser GIF, the same one as the landing page's. -->
+
+## Install
+
+<!-- generated: install -->
+```bash,install
+curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
+```
+
+| Platform | Command |
+|---|---|
+| Windows, WinGet | `winget install derekwisong.datui` |
+| [macOS, Homebrew](https://github.com/derekwisong/homebrew-datui) | `brew tap derekwisong/datui && brew trust derekwisong/datui && brew install datui` |
+| [Python, PyPI](https://pypi.org/project/datui/) | `pip install datui` |
+| [Rust, crates.io](https://crates.io/crates/datui) | `cargo install datui --locked` |
+| [Arch Linux, AUR](https://aur.archlinux.org/packages/datui-bin) | `paru -S datui-bin` |
+| Debian, Ubuntu | [Apt repository](https://derekwisong.github.io/datui/latest/getting-started/installation.html#apt-repository) |
+| Binaries | Linux, macOS and Windows binaries, `.deb`, `.rpm` and Arch tarballs on the [latest release](https://github.com/derekwisong/datui/releases/latest) |
+<!-- end generated: install -->
+
+On Linux and macOS the packages install the manual: `man datui`. After
+`cargo install`, this writes it where `man` finds it for your user:
+
+```bash
+datui man --dir ~/.local/share/man
+```
+
+The [installation guide][install-guide] covers user-only installs, RPMs, shell
+completions and building from source.
+
+## Try it
 
 ```bash,network
 datui                     # home screen: your files and a catalog of public datasets
 datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv
 datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/   # 37 million rows of NOAA weather, no login
 ```
-
-![Filtering public US baby-name data to see one name's history](demos/02-querying.gif)
-
-## Install
-
-On Linux or macOS:
-
-```bash,install
-curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
-```
-
-| Package manager | Command |
-|---|---|
-| Homebrew (macOS) | `brew tap derekwisong/datui && brew trust derekwisong/datui && brew install datui` |
-| WinGet (Windows) | `winget install derekwisong.datui` |
-| pip | `pip install datui` |
-| Cargo | `cargo install datui --locked` |
-| AUR (Arch Linux) | `paru -S datui-bin` |
-
-The [installation guide][install-guide] covers apt, RPMs, user-only installs
-and building from source. [Prebuilt binaries][latest-release] are also available.
 
 ## Keyboard controls
 
@@ -87,7 +98,7 @@ if result is not None:
     print(result.collect())
 ```
 
-[Python guide][python-module] · [Python API][python-api] · [Formats][formats] · [Open files][loading-guide]
+[Python guide][python-module] · [Python API][python-api] · [Open files][loading-guide]
 
 ## Configuration
 
@@ -107,9 +118,7 @@ Released under the [MIT license](LICENSE).
 [site]: https://derekwisong.github.io/datui/
 [docs]: https://derekwisong.github.io/datui/latest/
 [quick-start]: https://derekwisong.github.io/datui/latest/getting-started/quick-start.html
-[demos]: https://derekwisong.github.io/datui/latest/demos.html
 [install-guide]: https://derekwisong.github.io/datui/latest/getting-started/installation.html
-[latest-release]: https://github.com/derekwisong/datui/releases/latest
 [query-guide]: https://derekwisong.github.io/datui/latest/user-guide/querying-data.html
 [filter-guide]: https://derekwisong.github.io/datui/latest/user-guide/filtering-sorting.html
 [chart-guide]: https://derekwisong.github.io/datui/latest/user-guide/charting.html

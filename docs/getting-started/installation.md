@@ -5,9 +5,11 @@ datui runs on Linux, macOS and Windows. Pick one method, check it with
 
 ## Linux and macOS, one line
 
+<!-- generated: install-script -->
 ```bash,install
 curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
 ```
+<!-- end generated: install-script -->
 
 The script downloads the latest release for your platform and installs it: a
 `.deb` on Debian and Ubuntu, an `.rpm` on Fedora and RHEL, the binary elsewhere.
@@ -26,15 +28,20 @@ curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/inst
 
 ## Package managers
 
+<!-- generated: install-table -->
 | Platform | Command |
 |---|---|
-| macOS, [Homebrew](https://github.com/derekwisong/homebrew-datui) | `brew tap derekwisong/datui && brew trust derekwisong/datui && brew install datui` |
 | Windows, WinGet | `winget install derekwisong.datui` |
-| Arch Linux, [AUR](https://aur.archlinux.org/packages/datui-bin) | `paru -S datui-bin` or `yay -S datui-bin` |
-| Debian, Ubuntu | See [apt repository](#apt-repository) below |
-| Fedora, RHEL | `dnf install <url of the .rpm from the latest release>` |
-| Python, [PyPI](https://pypi.org/project/datui/) | `pip install datui` |
-| Rust, [crates.io](https://crates.io/crates/datui) | `cargo install datui --locked` |
+| [macOS, Homebrew](https://github.com/derekwisong/homebrew-datui) | `brew tap derekwisong/datui && brew trust derekwisong/datui && brew install datui` |
+| [Python, PyPI](https://pypi.org/project/datui/) | `pip install datui` |
+| [Rust, crates.io](https://crates.io/crates/datui) | `cargo install datui --locked` |
+| [Arch Linux, AUR](https://aur.archlinux.org/packages/datui-bin) | `paru -S datui-bin` |
+| Debian, Ubuntu | [Apt repository](#apt-repository) |
+| Binaries | Linux, macOS and Windows binaries, `.deb`, `.rpm` and Arch tarballs on the [latest release](https://github.com/derekwisong/datui/releases/latest) |
+<!-- end generated: install-table -->
+
+On Fedora and RHEL, the one-line script installs the `.rpm`; or install it from
+the release, as [below](#pre-built-binaries).
 
 Homebrew needs `brew trust` before it will install from a third-party tap. The
 pip package installs the `datui` command and the [Python module](../user-guide/python-module.md).
@@ -43,12 +50,14 @@ pip package installs the `datui` command and the [Python module](../user-guide/p
 
 Add the signing key and source once:
 
+<!-- generated: install-apt -->
 ```bash,install
 curl -fsSL https://derekwisong.github.io/datui-apt/public.key | sudo gpg --dearmor -o /usr/share/keyrings/datui-archive-keyring.gpg
 echo "deb [signed-by=/usr/share/keyrings/datui-archive-keyring.gpg] https://derekwisong.github.io/datui-apt/ ./" | sudo tee /etc/apt/sources.list.d/datui.list
 sudo apt update
 sudo apt install datui
 ```
+<!-- end generated: install-apt -->
 
 After that, `apt upgrade` keeps datui current.
 

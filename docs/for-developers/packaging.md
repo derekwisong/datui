@@ -169,6 +169,11 @@ The `publish-winget` job in `.github/workflows/publish-packages.yml` uses
 At least one version of `derekwisong.datui` must already exist in winget-pkgs; the
 action refuses to create a brand-new package.
 
+komac copies `ShortDescription` and `Description` from the previous manifest, so
+they change only by hand, in a manifest PR. Use the crate's `description` for
+`ShortDescription` and the deb's `extended-description` for `Description`; both
+are generated with the format count.
+
 ### Recovering from "does not have the correct permissions to execute `UpdateRef`"
 
 Before opening the PR, komac fast-forwards our fork from upstream. GitHub blocks any

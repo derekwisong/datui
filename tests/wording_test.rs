@@ -358,6 +358,11 @@ fn texts() -> Vec<Text> {
         "crates/datui-cli/examples.toml",
         "crates/datui-lib/README.md",
         "scripts/docs/index.html.j2",
+        "scripts/docs/install.toml",
+        // The package descriptions: crates.io, the AUR, deb and rpm, PyPI, Homebrew.
+        "Cargo.toml",
+        "scripts/packaging/homebrew-formula.rb.template",
+        "scripts/packaging/datui.desktop",
     ] {
         let path = root.join(file);
         if path.exists() {

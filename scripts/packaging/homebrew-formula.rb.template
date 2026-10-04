@@ -2,7 +2,9 @@
 # when updating the tap: VERSION_PLACEHOLDER, URL_ARM64_PLACEHOLDER, SHA_ARM64_PLACEHOLDER,
 # URL_X64_PLACEHOLDER, SHA_X64_PLACEHOLDER.
 class Datui < Formula
-  desc "Data Exploration in the Terminal"
+# generated: desc
+  desc "Explore tabular data in your terminal: 27 formats, on disk or in the cloud"
+# end generated: desc
   homepage "https://github.com/derekwisong/datui"
   version "VERSION_PLACEHOLDER"
   license "MIT"

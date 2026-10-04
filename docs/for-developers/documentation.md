@@ -67,6 +67,9 @@ cargo run -p datui-cli --bin gen_docs -- write
 | `formats/index.md`, region `formats` | The format descriptors in `crates/datui-cli/src/formats.rs` |
 | Region `format-count` in `formats/index.md`, `introduction.md` and `README.md` | The same: how many formats, and their names |
 | `reference/python-api.md`, region `options` | The registry's Python keywords |
+| Region `install` in `README.md` and the landing page; `install-script`, `install-table` and `install-apt` in `getting-started/installation.md` | `scripts/docs/install.toml`, one entry per install channel |
+| Regions `format-count` and `formats` in the landing page | The format descriptors: the count, and the formats strip by family |
+| The package descriptions: `description` in `Cargo.toml` and `python/pyproject.toml`, the deb's `extended-description`, Homebrew's `desc`, the desktop entry's `Comment` | `site::summary` and `site::description` in `crates/datui-cli/src/docgen/site.rs`, with the format count |
 | `reference/manual-pages.md`, region `pages` | The list of manpages, `PAGES` in `crates/datui-cli/src/man/mod.rs` |
 | `crates/datui-cli/man/*` (the manpages) | All of the above, plus `long_about.txt`, `query-syntax.md`, `formats/index.md` and the format-spec pages ([Build and publish packages](packaging.md#manpages-and-completions)) |
 
@@ -79,6 +82,9 @@ written by hand:
 <!-- end generated: keys -->
 ```
 
+In the landing page the comments are Jinja's, `{# generated: NAME #}`; in TOML,
+Ruby and desktop files, `# generated: NAME`.
+
 `the_generated_docs_are_current` (`scripts/dev/test.sh cli`) fails while a
 committed copy differs. `gen_docs` with no argument prints the command-line
 reference; with `settings`, `environment` or `keys`, that page.
@@ -86,7 +92,9 @@ reference; with `settings`, `environment` or `keys`, that page.
 ## Code blocks
 
 Every fenced block in `docs/`, the READMEs and the next release's notes is one
-of three kinds, named in its info string:
+of three kinds, named in its info string. On the landing page every `<pre>`
+names it in `data-example` (`<pre data-example="bash,network">`), and the runner
+checks and runs those the same way:
 
 | Kind | Info string | Checked |
 |---|---|---|

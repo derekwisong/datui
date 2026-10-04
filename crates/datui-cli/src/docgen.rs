@@ -12,11 +12,16 @@
 //! ...
 //! <!-- end generated: NAME -->
 //! ```
+//!
+//! In a Jinja template the comments are `{# generated: NAME #}`, and in TOML, Ruby
+//! and desktop files `# generated: NAME`, so they stay out of what the file renders.
 
 use std::path::{Path, PathBuf};
 
 use crate::formats::{FileFormat, RemoteRead, Stored};
 use crate::settings;
+
+mod site;
 
 /// What renders a generated part. Its argument reads a repository file by its path
 /// from the root, line endings as LF.
@@ -88,20 +93,97 @@ pub const GENERATED: &[Generated] = &[
         region: Some("pages"),
         render: |_| crate::man::render_markdown_index(),
     },
+    Generated {
+        file: "README.md",
+        region: Some("install"),
+        render: site::readme_install,
+    },
+    Generated {
+        file: "docs/getting-started/installation.md",
+        region: Some("install-script"),
+        render: site::docs_install_script,
+    },
+    Generated {
+        file: "docs/getting-started/installation.md",
+        region: Some("install-table"),
+        render: site::docs_install_table,
+    },
+    Generated {
+        file: "docs/getting-started/installation.md",
+        region: Some("install-apt"),
+        render: |read| site::channel_block(read, "apt"),
+    },
+    Generated {
+        file: "scripts/docs/index.html.j2",
+        region: Some("format-count"),
+        render: |_| site::landing_format_count(),
+    },
+    Generated {
+        file: "scripts/docs/index.html.j2",
+        region: Some("formats"),
+        render: |_| site::landing_formats(),
+    },
+    Generated {
+        file: "scripts/docs/index.html.j2",
+        region: Some("install"),
+        render: site::landing_install,
+    },
+    Generated {
+        file: "Cargo.toml",
+        region: Some("description"),
+        render: |_| format!("description = {}", site::toml_string(&site::summary())),
+    },
+    Generated {
+        file: "Cargo.toml",
+        region: Some("deb-description"),
+        render: |_| {
+            format!(
+                "extended-description = {}",
+                site::toml_string(&site::description())
+            )
+        },
+    },
+    Generated {
+        file: "python/pyproject.toml",
+        region: Some("description"),
+        render: |_| format!("description = {}", site::toml_string(&site::summary())),
+    },
+    Generated {
+        file: "scripts/packaging/homebrew-formula.rb.template",
+        region: Some("desc"),
+        render: |_| format!("  desc {}", site::toml_string(&site::summary())),
+    },
+    Generated {
+        file: "scripts/packaging/datui.desktop",
+        region: Some("comment"),
+        render: |_| format!("Comment={}", site::TAGLINE),
+    },
 ];
 
-/// The opening and closing comments of a region.
-fn markers(name: &str) -> (String, String) {
-    (
-        format!("<!-- generated: {name} -->"),
-        format!("<!-- end generated: {name} -->"),
-    )
+/// The opening and closing comments of a region in `file`.
+fn markers(file: &str, name: &str) -> (String, String) {
+    if file.ends_with(".j2") {
+        (
+            format!("{{# generated: {name} #}}"),
+            format!("{{# end generated: {name} #}}"),
+        )
+    } else if file.ends_with(".md") {
+        (
+            format!("<!-- generated: {name} -->"),
+            format!("<!-- end generated: {name} -->"),
+        )
+    } else {
+        (
+            format!("# generated: {name}"),
+            format!("# end generated: {name}"),
+        )
+    }
 }
 
-/// `text` with region `name` replaced by `content`. An error when the region's
-/// markers are missing.
-pub fn splice(text: &str, name: &str, content: &str) -> Result<String, String> {
-    let (open, close) = markers(name);
+/// `text`, the contents of `file`, with region `name` replaced by `content`. An
+/// error when the region's markers are missing.
+pub fn splice(file: &str, text: &str, name: &str, content: &str) -> Result<String, String> {
+    let (open, close) = markers(file, name);
     let start = text.find(&open).ok_or_else(|| format!("no `{open}`"))? + open.len();
     let end = text[start..]
         .find(&close)
@@ -159,9 +241,8 @@ pub fn render_all(root: &Path) -> Result<Vec<(PathBuf, String)>, String> {
         };
         let text = match part.region {
             None => content,
-            Some(name) => {
-                splice(&current, name, &content).map_err(|e| format!("{}: {e}", part.file))?
-            }
+            Some(name) => splice(part.file, &current, name, &content)
+                .map_err(|e| format!("{}: {e}", part.file))?,
         };
         out.push((path, text));
     }
@@ -220,17 +301,19 @@ pub fn doc_title(format: FileFormat) -> &'static str {
     }
 }
 
+/// A format's name in a list of them: its title, or a plain name for audio and text.
+pub fn short_title(format: FileFormat) -> &'static str {
+    match format {
+        FileFormat::Audio => "WAV/AIFF audio",
+        FileFormat::Text => "plain text",
+        _ => format.title(),
+    }
+}
+
 /// "datui reads 27 formats: Parquet, CSV, ... and binary formats you describe in a
 /// format spec." Counted from the descriptors, so the number cannot go stale.
 pub fn format_count_sentence() -> String {
-    let titles: Vec<&str> = FileFormat::ALL
-        .iter()
-        .map(|f| match f {
-            FileFormat::Audio => "WAV/AIFF audio",
-            FileFormat::Text => "plain text",
-            _ => f.title(),
-        })
-        .collect();
+    let titles: Vec<&str> = FileFormat::ALL.into_iter().map(short_title).collect();
     format!(
         "datui reads {} formats: {}, and binary formats you describe in a format spec.",
         titles.len(),
@@ -385,10 +468,15 @@ mod tests {
     fn a_region_is_replaced_between_its_markers() {
         let text = "a\n<!-- generated: x -->\nold\n<!-- end generated: x -->\nb\n";
         assert_eq!(
-            splice(text, "x", "new").unwrap(),
+            splice("a.md", text, "x", "new").unwrap(),
             "a\n<!-- generated: x -->\nnew\n<!-- end generated: x -->\nb\n"
         );
-        assert!(splice(text, "y", "new").is_err());
+        assert!(splice("a.md", text, "y", "new").is_err());
+        let toml = "a\n# generated: x\nold\n# end generated: x\nb\n";
+        assert_eq!(
+            splice("a.toml", toml, "x", "new").unwrap(),
+            "a\n# generated: x\nnew\n# end generated: x\nb\n"
+        );
     }
 
     #[test]

@@ -18,10 +18,9 @@ GROUP BY restaurant
 ORDER BY avg_calories DESC
 ```
 
-1. Press <kbd>y</kbd>. On **Scope**, press <kbd>Space</kbd>, type `Table` and
-   press <kbd>Enter</kbd>.
-2. <kbd>Tab</kbd> to **Format**, <kbd>Space</kbd>, type `Markdown`,
-   <kbd>Enter</kbd>.
+1. Press <kbd>y</kbd>. On **Scope**, press <kbd>→</kbd> until it reads
+   **Table**.
+2. <kbd>↓</kbd> to **Format**, <kbd>→</kbd> until it reads **Markdown**.
 3. Press <kbd>Enter</kbd> to copy. The status line says `Copied 8 rows as Markdown`.
 
 Paste into a note:
@@ -191,16 +190,18 @@ URL keeps its signature), are left out, with a comment saying so.
 
 ## Keys
 
+The dialog takes the keys every [dialog](../reference/dialogs.md) takes:
+
 | Key | Action |
 |---|---|
-| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between rows |
-| <kbd>Space</kbd> | Open the focused row's picker; on Header, toggle |
-| <kbd>↑</kbd> <kbd>↓</kbd> | Move focus, or the picker cursor |
+| <kbd>↓</kbd> <kbd>↑</kbd> or <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between rows |
+| <kbd>←</kbd> <kbd>→</kbd> | The previous or next scope, column or format; on Header, toggle |
+| <kbd>Space</kbd> | The next scope or format; on Column, open its picker; on Header, toggle |
 | <kbd>Enter</kbd> | Copy, from anywhere in the form; in a picker, choose |
 | <kbd>?</kbd> | Help |
 | <kbd>Esc</kbd> | Close a picker, then the dialog, without copying |
 
-In a picker, typing narrows the list.
+In the column picker, typing narrows the list and <kbd>↑</kbd> <kbd>↓</kbd> move.
 
 ## How the copy reaches the clipboard
 

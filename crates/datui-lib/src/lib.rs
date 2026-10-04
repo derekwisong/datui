@@ -99,6 +99,7 @@ mod first_rows_trace;
 pub mod fix;
 pub mod fixed_records;
 pub mod follow;
+pub mod form;
 pub mod formats;
 pub mod framed_records;
 pub mod fuzzy;
@@ -217,6 +218,7 @@ pub use export::{ExportOptions, ExportRequest};
 use export_modal::{ExportFocus, ExportFormat, ExportModal};
 pub use feedback::{ConfirmationModal, ErrorModal, Flash};
 use filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+use form::FormKey;
 use jobs::{Answer, Job, Jobs, Outcome};
 pub use jobs::{JobKind, Progress, Ticket};
 use numfmt::NumberFormatSettings;
@@ -228,8 +230,8 @@ use pivot_melt_modal::{MeltSpec, PivotMeltModal, PivotSpec};
 pub use quality_memory::{KeptQualitySample, QUALITY_MEMORY_BUDGET, RetainedCopy};
 use quality_memory::{QUALITY_RELEASED_REMEMBERED, QualityCacheEntry, QualityCopyJob};
 use scan::Scan;
-use sort_filter_modal::{SortFilterFocus, SortFilterModal, SortFilterTab};
-use sort_modal::{SortColumn, SortFocus, order_with_hidden};
+use sort_filter_modal::SortFilterModal;
+use sort_modal::{SortColumn, order_with_hidden};
 use terminal::{QuietTerminal, TakenTerminal, push_keyboard_flags, restore_terminal};
 pub use unfinished::ExitSweep;
 pub use view::{SavedView, ViewManager, Views};
@@ -1612,27 +1614,21 @@ impl App {
         let Some(form) = modal.data_quality_intent_form.as_mut() else {
             return;
         };
-        let typing = form.typing();
-        match event.code {
-            KeyCode::Esc => modal.data_quality_intent_form = None,
-            KeyCode::Enter => match form.apply(&mut modal.data_quality_plan.intent) {
+        match form::key(form, event) {
+            FormKey::Cancel => modal.data_quality_intent_form = None,
+            FormKey::Submit => match form.apply(&mut modal.data_quality_plan.intent) {
                 Ok(()) => modal.data_quality_intent_form = None,
                 Err(error) => form.error = Some(error),
             },
-            KeyCode::Tab | KeyCode::Down => form.move_field(true),
-            KeyCode::BackTab | KeyCode::Up => form.move_field(false),
-            KeyCode::Char('j') if !typing => form.move_field(true),
-            KeyCode::Char('k') if !typing => form.move_field(false),
-            KeyCode::Char(' ') if !typing => form.adjust(true),
-            KeyCode::Left | KeyCode::Char('h') if !typing => form.adjust(false),
-            KeyCode::Right | KeyCode::Char('l') if !typing => form.adjust(true),
-            _ if typing => {
+            FormKey::Act(_) => form.adjust(true),
+            FormKey::Step(_, delta) => form.adjust(delta > 0),
+            FormKey::Text(_) => {
                 if let Some(input) = form.input_mut() {
                     let _ = input.handle_key(event, None);
                 }
                 form.error = None;
             }
-            _ => {}
+            FormKey::Moved | FormKey::Other => {}
         }
     }
 
@@ -1837,47 +1833,27 @@ impl App {
         let Some(form) = self.analysis_modal.data_quality_expected_form.as_mut() else {
             return;
         };
-        let typing = form.typing();
-        match event.code {
-            KeyCode::Esc => {}
-            KeyCode::Enter => match form.expected() {
+        match form::key(form, event) {
+            FormKey::Cancel => {}
+            FormKey::Submit => match form.expected() {
                 Ok(expected) => self.analysis_modal.data_quality_plan.expected = expected,
                 Err(problem) => {
                     form.error = Some(problem);
                     return;
                 }
             },
-            KeyCode::Down | KeyCode::Tab => {
-                form.move_field(true);
+            FormKey::Step(_, delta) => {
+                form.cycle(&every, delta > 0);
                 return;
             }
-            KeyCode::Up | KeyCode::BackTab => {
-                form.move_field(false);
-                return;
-            }
-            KeyCode::Char('j') if !typing => {
-                form.move_field(true);
-                return;
-            }
-            KeyCode::Char('k') if !typing => {
-                form.move_field(false);
-                return;
-            }
-            KeyCode::Left | KeyCode::Char('h') if !typing => {
-                form.cycle(&every, false);
-                return;
-            }
-            KeyCode::Right | KeyCode::Char('l') | KeyCode::Char(' ') if !typing => {
-                form.cycle(&every, true);
-                return;
-            }
-            _ => {
+            FormKey::Text(_) => {
                 if let Some(input) = form.input_mut() {
                     let _ = input.handle_key(event, None);
                     form.error = None;
                 }
                 return;
             }
+            FormKey::Act(_) | FormKey::Moved | FormKey::Other => return,
         }
         self.analysis_modal.data_quality_expected_form = None;
         self.analysis_modal.data_quality_setup_note = None;
@@ -2814,40 +2790,36 @@ impl App {
 
     fn sample_form_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let form = self.analysis_modal.sample_form.as_mut()?;
-        let typing = form.field.is_text();
-        let on_files = form.field == sample_modal::SampleField::Files;
         let file_count = form.context.files.len();
-        match event.code {
+        let key = form::key(form, event);
+        match key {
             // In a tool's empty pane the form stays, as it was: Esc discards the
             // edit and hands the cursor back to the tool list.
-            KeyCode::Esc if form.inline => {
+            FormKey::Cancel if form.inline => {
                 self.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
                 self.open_first_run_form();
             }
-            KeyCode::Esc => self.analysis_modal.sample_form = None,
-            KeyCode::Enter => return self.run_sample_form(),
-            KeyCode::Down | KeyCode::Tab => form.move_field(true),
-            KeyCode::Up | KeyCode::BackTab => form.move_field(false),
-            KeyCode::Char('j') if !typing => form.move_field(true),
-            KeyCode::Char('k') if !typing => form.move_field(false),
-            KeyCode::Left | KeyCode::Char('h') if !typing => form.adjust(false),
-            KeyCode::Right | KeyCode::Char('l') if !typing => form.adjust(true),
-            KeyCode::PageDown if on_files => {
-                form.file_offset = (form.file_offset + crate::widgets::sample_form::FILES_SHOWN)
-                    .min(file_count.saturating_sub(1));
+            FormKey::Cancel => self.analysis_modal.sample_form = None,
+            FormKey::Submit => return self.run_sample_form(),
+            FormKey::Step(_, delta) => form.adjust(delta > 0),
+            FormKey::Text(sample_modal::SampleField::Files)
+                if matches!(event.code, KeyCode::PageDown | KeyCode::PageUp) =>
+            {
+                form.file_offset = if event.code == KeyCode::PageDown {
+                    (form.file_offset + crate::widgets::sample_form::FILES_SHOWN)
+                        .min(file_count.saturating_sub(1))
+                } else {
+                    form.file_offset
+                        .saturating_sub(crate::widgets::sample_form::FILES_SHOWN)
+                };
             }
-            KeyCode::PageUp if on_files => {
-                form.file_offset = form
-                    .file_offset
-                    .saturating_sub(crate::widgets::sample_form::FILES_SHOWN);
-            }
-            _ if typing => {
+            FormKey::Text(_) => {
                 if let Some(input) = form.input_mut(form.field) {
                     let _ = input.handle_key(event, None);
                 }
                 form.error = None;
             }
-            _ => {}
+            FormKey::Act(_) | FormKey::Moved | FormKey::Other => {}
         }
         None
     }
@@ -3927,16 +3899,9 @@ impl App {
             // The Picker narrows by typing, so it types.
             InputMode::GoToColumn => true,
             InputMode::PickFormat => true,
-            InputMode::SortFilter => {
-                self.sort_filter_modal.focus == SortFilterFocus::Body
-                    && match self.sort_filter_modal.active_tab {
-                        // The whole inline editor types: pickers narrow, the value edits.
-                        SortFilterTab::Filter => self.sort_filter_modal.filter.editor.is_some(),
-                        SortFilterTab::Sort => {
-                            self.sort_filter_modal.sort.focus == SortFocus::Filter
-                        }
-                    }
-            }
+            // The whole inline editor types (pickers narrow, the value edits), as
+            // do the add-sort Picker and the Columns tab's find.
+            InputMode::SortFilter => self.sort_filter_modal.typing(),
             InputMode::PivotMelt => {
                 // The Picker narrows by typing, so it types too.
                 self.pivot_melt_modal.picker.is_some()
@@ -5285,7 +5250,9 @@ impl App {
     /// change nothing and re-pick nothing, so a format chosen after typing stands.
     fn export_path_key(&mut self, event: &KeyEvent) {
         let before = self.export_modal.path_input.value().to_string();
-        self.export_modal.path_input.handle_key(event, None);
+        self.export_modal
+            .path_input
+            .handle_key(event, Some(&self.cache));
         if self.export_modal.path_input.value() != before {
             self.export_modal.sync_format_to_path();
             // Typing is the correction the message asked for.

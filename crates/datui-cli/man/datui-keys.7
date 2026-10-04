@@ -83,7 +83,7 @@ Query: SQL, Text or q
 Open the Sort & Filter sidebar (tabs: Columns, Filters), on the cursor's column
 .TP
 \fB+ / \-\fR
-Filter on the cursor's cell: + keeps the rows with its value, \- drops them (a null cell: the nulls). Each adds a row to the Filters tab, joined with "and"; the value is the cell's exactly as stored
+Filter on the cursor's cell: + keeps the rows with its value, \- drops them (a null cell: the nulls). Each adds a filter to the Sort & Filter sidebar, joined with "and"; the value is the cell's exactly as stored
 .TP
 \fBr\fR
 Reverse sort order (sorted columns carry a direction mark in the header); with no sort, reverse the row order
@@ -454,13 +454,10 @@ Copy the focused item: text as itself, a JSON object or array indented
 \fIPanel\fR
 .TP
 \fB\(<- / \(-> (h/l)\fR
-Switch tabs. Afterward focus rests on the tab bar, so Tab returns to the body before \(ua/\(da scroll
-.TP
-\fBTab / Shift+Tab\fR
-On Schema tab: move focus (tab bar \[u2194] schema table). On other tabs: focus stays on tab bar
+Previous or next tab, from anywhere in the panel; Shift+Tab and Tab do the same. The panel is a viewer, not a form: its body always has the keys
 .TP
 \fB\(ua / \(da (j/k)\fR
-Schema tab (when focused) or Notes tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list
+Schema or Notes tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list
 .TP
 \fBPgUp / PgDn\fR
 Model, Audio, MIDI, Metadata and format tabs: scroll the list a page
@@ -523,31 +520,42 @@ Back to the table; while every row is being counted, stop that and keep the samp
 .PP
 \fISidebar\fR
 .TP
-\fBTab / Shift+Tab\fR
-Between the tab bar and the body
+\fBTab / Shift+Tab (\(ua / \(da)\fR
+Next or previous field, wrapping; a field the form does not offer right now is skipped. The arrows move from the moment the dialog opens
 .TP
 \fB\(<- / \(->\fR
-Switch Columns / Filters (h/l on the tab bar)
+On the tab bar: switch Sort & Filter / Columns. On a sort: flip its direction. On a filter: and / or. On a column: step its sort (none, ascending, descending). h/l too
+.TP
+\fBSpace\fR
+On a sort: flip its direction. On a filter: edit it (column, operator, value). On "add sort": pick a column to sort by, last and ascending. On "add filter": a new filter, starting on the table's column cursor. On a column: step its sort
 .TP
 \fBEnter\fR
-Apply everything staged and close (on the Filters tab, Enter adds or edits instead)
-.TP
-\fBa\fR
-On the Filters tab, outside the row editor: apply and close
+Apply everything staged and close, from any row (in the filter editor Enter takes the step; Ctrl+J applies)
 .TP
 \fBCtrl+J\fR
 Apply from anywhere, including mid-edit (the row in progress is saved). Ctrl+Enter does the same, on a terminal that tells it from Enter
 .TP
 \fBEsc\fR
-Cancel and close; staged changes are discarded, and reopening shows what is applied
+Close an open picker or filter editor; otherwise cancel and close, discarding what is staged. Reopening shows what is applied
+.PP
+\fIIn effect\fR
+.TP
+\fB[ / ]\fR
+Move the focused sort earlier or later in the sort order, or the focused filter in the list
+.TP
+\fBd / Del\fR
+Remove the sort or filter
+.TP
+\fBC\fR
+Remove every sort and filter
 .PP
 \fIColumns\fR
 .TP
 \fB(type)\fR
-Narrow the column list, when the find field is focused
+Narrow the column list, when the find field is focused. \(da from find goes to the list, on the table's column cursor
 .TP
 \fBSpace\fR
-Cycle the column's sort: none \(-> ascending \(-> descending (each column carries its own direction)
+Cycle the column's sort: none \(-> ascending \(-> descending (\(<- steps back). Each column carries its own direction
 .TP
 \fB1\-9\fR
 Put the column at that place in the sort order; 0 removes it (a digit past the end of the order says so)
@@ -579,32 +587,29 @@ Back to the automatic width
 \fBC\fR
 Clear the staged sort, order, locks, hidden columns and widths
 .PP
-\fIFilters\fR
+\fIFilter editor\fR
+.TP
+\fB(type)\fR
+Narrow the column or operator list
 .TP
 \fBEnter\fR
-Edit the row under the cursor, or add one on the last row. Editing walks three steps on the row: pick the column (type to narrow, Enter chooses), pick the operator the same way, then type the value and Enter saves the row. Tab, \(-> and Space also choose at the column and operator steps; Shift+Tab steps back. \(ua\(da (j/k) move in both lists, and \(da jumps from the find field into the list. Esc backs out of the edit and only the edit
+Pick the column (type to narrow, Enter chooses), the operator the same way, then type the value and Enter saves the row. Tab, \(-> and Space also choose at the column and operator steps; Shift+Tab steps back; \(ua / \(da move in the lists
 .TP
-\fBSpace\fR
-Toggle and/or on the row
-.TP
-\fBd / Del\fR
-Delete the row
-.TP
-\fBC\fR
-Clear every staged filter
+\fBEsc\fR
+End the edit, and only the edit
 .SS "Pivot and melt"
 \fBp\fR at the table.
 .PP
 \fIForm\fR
 .TP
-\fBTab / Shift+Tab\fR
-Move between the rows (\(ua/\(da too); in a picker: choose and move to the next or previous row
+\fBTab / Shift+Tab (\(ua / \(da)\fR
+Next or previous field, wrapping; a field the form does not offer right now is skipped. The arrows move from the moment the dialog opens
 .TP
 \fB\(<- / \(->\fR
-Switch Pivot and Melt (h/l too, outside text fields); in a text field \(<-/\(-> move the cursor
+On the tab bar: switch Pivot and Melt. On the aggregation, strategy or type: the previous or next value. On a single column row: the previous or next column. In a text field: move the cursor. h/l too, outside text fields
 .TP
 \fBSpace\fR
-Open the row's picker, narrowed by what you type (typing opens it too)
+On a choice: its next value, wrapping. On a column row: open its picker, scoped to that row; typing narrows it
 .TP
 \fBEnter\fR
 Apply the spec echoed above the footer
@@ -636,14 +641,14 @@ Switch chart type directly: XY, Histogram, Box Plot, KDE, Heatmap, Bar ([ / ] cy
 \fB[ / ]\fR
 Previous or next chart type
 .TP
-\fBTab / Shift+Tab\fR
-Move between the option rows (\(ua / \(da too)
+\fBTab / Shift+Tab (\(ua / \(da)\fR
+Next or previous option row, wrapping (j/k too)
 .TP
-\fBEnter / Space\fR
-Open a column row's picker, toggle an option, or cycle the plot style, range or order
+\fBSpace / Enter\fR
+Open a column row's picker, toggle an option, or take the next plot style, range, order or number. The options apply as they change, so Enter acts as Space does
 .TP
 \fB\(<- / \(-> (h/l)\fR
-Cycle the plot style, range or order; adjust bins, bandwidth, or Sample size (+ / \- too)
+Step the plot style, range or order; adjust bins, bandwidth, or Sample size (+ / \- too); on a single column row, the previous or next column; flip a toggle
 .TP
 \fBPgUp / PgDn\fR
 Adjust Sample size in bigger steps
@@ -681,11 +686,14 @@ Back out of the picker alone
 .PP
 \fIExport dialog\fR
 .TP
-\fBTab / Shift+Tab\fR
+\fBTab / Shift+Tab (\(ua / \(da)\fR
 Format, Path, Title, Width, Height
 .TP
-\fB\(ua / \(da (j/k)\fR
-Change the format
+\fB\(<- / \(->\fR
+Change the format, on its row
+.TP
+\fBCtrl+P / Ctrl+N\fR
+Earlier or later paths in the path field
 .TP
 \fBEnter\fR
 Export, from anywhere in the dialog. An existing file asks Overwrite / No, starting on No; \(<-/\(-> (h/l) or Tab pick, Enter confirms, and declining returns to the filled dialog
@@ -977,17 +985,17 @@ Back to the list
 .PP
 \fIForm\fR
 .TP
-\fBTab / Shift+Tab\fR
-Move between fields
+\fBTab / Shift+Tab (\(ua / \(da)\fR
+Next or previous field, wrapping; the fields follow the format. The dialog opens on Path, and the arrows move from there
 .TP
-\fB\(ua / \(da (j/k)\fR
-In the format list: change format. On Compression: change compression. In Path and Delimiter: nothing (no history there, and j/k are characters)
-.TP
-\fB\(<- / \(-> (h/l)\fR
-Move the cursor in text fields. On Compression: change compression. On Include header and Source file: move focus
+\fB\(<- / \(->\fR
+On Format or Compression: the previous or next value (h/l too). On Include header or Source file: toggle. In Path and Delimiter: move the cursor
 .TP
 \fBSpace\fR
-Toggle a checkbox (Include header, Source file)
+Toggle a checkbox (Include header, Source file); on Format or Compression, the next value, wrapping
+.TP
+\fBCtrl+P / Ctrl+N\fR
+In the path field: the paths exported to before, earlier or later (\(ua and \(da move between fields)
 .TP
 \fBEnter\fR
 Export, from anywhere in the form. On a blank path the form says "Enter a file path." instead of exporting
@@ -1010,14 +1018,14 @@ Decline: back to the filled form
 .PP
 \fIForm\fR
 .TP
-\fBTab / Shift+Tab\fR
-Move between rows
+\fBTab / Shift+Tab (\(ua / \(da)\fR
+Next or previous row
 .TP
-\fB\(ua / \(da\fR
-Move between rows
+\fB\(<- / \(->\fR
+The previous or next scope, column or format (h/l too); on Header: toggle
 .TP
 \fBSpace\fR
-Open the row's picker; on Header: toggle
+On Scope or Format: the next value, wrapping. On Column: open its picker. On Header: toggle
 .TP
 \fBEnter\fR
 Copy, from anywhere in the form. On the Cell scope with no column picked, Enter re-accents the spec line instead of copying
@@ -1066,11 +1074,11 @@ Close
 .PP
 \fISave and edit\fR
 .TP
-\fBTab / Shift+Tab\fR
-Move between rows (\(ua / \(da outside the description)
+\fBTab / Shift+Tab (\(ua / \(da)\fR
+Next or previous row. In the description \(ua / \(da move between its lines, and leave it from the first or last
 .TP
 \fBEnter\fR
-Save. In the description Enter types: Tab out of it, then Enter
+Save, from any row. In the description Enter types: Ctrl+J saves from there
 .TP
 \fBCtrl+J\fR
 Save from anywhere, the description included; so does Ctrl+Enter, on a terminal that tells it from Enter

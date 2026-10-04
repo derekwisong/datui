@@ -109,21 +109,6 @@ impl IntentForm {
         fields
     }
 
-    pub fn move_field(&mut self, forward: bool) {
-        let fields = self.fields();
-        let at = fields
-            .iter()
-            .position(|field| *field == self.field)
-            .unwrap_or(0);
-        let next = if forward {
-            (at + 1).min(fields.len() - 1)
-        } else {
-            at.saturating_sub(1)
-        };
-        self.field = fields[next];
-        self.sync_focus();
-    }
-
     /// Space, or ←→, on a row that is a choice: the key and required boxes, and the
     /// reading, which a Text as time format holds when there is one.
     pub fn adjust(&mut self, forward: bool) {
@@ -223,6 +208,34 @@ impl IntentForm {
         declared.set_key(&self.column, in_key);
         declared.set(intent);
         Ok(())
+    }
+}
+
+impl crate::form::Form for IntentForm {
+    type Field = IntentField;
+
+    fn fields(&self) -> Vec<(IntentField, crate::form::FieldKind)> {
+        use crate::form::FieldKind;
+        IntentForm::fields(self)
+            .into_iter()
+            .map(|field| {
+                let kind = match field {
+                    IntentField::Key | IntentField::Required => FieldKind::Checkbox,
+                    field if field.is_text() => FieldKind::Text,
+                    _ => FieldKind::Choice,
+                };
+                (field, kind)
+            })
+            .collect()
+    }
+
+    fn focused(&self) -> IntentField {
+        self.field
+    }
+
+    fn set_focused(&mut self, field: IntentField) {
+        self.field = field;
+        self.sync_focus();
     }
 }
 

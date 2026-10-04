@@ -301,26 +301,6 @@ impl SampleForm {
         }
     }
 
-    pub fn move_field(&mut self, forward: bool) {
-        let fields = self.fields();
-        let at = fields
-            .iter()
-            .position(|field| *field == self.field)
-            .unwrap_or(0);
-        let next = if forward {
-            (at + 1).min(fields.len() - 1)
-        } else {
-            at.saturating_sub(1)
-        };
-        self.field = fields[next];
-        // Arriving on the seed selects it, so typing 1 makes it 1 rather than
-        // appending to the number already there.
-        if self.field == SampleField::Seed {
-            self.seed.select_all();
-        }
-        self.sync_focus(true);
-    }
-
     /// ←/→ on the focused row. Each ring steps both ways, so Left undoes Right.
     pub fn adjust(&mut self, forward: bool) {
         let step = |len: usize, at: usize| {
@@ -646,6 +626,39 @@ pub fn new_seed() -> u64 {
         % 1_000_000
 }
 
+impl crate::form::Form for SampleForm {
+    type Field = SampleField;
+
+    fn fields(&self) -> Vec<(SampleField, crate::form::FieldKind)> {
+        use crate::form::FieldKind;
+        SampleForm::fields(self)
+            .into_iter()
+            .map(|field| {
+                let kind = if field.is_text() {
+                    FieldKind::Text
+                } else {
+                    FieldKind::Choice
+                };
+                (field, kind)
+            })
+            .collect()
+    }
+
+    fn focused(&self) -> SampleField {
+        self.field
+    }
+
+    fn set_focused(&mut self, field: SampleField) {
+        self.field = field;
+        // Arriving on the seed selects it, so typing 1 makes it 1 rather than
+        // appending to the number already there.
+        if field == SampleField::Seed {
+            self.seed.select_all();
+        }
+        self.sync_focus(true);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -725,13 +738,32 @@ mod tests {
         assert_eq!(form.draft.method, SampleMethod::FirstRows);
     }
 
+    /// The Files row is typed into, so its PgUp/PgDn come back as its own keys:
+    /// the handler pages the numbered file list on `Text(Files)`, never `Other`.
+    #[test]
+    fn the_files_row_keeps_its_paging_keys() {
+        use crate::form::{Form, FormKey};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut form = form();
+        while form.kind != RowsKind::Files {
+            form.adjust(true);
+        }
+        assert!(form.focus(SampleField::Files));
+        for code in [KeyCode::PageDown, KeyCode::PageUp] {
+            assert_eq!(
+                crate::form::key(&mut form, &KeyEvent::new(code, KeyModifiers::NONE)),
+                FormKey::Text(SampleField::Files)
+            );
+        }
+    }
+
     /// Any number is a seed, typed over the one there; the same seed is the same
     /// sample, so 0 is one anyone can repeat.
     #[test]
     fn the_seed_is_typed() {
         let mut form = form();
         while form.field != SampleField::Seed {
-            form.move_field(true);
+            crate::form::Form::focus_next(&mut form);
         }
         assert!(form.field.is_text());
         let zero = crossterm::event::KeyEvent::new(

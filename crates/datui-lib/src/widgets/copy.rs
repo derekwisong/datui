@@ -22,21 +22,24 @@ fn row_label(focus: CopyFocus) -> &'static str {
 }
 
 pub fn render_copy_modal(area: Rect, buf: &mut Buffer, modal: &mut CopyModal, ctx: &RenderContext) {
+    let g = crate::glyphs::get();
     let footer = match &modal.picker {
         Some(_) => HintBar::from_ctx(ctx)
             .hint_weighted("Enter", "Choose", 3)
             .hint_weighted("type", "Narrow", 1)
             .hint_weighted("Esc", "Back", 4),
-        None if modal.focus == CopyFocus::Header => HintBar::from_ctx(ctx)
-            .hint_weighted("Enter", "Copy", 3)
-            .hint_weighted("Space", "Toggle", 2)
-            .hint_weighted("Tab", "Next", 1)
-            .hint_weighted("Esc", "Cancel", 4),
-        None => HintBar::from_ctx(ctx)
-            .hint_weighted("Enter", "Copy", 3)
-            .hint_weighted("Space", "Edit", 2)
-            .hint_weighted("Tab", "Next", 1)
-            .hint_weighted("Esc", "Cancel", 4),
+        None => {
+            let (key, label) = match modal.focus {
+                CopyFocus::Header => ("Space", "Toggle"),
+                CopyFocus::Column => ("Space", "Pick"),
+                CopyFocus::Scope | CopyFocus::Format => (g.updown_lr, "Change"),
+            };
+            HintBar::from_ctx(ctx)
+                .hint_weighted("Enter", "Copy", 3)
+                .hint_weighted(key, label, 2)
+                .hint_weighted("Tab", "Next", 1)
+                .hint_weighted("Esc", "Cancel", 4)
+        }
     };
     let content = Surface::new("Copy").footer(&footer).render(area, buf, ctx);
     if content.height < 3 || content.width < 10 {

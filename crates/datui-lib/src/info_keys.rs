@@ -1,13 +1,12 @@
 //! The info panel's keys.
 
-use crate::widgets::info::{InfoFocus, InfoTab};
+use crate::widgets::info::InfoTab;
 use crate::{App, AppEvent, InputMode};
 use crossterm::event::{KeyCode, KeyEvent};
 
 impl App {
     /// Keys in the info panel.
     pub(crate) fn info_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
-        let on_body = self.info_modal.focus == InfoFocus::Body;
         let schema_tab = self.info_modal.active_tab == InfoTab::Schema;
         let notes_tab = self.info_modal.active_tab == InfoTab::Notes;
         // The Metadata and the file's own tab scroll their lists the same way.
@@ -49,27 +48,21 @@ impl App {
                     return self.toggle_header();
                 }
             }
-            KeyCode::Tab if event.is_press() && schema_tab => {
-                self.info_modal.next_focus();
-            }
-            KeyCode::BackTab if event.is_press() && schema_tab => {
-                self.info_modal.prev_focus();
-            }
-            // From anywhere in the panel: the arrows have no other job on any tab's
-            // body, and the panel opens with the body focused, so gating them on
-            // tab-bar focus made a fresh `i` then `→` do nothing.
-            KeyCode::Left | KeyCode::Char('h') if event.is_press() => {
+            // The tabs switch from anywhere in the panel, which is a viewer, not a
+            // form: its body always has the keys, so Tab and the arrows across have
+            // no field to move between and step the tabs instead.
+            KeyCode::Left | KeyCode::Char('h') | KeyCode::BackTab if event.is_press() => {
                 let offered = self.info_tabs_on_offer();
                 self.info_modal.switch_tab_prev(offered);
             }
-            KeyCode::Right | KeyCode::Char('l') if event.is_press() => {
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Tab if event.is_press() => {
                 let offered = self.info_tabs_on_offer();
                 self.info_modal.switch_tab(offered);
             }
-            KeyCode::Down | KeyCode::Char('j') if event.is_press() && on_body && schema_tab => {
+            KeyCode::Down | KeyCode::Char('j') if event.is_press() && schema_tab => {
                 self.info_modal.schema_table_down(total_rows, visible);
             }
-            KeyCode::Up | KeyCode::Char('k') if event.is_press() && on_body && schema_tab => {
+            KeyCode::Up | KeyCode::Char('k') if event.is_press() && schema_tab => {
                 self.info_modal.schema_table_up(total_rows, visible);
             }
             KeyCode::Down | KeyCode::Char('j') if event.is_press() && notes_tab => {

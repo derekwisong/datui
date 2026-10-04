@@ -57,7 +57,7 @@ Where a dataset opens.
 |---|---|
 | `/` | Query: SQL, Text or q |
 | `s` | Open the Sort & Filter sidebar (tabs: Columns, Filters), on the cursor's column |
-| `+ / -` | Filter on the cursor's cell: + keeps the rows with its value, - drops them (a null cell: the nulls). Each adds a row to the Filters tab, joined with "and"; the value is the cell's exactly as stored |
+| `+ / -` | Filter on the cursor's cell: + keeps the rows with its value, - drops them (a null cell: the nulls). Each adds a filter to the Sort & Filter sidebar, joined with "and"; the value is the cell's exactly as stored |
 | `r` | Reverse sort order (sorted columns carry a direction mark in the header); with no sort, reverse the row order |
 | `H / L` | Move the cursor's column one place left or right, the cursor with it; a frozen column moves among the frozen ones. R puts the order back |
 | `p` | Pivot or melt |
@@ -295,9 +295,8 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `← / → (h/l)` | Switch tabs. Afterward focus rests on the tab bar, so Tab returns to the body before ↑/↓ scroll |
-| `Tab / Shift+Tab` | On Schema tab: move focus (tab bar ↔ schema table). On other tabs: focus stays on tab bar |
-| `↑ / ↓ (j/k)` | Schema tab (when focused) or Notes tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list |
+| `← / → (h/l)` | Previous or next tab, from anywhere in the panel; Shift+Tab and Tab do the same. The panel is a viewer, not a form: its body always has the keys |
+| `↑ / ↓ (j/k)` | Schema or Notes tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list |
 | `PgUp / PgDn` | Model, Audio, MIDI, Metadata and format tabs: scroll the list a page |
 | `Home / End` | Model, Audio, MIDI, Metadata and format tabs: the top or the end of the list |
 | `Enter` | Notes tab: take the offer on the note, where it has one |
@@ -338,19 +337,27 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `Tab / Shift+Tab` | Between the tab bar and the body |
-| `← / →` | Switch Columns / Filters (h/l on the tab bar) |
-| `Enter` | Apply everything staged and close (on the Filters tab, Enter adds or edits instead) |
-| `a` | On the Filters tab, outside the row editor: apply and close |
+| `Tab / Shift+Tab (↑ / ↓)` | Next or previous field, wrapping; a field the form does not offer right now is skipped. The arrows move from the moment the dialog opens |
+| `← / →` | On the tab bar: switch Sort & Filter / Columns. On a sort: flip its direction. On a filter: and / or. On a column: step its sort (none, ascending, descending). h/l too |
+| `Space` | On a sort: flip its direction. On a filter: edit it (column, operator, value). On "add sort": pick a column to sort by, last and ascending. On "add filter": a new filter, starting on the table's column cursor. On a column: step its sort |
+| `Enter` | Apply everything staged and close, from any row (in the filter editor Enter takes the step; Ctrl+J applies) |
 | `Ctrl+J` | Apply from anywhere, including mid-edit (the row in progress is saved). Ctrl+Enter does the same, on a terminal that tells it from Enter |
-| `Esc` | Cancel and close; staged changes are discarded, and reopening shows what is applied |
+| `Esc` | Close an open picker or filter editor; otherwise cancel and close, discarding what is staged. Reopening shows what is applied |
+
+### Sort and filter · In effect
+
+| Key | Action |
+|---|---|
+| `[ / ]` | Move the focused sort earlier or later in the sort order, or the focused filter in the list |
+| `d / Del` | Remove the sort or filter |
+| `C` | Remove every sort and filter |
 
 ### Sort and filter · Columns
 
 | Key | Action |
 |---|---|
-| `(type)` | Narrow the column list, when the find field is focused |
-| `Space` | Cycle the column's sort: none → ascending → descending (each column carries its own direction) |
+| `(type)` | Narrow the column list, when the find field is focused. ↓ from find goes to the list, on the table's column cursor |
+| `Space` | Cycle the column's sort: none → ascending → descending (← steps back). Each column carries its own direction |
 | `1-9` | Put the column at that place in the sort order; 0 removes it (a digit past the end of the order says so) |
 | `Del` | Remove the column from the sort |
 | `[ / ]` | Earlier or later in the sort order |
@@ -362,14 +369,13 @@ Where a dataset opens.
 | `w` | Back to the automatic width |
 | `C` | Clear the staged sort, order, locks, hidden columns and widths |
 
-### Sort and filter · Filters
+### Sort and filter · Filter editor
 
 | Key | Action |
 |---|---|
-| `Enter` | Edit the row under the cursor, or add one on the last row. Editing walks three steps on the row: pick the column (type to narrow, Enter chooses), pick the operator the same way, then type the value and Enter saves the row. Tab, → and Space also choose at the column and operator steps; Shift+Tab steps back. ↑↓ (j/k) move in both lists, and ↓ jumps from the find field into the list. Esc backs out of the edit and only the edit |
-| `Space` | Toggle and/or on the row |
-| `d / Del` | Delete the row |
-| `C` | Clear every staged filter |
+| `(type)` | Narrow the column or operator list |
+| `Enter` | Pick the column (type to narrow, Enter chooses), the operator the same way, then type the value and Enter saves the row. Tab, → and Space also choose at the column and operator steps; Shift+Tab steps back; ↑ / ↓ move in the lists |
+| `Esc` | End the edit, and only the edit |
 
 ## Pivot and melt
 
@@ -379,9 +385,9 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `Tab / Shift+Tab` | Move between the rows (↑/↓ too); in a picker: choose and move to the next or previous row |
-| `← / →` | Switch Pivot and Melt (h/l too, outside text fields); in a text field ←/→ move the cursor |
-| `Space` | Open the row's picker, narrowed by what you type (typing opens it too) |
+| `Tab / Shift+Tab (↑ / ↓)` | Next or previous field, wrapping; a field the form does not offer right now is skipped. The arrows move from the moment the dialog opens |
+| `← / →` | On the tab bar: switch Pivot and Melt. On the aggregation, strategy or type: the previous or next value. On a single column row: the previous or next column. In a text field: move the cursor. h/l too, outside text fields |
+| `Space` | On a choice: its next value, wrapping. On a column row: open its picker, scoped to that row; typing narrows it |
 | `Enter` | Apply the spec echoed above the footer |
 | `Esc` | Close without applying; while a pivot is computed, stop it and keep the form |
 
@@ -404,9 +410,9 @@ Where a dataset opens.
 |---|---|
 | `1-6` | Switch chart type directly: XY, Histogram, Box Plot, KDE, Heatmap, Bar ([ / ] cycle) |
 | `[ / ]` | Previous or next chart type |
-| `Tab / Shift+Tab` | Move between the option rows (↑ / ↓ too) |
-| `Enter / Space` | Open a column row's picker, toggle an option, or cycle the plot style, range or order |
-| `← / → (h/l)` | Cycle the plot style, range or order; adjust bins, bandwidth, or Sample size (+ / - too) |
+| `Tab / Shift+Tab (↑ / ↓)` | Next or previous option row, wrapping (j/k too) |
+| `Space / Enter` | Open a column row's picker, toggle an option, or take the next plot style, range, order or number. The options apply as they change, so Enter acts as Space does |
+| `← / → (h/l)` | Step the plot style, range or order; adjust bins, bandwidth, or Sample size (+ / - too); on a single column row, the previous or next column; flip a toggle |
 | `PgUp / PgDn` | Adjust Sample size in bigger steps |
 | `g` | Grid on or off at the labeled ticks: XY, Histogram, Box Plot and KDE. [analysis] chart_grid sets where it starts |
 | `Esc` | Back to the table |
@@ -432,8 +438,9 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `Tab / Shift+Tab` | Format, Path, Title, Width, Height |
-| `↑ / ↓ (j/k)` | Change the format |
+| `Tab / Shift+Tab (↑ / ↓)` | Format, Path, Title, Width, Height |
+| `← / →` | Change the format, on its row |
+| `Ctrl+P / Ctrl+N` | Earlier or later paths in the path field |
 | `Enter` | Export, from anywhere in the dialog. An existing file asks Overwrite / No, starting on No; ←/→ (h/l) or Tab pick, Enter confirms, and declining returns to the filled dialog |
 | `Esc` | Back to the chart |
 
@@ -619,10 +626,10 @@ Data Quality in the Analysis sidebar.
 
 | Key | Action |
 |---|---|
-| `Tab / Shift+Tab` | Move between fields |
-| `↑ / ↓ (j/k)` | In the format list: change format. On Compression: change compression. In Path and Delimiter: nothing (no history there, and j/k are characters) |
-| `← / → (h/l)` | Move the cursor in text fields. On Compression: change compression. On Include header and Source file: move focus |
-| `Space` | Toggle a checkbox (Include header, Source file) |
+| `Tab / Shift+Tab (↑ / ↓)` | Next or previous field, wrapping; the fields follow the format. The dialog opens on Path, and the arrows move from there |
+| `← / →` | On Format or Compression: the previous or next value (h/l too). On Include header or Source file: toggle. In Path and Delimiter: move the cursor |
+| `Space` | Toggle a checkbox (Include header, Source file); on Format or Compression, the next value, wrapping |
+| `Ctrl+P / Ctrl+N` | In the path field: the paths exported to before, earlier or later (↑ and ↓ move between fields) |
 | `Enter` | Export, from anywhere in the form. On a blank path the form says "Enter a file path." instead of exporting |
 | `Esc` | Close without exporting |
 
@@ -642,9 +649,9 @@ Data Quality in the Analysis sidebar.
 
 | Key | Action |
 |---|---|
-| `Tab / Shift+Tab` | Move between rows |
-| `↑ / ↓` | Move between rows |
-| `Space` | Open the row's picker; on Header: toggle |
+| `Tab / Shift+Tab (↑ / ↓)` | Next or previous row |
+| `← / →` | The previous or next scope, column or format (h/l too); on Header: toggle |
+| `Space` | On Scope or Format: the next value, wrapping. On Column: open its picker. On Header: toggle |
 | `Enter` | Copy, from anywhere in the form. On the Cell scope with no column picked, Enter re-accents the spec line instead of copying |
 | `Esc` | Close a picker, then the dialog, without copying |
 
@@ -677,8 +684,8 @@ Data Quality in the Analysis sidebar.
 
 | Key | Action |
 |---|---|
-| `Tab / Shift+Tab` | Move between rows (↑ / ↓ outside the description) |
-| `Enter` | Save. In the description Enter types: Tab out of it, then Enter |
+| `Tab / Shift+Tab (↑ / ↓)` | Next or previous row. In the description ↑ / ↓ move between its lines, and leave it from the first or last |
+| `Enter` | Save, from any row. In the description Enter types: Ctrl+J saves from there |
 | `Ctrl+J` | Save from anywhere, the description included; so does Ctrl+Enter, on a terminal that tells it from Enter |
 | `PgUp / PgDn` | Five lines in the description |
 | `Space` | Expand or collapse Matching; toggle schema match |

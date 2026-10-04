@@ -272,7 +272,7 @@ fn test_full_workflow() {
     // Space cycles none -> ascending -> descending.
     app.sort_filter_modal.sort.cycle_sort();
     app.sort_filter_modal.sort.cycle_sort();
-    app.sort_filter_modal.focus = datui::sort_filter_modal::SortFilterFocus::TabBar;
+    app.sort_filter_modal.focus = datui::sort_filter_modal::SortFilterField::TabBar;
 
     let key_event = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
     if let Some(next_event) = app.event(&AppEvent::Key(key_event)) {
@@ -8511,9 +8511,7 @@ fn test_durations_export_and_copy_as_iso_8601() {
 
     // View, with its header and the HTML flavor.
     press(&mut app, KeyCode::Char('y'));
-    press(&mut app, KeyCode::Char(' '));
-    press(&mut app, KeyCode::Down);
-    press(&mut app, KeyCode::Enter);
+    copy_scope(&mut app, datui::copy_modal::CopyScope::View);
     press(&mut app, KeyCode::Enter);
     let view = last(&copies);
     assert_eq!(view.text, tsv.join("\n"));
@@ -8522,9 +8520,7 @@ fn test_durations_export_and_copy_as_iso_8601() {
 
     // Table, collected off-thread.
     press(&mut app, KeyCode::Char('y'));
-    press(&mut app, KeyCode::Char(' '));
-    press(&mut app, KeyCode::Char('t'));
-    press(&mut app, KeyCode::Enter);
+    copy_scope(&mut app, datui::copy_modal::CopyScope::Table);
     let mut next = press(&mut app, KeyCode::Enter);
     while let Some(ev) = next {
         next = app.event(&ev);
@@ -8534,9 +8530,7 @@ fn test_durations_export_and_copy_as_iso_8601() {
 
     // One cell: `ns` of the first row.
     press(&mut app, KeyCode::Char('y'));
-    press(&mut app, KeyCode::Char(' '));
-    press(&mut app, KeyCode::Char('c'));
-    press(&mut app, KeyCode::Enter);
+    copy_scope(&mut app, datui::copy_modal::CopyScope::Cell);
     press(&mut app, KeyCode::Tab);
     press(&mut app, KeyCode::Char(' '));
     press(&mut app, KeyCode::Char('n'));
@@ -8795,9 +8789,7 @@ fn test_copy_writes_list_cells_as_json() {
 
     // The table scope, collected off-thread, as TSV with its header.
     press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
-    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
-    press_key(&mut app, KeyCode::Char('t'), KeyModifiers::NONE);
-    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    copy_scope(&mut app, datui::copy_modal::CopyScope::Table);
     press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     pump_until_idle(&mut app, &rx, &tx);
     let text = copies.lock().unwrap().last().expect("a copy").text.clone();
@@ -8814,10 +8806,7 @@ fn test_copy_writes_list_cells_as_json() {
 
     // The same scope as Markdown.
     press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
-    press_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
-    press_key(&mut app, KeyCode::Char('m'), KeyModifiers::NONE);
-    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    copy_format(&mut app, datui::clipboard::CopyFormat::Markdown);
     press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     pump_until_idle(&mut app, &rx, &tx);
     let text = copies.lock().unwrap().last().expect("a copy").text.clone();
@@ -9468,7 +9457,7 @@ fn test_the_export_options_panel_reads_as_one_for_every_format() {
     );
 
     let mut app = open_local_dataset(dir.path());
-    // The modal opens with focus on the path, where Down does not change the format.
+    // The modal opens with focus on the path, where → does not change the format.
     for key in [KeyCode::Char('e'), KeyCode::BackTab] {
         app.event(&AppEvent::Key(KeyEvent::new(key, KeyModifiers::NONE)));
     }
@@ -9518,9 +9507,9 @@ fn test_the_export_options_panel_reads_as_one_for_every_format() {
             )),
             Some(_) => {}
         }
-        // Move to the next format.
+        // Step to the next format.
         app.event(&AppEvent::Key(KeyEvent::new(
-            KeyCode::Down,
+            KeyCode::Right,
             KeyModifiers::NONE,
         )));
     }
@@ -10276,9 +10265,7 @@ fn q_pops_to_home_only_when_home_is_in_the_stack() {
 fn the_sort_list_cursor_is_real_on_open() {
     let (mut app, rx, tx) = open_query_filter_fixture("sort_cursor_open.csv");
 
-    press(&mut app, KeyCode::Char('s'));
-    press(&mut app, KeyCode::Tab);
-    press(&mut app, KeyCode::Tab);
+    open_columns_list(&mut app);
     assert_eq!(
         app.sort_filter_modal.sort.table_state.selected(),
         Some(0),
@@ -12895,9 +12882,8 @@ fn test_opening_a_directory_measures_it_and_the_info_panel_says_so() {
     let area = Rect::new(0, 0, 100, 30);
     let _ = painted(&mut app, &rx, &tx, area);
 
-    // `i` opens the panel on the Schema tab with the focus in its body; Tab moves the
-    // focus to the tab bar, and one step right from Schema is Resources.
-    for k in [KeyCode::Char('i'), KeyCode::Tab, KeyCode::Right] {
+    // `i` opens the panel on the Schema tab; one step right is Resources.
+    for k in [KeyCode::Char('i'), KeyCode::Right] {
         if let Some(next) = app.event(&key(k)) {
             let _ = tx.send(next);
         }
@@ -12975,7 +12961,7 @@ fn test_a_route_that_gave_up_leaves_no_figures_on_the_dataset_that_opened() {
          listing must not end up on the dataset that did open; got {listing:?}"
     );
 
-    for k in [KeyCode::Char('i'), KeyCode::Tab, KeyCode::Right] {
+    for k in [KeyCode::Char('i'), KeyCode::Right] {
         if let Some(next) = app.event(&key(k)) {
             let _ = tx.send(next);
         }
@@ -13036,7 +13022,7 @@ fn test_a_dataset_polars_opened_reports_nothing_about_opening_it() {
         "and with neither stretch there is nothing to total"
     );
 
-    for k in [KeyCode::Char('i'), KeyCode::Tab, KeyCode::Right] {
+    for k in [KeyCode::Char('i'), KeyCode::Right] {
         if let Some(next) = app.event(&key(k)) {
             let _ = tx.send(next);
         }
@@ -17425,6 +17411,62 @@ fn press(app: &mut App, code: KeyCode) -> Option<AppEvent> {
     app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
 }
 
+/// Step the open copy dialog's scope row (where it opens) with → until it reads
+/// `scope`. The scope is sticky, so a test never assumes where it starts.
+fn copy_scope(app: &mut App, scope: datui::copy_modal::CopyScope) {
+    for _ in 0..datui::copy_modal::CopyScope::ALL.len() {
+        if app.copy_modal.scope == scope {
+            return;
+        }
+        press(app, KeyCode::Right);
+    }
+    assert_eq!(app.copy_modal.scope, scope);
+}
+
+/// Open Sort & Filter and start a new filter: ↑ to the tab bar, ↑ again wraps to
+/// the last row, "add filter", and Space opens its editor.
+fn start_new_filter(app: &mut App) {
+    press(app, KeyCode::Char('s'));
+    press(app, KeyCode::Up);
+    press(app, KeyCode::Up);
+    assert_eq!(
+        app.sort_filter_modal.focus,
+        datui::sort_filter_modal::SortFilterField::AddFilter
+    );
+    press(app, KeyCode::Char(' '));
+    assert!(app.sort_filter_modal.filter.editor.is_some());
+}
+
+/// Open Sort & Filter and walk to the Columns tab's list: up to the tab bar, →
+/// to Columns, ↓ to find, ↓ to the list, on the table's column cursor.
+fn open_columns_list(app: &mut App) {
+    press(app, KeyCode::Char('s'));
+    press(app, KeyCode::Up);
+    assert_eq!(
+        app.sort_filter_modal.focus,
+        datui::sort_filter_modal::SortFilterField::TabBar
+    );
+    press(app, KeyCode::Right);
+    press(app, KeyCode::Down);
+    press(app, KeyCode::Down);
+    assert!(matches!(
+        app.sort_filter_modal.focus,
+        datui::sort_filter_modal::SortFilterField::Column(_)
+    ));
+}
+
+/// Step the copy dialog's format row, from the scope row, until it reads `format`.
+fn copy_format(app: &mut App, format: datui::clipboard::CopyFormat) {
+    press(app, KeyCode::Down);
+    for _ in 0..datui::clipboard::CopyFormat::ALL.len() {
+        if app.copy_modal.format == format {
+            return;
+        }
+        press(app, KeyCode::Right);
+    }
+    assert_eq!(app.copy_modal.format, format);
+}
+
 /// An edit staged in the Sort & Filter modal and then canceled dies with the modal:
 /// reopening `s` rebuilds it from the table's applied state, so nothing arrives
 /// pre-staged and Apply commits nothing stale.
@@ -17434,10 +17476,8 @@ fn test_sort_filter_esc_discards_staged_edits() {
     let headers_before = app.data_table_state.as_ref().unwrap().headers();
 
     // Open the modal, walk to the column list, and hide the first column — staged only.
-    press(&mut app, KeyCode::Char('s'));
+    open_columns_list(&mut app);
     assert!(app.sort_filter_modal.active);
-    press(&mut app, KeyCode::Tab); // tab bar -> body (search field)
-    press(&mut app, KeyCode::Tab); // search field -> column list
     press(&mut app, KeyCode::Down); // select the first column
     press(&mut app, KeyCode::Char('v'));
     assert!(
@@ -17491,9 +17531,7 @@ fn test_sort_filter_reopen_reflects_applied_state() {
     let (mut app, rx, tx) = open_query_filter_fixture("sort_filter_reopen.csv");
 
     // Hide the first column and apply.
-    press(&mut app, KeyCode::Char('s'));
-    press(&mut app, KeyCode::Tab);
-    press(&mut app, KeyCode::Tab);
+    open_columns_list(&mut app);
     // The list opens with the first column ("a") already under the cursor.
     press(&mut app, KeyCode::Char('v'));
     if let Some(next) = press(&mut app, KeyCode::Enter) {
@@ -17530,9 +17568,7 @@ fn showing_a_hidden_column_puts_it_back_in_place() {
         pump_until_idle(app, &rx, &tx);
     };
     let open_list = |app: &mut App| {
-        press(app, KeyCode::Char('s'));
-        press(app, KeyCode::Tab);
-        press(app, KeyCode::Tab);
+        open_columns_list(app);
     };
 
     // Hide c and show it again before applying: nothing moves.
@@ -17622,9 +17658,7 @@ fn a_freeze_survives_a_narrow_window() {
         rendered_text(&buf)
     };
     let freeze_through = |app: &mut App, name: &str| {
-        press(app, KeyCode::Char('s'));
-        press(app, KeyCode::Tab);
-        press(app, KeyCode::Tab);
+        open_columns_list(app);
         let sort = &mut app.sort_filter_modal.sort;
         let row = sort
             .filtered_columns()
@@ -17735,9 +17769,7 @@ fn column_widths_from_the_sidebar() {
         rendered_text(&buf)
     };
     let on_column = |app: &mut App, name: &str| {
-        press(app, KeyCode::Char('s'));
-        press(app, KeyCode::Tab);
-        press(app, KeyCode::Tab);
+        open_columns_list(app);
         let sort = &mut app.sort_filter_modal.sort;
         let row = sort
             .filtered_columns()
@@ -18002,9 +18034,7 @@ fn a_hidden_column_returns_to_the_applied_order_and_lock() {
         pump_until_idle(app, &rx, &tx);
     };
     let open_list = |app: &mut App| {
-        press(app, KeyCode::Char('s'));
-        press(app, KeyCode::Tab);
-        press(app, KeyCode::Tab);
+        open_columns_list(app);
     };
     let select = |app: &mut App, name: &str| {
         let sort = &mut app.sort_filter_modal.sort;
@@ -18050,9 +18080,7 @@ fn a_hidden_column_returns_to_the_applied_order_and_lock() {
 fn test_sort_filter_per_column_directions_reach_the_table() {
     let (mut app, rx, tx) = open_query_filter_fixture("sort_per_column.csv");
 
-    press(&mut app, KeyCode::Char('s'));
-    press(&mut app, KeyCode::Tab); // tab bar -> find
-    press(&mut app, KeyCode::Tab); // find -> column list, cursor on a
+    open_columns_list(&mut app);
     press(&mut app, KeyCode::Char(' ')); // ascending
     press(&mut app, KeyCode::Char(' ')); // descending
     press(&mut app, KeyCode::Down); // c
@@ -18099,17 +18127,14 @@ fn test_sort_filter_per_column_directions_reach_the_table() {
     assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int64(0));
 }
 
-/// The Filters tab is driven entirely from the keyboard: Enter on the add row
-/// opens the editor, typing narrows the column Picker, Enter walks the steps,
-/// Ctrl+Enter applies, and `d` deletes the statement under the cursor.
+/// Filters are driven entirely from the keyboard: Space on the add row opens the
+/// editor, typing narrows the column Picker, Enter walks the steps, Enter applies,
+/// and Del deletes the statement under focus.
 #[test]
 fn test_filter_editor_keyboard_flow() {
     let (mut app, rx, tx) = open_query_filter_fixture("filter_editor_flow.csv");
 
-    press(&mut app, KeyCode::Char('s'));
-    press(&mut app, KeyCode::Right); // Columns -> Filters
-    press(&mut app, KeyCode::Tab); // tab bar -> the list (the add row)
-    press(&mut app, KeyCode::Enter); // open the editor
+    start_new_filter(&mut app);
     assert!(app.sort_filter_modal.filter.editor.is_some());
     for ch in "na".chars() {
         press(&mut app, KeyCode::Char(ch)); // narrows to "name"
@@ -18126,20 +18151,17 @@ fn test_filter_editor_keyboard_flow() {
     assert!(app.sort_filter_modal.filter.editor.is_none());
     assert_eq!(app.sort_filter_modal.filter.statements.len(), 1);
 
-    // `a` applies from the Filters tab without a modifier — Ctrl+Enter is
-    // byte-identical to Enter on terminals without the kitty protocol.
-    if let Some(next) = press(&mut app, KeyCode::Char('a')) {
+    // Enter applies from any row.
+    if let Some(next) = press(&mut app, KeyCode::Enter) {
         let _ = tx.send(next);
     }
     pump_until_idle(&mut app, &rx, &tx);
     assert!(!app.sort_filter_modal.active);
     assert_eq!(current_rows(&app), 50, "only the alpha_ rows remain");
 
-    // Reopen: the statement is staged; d deletes it; Ctrl+Enter clears the filter.
+    // Reopen: the statement is staged; Del deletes it; Ctrl+Enter clears the filter.
     press(&mut app, KeyCode::Char('s'));
-    press(&mut app, KeyCode::Right);
-    press(&mut app, KeyCode::Tab);
-    press(&mut app, KeyCode::Up); // add row -> the statement
+    press(&mut app, KeyCode::Down); // add sort -> the statement
     press(&mut app, KeyCode::Delete); // Del deletes like d
     assert!(app.sort_filter_modal.filter.statements.is_empty());
     let apply = app.event(&AppEvent::Key(KeyEvent::new(
@@ -18159,10 +18181,7 @@ fn test_filter_editor_keyboard_flow() {
 fn test_ctrl_j_applies_from_the_filter_editor() {
     let (mut app, rx, tx) = open_query_filter_fixture("filter_editor_ctrl_j.csv");
 
-    press(&mut app, KeyCode::Char('s'));
-    press(&mut app, KeyCode::Right); // Columns -> Filters
-    press(&mut app, KeyCode::Tab); // tab bar -> the list (the add row)
-    press(&mut app, KeyCode::Enter); // open the editor
+    start_new_filter(&mut app);
     for ch in "na".chars() {
         press(&mut app, KeyCode::Char(ch));
     }
@@ -18192,10 +18211,7 @@ fn test_ctrl_j_applies_from_the_filter_editor() {
 fn test_space_chooses_in_the_filter_editor_steps() {
     let (mut app, _rx, _tx) = open_query_filter_fixture("filter_editor_space.csv");
 
-    press(&mut app, KeyCode::Char('s'));
-    press(&mut app, KeyCode::Right); // Columns -> Filters
-    press(&mut app, KeyCode::Tab); // tab bar -> the list (the add row)
-    press(&mut app, KeyCode::Enter); // open the editor
+    start_new_filter(&mut app);
     for ch in "na".chars() {
         press(&mut app, KeyCode::Char(ch)); // narrows to "name"
     }
@@ -18220,9 +18236,7 @@ fn test_space_chooses_in_the_filter_editor_steps() {
 fn test_del_removes_a_column_from_the_sort() {
     let (mut app, _rx, _tx) = open_query_filter_fixture("del_unsorts.csv");
 
-    press(&mut app, KeyCode::Char('s'));
-    press(&mut app, KeyCode::Tab);
-    press(&mut app, KeyCode::Tab); // cursor opens on a
+    open_columns_list(&mut app);
     press(&mut app, KeyCode::Char(' ')); // 1, ascending
     press(&mut app, KeyCode::Down); // c
     press(&mut app, KeyCode::Char(' ')); // 2
@@ -18235,15 +18249,18 @@ fn test_del_removes_a_column_from_the_sort() {
     assert_eq!(directions, [true], "keeping its own direction");
 }
 
-/// The first filter is reachable the obvious way: s, →, Enter. The sidebar
-/// opens with focus on the tab bar, and Enter there used to apply-and-close —
-/// the one path a first session actually takes.
+/// The first filter is three keys away: s, ↓, Space. With nothing in effect the
+/// sidebar opens on "add sort", and arrows move from the moment it opens.
 #[test]
-fn test_enter_on_the_filters_tab_bar_starts_a_filter() {
+fn test_the_first_filter_is_s_down_space() {
     let (mut app, _rx, _tx) = open_query_filter_fixture("filters_tab_bar_enter.csv");
     press(&mut app, KeyCode::Char('s'));
-    press(&mut app, KeyCode::Right);
-    press(&mut app, KeyCode::Enter);
+    assert_eq!(
+        app.sort_filter_modal.focus,
+        datui::sort_filter_modal::SortFilterField::AddSort
+    );
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char(' '));
     assert!(app.sort_filter_modal.active, "the sidebar stays open");
     assert!(
         app.sort_filter_modal.filter.editor.is_some(),
@@ -18257,10 +18274,7 @@ fn test_enter_on_the_filters_tab_bar_starts_a_filter() {
 fn test_filter_editor_esc_ends_the_edit_not_the_sidebar() {
     let (mut app, _rx, _tx) = open_query_filter_fixture("filter_editor_esc.csv");
 
-    press(&mut app, KeyCode::Char('s'));
-    press(&mut app, KeyCode::Right);
-    press(&mut app, KeyCode::Tab);
-    press(&mut app, KeyCode::Enter);
+    start_new_filter(&mut app);
     press(&mut app, KeyCode::Char('n'));
     assert!(app.sort_filter_modal.filter.editor.is_some());
 
@@ -18402,6 +18416,211 @@ fn test_export_enter_applies_from_any_row() {
         _ => panic!("Enter on a checkbox builds the export"),
     }
     assert!(!app.export_modal.active, "and the dialog is gone");
+}
+
+/// Every dialog takes the same keys (`datui::form`): ↓ / ↑ move between fields from
+/// the moment it opens, ← / → and Space step a choice, Space toggles a checkbox.
+#[test]
+fn every_dialog_moves_between_fields_with_the_arrows_on_open() {
+    use datui::copy_modal::{CopyFocus, CopyScope};
+    use datui::export_modal::{ExportFocus, ExportFormat};
+    use datui::pivot_melt_modal::{PivotMeltFocus, PivotMeltTab};
+    let (mut app, _rx, _tx) = open_query_filter_fixture("forms_arrows_on_open.csv");
+
+    // Export opens on the path; ↓ is the delimiter, ↑ ↑ the format.
+    press(&mut app, KeyCode::Char('e'));
+    assert_eq!(app.export_modal.focus, ExportFocus::PathInput);
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.export_modal.focus, ExportFocus::CsvDelimiter);
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.export_modal.focus, ExportFocus::FormatSelector);
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.export_modal.selected_format, ExportFormat::Tsv);
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Left);
+    assert_eq!(
+        app.export_modal.selected_format,
+        ExportFormat::Avro,
+        "a choice wraps"
+    );
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(app.export_modal.selected_format, ExportFormat::Csv);
+    press(&mut app, KeyCode::Up);
+    assert_eq!(
+        app.export_modal.focus,
+        ExportFocus::Compression,
+        "↑ from the first field wraps to the last"
+    );
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.export_modal.focus, ExportFocus::CsvIncludeHeader);
+    press(&mut app, KeyCode::Char(' '));
+    assert!(!app.export_modal.csv_include_header, "Space toggles");
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.export_modal.active);
+
+    // Copy opens on the scope; Space takes the next, ↓ the format.
+    press(&mut app, KeyCode::Char('y'));
+    assert_eq!(app.copy_modal.focus, CopyFocus::Scope);
+    let scope = app.copy_modal.scope;
+    press(&mut app, KeyCode::Char(' '));
+    assert_ne!(app.copy_modal.scope, scope);
+    copy_scope(&mut app, CopyScope::Row);
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.copy_modal.focus, CopyFocus::Format);
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.copy_modal.active);
+
+    // Pivot & Melt opens on its tab bar, a choice: → is Melt, ↓ the first row.
+    press(&mut app, KeyCode::Char('p'));
+    assert_eq!(app.pivot_melt_modal.focus, PivotMeltFocus::TabBar);
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.pivot_melt_modal.active_tab, PivotMeltTab::Melt);
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.pivot_melt_modal.focus, PivotMeltFocus::MeltIndex);
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.pivot_melt_modal.focus, PivotMeltFocus::MeltStrategy);
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(
+        app.pivot_melt_modal.melt_value_strategy,
+        datui::pivot_melt_modal::MeltValueStrategy::ByPattern,
+        "Space takes the next value"
+    );
+    press(&mut app, KeyCode::Down);
+    assert_eq!(
+        app.pivot_melt_modal.focus,
+        PivotMeltFocus::MeltPattern,
+        "the strategy's own row joins the walk"
+    );
+}
+
+/// Esc backs out one layer: an open picker first, then the dialog.
+#[test]
+fn esc_closes_the_picker_then_the_dialog() {
+    use datui::pivot_melt_modal::PivotMeltFocus;
+    let (mut app, _rx, _tx) = open_query_filter_fixture("forms_esc_order.csv");
+    press(&mut app, KeyCode::Char('p'));
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.pivot_melt_modal.focus, PivotMeltFocus::PivotIndex);
+    press(&mut app, KeyCode::Char(' '));
+    assert!(
+        app.pivot_melt_modal.picker.is_some(),
+        "Space opens the picker"
+    );
+    press(&mut app, KeyCode::Esc);
+    assert!(app.pivot_melt_modal.picker.is_none());
+    assert!(app.pivot_melt_modal.active, "the dialog survives");
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.pivot_melt_modal.active);
+}
+
+/// Enter submits from any field: on an incomplete pivot it re-accents the spec line
+/// rather than leaving or raising a modal, from the tab bar and from a row alike.
+#[test]
+fn enter_on_an_incomplete_form_stays_and_says_why() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("forms_enter_incomplete.csv");
+    press(&mut app, KeyCode::Char('p'));
+    for _ in 0..2 {
+        assert!(press(&mut app, KeyCode::Enter).is_none());
+        assert!(app.pivot_melt_modal.active);
+        assert!(app.pivot_melt_modal.attention, "the gap line re-accents");
+        assert!(!app.modal_showing());
+        press(&mut app, KeyCode::Down);
+    }
+}
+
+/// A text field's history is Ctrl+P / Ctrl+N; ↑ and ↓ move between fields.
+#[test]
+fn ctrl_p_recalls_the_last_export_path_and_up_moves_on() {
+    use datui::export_modal::ExportFocus;
+    let (mut app, _rx, _tx) = open_query_filter_fixture("forms_export_history.csv");
+    let out = common::fixture_dir().join("forms_export_history_out.csv");
+    let _ = std::fs::remove_file(&out);
+
+    press(&mut app, KeyCode::Char('e'));
+    for ch in out.to_str().unwrap().chars() {
+        press(&mut app, KeyCode::Char(ch));
+    }
+    assert!(matches!(
+        press(&mut app, KeyCode::Enter),
+        Some(AppEvent::Export(_))
+    ));
+
+    press(&mut app, KeyCode::Char('e'));
+    assert_eq!(app.export_modal.path_input.value(), "");
+    press(&mut app, KeyCode::Up);
+    assert_eq!(
+        app.export_modal.focus,
+        ExportFocus::FormatSelector,
+        "↑ leaves the field"
+    );
+    assert_eq!(
+        app.export_modal.path_input.value(),
+        "",
+        "and recalls nothing"
+    );
+    press(&mut app, KeyCode::Down);
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('p'),
+        KeyModifiers::CONTROL,
+    )));
+    assert_eq!(
+        app.export_modal.path_input.value(),
+        out.to_str().unwrap(),
+        "Ctrl+P recalls the path exported to"
+    );
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('n'),
+        KeyModifiers::CONTROL,
+    )));
+    assert_eq!(app.export_modal.path_input.value(), "");
+}
+
+/// Sort & Filter lists what is in effect: a sort flips with Space, moves with
+/// `[` / `]`, goes with `d`, and a new one is added from "add sort"; Enter applies
+/// the list as it stands.
+#[test]
+fn sort_and_filter_edits_what_is_in_effect() {
+    use datui::sort_filter_modal::SortFilterField;
+    let (mut app, rx, tx) = open_query_filter_fixture("forms_in_effect.csv");
+    app.event(&AppEvent::Sort(
+        vec!["a".to_string(), "c".to_string()],
+        vec![false, false],
+    ));
+    pump_until_idle(&mut app, &rx, &tx);
+
+    press(&mut app, KeyCode::Char('s'));
+    assert_eq!(app.sort_filter_modal.focus, SortFilterField::Sort(0));
+    press(&mut app, KeyCode::Char(' ')); // a: descending
+    press(&mut app, KeyCode::Char(']')); // a after c
+    assert_eq!(app.sort_filter_modal.focus, SortFilterField::Sort(1));
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Char('d')); // c goes
+    assert_eq!(
+        app.sort_filter_modal.sort.sorted_columns_and_directions(),
+        (vec!["a".to_string()], vec![true])
+    );
+    press(&mut app, KeyCode::Down); // add sort
+    assert_eq!(app.sort_filter_modal.focus, SortFilterField::AddSort);
+    press(&mut app, KeyCode::Char(' '));
+    assert!(app.sort_filter_modal.sort_picker.is_some());
+    for ch in "name".chars() {
+        press(&mut app, KeyCode::Char(ch));
+    }
+    press(&mut app, KeyCode::Enter); // chooses, and the picker closes
+    assert!(app.sort_filter_modal.sort_picker.is_none());
+    assert_eq!(app.sort_filter_modal.focus, SortFilterField::Sort(1));
+    if let Some(next) = press(&mut app, KeyCode::Enter) {
+        let _ = tx.send(next);
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(!app.sort_filter_modal.active);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(
+        state.view_sort_columns(),
+        ["a".to_string(), "name".to_string()]
+    );
+    assert_eq!(state.view_sort_descending(), [true, false]);
 }
 
 /// The export dialog is one Surface: one border, no bordered buttons, the
@@ -19201,9 +19420,8 @@ fn test_copy_dialog_sends_each_scope_to_the_destination() {
     // The view scope: header on by default, every buffered screen row, and
     // the HTML flavor beside the TSV.
     key(&mut app, KeyCode::Char('y'));
-    key(&mut app, KeyCode::Char(' ')); // open the scope picker
-    key(&mut app, KeyCode::Down); // Row -> View
-    key(&mut app, KeyCode::Enter); // choose
+    key(&mut app, KeyCode::Char(' ')); // the next scope: Row -> View
+    assert_eq!(app.copy_modal.scope, datui::copy_modal::CopyScope::View);
     key(&mut app, KeyCode::Enter); // copy
     {
         let copies = copies.lock().unwrap();
@@ -19215,11 +19433,12 @@ fn test_copy_dialog_sends_each_scope_to_the_destination() {
         assert!(html.contains("<th>city</th>"), "{html}");
     }
 
-    // The cell scope narrows by typing: 'c' leaves only Cell, 'p' only pop.
+    // The cell scope, two steps back; its column Picker narrows by typing: 'p'
+    // leaves only pop.
     key(&mut app, KeyCode::Char('y'));
-    key(&mut app, KeyCode::Char(' '));
-    key(&mut app, KeyCode::Char('c'));
-    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Left);
+    key(&mut app, KeyCode::Left);
+    assert_eq!(app.copy_modal.scope, datui::copy_modal::CopyScope::Cell);
     key(&mut app, KeyCode::Tab); // Scope -> Column
     key(&mut app, KeyCode::Char(' '));
     key(&mut app, KeyCode::Char('p'));
@@ -19243,9 +19462,7 @@ fn test_copy_dialog_sends_each_scope_to_the_destination() {
     // The table scope collects off-thread, then lands on the same destination
     // with the header the scope defaults to.
     key(&mut app, KeyCode::Char('y'));
-    key(&mut app, KeyCode::Char(' '));
-    key(&mut app, KeyCode::Char('t'));
-    key(&mut app, KeyCode::Enter);
+    copy_scope(&mut app, datui::copy_modal::CopyScope::Table);
     let mut next = key(&mut app, KeyCode::Enter);
     while let Some(ev) = next {
         next = app.event(&ev);
@@ -19311,9 +19528,7 @@ fn test_a_capped_destination_gets_text_within_its_cap() {
 
     // The view scope: TSV with no HTML beside it.
     press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
-    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
-    press_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
-    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    copy_scope(&mut app, datui::copy_modal::CopyScope::View);
     press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     {
         let copies = copies.lock().unwrap();
@@ -19324,9 +19539,7 @@ fn test_a_capped_destination_gets_text_within_its_cap() {
     // The whole table is about 60 KB, over a 4 KB cap: refused, nothing sent.
     let copy_table = |app: &mut App| {
         press_key(app, KeyCode::Char('y'), KeyModifiers::NONE);
-        press_key(app, KeyCode::Char(' '), KeyModifiers::NONE);
-        press_key(app, KeyCode::Char('t'), KeyModifiers::NONE);
-        press_key(app, KeyCode::Enter, KeyModifiers::NONE);
+        copy_scope(app, datui::copy_modal::CopyScope::Table);
         press_key(app, KeyCode::Enter, KeyModifiers::NONE);
         pump_until_idle(app, &rx, &tx);
     };
@@ -19458,9 +19671,7 @@ fn test_sort_digits_stage_zero_and_explain_out_of_range() {
     let (mut app, rx, tx) = open_query_filter_fixture("sort_digits.csv");
 
     // Sort by the first column through its digit, and apply.
-    press(&mut app, KeyCode::Char('s'));
-    press(&mut app, KeyCode::Tab); // tab bar -> find
-    press(&mut app, KeyCode::Tab); // find -> column list
+    open_columns_list(&mut app);
     press(&mut app, KeyCode::Char('1'));
     if let Some(next) = press(&mut app, KeyCode::Enter) {
         let _ = tx.send(next);
@@ -19472,9 +19683,7 @@ fn test_sort_digits_stage_zero_and_explain_out_of_range() {
     );
 
     // Reopen: the applied sort arrives staged and nothing is pending.
-    press(&mut app, KeyCode::Char('s'));
-    press(&mut app, KeyCode::Tab);
-    press(&mut app, KeyCode::Tab);
+    open_columns_list(&mut app);
     assert!(!app.sort_filter_modal.sort.has_unapplied_changes);
 
     // A digit past the end of the order does nothing and says so.
@@ -19954,9 +20163,7 @@ fn test_inspector_copies_the_exact_value() {
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     press_key(&mut app, KeyCode::Up, KeyModifiers::NONE);
     press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
-    press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
-    press_key(&mut app, KeyCode::Char('c'), KeyModifiers::NONE);
-    press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    copy_scope(&mut app, datui::copy_modal::CopyScope::Cell);
     press_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
     for c in "amount".chars() {
@@ -22373,9 +22580,9 @@ fn test_the_column_cursor_drives_the_per_column_keys() {
     let sort = &app.sort_filter_modal.sort;
     let row = sort.table_state.selected().unwrap();
     assert_eq!(sort.filtered_columns()[row].1.name, "amount");
-    press_and_send(&mut app, &tx, KeyCode::Right); // Columns -> Filters
-    press_and_send(&mut app, &tx, KeyCode::Tab); // the add row
-    press_and_send(&mut app, &tx, KeyCode::Enter); // a new filter
+    press_and_send(&mut app, &tx, KeyCode::Up); // the tab bar
+    press_and_send(&mut app, &tx, KeyCode::Up); // the last row: add filter
+    press_and_send(&mut app, &tx, KeyCode::Char(' ')); // a new filter
     let filter = &app.sort_filter_modal.filter;
     let editor = filter.editor.as_ref().expect("the editor is open");
     let chosen = editor.column.selected_original().unwrap();
@@ -23580,11 +23787,7 @@ fn test_copy_as_python_writes_the_view_as_a_script() {
     let key =
         |app: &mut App, code| app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     key(&mut app, KeyCode::Char('y'));
-    key(&mut app, KeyCode::Char(' '));
-    for c in "pyth".chars() {
-        key(&mut app, KeyCode::Char(c));
-    }
-    key(&mut app, KeyCode::Enter);
+    copy_scope(&mut app, datui::copy_modal::CopyScope::Python);
     assert_eq!(app.copy_modal.row_order().len(), 1, "no format or header");
     key(&mut app, KeyCode::Enter);
     assert_eq!(app.input_mode, InputMode::Normal);

@@ -12,7 +12,7 @@ Open **Palmer penguins** from **Public datasets**, as in the
 2. Set **Style** to **Scatter** with <kbd>→</kbd>.
 3. Choose `flipper_length_mm` for **X axis** and `body_mass_g` for **Y series**.
 
-Use <kbd>Tab</kbd> to move through settings and <kbd>Space</kbd> to open a
+Use <kbd>↓</kbd> to move through settings and <kbd>Space</kbd> to open a
 column picker. Type part of a name to narrow it; on **Y series**,
 <kbd>Space</kbd> toggles a series and <kbd>Enter</kbd> closes the picker. The
 picker leaves out the X column. The two penguins with no measurements are left
@@ -161,9 +161,9 @@ which the envelope would download whole twice.
 | Key | Action |
 |---|---|
 | <kbd>1</kbd>–<kbd>6</kbd> | Switch chart type directly, from anywhere (<kbd>[</kbd> <kbd>]</kbd> cycle) |
-| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> or <kbd>↑</kbd> <kbd>↓</kbd> | Move between the option rows |
-| <kbd>Enter</kbd> <kbd>Space</kbd> | Open a column row's picker, toggle an option, or cycle the plot style, range or bar order |
-| <kbd>←</kbd> <kbd>→</kbd> | Cycle the plot style, range or bar order, or adjust bins, bandwidth or the sample size (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the sample size) |
+| <kbd>↓</kbd> <kbd>↑</kbd> or <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between the option rows |
+| <kbd>Space</kbd> <kbd>Enter</kbd> | Open a column row's picker, toggle an option, or take the next plot style, range, bar order or number. The options apply as they change, so <kbd>Enter</kbd> acts as <kbd>Space</kbd> does |
+| <kbd>←</kbd> <kbd>→</kbd> | Step the plot style, range or bar order; adjust bins, bandwidth or the sample size (<kbd>+</kbd> <kbd>-</kbd> too, <kbd>PgUp</kbd> <kbd>PgDn</kbd> for bigger steps on the sample size); on a single column row, the previous or next column; flip a toggle |
 | <kbd>g</kbd> | Grid on or off (XY, Histogram, Box Plot, KDE) |
 | <kbd>e</kbd> | Export the chart |
 | <kbd>?</kbd> | Help |
@@ -177,8 +177,11 @@ and <kbd>Esc</kbd> backs out of the picker alone.
 
 ## Export
 
-<kbd>e</kbd> in the chart view opens the export dialog. Choose **PNG** or
-**EPS**, type a path, and press <kbd>Enter</kbd>. The extension is added when
+<kbd>e</kbd> in the chart view opens the export dialog, on its path. Type a
+path, <kbd>↑</kbd> to **Format** and <kbd>←</kbd> <kbd>→</kbd> for **PNG** or
+**EPS**, and press <kbd>Enter</kbd>; the keys are those of every
+[dialog](../reference/dialogs.md), and <kbd>Ctrl</kbd>+<kbd>P</kbd> recalls a
+path exported to before. The extension is added when
 missing, and you are asked before an existing file is overwritten; a failed
 export leaves it as it was ([Overwriting](exporting-data.md#overwriting)). A
 bar chart exports up to its first 100 bars; the category axis counts the rest.

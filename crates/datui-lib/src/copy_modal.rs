@@ -76,6 +76,33 @@ pub struct CopyModal {
     pub context: CopyContext,
 }
 
+impl crate::form::Form for CopyModal {
+    type Field = CopyFocus;
+
+    fn fields(&self) -> Vec<(CopyFocus, crate::form::FieldKind)> {
+        use crate::form::FieldKind;
+        self.row_order()
+            .into_iter()
+            .map(|row| {
+                let kind = match row {
+                    CopyFocus::Scope | CopyFocus::Format => FieldKind::Choice,
+                    CopyFocus::Column => FieldKind::Picker { multi: false },
+                    CopyFocus::Header => FieldKind::Checkbox,
+                };
+                (row, kind)
+            })
+            .collect()
+    }
+
+    fn focused(&self) -> CopyFocus {
+        self.focus
+    }
+
+    fn set_focused(&mut self, field: CopyFocus) {
+        self.focus = field;
+    }
+}
+
 impl Default for CopyModal {
     fn default() -> Self {
         Self {
@@ -137,16 +164,39 @@ impl CopyModal {
         }
     }
 
-    pub fn next_focus(&mut self) {
-        let order = self.row_order();
-        let pos = order.iter().position(|&f| f == self.focus).unwrap_or(0);
-        self.focus = order[(pos + 1) % order.len()];
+    /// Step the scope. The scope decides which rows exist, so a focus the new scope
+    /// does not offer goes back to the scope row.
+    pub fn step_scope(&mut self, delta: i8) {
+        self.scope = crate::form::step_value(&CopyScope::ALL, self.scope, delta);
+        if !self.row_order().contains(&self.focus) {
+            self.focus = CopyFocus::Scope;
+        }
     }
 
-    pub fn prev_focus(&mut self) {
-        let order = self.row_order();
-        let pos = order.iter().position(|&f| f == self.focus).unwrap_or(0);
-        self.focus = order[(pos + order.len() - 1) % order.len()];
+    /// Step the format. Markdown has no header row, so focus there moves back.
+    pub fn step_format(&mut self, delta: i8) {
+        self.format = crate::form::step_value(&CopyFormat::ALL, self.format, delta);
+        if !self.row_order().contains(&self.focus) {
+            self.focus = CopyFocus::Format;
+        }
+    }
+
+    /// ←/→ on the column row: the next or previous column.
+    pub fn step_column(&mut self, delta: i8) {
+        let columns = &self.available_columns;
+        if columns.is_empty() {
+            return;
+        }
+        let at = self
+            .column
+            .as_ref()
+            .and_then(|c| columns.iter().position(|name| name == c));
+        let next = match at {
+            Some(at) => crate::form::step_index(at, columns.len(), delta),
+            None if delta < 0 => columns.len() - 1,
+            None => 0,
+        };
+        self.column = Some(columns[next].clone());
     }
 
     /// The header setting the chosen scope carries.
@@ -168,27 +218,17 @@ impl CopyModal {
         }
     }
 
-    /// Rows edited through the Picker; the header row is a plain toggle.
+    /// Rows edited through the Picker: the column, a list too long to step. Scope
+    /// and format step; the header row is a toggle.
     pub fn is_picker_row(&self, focus: CopyFocus) -> bool {
-        matches!(
-            focus,
-            CopyFocus::Scope | CopyFocus::Format | CopyFocus::Column
-        )
+        focus == CopyFocus::Column
     }
 
     /// What the focused row's Picker offers.
     pub fn picker_items(&self) -> Vec<String> {
         match self.focus {
-            CopyFocus::Scope => CopyScope::ALL
-                .iter()
-                .map(|s| s.as_str().to_string())
-                .collect(),
-            CopyFocus::Format => CopyFormat::ALL
-                .iter()
-                .map(|f| f.as_str().to_string())
-                .collect(),
             CopyFocus::Column => self.available_columns.clone(),
-            CopyFocus::Header => Vec::new(),
+            CopyFocus::Scope | CopyFocus::Format | CopyFocus::Header => Vec::new(),
         }
     }
 
@@ -198,12 +238,7 @@ impl CopyModal {
             return;
         }
         let items = self.picker_items();
-        let current = match self.focus {
-            CopyFocus::Scope => Some(self.scope.as_str()),
-            CopyFocus::Format => Some(self.format.as_str()),
-            CopyFocus::Column => self.column.as_deref(),
-            CopyFocus::Header => None,
-        };
+        let current = self.column.as_deref();
         let mut state = PickerState::new(items.clone());
         if let Some(current) = current
             && let Some(i) = items.iter().position(|item| item == current)
@@ -213,7 +248,7 @@ impl CopyModal {
         self.picker = Some(state);
     }
 
-    /// Enter in the Picker takes the cursor's item and closes it.
+    /// Enter in the column Picker takes the cursor's item and closes it.
     pub fn picker_choose(&mut self) {
         let Some(state) = self.picker.take() else {
             return;
@@ -221,20 +256,8 @@ impl CopyModal {
         let Some(i) = state.selected_original() else {
             return;
         };
-        match self.focus {
-            CopyFocus::Scope => {
-                self.scope = CopyScope::ALL[i];
-                // The scope decides which rows exist; a focus the new scope
-                // does not offer would strand Tab.
-                if !self.row_order().contains(&self.focus) {
-                    self.focus = CopyFocus::Scope;
-                }
-            }
-            CopyFocus::Format => self.format = CopyFormat::ALL[i],
-            CopyFocus::Column => {
-                self.column = self.available_columns.get(i).cloned();
-            }
-            CopyFocus::Header => {}
+        if self.focus == CopyFocus::Column {
+            self.column = self.available_columns.get(i).cloned();
         }
     }
 
@@ -358,20 +381,45 @@ mod tests {
     }
 
     #[test]
-    fn picking_a_scope_that_hides_the_focused_row_moves_focus_home() {
+    fn stepping_to_a_scope_that_hides_the_focused_row_moves_focus_home() {
         let mut modal = CopyModal::new();
         modal.available_columns = vec!["a".into()];
         modal.scope = CopyScope::View;
         modal.focus = CopyFocus::Header;
-        modal.focus = CopyFocus::Scope;
-        modal.open_picker();
-        // Cursor lands on the current scope (View); move up twice to Cell.
-        let picker = modal.picker.as_mut().unwrap();
-        picker.move_up();
-        picker.move_up();
-        modal.picker_choose();
+        // View steps back twice to Cell, which has no header row.
+        modal.step_scope(-1);
+        modal.step_scope(-1);
         assert_eq!(modal.scope, CopyScope::Cell);
-        assert!(modal.row_order().contains(&modal.focus));
+        assert_eq!(modal.focus, CopyFocus::Scope);
+        modal.step_scope(-1);
+        assert_eq!(modal.scope, CopyScope::Python, "the scope wraps");
+    }
+
+    #[test]
+    fn markdown_takes_focus_off_the_header_row() {
+        let mut modal = CopyModal::new();
+        modal.scope = CopyScope::View;
+        modal.format = CopyFormat::Csv;
+        modal.focus = CopyFocus::Header;
+        modal.step_format(1);
+        assert_eq!(modal.format, CopyFormat::Markdown);
+        assert_eq!(modal.focus, CopyFocus::Format);
+    }
+
+    #[test]
+    fn the_column_row_steps_through_the_columns() {
+        let mut modal = CopyModal::new();
+        modal.available_columns = vec!["a".into(), "b".into()];
+        modal.step_column(1);
+        assert_eq!(
+            modal.column.as_deref(),
+            Some("a"),
+            "unset starts at the first"
+        );
+        modal.step_column(1);
+        assert_eq!(modal.column.as_deref(), Some("b"));
+        modal.step_column(1);
+        assert_eq!(modal.column.as_deref(), Some("a"), "and wraps");
     }
 
     #[test]
@@ -385,7 +433,7 @@ mod tests {
             "Copy the view as a Python (Polars) script"
         );
         modal.focus = CopyFocus::Scope;
-        modal.next_focus();
+        crate::form::Form::focus_next(&mut modal);
         assert_eq!(modal.focus, CopyFocus::Scope, "Tab has nowhere else to go");
     }
 

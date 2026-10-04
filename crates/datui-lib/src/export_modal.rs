@@ -124,24 +124,30 @@ impl ExportFormat {
     }
 }
 
+/// The export form's fields.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ExportFocus {
     #[default]
     FormatSelector,
     PathInput,
-    // CSV options
     CsvDelimiter,
     CsvIncludeHeader,
-    CsvCompression,
-    // JSON options
-    JsonCompression,
-    // NDJSON options
-    NdjsonCompression,
+    /// The compression of the chosen format; offered by the formats that take one.
+    Compression,
     /// Add a column naming the file each row came from. Only offered for a dataset
     /// whose files disagree, since that is where a null and an absent cell differ and
     /// the source file is what tells them apart downstream.
     SourceFile,
 }
+
+/// The compressions a delimited or JSON export steps through, in order.
+pub const COMPRESSION_OPTIONS: [Option<CompressionFormat>; 5] = [
+    None,
+    Some(CompressionFormat::Gzip),
+    Some(CompressionFormat::Zstd),
+    Some(CompressionFormat::Bzip2),
+    Some(CompressionFormat::Xz),
+];
 
 pub struct ExportModal {
     pub active: bool,
@@ -166,8 +172,6 @@ pub struct ExportModal {
     pub json_compression: Option<CompressionFormat>,
     // NDJSON options
     pub ndjson_compression: Option<CompressionFormat>,
-    // Compression selection index (the row cycles through the choices)
-    pub compression_selection_idx: usize,
     pub history_limit: usize,
     /// Why the form cannot export yet, said inline on its own status line.
     /// Set by Enter on an invalid form, cleared by typing in the path.
@@ -192,7 +196,9 @@ impl ExportModal {
         if let Some(format) = default_format {
             self.selected_format = format;
         }
+        // Ctrl+P / Ctrl+N recall the paths exported to before.
         self.path_input = TextInput::new()
+            .with_history("export_path".to_string())
             .with_history_limit(history_limit)
             .with_theme(theme);
         self.path_input.clear();
@@ -211,7 +217,6 @@ impl ExportModal {
         self.csv_compression = None;
         self.json_compression = None;
         self.ndjson_compression = None;
-        self.compression_selection_idx = 0;
         self.path_error = None;
     }
 
@@ -298,154 +303,78 @@ impl ExportModal {
         }
     }
 
+    /// The compression the chosen format writes with; `None` for one that takes none.
+    pub fn compression(&self) -> Option<CompressionFormat> {
+        match self.selected_format {
+            ExportFormat::Csv | ExportFormat::Tsv | ExportFormat::Psv => self.csv_compression,
+            ExportFormat::Json => self.json_compression,
+            ExportFormat::Ndjson => self.ndjson_compression,
+            ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => None,
+        }
+    }
+
+    /// Step the chosen format's compression through [`COMPRESSION_OPTIONS`].
+    pub fn step_compression(&mut self, delta: i8) {
+        let next = crate::form::step_value(&COMPRESSION_OPTIONS, self.compression(), delta);
+        self.set_compression_for(self.selected_format, next);
+    }
+
+    /// Step the format, carrying the typed path's extension with it.
+    pub fn step_format(&mut self, delta: i8) {
+        self.selected_format =
+            crate::form::step_value(&ExportFormat::ALL, self.selected_format, delta);
+        self.sync_path_to_format();
+        // A format without a delimiter row or compression takes focus off it.
+        crate::form::Form::settle_focus(self);
+    }
+
     /// The fields this modal offers, in the order Tab walks them.
     ///
     /// Built as a list rather than a match per field: the options differ by format and
     /// one of them depends on the dataset, and a hand-written state machine over both
     /// has an arm for every pair.
     pub fn focus_order(&self) -> Vec<ExportFocus> {
-        let mut order = vec![ExportFocus::FormatSelector, ExportFocus::PathInput];
-        match self.selected_format {
-            ExportFormat::Csv => order.extend([
-                ExportFocus::CsvDelimiter,
-                ExportFocus::CsvIncludeHeader,
-                ExportFocus::CsvCompression,
-            ]),
-            // The preset says the delimiter.
-            ExportFormat::Tsv | ExportFormat::Psv => {
-                order.extend([ExportFocus::CsvIncludeHeader, ExportFocus::CsvCompression])
-            }
-            ExportFormat::Json => order.push(ExportFocus::JsonCompression),
-            ExportFormat::Ndjson => order.push(ExportFocus::NdjsonCompression),
-            ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {}
+        crate::form::Form::fields(self)
+            .into_iter()
+            .map(|(field, _)| field)
+            .collect()
+    }
+}
+
+impl crate::form::Form for ExportModal {
+    type Field = ExportFocus;
+
+    fn fields(&self) -> Vec<(ExportFocus, crate::form::FieldKind)> {
+        use crate::form::FieldKind::{Checkbox, Choice, Text};
+        let mut fields = vec![
+            (ExportFocus::FormatSelector, Choice),
+            (ExportFocus::PathInput, Text),
+        ];
+        if self.selected_format == ExportFormat::Csv {
+            // The presets say the delimiter.
+            fields.push((ExportFocus::CsvDelimiter, Text));
+        }
+        if self.selected_format.is_delimited() {
+            fields.push((ExportFocus::CsvIncludeHeader, Checkbox));
+        }
+        if self.selected_format.supports_compression() {
+            fields.push((ExportFocus::Compression, Choice));
         }
         if self.offer_source_file {
-            order.push(ExportFocus::SourceFile);
+            fields.push((ExportFocus::SourceFile, Checkbox));
         }
-        order
+        fields
     }
 
-    /// Where `focus` sits in that list; 0 for a field the current format does not offer.
-    fn focus_index(&self) -> usize {
-        self.focus_order()
-            .iter()
-            .position(|field| *field == self.focus)
-            .unwrap_or(0)
+    fn focused(&self) -> ExportFocus {
+        self.focus
     }
 
-    pub fn next_focus(&mut self) {
-        let order = self.focus_order();
-        let new_focus = order[(self.focus_index() + 1) % order.len()];
-        self.focus = new_focus;
-        // Initialize compression selection index when focusing on compression
-        if matches!(
-            self.focus,
-            ExportFocus::CsvCompression
-                | ExportFocus::JsonCompression
-                | ExportFocus::NdjsonCompression
-        ) {
-            self.init_compression_selection();
-        }
-    }
-
-    pub fn prev_focus(&mut self) {
-        let order = self.focus_order();
-        let new_focus = order[(self.focus_index() + order.len() - 1) % order.len()];
-        self.focus = new_focus;
-        // Initialize compression selection index when focusing on compression
-        if matches!(
-            self.focus,
-            ExportFocus::CsvCompression
-                | ExportFocus::JsonCompression
-                | ExportFocus::NdjsonCompression
-        ) {
-            self.init_compression_selection();
-        }
-    }
-
-    pub fn init_compression_selection(&mut self) {
-        const COMPRESSION_OPTIONS: [Option<CompressionFormat>; 5] = [
-            None,
-            Some(CompressionFormat::Gzip),
-            Some(CompressionFormat::Zstd),
-            Some(CompressionFormat::Bzip2),
-            Some(CompressionFormat::Xz),
-        ];
-
-        let compression = match self.focus {
-            ExportFocus::CsvCompression => self.csv_compression,
-            ExportFocus::JsonCompression => self.json_compression,
-            ExportFocus::NdjsonCompression => self.ndjson_compression,
-            _ => return,
-        };
-
-        // Find current index based on selected compression
-        self.compression_selection_idx = COMPRESSION_OPTIONS
-            .iter()
-            .position(|&opt| opt == compression)
-            .unwrap_or(0);
-    }
-
-    pub fn cycle_compression(&mut self) {
-        const COMPRESSION_OPTIONS: [Option<CompressionFormat>; 5] = [
-            None,
-            Some(CompressionFormat::Gzip),
-            Some(CompressionFormat::Zstd),
-            Some(CompressionFormat::Bzip2),
-            Some(CompressionFormat::Xz),
-        ];
-
-        let compression = match self.focus {
-            ExportFocus::CsvCompression => &mut self.csv_compression,
-            ExportFocus::JsonCompression => &mut self.json_compression,
-            ExportFocus::NdjsonCompression => &mut self.ndjson_compression,
-            _ => return,
-        };
-
-        // Move to next
-        self.compression_selection_idx =
-            (self.compression_selection_idx + 1) % COMPRESSION_OPTIONS.len();
-        *compression = COMPRESSION_OPTIONS[self.compression_selection_idx];
-    }
-
-    pub fn cycle_compression_backward(&mut self) {
-        const COMPRESSION_OPTIONS: [Option<CompressionFormat>; 5] = [
-            None,
-            Some(CompressionFormat::Gzip),
-            Some(CompressionFormat::Zstd),
-            Some(CompressionFormat::Bzip2),
-            Some(CompressionFormat::Xz),
-        ];
-
-        let compression = match self.focus {
-            ExportFocus::CsvCompression => &mut self.csv_compression,
-            ExportFocus::JsonCompression => &mut self.json_compression,
-            ExportFocus::NdjsonCompression => &mut self.ndjson_compression,
-            _ => return,
-        };
-
-        // Move to previous
-        self.compression_selection_idx = if self.compression_selection_idx == 0 {
-            COMPRESSION_OPTIONS.len() - 1
-        } else {
-            self.compression_selection_idx - 1
-        };
-        *compression = COMPRESSION_OPTIONS[self.compression_selection_idx];
-    }
-
-    pub fn select_compression(&mut self, compression: Option<CompressionFormat>) {
-        match self.focus {
-            ExportFocus::CsvCompression => {
-                self.csv_compression = compression;
-            }
-            ExportFocus::JsonCompression => {
-                self.json_compression = compression;
-            }
-            ExportFocus::NdjsonCompression => {
-                self.ndjson_compression = compression;
-            }
-            _ => {}
-        }
+    fn set_focused(&mut self, field: ExportFocus) {
+        self.focus = field;
+        self.path_input.set_focused(field == ExportFocus::PathInput);
+        self.csv_delimiter_input
+            .set_focused(field == ExportFocus::CsvDelimiter);
     }
 }
 
@@ -465,7 +394,6 @@ impl Default for ExportModal {
             csv_compression: None,
             json_compression: None,
             ndjson_compression: None,
-            compression_selection_idx: 0,
             history_limit: 1000,
             path_error: None,
         }
@@ -515,7 +443,7 @@ mod tests {
             let order = modal.focus_order();
             assert!(!order.contains(&ExportFocus::CsvDelimiter), "{format:?}");
             assert!(order.contains(&ExportFocus::CsvIncludeHeader), "{format:?}");
-            assert!(order.contains(&ExportFocus::CsvCompression), "{format:?}");
+            assert!(order.contains(&ExportFocus::Compression), "{format:?}");
         }
         modal.selected_format = ExportFormat::Csv;
         modal.path_input.set_value("out.csv");

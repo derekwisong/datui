@@ -394,7 +394,7 @@ pub const SCREENS: &[Screen] = &[
                     k("s", "Sort & Filter", "Sort & Filter sidebar, on the cursor's column")
                         .more("Open the Sort & Filter sidebar (tabs: Columns, Filters), on the cursor's column"),
                     k("+ / -", "Filter", "Keep (+) or drop (-) rows with this cell's value")
-                        .more("Filter on the cursor's cell: + keeps the rows with its value, - drops them (a null cell: the nulls). Each adds a row to the Filters tab, joined with \"and\"; the value is the cell's exactly as stored"),
+                        .more("Filter on the cursor's cell: + keeps the rows with its value, - drops them (a null cell: the nulls). Each adds a filter to the Sort & Filter sidebar, joined with \"and\"; the value is the cell's exactly as stored"),
                     k("r", "Reverse", "Reverse the sort, or the row order")
                         .more("Reverse sort order (sorted columns carry a direction mark in the header); with no sort, reverse the row order"),
                     k("H / L", "Move column", "Move the cursor's column left or right")
@@ -699,12 +699,10 @@ pub const SCREENS: &[Screen] = &[
         groups: &[Group {
             name: "Panel",
             keys: &[
-                k("← / → (h/l)", "Tab", "Switch tabs")
-                    .more("Switch tabs. Afterward focus rests on the tab bar, so Tab returns to the body before ↑/↓ scroll"),
-                k("Tab / Shift+Tab", "Focus", "Schema tab: tab bar and table")
-                    .more("On Schema tab: move focus (tab bar ↔ schema table). On other tabs: focus stays on tab bar"),
+                k("← / → (h/l)", "Tab", "Previous or next tab (Shift+Tab / Tab too)")
+                    .more("Previous or next tab, from anywhere in the panel; Shift+Tab and Tab do the same. The panel is a viewer, not a form: its body always has the keys"),
                 k("↑ / ↓ (j/k)", "Move", "Move the cursor, or scroll the list")
-                    .more("Schema tab (when focused) or Notes tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list"),
+                    .more("Schema or Notes tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list"),
                 k("PgUp / PgDn", "Page", "Scroll the list a page")
                     .more("Model, Audio, MIDI, Metadata and format tabs: scroll the list a page"),
                 k("Home / End", "Top, end", "The top or the end of the list")
@@ -759,26 +757,37 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Sidebar",
                 keys: &[
-                    k("Tab / Shift+Tab", "Focus", "Between the tab bar and the body"),
-                    k("← / →", "Tab", "Switch Columns / Filters (h/l on the tab bar)"),
-                    k("Enter", "Apply", "Apply and close (Filters tab: edit the row)")
-                        .more("Apply everything staged and close (on the Filters tab, Enter adds or edits instead)"),
-                    k("a", "Apply", "Filters tab, outside the editor: apply and close")
-                        .more("On the Filters tab, outside the row editor: apply and close"),
+                    k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous field")
+                        .more("Next or previous field, wrapping; a field the form does not offer right now is skipped. The arrows move from the moment the dialog opens"),
+                    k("← / →", "Change", "Tabs on the tab bar; flip a sort; and/or")
+                        .more("On the tab bar: switch Sort & Filter / Columns. On a sort: flip its direction. On a filter: and / or. On a column: step its sort (none, ascending, descending). h/l too"),
+                    k("Space", "Act", "Flip a sort, edit a filter, add one")
+                        .more("On a sort: flip its direction. On a filter: edit it (column, operator, value). On \"add sort\": pick a column to sort by, last and ascending. On \"add filter\": a new filter, starting on the table's column cursor. On a column: step its sort"),
+                    k("Enter", "Apply", "Apply and close, from any row")
+                        .more("Apply everything staged and close, from any row (in the filter editor Enter takes the step; Ctrl+J applies)"),
                     k("Ctrl+J", "Apply", "Apply from anywhere, mid-edit too")
                         .more("Apply from anywhere, including mid-edit (the row in progress is saved). Ctrl+Enter does the same, on a terminal that tells it from Enter"),
-                    k("Esc", "Cancel", "Close; staged changes are discarded")
-                        .more("Cancel and close; staged changes are discarded, and reopening shows what is applied"),
+                    k("Esc", "Cancel", "Close a picker or editor, then the sidebar")
+                        .more("Close an open picker or filter editor; otherwise cancel and close, discarding what is staged. Reopening shows what is applied"),
+                ],
+            },
+            Group {
+                name: "In effect",
+                keys: &[
+                    k("[ / ]", "Move", "Move the sort or filter earlier or later")
+                        .more("Move the focused sort earlier or later in the sort order, or the focused filter in the list"),
+                    k("d / Del", "Remove", "Remove the sort or filter"),
+                    k("C", "Clear", "Remove every sort and filter"),
                 ],
             },
             Group {
                 name: "Columns",
                 keys: &[
                     k("(type)", "Narrow", "Narrow the list, with the find field focused")
-                        .more("Narrow the column list, when the find field is focused")
+                        .more("Narrow the column list, when the find field is focused. ↓ from find goes to the list, on the table's column cursor")
                         .no_run(),
                     k("Space", "Sort", "Cycle the sort: none, ascending, descending")
-                        .more("Cycle the column's sort: none → ascending → descending (each column carries its own direction)"),
+                        .more("Cycle the column's sort: none → ascending → descending (← steps back). Each column carries its own direction"),
                     k("1-9", "Sort place", "Put the column at that place in the sort")
                         .more("Put the column at that place in the sort order; 0 removes it (a digit past the end of the order says so)")
                         .run("1"),
@@ -799,13 +808,12 @@ pub const SCREENS: &[Screen] = &[
                 ],
             },
             Group {
-                name: "Filters",
+                name: "Filter editor",
                 keys: &[
-                    k("Enter", "Edit", "Edit the row, or add one on the last row")
-                        .more("Edit the row under the cursor, or add one on the last row. Editing walks three steps on the row: pick the column (type to narrow, Enter chooses), pick the operator the same way, then type the value and Enter saves the row. Tab, → and Space also choose at the column and operator steps; Shift+Tab steps back. ↑↓ (j/k) move in both lists, and ↓ jumps from the find field into the list. Esc backs out of the edit and only the edit"),
-                    k("Space", "And/or", "Toggle and/or on the row"),
-                    k("d / Del", "Delete", "Delete the row"),
-                    k("C", "Clear", "Clear every staged filter"),
+                    k("(type)", "Narrow", "Narrow the column or operator list").no_run(),
+                    k("Enter", "Next", "Choose the step; from the value, save the row")
+                        .more("Pick the column (type to narrow, Enter chooses), the operator the same way, then type the value and Enter saves the row. Tab, → and Space also choose at the column and operator steps; Shift+Tab steps back; ↑ / ↓ move in the lists"),
+                    k("Esc", "Back", "End the edit, and only the edit"),
                 ],
             },
         ],
@@ -818,12 +826,12 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Form",
                 keys: &[
-                    k("Tab / Shift+Tab", "Next", "Move between the rows (↑ / ↓ too)")
-                        .more("Move between the rows (↑/↓ too); in a picker: choose and move to the next or previous row"),
-                    k("← / →", "Mode", "Switch Pivot and Melt")
-                        .more("Switch Pivot and Melt (h/l too, outside text fields); in a text field ←/→ move the cursor"),
-                    k("Space", "Pick", "Open the row's picker; typing narrows it")
-                        .more("Open the row's picker, narrowed by what you type (typing opens it too)"),
+                    k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous field")
+                        .more("Next or previous field, wrapping; a field the form does not offer right now is skipped. The arrows move from the moment the dialog opens"),
+                    k("← / →", "Change", "Pivot / Melt on the tab bar; step a choice")
+                        .more("On the tab bar: switch Pivot and Melt. On the aggregation, strategy or type: the previous or next value. On a single column row: the previous or next column. In a text field: move the cursor. h/l too, outside text fields"),
+                    k("Space", "Act", "Next value of a choice; open a column picker")
+                        .more("On a choice: its next value, wrapping. On a column row: open its picker, scoped to that row; typing narrows it"),
                     k("Enter", "Apply", "Apply the spec echoed above the footer"),
                     k("Esc", "Close", "Close without applying; stop a pivot")
                         .more("Close without applying; while a pivot is computed, stop it and keep the form"),
@@ -852,11 +860,12 @@ pub const SCREENS: &[Screen] = &[
                         .more("Switch chart type directly: XY, Histogram, Box Plot, KDE, Heatmap, Bar ([ / ] cycle)")
                         .run("1"),
                     k("[ / ]", "Type", "Previous or next chart type"),
-                    k("Tab / Shift+Tab", "Next", "Move between the option rows (↑ / ↓ too)"),
-                    k("Enter / Space", "Pick", "Open a picker, toggle, or cycle the row")
-                        .more("Open a column row's picker, toggle an option, or cycle the plot style, range or order"),
-                    k("← / → (h/l)", "Adjust", "Cycle a choice; adjust a number (+ / - too)")
-                        .more("Cycle the plot style, range or order; adjust bins, bandwidth, or Sample size (+ / - too)"),
+                    k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous option row")
+                        .more("Next or previous option row, wrapping (j/k too)"),
+                    k("Space / Enter", "Act", "Open a picker, toggle, or step the row")
+                        .more("Open a column row's picker, toggle an option, or take the next plot style, range, order or number. The options apply as they change, so Enter acts as Space does"),
+                    k("← / → (h/l)", "Change", "Step a choice, a number or a column")
+                        .more("Step the plot style, range or order; adjust bins, bandwidth, or Sample size (+ / - too); on a single column row, the previous or next column; flip a toggle"),
                     k("PgUp / PgDn", "Step", "Adjust Sample size in bigger steps"),
                     k("g", "Grid", "Grid on or off")
                         .more("Grid on or off at the labeled ticks: XY, Histogram, Box Plot and KDE. [analysis] chart_grid sets where it starts"),
@@ -887,8 +896,9 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Export dialog",
                 keys: &[
-                    k("Tab / Shift+Tab", "Next", "Format, Path, Title, Width, Height"),
-                    k("↑ / ↓ (j/k)", "Format", "Change the format"),
+                    k("Tab / Shift+Tab (↑ / ↓)", "Next", "Format, Path, Title, Width, Height"),
+                    k("← / →", "Format", "Change the format, on its row"),
+                    k("Ctrl+P / Ctrl+N", "History", "Earlier or later paths in the path field"),
                     k("Enter", "Export", "Export, from anywhere in the dialog")
                         .more("Export, from anywhere in the dialog. An existing file asks Overwrite / No, starting on No; ←/→ (h/l) or Tab pick, Enter confirms, and declining returns to the filled dialog"),
                     k("Esc", "Back", "Back to the chart"),
@@ -1103,13 +1113,14 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Form",
                 keys: &[
-                    k("Tab / Shift+Tab", "Next", "Move between fields"),
-                    k("↑ / ↓ (j/k)", "Format", "Change the format or compression")
-                        .more("In the format list: change format. On Compression: change compression. In Path and Delimiter: nothing (no history there, and j/k are characters)"),
-                    k("← / → (h/l)", "Cursor", "Move the text cursor; change compression")
-                        .more("Move the cursor in text fields. On Compression: change compression. On Include header and Source file: move focus"),
-                    k("Space", "Toggle", "Toggle a checkbox")
-                        .more("Toggle a checkbox (Include header, Source file)"),
+                    k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous field")
+                        .more("Next or previous field, wrapping; the fields follow the format. The dialog opens on Path, and the arrows move from there"),
+                    k("← / →", "Change", "Step the format or compression; move the cursor")
+                        .more("On Format or Compression: the previous or next value (h/l too). On Include header or Source file: toggle. In Path and Delimiter: move the cursor"),
+                    k("Space", "Act", "Toggle a checkbox; next format or compression")
+                        .more("Toggle a checkbox (Include header, Source file); on Format or Compression, the next value, wrapping"),
+                    k("Ctrl+P / Ctrl+N", "History", "Earlier or later paths in the path field")
+                        .more("In the path field: the paths exported to before, earlier or later (↑ and ↓ move between fields)"),
                     k("Enter", "Export", "Export, from anywhere in the form")
                         .more("Export, from anywhere in the form. On a blank path the form says \"Enter a file path.\" instead of exporting"),
                     k("Esc", "Close", "Close without exporting"),
@@ -1133,9 +1144,11 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Form",
                 keys: &[
-                    k("Tab / Shift+Tab", "Next", "Move between rows"),
-                    k("↑ / ↓", "Move", "Move between rows"),
-                    k("Space", "Pick", "Open the row's picker; on Header: toggle"),
+                    k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous row"),
+                    k("← / →", "Change", "Step the scope, column or format")
+                        .more("The previous or next scope, column or format (h/l too); on Header: toggle"),
+                    k("Space", "Act", "Next scope or format; pick a column; toggle")
+                        .more("On Scope or Format: the next value, wrapping. On Column: open its picker. On Header: toggle"),
                     k("Enter", "Copy", "Copy, from anywhere in the form")
                         .more("Copy, from anywhere in the form. On the Cell scope with no column picked, Enter re-accents the spec line instead of copying"),
                     k("Esc", "Close", "Close a picker, then the dialog")
@@ -1176,9 +1189,10 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Save and edit",
                 keys: &[
-                    k("Tab / Shift+Tab", "Next", "Move between rows (↑ / ↓ outside the description)"),
+                    k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous row")
+                        .more("Next or previous row. In the description ↑ / ↓ move between its lines, and leave it from the first or last"),
                     k("Enter", "Save", "Save (in the description, Enter types)")
-                        .more("Save. In the description Enter types: Tab out of it, then Enter"),
+                        .more("Save, from any row. In the description Enter types: Ctrl+J saves from there"),
                     k("Ctrl+J", "Save", "Save from anywhere, the description too")
                         .more("Save from anywhere, the description included; so does Ctrl+Enter, on a terminal that tells it from Enter"),
                     k("PgUp / PgDn", "Lines", "Five lines in the description"),

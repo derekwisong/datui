@@ -148,10 +148,37 @@ across shapes.
 ## Focus
 
 One signal: the focused element carries the accent (title, label, or rail).
-Tab moves focus forward through a Surface's rows, Shift+Tab back; `←/→`
-switch tabs whenever a tab bar exists, from anywhere in the Surface. Focus
-never silently jumps (the analysis screen's jump-to-results is a defect, not
-a pattern). Selection that is not focused stays visible, dimmed.
+Focus never silently jumps (the analysis screen's jump-to-results is a
+defect, not a pattern). Selection that is not focused stays visible, dimmed.
+
+### Forms: one set of keys
+
+Every form, dialog and option sidebar is a `crate::form::Form`: an ordered
+list of fields, each a `FieldKind` (Text, MultilineText, Choice, Checkbox,
+Picker, Button). `form::key` decides what a key means and moves focus;
+`form::picker_key` does the same for an open picker. The modal only says
+what a submit, a step or an action does. Never hand-roll focus enums'
+next/prev or per-modal arrow handling.
+
+| Key | Does |
+|---|---|
+| Tab / Shift+Tab, ↓ / ↑ | Next / previous field, wrapping, from the moment the form opens |
+| ← / → | Step a Choice (or a pick-one Picker's value); flip a Checkbox; cursor in Text |
+| Space | Checkbox: toggle. Choice: next value, wrapping. Picker: open. Button: do it |
+| Enter | Submit from any field (MultilineText types it; Ctrl+J submits). Picker: choose |
+| Esc | Close an open picker, otherwise cancel the form |
+| Ctrl+P / Ctrl+N | History in a Text field; ↑ ↓ never recall in a form |
+
+- `h j k l` are the arrows on a field that does not type; letters never
+  open a picker (Space does, then typing narrows).
+- A hidden or disabled field is left out of `fields()`, so focus skips it;
+  `settle_focus` after a change that hides the focused one.
+- A tab bar is the form's first field, a Choice: ←/→ switch tabs there, and
+  only there. A viewer with no fields (the Info panel) switches tabs with
+  ←/→ and Tab from anywhere instead.
+- Short enumerations are Choices; long lists (columns) are Pickers.
+- A form that applies live (the chart options) treats Enter as Space.
+- Mouse: a click focuses through `Form::focus(field)`, then acts as Space.
 
 ## Feedback
 

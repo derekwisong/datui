@@ -436,8 +436,8 @@ fn test_melt_via_modal_apply() {
     assert!(df.height() > 0);
 }
 
-/// The whole pivot driven by keys alone: Tab to a row, Space or typing opens
-/// its Picker, Enter chooses, Enter applies from anywhere.
+/// The whole pivot driven by keys alone: Tab to a row, Space opens its Picker,
+/// typing narrows it, Enter chooses, Enter applies from anywhere.
 #[test]
 fn test_pivot_via_keys_only() {
     ensure_sample_data();
@@ -461,14 +461,16 @@ fn test_pivot_via_keys_only() {
     assert!(app.pivot_melt_modal.picker.is_none());
     assert_eq!(app.pivot_melt_modal.index_columns, ["id", "date"]);
 
-    // Columns: typing opens the Picker already narrowed; Enter chooses.
+    // Columns: Space opens the Picker, typing narrows it; Enter chooses.
     send_key(&mut app, KeyCode::Tab);
+    send_key(&mut app, KeyCode::Char(' '));
     send_key(&mut app, KeyCode::Char('k'));
     send_key(&mut app, KeyCode::Enter);
     assert_eq!(app.pivot_melt_modal.pivot_column, Some("key".to_string()));
 
     // Values.
     send_key(&mut app, KeyCode::Tab);
+    send_key(&mut app, KeyCode::Char(' '));
     send_key(&mut app, KeyCode::Char('v'));
     send_key(&mut app, KeyCode::Char('a'));
     send_key(&mut app, KeyCode::Enter);

@@ -21,9 +21,10 @@ SELECT year, name, n FROM df WHERE sex = 'F' AND name IN ('Emma', 'Jennifer', 'O
 | Values | `n` | The count to put in each cell |
 | Aggregate | `last` | There is one value per year and name, so any aggregate keeps it |
 
-Use <kbd>Tab</kbd> to move through settings. <kbd>Space</kbd> opens a column
+Use <kbd>↓</kbd> to move through settings. <kbd>Space</kbd> opens a column
 picker; type to narrow, <kbd>Space</kbd> to select and <kbd>Enter</kbd> to
-close it. Press <kbd>Enter</kbd> in the form to apply.
+close it. <kbd>←</kbd> <kbd>→</kbd> step **Aggregate**. Press <kbd>Enter</kbd>
+in the form to apply.
 
 The result has 138 rows, one per year, and the columns `year`, `Emma`,
 `Jennifer` and `Olivia`. A year with no count for a name is null: Jennifer is
@@ -89,11 +90,14 @@ Press <kbd>R</kbd> from the table to clear the reshape and other view changes.
 
 ## Keys
 
+The form takes the keys every [dialog](../reference/dialogs.md) takes. It opens
+on its tab bar, the first row.
+
 | Key | Action |
 |---|---|
-| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> or <kbd>↑</kbd> <kbd>↓</kbd> | Move between the rows |
-| <kbd>←</kbd> <kbd>→</kbd> | Switch tab, or move the cursor in a text field |
-| <kbd>Space</kbd> or typing | Open the focused row's picker, narrowed by what you type |
+| <kbd>↓</kbd> <kbd>↑</kbd> or <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between the rows |
+| <kbd>←</kbd> <kbd>→</kbd> | On the tab bar, switch Pivot and Melt; on Aggregate, Strategy or Type, the previous or next value; on Columns or Values, the previous or next column; in a text field, move the cursor |
+| <kbd>Space</kbd> | On a choice, its next value; on a column row, open its picker (type to narrow) |
 | <kbd>↑</kbd> <kbd>↓</kbd> in the picker | Move; <kbd>Space</kbd> chooses, or toggles where several can be chosen |
 | <kbd>Enter</kbd> | In the picker, choose; otherwise apply, from anywhere |
 | <kbd>Esc</kbd> | Stop a pivot being computed and keep the form; close the picker alone, keeping the toggles made in it; otherwise close without applying |

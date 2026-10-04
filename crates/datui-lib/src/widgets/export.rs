@@ -44,15 +44,13 @@ pub fn render_export_modal(
     let mut footer = HintBar::from_ctx(ctx).hint_weighted("Enter", "Export", 3);
     match modal.focus {
         ExportFocus::FormatSelector => {
-            footer = footer.hint_weighted(g.updown, "Format", 2);
+            footer = footer.hint_weighted(g.updown_lr, "Format", 2);
         }
         ExportFocus::CsvIncludeHeader | ExportFocus::SourceFile => {
             footer = footer.hint_weighted("Space", "Toggle", 2);
         }
-        ExportFocus::CsvCompression
-        | ExportFocus::JsonCompression
-        | ExportFocus::NdjsonCompression => {
-            footer = footer.hint_weighted(g.updown, "Change", 2);
+        ExportFocus::Compression => {
+            footer = footer.hint_weighted(g.updown_lr, "Change", 2);
         }
         ExportFocus::PathInput | ExportFocus::CsvDelimiter => {}
     }
@@ -68,7 +66,7 @@ pub fn render_export_modal(
 
     // At full width the format picker sits left under its section rule with
     // the option rows beside it. Narrow, the two-column split would leave the
-    // path a few cells, so the format becomes the first row — ↑↓ still cycle
+    // path a few cells, so the format becomes the first row — ←→ still step
     // it — and every row runs the full width.
     let narrow = content.width < FORMAT_WIDTH + 2 + LABEL_WIDTH + 16;
     let format_focused = modal.focus == ExportFocus::FormatSelector;
@@ -136,7 +134,7 @@ pub fn render_export_modal(
             (
                 "Compression:",
                 FormValue::Choice(compression_name(modal.csv_compression)),
-                ExportFocus::CsvCompression,
+                ExportFocus::Compression,
             ),
         ]),
         ExportFormat::Tsv | ExportFormat::Psv => rows.extend([
@@ -148,18 +146,18 @@ pub fn render_export_modal(
             (
                 "Compression:",
                 FormValue::Choice(compression_name(modal.csv_compression)),
-                ExportFocus::CsvCompression,
+                ExportFocus::Compression,
             ),
         ]),
         ExportFormat::Json => rows.push((
             "Compression:",
             FormValue::Choice(compression_name(modal.json_compression)),
-            ExportFocus::JsonCompression,
+            ExportFocus::Compression,
         )),
         ExportFormat::Ndjson => rows.push((
             "Compression:",
             FormValue::Choice(compression_name(modal.ndjson_compression)),
-            ExportFocus::NdjsonCompression,
+            ExportFocus::Compression,
         )),
         ExportFormat::Parquet | ExportFormat::Ipc | ExportFormat::Avro => {}
     }

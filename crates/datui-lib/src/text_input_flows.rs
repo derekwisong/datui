@@ -280,8 +280,8 @@ fn go_to_line_opens_on_an_empty_field() {
 
 /// Put the Sort tab's column filter under the cursor.
 fn focus_column_filter(app: &mut App) {
-    app.sort_filter_modal.focus = crate::sort_filter_modal::SortFilterFocus::Body;
-    app.sort_filter_modal.sort.focus = crate::sort_modal::SortFocus::Filter;
+    app.sort_filter_modal.active_tab = crate::sort_filter_modal::SortFilterTab::Columns;
+    app.sort_filter_modal.focus = crate::sort_filter_modal::SortFilterField::Find;
 }
 
 #[test]
@@ -477,7 +477,8 @@ fn the_pivot_and_melt_modal_opens_a_picker_narrowed_as_you_type() {
     assert_eq!(h.app.input_mode, InputMode::PivotMelt);
     h.app.pivot_melt_modal.focus = crate::pivot_melt_modal::PivotMeltFocus::PivotIndex;
 
-    // Typing on a picked row opens its Picker already narrowed.
+    // Space opens a picked row's Picker; typing narrows it.
+    h.press(KeyCode::Char(' '));
     h.type_str("na");
     let picker = h.app.pivot_melt_modal.picker.as_ref().expect("picker open");
     assert_eq!(picker.filter, "na");

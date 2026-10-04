@@ -8346,11 +8346,14 @@ impl App {
     /// Download `url` to a temporary file. `stop` ends it early, while the server is
     /// sending or while it is silent, and any failure removes the file; see
     /// [`crate::download::read_to_temp`].
+    ///
+    /// Past `limit` bytes it stops with a [`crate::download::PastLimit`] error.
     #[cfg(feature = "http")]
     fn download_http_to_temp(
         url: &str,
         temp_dir: Option<&Path>,
         extension: Option<&str>,
+        limit: Option<u64>,
         writer: &crate::unfinished::Writer,
     ) -> Result<crate::download::TempDownload> {
         use crate::download::StreamError;
@@ -8374,8 +8377,8 @@ impl App {
             // Content-Length it came with is the wire's, not the file's.
             Ok((response.into_body().into_reader(), None))
         };
-        crate::download::read_to_temp(temp_dir, extension, open, writer).map_err(
-            |error| match error {
+        crate::download::read_to_temp(temp_dir, extension, open, writer, limit).map_err(|error| {
+            match error {
                 StreamError::Open(message) => color_eyre::eyre::eyre!(message),
                 StreamError::Read(e) => {
                     color_eyre::eyre::eyre!("Download failed partway. Check your connection: {e}")
@@ -8385,8 +8388,8 @@ impl App {
                 ),
                 StreamError::Write(report) => report,
                 StreamError::Cut => color_eyre::eyre::eyre!("Download was cancelled."),
-            },
-        )
+            }
+        })
     }
 
     /// Stream one S3, GCS or Azure object to a temporary file, named for the user by
@@ -8806,14 +8809,17 @@ impl App {
                 let status = sized.as_deref().unwrap_or(status);
                 self.spawn_job(job, Some(status), move |_| {
                     let (url, _, options) = pending.parts();
-                    let (download, options) = match &pending {
+                    let fetched = match &pending {
                         #[cfg(feature = "http")]
                         loading::PendingDownload::Http { .. } => {
                             let ext = source::download_suffix(url);
+                            // A download nobody was asked about stops at its limit.
+                            let limit = options.download_unasked.map(|unasked| unasked.limit);
                             Self::download_http_to_temp(
                                 url,
                                 options.temp_dir.as_deref(),
                                 ext.as_deref(),
+                                limit,
                                 &writer,
                             )
                             .map(|file| (file, options.clone()))
@@ -8841,8 +8847,15 @@ impl App {
                                 (file, options)
                             })
                         }
-                    }
-                    .map_err(|e| crate::error_display::user_message_from_report(&e, None))?;
+                    };
+                    let (download, options) = match fetched {
+                        Err(e) if e.downcast_ref::<crate::download::PastLimit>().is_some() => {
+                            return Ok(Answer::Load(Box::new(LoadAnswer::PastLimit(pending))));
+                        }
+                        fetched => fetched.map_err(|e| {
+                            crate::error_display::user_message_from_report(&e, None)
+                        })?,
+                    };
                     Ok(Answer::Load(Box::new(LoadAnswer::Downloaded {
                         download,
                         options,

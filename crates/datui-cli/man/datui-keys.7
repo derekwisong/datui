@@ -395,10 +395,10 @@ Word wrap or hard wrap for long text
 Open the value in another program
 .TP
 \fBf\fR
-Only the fields with a value; comparing, only those that differ
+Nulls: shown or hidden (null and empty fields); comparing, only the fields that differ
 .TP
 \fBs\fR
-Order: the table's, A-Z, or filled first
+Order: the table's, A-Z, or nulls last
 .TP
 \fBc\fR
 Compare: a column for the next row, or the pinned one
@@ -798,6 +798,9 @@ Open pair detail view (on a cell) or select tool (sidebar); does nothing on a di
 .PP
 \fIActions\fR
 .TP
+\fBm\fR
+Method: Pearson or Spearman (both come from the one run)
+.TP
 \fBs\fR
 Choose the sample every tool reads: which rows, how they are picked, how many, the seed
 .TP
@@ -819,6 +822,9 @@ Cancel a run in progress; otherwise close the analysis view or this help
 \fBEnter\fR on a pair in the correlation matrix.
 .PP
 \fIKeys\fR
+.TP
+\fBm\fR
+Method: Pearson or Spearman
 .TP
 \fB?\fR
 Toggle this help

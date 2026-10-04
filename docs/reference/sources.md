@@ -67,7 +67,7 @@ share a name or a location.
 | Local directory | Steps inside | |
 | Object-store file | Opens it | `auth` or `connection` |
 | Object-store directory | Steps inside. <kbd>Backspace</kbd> at its top comes back to the list | `auth` or `connection` |
-| HTTP(S) file | Downloads it, after asking, and opens it; a built-in catalog file under 50 MB is downloaded without asking | No login |
+| HTTP(S) file | Downloads it, after asking, and opens it; a built-in catalog file under 50 MB is downloaded without asking, and asks if it passes 50 MB | No login |
 
 | Reading | Means |
 |---|---|

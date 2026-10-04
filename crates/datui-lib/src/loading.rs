@@ -127,6 +127,21 @@ impl PendingDownload {
         }
     }
 
+    /// The download once the user has agreed to it: it never asks again, so it has
+    /// no limit to stop at.
+    pub(crate) fn asked(mut self) -> Self {
+        match &mut self {
+            #[cfg(feature = "http")]
+            PendingDownload::Http { options, .. } => options.download_unasked = None,
+            #[cfg(feature = "cloud")]
+            PendingDownload::S3 { options, .. }
+            | PendingDownload::Gcs { options, .. }
+            | PendingDownload::Azure { options, .. }
+            | PendingDownload::Arrow { options, .. } => options.download_unasked = None,
+        }
+        self
+    }
+
     /// Replace the placeholder size with what the probe actually found.
     pub(crate) fn with_size(mut self, found: Option<u64>) -> Self {
         match &mut self {
@@ -781,6 +796,10 @@ pub(crate) enum LoadAnswer {
     /// The remote file's size.
     #[cfg(any(feature = "http", feature = "cloud"))]
     Sized(PendingDownload),
+    /// A download started without asking passed its limit and was stopped, its
+    /// partial file removed: the user is asked before it is fetched whole.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    PastLimit(PendingDownload),
     /// The remote file, downloaded. Dropped unused, it removes the file.
     #[cfg(any(feature = "http", feature = "cloud"))]
     Downloaded {
@@ -1668,6 +1687,18 @@ impl Loader {
                 };
                 Step::Ask(pending)
             }
+            // More arrived than the catalog said: asked once, as any large download is.
+            // Its size is unknown now, whatever the server said.
+            #[cfg(any(feature = "http", feature = "cloud"))]
+            (LoadAnswer::PastLimit(pending), Phase::Downloading) => {
+                let pending = pending.with_size(None);
+                load.phase = Phase::Confirming {
+                    pending: Box::new(pending.clone()),
+                    note: Some(PAST_LIMIT),
+                    _hold: jobs.hold(),
+                };
+                Step::Ask(pending)
+            }
             #[cfg(any(feature = "http", feature = "cloud"))]
             (LoadAnswer::Downloaded { download, options }, Phase::Downloading) => {
                 let fetched = Fetched {
@@ -1773,7 +1804,7 @@ impl Loader {
             Phase::Confirming { pending, .. } => {
                 load.phase = Phase::Downloading;
                 Step::Download {
-                    pending: *pending,
+                    pending: pending.asked(),
                     writer: load.writer.clone(),
                 }
             }
@@ -1907,6 +1938,11 @@ pub(crate) fn delimited_format(path: &Path, options: &OpenOptions) -> Option<Fil
     })?;
     format.decompressed_once().then_some(format)
 }
+
+/// Why a catalog file that started without a question asks partway.
+#[cfg(any(feature = "http", feature = "cloud"))]
+pub(crate) const PAST_LIMIT: &str =
+    "This catalog file passed 50 MB, more than it may download without asking.";
 
 /// Why a remote model is downloaded rather than read by its headers.
 #[cfg(any(feature = "http", feature = "cloud"))]
@@ -3298,6 +3334,69 @@ mod tests {
         assert!(!ask(None, Some(10)).0, "a URL from anywhere else asks");
     }
 
+    /// A catalog file fetched without a question that runs past its limit is asked
+    /// about once, its size unknown; agreed to, it downloads with no limit, and a
+    /// large catalog file asked about up front is not asked about again either.
+    #[cfg(feature = "http")]
+    #[test]
+    fn an_unasked_download_past_its_limit_asks_once() {
+        let url = "https://example.com/penguins.csv";
+        let jobs = jobs();
+        let unasked = Some(crate::UnaskedDownload {
+            limit: 1_000,
+            listed: Some(800),
+        });
+        let mut loader = Loader::default();
+        let mut asked_for = request(url);
+        asked_for.options.download_unasked = unasked;
+        let Step::Probe(pending) = loader.open(asked_for) else {
+            panic!("the size is asked first");
+        };
+        let id = loader.id().unwrap();
+        let Step::Download { pending, .. } =
+            loader.answered(id, LoadAnswer::Sized(pending.with_size(None)), &jobs)
+        else {
+            panic!("small by the catalog: no question");
+        };
+        assert!(
+            pending.parts().2.download_unasked.is_some(),
+            "it has a limit"
+        );
+
+        let Step::Ask(asked) = loader.answered(id, LoadAnswer::PastLimit(pending), &jobs) else {
+            panic!("past the limit, it asks");
+        };
+        assert_eq!(asked.parts().1, None, "its size is not what anyone said");
+        assert_eq!(loader.download_note(), Some(PAST_LIMIT));
+        assert!(jobs.would_strand(), "the generation is held while it asks");
+        let Step::Download { pending, .. } = loader.confirmed() else {
+            panic!("agreed to, it downloads");
+        };
+        assert!(pending.parts().2.download_unasked.is_none(), "asked once");
+
+        // Large by the server: asked up front, and not again.
+        let mut loader = Loader::default();
+        let mut asked_for = request(url);
+        asked_for.options.download_unasked = unasked;
+        let Step::Probe(pending) = loader.open(asked_for) else {
+            panic!("the size is asked first");
+        };
+        let id = loader.id().unwrap();
+        let step = loader.answered(id, LoadAnswer::Sized(pending.with_size(Some(5_000))), &jobs);
+        assert!(matches!(step, Step::Ask(_)));
+        let Step::Download { pending, .. } = loader.confirmed() else {
+            panic!("agreed to, it downloads");
+        };
+        assert!(pending.parts().2.download_unasked.is_none());
+    }
+
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    #[test]
+    fn the_past_limit_note_names_the_limit() {
+        assert_eq!(crate::UnaskedDownload::LIMIT, 50 * 1024 * 1024);
+        assert!(PAST_LIMIT.contains("50 MB"));
+    }
+
     /// A remote file is sized, put to the user, downloaded, then scanned under its URL;
     /// the installed dataset holds the file, and opening the URL again reads that copy
     /// rather than asking again.
@@ -3427,6 +3526,7 @@ mod tests {
             Some("csv"),
             || Ok((std::io::Cursor::new(b"a\n1\n".to_vec()), Some(4))),
             &writer,
+            None,
         )
         .unwrap();
         let at = file.path().to_path_buf();

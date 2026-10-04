@@ -257,6 +257,7 @@ fn render_body(
             view: app.analysis_modal.view,
             selected_tool: app.analysis_modal.selected_tool,
             selected_correlation: app.analysis_modal.selected_correlation,
+            correlation_method: app.analysis_modal.correlation_method,
             focus: app.analysis_modal.focus,
             selected_theoretical_distribution: app.analysis_modal.selected_theoretical_distribution,
             histogram_scale: app.analysis_modal.histogram_scale,

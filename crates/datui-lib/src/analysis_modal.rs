@@ -448,6 +448,8 @@ pub struct AnalysisModal {
     pub selected_tool: Option<AnalysisTool>,
     pub selected_distribution: Option<usize>, // Selected row in distribution table
     pub selected_correlation: Option<(usize, usize)>, // Selected cell in correlation matrix (row, col)
+    /// The coefficient the matrix and the pair detail show; both are computed.
+    pub correlation_method: crate::statistics::CorrelationMethod,
     pub selected_theoretical_distribution: DistributionType, // Selected theoretical distribution for Q-Q plot
     pub distribution_selector_state: TableState,             // For distribution selector list
     pub histogram_scale: HistogramScale,                     // Scale for histogram (linear or log)

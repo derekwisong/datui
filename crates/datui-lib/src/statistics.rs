@@ -237,13 +237,59 @@ pub struct PercentileBreakdown {
     pub p99: f64,
 }
 
+/// Which coefficient the correlation matrix shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CorrelationMethod {
+    /// Pearson's r: how close the pairs fall to a line.
+    #[default]
+    Pearson,
+    /// Spearman's ρ: Pearson's r of the pairs' ranks, for any monotone relation.
+    Spearman,
+}
+
+impl CorrelationMethod {
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Pearson => Self::Spearman,
+            Self::Spearman => Self::Pearson,
+        }
+    }
+}
+
 // Correlation matrix structures
 #[derive(Clone)]
 pub struct CorrelationMatrix {
     pub columns: Vec<String>,            // Numeric column names
-    pub correlations: Vec<Vec<f64>>,     // Square matrix of correlations
+    pub correlations: Vec<Vec<f64>>,     // Square matrix of Pearson correlations
     pub p_values: Option<Vec<Vec<f64>>>, // Statistical significance (optional)
     pub sample_sizes: Vec<Vec<usize>>,   // Sample size for each pair
+    /// Spearman's ρ for each pair, over the same pairs as Pearson's r.
+    pub rank_correlations: Vec<Vec<f64>>,
+    pub rank_p_values: Option<Vec<Vec<f64>>>,
+}
+
+impl CorrelationMatrix {
+    /// The pair's coefficient by `method`; NaN where there is none.
+    pub fn coefficient(&self, method: CorrelationMethod, row: usize, col: usize) -> f64 {
+        let matrix = match method {
+            CorrelationMethod::Pearson => &self.correlations,
+            CorrelationMethod::Spearman => &self.rank_correlations,
+        };
+        matrix
+            .get(row)
+            .and_then(|r| r.get(col))
+            .copied()
+            .unwrap_or(f64::NAN)
+    }
+
+    /// The pair's p-value by `method`, when the matrix has them.
+    pub fn p_value(&self, method: CorrelationMethod, row: usize, col: usize) -> Option<f64> {
+        let matrix = match method {
+            CorrelationMethod::Pearson => self.p_values.as_ref(),
+            CorrelationMethod::Spearman => self.rank_p_values.as_ref(),
+        };
+        matrix.and_then(|m| m.get(row)?.get(col).copied())
+    }
 }
 
 #[derive(Clone)]
@@ -2559,12 +2605,161 @@ fn correlation_matrix_in_bands(df: &DataFrame, band: usize) -> Result<Correlatio
         }
     }
 
+    let (rank_correlations, rank_p_values) = rank_correlation_matrix(&series, &sample_sizes);
     Ok(CorrelationMatrix {
         columns: numeric_cols,
         correlations,
         p_values: Some(p_values),
         sample_sizes,
+        rank_correlations,
+        rank_p_values: Some(rank_p_values),
     })
+}
+
+/// Marks a row with no finite value in [`Ranked::ranks`].
+const NO_RANK: u32 = u32::MAX;
+
+/// One column's ranks, for Spearman's ρ.
+struct Ranked {
+    /// Twice each finite value's average rank (from 1) among the column's finite
+    /// values, so a tie's half rank stays whole; [`NO_RANK`] where there is none.
+    /// Equal values share a rank, so the ranks also tell ties apart.
+    ranks: Vec<u32>,
+    /// The rows with a finite value, in order of value.
+    order: Vec<u32>,
+    /// Every row has a finite value.
+    complete: bool,
+}
+
+impl Ranked {
+    fn new(series: &Series) -> Option<Self> {
+        let rows = series.len();
+        // Doubled ranks reach twice the rows.
+        if rows >= (NO_RANK / 2) as usize {
+            return None;
+        }
+        let mut values = Vec::with_capacity(rows);
+        let mut row = 0u32;
+        for_each_float(series, 0..rows, |v| {
+            if let Some(v) = v.filter(|v| v.is_finite()) {
+                values.push((v, row));
+            }
+            row += 1;
+        });
+        values.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+        let mut ranks = vec![NO_RANK; rows];
+        let mut start = 0;
+        while start < values.len() {
+            // `==` so that -0 and 0 tie, which total_cmp sorts side by side.
+            let end = start
+                + values[start..]
+                    .iter()
+                    .take_while(|(v, _)| *v == values[start].0)
+                    .count();
+            let doubled = (start + 1 + end) as u32;
+            for &(_, row) in &values[start..end] {
+                ranks[row as usize] = doubled;
+            }
+            start = end;
+        }
+        Some(Self {
+            complete: values.len() == rows,
+            order: values.into_iter().map(|(_, row)| row).collect(),
+            ranks,
+        })
+    }
+
+    /// `out` becomes this column's doubled ranks among the rows where `other` also
+    /// has a value, NaN elsewhere; the number of those rows is returned. Walking the
+    /// rows in order of value, a run of equal global ranks is a run of equal values.
+    fn ranks_beside(&self, other: &Ranked, out: &mut Vec<f64>) -> usize {
+        out.clear();
+        out.resize(self.ranks.len(), f64::NAN);
+        let kept: Vec<u32> = self
+            .order
+            .iter()
+            .copied()
+            .filter(|&row| other.ranks[row as usize] != NO_RANK)
+            .collect();
+        let mut start = 0;
+        while start < kept.len() {
+            let tie = self.ranks[kept[start] as usize];
+            let end = start
+                + kept[start..]
+                    .iter()
+                    .take_while(|&&row| self.ranks[row as usize] == tie)
+                    .count();
+            let doubled = (start + 1 + end) as f64;
+            for &row in &kept[start..end] {
+                out[row as usize] = doubled;
+            }
+            start = end;
+        }
+        kept.len()
+    }
+}
+
+/// Spearman's ρ for every pair of `series`, with its p-values: Pearson's r of the
+/// ranks, each pair ranked over the rows where both hold a finite value, as Pearson
+/// pairs them. Where neither column misses a value the column's own ranks are the
+/// pair's, and no pair needs ranking again. Holds four bytes of rank and four of
+/// order per value, about what the sample's own values take.
+fn rank_correlation_matrix(
+    series: &[&Series],
+    sample_sizes: &[Vec<usize>],
+) -> (Vec<Vec<f64>>, Vec<Vec<f64>>) {
+    let n = series.len();
+    let mut ranked: Vec<Option<Ranked>> = (0..n).map(|_| None).collect();
+    across_threads(
+        series.iter().zip(ranked.iter_mut()).collect(),
+        |(series, ranked)| *ranked = Ranked::new(series),
+    );
+    let mut rows: Vec<Vec<f64>> = (0..n).map(|i| vec![f64::NAN; n - i - 1]).collect();
+    let ranked = &ranked;
+    across_threads(rows.iter_mut().enumerate().collect(), |(i, row)| {
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        for (k, rho) in row.iter_mut().enumerate() {
+            let (Some(x), Some(y)) = (&ranked[i], &ranked[i + 1 + k]) else {
+                continue;
+            };
+            let mut sums = PairSums::default();
+            if x.complete && y.complete {
+                // Ranks centered on their mean, which is the row count plus one.
+                let mean = (x.ranks.len() + 1) as f64;
+                for (&rx, &ry) in x.ranks.iter().zip(&y.ranks) {
+                    sums.add(rx as f64 - mean, ry as f64 - mean);
+                }
+            } else {
+                let pairs = x.ranks_beside(y, &mut a);
+                y.ranks_beside(x, &mut b);
+                let mean = (pairs + 1) as f64;
+                for (&rx, &ry) in a.iter().zip(&b) {
+                    if !rx.is_nan() {
+                        sums.add(rx - mean, ry - mean);
+                    }
+                }
+            }
+            if sums.count >= 3 {
+                *rho = sums.correlation();
+            }
+        }
+    });
+    let mut rho = vec![vec![1.0; n]; n];
+    let mut p_values = vec![vec![0.0; n]; n];
+    for (i, row) in rows.iter().enumerate() {
+        for (k, &r) in row.iter().enumerate() {
+            let j = i + 1 + k;
+            rho[i][j] = r;
+            rho[j][i] = r;
+            if !r.is_nan() {
+                // The same t approximation as Pearson's, over the same pairs.
+                let p = compute_correlation_p_value(r, sample_sizes[i][j]);
+                p_values[i][j] = p;
+                p_values[j][i] = p;
+            }
+        }
+    }
+    (rho, p_values)
 }
 
 /// Runs `work` on every item, the items dealt out across threads in turn. A worker's
@@ -3054,6 +3249,95 @@ mod sampling_tests {
             matrix.correlations[3][1]
         );
         assert!((matrix.correlations[1][2] - 1.0).abs() < 1e-9);
+    }
+
+    /// Spearman's ρ by the book: rank both columns over the pair's rows, average
+    /// ranks for ties, then Pearson's r of the ranks.
+    fn spearman_by_hand(x: &[Option<f64>], y: &[Option<f64>]) -> f64 {
+        let pairs: Vec<(f64, f64)> = x
+            .iter()
+            .zip(y)
+            .filter_map(|(a, b)| Some((a.filter(|v| v.is_finite())?, b.filter(|v| v.is_finite())?)))
+            .collect();
+        let rank = |values: Vec<f64>| -> Vec<f64> {
+            values
+                .iter()
+                .map(|v| {
+                    let below = values.iter().filter(|w| *w < v).count() as f64;
+                    let equal = values.iter().filter(|w| *w == v).count() as f64;
+                    below + (equal + 1.0) / 2.0
+                })
+                .collect()
+        };
+        let a = rank(pairs.iter().map(|p| p.0).collect());
+        let b = rank(pairs.iter().map(|p| p.1).collect());
+        let n = a.len() as f64;
+        let (ma, mb) = (a.iter().sum::<f64>() / n, b.iter().sum::<f64>() / n);
+        let sab: f64 = a.iter().zip(&b).map(|(x, y)| (x - ma) * (y - mb)).sum();
+        let saa: f64 = a.iter().map(|x| (x - ma).powi(2)).sum();
+        let sbb: f64 = b.iter().map(|y| (y - mb).powi(2)).sum();
+        sab / (saa * sbb).sqrt()
+    }
+
+    #[test]
+    fn spearman_ranks_each_pair_over_the_rows_both_hold() {
+        let rows = 400;
+        let x: Vec<Option<f64>> = (0..rows)
+            .map(|r| (r % 7 != 3).then(|| ((r * 37 % 101) as f64 * 0.5).floor()))
+            .collect();
+        // Monotone in x but far from a line, with its own gaps and a NaN.
+        let y: Vec<Option<f64>> = (0..rows)
+            .map(|r| match r {
+                _ if r % 11 == 5 => None,
+                17 => Some(f64::NAN),
+                _ => x[r].map(|v| v.powi(5)),
+            })
+            .collect();
+        let z: Vec<Option<f64>> = (0..rows).map(|r| Some(((r * 13) % 29) as f64)).collect();
+        let w: Vec<Option<f64>> = (0..rows)
+            .map(|r| Some(((r * 7) % 31) as f64 - (r % 3) as f64))
+            .collect();
+        let df = DataFrame::new(
+            rows,
+            vec![
+                Series::new("x".into(), &x).into(),
+                Series::new("y".into(), &y).into(),
+                Series::new("z".into(), &z).into(),
+                Series::new("w".into(), &w).into(),
+            ],
+        )
+        .unwrap();
+        let m = compute_correlation_matrix(&df).unwrap();
+        let columns = [&x, &y, &z, &w];
+        for i in 0..4 {
+            assert_eq!(m.coefficient(CorrelationMethod::Spearman, i, i), 1.0);
+            for j in (0..4).filter(|&j| j != i) {
+                let expected = spearman_by_hand(columns[i], columns[j]);
+                let got = m.coefficient(CorrelationMethod::Spearman, i, j);
+                assert!(
+                    (got - expected).abs() < 1e-12,
+                    "{i},{j}: {got} vs {expected}"
+                );
+            }
+        }
+        assert!((m.coefficient(CorrelationMethod::Spearman, 0, 1) - 1.0).abs() < 1e-12);
+        assert!(m.coefficient(CorrelationMethod::Pearson, 0, 1) < 0.99);
+        assert!(m.p_value(CorrelationMethod::Spearman, 2, 3).is_some());
+    }
+
+    #[test]
+    fn spearman_of_a_constant_column_is_undefined() {
+        let df = df!(
+            "year" => vec![2020.0f64; 50],
+            "value" => (0..50).map(|i| i as f64).collect::<Vec<_>>()
+        )
+        .unwrap();
+        let matrix = compute_correlation_matrix(&df).unwrap();
+        assert!(
+            matrix
+                .coefficient(CorrelationMethod::Spearman, 0, 1)
+                .is_nan()
+        );
     }
 
     #[test]

@@ -109,6 +109,9 @@ struct Entry {
     choice: WidthChoice,
     /// The width the column was last drawn at.
     shown: Option<u16>,
+    /// The width it was last drawn at with the room to the table's right edge, as
+    /// the last column drawn: what it showed, though not what it is planned with.
+    filled: Option<u16>,
     /// Whether `shown` was drawn since automatic widths were last relearned, so it
     /// is the width the column draws at now rather than in the view before.
     current: bool,
@@ -148,6 +151,7 @@ impl ColumnWidths {
                     settled: false,
                     choice: WidthChoice::Auto,
                     shown: None,
+                    filled: None,
                     current: false,
                 });
                 entries.len() - 1
@@ -181,8 +185,16 @@ impl ColumnWidths {
             }
         };
         entry.shown = Some(width);
+        entry.filled = None;
         entry.current = true;
         width
+    }
+
+    /// The column, drawn last at `width`, was widened to `filled` to reach the table's
+    /// right edge. Only an automatic width fills: one set by hand is drawn as set.
+    pub fn fill(&mut self, name: &str, dtype: &DataType, filled: u16) {
+        let entry = self.entry_mut(name, dtype);
+        entry.filled = Some(filled);
     }
 
     /// How the column's width is chosen.
@@ -191,9 +203,10 @@ impl ColumnWidths {
             .map_or(WidthChoice::Auto, |e| e.choice)
     }
 
-    /// The width the column was last drawn at, if it has been.
+    /// The width the column was last drawn at, if it has been, the room it filled
+    /// at the right edge included.
     pub fn shown(&self, name: &str, dtype: &DataType) -> Option<u16> {
-        self.entry(name, dtype).and_then(|e| e.shown)
+        self.entry(name, dtype).and_then(|e| e.filled.or(e.shown))
     }
 
     /// The width the column was last drawn at, if it has been drawn since the

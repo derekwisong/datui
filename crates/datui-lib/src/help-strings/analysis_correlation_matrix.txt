@@ -1,4 +1,6 @@
-The Correlation Matrix tool displays pairwise correlations between numeric columns.
+The Correlation Matrix tool displays pairwise correlations between numeric columns:
+Pearson's r, or Spearman's rank correlation, as the title says. Cells show three
+decimal places; a value that only rounds to 1.000 shows 0.999, so 1.000 means exactly 1.
 
 Navigation:
   Tab:           Switch focus between main area and sidebar
@@ -10,6 +12,7 @@ Navigation:
                  does nothing on a diagonal cell
 
 Actions:
+  m:             Method: Pearson or Spearman (both come from the one run)
   s:             Choose the sample every tool reads: which rows, how
                  they are picked, how many, the seed
   v:             View the sample's rows as a table; Esc comes back

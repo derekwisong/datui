@@ -10388,16 +10388,44 @@ impl DataTable {
         let lead = u16::from(leading_gap);
         let mut fitted = self.fit_columns(df, rows, area.width, lead, Side::Scrolling, &mut sizing);
         let shown = fitted.cols.len();
-        let used = fitted
+        let mut used = fitted
             .widths
             .iter()
             .fold(lead, |used, &w| used.saturating_add(w))
             + self
                 .table_cell_padding
                 .saturating_mul(u16::try_from(shown.saturating_sub(1)).unwrap_or(u16::MAX));
+        if let Some(filled) =
+            self.fill_last_column(&mut fitted, area.width.saturating_sub(used), &mut sizing)
+        {
+            used = used.saturating_add(filled);
+        }
         fitted.hint_cell = shown > 0 && shown < df.width() && used >= area.width;
         let (columns, rows) = self.draw_columns(&fitted, area, buf, state, leading_gap);
         (shown, columns, rows)
+    }
+
+    /// Widen the last column drawn by the `room` left at the table's right edge, so a
+    /// long text on the far right runs to the edge rather than stopping at its cap.
+    /// Only a column drawn whole at an automatic width, and not a right-aligned number,
+    /// which would only move away from its heading. Returns the cells it took.
+    fn fill_last_column(
+        &self,
+        fitted: &mut FittedColumns,
+        room: u16,
+        sizing: &mut Sizing,
+    ) -> Option<u16> {
+        let (col, width) = fitted.cols.last().zip(fitted.widths.last_mut())?;
+        if room == 0 || col.right_align || *width < col.natural_width() {
+            return None;
+        }
+        let dtype = sizing.schema.get(col.name.as_str())?;
+        if sizing.widths.choice(&col.name, dtype) != WidthChoice::Auto {
+            return None;
+        }
+        *width = width.saturating_add(room);
+        sizing.widths.fill(&col.name, dtype, *width);
+        Some(room)
     }
 
     /// The frozen columns that fit beside a usable scrolling column, with their widths.
@@ -18270,6 +18298,38 @@ mod tests {
                 assert!(rows[0].contains("tail"), "{ctx}");
             }
         }
+    }
+
+    /// The last column drawn takes the room to the table's right edge: a long text on
+    /// the far right runs to the edge rather than stopping at the cap. A width set by
+    /// hand is drawn as set, and a number stays under its heading.
+    #[test]
+    fn the_last_column_runs_to_the_right_edge() {
+        let long = "x".repeat(200);
+        let df = df!("id" => &[1i64], "text" => &[long.as_str()]).unwrap();
+        let ellipsis = crate::glyphs::get().ellipsis;
+        let mut state = state_of(&df, 1);
+        let rows = draw(DataTable::default(), &mut state, 120, 2);
+        let value = rows[1].trim_end();
+        assert!(value.ends_with(ellipsis), "{rows:#?}");
+        assert_eq!(crate::glyphs::cell_width(value), 120, "{rows:#?}");
+        assert!(state.shown_width("text").unwrap() > 48, "past the cap");
+
+        state.set_width_choices([("text".to_string(), WidthChoice::Manual(20))]);
+        let rows = draw(DataTable::default(), &mut state, 120, 2);
+        assert_eq!(state.shown_width("text"), Some(20), "{rows:#?}");
+        assert!(
+            crate::glyphs::cell_width(rows[1].trim_end()) < 40,
+            "{rows:#?}"
+        );
+
+        let df = df!("text" => &["ab"], "n" => &[5i64]).unwrap();
+        let mut state = state_of(&df, 1);
+        let rows = draw(DataTable::default(), &mut state, 120, 2);
+        assert!(
+            crate::glyphs::cell_width(rows[1].trim_end()) < 20,
+            "{rows:#?}"
+        );
     }
 
     /// The cap follows the terminal, not the table: a sidebar narrowing the table

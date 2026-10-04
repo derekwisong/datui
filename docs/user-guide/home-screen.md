@@ -236,7 +236,8 @@ with no login, listed after your own. datui ships none of the data.
 | Overture Maps | Places, buildings, addresses, roads and boundaries, by release | ODbL; places CDLA Permissive 2.0 and Apache 2.0 |
 
 - A web file's row gives its format and size. One under 50 MB downloads
-  without a question; a URL typed at <kbd>~</kbd> is always asked about.
+  without a question; if it passes 50 MB while downloading, it stops and
+  asks once. A URL typed at <kbd>~</kbd> is always asked about.
 - Once opened, a dataset comes back under Recent by its catalog name.
 - The pane gives the publisher, license and homepage; check the license
   before you use the data.

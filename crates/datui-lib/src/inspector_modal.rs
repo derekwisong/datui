@@ -83,7 +83,7 @@ impl Order {
         match self {
             Order::Table => None,
             Order::Name => Some("A-Z"),
-            Order::Filled => Some("filled first"),
+            Order::Filled => Some("nulls last"),
         }
     }
 }
@@ -218,7 +218,7 @@ pub struct InspectorModal {
     pub finding: bool,
     /// The focused field, an index into `fields`, while it is listed.
     selected: usize,
-    /// The fields listed, in the order listed: the find text, the Filled toggle and
+    /// The fields listed, in the order listed: the find text, the nulls toggle and
     /// the order applied. Kept by [`Self::set_visible`].
     pub visible: Vec<usize>,
     /// The first field listed when the list scrolls.

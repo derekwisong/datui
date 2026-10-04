@@ -877,6 +877,10 @@ pub struct CollectionDataset {
     pub details: Vec<(String, String)>,
     /// What the collection says a remote file weighs, before it is downloaded.
     pub size: Option<u64>,
+    /// What its columns mean, when the collection says.
+    pub codebook: Option<std::sync::Arc<crate::codebook::Codebook>>,
+    /// Places inside it to start from, by name, listed under its row.
+    pub suggested: Vec<(String, PathBuf)>,
 }
 
 impl Collection {
@@ -899,6 +903,7 @@ impl Collection {
                         ("publisher", &dataset.publisher),
                         ("license", &dataset.license),
                         ("homepage", &dataset.homepage),
+                        ("codebook", &dataset.codebook),
                     ]
                     .into_iter()
                     .filter(|(_, value)| !value.is_empty())
@@ -925,6 +930,16 @@ impl Collection {
                         location,
                         details,
                         size: dataset.size,
+                        codebook: crate::codebook::Codebook::of(dataset).map(std::sync::Arc::new),
+                        suggested: dataset
+                            .suggested
+                            .iter()
+                            .filter_map(|s| {
+                                dataset
+                                    .suggested_location(s)
+                                    .map(|place| (s.name.trim().to_string(), place))
+                            })
+                            .collect(),
                     }
                 })
                 .collect(),
@@ -992,6 +1007,37 @@ fn collection_entry(
     entry
 }
 
+/// The codebook of the collection dataset `path` is, or is inside: the innermost when
+/// one dataset is inside another. Only datasets that carry one are considered.
+pub fn codebook_for(
+    collections: &[Collection],
+    path: &Path,
+) -> Option<std::sync::Arc<crate::codebook::Codebook>> {
+    let text = path.to_string_lossy();
+    collections
+        .iter()
+        .flat_map(|c| c.datasets.iter())
+        .filter(|d| d.codebook.is_some())
+        .filter(|d| d.location == path || within(&text, &d.location.to_string_lossy()))
+        .max_by_key(|d| d.location.to_string_lossy().trim_end_matches('/').len())
+        .and_then(|d| d.codebook.clone())
+}
+
+/// The row for a place a collection suggests inside one of its datasets.
+fn suggested_entry(name: &str, place: &Path, network_check: fn(&Path) -> bool) -> Entry {
+    let local = matches!(
+        crate::source::input_source(place),
+        crate::source::InputSource::Local(_)
+    );
+    let mut entry = if is_object_store_url(place) && !names_a_file(place) {
+        Entry::directory(place)
+    } else {
+        entry_for_path(place, !local || network_check(place) || !place.exists())
+    };
+    entry.name = name.to_string();
+    entry
+}
+
 /// A collection's section.
 fn collection_section(
     collection: &Collection,
@@ -1007,10 +1053,18 @@ fn collection_section(
             "configured"
         }),
         root: None,
+        // Each dataset, and under it the places its collection suggests starting from.
         rows: collection
             .datasets
             .iter()
-            .map(|dataset| collection_entry(dataset, network_check, missing))
+            .flat_map(|dataset| {
+                std::iter::once(collection_entry(dataset, network_check, missing)).chain(
+                    dataset
+                        .suggested
+                        .iter()
+                        .map(|(name, place)| suggested_entry(name, place, network_check)),
+                )
+            })
             .collect(),
         unavailable: false,
         unavailable_note: None,
@@ -3136,6 +3190,24 @@ impl HomeState {
             .find(|(_, d)| d.location == path || same_place(&d.location, path))
     }
 
+    /// The dataset a suggested place is listed under, and the suggestion's name.
+    pub fn suggestion(&self, path: &Path) -> Option<(&CollectionDataset, &str)> {
+        self.collections
+            .iter()
+            .flat_map(|c| c.datasets.iter())
+            .find_map(|d| {
+                d.suggested
+                    .iter()
+                    .find(|(_, place)| place == path || same_place(place, path))
+                    .map(|(name, _)| (d, name.as_str()))
+            })
+    }
+
+    /// The codebook of the collection dataset `path` is, or is in.
+    pub fn codebook_at(&self, path: &Path) -> Option<std::sync::Arc<crate::codebook::Codebook>> {
+        codebook_for(&self.collections, path)
+    }
+
     /// The place of an Azure account, from whichever source lists it.
     fn azure_account_place(&self, account: &str) -> Option<PathBuf> {
         self.cloud
@@ -3187,10 +3259,12 @@ impl HomeState {
                 .any(|s| s.id == id && s.api == "gcs")
                 .then_some("project");
         }
+        // A place a collection suggests inside one opens whole, as a dataset does.
         (is_object_store_url(path)
-            && self
+            && (self
                 .collection_dataset(path)
-                .is_some_and(|(_, d)| is_object_store_url(&d.location)))
+                .is_some_and(|(_, d)| is_object_store_url(&d.location))
+                || (self.browsing.is_none() && self.suggestion(path).is_some())))
         .then_some("dataset")
     }
 
@@ -3225,6 +3299,7 @@ impl HomeState {
             .iter()
             .find_map(|s| s.place_details.get(path))
             .or_else(|| self.collection_dataset(path).map(|(_, d)| &d.details))
+            .or_else(|| self.suggestion(path).map(|(d, _)| &d.details))
             .map(Vec::as_slice)
     }
 
@@ -3720,10 +3795,20 @@ impl HomeState {
             if section.grouped_by_place {
                 out.extend(self.rows_by_place(si, section, &matched, capped));
             } else {
-                out.extend(matched.into_iter().map(|(entry, _)| Row::Entry {
-                    section: si,
-                    entry,
-                    nested: false,
+                // A suggested place sits under its dataset while the rows keep the
+                // collection's order.
+                let in_order = self.sort == SortMode::Natural && self.filter.is_empty();
+                out.extend(matched.into_iter().map(|(entry, _)| {
+                    Row::Entry {
+                        section: si,
+                        entry,
+                        nested: in_order
+                            && section
+                                .origin
+                                .is_some_and(|o| o == "built in" || o == "configured")
+                            && section.root.is_none()
+                            && self.suggestion(&entry.path).is_some(),
+                    }
                 }));
             }
             if hidden > 0 {
@@ -4125,9 +4210,12 @@ impl HomeState {
             if !matches!(entry.kind, EntryKind::Directory | EntryKind::Unknown) {
                 continue;
             }
-            // A collection's dataset is listed by name at the top, and nothing is asked
-            // of its store until it is opened or entered.
-            if self.browsing.is_none() && self.collection_dataset(&entry.path).is_some() {
+            // A collection's dataset, and a place it suggests, are listed by name at the
+            // top, and nothing is asked of their store until one is opened or entered.
+            if self.browsing.is_none()
+                && (self.collection_dataset(&entry.path).is_some()
+                    || self.suggestion(&entry.path).is_some())
+            {
                 continue;
             }
             // Asked and answered, or asked and still out.

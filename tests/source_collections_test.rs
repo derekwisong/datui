@@ -3,6 +3,8 @@
 #![cfg(all(feature = "cloud", feature = "http"))]
 
 mod common;
+#[path = "common/fake_s3.rs"]
+mod fake_s3;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::config::AppConfig;
@@ -326,4 +328,179 @@ fn the_catalog_is_replaced_dropped_or_hidden() {
             .any(|t| t == "Curated" || t == "Public datasets"),
         "a hidden replacement is hidden too: {hidden:?}"
     );
+}
+
+/// A collection entry's codebook and suggested places (#734): the place is listed under
+/// its dataset, Enter opens it whole, and the dataset opened knows what its columns
+/// mean.
+#[test]
+fn a_suggested_place_is_listed_under_its_dataset_and_opens_with_its_codebook() {
+    use polars::prelude::*;
+    let mut df = df!(
+        "ID" => ["USW00094728", "USW00094728"],
+        "DATE" => ["20240101", "20240102"],
+        "DATA_VALUE" => [56i64, 72],
+        "Q_FLAG" => [None, Some("S")],
+    )
+    .unwrap();
+    let mut bytes = Vec::new();
+    ParquetWriter::new(&mut bytes).finish(&mut df).unwrap();
+    let objects = [
+        (
+            "ghcn/by_year/YEAR=2024/ELEMENT=TMAX/part-0.parquet".to_string(),
+            bytes.clone(),
+        ),
+        (
+            "ghcn/by_year/YEAR=2024/ELEMENT=TMIN/part-0.parquet".to_string(),
+            bytes,
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let s3 = fake_s3::FakeS3::serve("weather", objects);
+    let config = format!(
+        r#"
+[[cloud.connections]]
+name = "lab"
+kind = "s3"
+endpoint_url = "{endpoint}"
+region = "us-east-1"
+addressing = "path"
+access_key_id_env = "CARGO_PKG_NAME"
+secret_access_key_env = "CARGO_PKG_NAME"
+
+[[sources]]
+name = "mine"
+label = "Mine"
+
+[[sources.datasets]]
+name = "Weather"
+url = "s3://weather/ghcn/"
+connection = "lab"
+codebook = "https://example.com/readme.txt"
+
+[sources.datasets.columns.Q_FLAG]
+description = "Quality flag"
+
+[sources.datasets.columns.Q_FLAG.values]
+"" = "did not fail any quality assurance check"
+
+[[sources.datasets.suggested]]
+name = "Daily highs, 2024"
+path = "by_year/YEAR=2024/ELEMENT=TMAX/"
+"#,
+        endpoint = s3.endpoint
+    );
+    let (mut app, rx) = home_with(&config);
+    pump(&mut app, &rx, |app| {
+        app.home.sections.iter().any(|s| s.title == "Mine")
+    });
+    let rows: Vec<(String, bool)> = app
+        .home
+        .visible()
+        .iter()
+        .filter_map(|row| match row {
+            datui::home::Row::Entry { entry, nested, .. } => Some((entry.name.clone(), *nested)),
+            _ => None,
+        })
+        .collect();
+    let at = rows
+        .iter()
+        .position(|(name, _)| name == "Weather")
+        .expect("the dataset is listed");
+    assert_eq!(
+        rows[at + 1],
+        ("Daily highs, 2024".to_string(), true),
+        "the place sits under its dataset: {rows:?}"
+    );
+
+    // The details pane says what the columns mean, and where that comes from.
+    select(&mut app, "Weather");
+    let area = ratatui::layout::Rect::new(0, 0, 140, 40);
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    ratatui::widgets::Widget::render(&mut app, area, &mut buffer);
+    let screen: String = (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                + "\n"
+        })
+        .collect();
+    assert!(screen.contains("CODEBOOK"), "{screen}");
+    assert!(screen.contains("Quality flag"), "{screen}");
+    assert!(
+        screen.contains("https://example.com/readme.txt"),
+        "{screen}"
+    );
+
+    // Enter opens the place whole, and the dataset carries the codebook.
+    select(&mut app, "Daily highs, 2024");
+    assert_eq!(app.what_enter_does(), datui::WhatEnter::OpensDirectory);
+    drive(&mut app, key(KeyCode::Enter));
+    pump(&mut app, &rx, |app| {
+        app.data_table_state.is_some() && !app.is_busy()
+    });
+    let headers = app.data_table_state.as_ref().unwrap().headers();
+    assert!(headers.iter().any(|h| h == "Q_FLAG"), "{headers:?}");
+    let book = app.codebook.as_ref().expect("the codebook came with it");
+    assert_eq!(
+        book.column("Q_FLAG")
+            .and_then(|c| c.legend_line(None))
+            .as_deref(),
+        Some("blank = did not fail any quality assurance check")
+    );
+}
+
+/// The keys a codebook adds are checked like the rest of a collection.
+#[test]
+fn a_codebook_that_says_nothing_or_a_place_outside_is_refused() {
+    let refused = |extra: &str| {
+        let text = format!(
+            "[[sources]]\nname = \"mine\"\n\n[[sources.datasets]]\nname = \"W\"\n\
+             url = \"s3://weather/ghcn/\"\n{extra}"
+        );
+        let config: AppConfig = toml::from_str(&text).unwrap();
+        config.validate().expect_err(extra).to_string()
+    };
+    let error = refused("[sources.datasets.columns.ELEMENT]\n");
+    assert!(error.contains("says nothing"), "{error}");
+    let error = refused("[sources.datasets.columns.ELEMENT]\nmeaning = \"x\"\n");
+    assert!(error.contains("unknown key 'meaning'"), "{error}");
+    let error = refused("[[sources.datasets.suggested]]\nname = \"Up\"\npath = \"../other/\"\n");
+    assert!(error.contains("stay inside it"), "{error}");
+    let error = refused("codebook = \"ftp://example.com/readme.txt\"\n");
+    assert!(error.contains("https://"), "{error}");
+
+    // A web file has no places inside it.
+    let text = "[[sources]]\nname = \"mine\"\n\n[[sources.datasets]]\nname = \"W\"\n\
+                url = \"https://example.com/a.csv\"\n\n[[sources.datasets.suggested]]\n\
+                name = \"x\"\npath = \"b/\"\n";
+    let config: AppConfig = toml::from_str(text).unwrap();
+    let error = config.validate().unwrap_err().to_string();
+    assert!(error.contains("suggested applies only"), "{error}");
+
+    // The built-in catalog's codebooks parse, and GHCN's flags say blank is normal.
+    let catalog = datui::config::builtin_catalog();
+    let ghcn = catalog
+        .datasets
+        .iter()
+        .find(|d| d.url.as_deref() == Some("s3://noaa-ghcn-pds/parquet/"))
+        .expect("GHCN is in the catalog");
+    let book = datui::codebook::Codebook::of(ghcn).expect("GHCN has a codebook");
+    for flag in ["M_FLAG", "Q_FLAG"] {
+        assert!(
+            book.column(flag)
+                .is_some_and(|c| c.about().contains("normal")),
+            "{flag}"
+        );
+    }
+    assert_eq!(
+        book.column("S_FLAG")
+            .and_then(|c| c.legend_line(Some("T")))
+            .as_deref()
+            .map(|l| l.starts_with("T = SNOwpack TELemtry (SNOTEL)")),
+        Some(true)
+    );
+    assert_eq!(ghcn.suggested.len(), 2);
 }

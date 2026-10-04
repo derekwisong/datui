@@ -1172,6 +1172,15 @@ fn mc_and_s3cmd_configs_are_sources_that_open() {
 
 /// Open `url` in a fresh app, confirming a download when asked, and return the headers.
 fn open_url(url: &str, config: &CloudConfig) -> Result<Vec<String>, String> {
+    open_url_with(url, config, datui::OpenOptions::default())
+}
+
+/// [`open_url`] with `options`: a directory read as one table, as home opens one.
+fn open_url_with(
+    url: &str,
+    config: &CloudConfig,
+    options: datui::OpenOptions,
+) -> Result<Vec<String>, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = datui::App::new_with_config(
         tx,
@@ -1184,10 +1193,7 @@ fn open_url(url: &str, config: &CloudConfig) -> Result<Vec<String>, String> {
             ..Default::default()
         },
     );
-    let open = datui::AppEvent::Open(
-        vec![std::path::PathBuf::from(url)],
-        datui::OpenOptions::default(),
-    );
+    let open = datui::AppEvent::Open(vec![std::path::PathBuf::from(url)], options);
     if let Some(crash) = drive(&mut app, open) {
         return Err(crash);
     }
@@ -1295,6 +1301,36 @@ fn every_public_dataset_lists_and_opens() {
             ),
             Ok(_) => failures.push(format!("{}: {found} has no columns", dataset.name)),
             Err(e) => failures.push(format!("{}: {found}: {e}", dataset.name)),
+        }
+        // Each suggested place opens whole, as Enter on its home row opens it.
+        for suggestion in &dataset.suggested {
+            let place = dataset
+                .suggested_location(suggestion)
+                .expect("a suggestion has a place")
+                .to_string_lossy()
+                .into_owned();
+            let started = std::time::Instant::now();
+            let options = datui::OpenOptions {
+                hive: true,
+                ..Default::default()
+            };
+            match open_url_with(&place, &config, options) {
+                Ok(headers) if !headers.is_empty() => println!(
+                    "ok   {} / {} ({:.1}s): {place}, {} columns",
+                    dataset.name,
+                    suggestion.name,
+                    started.elapsed().as_secs_f32(),
+                    headers.len()
+                ),
+                Ok(_) => failures.push(format!(
+                    "{} / {}: no columns",
+                    dataset.name, suggestion.name
+                )),
+                Err(e) => failures.push(format!(
+                    "{} / {}: {place}: {e}",
+                    dataset.name, suggestion.name
+                )),
+            }
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");

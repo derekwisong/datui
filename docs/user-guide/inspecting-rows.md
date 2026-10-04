@@ -45,6 +45,12 @@ preview. The inspector shows what is stored:
 Exact means the value as Polars stored it, not the spelling in a CSV file: a
 `1.50` read from CSV is the float `1.5`.
 
+A dataset a [collection](../reference/sources.md#codebooks) lists with a
+codebook says more under the value: what the field means, and what the value
+stands for when the codebook lists it. In NOAA's weather data, `AWDR` under
+`ELEMENT` reads `AWDR = Average daily wind direction (degrees)`, and a blank
+`Q_FLAG` reads `blank = did not fail any quality assurance check`.
+
 ## Keys
 
 | Key | Action |

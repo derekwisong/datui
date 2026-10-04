@@ -7,7 +7,11 @@
 # measured when it was added: its row shows it, and one under 50 MB is downloaded
 # without asking. A rolling file's size is a typical one.
 #
-# The weekly `Public datasets` workflow checks every entry.
+# An entry may carry a `codebook`: the publisher's documentation of its columns, and
+# `columns` notes taken from it, never from memory. `suggested` names places inside a
+# directory dataset to start from; each must list with no login.
+#
+# The weekly `Public datasets` workflow checks every entry and every suggested place.
 
 [[sources]]
 name = "public"
@@ -21,6 +25,48 @@ description = "Departures from JFK, LaGuardia and Newark; delays in minutes"
 publisher = "BTS / nycflights13; CSV hosted by Rdatasets"
 license = "CC0 (nycflights13)"
 homepage = "https://nycflights13.tidyverse.org/reference/flights.html"
+codebook = "https://nycflights13.tidyverse.org/reference/flights.html"
+
+[sources.datasets.columns.dep_time]
+description = "Actual departure time, local"
+unit = "HHMM or HMM"
+
+[sources.datasets.columns.arr_time]
+description = "Actual arrival time, local"
+unit = "HHMM or HMM"
+
+[sources.datasets.columns.sched_dep_time]
+description = "Scheduled departure time, local"
+unit = "HHMM or HMM"
+
+[sources.datasets.columns.sched_arr_time]
+description = "Scheduled arrival time, local"
+unit = "HHMM or HMM"
+
+[sources.datasets.columns.dep_delay]
+description = "Departure delay; negative is an early departure"
+unit = "minutes"
+
+[sources.datasets.columns.arr_delay]
+description = "Arrival delay; negative is an early arrival"
+unit = "minutes"
+
+[sources.datasets.columns.carrier]
+description = "Two letter carrier abbreviation"
+
+[sources.datasets.columns.air_time]
+description = "Time spent in the air"
+unit = "minutes"
+
+[sources.datasets.columns.distance]
+description = "Distance between airports"
+unit = "miles"
+
+[sources.datasets.columns.hour]
+description = "Hour of the scheduled departure"
+
+[sources.datasets.columns.minute]
+description = "Minute of the scheduled departure"
 
 [[sources.datasets]]
 name = "Food nutrition (fast food)"
@@ -48,6 +94,146 @@ description = "Worldwide weather station observations, by year and by station"
 publisher = "NOAA"
 license = "CC0"
 homepage = "https://registry.opendata.aws/noaa-ghcn/"
+codebook = "https://www.ncei.noaa.gov/pub/data/ghcn/daily/readme.txt"
+
+[sources.datasets.columns.ID]
+description = "Station identification code; ghcnd-stations.txt in the bucket lists each station"
+
+[sources.datasets.columns.STATION]
+description = "Station identification code, from the by_station partition"
+
+[sources.datasets.columns.YEAR]
+description = "Year, from the by_year partition"
+
+[sources.datasets.columns.DATE]
+description = "Date of the observation"
+unit = "YYYYMMDD"
+
+[sources.datasets.columns.ELEMENT]
+description = "Element type: what DATA_VALUE measures, and in what unit. The readme lists every code"
+
+[sources.datasets.columns.ELEMENT.values]
+PRCP = "Precipitation (tenths of mm)"
+SNOW = "Snowfall (mm)"
+SNWD = "Snow depth (mm)"
+TMAX = "Maximum temperature (tenths of degrees C)"
+TMIN = "Minimum temperature (tenths of degrees C)"
+TAVG = "Average daily temperature (tenths of degrees C)"
+TOBS = "Temperature at the time of observation (tenths of degrees C)"
+ADPT = "Average Dew Point Temperature for the day (tenths of degrees C)"
+ASLP = "Average Sea Level Pressure for the day (hPa * 10)"
+AWDR = "Average daily wind direction (degrees)"
+AWND = "Average daily wind speed (tenths of meters per second)"
+EVAP = "Evaporation of water from evaporation pan (tenths of mm)"
+MDPR = "Multiday precipitation total (tenths of mm; use with DAPR and DWPR, if available)"
+DAPR = "Number of days included in the multiday precipitation total (MDPR)"
+PGTM = "Peak gust time (hours and minutes, i.e., HHMM)"
+PSUN = "Daily percent of possible sunshine (percent)"
+RHAV = "Average relative humidity for the day (percent)"
+TSUN = "Daily total sunshine (minutes)"
+WDF2 = "Direction of fastest 2-minute wind (degrees)"
+WDF5 = "Direction of fastest 5-second wind (degrees)"
+WESD = "Water equivalent of snow on the ground (tenths of mm)"
+WESF = "Water equivalent of snowfall (tenths of mm)"
+WSF2 = "Fastest 2-minute wind speed (tenths of meters per second)"
+WSF5 = "Fastest 5-second wind speed (tenths of meters per second)"
+WSFG = "Peak gust wind speed (tenths of meters per second)"
+WT01 = "Weather type: fog, ice fog, or freezing fog (may include heavy fog)"
+WT03 = "Weather type: thunder"
+WT08 = "Weather type: smoke or haze"
+WT16 = "Weather type: rain (may include freezing rain, drizzle, and freezing drizzle)"
+WT18 = "Weather type: snow, snow pellets, snow grains, or ice crystals"
+
+[sources.datasets.columns.DATA_VALUE]
+description = "Data value for ELEMENT, in the unit its ELEMENT code gives; often tenths"
+unit = "per ELEMENT"
+
+[sources.datasets.columns.M_FLAG]
+description = "Measurement flag; blank (null) is normal: no measurement information applicable"
+
+[sources.datasets.columns.M_FLAG.values]
+"" = "no measurement information applicable"
+B = "precipitation total formed from two 12-hour totals"
+D = "precipitation total formed from four six-hour totals"
+H = "represents highest or lowest hourly temperature (TMAX or TMIN) or the average of hourly values (TAVG)"
+K = "converted from knots"
+L = "temperature appears to be lagged with respect to reported hour of observation"
+O = "converted from oktas"
+P = "identified as \"missing presumed zero\" in DSI 3200 and 3206"
+T = "trace of precipitation, snowfall, or snow depth"
+W = "converted from 16-point WBAN code (for wind direction)"
+
+[sources.datasets.columns.Q_FLAG]
+description = "Quality flag; blank (null) is normal: the value did not fail any quality assurance check"
+
+[sources.datasets.columns.Q_FLAG.values]
+"" = "did not fail any quality assurance check"
+D = "failed duplicate check"
+G = "failed gap check"
+I = "failed internal consistency check"
+K = "failed streak/frequent-value check"
+L = "failed check on length of multiday period"
+M = "failed megaconsistency check"
+N = "failed naught check"
+O = "failed climatological outlier check"
+R = "failed lagged range check"
+S = "failed spatial consistency check"
+T = "failed temporal consistency check"
+W = "temperature too warm for snow"
+X = "failed bounds check"
+Z = "flagged as a result of an official Datzilla investigation"
+
+[sources.datasets.columns.S_FLAG]
+description = "Source flag: where the value came from"
+
+[sources.datasets.columns.S_FLAG.values]
+"" = "No source (i.e., data value missing)"
+"0" = "U.S. Cooperative Summary of the Day (NCDC DSI-3200)"
+"1" = "CF6 (form F6) daily climate summaries from the U.S. National Weather Service"
+"2" = "Synoptic Summary of the Day (SSOD), the successor to GSOD (source 'S')"
+"6" = "CDMP Cooperative Summary of the Day (NCDC DSI-3206)"
+"7" = "U.S. Cooperative Summary of the Day -- Transmitted via WxCoder3 (NCDC DSI-3207)"
+A = "U.S. Automated Surface Observing System (ASOS) real-time data (since January 1, 2006)"
+a = "Australian data from the Australian Bureau of Meteorology"
+B = "U.S. ASOS data for October 2000-December 2005 (NCDC DSI-3211)"
+b = "Belarus update"
+C = "Environment Canada"
+D = "Short time delay US National Weather Service CF6 daily summaries provided by the High Plains Regional Climate Center"
+d = "Short time delay US National Weather Service Daily Summary Message (DSMs) provided by the High Plains Regional Climate Center"
+E = "European Climate Assessment and Dataset (Klein Tank et al., 2002)"
+F = "U.S. Fort data"
+G = "Official Global Climate Observing System (GCOS) or other government-supplied data"
+H = "High Plains Regional Climate Center real-time data"
+I = "International collection (non U.S. data received through personal contacts)"
+K = "U.S. Cooperative Summary of the Day data digitized from paper observer forms (from 2011 to present)"
+M = "Monthly METAR Extract (additional ASOS data)"
+f = "Data provided courtesy of the Fiji Met Service"
+m = "Data from the Mexican National Water Commission (Comision National del Agua -- CONAGUA)"
+N = "Community Collaborative Rain, Hail,and Snow (CoCoRaHS)"
+Q = "Data from several African countries that had been \"quarantined\", that is, withheld from public release until permission was granted from the respective meteorological services"
+R = "NCEI Reference Network Database (Climate Reference Network and Regional Climate Reference Network)"
+r = "All-Russian Research Institute of Hydrometeorological Information-World Data Center"
+S = "Global Summary of the Day (NCDC DSI-9618); use with caution, particularly for precipitation"
+s = "China Meteorological Administration/National Meteorological Information Center/Climatic Data Center"
+T = "SNOwpack TELemtry (SNOTEL) data obtained from the U.S. Department of Agriculture's Natural Resources Conservation Service"
+U = "Remote Automatic Weather Station (RAWS) data obtained from the Western Regional Climate Center"
+u = "Ukraine update"
+W = "WBAN/ASOS Summary of the Day from NCDC's Integrated Surface Data (ISD)"
+X = "U.S. First-Order Summary of the Day (NCDC DSI-3210)"
+Z = "Datzilla official additions or replacements"
+z = "Uzbekistan update"
+
+[sources.datasets.columns.OBS_TIME]
+description = "Time of observation, from NOAA/NCEI's station history where available (primarily U.S. Cooperative Observers); blank (null) otherwise"
+unit = "HHMM, 0700 = 7:00 am"
+
+[[sources.datasets.suggested]]
+name = "Daily highs, 2024"
+path = "by_year/YEAR=2024/ELEMENT=TMAX/"
+
+[[sources.datasets.suggested]]
+name = "Central Park, NY"
+path = "by_station/STATION=USW00094728/"
 
 [[sources.datasets]]
 name = "Premier League (2020-21)"
@@ -66,6 +252,93 @@ description = "One original monthly trip file; fares, distances and congestion f
 publisher = "NYC Taxi and Limousine Commission"
 license = "NYC Open Data terms"
 homepage = "https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page"
+codebook = "https://www.nyc.gov/assets/tlc/downloads/pdf/data_dictionary_trip_records_yellow.pdf"
+
+[sources.datasets.columns.VendorID]
+description = "The TPEP provider that provided the record"
+
+[sources.datasets.columns.VendorID.values]
+"1" = "Creative Mobile Technologies, LLC"
+"2" = "Curb Mobility, LLC"
+"6" = "Myle Technologies Inc"
+"7" = "Helix"
+
+[sources.datasets.columns.tpep_pickup_datetime]
+description = "When the meter was engaged"
+
+[sources.datasets.columns.tpep_dropoff_datetime]
+description = "When the meter was disengaged"
+
+[sources.datasets.columns.trip_distance]
+description = "Elapsed trip distance reported by the taximeter"
+unit = "miles"
+
+[sources.datasets.columns.RatecodeID]
+description = "The final rate code in effect at the end of the trip"
+
+[sources.datasets.columns.RatecodeID.values]
+"1" = "Standard rate"
+"2" = "JFK"
+"3" = "Newark"
+"4" = "Nassau or Westchester"
+"5" = "Negotiated fare"
+"6" = "Group ride"
+"99" = "Null/unknown"
+
+[sources.datasets.columns.store_and_fwd_flag]
+description = "Whether the trip record was held in vehicle memory before sending to the vendor, because the vehicle had no connection to the server"
+
+[sources.datasets.columns.store_and_fwd_flag.values]
+Y = "store and forward trip"
+N = "not a store and forward trip"
+
+[sources.datasets.columns.PULocationID]
+description = "TLC Taxi Zone in which the taximeter was engaged"
+
+[sources.datasets.columns.DOLocationID]
+description = "TLC Taxi Zone in which the taximeter was disengaged"
+
+[sources.datasets.columns.payment_type]
+description = "How the passenger paid for the trip"
+
+[sources.datasets.columns.payment_type.values]
+"0" = "Flex Fare trip"
+"1" = "Credit card"
+"2" = "Cash"
+"3" = "No charge"
+"4" = "Dispute"
+"5" = "Unknown"
+"6" = "Voided trip"
+
+[sources.datasets.columns.fare_amount]
+description = "The time-and-distance fare calculated by the meter"
+
+[sources.datasets.columns.extra]
+description = "Miscellaneous extras and surcharges"
+
+[sources.datasets.columns.mta_tax]
+description = "Tax that is automatically triggered based on the metered rate in use"
+
+[sources.datasets.columns.tip_amount]
+description = "Tip amount, populated automatically for credit card tips; cash tips are not included"
+
+[sources.datasets.columns.tolls_amount]
+description = "Total amount of all tolls paid in trip"
+
+[sources.datasets.columns.improvement_surcharge]
+description = "Improvement surcharge assessed trips at the flag drop, levied since 2015"
+
+[sources.datasets.columns.total_amount]
+description = "The total amount charged to passengers; does not include cash tips"
+
+[sources.datasets.columns.congestion_surcharge]
+description = "Total amount collected in trip for NYS congestion surcharge"
+
+[sources.datasets.columns.Airport_fee]
+description = "For pick up only at LaGuardia and John F. Kennedy Airports"
+
+[sources.datasets.columns.cbd_congestion_fee]
+description = "Per-trip charge for MTA's Congestion Relief Zone, starting Jan. 5, 2025"
 
 [[sources.datasets]]
 name = "Earthquakes (past month)"
@@ -75,6 +348,26 @@ description = "Rolling month of worldwide earthquakes; magnitudes, depth and loc
 publisher = "USGS"
 license = "Public domain"
 homepage = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/csv.php"
+codebook = "https://www.usgs.gov/programs/earthquake-hazards/magnitude-types"
+
+[sources.datasets.columns.magType]
+description = "How mag was measured: the magnitude type"
+
+[sources.datasets.columns.magType.values]
+mww = "Moment W-phase: from a centroid moment tensor inversion of the W-phase; about 5.0 and larger"
+mwc = "Centroid: from a centroid moment tensor inversion of the long-period surface waves; about 5.5 and larger"
+mwb = "Body wave: from moment tensor inversion of long-period body waves (P- and SH); about 5.5 to 7.0"
+mwr = "Regional: from moment tensor inversion of the whole seismogram at regional distances; about 4.0 to 6.5"
+mb = "Short-period body wave: from the amplitude of 1st arriving P-waves at periods of about 1 s; about 4.0 to 6.5"
+mfa = "Felt-area magnitude: an estimate of mb from the size of the area over which the earthquake was felt"
+ml = "Local: the original magnitude relationship defined by Richter and Gutenberg in 1935 for local earthquakes; about 2.0 to 6.5"
+mb_lg = "Short-period surface wave: from the amplitude of the Lg surface waves, for regional earthquakes; about 3.5 to 7.0"
+md = "Duration: from the duration of shaking as measured by the time decay of the amplitude; about 4 or smaller"
+me = "Energy: from the seismic energy radiated by the earthquake; about 3.5 and larger"
+mi = "Integrated p-wave: from the integral of the displacement of the P wave on broadband instruments; about 5.0 to 8.0"
+mwp = "Integrated p-wave: from the integral of the displacement of the P wave on broadband instruments; about 5.0 to 8.0"
+mh = "Non-standard magnitude method, generally used when standard methods will not work"
+mint = "Intensity magnitude: estimated from the maximum reported intensity"
 
 [[sources.datasets]]
 name = "Space launches (1957-2018)"

@@ -1154,6 +1154,7 @@ pub fn render(
     buf: &mut Buffer,
     modal: &mut InspectorModal,
     state: &DataTableState,
+    codebook: Option<&crate::codebook::Codebook>,
     ctx: &RenderContext,
 ) {
     let row = state.inspect_row();
@@ -1229,11 +1230,39 @@ pub fn render(
         Pane::lines(vec![(message.to_string(), Tone::Dim)], Vec::new())
     });
     modal.reader.prepare(pane.id, width, modal.wrap);
-    let need = modal
+    // What the codebook says of the field, and of the value under the cursor.
+    let note = match (&row, &focused, codebook) {
+        (Some(row), Some(field), Some(book)) => book
+            .column(&field.name)
+            .map(|column| {
+                codebook_lines(
+                    column,
+                    &shown(field, row, modal.read.as_ref(), state),
+                    width,
+                )
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    let value_need = modal
         .reader
         .rows_needed(&pane.content, content.height as usize);
+    let need = value_need + if note.is_empty() { 0 } else { note.len() + 1 };
 
-    let lay = layout(content, modal.visible.len(), need, modal.focus, shape);
+    let mut lay = layout(content, modal.visible.len(), need, modal.focus, shape);
+    // The note follows the value, a blank row between, and never takes more than half
+    // the pane: a long value scrolls above it.
+    let note_rows = if note.is_empty() || lay.value.height < 3 {
+        0
+    } else {
+        (note.len() + 1).min(lay.value.height as usize / 2) as u16
+    };
+    lay.value.height -= note_rows;
+    let note_area = Rect {
+        y: lay.value.y + lay.value.height.min(value_need as u16),
+        height: note_rows,
+        ..lay.value
+    };
 
     // The footer, from what the layout leaves visible.
     let enter = match (&row, &focused) {
@@ -1318,6 +1347,48 @@ pub fn render(
 
     let name = focused.as_ref().map(|f| f.name.clone()).unwrap_or_default();
     draw_value(buf, &lay, &name, &pane, modal, ctx);
+    for (i, (text, tone)) in note
+        .iter()
+        .take(note_rows.saturating_sub(1) as usize)
+        .enumerate()
+    {
+        let style = match tone {
+            Tone::Dim => Style::default().fg(ctx.dimmed),
+            _ => Style::default().fg(ctx.text_primary),
+        };
+        Paragraph::new(text.as_str()).style(style).render(
+            Rect {
+                x: note_area.x + 1,
+                y: note_area.y + 1 + i as u16,
+                width: note_area.width.saturating_sub(1),
+                height: 1,
+            },
+            buf,
+        );
+    }
+}
+
+/// The codebook's lines for a field: its meaning and unit, then what the value under
+/// the cursor stands for when the codebook lists it.
+pub fn codebook_lines(
+    column: &crate::codebook::Column,
+    shown: &Shown,
+    width: usize,
+) -> Vec<(String, Tone)> {
+    let mut lines = Vec::new();
+    let about = column.about();
+    if !about.is_empty() {
+        reader::wrap_lines(&about, width.max(1), Tone::Dim, &mut lines);
+    }
+    let value = match shown {
+        Shown::Null(_) => Some(None),
+        Shown::Value(v) => Some(Some(exact::value_text(v))),
+        _ => None,
+    };
+    if let Some(line) = value.and_then(|v| column.legend_line(v.as_deref())) {
+        reader::wrap_lines(&line, width.max(1), Tone::Plain, &mut lines);
+    }
+    lines
 }
 
 /// The chip on the list's rule: how many fields, how many null and empty, how

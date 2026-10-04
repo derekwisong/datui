@@ -705,14 +705,54 @@ pub struct DatasetConfig {
     /// downloaded. What the server says replaces it once the file is opened.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
+    /// Where the publisher documents the columns: the source of `columns`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub codebook: String,
+    /// What each column means, by its name as the data spells it.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub columns: std::collections::BTreeMap<String, ColumnNote>,
+    /// Places inside a directory dataset worth starting from, listed under it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub suggested: Vec<SuggestedPath>,
+    /// Keys that are not recognized, kept so validation can name them.
+    #[serde(flatten)]
+    pub unknown: std::collections::BTreeMap<String, toml::Value>,
+}
+
+/// A column's entry in a dataset's codebook: what it means, its unit, and what its
+/// codes stand for.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct ColumnNote {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub unit: String,
+    /// Code to meaning. `""` is what a blank or null value means.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub values: std::collections::BTreeMap<String, String>,
+    /// Keys that are not recognized, kept so validation can name them.
+    #[serde(flatten)]
+    pub unknown: std::collections::BTreeMap<String, toml::Value>,
+}
+
+/// A place inside a directory dataset to start from: a partition, a station.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(default)]
+pub struct SuggestedPath {
+    pub name: String,
+    /// Relative to the dataset's `path` or `url`.
+    pub path: String,
     /// Keys that are not recognized, kept so validation can name them.
     #[serde(flatten)]
     pub unknown: std::collections::BTreeMap<String, toml::Value>,
 }
 
 const SOURCE_KEYS: &str = "name, label, datasets";
-const DATASET_KEYS: &str =
-    "name, path, url, auth, connection, description, publisher, license, homepage, size";
+const DATASET_KEYS: &str = "name, path, url, auth, connection, description, publisher, license, \
+     homepage, size, codebook, columns, suggested";
+const COLUMN_KEYS: &str = "description, unit, values";
+const SUGGESTED_KEYS: &str = "name, path";
 const AUTH_VALUES: &str = "auto or anonymous";
 
 /// Where a dataset URL lives, as far as reading it is concerned.
@@ -795,6 +835,86 @@ impl DatasetConfig {
         }
     }
 
+    /// The codebook's columns and the suggested places: each says something, and a
+    /// suggestion stays inside a dataset that has places inside it.
+    fn validate_codebook(&self, what: &str) -> Result<()> {
+        if !self.codebook.is_empty() && !self.codebook.starts_with("https://") {
+            return Err(eyre!(
+                "{what}: codebook \"{}\" is not an https:// link",
+                self.codebook
+            ));
+        }
+        for (column, note) in &self.columns {
+            let what = format!("{what} column \"{column}\"");
+            if !note.unknown.is_empty() {
+                return Err(unknown_keys(&what, &note.unknown, COLUMN_KEYS));
+            }
+            if note.description.trim().is_empty()
+                && note.unit.trim().is_empty()
+                && note.values.is_empty()
+            {
+                return Err(eyre!(
+                    "{what}: says nothing. Give a description, unit or values"
+                ));
+            }
+            if let Some((code, _)) = note.values.iter().find(|(_, m)| m.trim().is_empty()) {
+                return Err(eyre!("{what}: value \"{code}\" has no meaning"));
+            }
+        }
+        if self.suggested.is_empty() {
+            return Ok(());
+        }
+        let has_places = self.path.is_some()
+            || self.url.as_deref().is_some_and(|url| {
+                matches!(dataset_url_place(url), Some(UrlPlace::ObjectStore(_)))
+            });
+        if !has_places {
+            return Err(eyre!(
+                "{what}: suggested applies only to a local path or an s3://, gs:// or Azure url"
+            ));
+        }
+        let mut names = std::collections::HashSet::new();
+        for suggestion in &self.suggested {
+            let name = suggestion.name.trim();
+            if name.is_empty() {
+                return Err(eyre!("{what}: every suggested place needs a name"));
+            }
+            let what = format!("{what} suggested \"{name}\"");
+            if !suggestion.unknown.is_empty() {
+                return Err(unknown_keys(&what, &suggestion.unknown, SUGGESTED_KEYS));
+            }
+            if !names.insert(name) {
+                return Err(eyre!("{what}: the name is used twice"));
+            }
+            let path = suggestion.path.trim();
+            if path.is_empty()
+                || path.starts_with('/')
+                || path.contains("://")
+                || path.contains('\\')
+                || path.split('/').any(|part| part == "..")
+            {
+                return Err(eyre!(
+                    "{what}: path \"{}\" must be relative to the dataset and stay inside it",
+                    suggestion.path
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Where a suggested place is: its path under the dataset's.
+    pub fn suggested_location(&self, suggestion: &SuggestedPath) -> Option<PathBuf> {
+        let rel = suggestion.path.trim().trim_start_matches("./");
+        if let Some(path) = self.local_path() {
+            return Some(path.join(rel));
+        }
+        let url = self.url.as_deref()?;
+        Some(PathBuf::from(format!(
+            "{}/{rel}",
+            url.trim_end_matches('/')
+        )))
+    }
+
     fn validate(&self, collection: &str, connections: &[CloudConnectionConfig]) -> Result<()> {
         if self.name.trim().is_empty() {
             return Err(eyre!(
@@ -805,6 +925,7 @@ impl DatasetConfig {
         if !self.unknown.is_empty() {
             return Err(unknown_keys(&what, &self.unknown, DATASET_KEYS));
         }
+        self.validate_codebook(&what)?;
         let url = match (&self.path, &self.url) {
             (None, None) => return Err(eyre!("{what}: say where it is with path or url")),
             (Some(_), Some(_)) => {

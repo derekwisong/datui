@@ -237,6 +237,13 @@ with no login, listed after your own. datui ships none of the data.
 - Once opened, a dataset comes back under Recent by its catalog name.
 - The pane gives the publisher, license and homepage; check the license
   before you use the data.
+- NYC flights, NOAA daily weather, NYC yellow taxis and Earthquakes carry
+  a codebook from their publisher's documentation: the pane lists what the
+  columns mean, and the [Info panel](dataset-info.md) and the
+  [inspector](inspecting-rows.md) explain them once the data is open.
+- NOAA daily weather lists two places to start from under it, `Daily highs,
+  2024` and `Central Park, NY`. <kbd>Enter</kbd> opens one whole;
+  the dataset's own row still steps inside.
 - A build without the `http` or `cloud` feature leaves out the rows it cannot
   open.
 - A collection named `public` replaces this one; `[home] builtin_catalog =

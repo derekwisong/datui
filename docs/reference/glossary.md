@@ -11,6 +11,7 @@ command line, the config file and Python.
 | **filter** | narrow, search | Keep only the matching rows: Sort & Filter (`s`), a query |
 | **narrow** | filter | Shrink a picker or a list by typing: pickers, the home screen's filter |
 | **search** | find | On the home screen only: look below the current directory for files |
+| **codebook** | data dictionary, column notes | What a collection says its dataset's columns mean: `codebook`, `columns` and `suggested` in `[[sources.datasets]]` |
 | **Info** (the Info panel) | Dataset Info | `i`: facts about the dataset |
 | **inspector** | row inspector, detail | One row's values (`Space`) |
 | **byte inspector** | inspector | The hex view's decoder of the bytes at the cursor |

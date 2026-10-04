@@ -100,7 +100,7 @@ Where a dataset opens.
 | `PgUp/PgDn` | Move a screenful, stopping at the first and last |
 | `Home / End` | The first or last row |
 | `← / →` | Fold or unfold a section; → on a directory or a file of tables goes inside it |
-| `Enter` | What the control bar says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them |
+| `Enter` | What the control bar says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A place a collection suggests, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them |
 | `Space` | While the filter is empty: fold or unfold the section header under the cursor. With a filter typed, it types |
 | `Backspace` | Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a collection's remote dataset, back here) |
 | `Tab` | Cycle the sort; the control bar names the order in effect when it has room |

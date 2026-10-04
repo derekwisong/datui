@@ -77,7 +77,12 @@ fn test_generate_default_config() {
     ] {
         assert!(template.contains(section), "{section}");
     }
-    assert!(!template.contains("version"));
+    // No `version` key; the catalog's notes may say "inversion".
+    assert!(
+        !template
+            .lines()
+            .any(|line| line.trim_start_matches(['#', ' ']).starts_with("version"))
+    );
 }
 
 #[test]

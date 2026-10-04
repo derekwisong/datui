@@ -591,26 +591,29 @@ Pick the column (type to narrow, Enter chooses), the operator the same way, then
 \fBEsc\fR
 End the edit, and only the edit
 .SS "Pivot and melt"
-\fBp\fR at the table.
+\fBp\fR at the table: the form on the left, a live preview of the result on the right (above and below on a narrow terminal).
 .PP
 \fIForm\fR
 .TP
 \fBTab / Shift+Tab (\(ua / \(da)\fR
-Next or previous field, wrapping; a field the form does not offer right now is skipped. The arrows move from the moment the dialog opens
+Next or previous field, wrapping; a field the form does not offer right now is skipped. The arrows move from the moment the builder opens
 .TP
 \fB\(<- / \(->\fR
-On the tab bar: switch Pivot and Melt. On the aggregation, strategy or type: the previous or next value. On a single column row: the previous or next column. In a text field: move the cursor. h/l too, outside text fields
+On the first row: switch Pivot and Melt. On the aggregation, strategy or type: the previous or next value. On a single column row: the previous or next column. In a text field: move the cursor. h/l too, outside text fields. The preview follows each change
 .TP
 \fBSpace\fR
-On a choice: its next value, wrapping. On a column row: open its picker, scoped to that row; typing narrows it
+On a column row: open its picker, scoped to that row; typing narrows it. On a choice: its next value, wrapping
 .TP
 \fBEnter\fR
-Apply the spec echoed above the footer
+Apply the reshape the preview shows, to the whole view, from any field
 .TP
 \fBEsc\fR
-Close without applying; while a pivot is computed, stop it and keep the form
+Close without applying; while a pivot is computed, stop it and keep the builder
 .PP
 \fIPicker\fR
+.TP
+\fB(type)\fR
+Narrow the column list
 .TP
 \fB\(ua / \(da\fR
 Move; typing narrows

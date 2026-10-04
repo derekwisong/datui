@@ -59,6 +59,11 @@ fn pivot_agg_expr(agg: PivotAggregation, values: Expr) -> Expr {
     }
 }
 
+/// The most columns a pivot may make. Past it the table, the schema and every view
+/// of them slow to a crawl; a pivot on a column with this many values is almost
+/// always a mistake (an id or a timestamp picked for Columns).
+pub const PIVOT_COLUMN_LIMIT: usize = 10_000;
+
 /// A pivot of the view as it was when planned, to be read off the UI thread.
 pub struct PivotJob {
     view: LazyFrame,
@@ -67,6 +72,15 @@ pub struct PivotJob {
 }
 
 impl PivotJob {
+    /// A pivot of `view`: the builder's preview runs one over a few rows in memory.
+    pub(crate) fn new(view: LazyFrame, spec: PivotSpec, streaming: bool) -> Self {
+        Self {
+            view,
+            spec,
+            streaming,
+        }
+    }
+
     /// The pivoted frame, in one pass over the view.
     ///
     /// The lazy pivot has to be told its new columns before it runs, which would mean a
@@ -112,6 +126,15 @@ impl PivotJob {
             .unique(None, UniqueKeepStrategy::Any)
             .sort([on], SortMultipleOptions::default().with_nulls_last(true))
             .collect()?;
+        // Refused before the pivot builds them: the cells are already in memory, the
+        // columns would be the expensive part.
+        if on_columns.height() > PIVOT_COLUMN_LIMIT {
+            return Err(color_eyre::eyre::eyre!(
+                "Pivot would make {} columns from {on}; the limit is {}. Filter first, or pivot a column with fewer values",
+                numfmt::group_chrome(on_columns.height()),
+                numfmt::group_chrome(PIVOT_COLUMN_LIMIT),
+            ));
+        }
         let (cells, on_columns) = Self::pivot_dates_as_text(cells, on_columns, on)?;
         // One row per index and pivot value now, so `first` is that cell. A count sums
         // instead, so a pair with no rows counts 0 rather than null, as it always did.
@@ -5493,6 +5516,18 @@ impl DataTableState {
         self.unsorted_lf.clone().unwrap_or_else(|| self.lf.clone())
     }
 
+    /// What the Pivot & Melt builder previews a few rows of: the view as the user
+    /// sees its columns, without its order. A sort would make the head of a large
+    /// table a read of all of it.
+    pub fn preview_lf(&self) -> LazyFrame {
+        Self::without_drift(self.analysis_lf())
+    }
+
+    /// Whether the view has a sort, which [`Self::preview_lf`] leaves out.
+    pub fn is_sorted(&self) -> bool {
+        self.unsorted_lf.is_some()
+    }
+
     pub fn scan_is_the_root(&self) -> bool {
         self.active_query.is_empty()
             && self.active_sql_query.is_empty()
@@ -8979,15 +9014,16 @@ impl DataTableState {
         self.replace_lf_after_reshape(pivoted.lazy(), step, &kept)
     }
 
-    /// Pivot the view here and now, reading it on this thread. The Pivot & Melt modal
+    /// Pivot the view here and now, reading it on this thread. The Pivot & Melt builder
     /// and views run the [`PivotJob`] in the background instead.
     pub fn pivot(&mut self, spec: &PivotSpec) -> Result<()> {
         let pivoted = self.plan_pivot(spec).run()?;
         self.install_pivot(spec, pivoted)
     }
 
-    /// Melt the current `LazyFrame` (wide → long). Never uses `original_lf`.
-    pub fn melt(&mut self, spec: &MeltSpec) -> Result<()> {
+    /// `view` melted by `spec`, planned only: the table's melt and the builder's
+    /// preview build it the same way.
+    pub(crate) fn melt_lf(view: LazyFrame, spec: &MeltSpec) -> Result<LazyFrame> {
         let on = cols(spec.value_columns.iter().map(|s| s.as_str()));
         let index = cols(spec.index.iter().map(|s| s.as_str()));
         let args = UnpivotArgsDSL {
@@ -8996,7 +9032,12 @@ impl DataTableState {
             variable_name: Some(PlSmallStr::from(spec.variable_name.as_str())),
             value_name: Some(PlSmallStr::from(spec.value_name.as_str())),
         };
-        let lf = Self::melt_dates_as_text(self.visible_lf(), spec, &args)?.unpivot(args);
+        Ok(Self::melt_dates_as_text(view, spec, &args)?.unpivot(args))
+    }
+
+    /// Melt the current `LazyFrame` (wide → long). Never uses `original_lf`.
+    pub fn melt(&mut self, spec: &MeltSpec) -> Result<()> {
+        let lf = Self::melt_lf(self.visible_lf(), spec)?;
         let step = Step::Melt {
             index: spec.index.clone(),
             on: spec.value_columns.clone(),

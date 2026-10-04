@@ -3282,7 +3282,7 @@ impl App {
         self.flash_note("Analysis cancelled".to_string());
     }
 
-    /// Whether the Pivot & Melt modal is waiting on a pivot it started.
+    /// Whether the Pivot & Melt builder is waiting on a pivot it started.
     pub(crate) fn pivot_computing(&self) -> bool {
         self.input_mode == InputMode::PivotMelt
             && self.jobs.current(|job| matches!(job, Job::Pivot)).is_some()
@@ -12202,18 +12202,8 @@ impl App {
                 None
             }
             KeyCode::Char('p') => {
-                if let Some(state) = &self.data_table_state
-                    && self.input_mode == InputMode::Normal
-                {
-                    self.pivot_melt_modal.available_columns =
-                        state.schema().iter_names().map(|s| s.to_string()).collect();
-                    self.pivot_melt_modal.column_dtypes = state
-                        .schema()
-                        .iter()
-                        .map(|(n, d)| (n.to_string(), d.clone()))
-                        .collect();
-                    self.pivot_melt_modal.open(self.history_limit, &self.theme);
-                    self.input_mode = InputMode::PivotMelt;
+                if self.data_table_state.is_some() && self.input_mode == InputMode::Normal {
+                    self.open_pivot_builder();
                 }
                 None
             }
@@ -14944,6 +14934,12 @@ impl App {
                 }
                 None
             }
+            Answer::ReshapePreviewed { input, result } => {
+                if let Job::ReshapePreview { epoch, token } = job {
+                    self.reshape_preview_ended(epoch, token, input, result);
+                }
+                None
+            }
             Answer::ViewPivoted(pivoted) => {
                 // Superseded means the view was cancelled or something replaced it, which
                 // owns the wait.
@@ -15167,6 +15163,15 @@ impl App {
                 if current {
                     self.view_pivot_failed(message);
                 }
+            }
+            // The preview says why in its own pane; the log has a panic's details.
+            Job::ReshapePreview { epoch, token } => {
+                let message = if panicked {
+                    "Could not preview; see the log".to_string()
+                } else {
+                    message.to_string()
+                };
+                self.reshape_preview_ended(*epoch, *token, None, Err(message));
             }
             Job::DrillRow => {
                 // The grouped view stays as it was. A flash has one line, and a panic's

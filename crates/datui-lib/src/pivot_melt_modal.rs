@@ -1,5 +1,6 @@
-//! Pivot / Melt modal state: a form of rows, each edited through one Picker
-//! scoped to that row alone. The staged spec is echoed live; Enter applies it.
+//! Pivot & Melt builder state: a form of rows, each edited through one Picker
+//! scoped to that row alone, and the live preview of the spec it stages. The spec
+//! is echoed live; Enter applies it.
 
 use crate::filter_modal::FilterStatement;
 use crate::widgets::text_input::TextInput;
@@ -130,7 +131,7 @@ impl PivotAggregation {
 }
 
 /// Spec for pivot operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PivotSpec {
     pub index: Vec<String>,
     pub pivot_column: String,
@@ -144,7 +145,7 @@ pub struct PivotSpec {
 }
 
 /// Spec for melt operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MeltSpec {
     pub index: Vec<String>,
     pub value_columns: Vec<String>,
@@ -191,8 +192,115 @@ impl ReshapeSource {
     }
 }
 
+/// Rows of the view the preview reshapes. Small enough that every edit reruns it at
+/// once; the head is read once per opening of the builder.
+pub const PREVIEW_INPUT_ROWS: usize = 1_000;
+
+/// Rows of the result the preview keeps to draw.
+pub const PREVIEW_ROWS: usize = 50;
+
+/// New columns past which the preview warns that a pivot is wide.
+pub const PREVIEW_WIDE_PIVOT: usize = 100;
+
+/// A staged reshape the preview runs: what Enter would apply.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PreviewSpec {
+    Pivot(PivotSpec),
+    Melt(MeltSpec),
+}
+
+/// The head of the view the preview runs over.
+#[derive(Debug, Clone)]
+pub struct PreviewInput {
+    pub rows: std::sync::Arc<polars::prelude::DataFrame>,
+    /// The head is all of the view: the preview's shape is the result's.
+    pub whole: bool,
+}
+
+/// What a preview found: the first rows of the result, and its shape.
+#[derive(Debug, Clone)]
+pub struct PreviewFrame {
+    pub head: polars::prelude::DataFrame,
+    pub rows: usize,
+    pub columns: usize,
+    /// A pivot's new columns, past its index.
+    pub new_columns: Option<usize>,
+    /// A melt's value columns: each input row becomes this many.
+    pub melted_columns: Option<usize>,
+}
+
+/// The builder's live preview: the head it runs over, the request in flight, and the
+/// last answer. Requests are numbered; one runs at a time, and an edit made while it
+/// runs is previewed when it ends, so typing never piles up workers.
+#[derive(Debug, Default)]
+pub struct ReshapePreview {
+    /// Which opening of the builder this is: an answer for an earlier one is dropped.
+    pub epoch: u64,
+    /// The newest request; an answer for an older one is not shown.
+    pub token: u64,
+    /// What the newest request is for; `None` while the spec is incomplete.
+    pub wanted: Option<PreviewSpec>,
+    /// The request whose worker is running.
+    pub running: Option<u64>,
+    pub input: Option<PreviewInput>,
+    /// The view is sorted: the head is read without its order.
+    pub sorted: bool,
+    /// The view's row count when it was known at opening.
+    pub view_rows: Option<usize>,
+    /// The answer for `shown.0`: the result, or why it failed.
+    pub shown: Option<(PreviewSpec, Result<PreviewFrame, String>)>,
+}
+
+impl ReshapePreview {
+    /// Whether the preview on screen is not for the spec staged now.
+    pub fn stale(&self) -> bool {
+        self.wanted.is_some() && self.shown.as_ref().map(|(spec, _)| spec) != self.wanted.as_ref()
+    }
+}
+
+/// A fresh epoch for each opening of the builder.
+fn next_epoch() -> u64 {
+    static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// `spec` run over `input`, in memory: the preview's worker.
+pub fn run_preview(
+    input: &polars::prelude::DataFrame,
+    spec: &PreviewSpec,
+) -> Result<PreviewFrame, String> {
+    use polars::prelude::IntoLazy;
+    let message = |e: color_eyre::Report| crate::error_display::user_message_from_report(&e, None);
+    let (result, new_columns, melted_columns) = match spec {
+        PreviewSpec::Pivot(spec) => {
+            let job =
+                crate::widgets::datatable::PivotJob::new(input.clone().lazy(), spec.clone(), false);
+            let df = job.run().map_err(message)?;
+            let new = df.width().saturating_sub(spec.index.len());
+            (df, Some(new), None)
+        }
+        PreviewSpec::Melt(spec) => {
+            let lf = crate::widgets::datatable::DataTableState::melt_lf(input.clone().lazy(), spec)
+                .map_err(message)?;
+            let df = lf
+                .collect()
+                .map_err(|e| crate::error_display::user_message_from_polars(&e))?;
+            (df, None, Some(spec.value_columns.len()))
+        }
+    };
+    Ok(PreviewFrame {
+        head: result.head(Some(PREVIEW_ROWS)),
+        rows: result.height(),
+        columns: result.width(),
+        new_columns,
+        melted_columns,
+    })
+}
+
 pub struct PivotMeltModal {
     pub active: bool,
+    /// The live preview of the staged spec.
+    pub preview: ReshapePreview,
     pub active_tab: PivotMeltTab,
     pub focus: PivotMeltFocus,
 
@@ -229,6 +337,7 @@ impl Default for PivotMeltModal {
     fn default() -> Self {
         let mut modal = Self {
             active: false,
+            preview: ReshapePreview::default(),
             active_tab: PivotMeltTab::default(),
             focus: PivotMeltFocus::default(),
             available_columns: Vec::new(),
@@ -260,6 +369,10 @@ impl PivotMeltModal {
 
     pub fn open(&mut self, history_limit: usize, theme: &crate::config::Theme) {
         self.active = true;
+        self.preview = ReshapePreview {
+            epoch: next_epoch(),
+            ..ReshapePreview::default()
+        };
         self.active_tab = PivotMeltTab::Pivot;
         self.melt_pattern_input = TextInput::new()
             .with_history_limit(history_limit)
@@ -276,6 +389,7 @@ impl PivotMeltModal {
     pub fn close(&mut self) {
         self.active = false;
         self.picker = None;
+        self.preview = ReshapePreview::default();
     }
 
     pub fn reset_form(&mut self) {
@@ -772,6 +886,14 @@ impl PivotMeltModal {
             variable_name: self.melt_variable_input.value().trim().to_string(),
             value_name: self.melt_value_input.value().trim().to_string(),
         })
+    }
+
+    /// The spec Enter would apply on the active tab, if it is complete.
+    pub fn staged_spec(&self) -> Option<PreviewSpec> {
+        match self.active_tab {
+            PivotMeltTab::Pivot => self.build_pivot_spec().map(PreviewSpec::Pivot),
+            PivotMeltTab::Melt => self.build_melt_spec().map(PreviewSpec::Melt),
+        }
     }
 }
 

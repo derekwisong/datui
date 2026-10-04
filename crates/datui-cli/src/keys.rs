@@ -818,25 +818,27 @@ pub const SCREENS: &[Screen] = &[
     Screen {
         context: Context::PivotMelt,
         title: "Pivot and melt",
-        reached: "<kbd>p</kbd> at the table.",
+        reached: "<kbd>p</kbd> at the table: the form on the left, a live preview of the result on the right (above and below on a narrow terminal).",
         groups: &[
             Group {
                 name: "Form",
                 keys: &[
                     k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous field")
-                        .more("Next or previous field, wrapping; a field the form does not offer right now is skipped. The arrows move from the moment the dialog opens"),
-                    k("← / →", "Change", "Pivot / Melt on the tab bar; step a choice")
-                        .more("On the tab bar: switch Pivot and Melt. On the aggregation, strategy or type: the previous or next value. On a single column row: the previous or next column. In a text field: move the cursor. h/l too, outside text fields"),
-                    k("Space", "Act", "Next value of a choice; open a column picker")
-                        .more("On a choice: its next value, wrapping. On a column row: open its picker, scoped to that row; typing narrows it"),
-                    k("Enter", "Apply", "Apply the spec echoed above the footer"),
+                        .more("Next or previous field, wrapping; a field the form does not offer right now is skipped. The arrows move from the moment the builder opens"),
+                    k("← / →", "Change", "Pivot / Melt on the first row; step a choice")
+                        .more("On the first row: switch Pivot and Melt. On the aggregation, strategy or type: the previous or next value. On a single column row: the previous or next column. In a text field: move the cursor. h/l too, outside text fields. The preview follows each change"),
+                    k("Space", "Open", "Open a column picker; next value of a choice")
+                        .more("On a column row: open its picker, scoped to that row; typing narrows it. On a choice: its next value, wrapping"),
+                    k("Enter", "Apply", "Apply the reshape the preview shows")
+                        .more("Apply the reshape the preview shows, to the whole view, from any field"),
                     k("Esc", "Close", "Close without applying; stop a pivot")
-                        .more("Close without applying; while a pivot is computed, stop it and keep the form"),
+                        .more("Close without applying; while a pivot is computed, stop it and keep the builder"),
                 ],
             },
             Group {
                 name: "Picker",
                 keys: &[
+                    k("(type)", "Narrow", "Narrow the column list").no_run(),
                     k("↑ / ↓", "Move", "Move; typing narrows"),
                     k("Enter", "Choose", "Choose; on a several-choice row, done"),
                     k("Space", "Toggle", "Choose; toggle a column on a several-choice row"),

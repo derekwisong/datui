@@ -13,13 +13,16 @@ static INIT: Once = Once::new();
 #[allow(dead_code)]
 pub const HANG_GUARD: Duration = Duration::from_secs(300);
 
-/// Whether the app still owes a result: `busy`, the row count, or a footer pass still
-/// reading the dataset's schema. What a test waits on rather than a quiet spell on the
-/// channel, which on a loaded machine says nothing. Abandoned work is not waited on; a
-/// cancelled analysis can run for minutes.
+/// Whether the app still owes a result: `busy`, the row count, a footer pass still
+/// reading the dataset's schema, or the Pivot & Melt preview. What a test waits on
+/// rather than a quiet spell on the channel, which on a loaded machine says nothing.
+/// Abandoned work is not waited on; a cancelled analysis can run for minutes.
 #[allow(dead_code)]
 pub fn work_pending(app: &App) -> bool {
-    app.is_busy() || app.row_count_pending() || footers_pending(app)
+    app.is_busy()
+        || app.row_count_pending()
+        || footers_pending(app)
+        || app.reshape_preview_pending()
 }
 
 /// What the home screen still owes, for a wait that timed out: every worker flag a

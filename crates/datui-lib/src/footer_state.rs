@@ -41,7 +41,13 @@ impl App {
             MainViewContent::Loading => {}
             MainViewContent::Datatable => {
                 footer.dataset = self.dataset_label();
-                self.table_status(&mut footer);
+                // The builder covers the table: its position and view are not on
+                // screen, so the status names where you are instead.
+                if self.input_mode == InputMode::PivotMelt && self.pivot_melt_modal.active {
+                    footer.stages.push("pivot & melt".to_string());
+                } else {
+                    self.table_status(&mut footer);
+                }
             }
             MainViewContent::Analysis
             | MainViewContent::Chart

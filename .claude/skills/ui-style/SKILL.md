@@ -172,7 +172,9 @@ Four shapes, chosen by what the user needs to keep seeing:
   you watch — Sort & Filter, chart options, views.
 - **Centered dialog** (small): a commitment — confirm, export, errors.
 - **Takeover** (full screen): a different way of looking — analysis, chart
-  canvas.
+  canvas, the Pivot & Melt builder (form beside a live preview of the result,
+  stacked when narrow; a preview runs in the background on a few rows, never in
+  render).
 - **Footer prompt** (bottom): text entry — the command line, find. It lives
   in the status footer, which grows a line for it.
 

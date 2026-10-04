@@ -1,147 +1,140 @@
 # Open files and directories
 
-Pass a file, several files, a directory, a glob or a URL.
+Pass datui a file, several files, a directory, a glob or a URL; files of one
+shape open as one table.
 
 ```bash
-datui data.parquet                             # a file
-datui jan.csv feb.csv mar.csv                  # files of the same shape, as one table
-datui /data/events/                            # a directory, read the way Enter reads its row
-datui --hive "/data/events/**/*.parquet"       # a glob (quote it)
-datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/   # public S3; gs:// and abfss:// too
-datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv
-datui --format csv https://example.com/export  # force the format when the name gives no hint
-cat data.csv | datui                           # data piped in
-datui - < events.parquet                       # `-` reads standard input
-datui -f app.log.ndjson                        # follow a file as it grows
-datui app.log                                  # text: a row per line
-SYSTEMD_PAGER=datui journalctl -u nginx        # datui as a pager
+printf 'id,amount\n1,9.50\n2,3.25\n' > jan.csv
+printf 'id,amount\n3,4.00\n' > feb.csv
+datui jan.csv
+datui jan.csv feb.csv
+mkdir -p exports && cp jan.csv feb.csv exports/ && datui exports/
 ```
+
+| Command | Opens |
+|---|---|
+| `datui FILE` | One file, in the format its extension or first bytes say ([Formats](../formats/index.md)) |
+| `datui FILE FILE...` | Files of the same shape as one table |
+| `datui DIR/` | A directory, as <kbd>Enter</kbd> on its row on the [home screen](home-screen.md) does |
+| `datui --hive 'GLOB'` | The files a glob matches, as one partitioned table. Quote the glob |
+| `datui URL` | An `s3://`, `gs://`, `abfss://` or `https://` URL: [Connect to cloud storage](remote-data.md) |
+| `datui -` | Standard input: [Pipes and growing files](pipes-and-follow.md) |
+| `datui --format FMT FILE` | A file whose name does not say its format |
+
+During a load, <kbd>Ctrl</kbd>+<kbd>O</kbd> cancels and returns home and
+<kbd>Ctrl</kbd>+<kbd>Q</kbd> quits. Every flag is in
+[Command-line options](../reference/command-line-options.md); defaults for
+most are [settings](../reference/settings.md).
 
 ## Directories
 
-`datui <directory>` does what <kbd>Enter</kbd> on that directory's row does on
-the [home screen](home-screen.md), and needs no flag:
+`datui DIR/` needs no flag:
 
-| The directory | What happens |
+| The directory holds | What opens |
 |---|---|
-| A hive tree, or files that are one table | Opens as one table |
-| Separate tables, more than one format, or no data directly inside | Opens the directory browser; choose a file or the first row, which reads them all |
-| A Delta, Iceberg or Hudi root | Opens the directory browser with a warning that transaction logs are not applied |
+| A hive tree, or files that are one table | One table |
+| Separate tables, several formats, or no data directly inside | The directory on the home screen; its first row reads everything as one table |
+| A Delta, Iceberg or Hudi root | The directory on the home screen, with a warning that the transaction log is not applied |
 
-`--hive` means: read this as partitioned, which is the answer for a glob and
-for a layout that does not say so itself.
-
-Reader options also affect directory detection. For headerless CSVs, use
-`datui --no-header exports/`; otherwise datui may treat the first data rows as
-headers and decide the files are separate tables.
-
-During loading, <kbd>Ctrl</kbd>+<kbd>O</kbd> cancels and returns home.
-<kbd>Ctrl</kbd>+<kbd>Q</kbd> quits. Other editing keys are not queued during a load.
-
-Every option is listed in [Command Line Options](../reference/command-line-options.md).
-Defaults for most of them can be set once in the
-[configuration file](../reference/settings.md#csv).
-
-## Compression
-
-Files ending in `.gz`, `.zst`, `.bz2` or `.xz` are decompressed before loading.
-Use `--compression gzip|zstd|bzip2|xz` when the extension is missing or wrong.
-
-Compressed CSV, TSV or PSV is decompressed to a temporary file so it can still
-be scanned lazily. `--temp-dir` chooses where; `-c read.decompress_in_memory=true`
-skips the file and reads the whole thing into memory instead.
-
-### Temporary files
-
-A decompressed text file, a converted Arrow stream or GPS log, or a downloaded file
-lives in the temp directory while datui uses it.
-
-| Exit | Temporary files |
-|---|---|
-| `q`, Ctrl+Q, Ctrl+C, an error | Removed, including a partial file mid-download, mid-decompression or mid-conversion |
-| SIGTERM, SIGHUP (closing the terminal) | Removed by the `datui` command, which quits as for `q` and exits with status 128 + the signal. Left by `datui.view()` in Python, which leaves signals to Python |
-| Windows: closing the console window, signing out, shutting down | Removed by the `datui` command, which quits as for `q` |
-| SIGKILL, ending the task in Task Manager | Left in the temp directory |
-
-On Windows a file cannot be removed while datui still reads it through a memory map.
-One that would not go is tried again as datui quits.
+`--hive` reads a glob, or a layout that does not say so itself, as
+partitioned. Reading flags take part in the decision: `datui --no-header
+exports/` keeps the first rows of headerless CSVs from being taken as
+headers, which would make the files look like separate tables.
 
 ## Hive-partitioned data
 
-A directory tree whose segments are `key=value` (`year=2024/month=01/...`)
-opens as one table. Pass the root directory, which needs no flag, or a glob with
-`--hive`; a glob usually needs quoting so your shell leaves it alone. A path
-that exists is never a glob: `d[1].parquet` opens that file, not `d1.parquet`. Only
-Parquet is supported — for a hive tree of anything else, open one partition.
+A tree of `key=value` directories (`year=2024/month=01/...`) opens as one
+table, its partition columns first. Pass the root, or a glob with `--hive`:
 
-Partition columns appear first in the table and on the **Partitions** tab of the
-[Info panel](dataset-info.md). Local directories use datui's schema union, counts and notes; local globs are
-delegated to Polars. Remote prefixes and globs both use datui's metadata reader.
+```bash,network
+datui --hive 's3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=T*/*.parquet'
+```
+
+- Only Parquet is read as a hive tree; for anything else, open one partition.
+- A path that exists is never a glob: `d[1].parquet` opens that file.
+- The **Partitions** tab of the [Info panel](dataset-info.md) lists the keys
+  and values.
+- Local and remote directories and remote globs read the schema from the
+  Parquet footers; a local glob is handed to Polars.
 
 ### Files that disagree
 
-By default, datui combines schemas from Parquet footers. It does not need to
-scan data values to find the columns.
+The schema is the union of the files' Parquet footers; no data is scanned to
+find it.
 
 | Across the files | In the table |
 |---|---|
-| A column appears in only some files | Shown, with nulls for files missing the column |
-| Compatible types, such as `Int32` and `Int64` | Widened to a shared type |
-| Incompatible types, such as numbers and text | Uses the type with the most rows; values of incompatible types are not read |
-| An unreadable footer | Skips that file |
+| A column in only some files | Shown; null in the files that lack it |
+| Compatible types (`Int32`, `Int64`) | Widened to one type |
+| Incompatible types (numbers and text) | The type of the most rows; values of the other type are not read |
+| An unreadable footer | That file is skipped |
 
-The [Info panel](dataset-info.md) reports the metadata scope. Above 20,000
-files, datui samples evenly across the file list. A dataset of more than 64
-files may also start with a partial schema while the remaining footers load.
+Above 20,000 files the footers are sampled evenly across the list; above 64
+the table may open on a partial schema while the rest load. The Info panel
+says what was read; [Large datasets](large-datasets.md#how-large-datasets-open)
+has the details.
 
-When all file row counts are known, empty cells distinguish three cases:
+When every file's row count is known, an empty cell says why:
 
-| Cell | Meaning |
+| Cell | Means |
 |---|---|
 | `∅` | A null value |
-| `·` | The source file has no such column |
-| `≠` | The source file stores an incompatible type, so the value was not read |
+| `·` | The file has no such column |
+| `≠` | The file holds the column in an incompatible type; the value was not read |
 
-Column-name markers also identify missing or conflicting fields. When row
-counts are incomplete, empty cells all display as `∅`, though the column
-markers remain. Queries, pivots and other transformations create new rows
-without this file-level distinction. Exports write all three cases as null.
+Without every row count, all three show as `∅`; the column name's marker
+still shows. Queries, pivots and exports write all three as null.
 
-To recover conflicting values, open the column's note in **Info → Notes**
-and apply **read as text**, if offered. This reuses the existing metadata.
-Lists, arrays, durations, binary and unknown types cannot use this action.
-Filters and sorting then compare strings: `"10"` sorts before `"2"`.
-Compatible numeric types still widen as usual; their mixed-type note remains.
+| To | Do |
+|---|---|
+| Read the conflicting values | **Info → Notes**, the column's note, **read as text**. Not offered for lists, arrays, durations, binary or unknown types. Sorting and filtering then compare text: `"10"` before `"2"` |
+| Keep every row while filtering on a conflicting column | Use a [query](querying-data.md). A sidebar filter or sort on the column drops the rows of files that hold the other type, even in an OR (`id = 3 OR n = 0`); a note counts them, and clearing the filter brings them back |
 
-**Sidebar filters and sorting can exclude conflicting rows.** When every
-file's row count is known, using a conflicting column removes rows from files
-that store its incompatible type. A note reports the affected count. Clearing
-that filter or sort restores the rows. With incomplete row counts, those rows
-remain as nulls instead.
+## Compression
 
-This exclusion applies even to an OR filter: `id = 3 OR n = 0` still removes
-rows from files where `n` has an incompatible type. Queries in the
-[query bar](querying-data.md) create a separate result and do not apply this
-file-level rule. Missing-column (`·`) rows remain during sorting; filters
-handle missing values as nulls.
+`.gz`, `.zst`, `.bz2` and `.xz` files are decompressed as they open;
+`--compression gzip|zstd|bzip2|xz` names it when the extension does not.
+
+```bash
+printf 'id,amount\n1,9.50\n2,3.25\n' | gzip > sales.csv.gz
+datui sales.csv.gz
+```
+
+Compressed CSV, TSV and PSV are decompressed once to a temporary file in
+`--temp-dir`, then scanned; `-c read.decompress_in_memory=true` reads them
+into memory instead. Which formats open compressed is in the
+[formats table](../formats/index.md#how-each-format-is-read).
+
+### Temporary files
+
+Decompressed, converted and downloaded files live in the temp directory while
+datui uses them.
+
+| How datui ends | Its temporary files |
+|---|---|
+| `q`, <kbd>Ctrl</kbd>+<kbd>Q</kbd>, <kbd>Ctrl</kbd>+<kbd>C</kbd>, an error | Removed, a partial download, decompression or conversion included |
+| SIGTERM, SIGHUP (closing the terminal) | Removed: the `datui` command quits as for `q` and exits 128 + the signal. `datui.view()` in Python leaves signals, and the files, to Python |
+| Windows: closing the console, signing out, shutting down | Removed, as for `q` |
+| SIGKILL, ending the task in Task Manager | Left behind |
+
+On Windows a file still mapped cannot be removed; it is tried again as datui
+quits.
 
 ## Binary columns
 
-A binary column shows a dim `‹binary›` placeholder instead of its bytes, so
-scrolling past large blobs stays fast. The bytes are still read for exports and
-analysis. The placeholder color is `binary_col` in the
-[theme](../reference/settings.md#colors).
+A binary column shows a dim `‹binary›` instead of its bytes. Exports and
+analysis still read the bytes, and the [inspector](inspecting-rows.md) shows
+them. The color is `binary_col` in the [theme](../reference/settings.md#colors).
 
 ## Remote data
 
-```bash
-datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/
-datui gs://cloud-samples-data/bigquery/us-states/us-states.parquet
-datui abfss://release@overturemapswestus2.dfs.core.windows.net/
+These are public and open with no login:
+
+```bash,network
+datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/
 datui https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_month.csv
 ```
 
-Each of these is public and opens with no login.
-
-[Remote data](remote-data.md) explains credentials, public access and what gets
-downloaded. Use a [cloud source](home-screen.md) on the home screen to find data without
+[Connect to cloud storage](remote-data.md) covers logins and what is
+downloaded; the home screen's [cloud sources](home-screen.md#cloud-sources)
+find data without typing a URL.

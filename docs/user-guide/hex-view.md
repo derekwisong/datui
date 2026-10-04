@@ -2,7 +2,7 @@
 
 The hex view shows a file as its bytes: the offset, the bytes in hex in groups
 of four, and the same bytes as ASCII. Use it to look inside a file datui has no
-reader for, and to work out the layout of a [binary format spec](../formats/format-specs.md).
+reader for, and to work out the layout of a [format spec](../formats/format-specs.md).
 
 | Opens it | |
 |---|---|
@@ -18,23 +18,31 @@ at once.
 
 ## Find a record's length
 
-`feed.bin` holds records that each start with `SYNC`. Open it, press
-<kbd>f</kbd>, type `SYNC`, <kbd>Enter</kbd>. The status line says the matches
-are 25 bytes apart; <kbd>R</kbd> makes that the bytes per row, and the records
-line up:
+This makes `feed.bin`, 500 records of 25 bytes that each start with `SYNC`,
+and opens it:
+
+```bash
+python3 -c "import struct,sys; sys.stdout.buffer.write(b''.join(b'SYNC'+struct.pack('<QIhhiB', i, 3*i, -i, i, 0, i%256) for i in range(500)))" > feed.bin
+datui --hex feed.bin
+```
+
+Press <kbd>f</kbd>, type `SYNC`, <kbd>Enter</kbd>. The status line says the
+matches are 25 bytes apart; <kbd>R</kbd> makes that the bytes per row, and
+the records line up:
 
 ```text
 Hex · feed.bin · 12,500 bytes · 25 a row (fixed)
 offset h  00 01 02 03  04 05 06 07   08 09 0a 0b  0c 0d 0e 0f   10 11 12 13  14 15 16 17   18
-00000000  53 59 4e 43  00 00 2a 36   fe 9c 97 17  00 00 00 00   00 00 44 20  82 3c fd e6   f1  SYNC··*6··········D ·<···
-00000019  53 59 4e 43  01 00 2a 36   fe 9c 97 17  03 00 00 00   ff ff c2 6b  30 f9 0e c7   dd  SYNC··*6···········k0····
-00000032  53 59 4e 43  02 00 2a 36   fe 9c 97 17  06 00 00 00   fe ff 01 e4  88 75 34 a2   0f  SYNC··*6·············u4··
+00000000  53 59 4e 43  00 00 00 00   00 00 00 00  00 00 00 00   00 00 00 00  00 00 00 00   00  SYNC·····················
+00000019  53 59 4e 43  01 00 00 00   00 00 00 00  03 00 00 00   ff ff 01 00  00 00 00 00   01  SYNC·····················
+00000032  53 59 4e 43  02 00 00 00   00 00 00 00  06 00 00 00   fe ff 02 00  00 00 00 00   02  SYNC·····················
 0x19 of 0x30d4 · 0.2% · found SYNC · every 25 bytes · No reader matched this file
 ```
 
-Bytes 4 to 11 count up in each record: a little-endian `u8` field. The byte
-inspector reads the bytes at the cursor every way at once, which is how the
-rest of the layout is found.
+Bytes 4 to 11 count up in each record: a little-endian `u8` field, in a
+[format spec](../formats/format-specs.md)'s types. The byte inspector reads
+the bytes at the cursor every way at once, which is how the rest of the
+layout is found.
 
 ## Layout
 
@@ -60,22 +68,17 @@ byte that is not printable is `·` (`.` on a terminal without Unicode).
 
 | Key | Action |
 |---|---|
-| <kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd> or <kbd>h</kbd> <kbd>l</kbd> <kbd>k</kbd> <kbd>j</kbd> | A byte, or a row |
-| <kbd>w</kbd> <kbd>b</kbd> | The next group of four, or back one |
-| <kbd>0</kbd> <kbd>$</kbd> | The start or end of the row |
-| <kbd>g</kbd> <kbd>G</kbd> or <kbd>Home</kbd> <kbd>End</kbd> | The start or end of the file |
-| <kbd>PgUp</kbd> <kbd>PgDn</kbd> | A page (<kbd>Ctrl</kbd>+<kbd>B</kbd> <kbd>Ctrl</kbd>+<kbd>F</kbd>; <kbd>Ctrl</kbd>+<kbd>U</kbd> <kbd>Ctrl</kbd>+<kbd>D</kbd> half a page) |
-| <kbd>:</kbd> | Go to an offset |
-| <kbd>f</kbd> | Find |
-| <kbd>n</kbd> <kbd>N</kbd> | Next and previous match, round the end of the file |
+| <kbd>f</kbd>, <kbd>n</kbd> <kbd>N</kbd> | [Find](#find); the next and previous match, round the end of the file |
+| <kbd>:</kbd> | [Go to an offset](#go-to-an-offset) |
 | <kbd>R</kbd> | Make the distance between matches the bytes per row |
 | <kbd>r</kbd> | Bytes per row; empty for as many as fit |
+| <kbd>i</kbd> <kbd>Enter</kbd> | Show or hide the [byte inspector](#the-byte-inspector) |
 | <kbd>v</kbd> | Mark a range from the cursor; the status line counts it |
-| <kbd>i</kbd> <kbd>Enter</kbd> | Show or hide the byte inspector |
-| <kbd>#</kbd> | Offsets in decimal or hex |
 | <kbd>B</kbd> | Read the file with a format spec |
-| <kbd>Esc</kbd> | Stop a find; close the byte inspector or the mark; then back to the table or home screen it came from |
-| <kbd>q</kbd> | Home, when opened from there; otherwise quit |
+| <kbd>Esc</kbd> | Stop a find; close the byte inspector or the mark; then back to where it came from |
+
+Moving takes vim's keys (`h` `j` `k` `l`, `w` `b`, `0` `$`, `g` `G`); the [keyboard reference](../reference/keyboard-shortcuts.md#hex-view)
+has every key.
 
 ## Go to an offset
 

@@ -45,7 +45,7 @@ Letters type into the filter, so <kbd>q</kbd> types `q`; <kbd>Ctrl</kbd>+<kbd>C<
 | Current directory | Where datui was launched; an empty one says `nothing to open here · ~ types a path` |
 | `CLOUD` | [Cloud sources](#cloud-sources): stores found on this machine and configured ones |
 | `MY DATASETS` | Your [catalog](#catalogs), `catalog.toml`: what <kbd>Ctrl</kbd>+<kbd>D</kbd> added and what you wrote |
-| Other catalogs | Each file `catalogs` lists, under its label |
+| Other catalogs | Each `*.toml` in the config directory's `catalogs/`, then each file `catalogs` lists, under its label |
 | `PUBLIC DATASETS` | The bundled [public datasets](#public-datasets) |
 | `ELSEWHERE` | Directories your desktop recorded (freedesktop `recently-used.xbel`); starts folded |
 | `Found` | [Search](#search-below-the-current-directory) results, while you type |
@@ -205,7 +205,7 @@ and old versions may show. How files combine is in
 <a id="collections"></a>
 
 A catalog is a file of named datasets, local and remote, shown as a section
-under its label: `catalog.toml` (`MY DATASETS`), each file `catalogs` lists, and
+under its label: `catalog.toml` (`MY DATASETS`), each file in `catalogs/` or listed in `catalogs`, and
 `PUBLIC DATASETS`. [Catalogs](../reference/catalogs.md) has the keys.
 
 ```text
@@ -292,8 +292,8 @@ no login, listed after your own. datui ships none of the data;
   still steps inside.
 - A build without the `http` or `cloud` feature leaves out the rows it cannot
   open.
-- A listed catalog file named `public.toml` replaces this one;
-  `[home] hide = ["public"]` hides it.
+- A catalog file named `public.toml`, in `catalogs/` or listed, replaces this one;
+  `[home] hide = ["public"]` hides it, and `["public/nyc-taxis"]` one entry.
 
 The guides use them:
 

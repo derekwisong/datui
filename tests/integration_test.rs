@@ -13379,7 +13379,7 @@ fn test_ctrl_d_adds_to_the_catalog_and_forgets() {
     assert!(
         std::fs::read_to_string(&catalog)
             .unwrap()
-            .starts_with("# Your catalog"),
+            .starts_with(datui::catalog::MINE_TEMPLATE),
         "a new catalog.toml says what it is"
     );
 

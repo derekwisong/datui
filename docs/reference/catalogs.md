@@ -11,15 +11,15 @@ datui catalog show public
 | Catalog | File | Written by |
 |---|---|---|
 | Yours, `My datasets` | `catalog.toml` in the config directory | You, and <kbd>Ctrl</kbd>+<kbd>D</kbd> on the home screen |
-| A team's or a project's | Any file `catalogs` in the config lists | You; datui only reads it |
+| A team's or a project's | Any `*.toml` in `catalogs/` in the config directory, or a file elsewhere that `catalogs` in the config lists | You; datui only reads it |
 | `Public datasets` | Ships with datui; `datui catalog show public` prints it | datui |
 
 | Command | Does |
 |---|---|
-| `datui catalog show` | List the catalogs: id, label, datasets and file |
-| `datui catalog show NAME` | Print a catalog's file: `mine`, `public`, or a listed file's name |
+| `datui catalog show` | List the catalogs: id, label, datasets, where each comes from, and its file |
+| `datui catalog show NAME` | Print a catalog's file: `mine`, `public`, or another catalog's file name |
 | `datui catalog check FILE` | Check a file and list its datasets; a mistake is named by its line, with the fix |
-| `datui config init` | Write the config file and an empty `catalog.toml`; an existing `catalog.toml` is kept |
+| `datui config init` | Write the config file, an empty `catalog.toml` and the `catalogs/` directory; an existing `catalog.toml` is kept |
 
 ## A catalog file
 
@@ -164,26 +164,48 @@ Directories that <kbd>Ctrl</kbd>+<kbd>D</kbd> kept before 0.4.0 move into
 
 ## Team catalogs
 
-List catalog files in the config; a relative path is relative to the config
-file that lists it, so a team's shared config can list its catalog beside it.
-Replace `<CATALOG_FILE>` with the file's path:
+<a id="catalogs-directory"></a>
+
+Drop a catalog file into `catalogs/` in the config directory
+(`~/.config/datui/catalogs/` on Linux, beside `catalog.toml`): every `*.toml`
+there is a catalog, read in file-name order, and other files are ignored.
+
+A catalog file elsewhere, such as a team's on a share, is listed in the config;
+a relative path is relative to the config file that lists it, so a team's
+shared config can list its catalog beside it. Replace `<CATALOG_FILE>` with the
+file's path:
 
 ```toml,template
 catalogs = ["<CATALOG_FILE>"]
 ```
 
-A listed file's name, without `.toml`, is its id: two files of one name, or
-one named `mine.toml`, are an error. A listed file that is not there is skipped
-with a warning, as a missing import is. `catalogs` adds up across
+A file you cannot rename or edit is listed as a table, `path` and an `id` or a
+`label` of its own. Replace `<CATALOG_FILE>` with the file's path:
+
+```toml,template
+catalogs = [{ path = "<CATALOG_FILE>", id = "acme", label = "ACME" }]
+```
+
+| Key | Meaning |
+|---|---|
+| `path` | Required. The file |
+| `id` | The catalog's id, in place of the file's name: what `[home] hide` names, and what decides a `public` catalog |
+| `label` | The section's title, in place of the file's own `label` |
+
+A catalog file's name, without `.toml`, is its id: two files of one name,
+wherever they are, or one named `mine.toml`, are an error naming both. A listed
+file that is not there is skipped with a warning, as a missing import is.
+`catalogs` adds up across
 [imported files](../user-guide/configuration.md#importing-other-config-files),
-imports first; the sections follow `My datasets` in that order, then `Public
-datasets`.
+imports first. The sections follow `My datasets`: `catalogs/` in file-name
+order, then the listed files, then `Public datasets`.
 
 | To | Do |
 |---|---|
-| Replace the public catalog | List a file named `public.toml`: it replaces the whole catalog; nothing bundled is merged in |
-| Hide a catalog | `[home] hide = ["public", "acme"]`, by id; hides add up across files |
-| Edit the public catalog | `datui catalog show public > public.toml`, edit it, and list it |
+| Replace the public catalog | A catalog file named `public.toml`, in `catalogs/` or listed: it replaces the whole catalog; nothing bundled is merged in |
+| Rename a catalog you cannot edit | List it as `{ path = "...", id = "acme", label = "ACME" }`: a shared `catalog.toml` or `public.toml` then takes neither role |
+| Hide a catalog, or one entry | `[home] hide = ["acme", "public/nyc-taxis"]`: a catalog by its id, an entry as `catalog/id`; hides add up across files, and a name that hides nothing is warned about |
+| Edit the public catalog | `datui catalog show public > public.toml`, move `public.toml` into the config directory's `catalogs/` (`~/.config/datui/catalogs/` on Linux), then edit it. Written there directly, the shell empties the file before datui reads it |
 
 Catalogs are apart from `RECENT`. Whatever you open goes into `RECENT` whether
 or not a catalog names it.
@@ -194,22 +216,22 @@ This is the bundled catalog, as `datui catalog show public` prints it: a worked
 example of every key.
 
 <!-- generated: public-catalog -->
-```toml,output
-# The bundled `public` catalog: data its publishers host and maintain, read with no
-# login. These are remote links, not bundled data: object-store roots browse, HTTP(S)
-# files open directly, and nothing is fetched until an entry is opened.
-#
-# Each entry is labeled with its actual scope, and must be readable without
-# credentials or requester-pays access. An HTTP(S) file gives its `size` in bytes, as
-# measured when it was added: its row shows it, and one under 50 MB is downloaded
-# without asking. A rolling file's size is a typical one.
-#
-# An entry may carry `documentation`: the publisher's documentation of its columns, and
-# `columns` notes taken from it, never from memory. `bookmarks` names places inside a
-# directory dataset to start from; each must list with no login.
-#
-# The weekly `Public datasets` workflow checks every entry and every bookmark.
+> The bundled `public` catalog: data its publishers host and maintain, read with no
+> login. These are remote links, not bundled data: object-store roots browse, HTTP(S)
+> files open directly, and nothing is fetched until an entry is opened.
+>
+> Each entry is labeled with its actual scope, and must be readable without
+> credentials or requester-pays access. An HTTP(S) file gives its `size` in bytes, as
+> measured when it was added: its row shows it, and one under 50 MB is downloaded
+> without asking. A rolling file's size is a typical one.
+>
+> An entry may carry `documentation`: the publisher's documentation of its columns, and
+> `columns` notes taken from it, never from memory. `bookmarks` names places inside a
+> directory dataset to start from; each must list with no login.
+>
+> The weekly `Public datasets` workflow checks every entry and every bookmark.
 
+```toml,output
 label = "Public datasets"
 description = "Data its publishers host and maintain, read with no login"
 

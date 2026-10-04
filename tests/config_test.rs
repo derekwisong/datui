@@ -2748,6 +2748,31 @@ fn the_bundled_catalog_is_replaced_or_hidden() {
     assert_eq!(hidden.home.hide, ["public", "mine"], "hides add up");
     assert!(names(&hidden, true).is_empty());
     assert_eq!(names(&hidden, false).len(), 1, "hidden, not gone");
+
+    // One entry, as catalog/id: the rest of its catalog stays.
+    let one = layered(&[
+        "[home]\nhide = [\"public/nyc-taxis\"]\n",
+        "[home]\nhide = [\"public/penguins\", \"public/nowhere\", \"nobody\"]\n",
+    ]);
+    one.validate().expect("catalog/id is a hide name");
+    let shown = one.shown_catalogs();
+    let ids: Vec<&str> = shown[0].datasets.iter().map(|d| d.id.as_str()).collect();
+    assert!(
+        !ids.contains(&"nyc-taxis") && !ids.contains(&"penguins"),
+        "{ids:?}"
+    );
+    assert!(ids.contains(&"noaa"), "{ids:?}");
+    assert_eq!(
+        one.catalogs()[0].datasets.len(),
+        ids.len() + 2,
+        "hidden, not gone"
+    );
+    assert_eq!(one.unknown_hidden(), ["public/nowhere", "nobody"]);
+    let bad = layered(&["[home]\nhide = [\"public/Bad Id\"]\n"])
+        .validate()
+        .expect_err("not an id")
+        .to_string();
+    assert!(bad.contains("catalog/id"), "{bad}");
 }
 
 #[test]
@@ -2785,6 +2810,113 @@ fn relative_paths_are_relative_to_the_file_that_names_them() {
 }
 
 #[test]
+fn every_toml_in_the_catalogs_directory_is_a_catalog() {
+    let dir = TempDir::new().unwrap();
+    let folder = dir.path().join("catalogs");
+    fs::create_dir_all(&folder).unwrap();
+    for (name, label) in [("zeta", "Zeta"), ("acme", "Acme"), ("public", "Curated")] {
+        fs::write(
+            folder.join(format!("{name}.toml")),
+            format!("label = \"{label}\"\n[x]\nname = \"X\"\npath = \"/{name}.csv\"\n"),
+        )
+        .unwrap();
+    }
+    fs::write(folder.join("notes.txt"), "not a catalog").unwrap();
+    let config_path = dir.path().join("config.toml");
+    fs::write(&config_path, "").unwrap();
+    let config = AppConfig::load_from_file(&config_path).expect("loads");
+    let labels: Vec<String> = config.catalogs().into_iter().map(|c| c.label).collect();
+    // By file name; public.toml replaces the bundled catalog.
+    assert_eq!(labels, ["Acme", "Curated", "Zeta"]);
+
+    // A listed file of a name the directory has is refused, naming both.
+    let other = dir.path().join("elsewhere");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(
+        other.join("acme.toml"),
+        "[y]\nname = \"Y\"\npath = \"/y\"\n",
+    )
+    .unwrap();
+    fs::write(&config_path, "catalogs = [\"elsewhere/acme.toml\"]\n").unwrap();
+    let error = AppConfig::load_from_file(&config_path)
+        .expect_err("refused")
+        .to_string();
+    assert!(error.contains("are both the catalog \"acme\""), "{error}");
+    assert!(error.contains("catalogs"), "{error}");
+}
+
+#[test]
+fn a_listed_catalog_can_be_given_an_id_and_a_label() {
+    let dir = TempDir::new().unwrap();
+    let shared = dir.path().join("shared");
+    fs::create_dir_all(&shared).unwrap();
+    // A shared file named catalog.toml and one named public.toml: neither takes those
+    // roles when an id says otherwise.
+    fs::write(
+        shared.join("catalog.toml"),
+        "label = \"Acme data\"\n[a]\nname = \"A\"\npath = \"/a\"\n",
+    )
+    .unwrap();
+    fs::write(
+        shared.join("public.toml"),
+        "[w]\nname = \"W\"\npath = \"/w\"\n",
+    )
+    .unwrap();
+    let team = dir.path().join("team");
+    fs::create_dir_all(&team).unwrap();
+    // Through an import: relative to the file that lists it.
+    fs::write(
+        team.join("team.toml"),
+        "catalogs = [{ path = \"../shared/catalog.toml\", id = \"acme\", label = \"ACME\" }]\n",
+    )
+    .unwrap();
+    let config_path = dir.path().join("config.toml");
+    let load = |text: &str| {
+        fs::write(&config_path, text).unwrap();
+        AppConfig::load_from_file(&config_path)
+    };
+    let config = load(
+        "import = [\"team/team.toml\"]\ncatalogs = [\"shared/public.toml\", { path = \"shared/public.toml\", id = \"weather\" }]\n",
+    )
+    .expect("loads");
+    let ids: Vec<(String, String)> = config
+        .catalogs()
+        .into_iter()
+        .map(|c| (c.id, c.label))
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            ("acme".to_string(), "ACME".to_string()),
+            ("public".to_string(), "public".to_string()),
+            ("weather".to_string(), "weather".to_string()),
+        ],
+        "the label is the table's; a public.toml listed by its name replaces the bundled one"
+    );
+    let kept =
+        load("catalogs = [{ path = \"shared/public.toml\", id = \"weather\" }]\n").expect("loads");
+    assert!(
+        kept.catalogs().iter().any(|c| c.label == "Public datasets"),
+        "an id that is not public leaves the bundled catalog"
+    );
+
+    // Each rule says what is wrong.
+    let error = |text: &str| load(text).expect_err(text).to_string();
+    let e = error("catalogs = [{ path = \"shared/public.toml\", name = \"x\" }]\n");
+    assert!(e.contains("unknown key 'name'"), "{e}");
+    let e = error("catalogs = [{ id = \"x\" }]\n");
+    assert!(e.contains("needs path"), "{e}");
+    let e = error("catalogs = [{ path = \"shared/public.toml\", id = \"Bad Id\" }]\n");
+    assert!(e.contains("cannot be a catalog's id"), "{e}");
+    let e = error("catalogs = [{ path = \"shared/public.toml\", id = \"mine\" }]\n");
+    assert!(e.contains("catalog.toml's"), "{e}");
+    let e = error(
+        "catalogs = [{ path = \"shared/public.toml\", id = \"acme\" }, { path = \"shared/catalog.toml\", id = \"acme\" }]\n",
+    );
+    assert!(e.contains("are both the catalog \"acme\""), "{e}");
+}
+
+#[test]
 fn two_catalogs_of_one_name_are_refused() {
     let dir = TempDir::new().unwrap();
     for sub in ["a", "b"] {
@@ -2804,7 +2936,7 @@ fn two_catalogs_of_one_name_are_refused() {
     let error = AppConfig::load_from_file(&config_path)
         .expect_err("refused")
         .to_string();
-    assert!(error.contains("two files are named team.toml"), "{error}");
+    assert!(error.contains("are both the catalog \"team\""), "{error}");
     // `mine` is catalog.toml's id.
     fs::rename(
         dir.path().join("a/team.toml"),
@@ -2815,7 +2947,7 @@ fn two_catalogs_of_one_name_are_refused() {
     let error = AppConfig::load_from_file(&config_path)
         .expect_err("refused")
         .to_string();
-    assert!(error.contains("cannot be a catalog's file name"), "{error}");
+    assert!(error.contains("cannot be a catalog's id"), "{error}");
 }
 
 #[test]
@@ -2834,11 +2966,24 @@ fn config_init_writes_an_empty_catalog_and_never_replaces_one() {
     let written = fs::read_to_string(&catalog).expect("catalog.toml written");
     let parsed = datui::catalog::parse(&written, "mine", datui::catalog::Origin::Mine, None)
         .expect("the empty catalog parses");
+    // Its header says how to hide and take over the public catalog.
+    assert!(
+        written.contains("hide = [\"public/nyc-taxis\"]"),
+        "{written}"
+    );
+    assert!(
+        written.contains("datui catalog show public > public.toml"),
+        "{written}"
+    );
     assert!(parsed.datasets.is_empty());
     assert_eq!(parsed.label, "My datasets");
     fs::write(&catalog, "# mine\n").unwrap();
     manager.write_default_config(true).expect("writes again");
     assert_eq!(fs::read_to_string(&catalog).unwrap(), "# mine\n", "kept");
+    assert!(
+        dir.path().join("catalogs").is_dir(),
+        "where more catalogs go"
+    );
 }
 
 #[test]

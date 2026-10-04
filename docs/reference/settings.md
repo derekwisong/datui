@@ -26,7 +26,7 @@ lives, imports, the theme and troubleshooting.
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
 | `import` | list | `[]` |  | Config files merged in before this one, in order; this file's own values win. Paths may be relative to this file, or use ~ and $VAR. |
-| `catalogs` | list | `[]` |  | Catalog files listed on the home screen after catalog.toml, each a section; see Catalogs. Paths may be relative to this file. Adds up across imports. |
+| `catalogs` | list of path \| { path, id, label } | `[]` |  | Catalog files elsewhere, listed on the home screen after catalog.toml and the config directory's catalogs/*.toml, each a section; see Catalogs. Each is a path, or { path, id, label } to give it another id or label. Paths may be relative to this file. Adds up across imports. |
 
 ## Read
 
@@ -104,7 +104,7 @@ lives, imports, the theme and troubleshooting.
 |---|---|---|---|---|
 | `home.desktop_recents` | bool | `true` |  | Also list directories from the desktop's recently-used files; never the file names. |
 | `home.show_unreadable` | bool | `false` |  | List files datui cannot read, dimmed (Ctrl+A toggles). |
-| `home.hide` | list | `[]` |  | Catalogs not shown, by id: mine (catalog.toml), public, or a listed file's name. Adds up across imports. |
+| `home.hide` | list | `[]` |  | Catalogs not shown, by id: mine (catalog.toml), public, or a listed file's name; one entry as catalog/id, such as public/nyc-taxis. Adds up across imports. |
 | `home.preview_max` | size | `"64MiB"` |  | Largest local file whose first rows the home screen previews; 0 turns the preview off. |
 
 ## Home search

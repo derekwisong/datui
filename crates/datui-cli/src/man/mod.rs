@@ -342,6 +342,10 @@ fn files(out: &mut String, which: Files) {
             "CONFIG/catalog.toml",
             "Your catalog, which Ctrl+D on the home screen adds to: see datui-catalog(1)",
         ),
+        (
+            "CONFIG/catalogs/",
+            "More catalogs, one *.toml each, named by its file; public.toml replaces the bundled one",
+        ),
         ("CONFIG/views/", "Saved views: see datui-views(1)"),
         (
             "CONFIG/formats/",
@@ -613,7 +617,7 @@ fn render_command(page: &Page, read: Read, name: &str) -> String {
     let extra = match name {
         "config" => "The file's keys are in datui-config(5).",
         "catalog" => {
-            "A catalog is one TOML file of named datasets, local or remote, that the home screen lists as a section under its label. *CONFIG*/catalog.toml is yours, and Ctrl+D on a home row adds to it; `catalogs` in the config lists others; public ships with datui. A catalog's top level holds `label` and `description`; every other table is a dataset, keyed by a short id of lowercase letters, digits and `-`. A dataset's keys: `name` (its row), `path` or `url`, `auth` (`auto` or `anonymous`) or `connection` (a `[[cloud.connections]]` name), `description`, `publisher`, `license`, `homepage`, `documentation` (an https link), `size` (a web file's bytes, shown until measured), `columns.NAME = { description, unit, values = { CODE = \"meaning\" } }` and `bookmarks.\"Name\" = \"path/\"`. A long legend is a `[id.columns.NAME.values]` table, with the column's other keys written as dotted keys. `datui catalog show public` prints a worked example."
+            "A catalog is one TOML file of named datasets, local or remote, that the home screen lists as a section under its label. *CONFIG*/catalog.toml is yours, and Ctrl+D on a home row adds to it; every *CONFIG*/catalogs/*.toml is a catalog, named by its file, and `catalogs` in the config lists files elsewhere; public ships with datui, and a catalogs/public.toml replaces it. A catalog's top level holds `label` and `description`; every other table is a dataset, keyed by a short id of lowercase letters, digits and `-`. A dataset's keys: `name` (its row), `path` or `url`, `auth` (`auto` or `anonymous`) or `connection` (a `[[cloud.connections]]` name), `description`, `publisher`, `license`, `homepage`, `documentation` (an https link), `size` (a web file's bytes, shown until measured), `columns.NAME = { description, unit, values = { CODE = \"meaning\" } }` and `bookmarks.\"Name\" = \"path/\"`. A long legend is a `[id.columns.NAME.values]` table, with the column's other keys written as dotted keys. `datui catalog show public` prints a worked example."
         }
         "cache" => {
             "The cache holds nothing datui cannot rebuild; clearing it loses the recents' order and the prompts' history."

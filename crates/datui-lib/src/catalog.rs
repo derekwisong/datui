@@ -18,6 +18,8 @@ pub const PUBLIC: &str = "public";
 pub const MINE: &str = "mine";
 /// The user's own catalog, in the config directory.
 pub const MINE_FILE: &str = "catalog.toml";
+/// The directory beside `catalog.toml` whose `*.toml` files are catalogs.
+pub const FOLDER: &str = "catalogs";
 /// The label of `catalog.toml` when it gives none.
 pub const MINE_LABEL: &str = "My datasets";
 
@@ -33,6 +35,8 @@ const AUTH_VALUES: &str = "auto or anonymous";
 pub enum Origin {
     /// `catalog.toml`: Ctrl+D adds to it and forgets from it.
     Mine,
+    /// A file in the config directory's `catalogs/`: read, never written.
+    Folder,
     /// A file named in `catalogs`: read, never written.
     Listed,
     /// The `public` catalog datui ships.
@@ -835,17 +839,25 @@ impl NewDataset {
 
 /// What a new `catalog.toml` starts with.
 pub const MINE_TEMPLATE: &str = "\
-# Your catalog: datasets and directories the home screen lists under its label.
-# Ctrl+D on a home row adds it here, and on a row from this file forgets it. Your own
-# edits, comments and layout are kept. `datui catalog check` checks the file.
+# catalog.toml, beside config.toml: your catalog, \"My datasets\" on the home screen.
+# Ctrl+D on the home screen adds the selected row here; Ctrl+D on one of these rows
+# forgets it. Your edits, comments and layout are kept: datui catalog check catalog.toml
 #
-# Each [table] is one dataset; its key is a short id (lowercase letters, digits, -).
+# Each [table] is one dataset; its key is a short id (lowercase letters, digits, -):
 #
 #   [sales]
 #   name = \"Sales\"
 #   path = \"~/datasets/sales.parquet\"
-#   description = \"Monthly sales\"
 #   columns.amount = { description = \"Net of returns\", unit = \"USD\" }
+#
+# The bundled \"Public datasets\" catalog is separate:
+#   hide all of it      [home] hide = [\"public\"]                 (config.toml)
+#   hide some entries   [home] hide = [\"public/nyc-taxis\"]       (config.toml)
+#   make it your own    datui catalog show public > public.toml
+#                       then move public.toml into catalogs/ here, and edit it:
+#                       it replaces the bundled one
+#
+# Any other *.toml in catalogs/ here is a catalog too, named by its file name.
 
 label = \"My datasets\"
 ";
@@ -1018,6 +1030,7 @@ pub fn command(
                     "ID".to_string(),
                     "LABEL".to_string(),
                     "DATASETS".to_string(),
+                    "FROM".to_string(),
                     "FILE".to_string(),
                 ]];
                 for catalog in &catalogs {
@@ -1030,11 +1043,18 @@ pub fn command(
                         catalog.id.clone(),
                         format!("{}{hidden}", catalog.label),
                         catalog.datasets.len().to_string(),
+                        match catalog.origin {
+                            Origin::Mine => MINE_FILE,
+                            Origin::Folder => "catalogs/",
+                            Origin::Listed => "catalogs = [...]",
+                            Origin::Bundled => "built in",
+                        }
+                        .to_string(),
                         catalog
                             .file
                             .as_deref()
                             .map(|f| f.display().to_string())
-                            .unwrap_or_else(|| "built in".to_string()),
+                            .unwrap_or_else(|| "-".to_string()),
                     ]);
                 }
                 return (table(&rows), SUCCESS);
@@ -1207,7 +1227,10 @@ mod tests {
         .unwrap();
         assert_eq!(id, "sales");
         let mut text = std::fs::read_to_string(&file).unwrap();
-        assert!(text.starts_with("# Your catalog"), "{text}");
+        assert!(
+            text.starts_with(MINE_TEMPLATE),
+            "the header is kept whole: {text}"
+        );
         text.push_str("\n# kept\n[noaa]\nname = \"NOAA\"\nurl = \"s3://noaa-ghcn-pds/parquet/\"\ncolumns.ELEMENT.description = \"What\"\n\n[noaa.columns.ELEMENT.values]\nTMAX = \"High\"\n");
         std::fs::write(&file, &text).unwrap();
         let again = add(
@@ -1222,8 +1245,8 @@ mod tests {
         assert_eq!(again, "sales-2");
         forget(&file, "noaa").unwrap();
         let text = std::fs::read_to_string(&file).unwrap();
-        assert!(!text.contains("noaa"), "{text}");
-        assert!(text.contains("# Your catalog"), "{text}");
+        assert!(!text.contains("[noaa"), "{text}");
+        assert!(text.starts_with(MINE_TEMPLATE), "{text}");
         let catalog = read(&file, MINE, Origin::Mine).unwrap().unwrap();
         let ids: Vec<&str> = catalog.datasets.iter().map(|d| d.id.as_str()).collect();
         assert_eq!(ids, ["sales", "sales-2"]);
@@ -1235,7 +1258,11 @@ mod tests {
         let cache_dir = tempfile::tempdir().unwrap();
         let config_dir = tempfile::tempdir().unwrap();
         let cache = crate::cache::CacheManager::with_dir(cache_dir.path().to_path_buf());
-        let places = [PathBuf::from("/data/lake"), PathBuf::from("/mnt/nas/share")];
+        // Absolute on every platform: a Windows path needs its drive.
+        let places = [
+            cache_dir.path().join("lake"),
+            cache_dir.path().join("share"),
+        ];
         cache.save_remembered_places(&places).unwrap();
         let taken = cache.load_remembered_places();
         assert_eq!(taken, places);

@@ -86,12 +86,7 @@ pub const GENERATED: &[Generated] = &[
     Generated {
         file: "docs/reference/catalogs.md",
         region: Some("public-catalog"),
-        render: |read| {
-            format!(
-                "```toml,output\n{}```",
-                read("crates/datui-lib/src/public_catalog.toml")
-            )
-        },
+        render: |read| render_public_catalog(&read("crates/datui-lib/src/public_catalog.toml")),
     },
     Generated {
         file: "docs/reference/manual-pages.md",
@@ -256,6 +251,29 @@ pub fn write_all(root: &Path) -> Result<Vec<PathBuf>, String> {
         }
     }
     Ok(changed)
+}
+
+/// The bundled catalog for the docs: its header comment as a quote, the rest as a
+/// block. A block's comment lines read as headings in some outlines, so the header's
+/// rules are prose here.
+pub fn render_public_catalog(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let header = lines.iter().take_while(|l| l.starts_with('#')).count();
+    let mut out = String::new();
+    for line in &lines[..header] {
+        let said = line.trim_start_matches('#').trim();
+        if said.is_empty() {
+            out.push_str(">\n");
+        } else {
+            out.push_str(&format!("> {said}\n"));
+        }
+    }
+    let body = lines[header..].join("\n");
+    out.push_str(&format!(
+        "\n```toml,output\n{}\n```",
+        body.trim_matches('\n')
+    ));
+    out
 }
 
 /// The family page and heading that describe a format, from `docs/formats/`.

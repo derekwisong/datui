@@ -933,7 +933,7 @@ impl ShownCatalog {
     pub fn origin_note(&self) -> &'static str {
         match self.origin {
             crate::catalog::Origin::Mine => "catalog.toml",
-            crate::catalog::Origin::Listed => "catalog",
+            crate::catalog::Origin::Listed | crate::catalog::Origin::Folder => "catalog",
             crate::catalog::Origin::Bundled => "built in",
         }
     }

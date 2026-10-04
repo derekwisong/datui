@@ -146,8 +146,90 @@ impl ConfigManager {
         if !catalog.exists() {
             std::fs::write(&catalog, crate::catalog::MINE_TEMPLATE)?;
         }
+        // Where more catalogs go: the header's `> catalogs/public.toml` needs it there.
+        self.ensure_subdir(crate::catalog::FOLDER)?;
 
         Ok(config_path)
+    }
+}
+
+/// One entry of `catalogs`: a catalog file's path, or a table naming it with an id and
+/// a label of its own, for a file that cannot be renamed or edited.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum CatalogRef {
+    Path(String),
+    Table {
+        path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+}
+
+impl CatalogRef {
+    /// The file, as written.
+    pub fn path(&self) -> &str {
+        match self {
+            Self::Path(path) | Self::Table { path, .. } => path,
+        }
+    }
+
+    /// The id the entry gives, when it gives one: else the file's name is the id.
+    pub fn id(&self) -> Option<&str> {
+        match self {
+            Self::Table { id: Some(id), .. } => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The label the entry gives, over the file's own.
+    pub fn label(&self) -> Option<&str> {
+        match self {
+            Self::Table {
+                label: Some(label), ..
+            } => Some(label),
+            _ => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CatalogRef {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        match toml::Value::deserialize(deserializer)? {
+            toml::Value::String(path) => Ok(Self::Path(path)),
+            toml::Value::Table(table) => {
+                let text = |key: &str| -> Result<Option<String>, D::Error> {
+                    match table.get(key) {
+                        None => Ok(None),
+                        Some(toml::Value::String(s)) => Ok(Some(s.clone())),
+                        Some(_) => Err(D::Error::custom(format!(
+                            "catalogs: {key} must be a string"
+                        ))),
+                    }
+                };
+                if let Some(key) = table
+                    .keys()
+                    .find(|k| !matches!(k.as_str(), "path" | "id" | "label"))
+                {
+                    return Err(D::Error::custom(format!(
+                        "catalogs: unknown key '{key}'. Expected one of: path, id, label"
+                    )));
+                }
+                let path = text("path")?
+                    .ok_or_else(|| D::Error::custom("catalogs: a table needs path = \"...\""))?;
+                Ok(Self::Table {
+                    path,
+                    id: text("id")?,
+                    label: text("label")?,
+                })
+            }
+            _ => Err(D::Error::custom(
+                "catalogs: each entry is a path, or { path, id, label }",
+            )),
+        }
     }
 }
 
@@ -157,8 +239,9 @@ impl ConfigManager {
 pub struct AppConfig {
     /// Additional config files merged in before this file's own values.
     pub import: Vec<String>,
-    /// Catalog files listed on the home screen besides `catalog.toml`.
-    pub catalogs: Vec<String>,
+    /// Catalog files elsewhere, listed on the home screen besides `catalog.toml` and
+    /// `catalogs/`: a path, or `{ path, id, label }`.
+    pub catalogs: Vec<CatalogRef>,
     /// The catalogs read: `catalog.toml`, then each of `catalogs`. Not a key: read by
     /// [`AppConfig::read_catalog_files`] once the layers are merged.
     #[serde(skip)]
@@ -2063,7 +2146,12 @@ impl ConfigLayer {
         }
         if let Some(toml::Value::Array(files)) = self.table.get_mut("catalogs") {
             for entry in files {
-                if let toml::Value::String(path) = entry
+                // A path, or a table's `path`.
+                let path = match entry {
+                    toml::Value::Table(table) => table.get_mut("path"),
+                    other => Some(other),
+                };
+                if let Some(toml::Value::String(path)) = path
                     && !path.trim().is_empty()
                     && expand_path(path).is_relative()
                 {
@@ -2331,6 +2419,10 @@ impl AppConfig {
         config.import = imports;
         // A catalog's mistake names its own file and line.
         config.read_catalog_files(config_path.parent())?;
+        // A name that hides nothing is likely a typo, but not worth refusing to start.
+        for name in config.unknown_hidden() {
+            eprintln!("datui: warning: home.hide: no catalog or entry is named {name}");
+        }
 
         config
             .validate()
@@ -2448,44 +2540,112 @@ impl AppConfig {
         all
     }
 
-    /// The catalogs the home screen shows: [`Self::catalogs`] less `[home] hide`.
+    /// The catalogs the home screen shows: [`Self::catalogs`] less `[home] hide`, which
+    /// names a whole catalog by its id or one entry as `catalog/id`.
     pub fn shown_catalogs(&self) -> Vec<crate::catalog::Catalog> {
         self.catalogs()
             .into_iter()
             .filter(|c| !self.home.hide.contains(&c.id))
+            .map(|mut c| {
+                c.datasets.retain(|d| {
+                    !self
+                        .home
+                        .hide
+                        .iter()
+                        .any(|h| h.split_once('/') == Some((c.id.as_str(), d.id.as_str())))
+                });
+                c
+            })
             .collect()
     }
 
-    /// Read `catalog.toml` from `config_dir`, when there is one, and every file
-    /// `catalogs` lists. A listed file that is not there is skipped with a warning, as a
-    /// missing import is: it may be on a share that is not mounted.
+    /// The `[home] hide` names no catalog or entry has, each once.
+    pub fn unknown_hidden(&self) -> Vec<String> {
+        let catalogs = self.catalogs();
+        let mut out: Vec<String> = Vec::new();
+        for name in &self.home.hide {
+            let known = match name.split_once('/') {
+                None => catalogs.iter().any(|c| c.id == *name),
+                Some((catalog, id)) => catalogs
+                    .iter()
+                    .any(|c| c.id == catalog && c.datasets.iter().any(|d| d.id == id)),
+            };
+            if !known && !out.contains(name) {
+                out.push(name.clone());
+            }
+        }
+        out
+    }
+
+    /// Read `catalog.toml` from `config_dir`, when there is one, every `*.toml` in its
+    /// `catalogs/` directory, by name, and every file `catalogs` lists. A listed file
+    /// that is not there is skipped with a warning, as a missing import is: it may be on
+    /// a share that is not mounted.
     pub fn read_catalog_files(&mut self, config_dir: Option<&Path>) -> Result<()> {
         use crate::catalog::{self, Origin};
-        let mut read = Vec::new();
-        if let Some(dir) = config_dir
-            && let Some(mine) =
+        let mut read: Vec<catalog::Catalog> = Vec::new();
+        // Each file, where it was found, and the id and label a `catalogs` table gives it.
+        let mut files: Vec<(PathBuf, Origin, Option<String>, Option<String>)> = Vec::new();
+        if let Some(dir) = config_dir {
+            if let Some(mine) =
                 catalog::read(&dir.join(catalog::MINE_FILE), catalog::MINE, Origin::Mine)?
-        {
-            read.push(mine);
+            {
+                read.push(mine);
+            }
+            let folder = dir.join(catalog::FOLDER);
+            let mut found: Vec<PathBuf> = match std::fs::read_dir(&folder) {
+                Ok(entries) => entries
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| {
+                        p.extension().is_some_and(|x| x == "toml")
+                            && std::fs::metadata(p).is_ok_and(|m| m.is_file())
+                    })
+                    .collect(),
+                Err(_) => Vec::new(),
+            };
+            found.sort();
+            files.extend(found.into_iter().map(|p| (p, Origin::Folder, None, None)));
         }
-        for file in &self.catalogs {
-            let path = expand_path(file);
-            let id = catalog::id_of_file(&path);
+        files.extend(self.catalogs.iter().map(|entry| {
+            (
+                expand_path(entry.path()),
+                Origin::Listed,
+                entry.id().map(str::to_string),
+                entry.label().map(str::to_string),
+            )
+        }));
+        for (path, origin, given_id, label) in files {
+            let id = given_id
+                .clone()
+                .unwrap_or_else(|| catalog::id_of_file(&path));
             if !is_valid_source_id(&id) || id == catalog::MINE {
                 return Err(eyre!(
-                    "catalogs: \"{file}\" cannot be a catalog's file name. Its name without \
-                     .toml is the catalog's id: lowercase letters, digits and '-', and not \
-                     \"{}\"",
-                    catalog::MINE
+                    "catalogs: {}: \"{id}\" cannot be a catalog's id: lowercase letters, \
+                     digits and '-', and not \"{}\", which is catalog.toml's. {}",
+                    path.display(),
+                    catalog::MINE,
+                    if given_id.is_some() {
+                        "Give another id = \"...\""
+                    } else {
+                        "Rename the file, or list it as { path = \"...\", id = \"...\" }"
+                    }
                 ));
             }
-            if read.iter().any(|c: &catalog::Catalog| c.id == id) {
+            if let Some(first) = read.iter().find(|c| c.id == id) {
                 return Err(eyre!(
-                    "catalogs: two files are named {id}.toml. Rename one: the name is its id"
+                    "catalogs: {} and {} are both the catalog \"{id}\". Rename one, or list \
+                     one as {{ path = \"...\", id = \"...\" }}",
+                    first.file_name(),
+                    path.display()
                 ));
             }
-            match catalog::read(&path, &id, Origin::Listed)? {
-                Some(listed) => read.push(listed),
+            match catalog::read(&path, &id, origin)? {
+                Some(mut listed) => {
+                    if let Some(label) = label {
+                        listed.label = label;
+                    }
+                    read.push(listed);
+                }
                 None => eprintln!(
                     "datui: warning: catalog not found, skipping: {}",
                     path.display()
@@ -2557,10 +2717,14 @@ impl AppConfig {
                 .check_connections(&self.cloud.connections)
                 .map_err(|e| eyre!("{}", e.in_file(&catalog.file_name())))?;
         }
-        if let Some(name) = self.home.hide.iter().find(|name| !is_valid_source_id(name)) {
+        let hide_name = |name: &str| match name.split_once('/') {
+            Some((catalog, id)) => is_valid_source_id(catalog) && is_valid_source_id(id),
+            None => is_valid_source_id(name),
+        };
+        if let Some(name) = self.home.hide.iter().find(|name| !hide_name(name)) {
             return Err(eyre!(
-                "home.hide: \"{name}\" is not a catalog id. Use the id (mine, public, or a \
-                 listed file's name), not the label"
+                "home.hide: \"{name}\" is not a catalog id or catalog/id. Use the ids (mine, \
+                 public, a listed file's name; public/nyc-taxis for one entry), not the labels"
             ));
         }
 

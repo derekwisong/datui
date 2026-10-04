@@ -105,10 +105,15 @@ impl App {
         let unknown = !pending
             && !state.is_num_rows_valid()
             && self.len_count_failed == Some(state.len_generation());
+        let arriving = state
+            .follow()
+            .is_some_and(|follow| follow.is_pipe() && follow.live());
         let total = if pending {
             Total::Pending
         } else if unknown {
             Total::Unknown
+        } else if arriving {
+            Total::Partial(state.num_rows())
         } else {
             Total::Known(state.num_rows())
         };

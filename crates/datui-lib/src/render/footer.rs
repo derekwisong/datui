@@ -106,6 +106,8 @@ pub enum Total {
     Pending,
     /// The count could not be made.
     Unknown,
+    /// The rows so far of standard input still arriving: `12,400+`.
+    Partial(usize),
 }
 
 /// Where the cursor is: `41,208 / 1,204,331`, led by the column when the table is
@@ -135,6 +137,8 @@ impl Position {
         let total = |short: bool| match self.total {
             Total::Known(n) if short => crate::discover::format_rows(n),
             Total::Known(n) => crate::numfmt::group_chrome(n),
+            Total::Partial(n) if short => format!("{}+", crate::discover::format_rows(n)),
+            Total::Partial(n) => format!("{}+", crate::numfmt::group_chrome(n)),
             Total::Pending => spinner.to_string(),
             Total::Unknown => "?".to_string(),
         };

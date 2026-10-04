@@ -179,30 +179,50 @@ fn inside(file: &Path, compression: CompressionFormat) -> (FileFormat, bool) {
 /// Bytes [`sniff`] looks at.
 const HEAD: usize = crate::readers::HEAD;
 
-/// Read what `open` answers with into a temporary file in `--temp-dir` (the system's
-/// otherwise), counting the bytes into `read`, and say what it holds: `options` with
-/// the format and compression the first bytes say, where the user did not. Stops,
-/// removing the file, once `writer`'s open is stopped.
+/// Where what comes in on standard input is copied: `--temp-dir`, else `spool` in the
+/// cache directory, on disk, rather than the system's temp directory, which is memory
+/// on many Linux machines. The system's when the cache directory cannot be made.
+pub(crate) fn spool_dir(options: &OpenOptions) -> Option<PathBuf> {
+    if let Some(dir) = &options.temp_dir {
+        return Some(dir.clone());
+    }
+    let dir = crate::cache::CacheManager::new(crate::APP_NAME)
+        .ok()?
+        .cache_dir()
+        .join("spool");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Read what `open` answers with into a temporary file in the spool directory
+/// ([`spool_dir`]), counting the bytes into `read`, and say what it holds: `options`
+/// with the format and compression the first bytes say, where the user did not.
+/// Stops, removing the file, once `writer`'s open is stopped.
 pub(crate) fn spool<R: Read>(
     open: impl FnOnce() -> Opened<R> + Send + 'static,
     options: OpenOptions,
     writer: &Writer,
     read: &AtomicU64,
 ) -> Result<(TempDownload, OpenOptions), String> {
-    let file = crate::download::spool_to_temp(options.temp_dir.as_deref(), open, writer, read)
+    let file = crate::download::spool_to_temp(spool_dir(&options).as_deref(), open, writer, read)
         .map_err(|error| match error {
-            StreamError::Open(e) | StreamError::Read(e) => {
-                format!("Could not read standard input: {e}")
-            }
-            StreamError::Write(report) => {
-                crate::error_display::user_message_from_report(&report, None)
-            }
-            StreamError::Short { .. } | StreamError::Cut => {
-                "Reading standard input was stopped.".to_string()
-            }
-        })?;
+        StreamError::Open(e) | StreamError::Read(e) => {
+            format!("Could not read standard input: {e}")
+        }
+        StreamError::Write(report) => crate::error_display::user_message_from_report(&report, None),
+        StreamError::Short { .. } | StreamError::Cut => {
+            "Reading standard input was stopped.".to_string()
+        }
+    })?;
+    let options = described(file.path(), options)?;
+    Ok((file, options))
+}
+
+/// What all of standard input, copied to `file`, holds: `options` with the format and
+/// compression its first bytes say, where the user did not.
+pub(crate) fn described(file: &Path, options: OpenOptions) -> Result<OpenOptions, String> {
     let mut head = Vec::with_capacity(HEAD);
-    std::fs::File::open(file.path())
+    std::fs::File::open(file)
         .and_then(|f| f.take(HEAD as u64).read_to_end(&mut head))
         .map_err(|e| format!("Could not read standard input back: {e}"))?;
     if head.is_empty() {
@@ -212,12 +232,12 @@ pub(crate) fn spool<R: Read>(
     if options.format.is_none()
         && let Some(compression) = options.compression.or(compression)
     {
-        (format, guessed) = inside(file.path(), compression);
+        (format, guessed) = inside(file, compression);
     }
     if guessed {
         format = crate::lines::as_asked(format, &options);
     }
-    let options = match (options.format, options.compression) {
+    Ok(match (options.format, options.compression) {
         // A delimited format named and compression not: the bytes say whether it is
         // compressed, as a file's extension would.
         (Some(named), None) if named.separator().is_some() => OpenOptions {
@@ -238,8 +258,16 @@ pub(crate) fn spool<R: Read>(
             format_guessed: guessed,
             ..options
         },
-    };
-    Ok((file, options))
+    })
+}
+
+/// Whether standard input opened with `options` may be shown as it arrives: nothing
+/// named rules it out (a format read once it is finished, or compression).
+pub(crate) fn may_read_as_it_arrives(options: &OpenOptions) -> bool {
+    options.compression.is_none()
+        && options
+            .format
+            .is_none_or(|format| format.follows() || format == FileFormat::Arrow)
 }
 
 #[cfg(test)]

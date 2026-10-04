@@ -379,3 +379,71 @@ fn a_large_log_is_indexed_behind_its_first_rows() {
     let numbers = state.row_numbers_from(state.start_row(), state.visible_rows.max(1));
     assert!(numbers.contains(&lines), "{numbers:?}");
 }
+
+/// A pipe shows its first rows while it is still sending, without `--follow`, and
+/// reads on to its end: the rows so far are said to be a part, until it ends. The view
+/// stays at the top, and what came in is spooled in the cache directory.
+#[test]
+fn a_pipe_shows_rows_as_they_arrive() {
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    producer.write_all(b"boot\nready\n").unwrap();
+    let (mut app, rx) = app();
+    app.read_stdin_from(reader);
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("-")],
+        OpenOptions::default(),
+    );
+    drain_events(&mut app, &rx);
+    assert_eq!(lines(&app), ["boot", "ready"], "rows before the pipe ends");
+    let follow = app.follow().expect("read on as it arrives");
+    assert!(follow.is_pipe() && follow.live());
+    let spooled = follow.path().to_path_buf();
+    let cache = std::path::PathBuf::from(std::env::var_os("DATUI_CACHE_DIR").unwrap());
+    assert!(
+        spooled.starts_with(cache.join("spool")),
+        "spooled in the cache: {}",
+        spooled.display()
+    );
+    let text = screen(&mut app);
+    assert!(text.contains("reading stdin"), "{text}");
+    assert!(text.contains("/ 2+"), "the count is a part: {text}");
+
+    producer.write_all(b"serving\n").unwrap();
+    drop(producer);
+    let deadline = Instant::now() + common::HANG_GUARD;
+    while app.follow().is_some_and(|f| f.live() || f.shown() < 3) {
+        assert!(Instant::now() < deadline, "the pipe never ended");
+        app.check_follow_now();
+        app.request_what_the_frame_needs();
+        if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            let mut next = Some(event);
+            while let Some(event) = next {
+                next = app.event(&event);
+            }
+            drain_events(&mut app, &rx);
+        }
+    }
+    assert_eq!(lines(&app), ["boot", "ready", "serving"]);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.start_row(), 0, "the view stays at the top");
+    let text = screen(&mut app);
+    assert!(text.contains("/ 3") && !text.contains("/ 3+"), "{text}");
+    assert!(!text.contains("reading stdin"), "{text}");
+}
+
+/// The screen as text.
+fn screen(app: &mut App) -> String {
+    let area = Rect::new(0, 0, 100, 20);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}

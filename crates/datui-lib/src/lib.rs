@@ -3639,6 +3639,18 @@ impl App {
         };
         let waiting = follow.waiting();
         let (chip, note) = match follow.standing {
+            // Standard input read as it arrives: how much has, until it ends.
+            Standing::Following if follow.is_pipe() => {
+                let read = follow.spool().map_or(0, |spool| spool.bytes());
+                let chip = format!(
+                    "reading stdin {} {}",
+                    crate::glyphs::get().middot,
+                    crate::discover::format_size(read)
+                );
+                let note = (follow.new_below > 0 && !state.on_last_row())
+                    .then(|| rows(follow.new_below, "new below"));
+                (chip, note)
+            }
             Standing::Following => {
                 let chip = match follow.last_append {
                     Some(at) => format!(
@@ -4873,12 +4885,17 @@ impl App {
         {
             match options.tail.as_deref() {
                 Some(tail) => {
-                    state.start_following(crate::follow::Follow::start(
+                    let follow = crate::follow::Follow::start(
                         tail.clone(),
                         self.app_config.read.follow_interval.duration(),
                         self.events.clone(),
                         options.spool.clone(),
-                    ));
+                    );
+                    state.start_following(if options.pipe {
+                        follow.as_pipe()
+                    } else {
+                        follow
+                    });
                     // Counted already, as the scan reads them: no count of its own.
                     state.follow_to(tail.rows(), false);
                 }
@@ -9369,7 +9386,11 @@ impl App {
                     };
                     // Followed, the copy goes on behind the first rows; recorded, it
                     // goes to the file the user named.
-                    let (download, options) = if options.follow || options.tee.is_some() {
+                    // And read as it arrives when what it holds can be.
+                    let (download, options) = if options.follow
+                        || options.tee.is_some()
+                        || crate::stdin::may_read_as_it_arrives(&options)
+                    {
                         match crate::follow::spool(open, options, &writer, &read, stdout)? {
                             (crate::follow::Spooled::Temp(download), options) => {
                                 (download, options)

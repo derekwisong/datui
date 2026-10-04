@@ -181,6 +181,9 @@ pub struct OpenOptions {
     pub tail: Option<Arc<crate::follow::Tail>>,
     /// Standard input still being copied to the file a follow reads.
     pub spool: Option<Arc<crate::follow::SpoolHandle>>,
+    /// Standard input shown as it arrives without `--follow`: read by the follow's
+    /// watcher until it ends, the view staying where it is rather than at the end.
+    pub pipe: bool,
     /// `--tee FILE`: standard input is recorded to FILE, which is what is read.
     pub tee: Option<PathBuf>,
     /// `--tee-raw`: FILE is the bytes exactly as they came, a WAV header included.
@@ -271,6 +274,7 @@ impl OpenOptions {
             follow: false,
             tail: None,
             spool: None,
+            pipe: false,
             tee: None,
             tee_raw: false,
             force: false,

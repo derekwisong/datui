@@ -164,8 +164,6 @@ pub(crate) fn open(
             .source
             .read_footers(&files, &read, &report.progress, &report.meter)?,
     };
-    // A shape just found needs no storing again: the lookup has dated it.
-    listed.remember(&read, &footers, !from_cache);
     log::debug!(
         target: "datui",
         "dataset of {} files: {} footers {}",
@@ -180,6 +178,8 @@ pub(crate) fn open(
         }
     );
     let opened = listed.dataset(&read, &footers)?;
+    // A shape just found needs no storing again: the lookup has dated it.
+    listed.remember(&read, &footers, Some(&opened.dataset.schema), !from_cache);
     let state = DataTableState::from_schema_and_lazyframe(
         opened.dataset.schema.clone(),
         opened.lf,
@@ -225,12 +225,12 @@ pub(crate) fn open(
                     None => fresh.next().flatten(),
                 })
                 .collect();
-            // This is the pass that reads a large dataset's footers, so this is where
-            // a large dataset gets remembered.
-            listed.remember(&read, &footers, true);
             // Past `MAX_FOOTER_READS` this read a sample, and the dataset has no row
             // groups until its count reads the rest — only the rest.
             let whole = listed.dataset(&read, &footers)?;
+            // This is the pass that reads a large dataset's footers, so this is where
+            // a large dataset gets remembered.
+            listed.remember(&read, &footers, Some(&whole.dataset.schema), true);
             Some(FootersFound {
                 dataset: whole.dataset,
                 lf: whole.lf,
@@ -337,7 +337,15 @@ impl Listed {
     /// moment's trouble into a file that is missing from the dataset on every open from
     /// now until something else changes. Read them again next time; the one that was
     /// really corrupt costs a read and says the same thing.
-    fn remember(&self, read: &[usize], footers: &[Option<FileFooter>], shape: bool) {
+    ///
+    /// `schema` is the union of these footers, where the caller has built it already.
+    fn remember(
+        &self,
+        read: &[usize],
+        footers: &[Option<FileFooter>],
+        schema: Option<&polars::prelude::Schema>,
+        shape: bool,
+    ) {
         let Some(cache) = self.remembered.as_ref() else {
             return;
         };
@@ -346,10 +354,30 @@ impl Listed {
         // sampled read does not replace a whole one, though: the shape cache is the
         // smaller of the two and forgets a dataset long before the index does.
         let path = PathBuf::from(self.source.key());
-        if let Some(facts) = self.facts(read, footers)
-            && facts_worth_recording(cache.dataset_facts(&path).as_ref(), &facts)
-        {
-            cache.record_dataset_facts(&[(path, facts)]);
+        if let Some(facts) = self.facts(read, footers, schema) {
+            let existing = cache.dataset_facts(&path);
+            // A reopen learns what it knew: the write, which waits on the disk, is
+            // skipped.
+            let same = existing.as_ref().is_some_and(|old| {
+                (
+                    old.rows,
+                    old.cols,
+                    old.size,
+                    old.mtime,
+                    &old.columns,
+                    old.kind,
+                ) == (
+                    facts.rows,
+                    facts.cols,
+                    facts.size,
+                    facts.mtime,
+                    &facts.columns,
+                    facts.kind,
+                ) && old.classified_by == facts.classified_by
+            });
+            if !same && facts_worth_recording(existing.as_ref(), &facts) {
+                cache.record_dataset_facts(&[(path, facts)]);
+            }
         }
         let Some(fingerprint) = self.fingerprint.as_ref().filter(|_| shape) else {
             return;
@@ -397,14 +425,18 @@ impl Listed {
         &self,
         read: &[usize],
         footers: &[Option<FileFooter>],
+        schema: Option<&polars::prelude::Schema>,
     ) -> Option<crate::cache::DatasetFacts> {
         use crate::discover::{CLASSIFIER_VERSION, EntryKind, Holds};
-        let dataset = self.schema(read, footers)?;
-        let columns: Vec<String> = dataset
-            .schema
-            .iter_names()
-            .map(|name| name.to_string())
-            .collect();
+        let unioned;
+        let schema = match schema {
+            Some(schema) => schema,
+            None => {
+                unioned = self.schema(read, footers)?.schema;
+                &unioned
+            }
+        };
+        let columns: Vec<String> = schema.iter_names().map(|name| name.to_string()).collect();
         let files = &self.files;
         let every_footer = read.len() == files.len() && footers.iter().all(Option::is_some);
         let rows = every_footer.then(|| footers.iter().flatten().map(FileFooter::rows).sum());
@@ -569,7 +601,7 @@ impl Listed {
                 .ok_or_else(|| "cancelled".to_string())?;
             if let Some(whole) = counted.whole.as_deref() {
                 let every: Vec<usize> = (0..listed.files.len()).collect();
-                listed.remember(&every, whole, true);
+                listed.remember(&every, whole, None, true);
             }
             Ok(counted.row_groups)
         })
@@ -646,7 +678,7 @@ pub(crate) fn facts_of(
         Arc::new(Meter::default()),
         None,
     )?;
-    let facts = listed.facts(read, footers)?;
+    let facts = listed.facts(read, footers, None)?;
     Some((PathBuf::from(listed.source.key()), facts))
 }
 

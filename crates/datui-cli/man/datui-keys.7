@@ -134,7 +134,7 @@ Apply the best-matching view (or open the list)
 \fIDisplay\fR
 .TP
 \fB#\fR
-Row numbers on or off
+Row numbers on or off: each row's place in the source, kept through a sort or a filter (a text file's line numbers). On for text and logs; display.row_numbers sets it
 .TP
 \fB,\fR
 Number formatting (digit grouping) on or off
@@ -478,6 +478,9 @@ Documentation tab: copy the link or value on the cursor's line, whole, however i
 .TP
 \fBH\fR
 Schema tab, CSV, TSV, PSV: read the first row as data, under column_1, column_2, \[u2026]; again to read it as column names. Reads the file again, so the query, filters and sort are cleared, and the panel closes
+.TP
+\fBc\fR
+A dataset of more files than read.exact_count_files shows a row count estimated from a sample of its footers; c reads every footer for the exact count. The footer shows how far it has got, and Esc at the table stops it
 .TP
 \fBx\fR
 Show the file's bytes in the hex view

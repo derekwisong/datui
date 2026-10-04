@@ -435,7 +435,8 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Display",
                 keys: &[
-                    k("#", "Row numbers", "Row numbers on or off"),
+                    k("#", "Row numbers", "Row numbers on or off")
+                        .more("Row numbers on or off: each row's place in the source, kept through a sort or a filter (a text file's line numbers). On for text and logs; display.row_numbers sets it"),
                     k(",", "Grouping", "Number formatting (digit grouping) on or off"),
                     k("D", "Types", "The type row under the headers on or off"),
                     k("< / >", "Width", "The cursor's column 4 cells narrower or wider"),

@@ -31,14 +31,31 @@ A directory of more than 64 Parquet files, local or in the cloud, opens on the
 first and last files by name and reads the other footers in the background;
 the footer counts them on a line of its own. Until they are in:
 
-- The total row count is not known, and every empty cell shows as `∅`.
+- The total row count is estimated from a random sample of 2,000 footers, read
+  first: `~4.12B (est.)` in the footer and on the Info panel.
+- Every empty cell shows as `∅`.
 - New columns join the end of the table as they are found; Notes says how
   much was read.
 - A query, pivot or drill-down leaves the new columns out until you return to
   the data as opened.
 
 Above 20,000 files the background pass reads a sample of the footers, and the
-row count reads the rest.
+row count reads the rest: the footer shows `files 18,402 / 842,225` and
+<kbd>Esc</kbd> stops it, leaving the estimate. Counts read 256 footers at once.
+
+| Files | Row count |
+|---|---|
+| Up to 64 | Exact at once, from every footer |
+| Up to 20,000 | Estimated, then exact when the background pass is done |
+| Up to `read.exact_count_files` (50,000) | Estimated, then counted in the background |
+| More | Estimated; <kbd>c</kbd> on the Info panel counts exactly, and so does <kbd>End</kbd> |
+
+A count keeps each file's footer in the cache by its path, size, time and
+etag. Counting the dataset again, after a stop, or after files were added,
+reads only the footers it does not have.
+
+[Value counts](value-counts.md) of a dataset of files say in the footer how
+many of the files the read has reached.
 
 While a directory or prefix is listed, the loading screen counts the files:
 `Listing files: 412,000`; <kbd>Ctrl</kbd>+<kbd>O</kbd> stops it. A large S3 or

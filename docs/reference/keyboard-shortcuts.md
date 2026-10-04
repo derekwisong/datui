@@ -87,7 +87,7 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `#` | Row numbers on or off |
+| `#` | Row numbers on or off: each row's place in the source, kept through a sort or a filter (a text file's line numbers). On for text and logs; display.row_numbers sets it |
 | `,` | Number formatting (digit grouping) on or off |
 | `D` | The type row under the headers on or off |
 | `< / >` | The cursor's column 4 cells narrower or wider |
@@ -296,6 +296,7 @@ Where a dataset opens.
 | `Enter` | Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor |
 | `y` | Documentation tab: copy the link or value on the cursor's line, whole, however it is cut on screen |
 | `H` | Schema tab, CSV, TSV, PSV: read the first row as data, under column_1, column_2, …; again to read it as column names. Reads the file again, so the query, filters and sort are cleared, and the panel closes |
+| `c` | A dataset of more files than read.exact_count_files shows a row count estimated from a sample of its footers; c reads every footer for the exact count. The footer shows how far it has got, and Esc at the table stops it |
 | `x` | Show the file's bytes in the hex view |
 | `Esc / i` | Close the panel |
 

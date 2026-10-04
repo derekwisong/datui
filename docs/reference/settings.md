@@ -39,6 +39,7 @@ lives, imports, the theme and troubleshooting.
 | `read.decompress_in_memory` | bool | `false` |  | Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file. |
 | `read.temp_dir` | path | unset | `--temp-dir` | Directory for decompression temp files. Unset: the system's. |
 | `read.follow_interval` | duration | `"250ms"` |  | With --follow, how often the file is checked for new rows, or on Linux the least time between two reads, 10ms to 1m. Appends within one interval are one refresh. |
+| `read.exact_count_files` | integer | `50000` |  | A dataset of more files than this shows a row count estimated from a sample of its footers until c in the Info panel counts it; 0 always counts. |
 | `read.memory_warning` | size | `"1GiB"` |  | Ask before reading more than this of a file whole into memory (JSON, Avro, ORC, Excel and the other formats read in memory); 0 never asks. |
 | `read.audio_float` | bool | `false` |  | Show integer audio samples as float in [-1, 1]. |
 
@@ -62,8 +63,8 @@ lives, imports, the theme and troubleshooting.
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
 | `display.unicode` | auto \| always \| never | `"auto"` |  | Box-drawing and arrow glyphs, or plain ASCII. auto uses them when the locale is UTF-8. |
-| `display.row_numbers` | bool | `false` | `--row-numbers` | Show row numbers on the left (# toggles). |
-| `display.row_numbers_start` | integer | `1` |  | The first row's number. |
+| `display.row_numbers` | "auto" \| bool | `"auto"` | `--row-numbers` | Number rows on the left by their place in the source, kept through a sort or filter (# toggles). auto: for text and logs; true or false: for all of them. |
+| `display.row_numbers_start` | integer | `1` |  | The number of the source's first row. |
 | `display.cell_padding` | "comfortable" \| "compact" \| integer | `"comfortable"` |  | Space between columns: comfortable (2 cells), compact (1) or a number of cells. |
 | `display.column_colors` | bool | `true` |  | Color cells by column type. |
 | `display.type_row` | bool | `true` |  | A second header row naming each column's type (D toggles). |

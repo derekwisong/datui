@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Check and run every code block users read, and every example in examples.toml.
 
-Every fenced block in docs/, the READMEs and the next release's notes is one of:
+Every fenced block in docs/, the READMEs and the next release's notes, and every
+<pre data-example="LANG,ATTRS"> on the landing page (scripts/docs/index.html.j2),
+is one of:
 
   runnable  `bash`, `sh`, `toml`, `python`, `sql`, `q`, ...: copied and pasted on a
             fresh install, it works and does what the text says. This script runs it.
@@ -43,6 +45,7 @@ A failing block names its file and line.
 from __future__ import annotations
 
 import argparse
+import html
 import os
 import re
 import shutil
@@ -186,10 +189,41 @@ def attach_files(blocks: list[Block], problems: list[str]) -> None:
         problems.append(f"{f.where()}: {f.values['file']} has no runnable block after it to use it")
 
 
+LANDING = ROOT / "scripts/docs/index.html.j2"
+PRE = re.compile(r"<pre\b([^>]*)>(.*?)</pre>", re.S)
+EXAMPLE = re.compile(r'\bdata-example="([^"]*)"')
+
+
+def blocks_in_html(path: Path, problems: list[str]) -> list[Block]:
+    """The landing page's commands: each <pre> says what it is in `data-example`."""
+    text = path.read_text(encoding="utf-8")
+    out: list[Block] = []
+    for m in PRE.finditer(text):
+        line = text.count("\n", 0, m.start()) + 1
+        info = EXAMPLE.search(m.group(1))
+        where = f"{path.relative_to(ROOT)}:{line}"
+        if not info:
+            problems.append(f'{where}: a <pre> with no data-example="LANG,..."')
+            continue
+        lang, attrs, values, unknown = parse_info(html.unescape(info.group(1)))
+        body = html.unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip("\n") + "\n"
+        if "{{" in body or "{%" in body:
+            problems.append(f"{where}: a command holds Jinja; write it out")
+        block = Block(path, line, lang, attrs, values, body)
+        if lang not in RUNNABLE | OUTPUT | EXCERPT:
+            problems.append(f"{where}: unknown language `{lang}`")
+        for u in unknown:
+            problems.append(f"{where}: unknown example attribute `{u}`")
+        out.append(block)
+    return out
+
+
 def all_blocks(problems: list[str]) -> list[Block]:
     out: list[Block] = []
     for path in user_files():
         out.extend(blocks_in(path, problems))
+    if LANDING.exists():
+        out.extend(blocks_in_html(LANDING, problems))
     return out
 
 

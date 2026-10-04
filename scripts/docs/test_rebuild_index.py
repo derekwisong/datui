@@ -2,6 +2,7 @@
 import contextlib
 import io
 import os
+import re
 import tempfile
 import unittest
 from html.parser import HTMLParser
@@ -40,7 +41,8 @@ class LandingPageTests(unittest.TestCase):
         (path / "index.html").write_text("<h1>Book</h1>")
         if demo:
             (path / "demos").mkdir()
-            (path / "demos/02-querying.gif").write_bytes(b"GIF89a")
+            (path / "demos/teaser.gif").write_bytes(b"GIF89a")
+            (path / "demos/teaser.png").write_bytes(b"\x89PNG")
         return path
 
     def render(self):
@@ -63,7 +65,8 @@ class LandingPageTests(unittest.TestCase):
     def test_no_books_links_to_source_docs(self):
         content, page = self.render()
         self.assertIn("https://github.com/derekwisong/datui/tree/main/docs/", page.links)
-        self.assertNotIn('id="query-demo"', content)
+        self.assertNotIn('id="teaser"', content)
+        self.assertIn("CAPTURE PLACEHOLDER", content)
         self.assertFalse(any(link.startswith("latest/") for link in page.links))
 
     def test_tag_without_alias_links_to_the_existing_tag(self):
@@ -71,7 +74,8 @@ class LandingPageTests(unittest.TestCase):
         content, page = self.render()
         self.assertIn("v0.3.2/", page.links)
         self.assertIn("v0.3.2/getting-started/quick-start.html", page.links)
-        self.assertIn('data-src="v0.3.2/demos/02-querying.gif"', content)
+        self.assertIn('data-src="v0.3.2/demos/teaser.gif"', content)
+        self.assertIn('src="v0.3.2/demos/teaser.png"', content)
         self.assertFalse(any(link.startswith("latest/") for link in page.links))
 
     def test_latest_alias_is_primary_but_not_a_duplicate_version(self):
@@ -125,16 +129,28 @@ class LandingPageTests(unittest.TestCase):
         self.assertIn('docs-"example"/', page.links)
         self.assertNotIn('href="docs-"example"', content)
 
-    def test_demo_is_opt_in_and_absent_when_not_built(self):
+    def test_teaser_is_opt_in_and_absent_when_not_built(self):
         path = self.build("main", demo=True)
         content, _ = self.render()
-        self.assertIn('id="query-demo" data-src=', content)
-        self.assertNotIn('<img src=', content)
-        self.assertIn("Stop the demo", content)
-        (path / "demos/02-querying.gif").unlink()
+        self.assertIn('id="teaser"', content)
+        self.assertIn('data-src="main/demos/teaser.gif"', content)
+        self.assertNotIn("CAPTURE PLACEHOLDER", content)
+        (path / "demos/teaser.png").unlink()
         content, _ = self.render()
-        self.assertNotIn('id="query-demo"', content)
+        self.assertNotIn('id="teaser"', content)
 
+    def test_generated_parts_are_filled_and_every_command_is_labelled(self):
+        content, _ = self.render()
+        self.assertRegex(content, r"\d+ formats")
+        self.assertNotIn("{{", content)
+        for channel in ["script", "winget", "brew", "pip", "cargo", "aur", "apt", "binaries"]:
+            self.assertIn(f'id="install-{channel}"', content)
+        pres = re.findall(r"<pre\b[^>]*>", content)
+        self.assertTrue(pres)
+        for pre in pres:
+            self.assertIn("data-example=", pre)
+        for phrase in ["opens anything", "any data file", "any format"]:
+            self.assertNotIn(phrase, content.lower())
 
 if __name__ == "__main__":
     unittest.main()

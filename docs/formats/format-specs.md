@@ -1,32 +1,17 @@
 # Format specs
 
+A format spec is a TOML file that describes a binary format, or a family of
+delimited text files, so datui opens it as a table.
+
 ```bash
-datui day.l2                           # a spec on the search path matches it
-datui --format acme.l2feed capture.bin # read it as that spec
-datui --format ./l2feed.toml capture.bin  # read it with this spec file
-datui --format s3://team/l2feed.toml day.bin  # or a spec at a URL
-datui formats                          # list the specs datui finds
-datui formats check acme.l2feed day.l2 # check a spec and print a file's first rows
-```
-
-A file of records, such as a tick capture, a sensor log or a struct dump, opens
-as a table once a spec describes it: fixed-size records, records that carry
-their length, several message types in one stream, or compressed blocks. So
-does a family of CSV-like text files with lines above their header: see
-[delimited text](#delimited-text).
-A spec is one TOML file per format. Specs are data: no scripts or expressions.
-Every size read from a file is bounded.
-
-## A spec
-
-```toml
+cat > l2feed.toml <<'EOF'
 name = "acme.l2feed"
 description = "Level 2 capture"
 match = { glob = ["*.l2"], magic = "L2FD" }
 endian = "le"
 
 [header]
-fields = [{ name = "magic", type = "str", size = 4 }, { name = "count", type = "u8" }]
+fields = [{ name = "magic", type = "str", size = 4 }, { name = "count", type = "u1" }]
 
 [records]
 count = "header.count"
@@ -36,10 +21,38 @@ fields = [
   { name = "side",   type = "u1", enum = { 1 = "BUY", 2 = "SELL" } },
   { name = "price",  type = "u4", scale = 4, null = "max" },
 ]
+EOF
+python3 -c "import struct; open('day.l2', 'wb').write(struct.pack('<4sB', b'L2FD', 2) + struct.pack('<Q8sBI', 1709294400000000000, b'MSFT', 1, 4105000) + struct.pack('<Q8sBI', 1709294400000500000, b'AAPL', 2, 4294967295))"
+datui formats check ./l2feed.toml day.l2
+datui --format ./l2feed.toml day.l2
+mkdir -p formats
+cp l2feed.toml formats/
+DATUI_FORMATS_PATH=formats datui day.l2
+DATUI_FORMATS_PATH=formats datui formats
 ```
 
-The table has the columns `ts` (datetime), `symbol`, `side` and `price` (a
-decimal with four places), one row per record.
+| Command | Does |
+|---|---|
+| `datui formats check ./l2feed.toml day.l2` | Checks the spec and prints the file's header and first rows |
+| `datui --format ./l2feed.toml day.l2` | Reads the file with that spec file |
+| `datui --format acme.l2feed day.l2` | Reads it with the spec of that name, from the search path |
+| `datui day.l2` | Reads it with the spec whose `match` it fits, from the search path |
+| `datui formats` | Lists the specs and dictionaries on the search path |
+
+A spec reads fixed-size records, records that carry their length, several
+message types in one stream, or compressed blocks; a `kind = "delimited"` spec
+reads [CSV-like text with lines above its header](#delimited-text). Specs are
+data: no scripts or expressions, and every size read from a file is bounded.
+`--format` also takes a spec's `http(s)://`, `s3://`, `gs://` or `az://` URL,
+fetched once as the open starts; a spec file is at most 1 MiB.
+
+## A spec
+
+`l2feed.toml` above is a whole spec.
+Its table has the columns `ts` (a datetime), `symbol`, `side` and `price` (a
+decimal with four places, null where the field holds its largest value), one
+row per record. [Format spec reference](../reference/format-specs.md) lists
+every field type and key.
 
 | Key | What it says |
 |---|---|
@@ -97,13 +110,13 @@ a repository of specs can run it in CI.
 | A `magic` matches, in a file whose bytes are no format datui reads (such as Parquet) | That spec |
 
 A spec with `match.where` matches only a file whose header holds those values,
-so one spec per version can share a glob and a magic:
+so one spec per version can share a glob and a magic. In a spec, in place of
+its `match` line:
 
-```toml
+```toml,template
 match = { glob = "*.l2", magic = "L2FD", where = { "header.version" = 3 } }
 ```
 
-A spec file is at most 1 MiB.
 
 When two specs match the same way, the first on the search path reads the file.
 The bar shows `2 formats match`, and the Notes tab names the others. A file no
@@ -117,42 +130,37 @@ values, and any bytes left out.
 
 ## Delimited text
 
-```bash
-datui flight.csv                                 # a delimited spec's magic matches
-datui logs/                                      # a directory of them, as one table
-datui formats check acme.instrument-log flight.csv
-```
-
 Loggers and instruments write a metadata line and a units line above a padded
-header:
+header. A spec of `kind = "delimited"` holds the [CSV options](delimited-text.md#csv-options)
+for such a family of files, so they open with no flags: from the command line,
+from the home screen, compressed, or as a directory.
 
-```
+```bash
+cat > instrument.toml <<'EOF'
+name = "acme.instrument-log"
+kind = "delimited"
+match = { magic = "#device_info" }
+comment = "#"
+skip_initial_space = true
+header_rows = { name = 3, unit = 2 }
+metadata_line = 1
+
+[columns]
+time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
+EOF
+cat > flight.csv <<'EOF'
 #device_info, log_version="1.03", model="Unit 7, rev B", serial="123"
 #yyyy-mm-dd, hh:mm:ss, hh:mm, degrees, volts, deg F
   Lcl Date, Lcl Time, UTCOfst,     Latitude, bus1volts, T1 Temp
           ,         ,        ,             ,      25.1,   187.2
 2024-03-01, 10:00:00,  -05:00,    40.100000,      25.0,   180.0
+EOF
+datui formats check ./instrument.toml flight.csv
+datui --format ./instrument.toml flight.csv
 ```
 
-A spec of `kind = "delimited"` holds the [CSV options](delimited-text.md#csv-options)
-for such a family of files, so they open with no flags: from the command line,
-from the home screen, compressed, or as a directory. It is a `[csv]` block of
-the [config](../reference/settings.md#csv), with the same keys, plus `match`,
-`kind`, the layout keys and `[columns]`.
-
-```toml
-name = "acme.instrument-log"
-kind = "delimited"
-match = { magic = "#device_info" }       # or glob = ["**/logs/log_*.csv"]
-
-comment = "#"
-skip_initial_space = true
-header_rows = { name = 3, unit = 2 }     # a list, such as [3] or [3, 2], also works
-metadata_line = 1
-
-[columns]
-time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
-```
+A delimited spec takes the keys of the config's [`[csv]`](../reference/settings.md#csv),
+plus `match`, `kind`, the layout keys and `[columns]`.
 
 | Key | What it says |
 |---|---|
@@ -172,7 +180,7 @@ Lines count from 1 at the top of the file. Each option the spec sets replaces
 the config's; a flag typed on the command line (`--delimiter`,
 `--comment`, `--skip-initial-space`, `--header-rows`, `--skip-lines`)
 wins over the spec. The options the spec does not set keep theirs.
-`datui --delimiter 44 formats check SPEC FILE` reads the file as an open with
+`datui --delimiter ';' formats check SPEC FILE` reads the file as an open with
 those flags would, and names the flags that override the spec. The header lines
 and the metadata line are the only lines read apart from the CSV reader.
 
@@ -222,9 +230,11 @@ without its derived columns.
 | A header count larger than the file | The whole records open, with a note |
 | A record whose length or type cannot be read | The records before it open; a note says where the rest was left out |
 | `checksum` in `[records]` | A `checksum_ok` column, true or false for each record, rather than an error |
-| `--format` with a spec on an `s3://`, `gs://` or Azure path | Refused: specs read local files, so download it first |
+| A spec for a file in a bucket or at a URL | The file is downloaded first, then read |
 
-```toml
+In a spec's `[records]`:
+
+```toml,template
 checksum = { algo = "crc16-ccitt", field = "crc", from = "len", to = "crc" }
 ```
 
@@ -242,9 +252,8 @@ and magic is read from the decompressed bytes.
 
 ## Large files
 
-Read: [lazy, or converted once when compressed](index.md#how-each-format-is-read).
-
-A file is memory-mapped, and only the columns and rows on screen are decoded.
+A spec's file is read [lazy](index.md#how-each-format-is-read), or converted
+once when compressed. It is memory-mapped, and only the columns and rows on screen are decoded.
 Records that are not all one size, and blocks, are indexed by one pass when the
 file opens. That pass keeps where each record starts (5 bytes a record, up to
 64M records), so a query reads every column from there rather than walking the

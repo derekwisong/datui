@@ -1,6 +1,7 @@
 # Format spec reference
 
-Every key a [format spec](../formats/format-specs.md) takes.
+Every field type and key a [format spec](../formats/format-specs.md) takes.
+Each example below is a whole spec; `datui formats check ./spec.toml` checks one.
 
 ## Field types
 
@@ -61,7 +62,10 @@ record. A record whose own field gives its size is `length_prefixed`.
 
 ## Records of different sizes
 
-```toml
+```toml,spec
+name = "acme.messages"
+match = { glob = "*.msg" }
+
 [records]
 framing = "length_prefixed"
 size = "len"          # the field that holds each record's length
@@ -86,7 +90,10 @@ start of every 1024th is kept, so a scroll anywhere reads from the nearest one.
 
 ### Variants
 
-```toml
+```toml,spec
+name = "acme.orders"
+match = { glob = "*.ord" }
+
 [records]
 framing = "length_prefixed"
 size = "len"
@@ -123,18 +130,21 @@ variants share is one column, so it must be the same field in both. A record of
 a type no variant names shows as `?X` when its size is known
 (`length_prefixed`); otherwise the read stops there, with a note.
 
-`datui --table add capture.bin` opens one variant as its own table: only its
+`datui --table add day.ord` opens one variant as its own table: only its
 records and its columns.
 
 On the home screen, a file a spec's glob names that holds several variants
 counts them as tables ("2 tables" in its details). Enter opens every record; →
-lists the tables inside it, one row each at `capture.bin/add`, and Enter on one
+lists the tables inside it, one row each at `day.ord/add`, and Enter on one
 opens it alone. That path opens the table on the command line too, and is
 what recents record.
 
 ## Footer
 
-```toml
+```toml,spec
+name = "acme.counted"
+match = { glob = "*.cnt" }
+
 [records]
 count = "footer.n"
 fields = [{ name = "v", type = "u2" }]
@@ -151,7 +161,10 @@ the footer against a footer field; a mismatch is a note.
 
 ## Blocks
 
-```toml
+```toml,spec
+name = "acme.blocks"
+match = { glob = "*.blk" }
+
 [blocks]
 header = [{ name = "clen", type = "u4" }, { name = "rawlen", type = "u4" }]
 size = "clen"
@@ -180,11 +193,17 @@ block that will not decompress is left out, with a note.
 
 ## Captures
 
-```toml
+```toml,spec
+name = "acme.multicast"
+match = { glob = "*.pcap" }
+
 [capture]
 header = [{ name = "session", type = "str", size = 10 }, { name = "seq", type = "u8" }, { name = "count", type = "u2" }]
 count = "count"
 time = "captured"
+
+[records]
+fields = [{ name = "price", type = "u4" }]
 ```
 
 The file is a pcap or pcapng capture, told apart by its magic. Each UDP
@@ -195,9 +214,15 @@ spec has no `[header]`, `[footer]` or `[blocks]`.
 
 ## A tree of files
 
-```toml
+```toml,spec
+name = "acme.trades"
+match = { glob = "*.bin" }
+
 [files]
 path = "{date:%Y%m%d}/{venue}/trades.bin"
+
+[records]
+fields = [{ name = "price", type = "f8" }]
 ```
 
 `datui --format acme.trades store/` reads every file under `store/` that the
@@ -207,7 +232,7 @@ left out, with a note.
 
 ## Columns layout
 
-```toml
+```toml,spec
 name = "kdb.trades"
 layout = "columns"
 endian = "be"
@@ -216,18 +241,21 @@ endian = "be"
 fields = [{ name = "price", type = "f8" }, { name = "size", type = "s8" }]
 ```
 
-`datui --format kdb.trades db/trades/` reads `db/trades/price` and
+With it, `datui --format kdb.trades db/trades/` reads `db/trades/price` and
 `db/trades/size` as two columns of one table, as kdb+ splays a table. A
 `[header]` describes the start of each file. A glob in a columns spec matches
 the directory.
 
 When the header lists where each column starts in one file, every field gives
-`offset` and the spec reads that file:
+`offset` and the spec reads that one file:
 
-```toml
+```toml,spec
+name = "acme.packed"
 layout = "columns"
+
 [header]
 fields = [{ name = "n", type = "u4" }, { name = "px_off", type = "u4" }]
+
 [records]
 count = "header.n"
 fields = [{ name = "px", type = "f8", offset = "header.px_off" }]

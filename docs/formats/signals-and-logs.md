@@ -1,12 +1,40 @@
 # Signals and logs
 
-## Audio files
+Recordings, captures and logs open as tables: audio, MIDI, waveforms, GPS
+tracks, flight and CAN logs, FIX sessions, molecule files, ELF symbol tables
+and the systemd journal.
 
-Read: [lazy](index.md#how-each-format-is-read).
+| Format | Extensions | Read | `--table` | Info tab |
+|---|---|---|---|---|
+| [Audio](#audio) | `.wav`, `.wave`, `.bwf`, `.rf64`, `.aif`, `.aiff`, `.aifc` | lazy | | Audio |
+| [MIDI](#midi) | `.mid`, `.midi`, `.smf`, `.kar`, `.rmi` | in memory | | MIDI |
+| [VCD](#vcd) | `.vcd` | converted once | | VCD |
+| [NMEA, GPX](#gps-logs) | `.nmea`, `.gpx` | converted once | NMEA: `fixes`, `GGA`, `RMC`, `VTG`, `GSA`, `GSV`, `GLL`, `ZDA`, `sentences` | GPS |
+| [ULog, DataFlash](#flight-logs) | `.ulg`; DataFlash by content | lazy | a topic, a message type | ULog, DataFlash |
+| [candump](#can-logs) | by content | lazy | `frames`, `signals`, a message | CAN |
+| [FIX](#fix-logs) | by content | converted once | | FIX |
+| [SDF](#sdf) | `.sdf`, `.sd` | converted once | | SDF |
+| [ELF](#elf) | `.elf`, `.axf` | in memory | `symbols`, `sections` | ELF |
+| [systemd journal](#systemd-journal) | by content | in memory | | Journal |
+
+[How each format is read](index.md#how-each-format-is-read) says what lazy,
+converted once and in memory mean. A file of several tables opens the home
+screen inside it, a row per table; downloaded or piped in, it is refused with
+the tables' names, and `--table` picks one.
+
+## Audio
 
 ```bash
+python3 - <<'EOF'
+import math, struct, wave
+with wave.open("take.wav", "wb") as w:
+    w.setnchannels(2)
+    w.setsampwidth(2)
+    w.setframerate(48000)
+    w.writeframes(b"".join(struct.pack("<hh", int(8000 * math.sin(i / 20)), 0) for i in range(48000)))
+EOF
 datui take.wav
-datui -c read.audio_float=true take.wav   # integer samples as float in [-1, 1]
+datui -c read.audio_float=true take.wav
 ```
 
 An uncompressed audio file opens as a table with one row per sample frame:
@@ -42,13 +70,11 @@ A line chart of a long recording draws each step's lowest and highest sample
 [Data Quality](../user-guide/data-quality.md) run reports clipping, runs of zeros and DC
 offset.
 
-## MIDI files
-
-Read: [in memory](index.md#how-each-format-is-read).
+## MIDI
 
 ```bash
+printf 'MThd\0\0\0\6\0\0\0\1\1\340MTrk\0\0\0\26\0\220\74\100\203\140\200\74\0\0\220\100\100\203\140\200\100\0\0\377\57\0' > song.mid
 datui song.mid
-datui path/to/midi/          # a directory of songs, as one table with a file column
 ```
 
 A Standard MIDI File opens as a table with one row per event, track by track in
@@ -90,13 +116,29 @@ Press <kbd>i</kbd> for the [MIDI tab](../user-guide/dataset-info.md#midi): forma
 length, tempo, meter, key and each track's name, events, notes and channels.
 Notes that never end are counted on the Notes tab.
 
-## VCD value change dumps
-
-Read: [converted once](index.md#how-each-format-is-read).
+## VCD
 
 ```bash
-datui waves.vcd
-datui waves.vcd.gz
+cat > counter.vcd <<'EOF'
+$timescale 1 ns $end
+$scope module tb $end
+$var wire 1 ! clk $end
+$var wire 4 " count [3:0] $end
+$upscope $end
+$enddefinitions $end
+#0
+0!
+b0000 "
+#5
+1!
+b0001 "
+#10
+0!
+#15
+1!
+b0010 "
+EOF
+datui counter.vcd
 ```
 
 A VCD file from an HDL simulator or logic analyzer opens as a long table, one row
@@ -121,9 +163,12 @@ per value change of each signal, read once into a temporary Arrow IPC file.
   scopes deep.
 
 The wide table, one row per time and one column per signal, each carried
-forward from its last change, is this SQL query (list the signals you want):
+forward from its last change, is this SQL query on `counter.vcd` above; for
+another dump, replace the signal names `tb.clk` and `tb.count[3:0]` and the
+columns named for them. It runs on a copy shipped with the docs,
+[`counter.vcd`](../examples/counter.vcd):
 
-```sql
+```sql,dataset=counter
 SELECT time,
        MAX(clk) OVER (PARTITION BY clk_n) AS clk,
        MAX(count) OVER (PARTITION BY count_n) AS count
@@ -149,19 +194,31 @@ changes.
 
 ## GPS logs
 
-Read: [converted once](index.md#how-each-format-is-read).
-
 ```bash
+python3 - <<'EOF'
+from functools import reduce
+def line(body):
+    return "$%s*%02X\n" % (body, reduce(lambda a, c: a ^ ord(c), body, 0))
+with open("drive.nmea", "w") as f:
+    for s in range(3):
+        t = "1200%02d" % s
+        f.write(line(f"GPRMC,{t}.00,A,4042.6142,N,07400.4168,W,10.5,90.0,010324,,,A"))
+        f.write(line(f"GPGGA,{t}.00,4042.6142,N,07400.4168,W,1,08,0.9,10.0,M,-34.0,M,,"))
+EOF
 datui drive.nmea
-datui --table GSV drive.nmea         # one row per satellite in view
-head -n 3000 /dev/ttyACM0 | datui    # NMEA from standard input
+datui --table GGA drive.nmea
+cat > ride.gpx <<'EOF'
+<?xml version="1.0"?>
+<gpx version="1.1" creator="docs"><trk><name>ride</name><trkseg>
+<trkpt lat="40.71" lon="-74.00"><ele>10</ele><time>2024-03-01T12:00:00Z</time></trkpt>
+<trkpt lat="40.72" lon="-74.01"><ele>12</ele><time>2024-03-01T12:00:05Z</time></trkpt>
+</trkseg></trk></gpx>
+EOF
 datui ride.gpx
-datui activities/                    # a directory of GPX files, as one table
 ```
 
-An NMEA 0183 log or a GPX file is read once, start to end, into a temporary
-Arrow IPC file, which is then scanned like any other: memory stays at one batch
-of rows however long the log. Several logs, named together or as a directory of
+An NMEA 0183 log or a GPX file is read once into a temporary Arrow IPC file,
+then scanned; memory stays at one batch of rows however long the log. Several logs, named together or as a directory of
 them, open as one table with a `file` column first; a column one file lacks is
 null in its rows, and the Notes tab counts across the files. A file with another name, such as `capture.log`,
 opens when its first complete line is an NMEA sentence or its first element is `<gpx`.
@@ -196,12 +253,6 @@ A time of day is dated by the last RMC or ZDA before it. Rows read before the
 first one are dated back from it when it comes within the first 65,536 rows;
 when it comes later, those rows keep a null `time`. A log with neither sentence
 has no dates, and `time` is null throughout.
-
-`--table` (`-t`) is for any file that holds several tables: an NMEA log's
-sentence types, a [SQLite database](databases-and-arrays.md#sqlite-databases)'s tables, an Excel
-workbook's worksheets, a format spec's record types, or a Hugging Face cache directory's
-splits ([Arrow IPC streams](columnar-and-json.md#arrow-ipc-streams)). Any other file opened with it
-is refused.
 
 **GPX** opens as one row per `trkpt`, `rtept` and `wpt`:
 
@@ -241,20 +292,18 @@ To look at a track:
 
 ## Flight logs
 
-Read: [lazy](index.md#how-each-format-is-read): one pass indexes the log, then each
-table is decoded from a map of the file where it is shown.
+Replace `<LOG>` with a PX4 ULog or ArduPilot DataFlash log:
 
-```bash
-datui flight.ulg                         # the list of its tables
-datui flight.ulg --table vehicle_status  # one topic
-datui 00000042.BIN/GPS                   # one DataFlash message type
+```bash,template
+datui <LOG>.ulg
+datui <LOG>.ulg --table vehicle_status
+datui <LOG>.BIN/GPS
 ```
 
-Both formats describe their own messages; no spec is needed. A log of several
-tables opens the home screen inside it, a row per table, like a directory.
-<kbd>Enter</kbd> opens one; <kbd>q</kbd> comes back to the list without reading
-the log again. A log downloaded or piped in is refused with the names of its
-tables; `--table` picks one.
+Both formats describe their own messages; no format spec is needed. One pass
+indexes the log, then each table is decoded from a map of the file where it is
+shown. <kbd>q</kbd> at a table comes back to the log's list of tables without
+reading the log again.
 
 | PX4 ULog (`.ulg`) | |
 |---|---|
@@ -283,16 +332,24 @@ tables; `--table` picks one.
 
 ## CAN logs
 
-Read: [lazy](index.md#how-each-format-is-read): one pass indexes the log, then each
-frame is read from its line where it is shown.
-
 ```bash
-datui candump-2024-01-31_081500.log                # the frames
-datui candump.log --dict vehicle.dbc                # a table per message
-datui candump.log --dict vehicle.dbc --table EEC1   # one message
+cat > candump.log <<'EOF'
+(1706689000.100000) can0 123#A00F000000000000
+(1706689000.200000) can0 123#B80B000000000000
+(1706689000.300000) can0 456#01
+EOF
+cat > vehicle.dbc <<'EOF'
+VERSION ""
+
+BO_ 291 Engine: 8 ECU
+ SG_ rpm : 0|16@1+ (0.25,0) [0|16383.75] "rpm" Vector__XXX
+EOF
+datui candump.log
+datui candump.log --dict vehicle.dbc --table Engine
 ```
 
-A `candump` log opens by its content, whatever it is called:
+One pass indexes the log, then each frame is read from its line where it is
+shown. A `candump` log opens by its content, whatever it is called:
 `(1706689000.123456) can0 123#DEADBEEF` as `candump -l` and `-L` write it (`##`
 for CAN FD, `#R` for a remote request), or `can0  123   [4]  DE AD BE EF` as
 `candump` prints it, with or without a timestamp in front.
@@ -325,14 +382,15 @@ Extended multiplexing (`SG_MUL_VAL_`) is not; the Notes tab says so.
 
 DBC dictionaries are found where [format specs](format-specs.md) are: the `formats`
 directory of the config directory, `$DATUI_FORMATS_PATH`, and `[formats] path`.
-A `.dbc` file there applies to every interface. A TOML file names one for an
-interface:
+A DBC dictionary there applies to every interface. A TOML file names one for an
+interface: replace `<DBC_FILE>` with the dictionary's name, beside the TOML
+file or a full path, and `<INTERFACE>` with the interface:
 
-```toml
+```toml,template
 kind = "dbc"
-file = "powertrain.dbc"     # beside this file, or a full path
+file = "<DBC_FILE>"
 [match]
-interface = "can1"
+interface = "<INTERFACE>"
 ```
 
 They are read in that order, then `--dict FILE`; where two name a message of the
@@ -342,12 +400,12 @@ message's id, frames, signals and comment.
 
 ## FIX logs
 
-Read: [converted once](index.md#how-each-format-is-read).
-
 ```bash
-datui session.log                       # known by its content
-datui --format fix capture.bin
-datui --dict broker.toml session.log
+cat > session.log <<'EOF'
+2024-03-01 12:00:00.001 OUT 8=FIX.4.4|9=65|35=D|49=BUYSIDE|56=BROKER|11=ord1|55=MSFT|54=1|38=100|40=2|44=410.5|10=000|
+2024-03-01 12:00:00.020 IN 8=FIX.4.4|9=70|35=8|49=BROKER|56=BUYSIDE|11=ord1|55=MSFT|54=1|150=0|39=0|14=0|10=000|
+EOF
+datui session.log
 ```
 
 A log of FIX `tag=value` messages, delimited by SOH, `|` or `^A`, opens as one row
@@ -394,17 +452,24 @@ version's names winning. Venues and brokers add their own tags (5000-9999 and
 | QuickFIX XML (`.xml`) | A QuickFIX or QuickFIX/J data dictionary, read as it is: its fields, types and enums. It applies to the messages of its version's BeginString |
 | TOML (`.toml`, `kind = "fix"`) | As below |
 
-```toml
+Continuing from the FIX example above, a TOML dictionary for the broker's
+messages, checked against the log:
+
+```bash,continue
+cat > broker.toml <<'EOF'
 name = "acme.fix.broker-x"
 kind = "fix"
-match = { sender = "BROKERX", begin_string = "FIX.4.4" }   # optional
+match = { sender = "BROKER", begin_string = "FIX.4.4" }
 tags = { 9001 = "AlgoName", 9002 = { name = "Urgency", type = "int", enum = { 1 = "Low", 2 = "High" } } }
+EOF
+datui formats check ./broker.toml session.log
+datui --dict broker.toml session.log
 ```
 
 | Key | |
 |---|---|
 | `name` | A namespaced name, such as `acme.fix.broker-x` |
-| `match` | `sender` (49), `target` (56), `begin_string` (8): the dictionary applies only to messages with these values |
+| `match` | Optional. `sender` (49), `target` (56), `begin_string` (8): the dictionary applies only to messages with these values |
 | `tags` | Tag number to a name, or to `name`, `type` (`int`, `float`, `price`, `qty`, `string`, `char`, `timestamp`, `date`, `bool`, `length`, `data`), `enum` (code to name) and, for a length tag, `data` (the tag it sizes) |
 
 The built-in dictionary comes first, then each matching dictionary on the search
@@ -419,14 +484,10 @@ The built-in dictionary is generated from QuickFIX's data dictionaries. This
 product includes software developed by quickfixengine.org
 (http://www.quickfixengine.org/).
 
-## SDF compound files
+## SDF
 
-Read: [converted once](index.md#how-each-format-is-read).
-
-```bash
-datui compounds.sdf
-datui compounds.sdf.gz
-datui https://example.com/library.sdf.gz
+```bash,network
+datui https://raw.githubusercontent.com/rdkit/rdkit/master/Docs/Book/data/solubility.train.sdf
 ```
 
 An SDF (structure-data) file of molecules, as PubChem, ChEMBL and screening
@@ -449,15 +510,13 @@ temporary Arrow IPC file. The atom and bond blocks are passed over, never held.
   molecules with `SOL` as a float and `SOL_classification` as text. Sort by
   `SOL`, or filter `SOL_classification` to `(C) high`.
 
-## ELF symbol tables
+## ELF
 
-Read: [in memory](index.md#how-each-format-is-read): the symbol and section tables,
-from a map of the file.
+On Linux, `/bin/sh` is an ELF file:
 
 ```bash
-datui firmware.elf                    # one row per symbol
-datui firmware.elf --table sections   # one row per section
-datui firmware.elf/sections           # the same
+datui /bin/sh
+datui /bin/sh --table sections
 ```
 
 On the home screen, <kbd>Enter</kbd> on an ELF file opens its symbols and <kbd>→</kbd>
@@ -490,10 +549,15 @@ in flash and in RAM, and each section's address, size and flags.
 `journalctl -o json` output is read as the journal, from a pipe or a file:
 
 ```bash
-journalctl -o json -u nginx --since today | datui
-journalctl -o json -b -p warning | datui
-journalctl -o json -f | datui -f -            # live
-jd() { journalctl -o json "$@" | datui; }     # jd -u nginx -b
+journalctl -o json -n 1000 | datui
+jd() { journalctl -o json "$@" | datui; }
+jd -n 100 -p info
+```
+
+Live, as entries are written:
+
+```bash,interactive
+journalctl -o json -f | datui -f -
 ```
 
 | Column | What |

@@ -1,16 +1,39 @@
 # Databases and arrays
 
-## SQLite databases
+SQLite databases and NumPy arrays are read where they are, a page of rows at a
+time, and a file of several tables lists them like a directory.
 
-Read: [lazy, in place](index.md#how-each-format-is-read); a database in a bucket or over
-HTTP(S) is downloaded first.
+## SQLite
 
 ```bash
-datui shop.db                        # its one table, or the list of its tables
-datui shop.db --table orders         # a table or view by name
-datui shop.db/orders                 # the same
-cat shop.db | datui --table orders   # from standard input
+python3 - <<'EOF'
+import sqlite3
+db = sqlite3.connect("shop.db")
+db.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, customer TEXT, amount REAL)")
+db.execute("CREATE TABLE customers (name TEXT, city TEXT)")
+db.executemany("INSERT INTO orders (customer, amount) VALUES (?, ?)", [("ana", 9.5), ("bo", 3.25)])
+db.executemany("INSERT INTO customers VALUES (?, ?)", [("ana", "Lima"), ("bo", "Oslo")])
+db.commit()
+EOF
+datui shop.db --table orders
+datui shop.db/orders
+cat shop.db | datui --table orders
 ```
+
+Continuing from above, a database of several tables opens the home screen
+inside it:
+
+```bash,continue,expect=screen
+datui shop.db
+```
+
+| | |
+|---|---|
+| Extensions | `.db`, `.sqlite`, `.sqlite3`, `.db3`; any other name by its first bytes, `SQLite format 3` |
+| Read | [lazy](index.md#how-each-format-is-read), in place; downloaded first from a bucket or over HTTP(S) |
+| `--table` | A table or view by name, or `shop.db/orders` |
+| Info tab | SQLite: page size, schema and user versions, text encoding, and each table's columns and the rows `ANALYZE` stored. No table is counted |
+| Not read | A compressed database (`shop.db.gz`): decompress it first |
 
 | The database | What happens |
 |---|---|
@@ -20,13 +43,8 @@ cat shop.db | datui --table orders   # from standard input
 
 SQLite's own tables (`sqlite_master`, `sqlite_sequence`, the `sqlite_stat`
 tables, a full-text index's shadow tables) are hidden until
-<kbd>Ctrl</kbd>+<kbd>A</kbd>; `--table` opens them by name. A file is known by
-its first bytes whatever it is called. The home screen labels a database with
-its tables (`3 tables`).
-
-The Info panel's [SQLite tab](../user-guide/dataset-info.md#file-format-tabs) gives the page size,
-the schema and user versions, and each table with its columns and, where `ANALYZE`
-stored them, its rows. It counts no table: that would read the whole database.
+<kbd>Ctrl</kbd>+<kbd>A</kbd>; `--table` opens them by name. The home screen
+labels a database with its tables (`3 tables`).
 
 A table is read in place; nothing is copied.
 
@@ -43,7 +61,7 @@ A view is paged by position and cannot be reversed with <kbd>r</kbd> in SQLite
 rows for each page; SQLite may use temporary files in the temp directory to do
 so.
 
-Columns are typed by what they declare, as SQLite reads a declared type:
+Columns are typed by what they declare:
 
 | Declared | Column |
 |---|---|
@@ -72,19 +90,32 @@ The database is only read:
 | A program writing the database meanwhile | datui waits up to 2 seconds for its lock. Without WAL, the program cannot commit while datui reads, which is a page at a time except for a whole-table read |
 | Not a SQLite database, or damaged | An error |
 
-A compressed database (`shop.db.gz`) is not read; decompress it first.
-
-## NumPy arrays
-
-Read: [lazy](index.md#how-each-format-is-read), from a map of the file; an array
-compressed in an `.npz` archive is decompressed once to a temporary file first.
+## NumPy
 
 ```bash
+python3 - <<'EOF'
+import struct, zipfile
+def npy(descr, shape, data):
+    header = repr({"descr": descr, "fortran_order": False, "shape": shape}).encode()
+    header += b" " * (63 - (10 + len(header)) % 64) + b"\n"
+    return b"\x93NUMPY\x01\x00" + struct.pack("<H", len(header)) + header + data
+open("prices.npy", "wb").write(npy("<f8", (3,), struct.pack("<3d", 1.5, 2.5, 4.0)))
+with zipfile.ZipFile("run.npz", "w") as z:
+    z.writestr("weights.npy", npy("<f4", (2, 2), struct.pack("<4f", 1, 2, 3, 4)))
+    z.writestr("bias.npy", npy("<f4", (2,), struct.pack("<2f", 0.5, -0.5)))
+EOF
 datui prices.npy
-datui run.npz                    # its one array, or the list of its arrays
-datui run.npz --table weights    # an array by name
-datui run.npz/weights            # the same
+datui run.npz --table weights
+datui run.npz/weights
 ```
+
+| | |
+|---|---|
+| Extensions | `.npy`, `.npz`; any other name by its first bytes, `\x93NUMPY` |
+| Read | [lazy](index.md#how-each-format-is-read), from a map of the file. An array saved with `np.savez_compressed` is decompressed to the temp directory first, and removed when the dataset closes |
+| `--table` | An array of an `.npz` archive by name, or `run.npz/weights` |
+| Several arrays | `datui run.npz` opens the home screen inside the archive, a row per array in the order saved. Downloaded or piped in, it is refused with the arrays' names |
+| Info tab | NumPy: shape, type, order and format version, and each field's type and offset |
 
 | The array | Columns |
 |---|---|
@@ -120,13 +151,10 @@ datui run.npz/weights            # the same
   says so.
 - A file named without `.npy` is known by its first bytes, `\x93NUMPY`.
 
-An `.npz` archive of several arrays opens the home screen inside it, a row per
-array in the order they were saved, like a directory. <kbd>Enter</kbd> opens
-one; <kbd>q</kbd> comes back to the list. An archive downloaded or piped in is
-refused with the names of its arrays; `--table` picks one. An array saved with
-`np.savez` is read in place in the archive; one saved with
-`np.savez_compressed` is decompressed to the temp directory and removed when
-the dataset closes.
-
-Press <kbd>i</kbd> for the NumPy tab: shape, type, order and format version,
-and each field's type and offset.
+- `NaT` is null.
+- Big-endian (`>i4`) and little-endian fields mix in one array.
+- Fortran (column-major) order reads the same as C order.
+- Padding fields (`align=True`) are left out, and fields at offsets
+  (`offsets`, `itemsize`) are read where they are.
+- A file shorter than its shape says shows the rows it holds; the Notes tab
+  says so.

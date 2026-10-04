@@ -4,7 +4,13 @@
 datui reads 27 formats: Parquet, CSV, TSV, PSV, JSON, NDJSON, Arrow IPC, Avro, ORC, Excel, SafeTensors, GGUF, NMEA, GPX, WAV/AIFF audio, MIDI, SQLite, VCD, FIX, SDF, NumPy, ELF, ULog, DataFlash, candump, plain text, systemd journal, and binary formats you describe in a format spec.
 <!-- end generated: format-count -->
 
-The format is taken from the extension, or from `--format` when there is none.
+The extension says the format; `--format` names it when the extension does
+not, and text piped in is [detected by content](#detected-by-content).
+
+```bash
+printf 'a,b\n1,2\n' > export.txt
+datui --format csv export.txt
+```
 
 ## How each format is read
 
@@ -65,7 +71,7 @@ The format is taken from the extension, or from `--format` when there is none.
   headers. An Arrow prefix scans its IPC files in place and downloads its
   streams, one split of a Hugging Face cache as on disk; a glob of Arrow reads
   IPC files only. A prefix marked `no` opens one object at a time from the
-  [cloud source](../user-guide/home-screen.md).
+  [cloud source](../user-guide/home-screen.md#cloud-sources).
 - [Standard input](../user-guide/pipes-and-follow.md#standard-input) is written to a temporary file first, then
   read as **Read** says.
 

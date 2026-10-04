@@ -23,7 +23,7 @@ use crate::local_copy::RemoteObject;
 use crate::numfmt::{self, CellFormatter, NumberFormatSettings};
 use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec, ReshapeSource};
 use crate::python_script::{SidebarFilter, Step, py_str};
-use crate::query::{ParsedQuery, parse_query};
+use crate::query::{ParsedQuery, parse_query_over};
 use crate::schema_union::FileSchema;
 use crate::statistics::collect_lazy;
 use crate::unfinished::{Claim, Writer};
@@ -9740,8 +9740,8 @@ impl DataTableState {
         }
 
         let source_schema = self.query_source().collect_schema().ok();
-        let parsed =
-            parse_query(&query).map(|parsed| parsed.past_calendar_safe(source_schema.as_deref()));
+        let parsed = parse_query_over(&query, source_schema.as_deref())
+            .map(|parsed| parsed.past_calendar_safe(source_schema.as_deref()));
         match parsed {
             Ok(ParsedQuery {
                 cols,

@@ -695,9 +695,9 @@ impl FileFormat {
 
     /// How a file of this format is read when it is opened, as `stored` on disk.
     ///
-    /// The one answer to "does this read only what it shows": the loading-data docs'
-    /// format table, the home screen's marker and the Info panel's `Read:` line all
-    /// ask here. `None` when a file stored that way does not open: a compressed
+    /// The one answer to "does this read only what it shows": the format table in
+    /// `docs/formats/index.md`, the home screen's marker and the Info panel's `Read:`
+    /// line all ask here. `None` when a file stored that way does not open: a compressed
     /// Parquet file, or an IPC stream of anything but Arrow.
     pub fn read_mode(self, stored: Stored) -> Option<ReadMode> {
         let d = self.descriptor();

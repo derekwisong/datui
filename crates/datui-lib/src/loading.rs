@@ -2000,8 +2000,8 @@ mod tests {
     use polars::prelude::IntoLazy;
 
     /// An open routes a remote file as `FileFormat::bucket_object` and `http_file` say,
-    /// which the loading-data page's table and the home screen's marker read: read in
-    /// place, or downloaded first. A bucket's Arrow is listed first, and read in place
+    /// which the format table in `docs/formats/index.md` and the home screen's marker
+    /// read: read in place, or downloaded first. A bucket's Arrow is listed first, and read in place
     /// unless the listing finds a stream; a compressed object is downloaded.
     #[cfg(all(feature = "http", feature = "cloud"))]
     #[test]

@@ -2918,7 +2918,7 @@ impl DataTableState {
     }
 
     /// Load a single ORC file (eager read via orc-rust → Arrow, then convert to Polars, then lazy).
-    /// ORC is read fully into memory; see loading-data docs for large-file notes.
+    /// ORC is read fully into memory; see `docs/formats/columnar-and-json.md`.
     pub fn from_orc(path: &Path, options: &OpenOptions) -> Result<Self> {
         let file = File::open(path)?;
         let reader = ArrowReaderBuilder::try_new(file)

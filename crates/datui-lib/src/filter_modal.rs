@@ -29,6 +29,9 @@ pub enum FilterOperator {
 /// of its columns matches.
 pub const ANY_COLUMN: &str = "*";
 
+/// How the column picker and the sidebar name [`ANY_COLUMN`].
+pub const ANY_COLUMN_LABEL: &str = "any column shown";
+
 impl FilterOperator {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -208,13 +211,38 @@ impl FilterModal {
         self.cursor = (self.cursor + 1) % self.row_count();
     }
 
+    /// The column picker's choices: every column, then [`ANY_COLUMN_LABEL`], which
+    /// a find's operators (`has`, `has regex`, `has letters`) take.
+    fn column_choices(&self) -> Vec<String> {
+        let mut choices = self.available_columns.clone();
+        choices.push(ANY_COLUMN_LABEL.to_string());
+        choices
+    }
+
+    /// The column choice `i` of the picker names: a column, or [`ANY_COLUMN`].
+    pub fn column_at(&self, i: usize) -> String {
+        self.available_columns
+            .get(i)
+            .cloned()
+            .unwrap_or_else(|| ANY_COLUMN.to_string())
+    }
+
+    /// How a statement's column reads in the list.
+    pub fn column_label(column: &str) -> &str {
+        if column == ANY_COLUMN {
+            ANY_COLUMN_LABEL
+        } else {
+            column
+        }
+    }
+
     /// Start the editor on the cursor's row: pre-filled over a statement, empty
     /// on the add row.
     pub fn open_editor(&mut self, theme: &crate::config::Theme, history_limit: usize) {
         if self.available_columns.is_empty() {
             return;
         }
-        let mut column = PickerState::new(self.available_columns.clone());
+        let mut column = PickerState::new(self.column_choices());
         let mut operator = PickerState::new(Self::operator_names());
         let mut value = TextInput::new()
             .with_history_limit(history_limit)
@@ -231,11 +259,15 @@ impl FilterModal {
             (None, LogicalOperator::And)
         } else {
             let statement = &self.statements[self.cursor];
-            if let Some(i) = self
-                .available_columns
-                .iter()
-                .position(|c| *c == statement.column)
-            {
+            // A find kept over every column comes back as "any column shown".
+            let at = if statement.column == ANY_COLUMN {
+                Some(self.available_columns.len())
+            } else {
+                self.available_columns
+                    .iter()
+                    .position(|c| *c == statement.column)
+            };
+            if let Some(i) = at {
                 column.select_original(i);
             }
             if let Some(i) = FilterOperator::iterator().position(|op| op == statement.operator) {
@@ -259,9 +291,10 @@ impl FilterModal {
     }
 
     /// Commit the editor's statement; the edit dies if its column picker chose
-    /// nothing (a filter narrowed to no match).
+    /// nothing (a filter narrowed to no match). Any column shown takes only a
+    /// find's operators: with another, the editor stays open on the operator.
     pub fn commit_editor(&mut self) {
-        let Some(editor) = self.editor.take() else {
+        let Some(mut editor) = self.editor.take() else {
             return;
         };
         let Some(column_idx) = editor.column.selected_original() else {
@@ -272,8 +305,14 @@ impl FilterModal {
             .selected_original()
             .and_then(|i| FilterOperator::iterator().nth(i))
             .unwrap_or(FilterOperator::Eq);
+        let column = self.column_at(column_idx);
+        if column == ANY_COLUMN && !operator.is_find() {
+            editor.step = FilterEditStep::Operator;
+            self.editor = Some(editor);
+            return;
+        }
         let statement = FilterStatement {
-            column: self.available_columns[column_idx].clone(),
+            column,
             operator,
             // A null test keeps no stale value from an earlier operator.
             value: if operator.takes_value() {
@@ -347,6 +386,42 @@ mod tests {
 
     fn theme() -> crate::config::Theme {
         crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap()
+    }
+
+    /// A find kept over every column edits as one: its column comes back as "any
+    /// column shown", and stays `*` when only the value changes; other operators
+    /// do not take it.
+    #[test]
+    fn a_kept_find_over_every_column_edits_as_one() {
+        let mut m = modal();
+        m.statements = vec![FilterStatement {
+            column: ANY_COLUMN.into(),
+            operator: FilterOperator::HasFuzzy,
+            value: "chkn".into(),
+            logical_op: LogicalOperator::And,
+        }];
+        m.cursor = 0;
+        m.open_editor(&theme(), 10);
+        {
+            let editor = m.editor.as_mut().unwrap();
+            let picked = editor.column.selected_original().unwrap();
+            assert_eq!(m.available_columns.len(), picked, "the last choice");
+            editor.value.set_value("chicken");
+        }
+        m.commit_editor();
+        assert!(m.editor.is_none());
+        assert_eq!(m.statements[0].column, ANY_COLUMN);
+        assert_eq!(m.statements[0].operator, FilterOperator::HasFuzzy);
+        assert_eq!(m.statements[0].value, "chicken");
+
+        // `=` over every column means nothing: the edit waits on the operator.
+        m.cursor = 0;
+        m.open_editor(&theme(), 10);
+        m.editor.as_mut().unwrap().operator.select_original(0);
+        m.commit_editor();
+        let editor = m.editor.as_ref().expect("still editing");
+        assert_eq!(editor.step, FilterEditStep::Operator);
+        assert_eq!(m.statements[0].operator, FilterOperator::HasFuzzy);
     }
 
     #[test]

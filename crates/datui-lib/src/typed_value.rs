@@ -1,10 +1,10 @@
 //! Text typed as a value for a column, read as the column's own type.
 //!
-//! A filter, a q comparison and a Data Quality partition all compare a column with
-//! a value someone typed. Compared as text it either fails (Polars will not compare
-//! a date with a string) or casts every row to text, which costs a pass over the
-//! column and blinds Parquet statistics and SQLite to the predicate. Read here into
-//! a literal of the column's type, `col op lit` stays a plain comparison.
+//! A filter and a Data Quality partition compare a column with a value someone
+//! typed. Compared as text it either fails (Polars will not compare a date with a
+//! string) or casts every row to text, which costs a pass over the column and
+//! blinds Parquet statistics and SQLite to the predicate. Read here into a literal
+//! of the column's type, `col op lit` stays a plain comparison.
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone as _};
 use polars::prelude::*;

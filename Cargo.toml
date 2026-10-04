@@ -10,7 +10,9 @@ version = "0.4.0-dev"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Derek Wisong"]
-description = "Data Exploration in the Terminal"
+# generated: description
+description = "Explore tabular data in your terminal: 27 formats, on disk or in the cloud"
+# end generated: description
 repository = "https://github.com/derekwisong/datui"
 homepage = "https://derekwisong.github.io/datui"
 license = "MIT"
@@ -65,6 +67,9 @@ libc = "0.2"
 # Packaging: deb, rpm, AUR.
 [package.metadata.deb]
 maintainer = "Derek Wisong"
+# generated: deb-description
+extended-description = "datui reads 27 formats: Parquet, CSV, TSV, PSV, JSON, NDJSON, Arrow IPC, Avro, ORC, Excel, SafeTensors, GGUF, NMEA, GPX, WAV/AIFF audio, MIDI, SQLite, VCD, FIX, SDF, NumPy, ELF, ULog, DataFlash, candump, plain text, systemd journal, and binary formats you describe in a format spec. Query with SQL or q, sort and filter, chart, analyze and export."
+# end generated: deb-description
 license-file = ["LICENSE", "0"]
 depends = ["libfontconfig1"]
 # The manpages and completions are staged in target/dist by

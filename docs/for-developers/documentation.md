@@ -63,7 +63,7 @@ cargo run -p datui-cli --bin gen_docs -- write
 | `reference/command-line-options.md` | The clap `Args` and `examples.toml` in `crates/datui-cli` |
 | `reference/settings.md` | The option registry, `SETTINGS` in `crates/datui-cli/src/settings.rs` |
 | `reference/environment.md` | `ENVIRONMENT` in the same file |
-| `reference/keyboard-shortcuts.md`, region `keys` | The help strings, `crates/datui-lib/src/help-strings/*.txt`, read by `crates/datui-cli/src/keys.rs` |
+| `reference/keyboard-shortcuts.md`, region `keys` | The key registry, `crates/datui-cli/src/keys.rs` |
 | `formats/index.md`, region `formats` | The format descriptors in `crates/datui-cli/src/formats.rs` |
 | Region `format-count` in `formats/index.md`, `introduction.md` and `README.md` | The same: how many formats, and their names |
 | `reference/python-api.md`, region `options` | The registry's Python keywords |

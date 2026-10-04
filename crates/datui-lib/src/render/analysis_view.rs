@@ -1,7 +1,7 @@
 //! Analysis modal view rendering (progress overlay, AnalysisWidget, or no-data message).
 //! Also provides help overlay title/text for analysis so the main render loop does not need analysis-specific layout.
 
-use crate::analysis_modal::{self, AnalysisModal};
+use crate::analysis_modal;
 use crate::render::context::RenderContext;
 use crate::widgets::{analysis, data_quality};
 use ratatui::layout::Rect;
@@ -297,43 +297,6 @@ fn render_body(
             .centered()
             .style(ratatui::style::Style::default().fg(ctx.warning))
             .render(area, buf);
-    }
-}
-
-/// Returns (title, text) for the help overlay when analysis modal help is shown.
-/// Keeps analysis-specific help content and layout in the analysis view module.
-pub fn help_title_and_text(modal: &AnalysisModal) -> (String, String) {
-    match modal.view {
-        analysis_modal::AnalysisView::DistributionDetail => (
-            "Distribution Detail Help".to_string(),
-            crate::help_strings::analysis_distribution_detail().to_string(),
-        ),
-        analysis_modal::AnalysisView::CorrelationDetail => (
-            "Correlation Detail Help".to_string(),
-            crate::help_strings::analysis_correlation_detail().to_string(),
-        ),
-        analysis_modal::AnalysisView::Main => match modal.selected_tool {
-            Some(analysis_modal::AnalysisTool::DistributionAnalysis) => (
-                "Distribution Analysis Help".to_string(),
-                crate::help_strings::analysis_distribution().to_string(),
-            ),
-            Some(analysis_modal::AnalysisTool::Describe) => (
-                "Describe Tool Help".to_string(),
-                crate::help_strings::analysis_describe().to_string(),
-            ),
-            Some(analysis_modal::AnalysisTool::CorrelationMatrix) => (
-                "Correlation Matrix Help".to_string(),
-                crate::help_strings::analysis_correlation_matrix().to_string(),
-            ),
-            Some(analysis_modal::AnalysisTool::DataQuality) => (
-                "Data Quality Help".to_string(),
-                crate::help_strings::analysis_data_quality().to_string(),
-            ),
-            None => (
-                "Analysis Help".to_string(),
-                "Pick a tool in the sidebar".to_string(),
-            ),
-        },
     }
 }
 

@@ -1141,24 +1141,31 @@ mod tests {
     use super::*;
     use unicode_width::UnicodeWidthStr;
 
-    /// Every character a help file uses outside ASCII has a twin in
+    /// Every character the key registry uses outside ASCII has a twin in
     /// `ascii_twin`, so the ASCII floor never sees a `?` where an
     /// instruction was.
     #[test]
     fn every_help_screen_is_ascii_clean() {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/help-strings");
-        let mut checked = 0;
-        for entry in std::fs::read_dir(dir).expect("help-strings dir") {
-            let path = entry.expect("dir entry").path();
-            let text = std::fs::read_to_string(&path).expect("help file");
+        use datui_cli::keys;
+        let mut texts: Vec<&str> = Vec::new();
+        for (screen, group, key) in keys::entries() {
+            texts.extend([group.name, key.keys, key.label, key.line, key.long()]);
+            if let Some(screen) = screen {
+                texts.push(screen.title);
+            }
+        }
+        for (example, meaning) in keys::Q_SUMMARY {
+            texts.extend([*example, *meaning]);
+        }
+        for text in &texts {
             for c in text.chars().filter(|c| !c.is_ascii()) {
                 assert!(
                     ascii_twin(c).is_some(),
-                    "{path:?} uses {c:?}, which has no ASCII twin"
+                    "{text:?} uses {c:?}, which has no ASCII twin"
                 );
             }
-            checked += 1;
         }
+        let checked = texts.len();
         assert!(checked > 10, "the help files were found");
         // And the border set's twin is pure ASCII by construction.
         let b = ASCII.border;
@@ -1223,65 +1230,6 @@ mod tests {
         ]
         .join("\n");
         assert_eq!(instructions_in_ascii(&text), expected);
-    }
-
-    /// Every help file, rendered in ASCII, keeps each section's description
-    /// column aligned: every row and continuation line moves by the same
-    /// amount (none unless an ASCII key needs the room), and a section that
-    /// does not move comes through with its ASCII lines untouched.
-    #[test]
-    fn every_help_screen_keeps_its_columns_in_ascii() {
-        fn indent(line: &str) -> usize {
-            line.len() - line.trim_start_matches(' ').len()
-        }
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/help-strings");
-        let mut repadded = 0;
-        for entry in std::fs::read_dir(dir).expect("help-strings dir") {
-            let path = entry.expect("dir entry").path();
-            let text = std::fs::read_to_string(&path).expect("help file");
-            let ascii = instructions_in_ascii(&text);
-            assert!(ascii.is_ascii(), "{path:?}");
-            assert_eq!(ascii.lines().count(), text.lines().count(), "{path:?}");
-            // Two spaces after a sentence would read as a key gap.
-            for line in text.lines() {
-                assert!(!line.contains(".  "), "{path:?}: {line:?}");
-            }
-            let pairs: Vec<(&str, &str)> = text.lines().zip(ascii.lines()).collect();
-            for section in pairs.split(|(utf8, _)| utf8.trim().is_empty()) {
-                let mut shift = None;
-                let mut tight = false;
-                for (utf8, ascii) in section {
-                    let Some((key_end, desc)) = key_gap(utf8) else {
-                        continue;
-                    };
-                    let (ascii_key, ascii_desc) =
-                        key_gap(ascii).unwrap_or_else(|| panic!("{path:?}: gap lost in {ascii:?}"));
-                    let column = UnicodeWidthStr::width(&ascii[..ascii_desc]);
-                    let moved = column - UnicodeWidthStr::width(&utf8[..desc]);
-                    assert_eq!(
-                        *shift.get_or_insert(moved),
-                        moved,
-                        "{path:?}: out of line with its section\n  {utf8:?}\n  {ascii:?}"
-                    );
-                    tight |= ascii_key + 2 == ascii_desc;
-                    if !utf8[..key_end].is_ascii() {
-                        repadded += 1;
-                    }
-                }
-                let shift = shift.unwrap_or(0);
-                assert!(shift == 0 || tight, "{path:?}: moved further than needed");
-                for (utf8, ascii) in section {
-                    if shift == 0 && utf8.is_ascii() {
-                        assert_eq!(utf8, ascii, "{path:?}");
-                    }
-                    if key_gap(utf8).is_none() {
-                        let moved = indent(ascii) - indent(utf8);
-                        assert!(moved == 0 || moved == shift, "{path:?}: {ascii:?}");
-                    }
-                }
-            }
-        }
-        assert!(repadded > 10, "rows with arrows in their keys were checked");
     }
 
     /// Every locality marker has to be the same display width in a given set, or the

@@ -49,7 +49,7 @@ cargo fmt
 |---|---|
 | A behavior | Its tests, chosen as [Run tests](tests.md#select-the-checks) says |
 | A parser or matcher | `./scripts/dev/test.sh integration fuzz_corpus_test` |
-| Keys or a screen | The help string in `crates/datui-lib/src/help-strings/`, then `cargo run -p datui-cli --bin gen_docs -- write` |
+| Keys or a screen | The screen's entries in the key registry, `crates/datui-cli/src/keys.rs`, then `cargo run -p datui-cli --bin gen_docs -- write` |
 | A flag, setting, format or environment variable | `gen_docs write`, which rewrites the reference pages ([Build documentation](documentation.md#generated-pages)) |
 | A config option | [Add configuration options](adding-configuration-options.md) |
 | The docs | `scripts/docs/doc_examples.py` and `lint_docs.py` ([Build documentation](documentation.md#run-the-checks)) |

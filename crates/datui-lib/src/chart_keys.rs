@@ -260,7 +260,7 @@ impl App {
             }
             // q/Q do nothing in chart view (no exit)
             KeyCode::Char('?') if event.is_press() => {
-                self.show_help = true;
+                self.open_help_overlay();
             }
             KeyCode::Esc if event.is_press() => {
                 self.chart_modal.close();

@@ -1,6 +1,6 @@
 ---
 name: ui-style
-description: The canon for how datui looks, reads and responds. Load before any change to render/, widgets/, control bars, help-strings, keybinds, or before designing a new modal, form, sidebar or screen. Carries the hard rules, the component patterns, the keybind compatibility contract, and the acceptance checklist every UI PR must pass.
+description: The canon for how datui looks, reads and responds. Load before any change to render/, widgets/, control bars, the key registry, keybinds, or before designing a new modal, form, sidebar or screen. Carries the hard rules, the component patterns, the keybind compatibility contract, and the acceptance checklist every UI PR must pass.
 ---
 
 # The datui visual style
@@ -260,7 +260,7 @@ leaving:
   only) and `~` goes to the filter. Never assign a letter key on the home
   screen.
 
-Any other key may move, with the help string and a release-notes line
+Any other key may move, with its key registry entry and a release-notes line
 updated in the same PR. The docs' key tables are generated from the help
 strings: run `cargo run -p datui-cli --bin gen_docs -- write`.
 
@@ -278,7 +278,7 @@ strings: run `cargo run -p datui-cli --bin gen_docs -- write`.
       closes.
 - [ ] Contract keybinds identical before and after.
 - [ ] Help string and docs page updated, `gen_docs write` run
-      (keyboard-shortcuts.md is generated from the help strings); buffer test
+      (keyboard-shortcuts.md is generated from the key registry); buffer test
       for the layout; integration test for the keys.
 - [ ] Every code block in the docs page is runnable and passes
       `scripts/docs/doc_examples.py`, or is labeled `,template` with

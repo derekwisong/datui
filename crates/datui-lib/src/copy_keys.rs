@@ -8,7 +8,7 @@ impl App {
     pub(crate) fn copy_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let picker_open = self.copy_modal.picker.is_some();
         if event.code == KeyCode::Char('?') && !picker_open {
-            self.show_help = true;
+            self.open_help_overlay();
             return None;
         }
 

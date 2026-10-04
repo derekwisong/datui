@@ -167,7 +167,7 @@ pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBa
                 .as_ref()
                 .map(|s| !s.get_active_query().trim().is_empty())
                 .unwrap_or(false);
-            let dimmed = app.show_help
+            let dimmed = app.help_visible()
                 || app.input_mode == crate::InputMode::SortFilter
                 || app.input_mode == crate::InputMode::PivotMelt
                 || app.input_mode == crate::InputMode::Info

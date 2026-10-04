@@ -246,7 +246,7 @@ impl App {
     /// The home screen is up with nothing over it, so its keys go to it.
     fn home_has_the_keys(&self) -> bool {
         self.input_mode == InputMode::Home
-            && !self.show_help
+            && !self.help_visible()
             && !self.error_modal.active
             && !self.confirmation_modal.active
     }
@@ -258,7 +258,7 @@ impl App {
             && self.chart_modal.active
             && self.chart_modal.picker.is_none()
             && !self.chart_export_modal.active
-            && !self.show_help
+            && !self.help_visible()
             && !self.error_modal.active
             && !self.confirmation_modal.active
     }

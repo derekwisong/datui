@@ -1,15 +1,16 @@
 //! The manpages, rendered from the sources the docs render from: the clap
-//! definitions, the option and environment registries, the format descriptors, the
-//! help strings, `examples.toml` and the query and format-spec references.
+//! definitions, the option, environment and key registries, the format descriptors,
+//! `examples.toml` and the query and format-spec references.
 //!
 //! The pages are rendered by `gen_docs write` and committed under
 //! `crates/datui-cli/man/`; `the_generated_docs_are_current` fails while a committed
-//! page differs. Committed, they need nothing at build time: the help strings and the
+//! page differs. Committed, they need nothing at build time: the
 //! references live outside this crate, which a build from crates.io could not read,
 //! and every package, tarball and `datui man` takes the same files. The date is the
 //! release's (`release-date.txt`, set by `scripts/bump_version.py`), never the build's,
 //! so a page is the same however and whenever it is built.
 
+mod plain;
 pub mod roff;
 
 use clap::CommandFactory;
@@ -96,6 +97,11 @@ impl Page {
     /// The committed page's text with a Windows checkout's line endings undone.
     pub fn roff(&self) -> String {
         self.text.replace("\r\n", "\n")
+    }
+
+    /// The page as plain text filled to `width` columns, for a system without `man`.
+    pub fn plain(&self, width: usize) -> String {
+        plain::render(&self.roff(), width)
     }
 
     /// The NAME line's description, as `whatis` and `datui man --list` show it.
@@ -612,7 +618,7 @@ fn render_command(page: &Page, read: Read, name: &str) -> String {
             "The script completes datui's options, commands and their values. Print it into the directory your shell loads completions from."
         }
         "man" => {
-            "With no option, prints the page, or shows it with man(1) when standard output is a terminal. `--dir` writes every page, so `man datui` finds them; a package or the release archive installs them already. *PAGE* is a page's name with or without `datui-`, and `.5` or `.7` for the file and topic pages when a command shares the name."
+            "With no option, prints the page, or shows it with man(1) when standard output is a terminal; where man(1) is missing, as plain text, through `$PAGER` when it is set. `--dir` writes every page, so `man datui` finds them; a package or the release archive installs them already. *PAGE* is a page's name with or without `datui-`, and `.5` or `.7` for the file and topic pages when a command shares the name."
         }
         _ => "",
     };
@@ -786,39 +792,39 @@ fn render_config_file(page: &Page, read: Read) -> String {
     out
 }
 
+/// One group of keys: its name, then a tagged paragraph per key.
+fn key_group(out: &mut String, name: Option<&str>, keys: &[keys::Key]) {
+    if let Some(name) = name {
+        out.push_str(".PP\n");
+        out.push_str(&line(format!("\\fI{}\\fR", text(name))));
+        out.push('\n');
+    }
+    for key in keys {
+        out.push_str(".TP\n");
+        out.push_str(&line(bold(key.keys)));
+        out.push('\n');
+        out.push_str(&line(text(key.long())));
+        out.push('\n');
+    }
+}
+
 fn render_keys(page: &Page, read: Read) -> String {
     let mut out = head(page);
     out.push_str(".SH DESCRIPTION\n");
     para(
         &mut out,
-        "`?` or `F1` on any screen shows that screen's keys. This page is the same text, screen by screen. Ctrl+Q quits from anywhere and Ctrl+O goes to the home screen.",
+        "`?` or `F1` on any screen shows that screen's keys, grouped by task: `/` narrows them to those whose text matches, and Enter closes the help and presses the key on the line. This page lists every screen's keys, with the longer descriptions.",
     );
     out.push_str(".SH KEYS\n");
+    out.push_str(&format!(".SS {}\n", arg(&text("Every screen"))));
+    key_group(&mut out, None, keys::GLOBAL.keys);
+    out.push_str(&format!(".SS {}\n", arg(&text("Help"))));
+    key_group(&mut out, None, keys::HELP.keys);
     for screen in keys::SCREENS {
-        let help = keys::parse(&read(&format!(
-            "crates/datui-lib/src/help-strings/{}.txt",
-            screen.help
-        )));
         out.push_str(&format!(".SS {}\n", arg(&text(screen.title))));
         para(&mut out, screen.reached);
-        for section in help.sections.iter().filter(|s| s.is_keys()) {
-            if let Some(title) = &section.title {
-                out.push_str(".PP\n");
-                out.push_str(&line(format!("\\fI{}\\fR", text(title))));
-                out.push('\n');
-            }
-            for row in &section.rows {
-                let tag = if keys::is_key(&row.label) {
-                    bold(&row.label)
-                } else {
-                    text(&row.label)
-                };
-                out.push_str(".TP\n");
-                out.push_str(&line(tag));
-                out.push('\n');
-                out.push_str(&line(text(&row.text)));
-                out.push('\n');
-            }
+        for group in screen.groups {
+            key_group(&mut out, Some(group.name), group.keys);
         }
     }
     examples(&mut out, page);
@@ -848,6 +854,15 @@ fn render_query(page: &Page, read: Read) -> String {
     ));
     out.push_str(".fi\n");
     out.push_str(".SH DESCRIPTION\n");
+    // The summary the query prompt's help shows.
+    out.push_str(".SS In brief\n");
+    for (example, meaning) in keys::Q_SUMMARY {
+        out.push_str(".TP\n");
+        out.push_str(&line(literal(example)));
+        out.push('\n');
+        out.push_str(&line(text(meaning)));
+        out.push('\n');
+    }
     let doc = read("docs/reference/query-syntax.md");
     let table = datasets(read);
     let label = |name: &str| -> String { format!("On the {} dataset (see DATASETS):", bold(name)) };

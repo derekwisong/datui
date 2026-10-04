@@ -98,8 +98,9 @@ fn matches(criteria: &MatchCriteria) -> String {
 
 /// What `datui man` prints, and its exit code: the page list (`list`), every page
 /// written under `dir`, or one page. On a terminal (`terminal`) a page is shown with
-/// `man`, as `git help` does; when `man` cannot show it, or for a pipe, the page's
-/// roff is printed, for `man -l -` or a file.
+/// `man`, as `git help` does; where there is no `man` (Windows, a minimal container),
+/// as plain text, through `$PAGER` when one is set. For a pipe the page's roff is
+/// printed, for `man -l -` or a file.
 pub fn man(
     page: Option<&str>,
     list: bool,
@@ -136,10 +137,43 @@ pub fn man(
             1,
         );
     };
-    if terminal && let Some(code) = show_with_man(page) {
-        return (String::new(), code);
+    if terminal {
+        if let Some(code) = show_with_man(page) {
+            return (String::new(), code);
+        }
+        let width = crossterm::terminal::size().map_or(80, |(cols, _)| usize::from(cols));
+        let text = page.plain(width.clamp(40, 100));
+        if show_with_pager(&text) {
+            return (String::new(), 0);
+        }
+        return (text, 0);
     }
     (page.roff(), 0)
+}
+
+/// Page `text` through `$PAGER`. False when none is set or it cannot be run.
+fn show_with_pager(text: &str) -> bool {
+    use std::io::Write;
+    let Some(pager) = std::env::var("PAGER").ok().filter(|p| !p.trim().is_empty()) else {
+        return false;
+    };
+    let mut words = pager.split_whitespace();
+    let Some(program) = words.next() else {
+        return false;
+    };
+    let Ok(mut child) = std::process::Command::new(program)
+        .args(words)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    else {
+        return false;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        // A pager quit before the end closes the pipe; that is not a failure.
+        let _ = stdin.write_all(text.as_bytes());
+    }
+    let _ = child.wait();
+    true
 }
 
 /// Show `page` with `man`, from a temporary file named as the page, so its title and
@@ -243,6 +277,10 @@ mod tests {
         let (page, code) = man(Some("keys"), false, None, false);
         assert_eq!(code, 0);
         assert!(page.contains(".TH DATUI\\-KEYS 7"), "{page}");
+        // Without man(1), the page reads as text.
+        let text = datui_cli::man::find("keys").unwrap().plain(80);
+        assert!(text.starts_with("DATUI-KEYS(7)"), "{text}");
+        assert!(text.contains("Ctrl+O"), "{text}");
         let (said, code) = man(Some("nope"), false, None, false);
         assert_eq!(code, 1);
         assert!(said.contains("datui man --list"), "{said}");

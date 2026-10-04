@@ -11,7 +11,7 @@ datui\-man \- show a manual page, list them, or write them all under a directory
 .SH DESCRIPTION
 Show a manual page, list them, or write them all under a directory.
 .PP
-With no option, prints the page, or shows it with man(1) when standard output is a terminal. \fB\-\-dir\fR writes every page, so \fBman datui\fR finds them; a package or the release archive installs them already. \fIPAGE\fR is a page's name with or without \fBdatui\-\fR, and \fB.5\fR or \fB.7\fR for the file and topic pages when a command shares the name.
+With no option, prints the page, or shows it with man(1) when standard output is a terminal; where man(1) is missing, as plain text, through \fB$PAGER\fR when it is set. \fB\-\-dir\fR writes every page, so \fBman datui\fR finds them; a package or the release archive installs them already. \fIPAGE\fR is a page's name with or without \fBdatui\-\fR, and \fB.5\fR or \fB.7\fR for the file and topic pages when a command shares the name.
 .SH OPTIONS
 .TP
 \fIPAGE\fR

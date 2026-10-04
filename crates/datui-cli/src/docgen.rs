@@ -27,11 +27,6 @@ mod site;
 /// from the root, line endings as LF.
 type Render = fn(&dyn Fn(&str) -> String) -> String;
 
-/// A help string's path from the repository's root.
-fn help_path(name: &str) -> String {
-    format!("crates/datui-lib/src/help-strings/{name}.txt")
-}
-
 /// A page, or a region of one, written from the code.
 pub struct Generated {
     /// From the repository's root.
@@ -61,7 +56,7 @@ pub const GENERATED: &[Generated] = &[
     Generated {
         file: "docs/reference/keyboard-shortcuts.md",
         region: Some("keys"),
-        render: |read| crate::keys::render_markdown(&|name| read(&help_path(name))),
+        render: |_| crate::keys::render_markdown(),
     },
     Generated {
         file: "docs/formats/index.md",
@@ -201,18 +196,6 @@ pub fn splice(file: &str, text: &str, name: &str, content: &str) -> Result<Strin
 pub fn repo_root() -> PathBuf {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     root.canonicalize().unwrap_or(root)
-}
-
-/// A help string's text, read from the repository.
-pub fn read_help(root: &Path, name: &str) -> String {
-    let path = root
-        .join("crates/datui-lib/src/help-strings")
-        .join(format!("{name}.txt"));
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
-        // A Windows checkout may turn line endings into CRLF, and the parser splits
-        // blocks on blank lines.
-        .replace("\r\n", "\n")
 }
 
 /// A repository file's text, by its path from the root, line endings as LF.
@@ -424,7 +407,7 @@ mod tests {
 
     /// The committed docs are what the code renders. Run `gen_docs write` (or
     /// `.venv/bin/python scripts/docs/generate_command_line_options.py --all`) after
-    /// changing a flag, a setting, a format, a help string or an environment variable.
+    /// changing a flag, a setting, a format, a key or an environment variable.
     #[test]
     fn the_generated_docs_are_current() {
         let root = repo_root();
@@ -445,23 +428,6 @@ mod tests {
             "stale: {}. Run `cargo run -p datui-cli --bin gen_docs -- write`",
             stale.join(", ")
         );
-    }
-
-    /// Every help string is listed in the keys reference.
-    #[test]
-    fn every_help_string_is_a_screen() {
-        let dir = repo_root().join("crates/datui-lib/src/help-strings");
-        for entry in std::fs::read_dir(dir).expect("help-strings") {
-            let path = entry.expect("entry").path();
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default();
-            assert!(
-                crate::keys::SCREENS.iter().any(|s| s.help == stem),
-                "{stem}.txt is not in keys::SCREENS"
-            );
-        }
     }
 
     #[test]

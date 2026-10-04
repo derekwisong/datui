@@ -35,10 +35,7 @@ fn main() {
         }
         Some("settings") => print!("{}", datui_cli::settings::render_settings_markdown()),
         Some("environment") => print!("{}", datui_cli::settings::render_environment_markdown()),
-        Some("keys") => print!(
-            "{}",
-            datui_cli::keys::render_markdown(&|name| datui_cli::docgen::read_help(&root, name))
-        ),
+        Some("keys") => print!("{}", datui_cli::keys::render_markdown()),
         _ => print!("{}", datui_cli::render_options_markdown()),
     }
 }

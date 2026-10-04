@@ -347,11 +347,6 @@ fn texts() -> Vec<Text> {
     let root = root();
     let mut paths = Vec::new();
     files_under(&root.join("docs"), "md", &mut paths);
-    files_under(
-        &root.join("crates/datui-lib/src/help-strings"),
-        "txt",
-        &mut paths,
-    );
     for file in [
         "README.md",
         "python/README.md",

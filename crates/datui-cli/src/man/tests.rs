@@ -189,20 +189,14 @@ fn every_setting_and_variable_is_documented() {
 
 #[test]
 fn every_key_and_format_is_documented() {
-    let root = crate::docgen::repo_root();
     let keys_page = page("datui-keys.7");
-    for screen in keys::SCREENS {
-        let help = keys::parse(&crate::docgen::read_help(&root, screen.help));
-        for section in help.sections.iter().filter(|s| s.is_keys()) {
-            for row in &section.rows {
-                assert!(
-                    mentions(&keys_page, &row.label),
-                    "datui-keys.7: {} in {}",
-                    row.label,
-                    screen.help
-                );
-            }
-        }
+    for (screen, _, key) in keys::entries() {
+        assert!(
+            mentions(&keys_page, key.keys),
+            "datui-keys.7: {} in {}",
+            key.keys,
+            screen.map_or("every screen", |s| s.title)
+        );
     }
     let formats = page("datui-formats.7");
     for format in crate::FileFormat::ALL {

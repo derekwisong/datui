@@ -59,7 +59,6 @@ pub struct ViewModal {
     /// from the dataset on save, kept from the view on edit.
     pub table: Option<String>,
     pub editing_view_id: Option<String>, // None while creating
-    pub show_help: bool,
     pub delete_confirm: bool,
     pub name_error: Option<String>,
     /// A refusal or note for the list's own status line, above the footer:
@@ -262,7 +261,6 @@ impl ViewModal {
         self.active = false;
         self.delete_confirm = false;
         self.score_details = None;
-        self.show_help = false;
     }
 }
 

@@ -712,6 +712,56 @@ fn test_chart_data_is_prepared_in_the_background() {
     assert!(!app.chart_preparing());
 }
 
+/// A chart being computed says so, and never asks for a column it has: after an
+/// option changes, the chart before it stays up under the spinner; for a column not
+/// yet drawn, the plot gives way to the message.
+#[test]
+fn a_chart_being_computed_says_so() {
+    use datui::chart_modal::ChartKind;
+    let (mut app, rx, tx) = open_chart_view("chart_computing_test.csv");
+    let area = Rect::new(0, 0, 100, 24);
+    let screen = |app: &mut App| {
+        let mut buf = Buffer::empty(area);
+        Widget::render(app, area, &mut buf);
+        rendered_text(&buf)
+    };
+    for kind in [ChartKind::Histogram, ChartKind::BoxPlot, ChartKind::Kde] {
+        app.chart_modal.chart_kind = kind;
+        app.chart_modal.hist_column = Some("x".to_string());
+        app.chart_modal.box_column = Some("x".to_string());
+        app.chart_modal.kde_column = Some("x".to_string());
+        app.chart_modal.row_limit = Some(1_000);
+        app.event(&AppEvent::Resize(area.width, area.height));
+        assert!(app.chart_preparing(), "{kind:?}");
+        let text = screen(&mut app);
+        assert!(text.contains("Computing chart..."), "{kind:?}: {text}");
+        assert!(!text.contains("Select a column"), "{kind:?}: {text}");
+
+        pump_until_chart_ready(&mut app, &rx, &tx);
+        let drawn = screen(&mut app);
+        assert!(!drawn.contains("Computing chart..."), "{kind:?}: {drawn}");
+
+        // Another sample size: the chart drawn stays, with the spinner over it.
+        app.chart_modal.row_limit = Some(2_000);
+        app.event(&AppEvent::Resize(area.width, area.height));
+        assert!(app.chart_preparing(), "{kind:?}");
+        let text = screen(&mut app);
+        assert!(text.contains("Computing chart..."), "{kind:?}: {text}");
+        assert!(!text.contains("Select a column"), "{kind:?}: {text}");
+        let axis = match kind {
+            ChartKind::Histogram => "Count",
+            ChartKind::Kde => "Density",
+            _ => "x",
+        };
+        assert!(text.contains(axis), "{kind:?} keeps its chart: {text}");
+
+        pump_until_chart_ready(&mut app, &rx, &tx);
+        assert!(!screen(&mut app).contains("Computing chart..."), "{kind:?}");
+        // The next kind starts from a column it has not drawn.
+        app.chart_modal.row_limit = Some(3_000);
+    }
+}
+
 /// Holding a key through the options must not fan out into a collect per step: one
 /// preparation runs at a time, and when it lands the newest selection is the one prepared.
 #[test]
@@ -23881,4 +23931,29 @@ fn copy_as_python_reads_a_directory_named_like_a_glob() {
     assert_eq!(rows, "v\nliteral\n", "{script}");
     assert!(script.contains("d[[]1[]]/*.csv\""), "{script}");
     assert!(!script.contains("glob=False"), "{script}");
+}
+
+/// While a query's first rows are read, the table area says a query is running in
+/// place of the rows it replaces; once they are in, they show.
+#[test]
+fn a_running_query_says_so_in_the_table() {
+    let (mut app, rx, tx) = open_query_filter_fixture("running_query_in_place.csv");
+    press(&mut app, KeyCode::Char('/'));
+    for c in "SELECT name FROM df WHERE c = 1".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    let mut next = press(&mut app, KeyCode::Enter);
+    while let Some(event) = next {
+        next = app.event(&event);
+    }
+    // Its rows are not in until their job's end is handled.
+    assert!(app.is_busy(), "the query is running");
+    let screen = screen_text(&mut app);
+    assert!(screen.contains("Running query..."), "{screen}");
+    assert!(!screen.contains("alpha_0"), "{screen}");
+
+    pump_until_idle(&mut app, &rx, &tx);
+    let screen = screen_text(&mut app);
+    assert!(!screen.contains("Running query..."), "{screen}");
+    assert!(screen.contains("beta_1"), "{screen}");
 }

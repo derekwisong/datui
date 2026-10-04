@@ -2,8 +2,8 @@
 //!
 //! Draws only what `App::chart_cache` already holds. The data is prepared off the UI
 //! thread by `App::ensure_chart_data`; while the current selection's data is still on
-//! its way the chart area shows the empty axes and the control bar spins. A selection
-//! that failed to prepare shows why.
+//! its way the chart area says so over the chart it replaces, or the empty axes, or in
+//! place of a plot when there is neither. A selection that failed to prepare shows why.
 
 use crate::chart_data;
 use crate::chart_modal::ChartKind;
@@ -11,6 +11,7 @@ use crate::render::context::RenderContext;
 use crate::widgets::{
     self,
     chart::{ChartRenderData, ChartView, PlotNumbers},
+    ui::Working,
 };
 use crate::{ChartPrepared, ChartRequest};
 use ratatui::layout::Rect;
@@ -29,10 +30,19 @@ pub fn render(
         .map(|state| state.units())
         .unwrap_or_default();
 
-    let outcome = ChartRequest::from_modal(&app.chart_modal)
-        .and_then(|request| app.chart_cache.get(&request));
-    let prepared = outcome.and_then(|o| o.as_ref().ok());
+    let request = ChartRequest::from_modal(&app.chart_modal);
+    let outcome = request
+        .as_ref()
+        .and_then(|request| app.chart_cache.get(request));
     let error = outcome.and_then(|o| o.as_ref().err()).map(String::as_str);
+    // Chosen but not here yet: it is being prepared (`App::ensure_chart_data` runs
+    // after every event). The chart of the same columns before an option changed
+    // stays up meanwhile.
+    let computing = request.is_some() && outcome.is_none();
+    let prepared = match &request {
+        Some(request) if computing => app.chart_cache.standing_in(request),
+        _ => outcome.and_then(|o| o.as_ref().ok()),
+    };
     let notes = prepared.map(ChartPrepared::notes).unwrap_or_default();
 
     // Axis numbers print as the table prints their columns; whole ones tick whole.
@@ -155,6 +165,10 @@ pub fn render(
             data: render_data,
             notes,
             error,
+            working: computing.then_some(Working {
+                text: "Computing chart...",
+                frame: app.throbber_frame as usize,
+            }),
         },
     );
 

@@ -14142,6 +14142,19 @@ impl App {
         pivot || rows
     }
 
+    /// Whether a query's first rows are being read over the frame on screen. The rows
+    /// drawn meanwhile are the view it replaces, under columns it may have changed.
+    pub(crate) fn query_reading(&self) -> bool {
+        self.is_busy()
+            && self.query_running.as_ref().is_some_and(|run| {
+                matches!(run.origin, RunOrigin::Query(_))
+                    && self
+                        .data_table_state
+                        .as_ref()
+                        .is_some_and(|state| state.len_generation() == run.frame)
+            })
+    }
+
     /// Stop applying a view and keep the one before it. As with a pivot, a worker runs
     /// to the end and the bump drops its answer.
     fn cancel_view(&mut self) {

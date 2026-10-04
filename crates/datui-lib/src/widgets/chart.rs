@@ -21,7 +21,7 @@ use crate::widgets::axes::{
     AxisSpec, Legend, PlotAxes, Track, cut, fit_x_labels, fit_y_labels, resolution,
 };
 use crate::widgets::crosshair::{self, PlotPlace};
-use crate::widgets::ui::{FormRow, FormValue, Picker, Surface};
+use crate::widgets::ui::{FormRow, FormValue, Picker, Surface, Working};
 use unicode_width::UnicodeWidthStr;
 
 const SIDEBAR_WIDTH: u16 = 42;
@@ -39,6 +39,9 @@ pub struct ChartView<'a> {
     pub notes: Vec<String>,
     /// Preparing the selection failed; shown in place of an empty plot.
     pub error: Option<&'a str>,
+    /// The selection is being prepared: said over the chart standing in for it, or in
+    /// place of a plot when there is none.
+    pub working: Option<Working<'a>>,
 }
 
 pub enum ChartRenderData<'a> {
@@ -73,6 +76,21 @@ pub enum ChartRenderData<'a> {
     Bar {
         data: Option<&'a BarData>,
     },
+}
+
+impl ChartRenderData<'_> {
+    /// Whether there is a plot to draw: data, or an XY chart's axes, which stand
+    /// empty until their series arrive.
+    fn draws_plot(&self) -> bool {
+        match self {
+            Self::XY { .. } => true,
+            Self::Histogram { data, .. } => data.is_some(),
+            Self::BoxPlot { data, .. } => data.is_some(),
+            Self::Kde { data, .. } => data.is_some(),
+            Self::Heatmap { data, .. } => data.is_some(),
+            Self::Bar { data } => data.is_some(),
+        }
+    }
 }
 
 /// What each axis holds, so its ticks print as the table prints its columns: whole
@@ -320,6 +338,12 @@ pub fn render_chart_view(
             .render(notes, buf);
         chart_inner = plot;
     }
+    if let Some(working) = view.working
+        && !view.data.draws_plot()
+    {
+        working.render_centered(chart_inner, buf, ctx);
+        return;
+    }
     modal.plot = render_plot(
         chart_inner,
         buf,
@@ -329,6 +353,9 @@ pub fn render_chart_view(
         view.data,
         crate::glyphs::get(),
     );
+    if let Some(working) = view.working {
+        working.render_corner(chart_inner, buf, ctx);
+    }
 }
 
 /// The plot itself, drawn with the marks of the glyph set `g`; where an XY plot with
@@ -408,7 +435,7 @@ fn render_bar_chart(
             .centered()
             .render(area, buf);
     };
-    // Picked but not here yet: the control bar spins; the canvas waits blank.
+    // Picked but not here yet: the chart view says it is being computed.
     let Some(data) = data else {
         if !picked {
             hint("Select a category and a value", buf);
@@ -1325,6 +1352,7 @@ mod tests {
                 },
                 notes: Vec::new(),
                 error: None,
+                working: None,
             },
         );
         (0..height)
@@ -1439,6 +1467,7 @@ mod tests {
                 },
                 notes: vec!["sample of 10,000 of 3.5M rows".to_string()],
                 error: None,
+                working: None,
             },
             80,
             24,
@@ -1468,6 +1497,7 @@ mod tests {
                 },
                 notes: notes.iter().map(|n| n.to_string()).collect(),
                 error: None,
+                working: None,
             },
             60,
             20,
@@ -1500,6 +1530,7 @@ mod tests {
                 },
                 notes: Vec::new(),
                 error: Some("column not found: gone"),
+                working: None,
             },
             100,
             24,
@@ -1529,6 +1560,7 @@ mod tests {
                     },
                     notes: Vec::new(),
                     error: None,
+                    working: None,
                 },
                 100,
                 24,
@@ -1576,6 +1608,7 @@ mod tests {
                 data: ChartRenderData::Bar { data: Some(data) },
                 notes: Vec::new(),
                 error: None,
+                working: None,
             },
             w,
             h,
@@ -2265,6 +2298,7 @@ mod tests {
                 data: xy_dates(&series),
                 notes: Vec::new(),
                 error: None,
+                working: None,
             },
             300,
             60,

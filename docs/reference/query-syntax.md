@@ -135,8 +135,9 @@ inside one AND term — and separate the groups with `,`.
 | Date literals | `2021.01.01` (YYYY.MM.DD) |
 | Timestamp literals | `2021.01.15T14:30:00.123456` (YYYY.MM.DDTHH:MM:SS[.fff...]); fractional-second digits set precision: 1–3 = ms, 4–6 = μs, 7–9 = ns |
 
-A date or timestamp literal has no time zone: comparing one with a column that
-has a time zone fails. Compare the column's `.date` instead.
+A timestamp literal compared with a column that has a time zone is read as a
+clock time in that zone. A clock time repeated when clocks fall back means its
+first instant.
 
 Either side of a comparison can be a column, a literal or an expression:
 `where a = 10`, `where created_at.date > other_date_col`.

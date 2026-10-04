@@ -32,6 +32,8 @@ datui.view(data, *, capture=False, options=None, **kwargs) -> polars.LazyFrame |
 A path or URL is read as the command line reads it (`s3://`, `gs://`,
 `abfss://`, `http(s)://`, globs), and the open's options apply. A frame is
 handed over as its serialized plan, and only display options apply to it.
+An `az://container/path` URL takes its account from the Azure environment
+variables or from the config's one Azure connection.
 
 ### Return value
 
@@ -80,7 +82,7 @@ character's code (`ord(";")`).
 <!-- generated: options -->
 | Keyword | Takes | Command line | What it does |
 |---|---|---|---|
-| `format` | string | `--format` | File format, when the extension does not say: parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, audio, midi, sqlite, vcd, fix, sdf, numpy, elf, ulog, dataflash, candump, text, journal; or a format spec, by name (acme.l2feed), file (./acme.toml) or http(s), s3, gs or az URL (at most 1 MiB) |
+| `format` | string | `--format` | File format, when the extension does not say: parquet, csv, tsv, psv, json, jsonl, arrow, avro, orc, excel, safetensors, gguf, nmea, gpx, audio, midi, sqlite, vcd, fix, sdf, numpy, elf, ulog, dataflash, candump, text, journal; or a format spec: its name (`datui formats` lists them), its file (a path with a / or ending .toml), or its http(s), s3, gs or az URL (at most 1 MiB) |
 | `table` | string | `--table` | Table to open from a file that holds several. Excel: a worksheet by name, or by 0-based index when no worksheet is so named. NMEA: fixes (default), GGA, RMC, VTG, GSA, GSV, GLL, ZDA or sentences. SQLite: a table or view by name. NumPy: an array of an archive (.npz) by name. ELF: symbols (default) or sections. ULog: a topic. DataFlash: a message type. candump: frames (default), signals, or a message a dictionary names. Hugging Face cache and DatasetDict directories: a split (default train) |
 | `hive` | bool | `--hive` | Read a glob as one partitioned table, or force partition columns on a directory whose layout does not say so. Ignored for a single file |
 | `compression` | gzip \| zstd \| bzip2 \| xz | `--compression` | Compression, when the extension does not say: gzip, zstd, bzip2 or xz |

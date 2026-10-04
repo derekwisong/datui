@@ -163,7 +163,10 @@ spec matches opens as it does without specs; a local file no reader takes
 either opens in the [hex view](../user-guide/hex-view.md), where <kbd>B</kbd> reads it with a
 spec and <kbd>r</kbd> lines the bytes up in records while you write one.
 
-<kbd>b</kbd> on the table picks another spec and reads the file again with it.
+<kbd>b</kbd> on the table picks another spec and reads the file again with it,
+clearing the query, filters and sort. The list starts with the spec the file
+was read with, then the others that matched it the same way, then every other
+spec on the search path for a file (or for a directory of column files).
 The Notes tab of <kbd>i</kbd> says which spec read the file and why, the header's
 values, and any bytes left out.
 

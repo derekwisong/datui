@@ -100,6 +100,9 @@ The last column on screen also takes the room left at the right edge, so a
 long text there shows more of each value. A number column, which sits flush
 right, and a width set by hand keep their width.
 
+A number is cut only when it is the first scrolling column and has no room;
+otherwise it waits, whole, for the scroll.
+
 A query, a pivot or melt, drilling down or back up, a new sort, <kbd>r</kbd>
 and a new filter change the rows, so automatic widths are learned again from
 the first page they show.
@@ -167,7 +170,9 @@ and that cell are drawn reversed.
 - The cursor stays on its column when columns are hidden, moved or frozen in
   the sidebar; when its own column is hidden, the column that takes its place
   takes the cursor.
-- Hidden columns are not listed by <kbd>g</kbd>.
+- <kbd>g</kbd> lists the columns the table shows, in its order. Hidden
+  columns are not listed: show them with <kbd>v</kbd> on the Columns tab. A
+  frozen column is on screen already, so choosing it moves nothing.
 
 <kbd>H</kbd> and <kbd>L</kbd> move the cursor's column itself one place left
 or right, the cursor with it: the same column order the Columns tab's

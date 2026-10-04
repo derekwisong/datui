@@ -45,6 +45,23 @@ sample), skewness and kurtosis.
 | Verdict | Among the families not rejected (p of 0.01 or more), the lowest AIC; a simpler family that holds is named instead unless the richer one is decisively better (AIC 10 or more lower). `No clear fit` when every family is rejected |
 | `n/a` | The family cannot describe the values: a log-normal of negative values, a Poisson of fractions |
 
+| Column | Says |
+|---|---|
+| Distribution | The family the values are consistent with; `Constant` when the column has one value, `No clear fit` when every family is rejected |
+| P-value | The fit's p-value; with no clear fit, the best any family managed |
+| Shapiro-Francia | The normality statistic W', from 0 to 1, higher is more normal, on up to 5,000 values |
+| SF p-value | Royston's approximation: how likely a W' this low is if the values were normal |
+| CV | Coefficient of variation: standard deviation over mean, spread independent of scale |
+| Outliers | Values past the outlier bounds, and their share of the sample |
+| Skewness | Asymmetry: positive is right-tailed, negative left-tailed |
+| Kurtosis | Tail heaviness; 3.0 is normal |
+
+| Color | When |
+|---|---|
+| Green or cyan | A p-value of 0.05 or more |
+| Yellow | Outliers 5–20%, \|skewness\| of 1 or more, kurtosis 1 or more away from 3, CV above 1, or a p-value between 0.01 and 0.05 |
+| Red | No clear fit, outliers above 20%, extreme skewness or kurtosis, or a p-value of 0.01 or less |
+
 A p-value is how surprising the values would be if they came from the fitted
 distribution, not the probability that they did. The tests assume independent
 draws: a time series such as a price over years is dependent, and its
@@ -57,6 +74,19 @@ another family to compare with, which does not change the verdict; <kbd>s</kbd>
 toggles the histogram between linear and log scale; <kbd>Esc</kbd> returns to
 the table.
 
+| Detail | Shows |
+|---|---|
+| Fit | The verdict and its p-value; it stays as you choose other families |
+| SF, Skew, Kurt, CV | As in the list |
+| Median, Mean, Std | The middle value, the average, and the standard deviation |
+| Q-Q plot | The values against the chosen family's quantiles; points on the diagonal mean a good match, and where they leave it the data differs |
+| Histogram | The values in bins, with the chosen family's density drawn over them in the theme's secondary series color |
+| Distributions | Each family with its p-value, highest first; choosing an `n/a` family says why |
+
+The list's last row names the histogram's scale. Log needs positive values:
+asked for on others, the histogram stays linear and the scale reads `Linear`
+in the warning color.
+
 On the same taxi sample, every column reads `No clear fit`, which is honest
 for fares, distances and tips. `fare_amount` has 10,459 outliers (10.5%),
 skewness 6.92 and kurtosis 279.05; its detail view shows the median, 12.47,
@@ -67,8 +97,10 @@ as Describe does.
 Pairwise correlations between every numeric column, colored by strength.
 Move around with the arrow keys and press <kbd>Enter</kbd> on a cell for the
 pair: the coefficient with a plain reading of it, R², the p-value, and how
-many row pairs it was computed from. Correlation is undefined for a constant
-column.
+many row pairs it was computed from, out of the total rows.
+<kbd>Enter</kbd> on a diagonal cell does nothing. Correlation is undefined for
+a constant column. <kbd>r</kbd> draws a new sample from the matrix, not from
+inside the pair's detail.
 
 | Key | Action |
 |---|---|

@@ -251,7 +251,7 @@ spinner = ["◐", "◓", "◑", "◒"]
 ## Mouse and text selection
 
 datui takes the mouse by default: the wheel scrolls and a click selects
-([Mouse](../reference/keyboard-shortcuts.md#mouse)). To select text with the
+([The mouse](table.md#the-mouse)). To select text with the
 terminal meanwhile, hold its bypass modifier as you drag:
 
 | Terminal | Select text |

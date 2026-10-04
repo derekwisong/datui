@@ -30,7 +30,7 @@ datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins
 | <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Move a page |
 | Wheel, click | Scroll; put the cursor on a cell. A double-click inspects the row |
 | <kbd>i</kbd> | Info panel: columns and file details |
-| <kbd>?</kbd> | Show help for this screen |
+| <kbd>?</kbd> | This screen's keys; <kbd>Enter</kbd> on one runs it |
 | <kbd>Esc</kbd> | Close a panel or go back |
 | <kbd>q</kbd> | Back to the home screen; quits when the table was opened from the shell |
 | <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Quit |

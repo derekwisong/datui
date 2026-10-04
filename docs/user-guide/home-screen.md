@@ -134,6 +134,13 @@ A row reads its name, `/` for a directory, two spaces, and a label:
 | `bucket`, `container` | The top of an object store |
 | `…`, a spinner, `?` | Not looked at yet, being looked at, failed |
 
+A SQLite database with several tables lists them inside, a row each. A
+workbook, an NMEA log or an ELF file opens its first worksheet, fixes or
+symbols on <kbd>Enter</kbd>, and a file a [format spec](../formats/format-specs.md)
+reads as several tables opens whole; <kbd>→</kbd> lists the tables, and
+<kbd>Enter</kbd> on one opens it alone. A Hugging Face cache lists its splits,
+as tables, above its files.
+
 Names starting `_` or `.` and `_$folder$` markers are passed over, except
 partitions such as `_date=2025-01-01`.
 
@@ -360,9 +367,10 @@ does not answer reads `unavailable`; <kbd>Ctrl</kbd>+<kbd>R</kbd> tries again.
 
 ## What datui remembers
 
-The cache holds recent paths, how often and how lately each was opened, and
-what was measured (counts, column names, size, modification time), never the
-data. Local facts are measured again when a file's size or time changes.
+The cache holds recent paths, how often and how lately each was opened, what
+was measured (counts, column names, size, modification time), query history,
+section folds, remembered directories, bucket listings and hidden cloud
+sources, never the data. Local facts are measured again when a file's size or time changes.
 
 | Command | Removes |
 |---|---|

@@ -544,16 +544,36 @@ pub(crate) mod bad_input {
         rows.err().map(|e| said(color_eyre::Report::new(e)))
     }
 
-    /// `message` is a reader error's shape: the file named in quotes first, its
-    /// first line a sentence ended with a full stop, nothing Rust prints.
+    /// `message` is a reader error's shape: the file named in quotes first, then
+    /// the line and column when it is at one place (`"spec.toml":3:7: `), its first
+    /// line a sentence ended with a full stop, nothing Rust prints.
     pub(crate) fn assert_shape(message: &str, path: &Path) {
-        let named = format!("\"{}\": ", path.display());
-        assert!(message.starts_with(&named), "names the file: {message}");
+        let quoted = format!("\"{}\":", path.display());
+        assert!(message.starts_with(&quoted), "names the file: {message}");
+        let after = &message[quoted.len()..];
+        let what = match after.strip_prefix(' ') {
+            Some(what) => what,
+            None => {
+                // `3:7: `: a line and a column, one-based.
+                let mut parts = after.splitn(3, ':');
+                let (line, column) = (parts.next().unwrap(), parts.next().unwrap_or_default());
+                for n in [line, column] {
+                    assert!(
+                        n.parse::<usize>().is_ok_and(|n| n > 0),
+                        "a place in the file: {message}"
+                    );
+                }
+                parts
+                    .next()
+                    .and_then(|what| what.strip_prefix(' '))
+                    .unwrap_or_else(|| panic!("a place, then a space: {message}"))
+            }
+        };
         let first = message.lines().next().unwrap_or_default();
         assert!(first.ends_with('.'), "ends with a full stop: {message}");
-        let what = &message[named.len()..];
         assert!(
-            what.chars().next().is_some_and(|c| !c.is_lowercase()),
+            crate::error_display::starts_with_a_key(what)
+                || what.chars().next().is_some_and(|c| !c.is_lowercase()),
             "sentence case: {message}"
         );
         assert_eq!(

@@ -11,10 +11,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
-use color_eyre::{Result, eyre::eyre};
+use color_eyre::Result;
 use object_store::{ObjectStore, ObjectStoreExt};
 
 use crate::download::TempDownload;
+use crate::error_display::{FileError, file_message, store_message};
 use crate::ipc_stream::{Merge, Part};
 use crate::unfinished::Writer;
 use crate::{App, FileFormat, OpenOptions};
@@ -30,6 +31,11 @@ pub(crate) struct Object {
 
 /// Objects by name or URL, with their sizes.
 type Listing = Vec<(String, u64)>;
+
+/// `what` went wrong with `url`, in the one shape reader errors take.
+fn failed(url: &str, what: impl Into<String>) -> color_eyre::Report {
+    FileError::new(Path::new(url), what).into()
+}
 
 /// Objects whose first bytes are asked for at once.
 const PEEKS: usize = 8;
@@ -68,14 +74,17 @@ pub(crate) fn list(
         let path = crate::cloud_browse::object_path(&key);
         let store = store.clone();
         let meta = crate::wait_on_runtime(runtime, async move { store.head(&path).await })
-            .ok_or_else(|| eyre!("Looking at {url} was cancelled."))?
-            .map_err(|e| eyre!("Could not read {url}: {e}"))?;
+            .ok_or_else(|| failed(url, "looking at it was cancelled"))?
+            .map_err(|e| failed(url, store_message(&e)))?;
         (vec![(full.clone(), meta.size)], options.clone())
     };
     // Refused before anything is asked or fetched, as it is on disk.
     if let (Some(table), None) = (&options.table, &options.splits) {
-        return Err(eyre!(
-            "{url} holds one table, not splits; --table {table} picks a Hugging Face dataset's split"
+        return Err(failed(
+            url,
+            format!(
+                "it holds one table, not splits. --table {table} picks a Hugging Face dataset's split"
+            ),
         ));
     }
     Ok((peek(&store, objects, runtime)?, options))
@@ -91,12 +100,17 @@ fn dict_split(
     options: &OpenOptions,
     runtime: &tokio::runtime::Handle,
 ) -> Result<(String, Listing, OpenOptions)> {
-    let text = get_text(store, &join(key, crate::hf_splits::DATASET_DICT), runtime)?;
+    let text = get_text(
+        store,
+        &join(key, crate::hf_splits::DATASET_DICT),
+        &format!("{base}/{}", crate::hf_splits::DATASET_DICT),
+        runtime,
+    )?;
     let splits = crate::hf_splits::dict_splits(&text)
-        .ok_or_else(|| eyre!("{url}: its dataset_dict.json names no splits"))?;
+        .ok_or_else(|| failed(url, "its dataset_dict.json names no splits"))?;
     let listed: Vec<&str> = splits.iter().map(String::as_str).collect();
-    let picked = crate::hf_splits::pick(&listed, options.table.as_deref())
-        .map_err(|e| eyre!("{url}: {e}"))?;
+    let picked =
+        crate::hf_splits::pick(&listed, options.table.as_deref()).map_err(|e| failed(url, e))?;
     let split = picked.split.clone().unwrap_or_default();
     let names = names_under(store, &join(key, &split), url, runtime)?;
     let inner = OpenOptions {
@@ -135,8 +149,8 @@ fn names_under(
     let listed = crate::wait_on_runtime(runtime, async move {
         store.list_with_delimiter(prefix.as_ref()).await
     })
-    .ok_or_else(|| eyre!("Listing {url} was cancelled."))?
-    .map_err(|e| eyre!("Could not list {url}: {e}"))?;
+    .ok_or_else(|| failed(url, "listing it was cancelled"))?
+    .map_err(|e| failed(url, store_message(&e)))?;
     let mut names: Vec<(String, u64)> = listed
         .objects
         .iter()
@@ -161,23 +175,24 @@ fn one_split(
             && crate::discover::data_format(Path::new(name)) == Some(FileFormat::Arrow)
     });
     if names.is_empty() {
-        return Err(eyre!("{url} holds no Arrow files"));
+        return Err(failed(url, "it holds no Arrow files"));
     }
     let mut options = options.clone();
     if hugging_face {
         let listed: Vec<&str> = names.iter().map(|(name, _)| name.as_str()).collect();
         let (chosen, splits) = crate::hf_splits::choose(&listed, options.table.as_deref())
-            .map_err(|e| eyre!("{url}: {e}"))?;
+            .map_err(|e| failed(url, e))?;
         names = chosen.into_iter().map(|i| names[i].clone()).collect();
         options.splits = Some(Arc::new(splits));
     }
     Ok((names, options))
 }
 
-/// A small object's text: a DatasetDict's `dataset_dict.json`.
+/// A small object's text: a DatasetDict's `dataset_dict.json`, at `url`.
 fn get_text(
     store: &Arc<dyn ObjectStore>,
     key: &str,
+    url: &str,
     runtime: &tokio::runtime::Handle,
 ) -> Result<String> {
     let store = store.clone();
@@ -186,8 +201,8 @@ fn get_text(
         runtime,
         async move { store.get(&path).await?.bytes().await },
     )
-    .ok_or_else(|| eyre!("Reading {key} was cancelled."))?
-    .map_err(|e| eyre!("Could not read {key}: {e}"))?;
+    .ok_or_else(|| failed(url, "reading it was cancelled"))?
+    .map_err(|e| failed(url, store_message(&e)))?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
@@ -209,7 +224,7 @@ fn peek(
                     let head = store
                         .get_range(&path, 0..size.min(6))
                         .await
-                        .map_err(|e| eyre!("Could not read {url}: {e}"))?;
+                        .map_err(|e| failed(&url, store_message(&e)))?;
                     let stream = !crate::ipc_stream::is_ipc_file_head(&head);
                     Ok::<_, color_eyre::Report>(Object { url, size, stream })
                 }
@@ -218,7 +233,7 @@ fn peek(
             .collect::<Vec<_>>()
             .await
     })
-    .ok_or_else(|| eyre!("Looking at the Arrow files was cancelled."))?;
+    .ok_or_else(|| color_eyre::eyre::eyre!("Looking at the Arrow files was cancelled."))?;
     heads.into_iter().collect()
 }
 
@@ -283,7 +298,7 @@ impl Body {
         let (_, _, store) = App::cloud_store_for(Path::new(url), cloud, runtime)?;
         let path = crate::cloud_browse::object_path(&key);
         let open = async move {
-            let got = store.get(&path).await.map_err(|e| e.to_string())?;
+            let got = store.get(&path).await.map_err(|e| store_message(&e))?;
             let len = got.range.end - got.range.start;
             Ok((got.into_stream(), Some(len)))
         };
@@ -299,19 +314,20 @@ impl Body {
             .spawn(move || {
                 let sent = crate::download::stream_into(&runtime, open, stop, |chunk| {
                     tx.send(Ok(chunk.to_vec()))
-                        .map_err(|_| eyre!("the conversion stopped"))
+                        .map_err(|_| color_eyre::eyre::eyre!("the conversion stopped"))
                 });
+                let named = Path::new(&url);
                 let message = match sent {
                     Ok(_) => return,
-                    Err(StreamError::Open(e)) => {
-                        format!("Could not read {url}. Check credentials and URL: {e}")
+                    Err(StreamError::Open(e)) => file_message(named, &e),
+                    Err(StreamError::Read(e)) => {
+                        file_message(named, &format!("the download stopped: {e}"))
                     }
-                    Err(StreamError::Read(e)) => format!("Could not read {url}: {e}"),
                     Err(StreamError::Short { expected, got }) => {
-                        format!("Could not read {url}: it ended after {got} of {expected} bytes")
+                        file_message(named, &format!("it ended after {got} of {expected} bytes"))
                     }
                     Err(StreamError::Write(e)) => e.to_string(),
-                    Err(StreamError::Cut) => format!("Downloading {url} was cancelled."),
+                    Err(StreamError::Cut) => file_message(named, "the download was cancelled"),
                 };
                 let _ = tx.send(Err(message));
             })?;
@@ -340,5 +356,65 @@ impl Read for Body {
         buf[..n].copy_from_slice(&self.chunk[self.at..self.at + n]);
         self.at += n;
         Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use object_store::{PutPayload, memory::InMemory, path::Path as Key};
+
+    /// Every way an Arrow listing in a store is refused names the URL, in the one shape.
+    #[test]
+    fn errors_name_the_file() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let handle = runtime.handle().clone();
+        let memory = InMemory::new();
+        runtime.block_on(async {
+            for (key, bytes) in [
+                ("csv/a.csv", &b"a\n1\n"[..]),
+                ("dd/dataset_dict.json", b"{\"splits\": 3}"),
+                ("hf/data-train.arrow", b"x"),
+                ("hf/dataset_info.json", b"{}"),
+            ] {
+                memory
+                    .put(&Key::from(key), PutPayload::from_static(bytes))
+                    .await
+                    .unwrap();
+            }
+        });
+        let store: Arc<dyn ObjectStore> = Arc::new(memory);
+        let options = OpenOptions::default();
+        let said = |e: color_eyre::Report| crate::error_display::user_message_from_report(&e, None);
+        let check = |message: String, url: &str, says: &str| {
+            eprintln!("{message}");
+            crate::readers::bad_input::assert_shape(&message, Path::new(url));
+            assert!(message.contains(says), "{url}: {message}");
+        };
+
+        let names = names_under(&store, "csv", "s3://b/csv/", &handle).unwrap();
+        let none = one_split(names, &options, "s3://b/csv/").err().unwrap();
+        check(said(none), "s3://b/csv/", "no Arrow files");
+
+        let dict = dict_split(&store, "dd", "s3://b/dd", "s3://b/dd/", &options, &handle);
+        check(said(dict.err().unwrap()), "s3://b/dd/", "names no splits");
+
+        let names = names_under(&store, "hf", "s3://b/hf/", &handle).unwrap();
+        let asked = OpenOptions {
+            table: Some("nope".to_string()),
+            ..OpenOptions::default()
+        };
+        let split = one_split(names, &asked, "s3://b/hf/").err().unwrap();
+        check(said(split), "s3://b/hf/", "nope");
+
+        let gone = get_text(&store, "gone.json", "s3://b/gone.json", &handle).unwrap_err();
+        check(said(gone), "s3://b/gone.json", "No object there");
+
+        let peeked = peek(&store, vec![("s3://b/gone.arrow".to_string(), 8)], &handle);
+        check(
+            said(peeked.unwrap_err()),
+            "s3://b/gone.arrow",
+            "No object there",
+        );
     }
 }

@@ -677,11 +677,9 @@ impl Layers {
                     .into());
                 }
                 Err(e) => {
-                    let at = match e.line {
-                        0 => String::new(),
-                        line => format!("line {line}, column {}: ", e.column),
-                    };
-                    return Err(FileError::new(path, format!("{at}{}", e.message)).into());
+                    // A TOML dictionary's error may be in the file it names.
+                    let at = e.path.as_deref().unwrap_or(path);
+                    return Err(FileError::at(at, e.line, e.column, e.message).into());
                 }
             }
         }

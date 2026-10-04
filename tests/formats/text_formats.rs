@@ -410,7 +410,7 @@ fn a_fix_dictionary_names_a_counterpartys_tags() {
         },
     )
     .expect("a dictionary that does not parse is an error");
-    assert!(message.contains("tags.x"), "{message}");
+    assert!(message.contains("wrong.toml\":3:1: tags.x"), "{message}");
 }
 
 #[test]

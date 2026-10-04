@@ -822,7 +822,7 @@ pub fn table_help() -> String {
 }
 
 /// Why `--table` was refused for a file of `format` (`None`: not known), which holds
-/// one table: the formats whose tables it picks.
+/// one table: the formats whose tables it picks. The reader names the file before it.
 pub fn one_table(format: Option<FileFormat>) -> String {
     let what = format.map_or("This file".to_string(), |f| format!("A {} file", f.name()));
     let titles: Vec<&str> = FileFormat::ALL
@@ -831,7 +831,7 @@ pub fn one_table(format: Option<FileFormat>) -> String {
         .map(FileFormat::title)
         .collect();
     format!(
-        "{what} holds one table; --table picks one from {} files, or a Hugging Face dataset's split.",
+        "{what} holds one table. --table picks one from {} files, or a Hugging Face dataset's split.",
         titles.join(", ")
     )
 }

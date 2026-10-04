@@ -1005,11 +1005,9 @@ pub fn layers(registry: &crate::formats::Registry, dicts: &[PathBuf]) -> Result<
                 .into());
             }
             Err(e) => {
-                let at = match e.line {
-                    0 => String::new(),
-                    line => format!("line {line}, column {}: ", e.column),
-                };
-                return Err(FileError::new(path, format!("{at}{}", e.message)).into());
+                // A TOML dictionary's error may be in the file it names.
+                let at = e.path.as_deref().unwrap_or(path);
+                return Err(FileError::at(at, e.line, e.column, e.message).into());
             }
         }
     }
@@ -1068,7 +1066,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         for (name, text, says) in [
             ("plain.toml", "a = 1\n", "--dict takes"),
-            ("broken.xml", "<fix><fields><field", "Line "),
+            ("broken.xml", "<fix><fields><field", "broken.xml\":1:"),
         ] {
             let dict = dir.path().join(name);
             std::fs::write(&dict, text).unwrap();

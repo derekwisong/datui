@@ -291,7 +291,17 @@ impl Dictionary {
     /// XML file that is not a FIX dictionary or a TOML file that is not `kind = "fix"`.
     pub fn load(path: &Path) -> Result<Option<Self>, SpecError> {
         let size = std::fs::metadata(path)
-            .map_err(|e| error(Some(path), 0, 0, format!("could not read it: {e}")))?
+            .map_err(|e| {
+                error(
+                    Some(path),
+                    0,
+                    0,
+                    format!(
+                        "could not read it. {}",
+                        crate::error_display::user_message_from_io(&e, None)
+                    ),
+                )
+            })?
             .len();
         if size > MAX_FILE {
             return Err(error(
@@ -305,8 +315,17 @@ impl Dictionary {
                 ),
             ));
         }
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| error(Some(path), 0, 0, format!("could not read it: {e}")))?;
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            error(
+                Some(path),
+                0,
+                0,
+                format!(
+                    "could not read it. {}",
+                    crate::error_display::user_message_from_io(&e, None)
+                ),
+            )
+        })?;
         let xml = path
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("xml"));
@@ -858,7 +877,7 @@ tags = { 9001 = "AlgoName", 9002 = { name = "Urgency", type = "int", enum = { 1 
         for (text, said) in [
             (
                 "name = \"a.b\"\nkind = \"fix\"\ncolour = 1",
-                "unknown key `colour`",
+                "Unknown key `colour`",
             ),
             ("name = \"plain\"\nkind = \"fix\"", "namespaced"),
             (
@@ -876,8 +895,9 @@ tags = { 9001 = "AlgoName", 9002 = { name = "Urgency", type = "int", enum = { 1 
             ("name = \"a.b\"\nkind = \"fix\"\n[[", ""),
         ] {
             let e = Dictionary::parse_toml(text, Some(Path::new("d.toml"))).unwrap_err();
-            assert!(e.to_string().contains(said), "{e}");
-            assert!(e.to_string().starts_with("d.toml:"), "{e}");
+            let e = e.to_string();
+            assert!(e.contains(said), "{e}");
+            assert!(e.starts_with("\"d.toml\":"), "{e}");
         }
     }
 

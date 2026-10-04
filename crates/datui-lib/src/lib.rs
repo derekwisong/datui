@@ -8376,17 +8376,25 @@ impl App {
         let ext = source::download_suffix(url);
         let (_bucket, key) = Self::cloud_bucket_and_key(url)?;
         if key.is_empty() {
-            return Err(color_eyre::eyre::eyre!(
-                "{label} URL must point to an object (e.g. {example})"
-            ));
+            return Err(crate::error_display::FileError::new(
+                Path::new(url),
+                format!("a {label} URL names an object here, such as {example}"),
+            )
+            .into());
         }
         let (_, _, store) = Self::cloud_store_for(Path::new(url), cloud, runtime)?;
 
         let path = crate::cloud_browse::object_path(&key);
         let open = async move {
-            let got = store.get(&path).await.map_err(|e| e.to_string())?;
+            let got = store
+                .get(&path)
+                .await
+                .map_err(|e| crate::error_display::store_message(&e))?;
             let len = got.range.end - got.range.start;
             Ok((got.into_stream(), Some(len)))
+        };
+        let failed = |what: String| -> color_eyre::Report {
+            crate::error_display::FileError::new(Path::new(url), what).into()
         };
         crate::download::stream_to_temp(
             runtime,
@@ -8396,17 +8404,13 @@ impl App {
             writer,
         )
         .map_err(|error| match error {
-            StreamError::Open(e) => color_eyre::eyre::eyre!(
-                "Could not read from {label}. Check credentials and URL: {e}"
-            ),
-            StreamError::Read(e) => {
-                color_eyre::eyre::eyre!("Could not read {label} object body: {e}")
+            StreamError::Open(e) => failed(e),
+            StreamError::Read(e) => failed(format!("the download stopped: {e}")),
+            StreamError::Short { expected, got } => {
+                failed(format!("it ended after {got} of {expected} bytes"))
             }
-            StreamError::Short { expected, got } => color_eyre::eyre::eyre!(
-                "Could not read {label} object body: it ended after {got} of {expected} bytes"
-            ),
             StreamError::Write(report) => report,
-            StreamError::Cut => color_eyre::eyre::eyre!("{label} download was cancelled."),
+            StreamError::Cut => failed("the download was cancelled".to_string()),
         })
     }
 
@@ -8861,19 +8865,24 @@ impl App {
                     #[cfg(not(any(feature = "http", feature = "cloud")))]
                     let fetched: std::result::Result<Option<Vec<u8>>, String> = {
                         let _ = &writer;
-                        Err(format!(
-                            "{} is a URL, and this build reads no URLs",
-                            url.display()
+                        Err(crate::error_display::file_message(
+                            &url,
+                            "this build reads no URLs",
                         ))
                     };
                     // The URL in the message may carry a password or a signature.
                     let bytes = fetched
                         .map_err(|message| crate::logging::redact(&message, &[]))?
                         .ok_or_else(|| {
-                            format!(
-                                "{}: a spec is at most {}",
-                                crate::logging::redact(&url.display().to_string(), &[]),
-                                crate::formats::MAX_SPEC_SAID
+                            crate::logging::redact(
+                                &crate::error_display::file_message(
+                                    &url,
+                                    &format!(
+                                        "a format spec is at most {}",
+                                        crate::formats::MAX_SPEC_SAID
+                                    ),
+                                ),
+                                &[],
                             )
                         })?;
                     let spec = crate::formats::Spec::from_bytes(&bytes, &url)
@@ -10789,9 +10798,26 @@ impl App {
         Ok(chosen.into_iter().map(|i| files[i].clone()).collect())
     }
 
-    /// Why `--table` was refused for a file of `format`, which holds one table.
-    fn one_table(format: Option<FileFormat>) -> color_eyre::Report {
-        color_eyre::eyre::eyre!(cli::one_table(format))
+    /// Why `--table` was refused for `path`, a file of `format`, which holds one table.
+    fn one_table(path: Option<&Path>, format: Option<FileFormat>) -> color_eyre::Report {
+        match path {
+            Some(path) => crate::error_display::FileError::new(path, cli::one_table(format)).into(),
+            None => color_eyre::eyre::eyre!(cli::one_table(format)),
+        }
+    }
+
+    /// A scan of `url` in an object store that Polars refused, with what to check.
+    #[cfg(feature = "cloud")]
+    fn cloud_scan_failed(url: &str, e: &polars::prelude::PolarsError) -> color_eyre::Report {
+        let said = crate::error_display::user_message_from_polars(e);
+        let (first, rest) = said.split_once('\n').unwrap_or((&said, ""));
+        let first = first.trim_end().trim_end_matches('.');
+        let what = format!("could not read it: {first}. Check the credentials and the URL.");
+        let what = match rest {
+            "" => what,
+            rest => format!("{what}\n{rest}"),
+        };
+        crate::error_display::FileError::new(Path::new(url), what).into()
     }
 
     /// The inputs of an Arrow read as one table, in order: each IPC file scanned where
@@ -10999,7 +11025,12 @@ impl App {
         // each input's rows are.
         if let Some(parts) = &options.arrow_parts {
             if options.table.is_some() && options.splits.is_none() {
-                return Err(Self::one_table(Some(FileFormat::Arrow)));
+                // Named by an input the user knows, never the converted copy.
+                let named = parts.first().map(|part| match part {
+                    crate::ipc_stream::Part::InPlace(path) => path.as_path(),
+                    crate::ipc_stream::Part::Converted { source, .. } => source.as_path(),
+                });
+                return Err(Self::one_table(named, Some(FileFormat::Arrow)));
             }
             return Self::scan_arrow_parts(cloud, paths.first(), parts).map(Scan::from);
         }
@@ -11054,12 +11085,8 @@ impl App {
                         glob: is_glob,
                         ..Default::default()
                     };
-                    let lf = LazyFrame::scan_parquet(pl_path, args).map_err(|e| {
-                        color_eyre::eyre::eyre!(
-                            "Could not read from S3. Check credentials and URL: {}",
-                            e
-                        )
-                    })?;
+                    let lf = LazyFrame::scan_parquet(pl_path, args)
+                        .map_err(|e| Self::cloud_scan_failed(&full, &e))?;
                     // The frame alone. Building a state here would ask Polars for the
                     // schema, which lists every file under a prefix, and the schema
                     // phase that follows lists them once more for itself.
@@ -11104,12 +11131,8 @@ impl App {
                         glob: is_glob,
                         ..Default::default()
                     };
-                    let lf = LazyFrame::scan_parquet(pl_path, args).map_err(|e| {
-                        color_eyre::eyre::eyre!(
-                            "Could not read from GCS. Check credentials and URL: {}",
-                            e
-                        )
-                    })?;
+                    let lf = LazyFrame::scan_parquet(pl_path, args)
+                        .map_err(|e| Self::cloud_scan_failed(&full, &e))?;
                     return Ok(lf.into());
                 }
                 #[cfg(not(feature = "cloud"))]
@@ -11148,14 +11171,8 @@ impl App {
                         glob: is_glob,
                         ..Default::default()
                     };
-                    let lf = LazyFrame::scan_parquet(PlRefPath::new(full.as_str()), args).map_err(
-                        |e| {
-                            color_eyre::eyre::eyre!(
-                                "Could not read from Azure. Check credentials and URL: {}",
-                                e
-                            )
-                        },
-                    )?;
+                    let lf = LazyFrame::scan_parquet(PlRefPath::new(full.as_str()), args)
+                        .map_err(|e| Self::cloud_scan_failed(&full, &e))?;
                     return Ok(lf.into());
                 }
                 #[cfg(not(feature = "cloud"))]
@@ -11477,7 +11494,7 @@ impl App {
             && !effective_format.is_some_and(FileFormat::takes_table)
             && options.splits.is_none()
         {
-            return Err(Self::one_table(effective_format));
+            return Err(Self::one_table(Some(path), effective_format));
         }
 
         // One compressed CSV, TSV, PSV or text file, as a directory of one resolves to:

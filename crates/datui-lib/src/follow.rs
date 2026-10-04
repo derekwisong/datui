@@ -1451,12 +1451,34 @@ fn replaced(known: Option<Identity>, now: Option<Identity>) -> bool {
     matches!((known, now), (Some(known), Some(now)) if known != now)
 }
 
+/// Why following `path` (`None`: standard input) ended: `doing` when `e` stopped it.
+fn failed_message(path: Option<&Path>, doing: &str, e: &std::io::Error) -> String {
+    let what = format!(
+        "{doing}. {}",
+        crate::error_display::user_message_from_io(e, None)
+    );
+    match path {
+        Some(path) => crate::error_display::file_message(path, &what),
+        None => crate::error_display::sentence(&format!("standard input: {what}")),
+    }
+}
+
 impl Watcher {
+    /// Why following ended, `doing` when `e` stopped it, naming the file followed;
+    /// standard input's spool is a file the user never named.
+    fn failed(&self, doing: &str, e: &std::io::Error) -> String {
+        failed_message(
+            self.spool.is_none().then_some(self.path.as_path()),
+            doing,
+            e,
+        )
+    }
+
     fn run(mut self) {
         let mut file = match File::open(&self.path) {
             Ok(file) => file,
             Err(e) => {
-                self.send(Change::Failed(format!("Could not follow the file: {e}")));
+                self.send(Change::Failed(self.failed("following it stopped", &e)));
                 return;
             }
         };
@@ -1490,7 +1512,7 @@ impl Watcher {
                     return;
                 }
                 Err(e) => {
-                    self.send(Change::Failed(format!("Could not follow the file: {e}")));
+                    self.send(Change::Failed(self.failed("following it stopped", &e)));
                     return;
                 }
             };
@@ -1500,7 +1522,7 @@ impl Watcher {
                 match File::open(&self.path) {
                     Ok(reopened) => file = reopened,
                     Err(e) => {
-                        self.send(Change::Failed(format!("Could not follow the file: {e}")));
+                        self.send(Change::Failed(self.failed("following it stopped", &e)));
                         return;
                     }
                 }
@@ -1512,7 +1534,7 @@ impl Watcher {
                 self.tail.restart();
                 self.marks.clear();
                 if let Err(e) = self.tail.read_on(&mut file, len, false) {
-                    self.send(Change::Failed(format!("Could not read the file: {e}")));
+                    self.send(Change::Failed(self.failed("reading it stopped", &e)));
                     return;
                 }
                 self.marks.take_from(&mut self.tail);
@@ -1524,7 +1546,7 @@ impl Watcher {
                 continue;
             }
             if let Err(e) = self.tail.read_on(&mut file, len, true) {
-                self.send(Change::Failed(format!("Could not read the file: {e}")));
+                self.send(Change::Failed(self.failed("reading it stopped", &e)));
                 return;
             }
             // Before the rows are reported, so the view's reads of them find marks.
@@ -1980,6 +2002,34 @@ pub(crate) fn spool<R: Read + Send + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Following that stops on an error names the file followed, in the one shape;
+    /// standard input is called that.
+    #[test]
+    fn errors_name_the_file() {
+        let path = Path::new("/data/app.log");
+        for (doing, e) in [
+            (
+                "following it stopped",
+                std::io::Error::from(std::io::ErrorKind::NotFound),
+            ),
+            (
+                "reading it stopped",
+                std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            ),
+        ] {
+            let message = failed_message(Some(path), doing, &e);
+            eprintln!("{message}");
+            crate::readers::bad_input::assert_shape(&message, path);
+            assert!(message.contains(&doing[1..]), "{message}");
+        }
+        let e = std::io::Error::from(std::io::ErrorKind::UnexpectedEof);
+        let message = failed_message(None, "reading it stopped", &e);
+        assert_eq!(
+            message,
+            "Standard input: reading it stopped. Unexpected end of file."
+        );
+    }
 
     fn tail_of(text: &[u8], format: FileFormat, options: &OpenOptions) -> Tail {
         let dir = tempfile::tempdir().unwrap();

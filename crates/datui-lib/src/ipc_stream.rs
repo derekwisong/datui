@@ -21,6 +21,7 @@ use polars_arrow::io::ipc::read::{StreamReader, StreamState, read_stream_metadat
 use polars_arrow::io::ipc::write::{FileWriter, WriteOptions};
 
 use crate::download::TempDownload;
+use crate::error_display::{FileError, user_message_from_io};
 use crate::unfinished::Writer;
 
 /// What a stream's messages start with since Arrow 0.15. Older streams start with the
@@ -289,14 +290,22 @@ impl<'a> Merge<'a> {
             ),
             at: 0,
         };
-        let unreadable = move |e: &dyn std::fmt::Display| {
-            eyre!("{} is not a readable Arrow IPC stream: {e}", name.display())
+        let unreadable = move |e: &dyn std::fmt::Display| -> color_eyre::Report {
+            FileError::new(name, format!("not a readable Arrow IPC stream: {e}")).into()
+        };
+        // A read that failed under the stream (a download cut off) says so, not that
+        // the stream is damaged.
+        let failed = move |e: polars::prelude::PolarsError| match e {
+            polars::prelude::PolarsError::IO { error, .. } => {
+                FileError::new(name, user_message_from_io(&error, None)).into()
+            }
+            e => unreadable(&e),
         };
         // Polars panics on a column type it has not implemented, such as run-end
         // encoding: that is a stream it cannot read, not a crash.
         let metadata = crate::logging::catch_panic(|| read_stream_metadata(&mut reader))
             .map_err(|_| unreadable(&"it has a column type Polars cannot read"))?
-            .map_err(|e| unreadable(&e))?;
+            .map_err(failed)?;
         self.start(
             name,
             &metadata.schema,
@@ -316,7 +325,7 @@ impl<'a> Merge<'a> {
                 Some(Ok(StreamState::Some(batch))) => batch,
                 // The end of a stream written without its end-of-stream marker.
                 Some(Ok(StreamState::Waiting)) | None => break,
-                Some(Err(e)) => return Err(unreadable(&e)),
+                Some(Err(e)) => return Err(failed(e)),
             };
             self.rows += batch.len() as u64;
             out.write(&batch, None)?;
@@ -694,7 +703,7 @@ pub(crate) mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("cut.arrow is not a readable Arrow IPC stream"),
+            error.contains("cut.arrow\": Not a readable Arrow IPC stream"),
             "{error}"
         );
         assert!(empty());
@@ -780,7 +789,7 @@ pub(crate) mod tests {
         .unwrap_err()
         .to_string();
         assert!(
-            error.contains("damaged.arrow is not a readable Arrow IPC stream"),
+            error.contains("damaged.arrow\": Not a readable Arrow IPC stream"),
             "{error}"
         );
         assert!(std::fs::read_dir(out.path()).unwrap().next().is_none());

@@ -319,7 +319,10 @@ impl Delimited {
         for derived in &self.columns {
             for from in &derived.from {
                 if !schema.contains(from) {
-                    polars_bail!(ColumnNotFound: "{}: no column named `{from}`", derived.name);
+                    polars_bail!(
+                        ColumnNotFound: "\"{}\" is made from \"{from}\", which the file has no column of",
+                        derived.name
+                    );
                 }
             }
             let name = PlSmallStr::from(derived.name.as_str());
@@ -352,7 +355,7 @@ pub fn read_facts(
         .compression
         .or_else(|| crate::CompressionFormat::from_extension(file));
     let source = crate::widgets::datatable::DataTableState::text_source(file, compression)
-        .map_err(|e| color_eyre::eyre::eyre!("{}: {e}", file.display()))?;
+        .map_err(|e| crate::error_display::in_file(file, e.into()))?;
     let separator = options.separator_or(
         options
             .format
@@ -362,7 +365,7 @@ pub fn read_facts(
     let HeadFacts { units, metadata } = read
         .delimited()
         .facts(source, separator, &options.header_join)
-        .map_err(|e| e.wrap_err(file.display().to_string()))?;
+        .map_err(|e| crate::error_display::in_file(file, e))?;
     Ok(DelimitedRead {
         units,
         metadata,
@@ -406,9 +409,10 @@ pub fn check(
     let Some(file) = file else {
         return Ok(out);
     };
-    let shown = file.display();
-    // With its causes: the outermost alone may only name the file.
-    let fail = |out: &str, e: &color_eyre::Report| format!("{out}error: {e:#}\n");
+    let fail = |out: &str, e: &color_eyre::Report| {
+        let said = crate::error_display::user_message_from_report(e, Some(file));
+        format!("{out}error: {said}\n")
+    };
     let mut options = crate::OpenOptions {
         format: crate::FileFormat::from_path(file),
         ..base.clone()
@@ -447,13 +451,13 @@ pub fn check(
     let separator = options.separator_or(b',');
     let state =
         crate::widgets::datatable::DataTableState::from_delimited(file, separator, &options)
-            .map_err(|e| fail(&out, &e.wrap_err(shown.to_string())))?;
+            .map_err(|e| fail(&out, &crate::error_display::in_file(file, e)))?;
     let df = state
         .lf()
         .clone()
         .limit(rows as IdxSize)
         .collect()
-        .map_err(|e| format!("{out}error: {shown}: {e}\n"))?;
+        .map_err(|e| fail(&out, &crate::error_display::in_file(file, e.into())))?;
     out.push_str(&crate::formats::text_table(&df));
     Ok(out)
 }
@@ -722,10 +726,12 @@ mod tests {
         for (file, said) in [
             (
                 short,
-                "short.csv: header line 3 is past the end of the file",
+                "short.csv\": Header line 3 is past the end of the file.",
             ),
-            // The reason is the OS's own words, which differ between platforms.
-            (dir.path().join("none.csv"), "none.csv: "),
+            (
+                dir.path().join("none.csv"),
+                "none.csv\": File or directory not found.",
+            ),
         ] {
             let e = check(&spec, Some(&file), 5, &crate::OpenOptions::default()).unwrap_err();
             assert!(e.contains(said), "{e}");
@@ -811,6 +817,57 @@ mod tests {
         assert_eq!(shown[2], "2024-03-05 18:00:00 UTC");
     }
 
+    /// Every way a delimited spec or the file it reads is refused names the file, in
+    /// the one shape; a spec's problem with its line and column.
+    #[test]
+    fn errors_name_the_file() {
+        use crate::readers::bad_input::assert_shape;
+        let dir = tempfile::tempdir().unwrap();
+        let spec_path = dir.path().join("log.toml");
+        let text = "name = \"a.log\"\nkind = \"delimited\"\nheader_rows = \"three\"\n";
+        let e = Spec::parse(text, Some(&spec_path)).unwrap_err().to_string();
+        eprintln!("{e}");
+        assert_shape(&e, &spec_path);
+        assert!(e.contains(":3:"), "{e}");
+
+        let data = dir.path().join("a.csv");
+        std::fs::write(&data, "a\n1\n").unwrap();
+        let spec = Delimited {
+            columns: vec![Derived {
+                name: "day".into(),
+                from: vec!["date".into()],
+                kind: DerivedKind::Date,
+                format: None,
+            }],
+            ..Default::default()
+        };
+        let lf = LazyCsvReader::new(PlRefPath::new(data.to_string_lossy().as_ref()))
+            .finish()
+            .unwrap();
+        let Err(e) = spec.derive(lf) else {
+            panic!("a missing column is an error");
+        };
+        let e = crate::error_display::user_message_from_report(&e.into(), Some(&data));
+        eprintln!("{e}");
+        assert_shape(&e, &data);
+        assert!(e.contains("\"date\""), "{e}");
+
+        let text = "name = \"a.log\"\nkind = \"delimited\"\nheader_rows = 3";
+        let spec = Arc::new(Spec::parse(text, None).unwrap());
+        let read = DelimitedRead::chosen(spec, Chosen::SpecFile, Vec::new());
+        for file in [data.clone(), dir.path().join("none.csv")] {
+            let e = read_facts(
+                &read,
+                std::slice::from_ref(&file),
+                &crate::OpenOptions::default(),
+            )
+            .unwrap_err();
+            let e = crate::error_display::user_message_from_report(&e, Some(&file));
+            eprintln!("{e}");
+            assert_shape(&e, &file);
+        }
+    }
+
     #[test]
     fn a_missing_source_column_is_named() {
         let df = df!("a" => [1]).unwrap();
@@ -827,6 +884,9 @@ mod tests {
             panic!("a missing column is an error");
         };
         let err = err.to_string();
-        assert!(err.contains("day: no column named `date`"), "{err}");
+        assert!(
+            err.contains("\"day\" is made from \"date\", which the file has no column of"),
+            "{err}"
+        );
     }
 }

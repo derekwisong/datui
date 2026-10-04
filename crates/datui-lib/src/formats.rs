@@ -47,17 +47,16 @@ pub struct SpecError {
     pub message: String,
 }
 
+/// Said as every reader error is, with the place in the text a compiler gives:
+/// `"spec.toml":3:7: <what went wrong>.`
 impl std::fmt::Display for SpecError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(path) = &self.path {
-            write!(f, "{}:", path.display())?;
-        }
-        if self.line > 0 {
-            write!(f, "{}:{}: ", self.line, self.column)?;
-        } else if self.path.is_some() {
-            f.write_str(" ")?;
-        }
-        f.write_str(&self.message)
+        let at = (self.line > 0).then_some((self.line, self.column));
+        f.write_str(&crate::error_display::located_message(
+            self.path.as_deref(),
+            at,
+            &self.message,
+        ))
     }
 }
 
@@ -1024,7 +1023,7 @@ impl Reader<'_> {
             let Some(header_fields) = header else {
                 return Err(self.error(
                     &w.span(),
-                    "where compares a binary header's fields; a delimited spec matches by glob and magic",
+                    "`where` compares a binary header's fields; a delimited spec matches by glob and magic",
                 ));
             };
             let table = self.table(w, "where")?;
@@ -2655,7 +2654,10 @@ impl Reader<'_> {
                 if !ty.is_number() {
                     return Err(self.error(
                         &span,
-                        format!("factor and offset are for numbers, not {}", type_name(ty)),
+                        format!(
+                            "`factor` and `offset` are for numbers, not {}",
+                            type_name(ty)
+                        ),
                     ));
                 }
                 let factor = keys
@@ -2720,7 +2722,7 @@ impl Reader<'_> {
         if let Some(v) = keys.get("epoch")
             && (unit.is_none() || of_day)
         {
-            return Err(self.error(&v.span(), "epoch goes with time, and not with of_day"));
+            return Err(self.error(&v.span(), "`epoch` goes with time, and not with of_day"));
         }
         match (unit, of_day, date) {
             (None, false, Some((date, at))) => {
@@ -2733,7 +2735,7 @@ impl Reader<'_> {
                 if !ty.is_integer() {
                     return Err(self.error(
                         &at,
-                        format!("date is for integer types, not {}", type_name(ty)),
+                        format!("`date` is for integer types, not {}", type_name(ty)),
                     ));
                 }
                 Ok(Meaning::Yyyymmdd)
@@ -2767,9 +2769,10 @@ impl Reader<'_> {
                     return Err(self.error(&at, "date: goes with of_day, or alone as \"yyyymmdd\""));
                 }
                 if !ty.is_number() {
-                    return Err(
-                        self.error(span, format!("time is for numbers, not {}", type_name(ty)))
-                    );
+                    return Err(self.error(
+                        span,
+                        format!("`time` is for numbers, not {}", type_name(ty)),
+                    ));
                 }
                 let epoch_ns = keys
                     .get("epoch")
@@ -3337,7 +3340,10 @@ impl Spec {
                 path: Some(path.to_path_buf()),
                 line: 0,
                 column: 0,
-                message: format!("could not read the spec: {e}"),
+                message: format!(
+                    "could not read it. {}",
+                    crate::error_display::user_message_from_io(&e, None)
+                ),
             })?;
         Self::from_bytes(&bytes, path)
     }
@@ -3352,10 +3358,10 @@ impl Spec {
             message,
         };
         if bytes.len() as u64 > MAX_SPEC_BYTES {
-            return Err(refused(format!("a spec is at most {MAX_SPEC_SAID}")));
+            return Err(refused(format!("a format spec is at most {MAX_SPEC_SAID}")));
         }
-        let text =
-            std::str::from_utf8(bytes).map_err(|_| refused("a spec is UTF-8 text".to_string()))?;
+        let text = std::str::from_utf8(bytes)
+            .map_err(|_| refused("not UTF-8 text, which a format spec is".to_string()))?;
         Self::parse(text, Some(from))
     }
 
@@ -5757,7 +5763,8 @@ fields = [
         let e = Spec::parse(text, Some(Path::new("a.toml"))).unwrap_err();
         assert_eq!((e.line, e.column), (3, 32), "{e}");
         assert!(
-            e.to_string().starts_with("a.toml:3:32: type: expected u1"),
+            e.to_string()
+                .starts_with("\"a.toml\":3:32: type: expected u1"),
             "{e}"
         );
         let e = Spec::parse(
@@ -6095,7 +6102,7 @@ fields = [{ name = "a", type = "u1" }, { name = "b", type = "u1" }]"#;
         let listing = registry.listing(&path);
         assert!(listing.contains("overrides"), "{listing}");
         assert!(
-            listing.contains("bad.toml:1:8: name: expected a string"),
+            listing.contains("bad.toml\":1:8: name: expected a string."),
             "{listing}"
         );
     }
@@ -6212,7 +6219,10 @@ fields = [{{ name = "x", type = "u1" }}]"#
             &crate::OpenOptions::default(),
         )
         .unwrap_err();
-        assert!(e.contains("l2.toml:3:10: fields: expected an array"), "{e}");
+        assert!(
+            e.contains("l2.toml\":3:10: fields: expected an array"),
+            "{e}"
+        );
         assert!(
             check(
                 "acme.nothing",
@@ -6280,7 +6290,7 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
         for (rest, said) in [
             (
                 "records = 1",
-                "3:1: unknown key `records` in a delimited spec",
+                "3:1: Unknown key `records` in a delimited spec",
             ),
             ("header_rows = { unit = 2 }", "header_rows: missing `name`"),
             (
@@ -6312,7 +6322,7 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
             ("comment = \"\"", "comment: must not be empty"),
             (
                 "match = { where = { \"header.v\" = 1 } }",
-                "where compares a binary header's fields",
+                "`where` compares a binary header's fields",
             ),
             (
                 "[columns]\nt = { from = [\"a\", \"b\"], as = \"date\" }",
@@ -6531,6 +6541,6 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
             &crate::OpenOptions::default(),
         )
         .unwrap_err();
-        assert!(e.contains("tags.nine"), "{e}");
+        assert!(e.contains("broken.toml\":3:1: tags.nine"), "{e}");
     }
 }

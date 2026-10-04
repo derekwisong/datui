@@ -908,7 +908,7 @@ fn render_formats(page: &Page, read: Read) -> String {
     };
     // The overview's count sentence is above already.
     let index = read("docs/formats/index.md");
-    let index = match crate::docgen::splice(&index, "format-count", "") {
+    let index = match crate::docgen::splice("docs/formats/index.md", &index, "format-count", "") {
         Ok(text) => text,
         Err(_) => index,
     };

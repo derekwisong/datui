@@ -1,0 +1,76 @@
+# How to install datui, one entry per channel, in the order they are shown.
+#
+# `gen_docs write` renders this into README.md, docs/getting-started/installation.md
+# and the landing page (scripts/docs/index.html.j2); `the_generated_docs_are_current`
+# fails while a copy differs. test-install.yml installs the commands.
+#
+# id       a short name; the landing page's tab id
+# label    the platform, as the tables and tabs name it
+# link     the package's page, linked from the label in the tables
+# os       the landing page shows this channel first on these systems: linux, macos, windows
+# lang     the shell the command runs in
+# command  what to type; several lines are shown whole on the landing page and
+#          linked from the tables to `anchor` in installation.md
+# text     Markdown for the tables when there is no command
+# html     the landing page's text when there is no command
+# table    false keeps it out of the tables (the one-line script heads them)
+
+[[channel]]
+id = "script"
+label = "Linux, macOS"
+os = ["linux", "macos"]
+lang = "bash"
+command = "curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh"
+table = false
+
+[[channel]]
+id = "winget"
+label = "Windows, WinGet"
+os = ["windows"]
+lang = "powershell"
+command = "winget install derekwisong.datui"
+
+[[channel]]
+id = "brew"
+label = "macOS, Homebrew"
+link = "https://github.com/derekwisong/homebrew-datui"
+lang = "bash"
+command = "brew tap derekwisong/datui && brew trust derekwisong/datui && brew install datui"
+
+[[channel]]
+id = "pip"
+label = "Python, PyPI"
+link = "https://pypi.org/project/datui/"
+lang = "bash"
+command = "pip install datui"
+
+[[channel]]
+id = "cargo"
+label = "Rust, crates.io"
+link = "https://crates.io/crates/datui"
+lang = "bash"
+command = "cargo install datui --locked"
+
+[[channel]]
+id = "aur"
+label = "Arch Linux, AUR"
+link = "https://aur.archlinux.org/packages/datui-bin"
+lang = "bash"
+command = "paru -S datui-bin"
+
+[[channel]]
+id = "apt"
+label = "Debian, Ubuntu"
+lang = "bash"
+anchor = "apt-repository"
+command = """
+curl -fsSL https://derekwisong.github.io/datui-apt/public.key | sudo gpg --dearmor -o /usr/share/keyrings/datui-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/datui-archive-keyring.gpg] https://derekwisong.github.io/datui-apt/ ./" | sudo tee /etc/apt/sources.list.d/datui.list
+sudo apt update
+sudo apt install datui"""
+
+[[channel]]
+id = "binaries"
+label = "Binaries"
+text = "Linux, macOS and Windows binaries, `.deb`, `.rpm` and Arch tarballs on the [latest release](https://github.com/derekwisong/datui/releases/latest)"
+html = "Linux (x86_64, arm64), macOS (Intel, Apple silicon) and Windows binaries, plus <code>.deb</code>, <code>.rpm</code> and Arch tarballs, are on the <a href=\"https://github.com/derekwisong/datui/releases/latest\">latest release</a>."

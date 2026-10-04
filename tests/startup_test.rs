@@ -568,7 +568,7 @@ fn a_dialect_reaches_data_piped_in() {
     pipe.write_all(&gzipped(&log)).unwrap();
     drop(pipe);
     session.wait_for_screen("Latitude degrees");
-    session.wait_for_screen("3 rows");
+    session.wait_for_screen("/ 3");
     let drawn = screen(&session.out).join("\n");
     assert!(
         drawn.contains("Lcl Date yyyy-mm-dd") && drawn.contains("f64"),

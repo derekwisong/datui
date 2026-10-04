@@ -118,7 +118,7 @@ impl Page {
             ),
             ("datui-config", 5) => "the datui configuration file".into(),
             ("datui-keys", 7) => "the keys of every datui screen".into(),
-            ("datui-query", 7) => "the q syntax of the datui query prompt".into(),
+            ("datui-query", 7) => "the q syntax of the datui command line".into(),
             ("datui-formats", 7) => "the formats datui reads, and format specs".into(),
             (name, _) => {
                 let command = name.trim_start_matches("datui-");
@@ -876,7 +876,7 @@ fn render_query(page: &Page, read: Read) -> String {
     ));
     out.push_str(".fi\n");
     out.push_str(".SH DESCRIPTION\n");
-    // The summary the query prompt's help shows.
+    // The summary the command line's help shows.
     out.push_str(".SS In brief\n");
     for (example, meaning) in keys::Q_SUMMARY {
         out.push_str(".TP\n");

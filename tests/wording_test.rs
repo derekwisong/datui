@@ -52,6 +52,11 @@ const RETIRED: &[(&str, &str)] = &[
     ("suggested places", "bookmarks"),
     ("remembered directory", "catalog entry"),
     ("remembered directories", "catalog entries"),
+    ("control bar", "footer"),
+    ("bottom bar", "footer"),
+    ("query prompt", "command line"),
+    ("query bar", "command line"),
+    ("text query", "a find kept with Ctrl+G"),
     // How a file is read: name what happens, not how often.
     ("converted once", "converted to Arrow, or decompressed copy"),
     ("downloaded, then", "download →"),
@@ -118,6 +123,8 @@ const ALLOWED: &[(&str, &str)] = &[
     ("release-notes/", "| `[templates]`"),
     ("release-notes/", "| `[query] default_mode = \"search\"`"),
     ("release-notes/", "Templates are now views"),
+    ("release-notes/", "which replaces the Text query mode"),
+    ("release-notes/", "A status footer replaces the control bar"),
     ("release-notes/", "- The `template` module is `view`"),
 ];
 

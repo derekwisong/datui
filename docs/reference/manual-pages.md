@@ -17,6 +17,6 @@ and `datui man --dir ~/.local/share/man` installs them where `man` finds them.
 | [datui-man(1)](man/datui-man.1.html) | show a manual page, list them, or write them all under a directory |
 | [datui-config(5)](man/datui-config.5.html) | the datui configuration file |
 | [datui-keys(7)](man/datui-keys.7.html) | the keys of every datui screen |
-| [datui-query(7)](man/datui-query.7.html) | the q syntax of the datui query prompt |
+| [datui-query(7)](man/datui-query.7.html) | the q syntax of the datui command line |
 | [datui-formats(7)](man/datui-formats.7.html) | the formats datui reads, and format specs |
 <!-- end generated: pages -->

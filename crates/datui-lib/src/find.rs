@@ -1,5 +1,9 @@
-//! Find in the table: `f` asks for a pattern, `n` and `N` move between the cells
-//! that hold it.
+//! Find in the table: `/` (or `f`) asks for a pattern, `n` and `N` move between the
+//! cells that hold it.
+//!
+//! As the pattern is typed, the cells that match among the rows on hand light up and
+//! are counted (`3 on screen`); nothing is read for that. Ctrl+G keeps only the rows
+//! that match, as a filter the Sort & Filter sidebar lists.
 //!
 //! The view is searched as it stands — query, filters, sort and the columns shown —
 //! and never changed: only the cursor moves. The search runs off the UI thread as a
@@ -15,6 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use polars::prelude::*;
 
+use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use crate::jobs::{Answer, Job, Progress};
 use crate::widgets::datatable::ViewRows;
 use crate::widgets::text_input::{TextInput, TextInputEvent};
@@ -42,6 +47,9 @@ pub struct FindSpec {
     pub pattern: String,
     /// The pattern is a regular expression rather than plain text.
     pub regex: bool,
+    /// The pattern's letters in order, anything between: `smth` finds `Smith`.
+    /// Spaces in the pattern are ignored.
+    pub fuzzy: bool,
     /// Only this column, when set; otherwise every column shown.
     pub column: Option<String>,
 }
@@ -65,8 +73,17 @@ impl FindSpec {
 
     /// The regex a cell's text is matched with, or `None` for a case-sensitive plain
     /// pattern, which is matched literally.
-    fn regex_source(&self) -> Option<String> {
+    pub(crate) fn regex_source(&self) -> Option<String> {
         let case = if self.ignores_case() { "(?i)" } else { "" };
+        if self.fuzzy {
+            let letters: Vec<String> = self
+                .pattern
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .map(|c| regex::escape(&c.to_string()))
+                .collect();
+            return Some(format!("{case}{}", letters.join(".*")));
+        }
         match (self.regex, self.ignores_case()) {
             (false, false) => None,
             (false, true) => Some(format!("{case}{}", regex::escape(&self.pattern))),
@@ -76,7 +93,7 @@ impl FindSpec {
 
     /// Why the pattern cannot be searched, in one line.
     pub fn check(&self) -> Result<(), String> {
-        let Some(source) = self.regex_source().filter(|_| self.regex) else {
+        let Some(source) = self.regex_source().filter(|_| self.regex && !self.fuzzy) else {
             return Ok(());
         };
         regex::Regex::new(&source).map(|_| ()).map_err(|e| {
@@ -113,12 +130,20 @@ impl FindSpec {
         if self.pattern.chars().count() > LONGEST {
             text.push_str(g.ellipsis);
         }
-        if self.regex {
+        if self.fuzzy {
+            format!("~{text}")
+        } else if self.regex {
             format!("/{text}/")
         } else {
             format!("\"{text}\"")
         }
     }
+}
+
+/// Whether a cell of column `name` matches `spec`, or `None` for a column a find
+/// skips: the one place a cell is matched, for a find and for the filter it keeps.
+pub(crate) fn cell_matches(spec: &FindSpec, name: &str, dtype: &DataType) -> Option<Expr> {
+    Some(spec.matches(text_of(name, dtype)?))
 }
 
 /// A column's values as text to match, or `None` for a column a find skips: bytes,
@@ -553,6 +578,8 @@ pub struct Find {
     pub input: TextInput,
     /// The prompt's pattern is a regex.
     pub regex: bool,
+    /// The prompt's pattern is letters in order.
+    pub fuzzy: bool,
     /// The prompt limits the find to `column`.
     pub in_column: bool,
     /// The column the prompt opened on: the column cursor's.
@@ -561,6 +588,34 @@ pub struct Find {
     pub error: Option<String>,
     /// The find `n` and `N` repeat.
     pub active: Option<ActiveFind>,
+    /// The cells the prompt's pattern matches among the rows on hand.
+    pub live: Option<LiveMatches>,
+    /// The rows on hand `live` was worked out over: their first view row, how many,
+    /// and the frame. Rows that arrive or a new frame make it stale.
+    live_rows: Option<(usize, usize, u64)>,
+    /// Rows the find reading has read, for the footer's progress line.
+    pub read: Option<usize>,
+}
+
+/// The view rows a pattern being typed matches among the rows on hand, by column
+/// name: looked up by the table as it draws, without a name cloned per cell.
+pub type MatchCells = std::collections::HashMap<String, std::collections::HashSet<usize>>;
+
+/// The cells a pattern being typed matches among the rows on hand. Worked out in
+/// memory as the pattern or the rows on hand change; never read.
+#[derive(Debug, Clone, Default)]
+pub struct LiveMatches {
+    pub cells: Arc<MatchCells>,
+}
+
+impl LiveMatches {
+    /// The matches in view rows `rows`: the count the prompt shows.
+    pub fn within(&self, rows: Range<usize>) -> usize {
+        self.cells
+            .values()
+            .map(|hits| hits.iter().filter(|r| rows.contains(r)).count())
+            .sum()
+    }
 }
 
 /// The find in effect, and where it last landed.
@@ -582,18 +637,23 @@ impl Find {
         Self {
             input,
             regex: false,
+            fuzzy: false,
             in_column: false,
             column: None,
             error: None,
             active: None,
+            live: None,
+            live_rows: None,
+            read: None,
         }
     }
 
     /// The spec the prompt describes.
-    fn prompt_spec(&self) -> FindSpec {
+    pub(crate) fn prompt_spec(&self) -> FindSpec {
         FindSpec {
             pattern: self.input.value().to_string(),
             regex: self.regex,
+            fuzzy: self.fuzzy,
             column: self.column.clone().filter(|_| self.in_column),
         }
     }
@@ -627,8 +687,8 @@ fn finding_status(spec: &FindSpec, read: Option<usize>) -> String {
 }
 
 impl App {
-    /// `f` at the table: the find prompt, holding the last pattern, selected so that
-    /// typing replaces it.
+    /// `/` (or `f`) at the table: the find prompt, holding the last pattern, selected
+    /// so that typing replaces it.
     pub(crate) fn open_find(&mut self) {
         if self.data_table_state.is_none() {
             return;
@@ -646,6 +706,99 @@ impl App {
         self.find.input.set_focused(true);
         self.input_mode = InputMode::Editing;
         self.input_type = Some(InputType::Find);
+        self.refresh_live_matches();
+    }
+
+    /// Light up the cells the prompt's pattern matches among the rows on hand. Only
+    /// what is already in memory is matched, so typing never waits on a read.
+    pub(crate) fn refresh_live_matches(&mut self) {
+        self.find.live = None;
+        self.find.live_rows = self.rows_on_hand_key();
+        let spec = self.find.prompt_spec();
+        if spec.pattern.trim().is_empty() || spec.check().is_err() {
+            return;
+        }
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let Some((df, start)) = state.rows_on_hand() else {
+            return;
+        };
+        let columns: Vec<(String, Expr)> =
+            searched_columns(state.get_column_order(), state.schema(), &spec)
+                .into_iter()
+                .filter(|(name, _)| df.column(name).is_ok())
+                .collect();
+        if columns.is_empty() {
+            self.find.live = Some(LiveMatches::default());
+            return;
+        }
+        let exprs: Vec<Expr> = columns
+            .iter()
+            .enumerate()
+            .map(|(i, (_, expr))| expr.clone().alias(format!("m{i}")))
+            .collect();
+        // In memory: the rows on hand are a frame already collected.
+        let Ok(found) = df.clone().lazy().select(exprs).collect() else {
+            return;
+        };
+        let mut cells = MatchCells::new();
+        for (i, (name, _)) in columns.iter().enumerate() {
+            let Ok(hits) = found
+                .column(&format!("m{i}"))
+                .and_then(|c| c.bool().cloned())
+            else {
+                continue;
+            };
+            let rows: std::collections::HashSet<usize> = hits
+                .iter()
+                .enumerate()
+                .filter(|(_, hit)| *hit == Some(true))
+                .map(|(row, _)| start + row)
+                .collect();
+            if !rows.is_empty() {
+                cells.insert(name.clone(), rows);
+            }
+        }
+        self.find.live = Some(LiveMatches {
+            cells: Arc::new(cells),
+        });
+    }
+
+    /// Which rows are on hand, to tell when the live matches were worked out over
+    /// others.
+    fn rows_on_hand_key(&self) -> Option<(usize, usize, u64)> {
+        let state = self.data_table_state.as_ref()?;
+        let (df, start) = state.rows_on_hand()?;
+        Some((start, df.height(), state.len_generation()))
+    }
+
+    /// While the find prompt is open, work the matches out again when the rows on
+    /// hand changed under it: a collect after the footer took a row, a follow's new
+    /// rows.
+    pub(crate) fn refresh_stale_live_matches(&mut self) {
+        if self.input_type == Some(InputType::Find)
+            && self.find.live_rows != self.rows_on_hand_key()
+        {
+            self.refresh_live_matches();
+        }
+    }
+
+    /// The matches the prompt's pattern has among the rows on screen, while the
+    /// prompt is open.
+    pub fn live_on_screen(&self) -> Option<usize> {
+        let live = self.find.live.as_ref()?;
+        let state = self.data_table_state.as_ref()?;
+        let start = state.start_row();
+        Some(live.within(start..start + state.visible_rows))
+    }
+
+    /// The cells to light up: the prompt's matches while it is open.
+    pub fn live_cells(&self) -> Option<Arc<MatchCells>> {
+        (self.input_type == Some(InputType::Find))
+            .then_some(self.find.live.as_ref())
+            .flatten()
+            .map(|live| live.cells.clone())
     }
 
     /// The column a find limited to one column searches: the column cursor's, which a
@@ -660,22 +813,40 @@ impl App {
     fn close_find_prompt(&mut self) {
         self.find.input.set_focused(false);
         self.find.error = None;
+        self.find.live = None;
         self.input_mode = InputMode::Normal;
         self.input_type = None;
     }
 
-    /// A key in the find prompt. Ctrl+R switches regex, Ctrl+L the column limit; the
-    /// field keeps its readline keys and its history.
+    /// A key in the find prompt. Ctrl+R switches regex, Ctrl+T letters in order,
+    /// Ctrl+L the column limit, and Ctrl+G keeps the rows that match; the field keeps
+    /// its readline keys and its history.
     pub(crate) fn find_prompt_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
-        if event.is_press() && ctrl && event.code == KeyCode::Char('r') {
-            self.find.regex = !self.find.regex;
-            self.find.error = None;
-            return None;
-        }
-        if event.is_press() && ctrl && event.code == KeyCode::Char('l') {
-            self.find.in_column = !self.find.in_column;
-            return None;
+        if event.is_press() && ctrl {
+            match event.code {
+                KeyCode::Char('r') => {
+                    self.find.regex = !self.find.regex;
+                    self.find.fuzzy &= !self.find.regex;
+                    self.find.error = None;
+                    self.refresh_live_matches();
+                    return None;
+                }
+                KeyCode::Char('t') => {
+                    self.find.fuzzy = !self.find.fuzzy;
+                    self.find.regex &= !self.find.fuzzy;
+                    self.find.error = None;
+                    self.refresh_live_matches();
+                    return None;
+                }
+                KeyCode::Char('l') => {
+                    self.find.in_column = !self.find.in_column;
+                    self.refresh_live_matches();
+                    return None;
+                }
+                KeyCode::Char('g') => return self.keep_matches(),
+                _ => {}
+            }
         }
         let before = self.find.input.value().to_string();
         match self.find.input.handle_key(event, Some(&self.cache)) {
@@ -699,10 +870,64 @@ impl App {
             TextInputEvent::HistoryChanged | TextInputEvent::None => {
                 if self.find.input.value() != before {
                     self.find.error = None;
+                    self.refresh_live_matches();
                 }
             }
         }
         None
+    }
+
+    /// Ctrl+G in the find prompt: keep only the rows that match, as a filter added to
+    /// the sidebar's, and leave the find in effect for `n` and `N` among them.
+    fn keep_matches(&mut self) -> Option<AppEvent> {
+        let spec = self.find.prompt_spec();
+        if spec.pattern.trim().is_empty() {
+            return None;
+        }
+        if let Err(reason) = spec.check() {
+            self.find.error = Some(reason);
+            return None;
+        }
+        let state = self.data_table_state.as_ref()?;
+        let operator = if spec.fuzzy {
+            FilterOperator::HasFuzzy
+        } else if spec.regex {
+            FilterOperator::HasRegex
+        } else {
+            FilterOperator::Has
+        };
+        // Over every column, the ones shown now: what the find searched.
+        let columns = if spec.column.is_none() {
+            state.get_column_order().to_vec()
+        } else {
+            Vec::new()
+        };
+        let statement = FilterStatement {
+            columns,
+            column: spec
+                .column
+                .clone()
+                .unwrap_or_else(|| crate::filter_modal::ANY_COLUMN.to_string()),
+            operator,
+            value: spec.pattern.clone(),
+            logical_op: LogicalOperator::And,
+        };
+        let mut statements = state.view_filters().to_vec();
+        let frame = state.len_generation();
+        let _ = self.find.input.save_to_history(&self.cache);
+        self.close_find_prompt();
+        self.find.active = Some(ActiveFind {
+            spec,
+            dataset: self.dataset_generation,
+            frame,
+            hit: None,
+            ordinal: None,
+        });
+        if statements.contains(&statement) {
+            return None;
+        }
+        statements.push(statement);
+        Some(AppEvent::Filter(statements))
     }
 
     /// `n` / `N` at the table: the find in effect again, from the cursor's cell.
@@ -712,7 +937,7 @@ impl App {
                 let spec = active.spec.clone();
                 self.start_find(spec, direction, false);
             }
-            _ => self.flash_note("Nothing to find yet: f finds".to_string()),
+            _ => self.flash_note("Nothing to find yet: / finds".to_string()),
         }
     }
 
@@ -785,6 +1010,7 @@ impl App {
         run.stop.store(true, Ordering::Relaxed);
         self.jobs.cancel(|job| matches!(job, Job::Find(_)));
         self.status_message = None;
+        self.find.read = None;
         true
     }
 
@@ -849,6 +1075,7 @@ impl App {
         };
         let rows = state.view_rows();
         let status = finding_status(&spec, None);
+        self.find.read = None;
         self.spawn_job(Job::Find(run), Some(&status), move |worker| {
             let report = worker.reporter();
             let search = Search::new(rows, columns, stop, move |read| {
@@ -860,6 +1087,7 @@ impl App {
 
     /// A find's progress: the rows it has read.
     pub(crate) fn find_progress(&mut self, rows: usize) {
+        self.find.read = Some(rows);
         if let Some(active) = self.find.active.as_ref() {
             self.status_message = Some(finding_status(&active.spec, Some(rows)));
         }
@@ -872,6 +1100,7 @@ impl App {
         }
         // The line was the find's progress, which the job's own line no longer is.
         self.status_message = None;
+        self.find.read = None;
         let Some(active) = self.find.active.as_mut() else {
             return;
         };
@@ -927,6 +1156,7 @@ impl App {
             return;
         }
         self.status_message = None;
+        self.find.read = None;
         if message != CANCELLED {
             self.flash_note(format!("Find failed: {message}"));
         }
@@ -941,6 +1171,7 @@ mod tests {
         FindSpec {
             pattern: pattern.to_string(),
             regex,
+            fuzzy: false,
             column: None,
         }
     }
@@ -1609,7 +1840,7 @@ mod app_tests {
         key(&mut app, KeyCode::Char('n'));
         settle(&mut app, &rx);
         assert_eq!(cursor(&app), at, "n does not move");
-        assert_eq!(app.flash_message(), Some("Nothing to find yet: f finds"));
+        assert_eq!(app.flash_message(), Some("Nothing to find yet: / finds"));
     }
 
     /// Esc at the table clears a find before it backs out of anything else (#644).
@@ -1850,7 +2081,7 @@ mod app_tests {
     fn n_before_any_find_says_how_to_start_one() {
         let (mut app, _rx) = app_over(haystack(5, &[]));
         key(&mut app, KeyCode::Char('N'));
-        assert_eq!(app.flash_message(), Some("Nothing to find yet: f finds"));
+        assert_eq!(app.flash_message(), Some("Nothing to find yet: / finds"));
         assert!(
             !app.data_table_state.as_ref().unwrap().row_numbers(),
             "N no longer toggles row numbers"

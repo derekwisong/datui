@@ -1,6 +1,6 @@
 # Query syntax
 
-The grammar of the q mode of the query prompt (<kbd>/</kbd>): a subset of the
+The grammar of q on the command line (<kbd>:</kbd>, then `q:`): a subset of the
 q language, evaluated right to left. [Query data](../user-guide/querying-data.md)
 walks through it. Every example below runs on the public dataset its block
 names; open that dataset from **Public datasets** on the home screen.

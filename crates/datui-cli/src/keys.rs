@@ -17,7 +17,6 @@ pub enum Context {
     Home,
     Query,
     Find,
-    GoToRow,
     GoToColumn,
     Inspector,
     Info,
@@ -369,28 +368,30 @@ pub const SCREENS: &[Screen] = &[
                     k("↑ / ↓ (j/k)", "Move", "Move the row cursor"),
                     k("← / → (h/l)", "Column", "Move the column cursor")
                         .more("Move the column cursor, frozen columns included; the columns scroll only when it would leave the screen"),
-                    k("[ / ]", "Page columns", "A page of columns left or right")
-                        .more("A page of columns left or right, the cursor on the page's first column (Shift+←/→ too)"),
+                    k("Shift+← / Shift+→", "Page columns", "A page of columns left or right")
+                        .more("A page of columns left or right, the cursor on the page's first column"),
                     k("{ / }", "First, last", "First column, last column"),
                     k("PgUp / PgDn", "Page", "A page up or down (Ctrl+B / Ctrl+F too)"),
                     k("Ctrl+D / Ctrl+U", "Half page", "Half a page down or up"),
                     k("Home / End", "Top, end", "First or last row (G = End)"),
-                    k(":", "Go to row", "Go to a row number (:0 Enter for the top)"),
+                    k(":", "Command line", "Go to a row, or run SQL or q")
+                        .more("The command line: digits go to that row (the prefix says row:), anything else runs as SQL or q, as the prefix says; Ctrl+T switches. With a query in effect it opens on the query's text"),
                     k("g", "Go to column", "Go to a column by name"),
-                    k("f", "Find", "Find text or a regex in the view")
-                        .more("Find text or a regex in the view; the cursor, column cursor and all, goes to the first match at or after its row"),
-                    k("n / N", "Next, previous", "Next or previous match")
+                    k("/ (f)", "Find", "Find text, a regex, or letters in order")
+                        .more("Find text, a regex, or letters in order in the view; matches on screen light up as you type, and Enter takes the cursor, column cursor and all, to the first at or after its row. f opens it too"),
+                    k("n / N", "Next", "Next or previous match")
                         .more("Next / previous match from the cursor's cell, wrapping round the view"),
                     k("Enter", "Drill", "Drill down to a group's rows, or inspect")
                         .more("On a row of a by query or a SQL GROUP BY, drill down to its rows (Esc comes back); elsewhere, inspect the row"),
                     k("Space", "Inspect", "Inspect the row: every field, whole")
-                        .more("Inspect the row: every field, each value whole and exact (Esc or Space closes). The bar's first chip says what Enter does: Inspect, or Drill"),
+                        .more("Inspect the row: every field, each value whole and exact (Esc or Space closes)"),
                 ],
             },
             Group {
                 name: "Shape",
                 keys: &[
-                    k("/", "Query", "Query: SQL, Text or q"),
+                    k("[ / ]", "Sort", "Sort by the cursor's column, up or down")
+                        .more("Sort by the cursor's column, [ ascending and ] descending, replacing the sort in effect; the same key again on that column removes it. The s sidebar adds secondary sorts"),
                     k("s", "Sort & Filter", "Sort & Filter sidebar, on the cursor's column")
                         .more("Open the Sort & Filter sidebar (tabs: Columns, Filters), on the cursor's column"),
                     k("+ / -", "Filter", "Keep (+) or drop (-) rows with this cell's value")
@@ -446,7 +447,7 @@ pub const SCREENS: &[Screen] = &[
                 name: "Go",
                 keys: &[
                     k("q", "Back", "Home when opened from there, else quit")
-                        .more("Back to the home screen when the dataset was opened from it; otherwise quit (the control bar says which)"),
+                        .more("Back to the home screen when the dataset was opened from it; otherwise quit"),
                     k("Q", "Quit", "Quit"),
                     k("Esc", "Back", "Leave a drill-down, stop a find or a follow"),
                 ],
@@ -463,7 +464,7 @@ pub const SCREENS: &[Screen] = &[
                     k("Shift+wheel", "Across", "← / →, the column cursor")
                         .more("← / →, the column cursor (a sideways wheel too)")
                         .no_run(),
-                    k("Click a chip", "Press", "Press its key").no_run(),
+                    k("Click a key", "Press", "Press a key the footer shows").no_run(),
                 ],
             },
         ],
@@ -486,18 +487,18 @@ pub const SCREENS: &[Screen] = &[
                     k("Space", "Fold", "Fold the section (types once filtering)")
                         .more("While the filter is empty: fold or unfold the section header under the cursor. With a filter typed, it types"),
                     k("Tab", "Sort", "Cycle the sort")
-                        .more("Cycle the sort; the control bar names the order in effect when it has room"),
+                        .more("Cycle the sort; the footer names the order in effect when it has room"),
                 ],
             },
             Group {
                 name: "Go",
                 keys: &[
-                    k("Enter", "Open", "What the control bar names: Open, Inside, Look")
-                        .more("What the control bar says on this row: \"Open all\" reads a whole directory as one table, \"Inside\" steps into it, \"Open\" loads a file, \"Look\" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them"),
+                    k("Enter", "Open", "What the footer names: Open, Inside, Look")
+                        .more("What the footer says on this row: \"Open all\" reads a whole directory as one table, \"Inside\" steps into it, \"Open\" loads a file, \"Look\" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them"),
                     k("Backspace", "Up", "Delete a filter character, or up a level")
                         .more("Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a catalog's remote dataset, back here)"),
                     k("Esc", "Back", "Path prompt, filter, directory, then the table")
-                        .more("Back out one layer: the path prompt, the filter, the directory (back to the row it was entered from), then to the open table, which the control bar's chip names"),
+                        .more("Back out one layer: the path prompt, the filter, the directory (back to the row it was entered from), then to the open table"),
                 ],
             },
             Group {
@@ -521,7 +522,7 @@ pub const SCREENS: &[Screen] = &[
                         .more("Show the local file under the cursor as bytes, in the hex view, whatever datui would read it as"),
                     k("Ctrl+D", "Catalog", "Add the row to catalog.toml; on its rows, forget it")
                         .more("Add the dataset or directory under the cursor to catalog.toml, listed under My datasets; on a row from catalog.toml, forget it. A heading stands for the directory it lists. Only catalog.toml is written; another catalog is hidden with home.hide"),
-                    k("Ctrl+E", "Documentation", "What the catalog says of the row, full screen")
+                    k("Ctrl+E", "Docs", "What the catalog says of the row, full screen")
                         .more("Open the Documentation view of a catalog row, or of a place inside one: publisher, license, links, columns with units and value legends, bookmarks. ↑ / ↓ move, Enter opens a column's legend, y copies the line's link or value, Esc goes back. Ctrl+E here is not readline's end of line: the filter is edited at its end"),
                     k("Delete", "Forget", "Forget a recent, a place, or a catalog.toml row")
                         .more("Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source"),
@@ -541,30 +542,31 @@ pub const SCREENS: &[Screen] = &[
     },
     Screen {
         context: Context::Query,
-        title: "Query prompt",
-        reached: "<kbd>/</kbd> at the table.",
+        title: "Command line",
+        reached: "<kbd>:</kbd> at the table.",
         groups: &[
             Group {
                 name: "Run",
                 keys: &[
-                    k("Enter", "Run", "Run the query")
-                        .more("Run the query (reopening / restores the last query, selected: typing replaces it, arrows edit it). On the tab bar, Enter returns to the input"),
+                    k("(digits)", "Row", "Digits go to that row (row: shows it)")
+                        .more("Digits alone go to that row, and the prefix says row: (:0 Enter is the top)")
+                        .no_run(),
+                    k("Enter", "Run", "Go to the row, or run the query")
+                        .more("Go to the row, or run the query as the prefix says, sql: or q:. Reopened with a query in effect, the line holds its text, selected: typing replaces it, arrows edit it"),
                     k("Ctrl+J", "Run", "Run, the same as Enter"),
-                    k("Ctrl+T", "Mode", "Next mode: SQL, Text, q")
-                        .more("Next mode: SQL, Text, q (from the input too)"),
-                    k("Shift+Tab", "Tab bar", "Input to the tab bar and back"),
-                    k("← / → (h/l)", "Mode", "On the tab bar: switch mode"),
+                    k("Ctrl+T", "Language", "SQL or q; the line keeps its text")
+                        .more("Switch between SQL and q, keeping what is typed; the choice is remembered. [query] default_mode sets the first"),
                     k("Esc", "Close", "Close"),
                 ],
             },
             Group {
                 name: "Edit",
                 keys: &[
-                    k("Tab", "Complete", "SQL: complete a column name or df")
-                        .more("SQL: complete a column name or df; again for the next match. Text, q: to the tab bar"),
+                    k("Tab", "Complete", "Complete a column name (SQL: or df)")
+                        .more("Complete a column name, or df in SQL; again for the next match. The line under the input lists the names that fit"),
                     k("Alt+Enter", "New line", "SQL: start a new line"),
                     k("↑ / ↓", "History", "Earlier and later queries (Ctrl+P / Ctrl+N)")
-                        .more("Earlier and later queries from the history (Ctrl+P / Ctrl+N too; each mode keeps its own). In SQL over several lines, they move between lines first"),
+                        .more("Earlier and later queries from the history (Ctrl+P / Ctrl+N too; SQL and q keep their own). In SQL over several lines, they move between lines first"),
                     k("Ctrl+U / Ctrl+K", "Delete", "Delete to the start or end of the line"),
                     k("Ctrl+Z / Ctrl+R", "Undo", "Undo, redo"),
                 ],
@@ -574,16 +576,20 @@ pub const SCREENS: &[Screen] = &[
     Screen {
         context: Context::Find,
         title: "Find",
-        reached: "<kbd>f</kbd> at the table.",
+        reached: "<kbd>/</kbd> (or <kbd>f</kbd>) at the table.",
         groups: &[
             Group {
                 name: "Find",
                 keys: &[
-                    k("(text)", "Pattern", "What to find: text, or a regex with Ctrl+R")
+                    k("(text)", "Pattern", "Text, a regex, or letters in order")
+                        .more("What to find: text (any case until a capital is typed), a regex with Ctrl+R, or letters in order with Ctrl+T. Matches in the rows on screen light up as you type, and the line says how many are on screen")
                         .no_run(),
-                    k("Enter", "Find", "Go to the first match at or after the row")
-                        .more("Find: the cursor, column cursor and all, goes to the first match at or after its row. On an empty field, clear the find"),
+                    k("Enter", "Next", "Go to the first match at or after the row")
+                        .more("Find: the cursor, column cursor and all, goes to the first match at or after its row, reading past the rows on hand when it must (the footer counts the rows read; Esc stops). On an empty field, clear the find"),
+                    k("Ctrl+G", "Keep matches", "Keep only the rows that match, as a filter")
+                        .more("Keep only the rows with a match, as a filter: the footer and the Sort & Filter sidebar show it, and removing it there (or R) brings the rows back"),
                     k("Ctrl+R", "Regex", "Regex on or off"),
+                    k("Ctrl+T", "Letters in order", "Letters in order on or off: smth finds Smith"),
                     k("Ctrl+L", "Column", "Only the cursor's column, or every column")
                         .more("Only the column cursor's column, or every column shown"),
                     k("↑ / ↓", "History", "Earlier patterns (Ctrl+P / Ctrl+N too)"),
@@ -594,27 +600,13 @@ pub const SCREENS: &[Screen] = &[
                 // Keys of the table, not the prompt: Enter here would type them.
                 name: "At the table",
                 keys: &[
-                    k("n / N", "Next, previous", "Next or previous match")
-                        .more("Next / previous match from the cursor's cell. Past the last match the find comes round to the first, and the bar says so. Each one typed while a find reads runs in turn; Esc stops them all").no_run(),
-                    k("f", "Find again", "Find again, the last pattern ready to edit").no_run(),
+                    k("n / N", "Next", "Next or previous match")
+                        .more("Next / previous match from the cursor's cell. Past the last match the find comes round to the first, and the footer says so. Each one typed while a find reads runs in turn; Esc stops them all").no_run(),
+                    k("/", "Find again", "Find again, the last pattern ready to edit").no_run(),
                     k("Esc", "Clear", "Clear the find (or stop one still reading)").no_run(),
                 ],
             },
         ],
-    },
-    Screen {
-        context: Context::GoToRow,
-        title: "Go to row",
-        reached: "<kbd>:</kbd> at the table.",
-        groups: &[Group {
-            name: "Go",
-            keys: &[
-                k("(digits)", "Row", "The row to go to (:0 Enter is the top)").no_run(),
-                k("Enter", "Go", "Go"),
-                k("Backspace", "Delete", "Delete a digit"),
-                k("Esc", "Cancel", "Cancel"),
-            ],
-        }],
     },
     Screen {
         context: Context::GoToColumn,
@@ -1296,6 +1288,17 @@ pub fn screen(context: Context) -> &'static Screen {
         .expect("every context has a screen")
 }
 
+/// The entry for `keys` on `context`'s screen, or in `group` of it when named: what
+/// the footer's hints read their labels from.
+pub fn lookup(context: Context, group: Option<&str>, keys: &str) -> Option<&'static Key> {
+    screen(context)
+        .groups
+        .iter()
+        .filter(|g| group.is_none_or(|name| g.name == name))
+        .flat_map(|g| g.keys.iter())
+        .find(|k| k.keys == keys)
+}
+
 /// Every key entry with its screen and group, in reference order; [`GLOBAL`] first.
 pub fn entries() -> impl Iterator<Item = (Option<&'static Screen>, &'static Group, &'static Key)> {
     GLOBAL
@@ -1369,7 +1372,7 @@ mod tests {
             ("e, w, y, o", "e"),
             ("Enter (d / D)", "Enter"),
             ("↑ / ↓, Tab", "↑"),
-            ("Click a chip", "Click"),
+            ("Click a key", "Click"),
         ] {
             assert_eq!(first_key(keys), first, "{keys}");
         }

@@ -110,6 +110,16 @@ fn select(app: &mut App, name: &str) {
     app.home.selected = index;
 }
 
+/// The footer: the last line drawn.
+fn footer(app: &mut App) -> String {
+    screen(app)
+        .lines()
+        .last()
+        .unwrap_or_default()
+        .trim_end()
+        .to_string()
+}
+
 fn screen(app: &mut App) -> String {
     let area = ratatui::layout::Rect::new(0, 0, 140, 40);
     let mut buffer = ratatui::buffer::Buffer::empty(area);
@@ -553,10 +563,19 @@ bookmarks."Daily highs, 2024" = "by_year/YEAR=2024/ELEMENT=TMAX/"
     assert!(shown.contains("Quality flag"), "{shown}");
     assert!(shown.contains("https://example.com/readme.txt"), "{shown}");
 
-    // Ctrl+E opens the whole page, a bookmark's too, and Esc comes back.
+    // Ctrl+E opens the whole page, a bookmark's too, and Esc comes back. The footer
+    // offers it on a catalog row.
     select(&mut app, "Daily highs, 2024");
+    let line = footer(&mut app);
+    assert!(line.contains("^E Docs"), "{line}");
     drive(&mut app, ctrl('e'));
     assert!(app.documentation.is_open());
+    let line = footer(&mut app);
+    assert!(
+        line.contains("documentation") && line.ends_with("F1 keys"),
+        "{line}"
+    );
+    assert!(!line.contains("^E"), "the page names its own keys: {line}");
     let page = screen(&mut app);
     assert!(page.contains("Documentation"), "{page}");
     assert!(page.contains("BOOKMARKS"), "{page}");
@@ -617,7 +636,40 @@ fn ctrl_d_adds_a_row_to_catalog_toml_and_forgets_it() {
         app.home.sections.iter().any(|s| s.title == "Team")
     });
 
+    // Moving the selection never moves the footer: each slot keeps its place on
+    // every row, offered or not, and so does help.
+    let column = |line: &str, text: &str| line.find(text).map(|at| line[..at].chars().count());
+    let mut seen: [std::collections::BTreeSet<usize>; 4] = Default::default();
+    let mut offered = [0; 3];
+    let rows = app.home.visible().len();
+    for row in 0..rows {
+        app.home.selected = row;
+        let line = footer(&mut app);
+        for (i, text) in ["Enter", "^D", "^E", "? keys"].iter().enumerate() {
+            if let Some(at) = column(&line, text) {
+                seen[i].insert(at);
+                if i < 3 {
+                    offered[i] += 1;
+                }
+            }
+        }
+    }
+    for (i, at) in seen.iter().enumerate() {
+        assert!(at.len() <= 1, "slot {i} moved between rows: {at:?}");
+    }
+    assert_eq!(seen[3].len(), 1, "help is on every row");
+    assert!(offered[1] > 0 && offered[2] > 0, "{offered:?}");
+    assert!(
+        offered[1] < rows || offered[2] < rows,
+        "some row lacks a slot, so the check means something: {offered:?}"
+    );
+
     select(&mut app, "Lake");
+    let line = footer(&mut app);
+    assert!(
+        line.contains("^D Add"),
+        "the footer names what Ctrl+D does: {line}"
+    );
     drive(&mut app, ctrl('d'));
     pump(&mut app, &rx, |app| {
         app.home.sections.iter().any(|s| s.title == "Mine")
@@ -650,6 +702,8 @@ fn ctrl_d_adds_a_row_to_catalog_toml_and_forgets_it() {
                 if *section == mine_section && entry.name == "Lake")
         })
         .unwrap();
+    let line = footer(&mut app);
+    assert!(line.contains("^D Forget"), "{line}");
     drive(&mut app, ctrl('d'));
     pump(&mut app, &rx, |app| {
         !app.home.sections.iter().any(|s| s.title == "Mine")

@@ -483,7 +483,7 @@ fn render_filters(
     let col_w = filter
         .statements
         .iter()
-        .map(|s| s.column.chars().count())
+        .map(|s| filter.column_label(s).chars().count())
         .max()
         .unwrap_or(6)
         .clamp(6, 14);
@@ -523,7 +523,11 @@ fn render_filters(
                 }
             };
             let column_text = match editor.column.selected_original() {
-                Some(i) if step != FilterEditStep::Column => filter.available_columns[i].clone(),
+                Some(i) if step != FilterEditStep::Column => filter
+                    .available_columns
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| crate::filter_modal::ANY_COLUMN_LABEL.to_string()),
                 _ => format!("{}{}", editor.column.filter, g.cursor),
             };
             let operator_text = if step == FilterEditStep::Operator {
@@ -622,7 +626,7 @@ fn render_filters(
         }
         let text = format!(
             "{:<col$} {:<op$} {}{}",
-            statement.column,
+            filter.column_label(statement),
             statement.operator.as_str(),
             statement.value,
             conjunction,
@@ -661,6 +665,7 @@ mod tests {
             })
             .collect();
         m.filter.statements = vec![FilterStatement {
+            columns: Vec::new(),
             column: "protein".to_string(),
             operator: FilterOperator::GtEq,
             value: "40".to_string(),

@@ -132,9 +132,60 @@ pub struct SidebarFilter {
     /// The value as typed, which `contains` matches as text whatever the column.
     pub text: String,
     pub logical_op: LogicalOperator,
+    /// The columns a find kept as a filter matches in, with their types: the one
+    /// named, or every column for [`crate::filter_modal::ANY_COLUMN`].
+    pub searched: Vec<(String, DataType)>,
 }
 
 impl SidebarFilter {
+    /// [`Self::typed`] against the schema, and for a find kept over every column
+    /// the columns it was kept over (or, for one that names none, the columns
+    /// `shown`). Only columns that have text to match are searched, as in a find.
+    pub fn typed_in(statement: &FilterStatement, schema: &Schema, shown: &[String]) -> Self {
+        let mut filter = Self::typed(statement, schema.get(&statement.column));
+        if statement.operator.is_find() {
+            let spec = filter.find_spec();
+            let names: Vec<&String> = if statement.column == crate::filter_modal::ANY_COLUMN {
+                if statement.columns.is_empty() {
+                    shown.iter().collect()
+                } else {
+                    statement.columns.iter().collect()
+                }
+            } else {
+                vec![&statement.column]
+            };
+            filter.searched = names
+                .into_iter()
+                .filter_map(|name| Some((name.clone(), schema.get(name)?.clone())))
+                .filter(|(name, dtype)| crate::find::cell_matches(&spec, name, dtype).is_some())
+                .collect();
+        }
+        filter
+    }
+
+    /// The duration columns a kept find matches as the table writes them, which the
+    /// script cannot.
+    pub fn unscriptable_columns(&self) -> Vec<String> {
+        if !self.operator.is_find() {
+            return Vec::new();
+        }
+        self.searched
+            .iter()
+            .filter(|(_, dtype)| matches!(dtype, DataType::Duration(_)))
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// The find a kept-find statement repeats.
+    fn find_spec(&self) -> crate::find::FindSpec {
+        crate::find::FindSpec {
+            pattern: self.text.clone(),
+            regex: self.operator == FilterOperator::HasRegex,
+            fuzzy: self.operator == FilterOperator::HasFuzzy,
+            column: None,
+        }
+    }
+
     pub fn typed(statement: &FilterStatement, dtype: Option<&DataType>) -> Self {
         let text = statement.value.as_str();
         let value = match dtype {
@@ -149,6 +200,7 @@ impl SidebarFilter {
             value,
             text: statement.value.clone(),
             logical_op: statement.logical_op,
+            searched: Vec::new(),
         }
     }
 
@@ -156,7 +208,27 @@ impl SidebarFilter {
     /// its value does not read as the column's type. `None` when it can, and for
     /// `contains` and the null tests, which read no value of the column's type.
     pub fn problem(statement: &FilterStatement, dtype: Option<&DataType>) -> Option<String> {
+        // A regex that does not compile is refused before it is run.
+        if statement.operator == FilterOperator::HasRegex
+            && let Err(reason) = Self::typed(statement, dtype).find_spec().check()
+        {
+            return Some(reason);
+        }
+        // A find kept on one column needs text there to match; with none it would keep
+        // nothing, silently.
+        if statement.operator.is_find()
+            && let Some(dtype) = dtype
+            && crate::find::cell_matches(
+                &Self::typed(statement, Some(dtype)).find_spec(),
+                &statement.column,
+                dtype,
+            )
+            .is_none()
+        {
+            return Some(format!("{}: no text to match", statement.column));
+        }
         let compares = statement.operator.takes_value()
+            && !statement.operator.is_find()
             && !matches!(
                 statement.operator,
                 FilterOperator::Contains | FilterOperator::NotContains
@@ -185,6 +257,18 @@ impl SidebarFilter {
             FilterOperator::NotContains => contains().not(),
             FilterOperator::IsNull => column.is_null(),
             FilterOperator::IsNotNull => column.is_not_null(),
+            FilterOperator::Has | FilterOperator::HasRegex | FilterOperator::HasFuzzy => {
+                let spec = self.find_spec();
+                let cells: Vec<Expr> = self
+                    .searched
+                    .iter()
+                    .filter_map(|(name, dtype)| crate::find::cell_matches(&spec, name, dtype))
+                    .collect();
+                cells
+                    .into_iter()
+                    .reduce(|a, b| a.or(b))
+                    .unwrap_or(lit(false))
+            }
         }
     }
 
@@ -210,6 +294,33 @@ impl SidebarFilter {
             }
             FilterOperator::IsNull => return format!("{column}.is_null()"),
             FilterOperator::IsNotNull => return format!("{column}.is_not_null()"),
+            FilterOperator::Has | FilterOperator::HasRegex | FilterOperator::HasFuzzy => {
+                let spec = self.find_spec();
+                // A duration is matched as the table writes it (`1d 2h`), which no
+                // cast reproduces: left out here, and the script says so.
+                let cells: Vec<String> = self
+                    .searched
+                    .iter()
+                    .filter(|(_, dtype)| !matches!(dtype, DataType::Duration(_)))
+                    .map(|(name, _)| {
+                        let column = format!("pl.col({}).cast(pl.String)", py_str(name));
+                        match spec.regex_source() {
+                            None => format!(
+                                "{column}.str.contains({}, literal=True)",
+                                py_str(&spec.pattern)
+                            ),
+                            Some(source) => {
+                                format!("{column}.str.contains({})", py_str(&source))
+                            }
+                        }
+                    })
+                    .collect();
+                return match cells.len() {
+                    0 => "pl.lit(False)".to_string(),
+                    1 => format!("{}.fill_null(False)", cells[0]),
+                    _ => format!("pl.any_horizontal({}).fill_null(False)", cells.join(", ")),
+                };
+            }
         };
         format!("{column} {op} {}", self.value.python())
     }
@@ -1438,6 +1549,7 @@ mod tests {
 
     fn statement(column: &str, operator: FilterOperator, value: &str) -> FilterStatement {
         FilterStatement {
+            columns: Vec::new(),
             column: column.to_string(),
             operator,
             value: value.to_string(),
@@ -2085,5 +2197,64 @@ mod tests {
             "pl.scan_parquet(\"s3://b/p/**/*.parquet\", hive_partitioning=True, \
              storage_options={\"aws_endpoint_url\": \"http://localhost:9000\"})"
         );
+    }
+
+    /// A duration is matched as the table writes it, which the script cannot: left out
+    /// of the script's filter and named; a regex that does not compile is refused.
+    #[test]
+    fn a_kept_find_names_what_the_script_cannot_match() {
+        let schema = Schema::from_iter([
+            Field::new("name".into(), DataType::String),
+            Field::new("took".into(), DataType::Duration(TimeUnit::Milliseconds)),
+        ]);
+        let statement = FilterStatement {
+            columns: vec!["name".into(), "took".into()],
+            column: crate::filter_modal::ANY_COLUMN.to_string(),
+            operator: FilterOperator::Has,
+            value: "1d".to_string(),
+            logical_op: LogicalOperator::And,
+        };
+        let filter = SidebarFilter::typed_in(&statement, &schema, &[]);
+        assert_eq!(filter.unscriptable_columns(), ["took"]);
+        assert!(!filter.python().contains("took"), "{}", filter.python());
+
+        let bad = FilterStatement {
+            columns: Vec::new(),
+            column: "name".into(),
+            operator: FilterOperator::HasRegex,
+            value: "(".into(),
+            logical_op: LogicalOperator::And,
+        };
+        let why = SidebarFilter::problem(&bad, Some(&DataType::String)).expect("refused");
+        assert!(why.starts_with("Not a regex"), "{why}");
+    }
+
+    /// A find kept over every column searches the shown columns that hold text,
+    /// in the table and in the script alike: never a list, never a hidden column.
+    #[test]
+    fn a_kept_find_searches_the_shown_text_columns() {
+        let schema = Schema::from_iter([
+            Field::new("name".into(), DataType::String),
+            Field::new("tags".into(), DataType::List(Box::new(DataType::String))),
+            Field::new("note".into(), DataType::String),
+            Field::new("n".into(), DataType::Int64),
+        ]);
+        let statement = FilterStatement {
+            columns: Vec::new(),
+            column: crate::filter_modal::ANY_COLUMN.to_string(),
+            operator: FilterOperator::Has,
+            value: "al".to_string(),
+            logical_op: LogicalOperator::And,
+        };
+        let shown = ["name", "tags", "n"].map(String::from);
+        let filter = SidebarFilter::typed_in(&statement, &schema, &shown);
+        let names: Vec<&str> = filter.searched.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["name", "n"]);
+        let script = filter.python();
+        assert!(
+            !script.contains("tags") && !script.contains("note"),
+            "{script}"
+        );
+        assert!(script.contains("pl.any_horizontal"), "{script}");
     }
 }

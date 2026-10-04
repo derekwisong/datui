@@ -325,11 +325,11 @@ fn the_bar_offers_esc_while_a_view_applies() {
             view.settings.column_order = vec!["id".to_string(), "val".to_string()];
         }
         let bar = control_bar(&mut app);
-        assert!(!bar.contains("Cancel"), "nothing to stop yet: {bar}");
+        assert!(!bar.contains("Stop"), "nothing to stop yet: {bar}");
         assert!(app.apply_view(&view).is_ok());
         let bar = control_bar(&mut app);
         assert!(
-            bar.contains("Applying view") && bar.contains("Esc") && bar.contains("Cancel"),
+            bar.contains("Applying view") && bar.contains("Esc Stop"),
             "pivot {pivot}: {bar}"
         );
         super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !a.is_busy());
@@ -354,7 +354,7 @@ fn the_bar_offers_esc_while_a_pivot_is_computed() {
     }));
     let bar = control_bar(&mut app);
     assert!(
-        bar.contains("Computing pivot") && bar.contains("Esc") && bar.contains("Cancel"),
+        bar.contains("Computing pivot") && bar.contains("Esc Stop"),
         "{bar}"
     );
     assert!(!bar.contains("Help"), "? is held at the form: {bar}");
@@ -513,6 +513,7 @@ fn sorted_and_filtered(
     app.event(&AppEvent::Sort(vec!["val".to_string()], vec![true]));
     super::chart_prepare_tests::pump(app, rx, tx, |a| !crate::tests::work_pending(a));
     app.event(&AppEvent::Filter(vec![FilterStatement {
+        columns: Vec::new(),
         column: "val".to_string(),
         operator: FilterOperator::Gt,
         value: "0".to_string(),
@@ -563,7 +564,7 @@ fn a_prompt_query_whose_rows_worker_dies_rolls_back() {
             next = app.event(&event);
         }
     };
-    press(&mut app, KeyCode::Char('/'));
+    press(&mut app, KeyCode::Char(':'));
     assert_eq!(app.query_prompt_mode(), Some(QueryMode::Sql));
     app.sql_input.set_value("SELECT id FROM df WHERE val > 5");
     app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, Job::Rows(_)));
@@ -1196,6 +1197,7 @@ fn blank_view(app: &mut App, name: &str) -> SavedView {
 fn a_view_failing_after_any_step_puts_the_view_back() {
     use crate::filter_modal::{FilterOperator, LogicalOperator};
     let filter = |column: &str| FilterStatement {
+        columns: Vec::new(),
         column: column.to_string(),
         operator: FilterOperator::Gt,
         value: "0".to_string(),

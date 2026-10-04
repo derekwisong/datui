@@ -110,7 +110,7 @@ they were applied:
 | The file | The reader below, with the reader options datui used (delimiter, header, comment lines, skipped lines and rows, null values), then the column names it trimmed and the text columns it read as numbers or dates; a directory or bucket prefix as a glob |
 | Query | `.filter`, `.group_by().agg()` ordered by the keys, `.select`, `.unique` |
 | SQL | `.sql(..., table_name="df")` |
-| Text query | `.filter` with a case-insensitive pattern per word |
+| A find kept with <kbd>Ctrl</kbd>+<kbd>G</kbd> | `.filter` on each column as text, `pl.any_horizontal` across them |
 | Pivot, Melt | `.group_by().agg()` then `.pivot()`; `.unpivot()` |
 | Drill-down | `.filter` on the grouped rows with `eq_missing` |
 | Filters, sort, <kbd>r</kbd> | `.filter`, `.sort(..., nulls_last=True, maintain_order=True)`, `.reverse()` |

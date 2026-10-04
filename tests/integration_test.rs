@@ -228,6 +228,7 @@ fn test_full_workflow() {
         .filter
         .statements
         .push(datui::filter_modal::FilterStatement {
+            columns: Vec::new(),
             column,
             operator: datui::filter_modal::FilterOperator::Eq,
             value: "1".to_string(),
@@ -482,8 +483,7 @@ fn test_chart_crosshair_keys_and_click() {
     let press = |app: &mut App, code: KeyCode| {
         app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     };
-    let screen = draw(&mut app);
-    assert!(screen.concat().contains("x  Cursor"), "{screen:#?}");
+    draw(&mut app);
     assert!(!app.chart_modal.plot_focus);
 
     // In the middle of the plot, on x = 2 of 0..4.
@@ -2189,8 +2189,8 @@ fn data_quality_reads_as_a_report() {
         assert!(!screen.contains(gone), "{gone:?} repeats the header");
     }
 
-    // The arrows walk the tabs, and every page's bar has one shape: the way out,
-    // the page's own action, then the shared keys in one order.
+    // The arrows walk the tabs, and every page's footer has one shape: the way out,
+    // the page's own action, then Setup.
     let bar = |app: &mut App| {
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
@@ -2200,15 +2200,12 @@ fn data_quality_reads_as_a_report() {
             .map(|cell| cell.symbol())
             .collect::<String>()
     };
-    let shared = format!(
-        "e  Setup   s  Sample   {}  Page",
-        datui::glyphs::get().updown_lr
-    );
+    let shared = "e Setup";
     for (page, own) in [
-        (QualityPage::Overview, "Enter  Details"),
-        (QualityPage::Columns, "Enter  Inspect"),
-        (QualityPage::Segments, "Enter  Set Grain"),
-        (QualityPage::Trends, "Enter  Set Grain"),
+        (QualityPage::Overview, "Enter Details"),
+        (QualityPage::Columns, "Enter Inspect"),
+        (QualityPage::Segments, "Enter Set Grain"),
+        (QualityPage::Trends, "Enter Set Grain"),
     ] {
         if page != QualityPage::Overview {
             app.event(&AppEvent::Key(KeyEvent::new(
@@ -2218,7 +2215,7 @@ fn data_quality_reads_as_a_report() {
         }
         assert_eq!(app.analysis_modal.data_quality_page, page);
         assert!(
-            bar(&mut app).starts_with(&format!(" Esc  Back   {own}   {shared}")),
+            bar(&mut app).contains(&format!("Esc Back  {own}  {shared}")),
             "{page:?}: {:?}",
             bar(&mut app)
         );
@@ -2271,10 +2268,7 @@ fn data_quality_reads_as_a_report() {
     assert!(app.analysis_modal.quality_plan_pending());
     assert!(!app.is_busy() && app.analysis_modal.computing.is_none());
     let bar = bar_now(&mut app);
-    assert!(
-        bar.contains("Discard") && bar.contains("Run") && bar.contains("Space  Choose"),
-        "{bar}"
-    );
+    assert!(bar.contains("Discard") && bar.contains("Run"), "{bar}");
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
     assert!(rendered_text(&buffer).contains("Enter runs, Esc discards"));
@@ -3157,8 +3151,8 @@ fn one_sample_serves_every_analysis_tool() {
         .collect();
     // At 80 columns the report's bar keeps Setup, whose first row is the sample.
     assert!(
-        bar.contains("e  Setup"),
-        "e Setup on the Data Quality bar at 80 columns: {bar}"
+        bar.contains("e Setup"),
+        "e Setup on the Data Quality footer at 80 columns: {bar}"
     );
     // The seed is typed: arriving on it selects it, so one key makes it that key.
     key(&mut app, KeyCode::Char('s'));
@@ -3781,6 +3775,7 @@ fn data_quality_setup_names_every_count_pass_on_one_parquet_file() {
     let sorted = || AppEvent::Sort(vec!["id".into()], vec![true]);
     let filtered = || {
         AppEvent::Filter(vec![FilterStatement {
+            columns: Vec::new(),
             column: "id".into(),
             operator: FilterOperator::Gt,
             value: "10".into(),
@@ -4710,7 +4705,6 @@ fn kept_rows_are_released_from_setup() {
     app.analysis_modal.data_quality_plan.grain = datui::data_quality::QualityGrain::RowChunks(100);
     let text = screen(&mut app);
     assert!(text.contains("500 rows kept"), "{text}");
-    assert!(text.contains("Release Rows"), "{text}");
     assert!(text.contains("Rows: from an earlier run"), "{text}");
 
     assert!(press(&mut app, KeyCode::Char('d')).is_none());
@@ -5328,6 +5322,7 @@ fn test_async_collect_handles_invalidated_num_rows() {
 
     // Apply a filter via the public event. This invalidates num_rows.
     let filter = FilterStatement {
+        columns: Vec::new(),
         column: "value".to_string(),
         operator: FilterOperator::Lt,
         value: "200".to_string(),
@@ -6086,26 +6081,15 @@ fn test_the_notes_accent_reaches_the_control_bar_and_the_config_can_stop_it() {
         KeyModifiers::NONE,
     )));
     let (plain, plain_text) = bar_of(&mut app);
-    let accented_cells: Vec<usize> = (0..plain.len())
-        .filter(|x| accented[*x] != plain[*x])
-        .collect();
-    assert!(
-        !accented_cells.is_empty(),
-        "the accent was on the bar, and reading the notes took it off"
-    );
-    // And it is the Info key that carries it, not the row count changing width or a
-    // status message appearing — either of which would also colour some cells.
-    let accented_word: String = accented_cells
-        .iter()
-        .map(|x| accented_text.chars().nth(*x).unwrap_or(' '))
-        .collect();
-    assert!(
-        accented_word.contains("Info"),
-        "the cells that changed spell the Info key: {accented_word:?}"
-    );
-    assert_eq!(
-        accented_text, plain_text,
-        "and the accent is only a colour — the bar says the same thing either way"
+    // The footer offers `i Notes`, in the accent, until the notes are read.
+    assert!(accented_text.contains("i Notes"), "{accented_text:?}");
+    assert!(!plain_text.contains("Notes"), "{plain_text:?}");
+    let at = accented_text.find("Notes").unwrap();
+    let at = accented_text[..at].chars().count();
+    assert_ne!(
+        accented[at],
+        plain[at.min(plain.len() - 1)],
+        "in the accent"
     );
 
     // And a user who does not want it never sees it, however many notes there are.
@@ -6133,19 +6117,10 @@ fn test_the_notes_accent_reaches_the_control_bar_and_the_config_can_stop_it() {
         off.data_table_state.as_ref().unwrap().notes_unseen(),
         "there is still a note to accent"
     );
-    let (unaccented, unaccented_text) = bar_of(&mut off);
-    assert_eq!(
-        unaccented_text, plain_text,
-        "the same bar, so the colours below are comparable"
-    );
-    let still_accented: Vec<usize> = accented_cells
-        .iter()
-        .copied()
-        .filter(|x| unaccented[*x] != plain[*x])
-        .collect();
+    let (_, unaccented_text) = bar_of(&mut off);
     assert!(
-        still_accented.is_empty(),
-        "and the cells that carry the accent are the ordinary colour at {still_accented:?}"
+        !unaccented_text.contains("Notes"),
+        "the footer offers nothing: {unaccented_text:?}"
     );
 }
 
@@ -7603,11 +7578,12 @@ fn test_the_bar_says_the_footers_are_still_arriving_while_the_data_is_up() {
     let area = Rect::new(0, 0, 100, 24);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let bar: String = (0..area.width)
-        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+    let bar: String = (area.height - 2..area.height)
+        .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+        .map(|at| buf[at].symbol().to_string())
         .collect();
     assert!(
-        bar.contains("Reading footers: 1,203 of 6,541"),
+        bar.contains("footers 1,203 / 6,541"),
         "the bar says what is still arriving: {bar:?}"
     );
     // And it prints the count, because this dataset has one: every file of it was read
@@ -7616,7 +7592,7 @@ fn test_the_bar_says_the_footers_are_still_arriving_while_the_data_is_up() {
     // `a_count_that_has_arrived_is_not_held_back_with_the_columns`, where the dataset
     // says a count is still coming exactly while it has none.
     assert!(
-        bar.contains("3 rows"),
+        bar.contains("/ 3"),
         "the count it does have is shown: {bar:?}"
     );
 
@@ -7628,11 +7604,12 @@ fn test_the_bar_says_the_footers_are_still_arriving_while_the_data_is_up() {
         .give_up_on_pending_footers();
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let other: String = (0..area.width)
-        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+    let other: String = (area.height - 2..area.height)
+        .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+        .map(|at| buf[at].symbol().to_string())
         .collect();
     assert!(
-        !other.contains("Reading footers"),
+        !other.contains("footers 1,203"),
         "a count belonging to a directory the user left is not this dataset's: {other:?}"
     );
     app.data_table_state = Some(waiting());
@@ -7641,11 +7618,12 @@ fn test_the_bar_says_the_footers_are_still_arriving_while_the_data_is_up() {
     app.footer_progress().done();
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    let bar: String = (0..area.width)
-        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
+    let bar: String = (area.height - 2..area.height)
+        .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+        .map(|at| buf[at].symbol().to_string())
         .collect();
     assert!(
-        !bar.contains("Reading footers"),
+        !bar.contains("footers 1,203"),
         "and nothing once they are all in: {bar:?}"
     );
 }
@@ -9068,7 +9046,7 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
         KeyModifiers::NONE,
     )));
     // A short panel cannot show six notes at two lines each plus a gap.
-    let area = Rect::new(0, 0, 100, 15);
+    let area = Rect::new(0, 0, 100, 16);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
     let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
@@ -9120,7 +9098,7 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
 
     // Too short to hold a note is not the same as having none to hold: the panel
     // says which it is, and never claims there is nothing to say.
-    for height in 4u16..26 {
+    for height in 5u16..26 {
         let area = Rect::new(0, 0, 100, height);
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
@@ -9136,7 +9114,7 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
 
     // A summary without its scope line under it is the misreading the scope line
     // exists to prevent, so no height may produce one.
-    for height in 4u16..26 {
+    for height in 5u16..26 {
         let area = Rect::new(0, 0, 100, height);
         let mut buf = Buffer::empty(area);
         app.render(area, &mut buf);
@@ -9167,7 +9145,7 @@ fn test_notes_past_the_fold_are_counted_and_reachable() {
 
     // A note needs its summary and its basis, so one row cannot hold one. Say that
     // rather than draw half a note.
-    let area = Rect::new(0, 0, 100, 4);
+    let area = Rect::new(0, 0, 100, 5);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
     let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
@@ -9202,19 +9180,20 @@ fn test_a_note_that_fills_the_panel_is_drawn_not_refused() {
         app.render(area, &mut buf);
         buf.content().iter().map(|c| c.symbol()).collect()
     };
-    let shortest = (4u16..14)
+    let shortest = (4u16..15)
         .find(|height| drawn_at(*height).contains("is in 1 of 2 files"))
         .expect("some panel in this range draws a note");
-    // Eight: the note, the panel's rows and the blank row above its footer (#650).
+    // Nine: the note, the panel's rows, the blank row above its footer (#650) and the
+    // rule above the status footer.
     assert!(
-        shortest <= 8,
+        shortest <= 9,
         "a note fits in a short panel; {shortest} rows to draw one means the panel has \
          got greedier, and the loop below would pass on one height and prove nothing"
     );
 
     // From there up, every height draws one. The bug this guards is a panel that has
     // the room and refuses anyway, which showed as a gap in the middle of this range.
-    for height in shortest..14 {
+    for height in shortest..15 {
         let screen = drawn_at(height);
         assert!(
             screen.contains("is in 1 of 2 files"),
@@ -10202,7 +10181,7 @@ fn test_len_generations_are_unique_across_datasets() {
 
 /// q pops the context: a dataset opened from the home screen returns there,
 /// one launched straight from the command line quits as it always has. Q is
-/// unconditional, and the control bar says which meaning q carries.
+/// unconditional.
 #[test]
 fn q_pops_to_home_only_when_home_is_in_the_stack() {
     // Launched straight onto a file: q quits.
@@ -10215,13 +10194,6 @@ fn q_pops_to_home_only_when_home_is_in_the_stack() {
         matches!(out, Some(AppEvent::Exit)),
         "a direct launch keeps q as quit"
     );
-    let area = Rect::new(0, 0, 110, 24);
-    let mut buf = Buffer::empty(area);
-    app.render(area, &mut buf);
-    assert!(
-        rendered_text(&buf).contains(" Quit"),
-        "the bar says q quits here"
-    );
 
     // Opened from the home screen: q returns there.
     let path = common::fixture_dir().join("q_from_home.csv");
@@ -10231,14 +10203,6 @@ fn q_pops_to_home_only_when_home_is_in_the_stack() {
     pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
     // As `home_open_path` does before it emits the `Open`.
     app.input_mode = InputMode::Normal;
-
-    let mut buf = Buffer::empty(area);
-    app.render(area, &mut buf);
-    let bar = rendered_text(&buf);
-    assert!(
-        bar.contains("q  Home"),
-        "the bar says q goes home here: {bar:?}"
-    );
 
     let out = app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('q'),
@@ -10937,6 +10901,7 @@ fn filter_stmt(
     value: &str,
 ) -> datui::filter_modal::FilterStatement {
     datui::filter_modal::FilterStatement {
+        columns: Vec::new(),
         column: column.to_string(),
         operator,
         value: value.to_string(),
@@ -11020,49 +10985,6 @@ fn test_q_style_distinct_like_mod_and_xbar() {
     assert_eq!(
         df.column("n").unwrap().get(9).unwrap(),
         AnyValue::UInt32(10)
-    );
-}
-
-/// Same for a fuzzy search: sort and filter stack on it, and clearing them keeps it.
-#[test]
-fn test_sidebar_filter_and_sort_keep_fuzzy_query() {
-    use datui::filter_modal::FilterOperator;
-    let (mut app, rx, tx) = open_query_filter_fixture("fuzzy_then_filter.csv");
-
-    app.event(&AppEvent::TextQuery("alpha".to_string()));
-    pump_until_idle(&mut app, &rx, &tx);
-    assert_eq!(current_rows(&app), 50);
-
-    app.event(&AppEvent::Filter(vec![filter_stmt(
-        "a",
-        FilterOperator::Lt,
-        "20",
-    )]));
-    pump_until_idle(&mut app, &rx, &tx);
-    assert_eq!(current_rows(&app), 10);
-
-    app.event(&AppEvent::Sort(vec!["a".to_string()], vec![true]));
-    pump_until_idle(&mut app, &rx, &tx);
-    let df = app
-        .data_table_state
-        .as_ref()
-        .unwrap()
-        .lf()
-        .clone()
-        .collect()
-        .unwrap();
-    assert_eq!(df.height(), 10);
-    assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int64(18));
-
-    app.event(&AppEvent::Filter(vec![]));
-    pump_until_idle(&mut app, &rx, &tx);
-    assert_eq!(current_rows(&app), 50);
-    assert_eq!(
-        app.data_table_state
-            .as_ref()
-            .unwrap()
-            .get_active_fuzzy_query(),
-        "alpha"
     );
 }
 
@@ -11423,42 +11345,6 @@ fn test_sidebar_filter_and_sort_stay_inside_a_drill_down() {
     assert_eq!(current_rows(&app), 3);
 }
 
-/// A fuzzy search after a DSL query that renamed columns works on the data as loaded
-/// and installs that schema, so a sidebar sort afterwards finds its columns.
-#[test]
-fn test_fuzzy_after_an_aliasing_query_then_sort_has_no_error() {
-    let (mut app, rx, tx) = open_query_filter_fixture("alias_then_fuzzy.csv");
-
-    app.event(&AppEvent::QQuery("select a, label: name".to_string()));
-    pump_until_idle(&mut app, &rx, &tx);
-    assert_eq!(
-        app.data_table_state
-            .as_ref()
-            .unwrap()
-            .schema()
-            .iter_names()
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>(),
-        vec!["a", "label"]
-    );
-
-    app.event(&AppEvent::TextQuery("alpha".to_string()));
-    pump_until_idle(&mut app, &rx, &tx);
-    let state = app.data_table_state.as_ref().unwrap();
-    assert!(state.error().is_none(), "{:?}", state.error());
-    assert_eq!(current_rows(&app), 50);
-    assert!(state.schema().contains("name") && state.schema().contains("c"));
-    assert_eq!(state.headers(), vec!["a", "c", "name"]);
-
-    app.event(&AppEvent::Sort(vec!["a".to_string()], vec![true]));
-    pump_until_idle(&mut app, &rx, &tx);
-    let state = app.data_table_state.as_ref().unwrap();
-    assert!(state.error().is_none(), "{:?}", state.error());
-    let df = state.lf().clone().collect().unwrap();
-    assert_eq!(df.height(), 50);
-    assert_eq!(df.column("a").unwrap().get(0).unwrap(), AnyValue::Int64(98));
-}
-
 /// A DSL query after a pivot shows the loaded columns again, so SQL afterwards must run
 /// against the loaded data, not against a pivot the user no longer sees.
 #[cfg(feature = "sql")]
@@ -11705,7 +11591,7 @@ fn test_drill_into_a_small_group_shows_its_rows() {
     app.event(&AppEvent::QQuery("select name by a".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     painted(&mut app, &rx, &tx, area);
-    assert_eq!(on_screen(&app, "a").len(), 27, "a screen of the 100 groups");
+    assert_eq!(on_screen(&app, "a").len(), 26, "a screen of the 100 groups");
 
     press_and_send(&mut app, &tx, KeyCode::Down);
     press_and_send(&mut app, &tx, KeyCode::Enter);
@@ -11983,23 +11869,16 @@ fn test_drill_from_lists_keeps_a_null_key_and_names_only_keys() {
     assert_eq!(df.column("k").unwrap().dtype(), &DataType::String);
 }
 
-/// Enter where there is nothing to drill into opens the row inspector, as Space does,
-/// and the control bar's first chip says `Enter Inspect`; on a `by` view Enter still
-/// drills and the chip says `Enter Drill`; inside the group, where there is nothing
-/// further, it inspects again. Esc closes.
+/// Enter where there is nothing to drill into opens the row inspector, as Space does;
+/// on a `by` view Enter drills and the footer says `Enter Drill`; inside the group,
+/// where there is nothing further, it inspects again, and the footer offers the way
+/// back. Esc closes.
 #[test]
 fn test_enter_inspects_where_there_is_nothing_to_drill_into() {
     let (mut app, rx, tx) = open_query_filter_fixture("drill_nothing.csv");
-    // Wide enough for the bar to reach its inspect chip.
     let area = Rect::new(0, 0, 220, 30);
-    // The key on the chip before the Inspect label.
-    let inspect_key = |screen: &str| {
-        let at = screen.find("Inspect").unwrap_or_else(|| panic!("{screen}"));
-        let before = screen[..at].trim_end();
-        before[before.rfind(' ').map_or(0, |i| i + 1)..].to_string()
-    };
     let plain = painted(&mut app, &rx, &tx, area);
-    assert_eq!(inspect_key(&plain), "Enter");
+    assert!(!plain.contains("Enter Drill"), "{plain}");
     press_and_send(&mut app, &tx, KeyCode::Enter);
     assert_eq!(app.input_mode, InputMode::Inspect);
     assert!(app.inspector_modal.active);
@@ -12011,17 +11890,16 @@ fn test_enter_inspects_where_there_is_nothing_to_drill_into() {
     pump_until_idle(&mut app, &rx, &tx);
     let grouped = painted(&mut app, &rx, &tx, area);
     assert!(
-        grouped.contains(" Enter  Drill "),
+        grouped.contains("Enter Drill"),
         "Enter drills here: {grouped}"
     );
-    assert!(!grouped.contains("Inspect"), "{grouped}");
     press_and_send(&mut app, &tx, KeyCode::Enter);
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(app.input_mode, InputMode::Normal, "Enter drilled");
     assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
 
     let inside = painted(&mut app, &rx, &tx, area);
-    assert_eq!(inspect_key(&inside), "Enter");
+    assert!(inside.contains("Esc Back"), "{inside}");
     assert!(!inside.contains("Drill"), "{inside}");
     press_and_send(&mut app, &tx, KeyCode::Enter);
     assert_eq!(app.input_mode, InputMode::Inspect);
@@ -12056,10 +11934,10 @@ fn test_enter_inspects_a_loaded_list_column_and_drills_a_by_view() {
     pump_until_idle(&mut app, &rx, &tx);
     let area = Rect::new(0, 0, 220, 30);
     let before = painted(&mut app, &rx, &tx, area);
-    // The key on the chip before the Inspect label.
-    let at = before.find("Inspect").unwrap_or_else(|| panic!("{before}"));
-    let chip = before[..at].trim_end();
-    assert!(chip.ends_with(" Enter"), "{before}");
+    assert!(
+        !before.contains("Enter Drill"),
+        "nothing to drill: {before}"
+    );
     let state = app.data_table_state.as_ref().unwrap();
     assert!(!state.is_grouped());
     let headers = state.headers();
@@ -13181,17 +13059,6 @@ fn test_right_goes_inside_a_local_multi_file_directory() {
         Some(datui::discover::EntryKind::MultiFile),
         "a directory of part files is offered as one dataset"
     );
-
-    // The bar says the door is there, since nothing else on screen does.
-    // Wide on purpose: the bar is cut from the right, and this assertion is about
-    // what the bar says, not about where the fitting loop stops.
-    let area = Rect::new(0, 0, 200, 24);
-    let mut buf = Buffer::empty(area);
-    app.render(area, &mut buf);
-    let bar: String = (0..area.width)
-        .map(|x| buf[(x, area.height - 1)].symbol().to_string())
-        .collect();
-    assert!(bar.contains("Inside"), "the bar offers the key: {bar:?}");
 
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Right,
@@ -18857,23 +18724,23 @@ fn run_and_settle(
     pump_until_idle(app, rx, tx);
 }
 
-/// A new user pressing `/` gets SQL; a build without SQL opens on Search.
+/// A new user pressing `:` gets SQL; a build without SQL opens on q.
 #[test]
 fn the_query_prompt_opens_on_sql() {
     let (mut app, _rx, _tx) = open_query_filter_fixture("prompt_default.csv");
-    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
     #[cfg(feature = "sql")]
     assert_eq!(app.query_prompt_mode(), Some(QueryMode::Sql));
     #[cfg(not(feature = "sql"))]
-    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Text));
+    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Q));
 }
 
-/// `[query] default_mode` chooses where `/` opens, read from the config file.
+/// `[query] default_mode` chooses where `:` opens, read from the config file.
 #[test]
 fn the_preferred_query_mode_is_where_the_prompt_opens() {
     let config: datui::AppConfig = toml::from_str("[query]\ndefault_mode = \"q\"\n").unwrap();
     let (mut app, _rx, _tx) = open_query_filter_fixture_with("prompt_preferred.csv", config);
-    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
     assert_eq!(app.query_prompt_mode(), Some(QueryMode::Q));
 
     // Typed there, a q query runs as one.
@@ -18905,7 +18772,7 @@ fn a_quoted_date_in_a_q_query_is_explained_in_the_prompt() {
         "the repro needs d read as a date"
     );
 
-    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
     assert_eq!(app.query_prompt_mode(), Some(QueryMode::Q));
     type_text(&mut app, "select where d = \"2024.01.01\"");
     press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
@@ -18942,15 +18809,10 @@ fn reopening_the_prompt_selects_the_active_query_mode() {
         &rx,
         &tx,
     );
-    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
     assert_eq!(app.query_prompt_mode(), Some(QueryMode::Q));
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert_eq!(app.query_prompt_mode(), None);
-
-    run_and_settle(&mut app, AppEvent::TextQuery("alpha".to_string()), &rx, &tx);
-    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
-    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Text));
-    press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
 
     #[cfg(feature = "sql")]
     {
@@ -18960,26 +18822,26 @@ fn reopening_the_prompt_selects_the_active_query_mode() {
             &rx,
             &tx,
         );
-        press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+        press_key(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
         assert_eq!(app.query_prompt_mode(), Some(QueryMode::Sql));
         press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     }
 
     // Clearing the query returns `/` to the default.
     run_and_settle(&mut app, AppEvent::QQuery(String::new()), &rx, &tx);
-    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
     assert_eq!(
         app.query_prompt_mode(),
         Some(datui::AppConfig::default().query.default_mode.resolve())
     );
 }
 
-/// Ctrl+T switches the mode from inside the input, in tab order and around,
-/// and what is then typed runs in the mode on screen.
+/// Ctrl+T switches the language from inside the input and around, and what is
+/// then typed runs in the language the prefix names.
 #[test]
 fn ctrl_t_switches_the_query_mode() {
     let (mut app, rx, tx) = open_query_filter_fixture("prompt_chord.csv");
-    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
     let modes = QueryMode::available();
     assert_eq!(app.query_prompt_mode(), Some(modes[0]));
     for &mode in modes[1..].iter().chain(&modes[..1]) {
@@ -18987,16 +18849,14 @@ fn ctrl_t_switches_the_query_mode() {
         assert_eq!(app.query_prompt_mode(), Some(mode));
     }
 
-    while app.query_prompt_mode() != Some(QueryMode::Text) {
+    while app.query_prompt_mode() != Some(QueryMode::Q) {
         press_key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
     }
-    for c in "alpha".chars() {
-        press_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
-    }
+    type_text(&mut app, "select where a < 50");
     press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
-    assert_eq!(state.get_active_fuzzy_query(), "alpha");
+    assert_eq!(state.get_active_query(), "select where a < 50");
     assert_eq!(current_rows(&app), 50);
 }
 
@@ -19020,28 +18880,22 @@ fn screen_at(app: &mut App, width: u16, height: u16) -> String {
         .join("\n")
 }
 
-/// Under a SQL statement the prompt lists the columns of `df` with their types,
-/// narrowed to the word being typed, and Tab completes it: the one name that
-/// fits, then the table name. Shift+Tab is the way to the tab bar.
+/// Under a SQL statement the command line lists the columns of `df`, narrowed to
+/// the word being typed, and Tab completes it: the one name that fits, then the
+/// table name.
 #[cfg(feature = "sql")]
 #[test]
 fn tab_completes_column_names_in_sql() {
     let (mut app, rx, tx) = open_query_filter_fixture("sql_complete.csv");
-    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
     assert_eq!(app.query_prompt_mode(), Some(QueryMode::Sql));
-    let screen = screen_at(&mut app, 80, 24);
-    assert!(screen.contains("Columns"), "{screen}");
-    assert!(
-        screen.contains("a i64") && screen.contains("name str"),
-        "{screen}"
-    );
+    let footer = |app: &mut App| screen_at(app, 80, 24).lines().last().unwrap().to_string();
+    let line = footer(&mut app);
+    assert!(line.contains("a  c  name"), "{line}");
 
     type_text(&mut app, "SELECT na");
-    let screen = screen_at(&mut app, 80, 24);
-    assert!(
-        screen.contains("name str") && !screen.contains("a i64"),
-        "{screen}"
-    );
+    let line = footer(&mut app);
+    assert!(line.contains("name") && !line.contains("a  c"), "{line}");
     press_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     assert_eq!(app.query_prompt_text(), Some("SELECT name"));
     type_text(&mut app, " FROM d");
@@ -19057,12 +18911,19 @@ fn tab_completes_column_names_in_sql() {
             .get_active_sql_query(),
         "SELECT name FROM df"
     );
+}
 
-    // Shift+Tab reaches the tab bar, where ←/→ change mode.
-    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
-    press_key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
-    press_key(&mut app, KeyCode::Right, KeyModifiers::NONE);
-    assert_eq!(app.query_prompt_mode(), Some(QueryMode::Text));
+/// Tab completes a column name in q too, spelled as q reads it.
+#[test]
+fn tab_completes_column_names_in_q() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("q_complete.csv");
+    press_key(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
+    while app.query_prompt_mode() != Some(QueryMode::Q) {
+        press_key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+    }
+    type_text(&mut app, "select na");
+    press_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(app.query_prompt_text(), Some("select name"));
 }
 
 /// Alt+Enter breaks the line; Enter runs the statement, line breaks and all.
@@ -19070,7 +18931,7 @@ fn tab_completes_column_names_in_sql() {
 #[test]
 fn alt_enter_breaks_a_sql_line_and_enter_runs_it() {
     let (mut app, rx, tx) = open_query_filter_fixture("sql_newline.csv");
-    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
     type_text(&mut app, "SELECT a FROM df");
     press_key(&mut app, KeyCode::Enter, KeyModifiers::ALT);
     type_text(&mut app, "WHERE a < 10");
@@ -19098,7 +18959,7 @@ fn alt_enter_breaks_a_sql_line_and_enter_runs_it() {
 #[test]
 fn a_sql_statement_that_fails_while_running_stays_in_the_prompt() {
     let (mut app, rx, tx) = open_query_filter_fixture("sql_runtime_error.csv");
-    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
     type_text(&mut app, "SELECT CAST(name AS INT) AS n FROM df");
     press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     pump_until_idle(&mut app, &rx, &tx);
@@ -19145,7 +19006,7 @@ fn a_sql_statement_that_fails_while_running_stays_in_the_prompt() {
 #[test]
 fn a_date_that_does_not_parse_is_explained_in_the_prompt() {
     let (mut app, rx, tx) = open_query_filter_fixture("sql_date_error.csv");
-    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
     type_text(&mut app, "SELECT STRPTIME(name, '%Y-%m-%d') AS d FROM df");
     press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     pump_until_idle(&mut app, &rx, &tx);
@@ -19190,7 +19051,7 @@ fn a_query_that_fails_when_collected_is_not_installed() {
         "the repro needs ds read as a date"
     );
 
-    press_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    press_key(&mut app, KeyCode::Char(':'), KeyModifiers::NONE);
     type_text(
         &mut app,
         "SELECT CAST(SUBSTR(ds, 1, 10) AS DATE) AS d, COUNT(*) FROM df GROUP BY d",
@@ -19215,8 +19076,8 @@ fn a_query_that_fails_when_collected_is_not_installed() {
 
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     let screen = screen_at(&mut app, 80, 24);
-    assert!(!screen.contains("? rows"), "{screen}");
-    assert!(screen.contains("30 rows"), "{screen}");
+    assert!(!screen.contains("/ ?"), "{screen}");
+    assert!(screen.contains("/ 30"), "{screen}");
 
     // A sort works on the data as it was.
     run_and_settle(
@@ -19263,7 +19124,7 @@ fn reopening_the_query_prompt_selects_the_old_query() {
     let (mut app, rx, tx) = open_query_filter_fixture_with("reopen_query.csv", q_style_config());
 
     app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Char('/'),
+        KeyCode::Char(':'),
         KeyModifiers::NONE,
     )));
     for c in "select a where a > 10".chars() {
@@ -19284,7 +19145,7 @@ fn reopening_the_query_prompt_selects_the_old_query() {
 
     // Reopen and type a fresh query: the first character replaces the old text.
     app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Char('/'),
+        KeyCode::Char(':'),
         KeyModifiers::NONE,
     )));
     for c in "select a where a > 50".chars() {
@@ -19558,7 +19419,7 @@ fn test_query_prompt_ctrl_u_kills_to_line_start_and_ctrl_z_undoes() {
     let (mut app, rx, tx) =
         open_query_filter_fixture_with("ctrl_u_query_prompt.csv", q_style_config());
 
-    press(&mut app, KeyCode::Char('/'));
+    press(&mut app, KeyCode::Char(':'));
     assert_eq!(app.input_mode, InputMode::Editing);
     for c in "select name where c = 1".chars() {
         press(&mut app, KeyCode::Char(c));
@@ -20359,8 +20220,8 @@ fn open_orders_fixture(dir: &Path) -> (App, mpsc::Receiver<AppEvent>, mpsc::Send
     (app, rx, tx)
 }
 
-/// #548 M1: the inspect chip leads the bar, at 60×20 too beside a short column
-/// position, with Help kept. A binary column's type row says binary (D2, D10).
+/// #548 M1: the footer keeps help at 60×20 too, beside the column position. A binary
+/// column's type row says binary (D2, D10).
 #[test]
 fn test_inspect_chip_and_binary_type_at_narrow_and_wide_sizes() {
     let dir = tempfile::tempdir().unwrap();
@@ -20369,12 +20230,8 @@ fn test_inspect_chip_and_binary_type_at_narrow_and_wide_sizes() {
         let text = painted(&mut app, &rx, &tx, Rect::new(0, 0, width, height));
         let rows = rows_at(&mut app, width, height);
         let bar = rows.last().unwrap();
-        assert!(bar.contains("?  Help"), "{width}x{height}: {bar}");
-        // At 60 too: the column cursor's `col 1/14` leaves Inspect its room.
-        assert!(
-            bar.trim_start().starts_with("Enter  Inspect"),
-            "{width}x{height}: {bar}"
-        );
+        assert!(bar.contains("? keys"), "{width}x{height}: {bar}");
+        assert!(bar.contains("1 / 3"), "{width}x{height}: {bar}");
         if width == 200 {
             // The type row, not the `‹binary›` stub in the cells.
             assert!(text.contains(" binary"), "{text}");
@@ -21364,6 +21221,12 @@ fn press_and_draw(app: &mut App, code: KeyCode, size: (u16, u16)) -> String {
     draw_sized(app, size)
 }
 
+/// A page of columns, Shift+← or Shift+→.
+fn page_and_draw(app: &mut App, code: KeyCode, size: (u16, u16)) -> String {
+    press_key(app, code, KeyModifiers::SHIFT);
+    draw_sized(app, size)
+}
+
 fn type_and_draw(app: &mut App, text: &str, size: (u16, u16)) -> String {
     for c in text.chars() {
         press_key(app, KeyCode::Char(c), KeyModifiers::NONE);
@@ -21419,7 +21282,7 @@ fn wide_table_pages_across_300_columns() {
     // starts each page.
     let mut pages = vec![first];
     loop {
-        press_and_draw(&mut app, KeyCode::Char(']'), size);
+        page_and_draw(&mut app, KeyCode::Right, size);
         let now = columns_shown(&app).unwrap();
         let before = *pages.last().unwrap();
         if (now.first, now.last) == (before.first, before.last) {
@@ -21443,7 +21306,7 @@ fn wide_table_pages_across_300_columns() {
     let mut back = pages.clone();
     back.pop();
     while let Some(expected) = back.pop() {
-        press_and_draw(&mut app, KeyCode::Char('['), size);
+        page_and_draw(&mut app, KeyCode::Left, size);
         assert_eq!(range_shown(&app), Some((expected.first, expected.last)));
         assert_eq!(cursor_at(&app), expected.first);
     }
@@ -21462,7 +21325,7 @@ fn wide_table_pages_across_300_columns() {
     );
     loop {
         let before = columns_shown(&app).unwrap();
-        press_and_draw(&mut app, KeyCode::Char('['), size);
+        page_and_draw(&mut app, KeyCode::Left, size);
         let now = columns_shown(&app).unwrap();
         if now.first == 1 {
             break;
@@ -21570,7 +21433,7 @@ fn wide_table_pages_beside_frozen_and_hidden_columns() {
     assert_eq!(start.first, 3, "two frozen lead the count");
     assert_eq!(start.total, 118, "hidden columns are not counted");
 
-    let screen = press_and_draw(&mut app, KeyCode::Char(']'), size);
+    let screen = page_and_draw(&mut app, KeyCode::Right, size);
     let page = columns_shown(&app).unwrap();
     assert!(page.first > start.first);
     assert!(page.first <= start.last + 1);
@@ -21604,8 +21467,12 @@ fn wide_table_pages_beside_frozen_and_hidden_columns() {
         &tx,
     );
     draw_sized(&mut app, size);
-    for key in ['[', ']', '{', '}'] {
+    for key in ['{', '}'] {
         press_and_draw(&mut app, KeyCode::Char(key), size);
+        assert_eq!(app.data_table_state.as_ref().unwrap().termcol_index, 0);
+    }
+    for arrow in [KeyCode::Left, KeyCode::Right] {
+        page_and_draw(&mut app, arrow, size);
         assert_eq!(app.data_table_state.as_ref().unwrap().termcol_index, 0);
     }
     // The cursor still walks them.
@@ -21684,14 +21551,14 @@ fn wide_table_pages_in_a_narrow_window() {
         "the wide column is drawn cut, last: {start:?}"
     );
 
-    press_and_draw(&mut app, KeyCode::Char(']'), small);
+    page_and_draw(&mut app, KeyCode::Right, small);
     let wide = columns_shown(&app).unwrap();
     assert_eq!((wide.first, wide.last), (3, 3), "the wide column alone");
-    press_and_draw(&mut app, KeyCode::Char(']'), small);
+    page_and_draw(&mut app, KeyCode::Right, small);
     assert_eq!(columns_shown(&app).unwrap().first, 4, "and past it");
-    press_and_draw(&mut app, KeyCode::Char('['), small);
+    page_and_draw(&mut app, KeyCode::Left, small);
     assert_eq!(columns_shown(&app).unwrap().first, 3);
-    press_and_draw(&mut app, KeyCode::Char('['), small);
+    page_and_draw(&mut app, KeyCode::Left, small);
     assert_eq!(columns_shown(&app).unwrap().first, 1);
 
     // A resize keeps the first column; the last page is planned in the new room.
@@ -21723,9 +21590,8 @@ fn wide_table_pages_in_a_narrow_window() {
     let wide_last = columns_shown(&app).unwrap();
     assert!(wide_last.first < narrow_last.first, "{wide_last:?}");
     assert_eq!(wide_last.last, 12);
-    // The bar has the room for the long form there.
     let screen = draw_sized(&mut app, wide_size);
-    let expected = "col 12 of 12".to_string();
+    let expected = "col 12/12".to_string();
     assert!(
         screen.lines().last().unwrap().contains(&expected),
         "{screen}"
@@ -21750,15 +21616,27 @@ fn wide_table_paging_after_a_query_with_one_and_no_columns() {
 
     app.event(&AppEvent::QQuery("select id_000".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
-    for key in ['[', ']', '{', '}', 'l', 'h'] {
+    for key in ['{', '}', 'l', 'h'] {
         let screen = press_and_draw(&mut app, KeyCode::Char(key), size);
         assert!(header_line(&screen).contains("id_000"), "{key}: {screen}");
+        assert_eq!(app.data_table_state.as_ref().unwrap().termcol_index, 0);
+    }
+    for arrow in [KeyCode::Left, KeyCode::Right] {
+        let screen = page_and_draw(&mut app, arrow, size);
+        assert!(
+            header_line(&screen).contains("id_000"),
+            "{arrow:?}: {screen}"
+        );
         assert_eq!(app.data_table_state.as_ref().unwrap().termcol_index, 0);
     }
 
     // No column shown at all: the keys do nothing, and the picker has nothing to offer.
     run_and_settle(&mut app, AppEvent::ColumnOrder(Vec::new(), 0), &rx, &tx);
-    for key in ['[', ']', '{', '}', 'g'] {
+    for arrow in [KeyCode::Left, KeyCode::Right] {
+        page_and_draw(&mut app, arrow, size);
+        assert_eq!(app.data_table_state.as_ref().unwrap().termcol_index, 0);
+    }
+    for key in ['{', '}', 'g'] {
         press_and_draw(&mut app, KeyCode::Char(key), size);
         assert_eq!(app.input_mode, InputMode::Normal, "{key}");
         assert_eq!(app.data_table_state.as_ref().unwrap().termcol_index, 0);
@@ -22245,7 +22123,7 @@ fn test_value_counts_count_the_column_and_step_columns() {
     assert!(screen.contains("all 10 rows"), "{screen}");
     assert!(screen.contains("Distinct 3"), "{screen}");
     assert!(
-        screen.contains("Enter  Rows") && screen.contains("Esc  Back"),
+        screen.contains("Enter Rows") && screen.contains("Esc Back"),
         "the bar names the keys: {screen}"
     );
 
@@ -22413,7 +22291,7 @@ fn test_value_counts_sample_first_then_every_row() {
     assert_eq!(counts.summary.rows, 200);
     let screen = counts_screen(&mut app, 80, 24);
     assert!(screen.contains("sample of 200 of 30,000 rows"), "{screen}");
-    assert!(screen.contains("a  All rows"), "{screen}");
+    assert!(screen.contains("a All rows"), "{screen}");
 
     counts_key(&mut app, &rx, &tx, KeyCode::Char('a'));
     let counts = app.value_counts.current().unwrap();
@@ -22886,6 +22764,7 @@ fn a_filter_value_its_column_cannot_read_is_refused_with_a_reason() {
         .filter
         .statements
         .push(datui::filter_modal::FilterStatement {
+            columns: Vec::new(),
             column: "day".into(),
             operator: datui::filter_modal::FilterOperator::Gt,
             value: "2024-13-01".into(),
@@ -23708,6 +23587,7 @@ fn python_filter(
     logical_op: datui::filter_modal::LogicalOperator,
 ) -> datui::filter_modal::FilterStatement {
     datui::filter_modal::FilterStatement {
+        columns: Vec::new(),
         column: column.to_string(),
         operator,
         value: value.to_string(),
@@ -24671,7 +24551,7 @@ fn copy_as_python_reads_a_directory_named_like_a_glob() {
 #[test]
 fn a_running_query_says_so_in_the_table() {
     let (mut app, rx, tx) = open_query_filter_fixture("running_query_in_place.csv");
-    press(&mut app, KeyCode::Char('/'));
+    press(&mut app, KeyCode::Char(':'));
     for c in "SELECT name FROM df WHERE c = 1".chars() {
         press(&mut app, KeyCode::Char(c));
     }
@@ -24691,4 +24571,131 @@ fn a_running_query_says_so_in_the_table() {
     let screen = screen_text(&mut app);
     assert!(!screen.contains("Applying SQL query..."), "{screen}");
     assert!(screen.contains("beta_1"), "{screen}");
+}
+
+/// The status footer: at rest the dataset, the position and `? keys`; once the column
+/// cursor moves, the column's keys; a sort, a query and a filter in pipeline order;
+/// a find's keys; and a line more for a prompt, taken from the table's bottom.
+#[test]
+fn the_footer_says_what_is_in_effect_and_the_mode_s_keys() {
+    use datui::filter_modal::FilterOperator;
+    let (mut app, rx, tx) = open_query_filter_fixture("footer_states.csv");
+    let none = KeyModifiers::NONE;
+    let footer = |app: &mut App, width: u16| {
+        screen_at(app, width, 24)
+            .lines()
+            .last()
+            .unwrap()
+            .trim_end()
+            .to_string()
+    };
+    let rest = footer(&mut app, 120);
+    assert!(rest.contains("footer_states.csv"), "{rest}");
+    assert!(rest.contains("1 / 100"), "{rest}");
+    assert!(rest.ends_with("? keys"), "{rest}");
+    assert!(!rest.contains("Filter"), "no mode keys at rest: {rest}");
+
+    // The column cursor moved: its keys, until a key that is not about the column.
+    press_key(&mut app, KeyCode::Char('l'), none);
+    let moved = footer(&mut app, 120);
+    for hint in ["+/- Filter", "[/] Sort", "F Counts"] {
+        assert!(moved.contains(hint), "{hint}: {moved}");
+    }
+    press_key(&mut app, KeyCode::Char('j'), none);
+    assert!(!footer(&mut app, 120).contains("Filter"));
+
+    // `]` sorts by the cursor's column descending, `[` ascending; the same key again
+    // takes the sort away, back to the natural order.
+    let g = datui::glyphs::get();
+    let sorted = |app: &App| {
+        let state = app.data_table_state.as_ref().unwrap();
+        (
+            state.view_sort_columns().to_vec(),
+            state.view_sort_descending().to_vec(),
+        )
+    };
+    run_and_settle(
+        &mut app,
+        AppEvent::Key(KeyEvent::new(KeyCode::Char(']'), none)),
+        &rx,
+        &tx,
+    );
+    assert_eq!(sorted(&app), (vec!["c".to_string()], vec![true]));
+    let line = footer(&mut app, 120);
+    assert!(line.contains(&format!("c {}", g.sort_desc)), "{line}");
+    run_and_settle(
+        &mut app,
+        AppEvent::Key(KeyEvent::new(KeyCode::Char('['), none)),
+        &rx,
+        &tx,
+    );
+    assert_eq!(sorted(&app), (vec!["c".to_string()], vec![false]));
+    run_and_settle(
+        &mut app,
+        AppEvent::Key(KeyEvent::new(KeyCode::Char('['), none)),
+        &rx,
+        &tx,
+    );
+    assert_eq!(sorted(&app), (Vec::new(), Vec::new()));
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.view_sort_ascending(), "not left reversed");
+    let first = state.lf().clone().collect().unwrap();
+    assert_eq!(
+        first.column("a").unwrap().get(0).unwrap(),
+        AnyValue::Int64(0)
+    );
+
+    // A query, then a filter on it: dataset › query › filter.
+    run_and_settle(
+        &mut app,
+        AppEvent::QQuery("select where a < 50".to_string()),
+        &rx,
+        &tx,
+    );
+    run_and_settle(
+        &mut app,
+        AppEvent::Filter(vec![filter_stmt("a", FilterOperator::Gt, "10")]),
+        &rx,
+        &tx,
+    );
+    let line = footer(&mut app, 120);
+    let at = |s: &str| line.find(s).unwrap_or_else(|| panic!("{s:?} in {line:?}"));
+    assert!(at("footer_states.csv") < at("query") && at("query") < at("a > 10"));
+    assert!(line.contains("1 / 39"), "{line}");
+    // Short of room, the filter is counted and the name goes; help stays.
+    let narrow = footer(&mut app, 40);
+    assert!(!narrow.contains("footer_states"), "{narrow}");
+    assert!(
+        narrow.ends_with('?') || narrow.ends_with("? keys"),
+        "{narrow}"
+    );
+
+    // The find prompt is a line under the status line, the table a row shorter.
+    let before = screen_at(&mut app, 120, 24);
+    press_key(&mut app, KeyCode::Char('/'), none);
+    for c in "alpha_2".chars() {
+        press_key(&mut app, KeyCode::Char(c), none);
+    }
+    let typing = screen_at(&mut app, 120, 24);
+    let lines: Vec<&str> = typing.lines().collect();
+    assert!(lines[23].trim_start().starts_with("/ alpha_2"), "{typing}");
+    assert!(lines[22].contains("Enter Next"), "{typing}");
+    assert!(lines[23].contains("on screen"), "{typing}");
+    assert_eq!(
+        before.lines().nth(1),
+        typing.lines().nth(1),
+        "the table's top stays put"
+    );
+    run_and_settle(
+        &mut app,
+        AppEvent::Key(KeyEvent::new(KeyCode::Enter, none)),
+        &rx,
+        &tx,
+    );
+    let found = footer(&mut app, 120);
+    assert!(
+        found.contains("n/N Next") && found.contains("Esc Clear"),
+        "{found}"
+    );
+    assert!(found.contains("match 1"), "{found}");
 }

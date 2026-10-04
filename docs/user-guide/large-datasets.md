@@ -29,7 +29,7 @@ has measured times to first rows and memory.
 
 A directory of more than 64 Parquet files, local or in the cloud, opens on the
 first and last files by name and reads the other footers in the background;
-the control bar counts them. Until they are in:
+the footer counts them on a line of its own. Until they are in:
 
 - The total row count is not known, and every empty cell shows as `∅`.
 - New columns join the end of the table as they are found; Notes says how

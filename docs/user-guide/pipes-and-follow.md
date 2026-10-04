@@ -51,8 +51,8 @@ printf 'time,value\n1,10\n2,20\n' > readings.csv && datui -f readings.csv
 | <kbd>t</kbd> | Pause and resume. On a file opened without `-f`, follow it: the file is read again, as <kbd>H</kbd> on the Info panel's Schema tab reads it, so the query, filters and sort are cleared |
 | <kbd>Esc</kbd> | Stop following; the rows read stay |
 
-The control bar says `following` and how long ago rows last arrived, or
-`paused` and how many have arrived since.
+The footer says `following` and how long ago rows last arrived, or `paused`
+and how many have arrived since, and offers <kbd>t</kbd> and <kbd>Esc</kbd>.
 
 | What | How it behaves |
 |---|---|

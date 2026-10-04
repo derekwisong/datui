@@ -1,30 +1,37 @@
 # Query data
 
-<kbd>/</kbd> opens the query prompt: SQL, Text or q over the table.
-It opens on **SQL**, or on the active query's mode when you edit one.
-<kbd>Ctrl</kbd>+<kbd>T</kbd> switches mode without leaving the input;
-<kbd>Shift</kbd>+<kbd>Tab</kbd> moves to the tab bar, where <kbd>←</kbd>
-<kbd>→</kbd> switch too.
+<kbd>:</kbd> opens the command line in the footer: a row number, or a query in
+SQL or q over the table. The prefix says what <kbd>Enter</kbd> will do: `row:`
+while the line is digits alone, else `sql:` or `q:`.
+<kbd>Ctrl</kbd>+<kbd>T</kbd> switches between SQL and q, keeping what is typed,
+and the line opens in that language next time. With a query in effect the line
+opens on its text, in its language, selected: typing replaces it, the arrows
+edit it.
 
-| Mode | What you type | Example, on NYC flights (2013) |
+| Prefix | What you type | Example, on NYC flights (2013) |
 |---|---|---|
-| **SQL** | SQL over the table named `df` | `SELECT carrier, COUNT(*) AS flights FROM df GROUP BY carrier ORDER BY flights DESC` |
-| **Text** | Words; each word's letters in order, in any text column | `jfk sea` (2,092 flights) |
-| **q** | Datui's short language, a subset of q, described below | `select flights: count flight by carrier` |
+| `row:` | A row number | `1200` |
+| `sql:` | SQL over the table named `df` | `SELECT carrier, COUNT(*) AS flights FROM df GROUP BY carrier ORDER BY flights DESC` |
+| `q:` | Datui's short language, a subset of q, described below | `select flights: count flight by carrier` |
 
 | Key | Action |
 |---|---|
-| <kbd>Enter</kbd> | Run the query; an empty query returns to the full table |
+| <kbd>Enter</kbd> | Go to the row, or run the query; an empty query returns to the full table |
+| <kbd>Tab</kbd> | Complete the column name being typed (in SQL, `df` too) |
+| <kbd>Ctrl</kbd>+<kbd>T</kbd> | SQL or q |
 | <kbd>Esc</kbd> | Cancel |
-| <kbd>↑</kbd> <kbd>↓</kbd> | The current mode's history |
+| <kbd>↑</kbd> <kbd>↓</kbd> | The language's history |
+
+To keep the rows that hold some text, [find](finding.md) it with <kbd>/</kbd>
+and press <kbd>Ctrl</kbd>+<kbd>G</kbd>.
 
 Running a query, or clearing one, starts a fresh view: sidebar filters, sort,
 frozen columns and pivot/melt are dropped. Apply them after the query. The
-prompt stays open until the query's first rows are in. A query that fails on
+command line stays open until the query's first rows are in. A query that fails on
 the data is not applied: the reason shows under it, the table keeps what it
 showed, and the query stays to fix.
 
-To open on q, or on Text, set [`query.default_mode`](../reference/settings.md#query):
+To start in q, set [`query.default_mode`](../reference/settings.md#query):
 
 ```toml
 [query]
@@ -32,13 +39,13 @@ default_mode = "q"
 ```
 
 A build without the `sql` [feature](../getting-started/installation.md#from-source)
-has no SQL tab and opens on Text instead.
+has q alone.
 
 ## Run a query
 
 Open **NYC flights (2013)** from **Public datasets** on the home screen: 336,776
 departures from JFK, LaGuardia and Newark, delays in minutes. When does a JFK
-departure leave late? On the **SQL** tab:
+departure leave late? At `sql:`:
 
 ```sql,dataset=flights,network,rows=19
 SELECT hour, AVG(dep_delay) AS mean_delay, COUNT(dep_delay) AS flights
@@ -94,17 +101,17 @@ come in. Paging through the result never repeats a row or skips one, and a
 
 ## Write SQL
 
-| Key | In the SQL input |
+| Key | In SQL |
 |---|---|
 | <kbd>Tab</kbd> | Complete the column name, or `df`, being typed. Press again for the next match |
 | <kbd>Alt</kbd>+<kbd>Enter</kbd> | Start a new line |
 | <kbd>Enter</kbd> | Run the statement |
 | <kbd>↑</kbd> <kbd>↓</kbd> | Move between lines; past the first or last, walk the history |
 
-- The columns of `df` and their types are listed under the input, narrowed to
-  the name being typed. Names with spaces complete in double quotes:
-  `"Team 1"`.
-- A long statement wraps onto up to four lines instead of scrolling sideways.
+- The columns of `df` are listed under the input in their types' colors,
+  narrowed to the name being typed. Names with spaces complete in double
+  quotes: `"Team 1"`; in q, as `col["Team 1"]`.
+- A long statement wraps onto a second line, then scrolls within the two.
 - An empty input shows an example to start from: `SELECT * FROM df WHERE ...`.
 
 When a statement fails on a value that will not convert, the reason names
@@ -202,24 +209,10 @@ ORDER BY pickup_hour
 | Computed keys: `EXTRACT(HOUR FROM ts) AS h` | A key that is not selected, or written differently in `SELECT` |
 
 Where a statement does not drill, <kbd>Enter</kbd>
-[inspects the row](inspecting-rows.md) instead. The bar's first chip says
-which: `Enter Drill` or `Enter Inspect`. A result that drills has the
+[inspects the row](inspecting-rows.md) instead. Where it drills, the footer
+says `Enter Drill`. A result that drills has the
 keys that lead it frozen, as a q `by` does. Without `ORDER BY` or `LIMIT` it comes back sorted by its keys,
 since Polars returns groups in no fixed order.
-
-## Text
-
-Type words on the **Text** tab and press <kbd>Enter</kbd>. A row matches
-when, for every word, one of its text columns contains that word's characters
-in order, not necessarily adjacent. Matching is case-insensitive. Reopen the
-prompt to see how many rows matched.
-To jump between matches without filtering, [find](finding.md) with
-<kbd>f</kbd>.
-
-On **Food nutrition (fast food)**, `chicken` keeps 178 of 515 menu items.
-`chkn` keeps 186: it also finds Chick Fil-A's `Chick-n-Strips`, and, since the
-letters need not be adjacent, `Three Cheese Steak Sandwich`. On NYC flights,
-`jfk sea` keeps the 2,092 flights from JFK to Seattle.
 
 ## q
 
@@ -247,5 +240,5 @@ The cursor, frozen columns and column order come back with <kbd>Esc</kbd>.
 
 ## Save a query
 
-A [view](views.md) saves the active query, in its mode, with the filters and
-sort, to replay on the next file of the same shape.
+A [view](views.md) saves the active query, in its language, with the filters
+and sort, to replay on the next file of the same shape.

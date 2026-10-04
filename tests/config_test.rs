@@ -345,16 +345,14 @@ fn test_query_default_mode() {
     let config: AppConfig = toml::from_str("[query]\nhistory_limit = 10\n").unwrap();
     assert_eq!(config.query.default_mode, QueryMode::Sql);
 
-    for (text, mode) in [
-        ("sql", QueryMode::Sql),
-        ("text", QueryMode::Text),
-        ("q", QueryMode::Q),
-    ] {
+    for (text, mode) in [("sql", QueryMode::Sql), ("q", QueryMode::Q)] {
         let config: AppConfig =
             toml::from_str(&format!("[query]\ndefault_mode = \"{text}\"\n")).unwrap();
         assert_eq!(config.query.default_mode, mode, "{text}");
     }
     assert!(toml::from_str::<AppConfig>("[query]\ndefault_mode = \"fuzzy\"\n").is_err());
+    // Text left the command line for find's Ctrl+G: a config that names it is told so.
+    assert!(toml::from_str::<AppConfig>("[query]\ndefault_mode = \"text\"\n").is_err());
 
     // A file that picks q wins, a later one that says nothing keeps it, and one
     // that names the default puts it back.
@@ -466,7 +464,7 @@ streaming = false
 quality_local_copy = "512MiB"
 
 [query]
-default_mode = "text"
+default_mode = "q"
 history = false
 
 [views]
@@ -497,7 +495,7 @@ cross_filesystems = true
     );
     assert!(!kept.performance.streaming);
     assert_eq!(kept.analysis.quality_local_copy, ByteSize::mib(512));
-    assert_eq!(kept.query.default_mode, QueryMode::Text);
+    assert_eq!(kept.query.default_mode, QueryMode::Q);
     assert!(!kept.query.history);
     assert!(kept.views.auto_apply);
     assert_eq!(kept.clipboard.backend, "osc52");
@@ -1397,6 +1395,25 @@ fn test_a_config_with_the_removed_ui_section_still_loads() {
     );
     let config = AppConfig::load_from_file(&root).expect("Config should load");
     assert!(config.display.row_numbers);
+}
+
+/// `-c` names one setting; a removed one is refused, with nothing applied: the
+/// control bar's `custom_controls` went with the bar, and Text left the command line.
+#[test]
+fn removed_settings_are_refused_on_the_command_line() {
+    use clap::Parser;
+    use datui::config::ConfigLayer;
+    for flag in [
+        "ui.controls.custom_controls=[[\"q\", \"Quit\"]]",
+        "query.default_mode=text",
+    ] {
+        let refused = match datui_cli::Args::try_parse_from(["datui", "-c", flag]) {
+            // Clap checks each key and value against the option registry.
+            Err(_) => true,
+            Ok(args) => ConfigLayer::from_overrides(&args.config).is_err(),
+        };
+        assert!(refused, "{flag} is refused");
+    }
 }
 
 #[test]

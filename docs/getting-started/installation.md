@@ -99,7 +99,7 @@ cargo build --release --locked --no-default-features --features sql,streaming
 |---|---|
 | `cloud` | S3, GCS and Azure URLs fail to open; no cloud sources on the home screen |
 | `http` | HTTP(S) URLs fail to open |
-| `sql` | The query prompt has no SQL tab; a view saved with SQL fails to apply |
+| `sql` | The command line has no `sql:`; a view saved with SQL fails to apply |
 | `sqlite` | SQLite databases fail to open |
 | `streaming` | No Polars streaming engine: an export reads the whole view first, and a Data Quality read runs to its end on <kbd>Esc</kbd> |
 

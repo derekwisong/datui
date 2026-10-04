@@ -45,6 +45,7 @@ fn filter(
     logical: LogicalOperator,
 ) -> FilterStatement {
     FilterStatement {
+        columns: Vec::new(),
         column: column.to_string(),
         operator,
         value: value.to_string(),

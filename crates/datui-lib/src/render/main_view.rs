@@ -1,3 +1,5 @@
+use crate::render::footer::{Hint, registry_hint, registry_hint_in};
+
 /// Determines which full-screen content is active in the main view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MainViewContent {
@@ -54,161 +56,215 @@ impl MainViewContent {
     }
 }
 
-/// Control bar configuration provided by the active main view.
-/// The main render loop uses this to build the Controls widget.
-#[derive(Debug, Clone)]
-pub enum ControlBarSpec {
-    /// Default datatable controls (row count, etc.) with optional dimmed and query-active state.
-    Datatable {
-        dimmed: bool,
-        query_active: bool,
-        /// True when `q` pops to the home screen instead of quitting.
-        q_pops: bool,
-        /// True when Enter drills into the row's group rather than inspecting it.
-        enter_drills: bool,
-    },
-    /// Custom keybinding list for this view (e.g. analysis or chart).
-    Custom(Vec<(&'static str, &'static str)>),
-}
-
-/// Returns the control bar keybindings and options for the current main view content.
-/// The main render loop calls this and applies the result to the Controls widget.
-pub fn control_bar_spec(app: &crate::App, content: MainViewContent) -> ControlBarSpec {
-    // A confirmation takes every key until it is answered, over any screen: the
-    // keys underneath do nothing meanwhile.
-    if app.confirmation_modal.active {
-        return ControlBarSpec::Custom(crate::render::overlays::confirmation_keys());
+/// The keys of the mode in effect, for the footer's right end. Empty at rest: the
+/// footer then offers only help. A surface with its own footer (a dialog, a
+/// sidebar, the inspector) names its own keys, so the footer adds none.
+pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
+    use datui_cli::keys::Context;
+    if app.confirmation_modal.active || app.error_modal.active || app.help_visible() {
+        return Vec::new();
     }
     match content {
         MainViewContent::Datatable => {
-            // A surface that owns the keyboard gets a bar that describes it:
-            // the table's chips advertise keys that type here, not act.
             if app.input_mode == crate::InputMode::Editing {
-                return ControlBarSpec::Custom(match app.input_type {
-                    Some(crate::InputType::GoToLine) => {
-                        vec![("Enter", "Go"), ("F1", "Help"), ("Esc", "Cancel")]
-                    }
+                return match app.input_type {
                     Some(crate::InputType::Find) => vec![
-                        ("Enter", "Find"),
-                        ("^R", "Regex"),
-                        ("^L", "Column"),
-                        ("F1", "Help"),
-                        ("Esc", "Cancel"),
+                        // The switches are on the prompt's own line, beside their state.
+                        registry_hint_in(Context::Find, Some("Find"), "Enter"),
+                        registry_hint(Context::Find, "Ctrl+G"),
+                        registry_hint_in(Context::Find, Some("Find"), "Esc"),
                     ],
-                    // In the SQL input Tab completes; the tab bar is Shift+Tab or
-                    // ^T away. Alt+Enter is named beside the tabs, where it has room.
-                    _ if app.query_mode == crate::QueryMode::Sql
-                        && app.query_focus == crate::QueryFocus::Input =>
-                    {
-                        vec![
-                            ("Enter", "Run"),
-                            ("Tab", "Complete"),
-                            ("^T", "Mode"),
-                            ("F1", "Help"),
-                            ("Esc", "Cancel"),
-                        ]
+                    _ => {
+                        let row = crate::editing_keys::row_number(
+                            app.query_prompt_text().unwrap_or_default(),
+                        )
+                        .is_some();
+                        let mut keys = vec![if row {
+                            Hint::new("Enter", "Go")
+                        } else {
+                            registry_hint(Context::Query, "Enter")
+                        }];
+                        if !row {
+                            keys.push(registry_hint(Context::Query, "Tab"));
+                        }
+                        if crate::QueryMode::available().len() > 1 {
+                            keys.push(registry_hint(Context::Query, "Ctrl+T"));
+                        }
+                        keys.push(registry_hint(Context::Query, "Esc"));
+                        keys
                     }
-                    _ => vec![
-                        ("Enter", "Run"),
-                        ("^T", "Mode"),
-                        ("Tab", "Focus"),
-                        ("F1", "Help"),
-                        ("Esc", "Cancel"),
-                    ],
-                });
-            }
-            // Export and Copy carry their own footers; the bar keeps only the
-            // globals that still act, rather than a dimmed row of untruths.
-            if app.input_mode == crate::InputMode::Export
-                || app.input_mode == crate::InputMode::Copy
-            {
-                return ControlBarSpec::Custom(vec![("^Q", "Quit"), ("Esc", "Cancel")]);
-            }
-            // The column picker's footer names its keys.
-            if app.input_mode == crate::InputMode::GoToColumn
-                || app.input_mode == crate::InputMode::PickFormat
-            {
-                return ControlBarSpec::Custom(vec![("^Q", "Quit"), ("Esc", "Cancel")]);
-            }
-            // The inspector's footer names its keys; it has nothing to cancel.
-            if app.input_mode == crate::InputMode::Inspect {
-                // Inside a drill, Esc steps up a level, as the footer says.
-                let esc = if app.inspector_modal.drill.is_some() {
-                    "Back"
-                } else {
-                    "Close"
                 };
-                return ControlBarSpec::Custom(vec![("^Q", "Quit"), ("Esc", esc)]);
             }
-            // Esc stops a pivot or a view being read, like any other cancellable
-            // wait. At the form only the hard escapes act meanwhile.
-            if app.pivot_computing() {
-                return ControlBarSpec::Custom(vec![("Esc", "Cancel"), ("^O", "Home")]);
+            // A wait the user can stop: Esc stops it, over the form that started it.
+            if app.pivot_computing() || app.finding() || app.view_applying() {
+                return vec![Hint::new("Esc", "Stop")];
             }
-            // A find reading the view stops with Esc too.
-            if app.finding() {
-                return ControlBarSpec::Custom(vec![
-                    ("Esc", "Cancel"),
-                    ("^O", "Home"),
-                    ("?", "Help"),
-                    ("q", if app.opened_from_home { "Home" } else { "Quit" }),
-                ]);
+            if app.input_mode != crate::InputMode::Normal
+                || app.sort_filter_modal.active
+                || app.view_modal.active
+            {
+                return Vec::new();
             }
-            if app.view_applying() {
-                return ControlBarSpec::Custom(vec![
-                    ("Esc", "Cancel"),
-                    ("^O", "Home"),
-                    ("?", "Help"),
-                    ("q", if app.opened_from_home { "Home" } else { "Quit" }),
-                ]);
-            }
-            let query_active = app
+            let mut keys = Vec::new();
+            if let Some(key) = app.follow_mark().and_then(|f| f.key) {
+                keys.push(Hint::new("t", key));
+                keys.push(Hint::new("Esc", "Stop"));
+            } else if app.find_hint_shown() {
+                keys.push(registry_hint_in(
+                    Context::Find,
+                    Some("At the table"),
+                    "n / N",
+                ));
+                keys.push(registry_hint_in(Context::Find, Some("At the table"), "Esc"));
+            } else if app.column_hints_shown() {
+                keys.push(registry_hint(Context::Table, "+ / -"));
+                keys.push(registry_hint(Context::Table, "[ / ]"));
+                keys.push(registry_hint(Context::Table, "F"));
+            } else if app
                 .data_table_state
                 .as_ref()
-                .map(|s| !s.get_active_query().trim().is_empty())
-                .unwrap_or(false);
-            let dimmed = app.help_visible()
-                || app.input_mode == crate::InputMode::SortFilter
-                || app.input_mode == crate::InputMode::PivotMelt
-                || app.input_mode == crate::InputMode::Info
-                || app.sort_filter_modal.active;
-            ControlBarSpec::Datatable {
-                dimmed,
-                query_active,
-                q_pops: app.opened_from_home,
-                // From the table alone, so the chip holds still under a dimming sidebar.
-                enter_drills: app
-                    .data_table_state
-                    .as_ref()
-                    .is_some_and(|state| state.can_drill_down()),
+                .is_some_and(|s| s.is_drilled_down())
+            {
+                keys.push(Hint::new("Esc", "Back"));
+            } else if app
+                .data_table_state
+                .as_ref()
+                .is_some_and(|s| s.can_drill_down())
+            {
+                // A `by` view: Enter drills where it would otherwise inspect.
+                keys.push(registry_hint(Context::Table, "Enter"));
             }
+            let state = app.data_table_state.as_ref();
+            // Read through a format spec: `b` reads it with another.
+            if state.and_then(|s| s.format_read()).is_some() {
+                keys.push(registry_hint(Context::Table, "b"));
+            }
+            if app.app_config.display.notes_accent && state.is_some_and(|s| s.notes_unseen()) {
+                let mut notes = Hint::new("i", "Notes");
+                notes.accented = true;
+                keys.push(notes);
+            }
+            keys
         }
-        MainViewContent::Analysis => ControlBarSpec::Custom(analysis_control_keys(app)),
-        MainViewContent::Chart => ControlBarSpec::Custom(chart_control_keys(app)),
-        MainViewContent::ValueCounts => ControlBarSpec::Custom(value_counts_control_keys(app)),
-        MainViewContent::Hex => ControlBarSpec::Custom(hex_control_keys(app)),
-        // Only the keys that survive the busy gate in `App::key`. Offering anything
-        // else would be advertising something that does nothing.
-        MainViewContent::Loading => ControlBarSpec::Custom(vec![
-            ("^O", "Home"),
-            ("?", "Help"),
-            // The same meaning q carries at the table: pop or quit.
-            ("q", if app.opened_from_home { "Home" } else { "Quit" }),
-        ]),
-        MainViewContent::Home => ControlBarSpec::Custom(home_control_keys(
-            app.home.path_input_active,
-            if app.home.below_browse_start() {
-                Browse::BelowStart
-            } else if app.home.browsing.is_some() {
-                Browse::AtStart
-            } else {
-                Browse::Listing
-            },
-            !app.home.filter.is_empty(),
-            app.data_table_state.is_some(),
-            app.selected_directory_to_enter().is_some(),
-            app.what_enter_does(),
-        )),
+        MainViewContent::Analysis => followed(app, screen_hints(analysis_control_keys(app))),
+        MainViewContent::Chart => followed(app, screen_hints(chart_control_keys(app))),
+        MainViewContent::ValueCounts => followed(app, screen_hints(value_counts_control_keys(app))),
+        MainViewContent::Hex => screen_hints(hex_control_keys(app)),
+        MainViewContent::Loading => vec![Hint::new("^O", "Home")],
+        MainViewContent::Home => {
+            // The Documentation view names its keys in its own footer.
+            if app.documentation.is_open() {
+                return Vec::new();
+            }
+            if app.home.path_input_active {
+                return vec![
+                    Hint::new("Enter", "Open"),
+                    Hint::new("Tab", "Complete"),
+                    Hint::new("Esc", "Cancel"),
+                ];
+            }
+            // Fixed slots, each its full width whether or not the row offers it, so
+            // moving the selection never moves the footer.
+            let enter = Some(enter_label(app.what_enter_does())).filter(|l| !l.is_empty());
+            let docs = registry_hint(Context::Home, "Ctrl+E");
+            vec![
+                slot("Enter", enter, ENTER_SLOT),
+                slot("^D", app.home_catalog_action(), CATALOG_SLOT),
+                slot(
+                    "^E",
+                    app.home_documented_row()
+                        .is_some()
+                        .then_some(docs.label.as_ref()),
+                    docs.label.len(),
+                ),
+            ]
+        }
+    }
+}
+
+/// A screen's keys with what `t` does there, first, while a followed file has rows
+/// it has not read.
+fn followed(app: &crate::App, mut keys: Vec<Hint>) -> Vec<Hint> {
+    if let Some(key) = app.follow_mark().and_then(|f| f.key) {
+        keys.insert(0, Hint::new("t", key));
+    }
+    keys
+}
+
+/// A screen's own keys in the footer: the two or three it leads with, without help,
+/// which the footer always offers.
+fn screen_hints(keys: Vec<(&'static str, &'static str)>) -> Vec<Hint> {
+    let keys: Vec<_> = keys
+        .into_iter()
+        .filter(|(key, _)| !matches!(*key, "?" | "F1"))
+        .collect();
+    let mut shown: Vec<_> = keys.iter().take(3).copied().collect();
+    // The way out stays, in the last place, wherever the screen listed it.
+    if let Some(esc) = keys.iter().skip(3).find(|(key, _)| *key == "Esc")
+        && !shown.iter().any(|(key, _)| *key == "Esc")
+        && let Some(last) = shown.last_mut()
+    {
+        *last = *esc;
+    }
+    shown
+        .into_iter()
+        .map(|(key, label)| Hint::new(key, label))
+        .collect()
+}
+
+/// The key that opens help, as the footer offers it: `?`, or F1 where `?` types (a
+/// prompt, a filter typed on the home screen).
+pub fn help_key(app: &crate::App, content: MainViewContent) -> Option<&'static str> {
+    // Help waits, with every other key, while a pivot is computed at its form.
+    if app.help_visible() || app.pivot_computing() {
+        return None;
+    }
+    let types = match content {
+        MainViewContent::Datatable => app.input_mode == crate::InputMode::Editing,
+        // The Documentation view takes every key but F1.
+        MainViewContent::Home => {
+            !app.home.filter.is_empty() || app.home.path_input_active || app.documentation.is_open()
+        }
+        MainViewContent::Hex => app.hex.as_ref().is_some_and(|v| v.prompt.is_some()),
+        _ => false,
+    };
+    Some(if types { "F1" } else { "?" })
+}
+
+/// Columns the home screen's Enter label is given, whatever it says.
+const ENTER_SLOT: usize = 8;
+/// Columns Ctrl+D's label is given: `Add` or `Forget`.
+const CATALOG_SLOT: usize = 6;
+
+/// A hint in a slot of fixed width: `key label`, the label padded to `width`, or as
+/// many blanks where the row does not offer the key.
+fn slot(key: &'static str, label: Option<&str>, width: usize) -> Hint {
+    match label {
+        Some(label) => Hint::new(key, format!("{label:<width$}")),
+        None => Hint::new(" ".repeat(key.len()), " ".repeat(width)),
+    }
+}
+
+/// What Enter does on the home screen's row, as the footer names it.
+///
+/// Enter is labelled with what it will do on *this* row, not with the word "Open". On
+/// a directory whose files are not one table, Enter goes inside — and a hint saying
+/// "Open" there taught the wrong thing on the first try, which is the try that forms
+/// the impression.
+pub fn enter_label(enter: crate::WhatEnter) -> &'static str {
+    match enter {
+        crate::WhatEnter::OpensDirectory => "Open all",
+        crate::WhatEnter::GoesInside => "Inside",
+        crate::WhatEnter::LooksFirst => "Look",
+        crate::WhatEnter::FoldsSection => "Fold",
+        crate::WhatEnter::ShowsMore => "Show all",
+        crate::WhatEnter::ShowsHidden => "Show",
+        crate::WhatEnter::OpensFile => "Open",
+        crate::WhatEnter::OpensHex => "Hex",
+        // The row only explains itself — an HTTP place has no listing to browse —
+        // so the hint must not promise an Open it cannot do.
+        crate::WhatEnter::Explains => "About",
+        crate::WhatEnter::Nothing => "",
     }
 }
 
@@ -829,133 +885,8 @@ fn chart_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
     keys
 }
 
-/// Where the home screen is, as far as Esc is concerned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Browse {
-    /// The root listing.
-    Listing,
-    /// In the directory the browse began at; Esc returns to the listing.
-    AtStart,
-    /// Below where the browse began; Esc goes up a level.
-    BelowStart,
-}
-
-/// Control bar keys for the home screen.
-///
-/// Split out as a pure function so the one invariant that matters can be tested: the
-/// bar must never advertise plain `q` as quit. Every plain character on this screen
-/// goes into the filter — `q` types a `q`, or you could not search for "quarterly" —
-/// and a control bar promising otherwise leaves the user with no visible way out.
-pub fn home_control_keys(
-    path_input_active: bool,
-    browsing: Browse,
-    has_filter: bool,
-    has_data: bool,
-    on_a_directory: bool,
-    enter: crate::WhatEnter,
-) -> Vec<(&'static str, &'static str)> {
-    // Named keys are spelled out — "Enter", "Tab", "Bksp" — matching the analysis and
-    // chart bars, and avoiding U+23CE and U+21E5, which plenty of terminal fonts do
-    // not carry. Only the arrows stay as glyphs: those are basic Arrows, present
-    // everywhere, and they have no compact spelling.
-    //
-    // Ordered by what a narrow terminal can least afford to lose: the bar is cut from
-    // the right, so the way out comes before the conveniences. At 70 columns this is
-    // the difference between seeing "^C Quit" and seeing nothing about leaving.
-    let g = crate::glyphs::get();
-    // Enter is labelled with what it will do on *this* row, not with the word "Open". On
-    // a directory whose files are not one table, Enter goes inside — and a bar saying
-    // "Open" there taught the wrong thing on the first try, which is the try that forms
-    // the impression. `Open all` is the promise the `(all files)` row and every directory
-    // that reads as one table keep; `Inside` is what the other directories do, and the
-    // same thing `→` does, so those two rows are given one chip between them below.
-    let enter_says = match enter {
-        crate::WhatEnter::OpensDirectory => "Open all",
-        crate::WhatEnter::GoesInside => "Inside",
-        crate::WhatEnter::LooksFirst => "Look",
-        crate::WhatEnter::FoldsSection => "Fold",
-        crate::WhatEnter::ShowsMore => "Show all",
-        crate::WhatEnter::ShowsHidden => "Show",
-        crate::WhatEnter::OpensFile => "Open",
-        crate::WhatEnter::OpensHex => "Hex",
-        // The row only explains itself — an HTTP place has no listing to
-        // browse — so the chip must not promise an Open it cannot do.
-        crate::WhatEnter::Explains => "About",
-        crate::WhatEnter::Nothing => "",
-    };
-    // What a first session needs leads, the way out with it, so 80 columns show all of
-    // it: Enter, that typing filters, `~` for a path, Esc, help and quit. The moves and
-    // conveniences follow, and the bar is cut from the right (#547 M2).
-    let mut keys = vec![("Enter", enter_says)];
-    if enter_says.is_empty() {
-        keys.clear();
-    }
-
-    if path_input_active {
-        // What Enter does is the typed path's, not the row's under the prompt.
-        keys = vec![("Enter", "Open")];
-        keys.push(("Esc", "Cancel"));
-        keys.push(("Tab", "Complete"));
-        keys.push((g.updown, "Pick"));
-    } else {
-        keys.push(("type", "Filter"));
-        // `~` opens the path prompt only on an empty filter; with one typed it
-        // is an ordinary filter character, and the chip must not say otherwise.
-        if !has_filter {
-            keys.push(("~", "Path"));
-        }
-        // Esc peels off one layer of context at a time, so label it with what it will
-        // actually do next rather than a generic "Back". At the top level it does
-        // nothing, and is not offered. Back to the open data, it names where the next
-        // keys will land: a reflexive Esc too many puts them on the table (#547 D14).
-        if has_filter {
-            keys.push(("Esc", "Clear"));
-        } else if browsing == Browse::BelowStart {
-            keys.push(("Esc", "Up"));
-        } else if browsing == Browse::AtStart {
-            keys.push(("Esc", "Back"));
-        } else if has_data {
-            keys.push(("Esc", "Table"));
-        }
-        // `?` is the one printable that does not type into the filter — but only
-        // while the filter is empty, so it is only promised then.
-        if !has_filter {
-            keys.push(("?", "Help"));
-        }
-        keys.push(("^C", "Quit"));
-        keys.push((g.updown, "Move"));
-        if browsing != Browse::Listing {
-            keys.push(("Bksp", "Up"));
-        }
-        // → does not fold on a directory row, it goes inside — and nothing else on screen
-        // says that door exists. One chip, not two beside it: ← still folds, and says so
-        // on every other row.
-        //
-        // Not when Enter goes inside as well. Two chips for one outcome is the bar
-        // implying a choice that is not there.
-        if on_a_directory && enter != crate::WhatEnter::GoesInside {
-            keys.push((g.arrow_right, "Inside"));
-        } else if !on_a_directory && browsing == Browse::Listing {
-            // Only the root listing has sections to fold. The listing browsed into is
-            // the whole screen and never folds.
-            keys.push((g.updown_lr, "Fold"));
-        }
-        keys.push((g.ctrl_updown, "Section"));
-        // The key is an action; which order is currently in effect is state, and it
-        // belongs at the far end of the bar rather than dressed up as something to press.
-        keys.push(("Tab", "Sort"));
-    }
-
-    // Ctrl+C quits from the path prompt too.
-    if !keys.iter().any(|(_, label)| *label == "Quit") {
-        keys.push(("^C", "Quit"));
-    }
-    keys
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Browse, home_control_keys};
 
     /// Every Data Quality page's bar offers Esc: the overview was the one
     /// screen without a way out.
@@ -1036,260 +967,5 @@ mod tests {
         app.analysis_modal.selected_correlation = Some((1, 2));
         assert_eq!(label(&app, "Enter"), Some("Detail"));
         assert_eq!(label(&app, "m"), Some("Method"));
-    }
-
-    /// Every combination of home-screen state the control bar can be drawn in.
-    fn all_states() -> Vec<(bool, Browse, bool, bool, bool)> {
-        let mut out = Vec::new();
-        for path_input in [false, true] {
-            for browsing in [Browse::Listing, Browse::AtStart, Browse::BelowStart] {
-                for filter in [false, true] {
-                    for data in [false, true] {
-                        for directory in [false, true] {
-                            out.push((path_input, browsing, filter, data, directory));
-                        }
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    /// What Enter does on a row that is not a directory, for the tests that are about
-    /// something else.
-    const OPENS: crate::WhatEnter = crate::WhatEnter::OpensFile;
-
-    #[test]
-    fn home_bar_never_advertises_bare_q_as_quit() {
-        // The bug this guards: the bar said "q Quit" while `q` typed into the filter,
-        // so there was no discoverable way to leave the home screen.
-        for (p, b, f, d, n) in all_states() {
-            for (key, _) in home_control_keys(p, b, f, d, n, OPENS) {
-                assert_ne!(
-                    key, "q",
-                    "bare `q` advertised in state (path={p}, browsing={b:?}, filter={f}, data={d}, directory={n})"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn home_bar_always_offers_a_way_out() {
-        for (p, b, f, d, n) in all_states() {
-            let keys = home_control_keys(p, b, f, d, n, OPENS);
-            assert!(
-                keys.iter().any(|(_, label)| *label == "Quit"),
-                "no quit offered in state (path={p}, browsing={b:?}, filter={f}, data={d}, directory={n})"
-            );
-        }
-    }
-
-    #[test]
-    fn home_bar_leads_with_the_way_out() {
-        // A narrow terminal cuts the bar from the right. Whatever survives has to
-        // include how to leave.
-        for (p, b, f, d, n) in all_states() {
-            let keys = home_control_keys(p, b, f, d, n, OPENS);
-            // Esc while there is a layer to back out of; Ctrl+C at the top, where
-            // Esc does nothing and is not offered.
-            let way_out = keys
-                .iter()
-                .position(|(key, _)| *key == "Esc" || *key == "^C")
-                .expect("a way out is always offered");
-            assert!(
-                way_out < 5,
-                "the way out is {way_out} deep in state (path={p}, browsing={b:?}, filter={f}, data={d}, directory={n}); \
-                 a narrow bar would cut it"
-            );
-        }
-    }
-
-    #[test]
-    fn home_bar_labels_esc_with_what_it_will_do() {
-        // Esc escalates, so the label has to track the state rather than say "Back".
-        let esc = |p, b, f, d| {
-            home_control_keys(p, b, f, d, false, OPENS)
-                .into_iter()
-                .find(|(key, _)| *key == "Esc")
-                .map(|(_, label)| label)
-        };
-        assert_eq!(esc(false, Browse::Listing, true, false), Some("Clear"));
-        assert_eq!(esc(false, Browse::BelowStart, false, false), Some("Up"));
-        assert_eq!(esc(false, Browse::AtStart, false, false), Some("Back"));
-        assert_eq!(esc(false, Browse::Listing, false, true), Some("Table"));
-        // Nothing to back out of: Esc does nothing and is not offered.
-        assert_eq!(esc(false, Browse::Listing, false, false), None);
-        assert_eq!(esc(true, Browse::Listing, false, false), Some("Cancel"));
-    }
-
-    /// Enter is labelled with what it will do on this row, and the two doors are two
-    /// chips only where they are two different things.
-    ///
-    /// A bar reading `Enter Open` on a directory Enter steps into teaches the wrong thing
-    /// on the first try, and the first try is the one that forms the impression.
-    #[test]
-    fn home_bar_labels_enter_with_what_it_will_do() {
-        let g = crate::glyphs::get();
-        let bar = |directory, enter| {
-            home_control_keys(false, Browse::AtStart, false, false, directory, enter)
-        };
-        let label = |keys: &[(&'static str, &'static str)], k: &str| {
-            keys.iter().find(|(key, _)| *key == k).map(|(_, l)| *l)
-        };
-
-        // A directory that reads as one table: Enter opens all of it, → goes inside. Two
-        // doors, both advertised, because they are two different outcomes.
-        let one_table = bar(true, crate::WhatEnter::OpensDirectory);
-        assert_eq!(label(&one_table, "Enter"), Some("Open all"));
-        assert_eq!(label(&one_table, g.arrow_right), Some("Inside"));
-
-        // A directory that is somewhere to look: Enter and → do the same thing, so the
-        // bar says it once rather than implying a choice that is not there.
-        let look_inside = bar(true, crate::WhatEnter::GoesInside);
-        assert_eq!(label(&look_inside, "Enter"), Some("Inside"));
-        assert_eq!(
-            label(&look_inside, g.arrow_right),
-            None,
-            "one outcome, one chip: {look_inside:?}"
-        );
-
-        // A file: unchanged.
-        assert_eq!(
-            label(&bar(false, crate::WhatEnter::OpensFile), "Enter"),
-            Some("Open")
-        );
-        // A row nothing has looked into says so rather than promising either.
-        assert_eq!(
-            label(&bar(true, crate::WhatEnter::LooksFirst), "Enter"),
-            Some("Look")
-        );
-    }
-
-    /// On a directory that opens as one dataset, → does not fold — it goes inside. The
-    /// bar is the only thing on screen that says so.
-    #[test]
-    fn home_bar_offers_inside_only_on_a_dataset_directory() {
-        let g = crate::glyphs::get();
-        let labels = |directory| {
-            home_control_keys(false, Browse::Listing, false, false, directory, OPENS)
-                .into_iter()
-                .collect::<Vec<_>>()
-        };
-
-        let on_directory = labels(true);
-        assert!(
-            on_directory.contains(&(g.arrow_right, "Inside")),
-            "the door is advertised: {on_directory:?}"
-        );
-        assert!(
-            !on_directory.iter().any(|(key, _)| *key == g.updown_lr),
-            "the pair would say → folds, which it does not here: {on_directory:?}"
-        );
-        assert_eq!(
-            on_directory.len(),
-            labels(false).len(),
-            "one chip in place of one, so the bar is no wider on this row than any \
-             other — it is cut from the right and this hint is near that end"
-        );
-
-        let elsewhere = labels(false);
-        assert!(
-            !elsewhere.iter().any(|(_, label)| *label == "Inside"),
-            "nothing to go inside of: {elsewhere:?}"
-        );
-        assert!(
-            elsewhere.contains(&(g.updown_lr, "Fold")),
-            "both arrows fold: {elsewhere:?}"
-        );
-    }
-
-    /// While browsing, the one section on screen never folds, so the bar does not say
-    /// it does.
-    #[test]
-    fn home_bar_offers_fold_only_on_the_root_listing() {
-        let g = crate::glyphs::get();
-        let has_fold = |b| {
-            home_control_keys(false, b, false, false, false, OPENS)
-                .iter()
-                .any(|(key, _)| *key == g.updown_lr)
-        };
-        assert!(has_fold(Browse::Listing));
-        assert!(!has_fold(Browse::AtStart));
-        assert!(!has_fold(Browse::BelowStart));
-    }
-
-    /// At 80 columns every home state shows that typing filters, `~` where it opens the
-    /// path prompt, help where `?` asks for it, and a way out; the caption yields first
-    /// (#547 M2).
-    #[test]
-    fn home_bar_at_80_columns_keeps_what_a_first_session_needs() {
-        use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
-        let enters = [
-            crate::WhatEnter::OpensFile,
-            crate::WhatEnter::OpensDirectory,
-            crate::WhatEnter::ShowsMore,
-            crate::WhatEnter::GoesInside,
-        ];
-        for (p, b, f, d, n) in all_states() {
-            for enter in enters {
-                let keys = home_control_keys(p, b, f, d, n, enter);
-                let controls = crate::widgets::controls::Controls::from_context(
-                    0,
-                    &crate::render::context::RenderContext::for_test(),
-                )
-                .with_custom_controls(keys)
-                .with_caption(Some("by recent".to_string()))
-                .with_caption_yielding(true);
-                let area = Rect::new(0, 0, 80, 1);
-                let mut buf = Buffer::empty(area);
-                controls.render(area, &mut buf);
-                let bar: String = (0..80).map(|x| buf[(x, 0)].symbol().to_string()).collect();
-                let state =
-                    format!("path={p}, browsing={b:?}, filter={f}, data={d}, enter={enter:?}");
-                if p {
-                    assert!(bar.contains("Cancel"), "{state}: {bar:?}");
-                    continue;
-                }
-                assert!(bar.contains("type  Filter"), "{state}: {bar:?}");
-                assert!(bar.contains("Quit"), "{state}: {bar:?}");
-                if !f {
-                    assert!(bar.contains("~  Path"), "{state}: {bar:?}");
-                    assert!(bar.contains("?  Help"), "{state}: {bar:?}");
-                }
-                if f || b != Browse::Listing || d {
-                    assert!(bar.contains("Esc"), "{state}: {bar:?}");
-                }
-                assert!(
-                    !bar.contains("by recent"),
-                    "the caption went first: {bar:?}"
-                );
-            }
-        }
-        // With room for every chip, the caption is there too.
-        let keys = home_control_keys(false, Browse::Listing, false, false, false, OPENS);
-        let controls = crate::widgets::controls::Controls::from_context(
-            0,
-            &crate::render::context::RenderContext::for_test(),
-        )
-        .with_custom_controls(keys)
-        .with_caption(Some("by recent".to_string()))
-        .with_caption_yielding(true);
-        let area = Rect::new(0, 0, 200, 1);
-        let mut buf = Buffer::empty(area);
-        controls.render(area, &mut buf);
-        let bar: String = (0..200).map(|x| buf[(x, 0)].symbol().to_string()).collect();
-        assert!(bar.contains("Sort") && bar.contains("by recent"), "{bar:?}");
-    }
-
-    #[test]
-    fn home_bar_offers_up_only_while_browsing() {
-        let has_up = |b| {
-            home_control_keys(false, b, false, false, false, OPENS)
-                .iter()
-                .any(|(_, label)| *label == "Up")
-        };
-        assert!(has_up(Browse::AtStart));
-        assert!(has_up(Browse::BelowStart));
-        assert!(!has_up(Browse::Listing));
     }
 }

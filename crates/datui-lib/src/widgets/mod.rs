@@ -4,7 +4,6 @@ pub mod chart;
 pub mod chart_export_modal;
 pub mod column_paging;
 pub mod column_widths;
-pub mod controls;
 pub mod copy;
 pub mod crosshair;
 pub mod data_quality;

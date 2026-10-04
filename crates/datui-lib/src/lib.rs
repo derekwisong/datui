@@ -100,6 +100,7 @@ mod first_rows_trace;
 pub mod fix;
 pub mod fixed_records;
 pub mod follow;
+mod footer_state;
 pub mod form;
 pub mod formats;
 pub mod framed_records;
@@ -237,7 +238,6 @@ use terminal::{QuietTerminal, TakenTerminal, push_keyboard_flags, restore_termin
 pub use unfinished::ExitSweep;
 pub use view::{SavedView, ViewManager, Views};
 use widgets::column_widths::WidthChoice;
-use widgets::controls::Controls;
 use widgets::datatable::{DataTableState, DrillRow, OpenFacts};
 use widgets::debug::DebugState;
 use widgets::text_input::TextInput;
@@ -447,7 +447,6 @@ pub enum AppEvent {
     Crash(String),
     QQuery(String),
     SqlQuery(String),
-    TextQuery(String),
     Filter(Vec<FilterStatement>),
     Sort(Vec<String>, Vec<bool>), // Columns, and per column whether it runs descending
     ColumnOrder(Vec<String>, usize), // Column order, locked columns count
@@ -740,8 +739,8 @@ pub enum InputMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputType {
+    /// The command line (`:`): a row number, or a query in SQL or q.
     Query,
-    GoToLine,
     Find,
 }
 
@@ -776,14 +775,6 @@ enum RunOrigin {
         previous: Option<String>,
         matched: Option<(String, view::MatchReason)>,
     },
-}
-
-/// Focus within the query prompt: the tab bar or the current mode's input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum QueryFocus {
-    TabBar,
-    #[default]
-    Input,
 }
 
 /// What the bar says of a recording (`--tee`): `rec` with its size and rate while it
@@ -976,7 +967,7 @@ pub struct App {
     /// Where `--tee -` passes the stream on: standard output as the process got it.
     stdout_pass: Option<Box<dyn std::io::Write + Send>>,
     /// The follow mark as last drawn, so its clock redraws only when it changes.
-    follow_drawn: Option<crate::widgets::controls::FollowMark>,
+    follow_drawn: Option<crate::render::footer::FollowMark>,
     /// Leaving was asked about while recording: what the user was doing.
     pending_leave: Option<Leaving>,
     /// A recording kept going after the user went home or quit, until its stream ends.
@@ -1006,22 +997,28 @@ pub struct App {
     /// Send a HEAD for the HTTP(S) file under the cursor on home, to show its size.
     /// Off under `cargo test`, which never reaches the network unless a test asks.
     pub head_web_rows: bool,
-    // One input per query mode, each with its own history. The history ids
-    // ("query", "sql", "fuzzy") name files already on disk; they stay as they
-    // are so no history is lost or read as another mode's.
-    query_input: TextInput, // q mode, history id "query"; also borrowed by go-to-line
+    // One input per command line language, each with its own history. The history
+    // ids ("query", "sql") name files already on disk; they stay as they are so no
+    // history is lost or read as another language's.
+    query_input: TextInput, // q, history id "query"
     sql_input: TextInput,   // SQL, history id "sql"
-    fuzzy_input: TextInput, // Search, history id "fuzzy"
-    /// The find prompt (`f`) and the find `n` and `N` repeat; history id "find".
+    /// The find prompt (`/`) and the find `n` and `N` repeat; history id "find".
     pub find: find::Find,
+    /// The column cursor moved last: the footer offers the column's keys.
+    column_hints: bool,
     pub input_mode: InputMode,
     input_type: Option<InputType>,
     query_mode: QueryMode,
-    query_focus: QueryFocus,
-    /// The columns of `df`, for the SQL prompt's list and completion. Taken from the
-    /// schema when the prompt opens.
+    /// The language Ctrl+T last chose, which the command line opens on until a query
+    /// in effect says otherwise.
+    query_mode_chosen: Option<QueryMode>,
+    /// The command line holds the query in effect, selected and untouched: Ctrl+T
+    /// carries it selected, so typing still replaces it.
+    query_text_restored: bool,
+    /// The columns of `df`, for the command line's list and completion. Taken from
+    /// the schema when it opens.
     sql_columns: Vec<(String, DataType)>,
-    /// A Tab completion in progress in the SQL input.
+    /// A Tab completion in progress in the command line.
     sql_completion: Option<sql_assist::Cycle>,
     /// A query whose first collect is running, and the view to go back to if it
     /// fails. From the prompt, the prompt stays open until it is done.
@@ -3609,7 +3606,7 @@ impl App {
     }
 
     /// What the control bar says about the follow of the dataset on screen.
-    fn follow_mark(&self) -> Option<crate::widgets::controls::FollowMark> {
+    fn follow_mark(&self) -> Option<crate::render::footer::FollowMark> {
         use crate::follow::Standing;
         // The hex view shows a file's bytes, not the table the follow moves.
         if self.input_mode == InputMode::Hex {
@@ -3622,7 +3619,7 @@ impl App {
             None => (None, false),
         };
         let Some(follow) = state.follow().filter(|f| f.standing != Standing::Ended) else {
-            return rec.is_some().then(|| crate::widgets::controls::FollowMark {
+            return rec.is_some().then(|| crate::render::footer::FollowMark {
                 rec,
                 rec_stopped,
                 ..Default::default()
@@ -3672,7 +3669,7 @@ impl App {
         } else {
             None
         };
-        Some(crate::widgets::controls::FollowMark {
+        Some(crate::render::footer::FollowMark {
             key,
             chip: Some(chip),
             note,
@@ -3820,8 +3817,6 @@ impl App {
         }
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         match key.code {
-            KeyCode::Char('[') => Some(CursorMove::PageLeft),
-            KeyCode::Char(']') => Some(CursorMove::PageRight),
             KeyCode::Left if shift => Some(CursorMove::PageLeft),
             KeyCode::Right if shift => Some(CursorMove::PageRight),
             KeyCode::Left | KeyCode::Char('h') => Some(CursorMove::Left),
@@ -3888,8 +3883,6 @@ impl App {
                     | KeyCode::Right
                     | KeyCode::Char('h')
                     | KeyCode::Char('l')
-                    | KeyCode::Char('[')
-                    | KeyCode::Char(']')
                     | KeyCode::Char('{')
                     | KeyCode::Char('}')
                     | KeyCode::F(1)
@@ -5455,20 +5448,18 @@ impl App {
                 .with_history_limit(app_config.query.history_limit)
                 .with_theme(&theme)
                 .with_history("sql".to_string()),
-            fuzzy_input: TextInput::new()
-                .with_history_limit(app_config.query.history_limit)
-                .with_theme(&theme)
-                .with_history("fuzzy".to_string()),
             find: find::Find::new(
                 TextInput::new()
                     .with_history_limit(app_config.query.history_limit)
                     .with_theme(&theme)
                     .with_history("find".to_string()),
             ),
+            column_hints: false,
             input_mode: InputMode::Normal,
             input_type: None,
             query_mode: QueryMode::default().resolve(),
-            query_focus: QueryFocus::Input,
+            query_mode_chosen: None,
+            query_text_restored: false,
             sql_columns: Vec::new(),
             sql_completion: None,
             query_running: None,
@@ -7111,6 +7102,23 @@ impl App {
     /// Ctrl+E: the Documentation view of the catalog row under the cursor, or of the
     /// catalog dataset the row is inside.
     fn home_open_documentation(&mut self) {
+        let Some((path, catalog, entry)) = self.home_documented_row() else {
+            self.home.status = Some("Ctrl+E shows a catalog row's documentation".into());
+            return;
+        };
+        let measured = self
+            .home
+            .selected_entry()
+            .filter(|e| e.path == path && entry.location() == path)
+            .and_then(|e| e.size);
+        self.documentation.open(entry, catalog, measured);
+    }
+
+    /// The catalog dataset the row under the cursor is, or is inside: what Ctrl+E
+    /// documents, with the row's path and the catalog's label.
+    pub(crate) fn home_documented_row(
+        &self,
+    ) -> Option<(PathBuf, String, std::sync::Arc<catalog::Dataset>)> {
         let path = match self.home.selected_row() {
             Some(home::Row::Entry { entry, .. }) | Some(home::Row::Door { entry, .. }) => {
                 Some(entry.path.clone())
@@ -7121,20 +7129,20 @@ impl App {
             }
             _ => None,
         };
-        let found = path
-            .as_deref()
-            .and_then(|p| home::catalog_entry_for(&self.home.catalogs, p));
-        let Some((catalog, entry)) = found else {
-            self.home.status = Some("Ctrl+E shows a catalog row's documentation".into());
-            return;
-        };
-        let measured = path.as_deref().and_then(|p| {
-            self.home
-                .selected_entry()
-                .filter(|e| e.path == p && entry.location() == p)
-                .and_then(|e| e.size)
-        });
-        self.documentation.open(entry, catalog, measured);
+        let path = path?;
+        let (catalog, entry) = home::catalog_entry_for(&self.home.catalogs, &path)?;
+        Some((path, catalog, entry))
+    }
+
+    /// What Ctrl+D does on the row under the cursor, as the footer names it: add it to
+    /// `catalog.toml`, or forget it from there; `None` on a row it cannot add.
+    pub(crate) fn home_catalog_action(&self) -> Option<&'static str> {
+        let (location, _) = self.home_row_for_catalog()?;
+        Some(if self.mine_entry_at(&location).is_some() {
+            "Forget"
+        } else {
+            "Add"
+        })
     }
 
     /// A key while the Documentation view is open over home.
@@ -11316,9 +11324,8 @@ impl App {
         match self.input_mode {
             InputMode::Normal => Context::Table,
             InputMode::Editing => match self.input_type {
-                Some(InputType::Query) => Context::Query,
                 Some(InputType::Find) => Context::Find,
-                _ => Context::GoToRow,
+                _ => Context::Query,
             },
             InputMode::SortFilter => Context::SortFilter,
             InputMode::PivotMelt => Context::PivotMelt,
@@ -11618,6 +11625,18 @@ impl App {
             || self.help.is_open()
             || self.view_modal.active
             || self.analysis_modal.active);
+        // The footer offers the column's keys once the column cursor moves, until a
+        // key that is not about the column.
+        if in_main_table && event.is_press() {
+            self.column_hints = Self::column_cursor_key(event).is_some()
+                || (self.column_hints
+                    && matches!(
+                        event.code,
+                        KeyCode::Char(
+                            '+' | '-' | 'F' | '[' | ']' | 'H' | 'L' | '<' | '>' | '=' | 'w'
+                        )
+                    ));
+        }
         if in_main_table
             && let Some(mv) = Self::column_cursor_key(event)
             && let Some(state) = self.data_table_state.as_mut()
@@ -11775,12 +11794,15 @@ impl App {
                 }
                 None
             }
-            // Ctrl+F pages down, below.
-            KeyCode::Char('f')
+            // `/` finds, as in less and vim; `f` too. Ctrl+F pages down, below.
+            KeyCode::Char('/' | 'f')
                 if event.is_press() && !event.modifiers.contains(KeyModifiers::CONTROL) =>
             {
                 self.open_find();
                 None
+            }
+            KeyCode::Char('[' | ']') if event.is_press() => {
+                self.sort_by_cursor_column(event.code == KeyCode::Char(']'))
             }
             KeyCode::Char('n') if event.is_press() => {
                 self.find_again(find::Direction::Next);
@@ -12065,41 +12087,8 @@ impl App {
                 }
                 None
             }
-            KeyCode::Char('/') => {
-                self.input_mode = InputMode::Editing;
-                self.input_type = Some(InputType::Query);
-                self.query_mode = self.opening_query_mode();
-                self.query_focus = QueryFocus::Input;
-                self.query_run_error = None;
-                self.sql_completion = None;
-                self.sql_columns.clear();
-                if let Some(state) = &mut self.data_table_state {
-                    self.query_input.set_value(state.get_active_query());
-                    self.sql_input.set_value(state.get_active_sql_query());
-                    self.fuzzy_input.set_value(state.get_active_fuzzy_query());
-                    // The restored query arrives selected: typing states a new
-                    // question, arrows edit the old one. Unselected, typing
-                    // appended to the tail of the last query.
-                    self.query_input.select_all();
-                    self.sql_input.select_all();
-                    self.fuzzy_input.select_all();
-                    state.suppress_error_display = true;
-                    self.sql_columns = state.sql_table_columns();
-                } else {
-                    self.query_input.clear();
-                    self.sql_input.clear();
-                    self.fuzzy_input.clear();
-                }
-                self.sync_query_focus();
-                None
-            }
             KeyCode::Char(':') if event.is_press() => {
-                if self.data_table_state.is_some() {
-                    self.input_mode = InputMode::Editing;
-                    self.input_type = Some(InputType::GoToLine);
-                    self.query_input.clear();
-                    self.query_input.set_focused(true);
-                }
+                self.open_command_line();
                 None
             }
             KeyCode::Char('V') => {
@@ -12321,6 +12310,8 @@ impl App {
         }
         self.ensure_chart_data();
         self.home_score_search();
+        // New rows on hand under an open find prompt: light up their matches.
+        self.refresh_stale_live_matches();
         Ok(out)
     }
 
@@ -13562,10 +13553,6 @@ impl App {
                 self.run_query(QueryMode::Sql, sql, "Applying SQL query...");
                 None
             }
-            AppEvent::TextQuery(query) => {
-                self.run_query(QueryMode::Text, query, "Applying Text query...");
-                None
-            }
             AppEvent::Filter(statements) => {
                 if let Some(state) = &mut self.data_table_state {
                     state.deferred(|s| s.filter(statements.clone()));
@@ -14246,6 +14233,26 @@ impl App {
     /// and applied, so it shows there, joins the others with "and", and `R` clears
     /// it. `+` keeps the rows with the cell's value and `-` drops them; a null cell
     /// is "is null" or "not null". The value is the cell's exactly as stored.
+    /// `[` / `]` at the table: sort by the cursor's column, ascending or descending,
+    /// in place of the sort in effect. The same key again on a view sorted that way
+    /// by that column alone takes the sort away.
+    fn sort_by_cursor_column(&mut self, descending: bool) -> Option<AppEvent> {
+        let state = self.data_table_state.as_ref()?;
+        let column = state.current_column()?.to_string();
+        let already = state.view_sort_columns() == std::slice::from_ref(&column)
+            && state.view_sort_descending() == [descending];
+        if already {
+            // Back to the natural order: `sort` with no columns resets the direction
+            // `]` left behind, which would otherwise read as a reversal.
+            if let Some(state) = self.data_table_state.as_mut() {
+                state.deferred(|s| s.sort(Vec::new(), true));
+            }
+            self.spawn_async_collect("Sorting...");
+            return None;
+        }
+        Some(AppEvent::Sort(vec![column], vec![descending]))
+    }
+
     fn quick_filter(&mut self, keep: bool) -> Option<AppEvent> {
         let state = self.data_table_state.as_ref()?;
         let column = state.current_column()?.to_string();
@@ -14284,6 +14291,7 @@ impl App {
             (operator, text)
         };
         let statement = FilterStatement {
+            columns: Vec::new(),
             column,
             operator,
             value: text,
@@ -17375,20 +17383,39 @@ impl App {
             .create_view(name, description, match_criteria, settings)
     }
 
-    /// The query prompt's mode while it is open.
+    /// The command line's language while it is open.
     pub fn query_prompt_mode(&self) -> Option<QueryMode> {
         (self.input_mode == InputMode::Editing && self.input_type == Some(InputType::Query))
             .then_some(self.query_mode)
     }
 
-    /// The mode `/` opens on: the active query's own, so editing never
-    /// reinterprets it in another language; otherwise the configured default.
+    /// `:` at the table: the command line, holding the query in effect, selected,
+    /// so typing states a new one and the arrows edit it.
+    pub(crate) fn open_command_line(&mut self) {
+        let Some(state) = self.data_table_state.as_mut() else {
+            return;
+        };
+        self.input_mode = InputMode::Editing;
+        self.input_type = Some(InputType::Query);
+        self.query_run_error = None;
+        self.sql_completion = None;
+        self.query_input.set_value(state.get_active_query());
+        self.sql_input.set_value(state.get_active_sql_query());
+        self.query_input.select_all();
+        self.sql_input.select_all();
+        state.suppress_error_display = true;
+        self.sql_columns = state.sql_table_columns();
+        self.query_mode = self.opening_query_mode();
+        self.query_text_restored = !self.query_input_shown().is_empty();
+        self.sync_query_focus();
+    }
+
+    /// The language `:` opens in: the query in effect's own, so editing never
+    /// reinterprets it; else the one Ctrl+T last chose; else the configured default.
     fn opening_query_mode(&self) -> QueryMode {
         let active = self.data_table_state.as_ref().and_then(|state| {
             if !state.get_active_sql_query().trim().is_empty() {
                 Some(QueryMode::Sql)
-            } else if !state.get_active_fuzzy_query().trim().is_empty() {
-                Some(QueryMode::Text)
             } else if !state.get_active_query().trim().is_empty() {
                 Some(QueryMode::Q)
             } else {
@@ -17396,8 +17423,25 @@ impl App {
             }
         });
         active
+            .or(self.query_mode_chosen)
             .unwrap_or(self.app_config.query.default_mode)
             .resolve()
+    }
+
+    /// The command line's input for its current language.
+    fn query_input_mut(&mut self) -> &mut TextInput {
+        match self.query_mode {
+            QueryMode::Sql => &mut self.sql_input,
+            QueryMode::Q => &mut self.query_input,
+        }
+    }
+
+    /// The command line's input for its current language.
+    pub(crate) fn query_input_shown(&self) -> &TextInput {
+        match self.query_mode {
+            QueryMode::Sql => &self.sql_input,
+            QueryMode::Q => &self.query_input,
+        }
     }
 
     /// Switch the prompt's mode. Each mode keeps its own text; an error from the
@@ -17411,54 +17455,57 @@ impl App {
         self.sync_query_focus();
     }
 
-    /// Tab in the SQL input: complete the column name or table name being typed,
-    /// and on further presses step through the other names that match.
-    fn complete_sql_name(&mut self) {
-        let line = self
-            .sql_input
-            .line_at(self.sql_input.cursor_line())
+    /// Tab in the command line: complete the column name (or, in SQL, the table
+    /// name) being typed, and on further presses step through the other names that
+    /// match.
+    fn complete_column_name(&mut self) {
+        let sql = self.query_mode == QueryMode::Sql;
+        let columns = std::mem::take(&mut self.sql_columns);
+        let mut cycle = self.sql_completion.take();
+        let input = self.query_input_mut();
+        let line = input
+            .line_at(input.cursor_line())
             .unwrap_or_default()
             .to_string();
-        let value = self.sql_input.value().to_string();
-        let Some(step) = sql_assist::tab(
-            &self.sql_columns,
-            &line,
-            self.sql_input.cursor_col(),
-            &value,
-            self.sql_input.cursor(),
-            &mut self.sql_completion,
-        ) else {
-            return;
+        let value = input.value().to_string();
+        let complete = if sql {
+            sql_assist::tab
+        } else {
+            sql_assist::q_tab
         };
-        self.sql_input
-            .replace_before_cursor(step.span, &step.insert);
-        sql_assist::landed(
-            &mut self.sql_completion,
-            self.sql_input.value(),
-            self.sql_input.cursor(),
-        );
+        if let Some(step) = complete(
+            &columns,
+            &line,
+            input.cursor_col(),
+            &value,
+            input.cursor(),
+            &mut cycle,
+        ) {
+            input.replace_before_cursor(step.span, &step.insert);
+            sql_assist::landed(&mut cycle, input.value(), input.cursor());
+        }
+        self.sql_completion = cycle;
+        self.sql_columns = columns;
     }
 
-    /// The columns of `df` the word at the SQL cursor could name, for the list
-    /// under the input: every column while nothing is being typed.
+    /// The columns of `df` the word at the command line's cursor could name, for
+    /// the list under the input: every column while nothing is being typed.
     pub(crate) fn sql_column_matches(&self) -> Vec<&(String, DataType)> {
-        let line = self
-            .sql_input
-            .line_at(self.sql_input.cursor_line())
-            .unwrap_or_default();
-        let word = sql_assist::word_before(line, self.sql_input.cursor_col())
-            .map(|w| w.text)
-            .unwrap_or_default();
+        let input = self.query_input_shown();
+        let line = input.line_at(input.cursor_line()).unwrap_or_default();
+        let word = match self.query_mode {
+            QueryMode::Sql => sql_assist::word_before(line, input.cursor_col()),
+            QueryMode::Q => sql_assist::q_word_before(line, input.cursor_col()),
+        }
+        .map(|w| w.text)
+        .unwrap_or_default();
         sql_assist::matching(&self.sql_columns, &word)
     }
 
-    /// The text in the query prompt's current mode, while the prompt is open.
+    /// The command line's text, while it is open.
     pub fn query_prompt_text(&self) -> Option<&str> {
-        Some(match self.query_prompt_mode()? {
-            QueryMode::Sql => self.sql_input.value(),
-            QueryMode::Text => self.fuzzy_input.value(),
-            QueryMode::Q => self.query_input.value(),
-        })
+        self.query_prompt_mode()?;
+        Some(self.query_input_shown().value())
     }
 
     /// Why the last run failed, for the line under the input: a statement that
@@ -17496,7 +17543,6 @@ impl App {
         state.deferred(|s| match mode {
             QueryMode::Sql => s.sql_query(text.to_string()),
             QueryMode::Q => s.query(text.to_string()),
-            QueryMode::Text => s.fuzzy_search(text.to_string()),
         });
         if state.error().is_some() {
             return;
@@ -17534,21 +17580,16 @@ impl App {
         self.input_type = None;
         self.sql_input.set_focused(false);
         self.query_input.set_focused(false);
-        self.fuzzy_input.set_focused(false);
         if let Some(state) = &mut self.data_table_state {
             state.suppress_error_display = false;
         }
     }
 
-    /// Only the current mode's input carries the cursor, and only while the
-    /// input, not the tab bar, has focus.
+    /// Only the current language's input carries the cursor.
     fn sync_query_focus(&mut self) {
-        let input = self.query_focus == QueryFocus::Input;
         let mode = self.query_mode;
-        self.sql_input.set_focused(input && mode == QueryMode::Sql);
-        self.fuzzy_input
-            .set_focused(input && mode == QueryMode::Text);
-        self.query_input.set_focused(input && mode == QueryMode::Q);
+        self.sql_input.set_focused(mode == QueryMode::Sql);
+        self.query_input.set_focused(mode == QueryMode::Q);
     }
 
     /// Esc from anywhere in the prompt: nothing runs and nothing typed survives.
@@ -17557,31 +17598,14 @@ impl App {
         self.sql_completion = None;
         self.query_input.clear();
         self.sql_input.clear();
-        self.fuzzy_input.clear();
         self.query_input.set_focused(false);
         self.sql_input.set_focused(false);
-        self.fuzzy_input.set_focused(false);
         self.input_mode = InputMode::Normal;
         self.input_type = None;
         if let Some(state) = &mut self.data_table_state {
             state.dismiss_error();
             state.suppress_error_display = false;
         }
-    }
-
-    /// Rows the active search matched, once the count is settled, while the
-    /// Search input still holds the words that ran. A sidebar filter on top
-    /// makes the row count something else, so then there is none to show.
-    pub(crate) fn search_match_count(&self) -> Option<usize> {
-        let state = self.data_table_state.as_ref()?;
-        let ran = state.get_active_fuzzy_query();
-        (!ran.trim().is_empty()
-            && self.fuzzy_input.value() == ran
-            && state.get_filters().is_empty()
-            && !state.is_drilled_down()
-            && state.is_num_rows_valid()
-            && !self.row_count_pending())
-        .then_some(state.num_rows())
     }
 }
 
@@ -17613,7 +17637,25 @@ impl Widget for &mut App {
             .style(Style::default().bg(background_color))
             .render(area, buf);
 
-        let app_layout = app_layout(area, self.debug.enabled);
+        // The footer grows, taking rows from the bottom of the view, only for a prompt
+        // being typed or a job with progress.
+        let progress = self.footer_progress_line(main_view_content);
+        let prompt_room = crate::render::footer::MAX_LINES - 1;
+        let prompt_rows = if main_view_content == MainViewContent::Datatable {
+            crate::render::input_strip::rows(self, area.width, prompt_room)
+        } else {
+            0
+        };
+        let progress_rows = u16::from(progress.is_some() && prompt_rows < prompt_room);
+        let footer_lines = 1 + prompt_rows + progress_rows;
+        // The inspector is framed; its border sets it off from the footer.
+        let rule = self.input_mode != InputMode::Inspect;
+        let app_layout = app_layout(area, self.debug.enabled, footer_lines, rule);
+        // A terminal too short for all of it keeps the status line first, then the
+        // prompt, then the progress.
+        let room = app_layout.footer.height.saturating_sub(1);
+        let prompt_rows = prompt_rows.min(room);
+        let progress_rows = progress_rows.min(room - prompt_rows);
         let main_area = app_layout.main_view;
         Clear.render(main_area, buf);
 
@@ -17637,222 +17679,43 @@ impl Widget for &mut App {
             crate::render::help::render_help(area, buf, &mut self.help, &ctx);
         }
 
-        let row_count = self.data_table_state.as_ref().map(|s| s.num_rows());
-        // The spinner follows the glyph set, so it cannot disagree with the rest of
-        // the chrome about whether the terminal is doing UTF-8.
-        let use_unicode_throbber = crate::glyphs::active_is_unicode();
-        let mut controls = Controls::from_context(row_count.unwrap_or(0), &ctx)
-            .with_unicode_throbber(use_unicode_throbber);
-
-        // Derive the status message from the open in flight, an export, or the explicit
-        // status message. An export started over an open's first rows is the one the
-        // user is waiting on.
-        let load = self
-            .load_shown()
-            .filter(|_| self.awaiting_dataset() || self.export_progress.is_none());
-        let status_msg = match (load, &self.export_progress) {
-            // The load is paused on the user; the bar names the modal's keys instead.
-            (Some(_), _) if self.awaiting_open_confirmation() => None,
-            (Some((current_phase, progress_percent, ..)), _) => {
-                let current_phase = self.loading_phase(current_phase);
-                // The percentage is a constant per phase, which was harmless beside a
-                // phase name and is not beside a real fraction: 1,203 of 6,541 is 18%,
-                // and "(40%)" next to it reads as that count's progress. The same
-                // number the phase was built from, so a pass that ends mid-frame
-                // cannot leave the count showing with the percentage back beside it.
-                let counting =
-                    self.footers_this_frame.is_some() || self.listed_this_frame.is_some();
-                if progress_percent > 0 && !counting {
-                    Some(format!("{}... ({}%)", current_phase, progress_percent))
-                } else {
-                    Some(format!("{}...", current_phase))
-                }
-            }
-            (
-                None,
-                Some(ExportProgress {
-                    current_phase,
-                    written,
-                    file_path,
-                }),
-            ) => {
-                let filename = file_path.file_name().and_then(|f| f.to_str()).unwrap_or("");
-                // The count last, so its changing width moves nothing.
-                Some(match written {
-                    Some(bytes) => format!(
-                        "{}...  {}  {}",
-                        current_phase,
-                        filename,
-                        crate::discover::format_size(*bytes)
-                    ),
-                    None => format!("{}...  {}", current_phase, filename),
-                })
-            }
-            (None, None) => {
-                if self.fetch_too_young_to_mention() {
-                    None
-                } else if self.is_busy() {
-                    self.status_message.clone()
-                } else if let Some((read, total)) = self
-                    .footers_this_frame
-                    .filter(|_| self.dataset_is_still_reading_its_footers())
-                {
-                    // The dataset opened from two footers and is still learning the
-                    // rest. Said quietly, because nothing is wrong and nothing is
-                    // blocked: the columns it finds will join what is already here.
-                    Some(format!(
-                        "Reading footers: {} of {}...",
-                        crate::numfmt::group_chrome(read),
-                        crate::numfmt::group_chrome(total)
-                    ))
-                } else if self.chart_preparing() {
-                    Some("Preparing chart...".to_string())
-                } else if main_view_content == MainViewContent::Datatable {
-                    // Whatever is on the line, busy or not. An End waiting on a remote
-                    // count parks without setting `busy` — keys go on working meanwhile,
-                    // which is the point of parking — so both the message explaining the
-                    // wait and the one saying the count failed were written here and
-                    // painted by nothing.
-                    //
-                    // Only at the table, because that is what these messages are about.
-                    // A parked End survives Ctrl+O, and the home screen has a caption and
-                    // a row count of its own: shown there it would replace every key chip
-                    // on the bar with a sentence about a dataset the user has left.
-                    //
-                    // Not every message needs this branch. The one `jump_key` puts up
-                    // while a footer pass is running is superseded by the footers line
-                    // above, which says the same thing with numbers.
-                    self.status_message.clone()
-                } else {
-                    None
-                }
-            }
+        let footer = self.footer(main_view_content, progress_rows > 0);
+        crate::render::footer::render_rule(app_layout.rule, buf, &ctx);
+        let line = Rect {
+            height: 1,
+            ..app_layout.footer
         };
-        let status_msg = status_msg.map(|msg| {
-            if self.input_dropped && self.is_busy() {
-                format!("{msg}  input dropped while busy")
-            } else {
-                msg
-            }
-        });
-        controls = controls.with_status_message(status_msg);
-        controls = controls.with_flash(self.flash.as_ref().map(|f| f.message.clone()));
-        controls = controls.with_reshaped(self.data_table_state.as_ref().and_then(|s| {
-            if s.last_pivot_spec().is_some() {
-                Some("pivoted")
-            } else if s.last_melt_spec().is_some() {
-                Some("melted")
-            } else {
-                None
-            }
-        }));
-        controls = controls.with_not_the_table(
-            self.data_table_state
-                .as_ref()
-                .and_then(|s| s.not_the_table()),
-        );
-        controls = controls.with_follow(self.follow_mark());
-        let format_read = self.data_table_state.as_ref().and_then(|s| s.format_read());
-        controls = controls.with_format(
-            format_read.is_some(),
-            format_read.map(|read| read.also.len()),
-        );
-        controls = controls.with_notes_pending(
-            self.app_config.display.notes_accent
-                && self
-                    .data_table_state
-                    .as_ref()
-                    .is_some_and(|s| s.notes_unseen()),
-        );
-
-        match crate::render::main_view::control_bar_spec(self, main_view_content) {
-            crate::render::main_view::ControlBarSpec::Datatable {
-                dimmed,
-                query_active,
-                q_pops,
-                enter_drills,
-            } => {
-                controls = controls
-                    .with_dimmed(dimmed)
-                    .with_query_active(query_active)
-                    .with_q_pops(q_pops)
-                    .with_enter_drills(enter_drills);
-            }
-            crate::render::main_view::ControlBarSpec::Custom(pairs) => {
-                controls = controls.with_custom_controls(pairs);
-            }
-        }
-
-        // Which columns are on screen, beside the rows, while the table is wider.
-        if main_view_content == MainViewContent::Datatable {
-            controls = controls.with_find(self.find_mark());
-            controls = controls.with_columns(
-                self.data_table_state
-                    .as_ref()
-                    .and_then(|s| s.columns_on_screen()),
+        let drawn = footer.render_line(line, buf, &ctx);
+        if prompt_rows > 0 {
+            crate::render::input_strip::render(
+                Rect {
+                    y: line.y + 1,
+                    height: prompt_rows,
+                    ..line
+                },
+                buf,
+                self,
+                &ctx,
             );
         }
-
-        // The trailing figure belongs to whatever view is showing. On the home screen it
-        // is the order the rows are in: each section's rule already counts its rows, and
-        // a total across sections counted things no one listed together (#547 D11). It
-        // yields to every chip at a narrow width.
-        if main_view_content == MainViewContent::Home {
-            // State, not actions. The Tab key that changes it lives with the other keys.
-            let in_recents = self
-                .home
-                .selected_section()
-                .and_then(|i| self.home.sections.get(i))
-                .map(|s| s.grouped_by_place)
-                .unwrap_or(false);
-            let order = self.home.sort.label_in(in_recents);
-            let waiting = self.home.listing_in_flight || self.home.awaiting_listing().is_some();
-            let caption = if waiting && self.home.visible().is_empty() {
-                "Looking...".to_string()
-            } else {
-                format!("by {order}")
-            };
-            controls = controls
-                .with_caption(Some(caption))
-                .with_caption_yielding(true);
-        }
-
-        // Chart preparation spins the throbber without setting `busy`, so the chart
-        // sidebar keeps taking keys while the data is computed.
-        controls = controls.with_busy(
-            self.is_busy() || self.chart_preparing() || self.value_counts_computing(),
-            self.throbber_frame,
-        );
-        // Reflect the row-count's determinacy in the control bar:
-        //  - in flight   -> spinner (still being computed)
-        //  - failed       -> "?" (computation gave up; don't show a misleading partial total)
-        //  - otherwise    -> the number
-        let count_pending = self.row_count_pending();
-        let count_unknown = !count_pending
-            && self.data_table_state.as_ref().is_some_and(|s| {
-                !s.is_num_rows_valid() && self.len_count_failed == Some(s.len_generation())
-            });
-        // Nothing is counted while a load waits on the download confirmation, and a
-        // spinning count there would read as progress.
-        if self.awaiting_open_confirmation() {
-            controls.row_count = None;
-        }
-        // The hex view has bytes, not rows: its status line says where the cursor is.
-        if main_view_content == MainViewContent::Hex {
-            controls.row_count = None;
-        }
-        controls = controls
-            .with_row_count_pending(count_pending)
-            .with_row_count_unknown(count_unknown)
-            // "417 of 1,000" under a filter or query. Only a total something already
-            // resolved: never a reason for the chrome to read data.
-            .with_total_row_count(
-                self.data_table_state
-                    .as_ref()
-                    .and_then(|s| s.total_rows_when_subset()),
+        if let Some(progress) = progress.filter(|_| progress_rows > 0) {
+            crate::render::footer::render_progress(
+                &progress,
+                Rect {
+                    y: line.y + 1 + prompt_rows,
+                    height: 1,
+                    ..line
+                },
+                buf,
+                &ctx,
             );
-        controls.render(app_layout.control_bar, buf);
-        self.pointer.chips_drawn(controls.drawn_chips());
+        }
+        self.pointer.chips_drawn(
+            drawn
+                .iter()
+                .map(|(rect, key)| (*rect, key.as_str()))
+                .collect(),
+        );
         if let Some(debug_area) = app_layout.debug {
             self.debug.render(debug_area, buf);
         }

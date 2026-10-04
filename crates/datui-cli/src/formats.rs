@@ -91,7 +91,7 @@ pub struct Descriptor {
     /// Whether a file of it declares its columns' types, which the Schema tab then
     /// calls known rather than inferred.
     pub declares_types: bool,
-    /// What the loading screen and the control bar say while a file of it is read into
+    /// What the loading screen and the footer say while a file of it is read into
     /// files of its own before it is scanned.
     pub conversion: Option<Conversion>,
 }
@@ -149,7 +149,7 @@ pub struct Tables {
 pub struct Conversion {
     /// The loading screen's line: `Reading FIX log`.
     pub label: &'static str,
-    /// The control bar's, shorter: `Reading FIX log...`.
+    /// The footer's, shorter: `Reading FIX log...`.
     pub status: &'static str,
 }
 

@@ -7,9 +7,7 @@ cursor's column. <kbd>Esc</kbd> or <kbd>Space</kbd> closes it.
 <kbd>Enter</kbd>, or a double-click on the row, opens it too, except on a row of a `by` query or a SQL
 `GROUP BY`, where <kbd>Enter</kbd>
 [drills down into the group](querying-data.md#drill-down-a-group-by) and <kbd>Space</kbd> inspects.
-The bottom bar's first chip says what <kbd>Enter</kbd> does: `Enter Inspect`,
-or `Enter Drill` where it drills. On a narrow terminal it yields to
-`? Help`.
+Where <kbd>Enter</kbd> drills, the footer says `Enter Drill`.
 
 The title counts the rows: `Row 3 of 60`. Inside a drill-down it counts the
 group's rows and names the group, `Row 3 of 20 · region=north`, since the
@@ -154,7 +152,7 @@ fit, and the focused item's whole value is under the table.
 | JSON text | Up to 64 KB is parsed on the key; longer text in the background, with the spinner. Text over 4 MiB is not opened; <kbd>Tab</kbd> reads it in the value |
 | Depth | JSON nested deeper than 128 levels does not open |
 
-Text that does not parse stays where it is, and the bottom bar says why:
+Text that does not parse stays where it is, and the footer says why:
 `Not JSON: key must be a string at line 1 column 2`. From then on
 <kbd>Enter</kbd> leaves it as text, read in the value like any other.
 

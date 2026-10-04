@@ -761,8 +761,8 @@ impl Pacer {
 }
 
 /// Navigation keys a held run keeps every press of: the column cursor's (`h` `l`
-/// `[` `]` `{` `}` and the arrows across), which read nothing, and a find's next and
-/// previous, each its own match.
+/// `{` `}` and the arrows across, Shift for a page), which read nothing, and a find's
+/// next and previous, each its own match.
 fn replays_each_press(key: &KeyEvent) -> bool {
     matches!(
         key.code,
@@ -770,8 +770,6 @@ fn replays_each_press(key: &KeyEvent) -> bool {
             | KeyCode::Right
             | KeyCode::Char('h')
             | KeyCode::Char('l')
-            | KeyCode::Char('[')
-            | KeyCode::Char(']')
             | KeyCode::Char('{')
             | KeyCode::Char('}')
             | KeyCode::Char('n')
@@ -780,7 +778,7 @@ fn replays_each_press(key: &KeyEvent) -> bool {
 }
 
 /// Keys that move the view and are commonly held down. The column cursor's keys
-/// (Left/Right/h/l, `[ ] { }`) are included, so Enter behind them still inspects.
+/// (Left/Right/h/l, `{ }`) are included, so Enter behind them still inspects.
 fn is_navigation(key: &KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
@@ -796,8 +794,6 @@ fn is_navigation(key: &KeyEvent) -> bool {
         | KeyCode::Char('k')
         | KeyCode::Char('h')
         | KeyCode::Char('l')
-        | KeyCode::Char('[')
-        | KeyCode::Char(']')
         | KeyCode::Char('{')
         | KeyCode::Char('}')
         | KeyCode::Char('G')
@@ -1272,13 +1268,13 @@ mod tests {
         assert_eq!(cell(&p).0, Some(2), "on the frame that shows the resize");
     }
 
-    /// A chip on the control bar presses its key, as typed: Help opens help, and
+    /// A key the footer shows presses it, as typed: `? keys` opens help, and
     /// while the help is up the wheel moves its selection.
     #[test]
     fn a_chip_presses_its_key() {
         use crossterm::event::MouseEventKind;
         let (mut p, _dir) = loaded_pump();
-        let help = on_screen(&mut p.app, "Help");
+        let help = on_screen(&mut p.app, "? keys");
         assert!(p.terminal_mouse(click(help)).unwrap());
         assert!(p.app.help_visible(), "the Help chip opened help");
         rendered(&mut p.app);
@@ -1829,7 +1825,7 @@ mod tests {
     fn a_query_typed_while_busy_lands_in_the_query_bar() {
         let (mut p, _dir) = loaded_pump();
         p.app.busy = true;
-        type_keys(&mut p, "/hello");
+        type_keys(&mut p, ":hello");
         assert_eq!(
             p.app.input_mode,
             InputMode::Normal,
@@ -1859,7 +1855,7 @@ mod tests {
     fn a_mode_chord_typed_while_busy_switches_before_the_text() {
         let (mut p, _dir) = loaded_pump();
         p.app.busy = true;
-        type_keys(&mut p, "/");
+        type_keys(&mut p, ":");
         p.terminal_key(ctrl('t')).unwrap();
         type_keys(&mut p, "ada");
         assert_eq!(held(&p).len(), 5, "the chord is held with the text");
@@ -1870,7 +1866,6 @@ mod tests {
         assert_eq!(p.app.query_prompt_mode(), Some(mode));
         let typed = match mode {
             crate::QueryMode::Sql => &p.app.sql_input,
-            crate::QueryMode::Text => &p.app.fuzzy_input,
             crate::QueryMode::Q => &p.app.query_input,
         };
         assert_eq!(typed.value(), "ada");
@@ -1883,7 +1878,7 @@ mod tests {
     fn a_fresh_key_waits_behind_the_held_ones() {
         let (mut p, _dir) = loaded_pump();
         p.app.busy = true;
-        type_keys(&mut p, "/abc");
+        type_keys(&mut p, ":abc");
         // The busy-clearing event was handled; the next key read is still behind.
         p.app.busy = false;
         type_keys(&mut p, "d");
@@ -1899,7 +1894,7 @@ mod tests {
     fn a_held_enter_finishes_its_search_before_the_next_key() {
         let (mut p, _dir) = loaded_pump();
         p.app.busy = true;
-        type_keys(&mut p, "/select name where age > 40");
+        type_keys(&mut p, ":select name where age > 40");
         p.terminal_key(plain(KeyCode::Enter)).unwrap();
         p.terminal_key(plain(KeyCode::Char('G'))).unwrap();
         p.app.busy = false;
@@ -2017,7 +2012,7 @@ mod tests {
     fn keys_held_while_a_statement_runs_are_dropped_when_it_fails() {
         let (mut p, _dir) = loaded_pump();
         p.app.app_config.query.default_mode = crate::QueryMode::Sql;
-        p.terminal_key(plain(KeyCode::Char('/'))).unwrap();
+        p.terminal_key(plain(KeyCode::Char(':'))).unwrap();
         let sql = "SELECT CAST(name AS INT) AS n FROM df";
         type_keys(&mut p, sql);
         // Its worker waits until the keys are typed, so it is still running then.
@@ -2047,7 +2042,7 @@ mod tests {
     #[test]
     fn ctrl_c_in_the_query_bar_quits() {
         let (mut p, _dir) = loaded_pump();
-        p.terminal_key(plain(KeyCode::Char('/'))).unwrap();
+        p.terminal_key(plain(KeyCode::Char(':'))).unwrap();
         assert_eq!(p.app.input_mode, InputMode::Editing);
         assert!(matches!(
             p.app.handle(&AppEvent::Key(ctrl('c'))),
@@ -2195,7 +2190,7 @@ mod tests {
     fn a_replayed_search_runs_before_a_fresh_key() {
         let (mut p, _dir) = loaded_pump();
         p.app.busy = true;
-        type_keys(&mut p, "/select name where age > 40");
+        type_keys(&mut p, ":select name where age > 40");
         p.terminal_key(plain(KeyCode::Enter)).unwrap();
         p.app.busy = false;
         let (waits, release) =
@@ -2429,9 +2424,11 @@ mod tests {
     #[test]
     fn column_paging_acts_live_and_replays_in_order() {
         let (mut p, _dir) = wide_pump();
+        let shift_right = KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT);
+        let shift_left = KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT);
         p.app.busy = true;
-        assert!(p.terminal_key(plain(KeyCode::Char(']'))).unwrap());
-        assert!(held(&p).is_empty(), "] did not queue");
+        assert!(p.terminal_key(shift_right).unwrap());
+        assert!(held(&p).is_empty(), "Shift+→ did not queue");
         rendered(&mut p.app);
         let page = first_scrolled(&p);
         assert!(page > 1, "a page moves more than a column: {page}");
@@ -2441,27 +2438,26 @@ mod tests {
         assert!(last_page > page && last_page < 59, "{page} {last_page}");
         assert!(p.terminal_key(plain(KeyCode::Char('{'))).unwrap());
         assert_eq!(first_scrolled(&p), 0);
-        let shift_right = KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT);
         assert!(p.terminal_key(shift_right).unwrap());
-        assert_eq!(first_scrolled(&p), page, "Shift+→ pages too");
-        assert!(p.terminal_key(plain(KeyCode::Char('['))).unwrap());
+        assert_eq!(first_scrolled(&p), page);
+        assert!(p.terminal_key(shift_left).unwrap());
         assert_eq!(first_scrolled(&p), 0);
 
         // Behind a held key they wait, each one: they read nothing.
         p.terminal_key(plain(KeyCode::Char('k'))).unwrap();
         for _ in 0..2 {
-            p.terminal_key(plain(KeyCode::Char(']'))).unwrap();
+            p.terminal_key(shift_right).unwrap();
         }
         p.terminal_key(plain(KeyCode::Char('}'))).unwrap();
-        p.terminal_key(plain(KeyCode::Char('['))).unwrap();
+        p.terminal_key(shift_left).unwrap();
         assert_eq!(
             held(&p),
             vec![
                 KeyCode::Char('k'),
-                KeyCode::Char(']'),
-                KeyCode::Char(']'),
+                KeyCode::Right,
+                KeyCode::Right,
                 KeyCode::Char('}'),
-                KeyCode::Char('['),
+                KeyCode::Left,
             ]
         );
         assert_eq!(first_scrolled(&p), 0, "nothing acted yet");
@@ -2469,7 +2465,7 @@ mod tests {
         settle(&mut p);
         assert!(held(&p).is_empty());
         rendered(&mut p.app);
-        // ] then } reach the last page; [ is the page before it.
+        // Shift+→ then } reach the last page; Shift+← is the page before it.
         let before_last = first_scrolled(&p);
         assert!(
             before_last > 0 && before_last < last_page,
@@ -3245,9 +3241,8 @@ mod tests {
                 &["Explore", "Shape", "Analyze", "Output", "Display", "Go"],
             ),
             // Something typed, for the editing keys to edit.
-            (Context::Query, vec![ch('/'), ch('a')], &["Run", "Edit"]),
-            (Context::Find, vec![ch('f'), ch('7')], &["Find"]),
-            (Context::GoToRow, vec![ch(':'), ch('5')], &["Go"]),
+            (Context::Query, vec![ch(':'), ch('a')], &["Run", "Edit"]),
+            (Context::Find, vec![ch('/'), ch('7')], &["Find"]),
             (Context::GoToColumn, vec![ch('g'), ch('c')], &["Go"]),
             (Context::Inspector, vec![ch(' ')], &["Fields", "Output"]),
             (Context::Info, vec![ch('i')], &["Panel"]),
@@ -3460,7 +3455,7 @@ mod tests {
         assert_eq!(p.app.find.input.value(), "", "nothing was typed");
 
         p.terminal_key(plain(KeyCode::Esc)).unwrap();
-        p.terminal_key(plain(KeyCode::Char('/'))).unwrap();
+        p.terminal_key(plain(KeyCode::Char(':'))).unwrap();
         p.terminal_key(plain(KeyCode::F(1))).unwrap();
         run_from_help(&mut p, "screen's keys");
         settle(&mut p);

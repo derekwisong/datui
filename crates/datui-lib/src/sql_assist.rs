@@ -202,6 +202,54 @@ pub fn tab(
     cursor: usize,
     cycle: &mut Option<Cycle>,
 ) -> Option<Step> {
+    let word = || word_before(line, col);
+    let candidates = |word: &str| completions(columns, word);
+    tab_with(word, candidates, value, cursor, cycle)
+}
+
+/// The q word being typed at `col` (a character index) on `line`. `None` inside a
+/// string: in q, `"` opens one, and a name with spaces is spelled `col["..."]`.
+pub fn q_word_before(line: &str, col: usize) -> Option<Word> {
+    let before: Vec<char> = line.chars().take(col).collect();
+    if before.iter().filter(|&&c| c == '"').count() % 2 == 1 {
+        return None;
+    }
+    let start = before
+        .iter()
+        .rposition(|&c| !is_name_char(c))
+        .map_or(0, |i| i + 1);
+    Some(Word {
+        text: before[start..].iter().collect(),
+        span: before.len() - start,
+    })
+}
+
+/// [`tab`] for q: the columns spelled as q reads them, and no table name.
+pub fn q_tab(
+    columns: &[(String, DataType)],
+    line: &str,
+    col: usize,
+    value: &str,
+    cursor: usize,
+    cycle: &mut Option<Cycle>,
+) -> Option<Step> {
+    let word = || q_word_before(line, col);
+    let candidates = |word: &str| {
+        matching(columns, word)
+            .into_iter()
+            .map(|(name, _)| crate::query::q_name(name))
+            .collect()
+    };
+    tab_with(word, candidates, value, cursor, cycle)
+}
+
+fn tab_with(
+    word: impl FnOnce() -> Option<Word>,
+    completions: impl FnOnce(&str) -> Vec<String>,
+    value: &str,
+    cursor: usize,
+    cycle: &mut Option<Cycle>,
+) -> Option<Step> {
     if let Some(c) = cycle.as_mut()
         && c.value == value
         && c.cursor == cursor
@@ -214,11 +262,11 @@ pub fn tab(
         });
     }
     *cycle = None;
-    let word = word_before(line, col)?;
+    let word = word()?;
     if word.span == 0 {
         return None;
     }
-    let candidates = completions(columns, &word.text);
+    let candidates = completions(&word.text);
     let first = candidates.first()?.clone();
     if candidates.len() == 1 {
         return Some(Step {

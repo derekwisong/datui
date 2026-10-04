@@ -1,8 +1,7 @@
-//! Datatable main view: table content, input strip, sidebars (sort/filter, views, pivot/melt), export modal.
+//! Datatable main view: table content, sidebars (sort/filter, views, pivot/melt), export modal.
 
 use crate::render::context::RenderContext;
 use crate::render::datatable_view::{ActiveSidebar, DatatableLayout};
-use crate::render::main_view::MainViewContent;
 use crate::widgets::datatable::DataTable;
 use crate::widgets::info::{DataTableInfo, InfoContext};
 use crate::widgets::ui::{HintBar, Working};
@@ -20,40 +19,6 @@ pub fn render(
     app: &mut crate::App,
     ctx: &RenderContext,
 ) {
-    let main_view_content = MainViewContent::from_app_state(
-        app.analysis_modal.active,
-        app.input_mode == crate::InputMode::Chart,
-    );
-    let input_strip_visible = main_view_content == MainViewContent::Datatable
-        && app.input_mode == crate::InputMode::Editing;
-    let prompt = app.input_type == Some(crate::InputType::Query);
-    let finding = app.input_type == Some(crate::InputType::Find);
-    let error = if prompt {
-        app.query_prompt_error()
-    } else if finding {
-        app.find.error.clone()
-    } else {
-        app.data_table_state
-            .as_ref()
-            .and_then(|state| state.error())
-            .map(crate::error_display::user_message_from_polars)
-    };
-    // The prompt grows with a long statement, its error and the column list, and
-    // leaves the table a few rows to show what the query is over.
-    const TABLE_KEEPS: u16 = 6;
-    let input_strip_height = if !input_strip_visible {
-        0
-    } else if prompt {
-        let room = main_area.height.saturating_sub(TABLE_KEEPS).max(5);
-        crate::render::input_strip::plan(app, main_area.width, room, error.as_deref()).total()
-    } else if finding {
-        crate::render::input_strip::find_rows(error.is_some())
-    } else if error.is_some() {
-        6
-    } else {
-        3
-    };
-
     let active_sidebar = ActiveSidebar::from_modals(
         app.info_modal.active,
         app.sort_filter_modal.active,
@@ -64,8 +29,6 @@ pub fn render(
     let datatable_layout = DatatableLayout::compute(
         main_area,
         active_sidebar,
-        input_strip_visible,
-        input_strip_height,
         app.app_config.display.sidebar_width,
     );
     let data_area = datatable_layout.content_area;
@@ -80,6 +43,7 @@ pub fn render(
         .opened_format()
         .is_some_and(|f| f.descriptor().declares_types);
     let find_cell = app.find_hit();
+    let match_cells = app.live_cells();
     let hex = app.hex_target().is_some();
     let query_reading = app.query_reading().map(str::to_string);
     let frame = app.throbber_frame as usize;
@@ -149,7 +113,8 @@ pub fn render(
                     state.display_drift(table_area.height as usize),
                     state.drift_groups(),
                 )
-                .with_find_cell(find_cell, ctx.find_match);
+                .with_find_cell(find_cell, ctx.find_match)
+                .with_match_cells(match_cells);
             if ctx.column_colors {
                 dt = dt.with_column_type_colors(
                     ctx.str_col,
@@ -196,21 +161,6 @@ pub fn render(
             // an empty screen. A load still in flight never reaches here — it draws
             // `loading_view` instead.
         }
-    }
-
-    if app.input_mode == crate::InputMode::Editing {
-        let input_area = datatable_layout.input_strip_area.unwrap_or_else(|| {
-            let y = main_area
-                .y
-                .saturating_add(main_area.height.saturating_sub(input_strip_height));
-            Rect {
-                x: area.x,
-                y,
-                width: area.width,
-                height: input_strip_height.min(main_area.height),
-            }
-        });
-        crate::render::input_strip::render(input_area, buf, app, error.as_deref(), ctx);
     }
 
     if app.sort_filter_modal.active {

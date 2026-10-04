@@ -310,7 +310,7 @@ pub const SETTINGS: &[Setting] = &[
     // [query]
     s("query.history_limit", Count, Value("1000"), "Queries remembered."),
     s("query.history", Bool, Value("true"), "Remember queries."),
-    s("query.default_mode", Choice(&["sql", "text", "q"]), Value("\"sql\""), "The mode / opens on when no query is active."),
+    s("query.default_mode", Choice(&["sql", "q"]), Value("\"sql\""), "The language : starts in, until Ctrl+T picks another."),
     // [views]
     s("views.auto_apply", Bool, Value("false"), "Apply the best-matching view when a file opens."),
     // [clipboard]
@@ -323,8 +323,8 @@ pub const SETTINGS: &[Setting] = &[
     s("log.level", Choice(&["error", "warn", "info", "debug", "trace", "off"]), Unset("\"warn\""), "How much the log says (default warn). DATUI_LOG beats a config file's; -c and --log-level beat DATUI_LOG.").flag("log-level"),
     // [theme]
     s("theme.mode", Choice(&["auto", "dark", "light"]), Unset("\"auto\""), "Which built-in palette to start from. auto reads COLORFGBG and falls back to dark."),
-    color("theme.colors.chip_key", "#7dcfff", "#2e7de9", "Keys named in dialogs, the breadcrumb and the correlation matrix."),
-    color("theme.colors.chip_label", "#a9b1d6", "#3760bf", "Labels beside keys in the control bar."),
+    color("theme.colors.chip_key", "#7dcfff", "#2e7de9", "Keys named in the footer, dialogs, the breadcrumb and the correlation matrix."),
+    color("theme.colors.chip_label", "#a9b1d6", "#3760bf", "Labels beside keys in the footer, and the footer's status."),
     color("theme.colors.throbber", "#7dcfff", "#2e7de9", "The busy spinner."),
     color("theme.colors.success", "#9ece6a", "#587539", "Success."),
     color("theme.colors.error", "#f7768e", "#f52a65", "Errors."),
@@ -332,7 +332,7 @@ pub const SETTINGS: &[Setting] = &[
     color("theme.colors.dimmed", "#565f89", "#848cb5", "Dimmed text, nulls and axes."),
     color("theme.colors.background", "default", "default", "Main background."),
     color("theme.colors.surface", "default", "default", "Dialog background."),
-    color("theme.colors.controls_bg", "#262a3f", "#d0d5e3", "Control bar and count chips."),
+    color("theme.colors.controls_bg", "#262a3f", "#d0d5e3", "Count chips and dialogs' key chips."),
     color("theme.colors.text_primary", "default", "default", "Text."),
     color("theme.colors.text_secondary", "#737aa2", "#6172b0", "Secondary text."),
     color("theme.colors.text_inverse", "#1a1b26", "#e1e2e7", "Text on a key chip."),

@@ -380,6 +380,7 @@ fn the_sidebar_sorts_and_filters_in_sqlite() {
     let whole = frame(&app);
     let state = app.data_table_state.as_mut().unwrap();
     state.filter(vec![FilterStatement {
+        columns: Vec::new(),
         column: "amount".to_string(),
         operator: FilterOperator::Gt,
         value: "40".to_string(),

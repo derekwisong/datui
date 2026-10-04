@@ -20,8 +20,9 @@ Open **Food nutrition (fast food)** from **Public datasets**: 515 menu items
 from eight chains, nutrients per item. Find the chicken dishes with at least
 40 g of protein, heaviest first:
 
-1. Press <kbd>/</kbd>, then <kbd>Ctrl</kbd>+<kbd>T</kbd> for **Text**. Type
-   `chicken` and press <kbd>Enter</kbd>: 178 of 515.
+1. Press <kbd>/</kbd> to find, then <kbd>Ctrl</kbd>+<kbd>T</kbd> for letters
+   in order. Type `chicken` and press <kbd>Ctrl</kbd>+<kbd>G</kbd> to keep the
+   178 of 515 that match.
 2. Press <kbd>s</kbd>: the sidebar opens on `add sort…`. Press <kbd>↓</kbd>
    to `add filter…` and <kbd>Space</kbd>. Type `protein` and press
    <kbd>Enter</kbd>, `>=` and <kbd>Enter</kbd>, `40` and <kbd>Enter</kbd>.
@@ -65,8 +66,8 @@ binary cell has no value to compare; the bar says so.
 
 Sidebar filters and sort apply to the current query or reshape result. Running
 a new query clears them, so apply the query first and the sidebar settings
-afterward. The bottom bar shows matching and total row counts, such as `30 of 515`.
-Large totals are abbreviated; **Info** shows the exact total.
+afterward. The footer names the filters and the sort, and counts the rows kept
+beside the cursor's: `1 / 30`. **Info** shows the dataset's total.
 Canceling the sidebar discards whatever was staged; reopening it shows what
 is actually applied.
 
@@ -158,15 +159,15 @@ and that cell are drawn reversed.
 | Key | Moves |
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | The cursor one column. The columns scroll only when it would leave the screen |
-| <kbd>[</kbd> <kbd>]</kbd> or <kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd> | A page of columns; the cursor goes to its first column |
+| <kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd> | A page of columns; the cursor goes to its first column |
 | <kbd>{</kbd> <kbd>}</kbd> | The cursor to the first column, or to the last on the last page |
 | <kbd>g</kbd> | The cursor to a column you name: type to narrow the list, <kbd>Enter</kbd> goes |
 
-- <kbd>]</kbd> starts the next page at the first column not shown whole, so
+- <kbd>Shift</kbd>+<kbd>→</kbd> starts the next page at the first column not shown whole, so
   a column cut at the edge is read whole there. A column wider than the
   window still moves one at a time.
 - The last page is full: it ends with the last column.
-- <kbd>[</kbd> right after <kbd>]</kbd> goes back to the page it left;
+- <kbd>Shift</kbd>+<kbd>←</kbd> right after <kbd>Shift</kbd>+<kbd>→</kbd> goes back to the page it left;
   otherwise it ends the page before with the column left of the first one
   shown.
 - <kbd>g</kbd> leaves a column already whole on screen where it is; another
@@ -174,8 +175,9 @@ and that cell are drawn reversed.
 - Frozen columns stay put, and the cursor walks them too: <kbd>h</kbd> from
   the first scrolling column goes to the last frozen one, and <kbd>l</kbd>
   back goes to the first scrolling column, scrolling back to it.
-- At the last page, <kbd>]</kbd> takes the cursor to the last column; at the
-  first, <kbd>[</kbd> takes it to the page's first column, then the first.
+- At the last page, <kbd>Shift</kbd>+<kbd>→</kbd> takes the cursor to the last
+  column; at the first, <kbd>Shift</kbd>+<kbd>←</kbd> takes it to the page's
+  first column, then the first.
 - The cursor stays on its column when columns are hidden, moved or frozen in
   the sidebar; when its own column is hidden, the column that takes its place
   takes the cursor.
@@ -193,14 +195,17 @@ The keys that act on one column act on the cursor's:
 | Key | On the cursor's column |
 |---|---|
 | <kbd>F</kbd> | [Value counts](value-counts.md) |
+| <kbd>[</kbd> <kbd>]</kbd> | Sort by it, ascending or descending, in place of the sort in effect; again to take the sort away |
+| <kbd>+</kbd> <kbd>-</kbd> | [Filter on its cell](#filter-on-a-cell) |
 | <kbd>s</kbd> | The sidebar opens with its Columns cursor there, and a new filter starts on it |
 | <kbd>y</kbd> | The Cell scope [copies](copying.md) its value in the current row |
 | <kbd>Space</kbd> | The [inspector](inspecting-rows.md) opens on its field |
-| <kbd>f</kbd> | <kbd>Ctrl</kbd>+<kbd>L</kbd> in the prompt [finds](finding.md) in it alone; a match moves the cursor to its column |
+| <kbd>/</kbd> | <kbd>Ctrl</kbd>+<kbd>L</kbd> in the prompt [finds](finding.md) in it alone; a match moves the cursor to its column |
 
-The bottom bar says where the cursor is: `col 43 of 300` (`col 43/300` on a
-bar under 100 cells). It counts the columns the table shows, frozen first;
-hidden columns are not counted.
+Once the column cursor moves, the footer offers those keys: `+/- Filter  [/] Sort
+F Counts`. It says where the cursor is too: `col 43/300` before the row, while
+there is room. It counts the columns the table shows, frozen first; hidden
+columns are not counted.
 
 ## Sort & Filter tab
 
@@ -256,7 +261,7 @@ clock a time zone skips or repeats (the night clocks change) asks for its
 offset. Filters stay in place while you chart, analyze or export, and are
 saved in [views](views.md).
 
-## From the query prompt
+## From the command line
 
 For anything more involved, a SQL `WHERE` or the `where` clause of a
 [q query](../reference/query-syntax.md#where-clause--and-) takes

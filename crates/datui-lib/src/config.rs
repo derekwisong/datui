@@ -1543,65 +1543,60 @@ pub struct QueryConfig {
     pub default_mode: QueryMode,
 }
 
-/// A mode of the query prompt, in tab order.
+/// The language the command line runs a query in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum QueryMode {
     #[default]
     Sql,
-    /// Rows whose text columns contain every word (the fuzzy search).
-    Text,
     /// Datui's q-inspired language.
     Q,
 }
 
 impl QueryMode {
-    /// The modes this build offers, in tab order. SQL is absent without the
-    /// `sql` feature rather than present and broken.
+    /// The languages this build offers. SQL is absent without the `sql` feature
+    /// rather than present and broken.
     pub fn available() -> &'static [QueryMode] {
         #[cfg(feature = "sql")]
         {
-            &[QueryMode::Sql, QueryMode::Text, QueryMode::Q]
+            &[QueryMode::Sql, QueryMode::Q]
         }
         #[cfg(not(feature = "sql"))]
         {
-            &[QueryMode::Text, QueryMode::Q]
+            &[QueryMode::Q]
         }
     }
 
-    /// This mode if the build offers it, otherwise the next one in tab order.
+    /// This language if the build offers it, otherwise q.
     pub fn resolve(self) -> QueryMode {
         if Self::available().contains(&self) {
             self
         } else {
-            QueryMode::Text
+            QueryMode::Q
         }
     }
 
-    pub fn title(self) -> &'static str {
+    /// The command line's prefix for it: `sql`, `q`.
+    pub fn prefix(self) -> &'static str {
         match self {
-            QueryMode::Sql => "SQL",
-            QueryMode::Text => "Text",
+            QueryMode::Sql => "sql",
             QueryMode::Q => "q",
         }
     }
 
-    /// Position among the available modes: the tab index.
-    pub fn index(self) -> usize {
-        Self::available()
-            .iter()
-            .position(|&m| m == self)
-            .unwrap_or(0)
+    /// The prefix as the command line draws it: `sql:`, `q:`.
+    pub fn prefix_colon(self) -> &'static str {
+        match self {
+            QueryMode::Sql => "sql:",
+            QueryMode::Q => "q:",
+        }
     }
 
+    /// The other language, where the build has one.
     pub fn next(self) -> QueryMode {
         let modes = Self::available();
-        modes[(self.index() + 1) % modes.len()]
-    }
-
-    pub fn prev(self) -> QueryMode {
-        let modes = Self::available();
-        modes[(self.index() + modes.len() - 1) % modes.len()]
+        let at = modes.iter().position(|&m| m == self).unwrap_or(0);
+        modes[(at + 1) % modes.len()]
     }
 }
 

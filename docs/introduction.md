@@ -31,8 +31,8 @@ datui reads 27 formats: Parquet, CSV, TSV, PSV, JSON, NDJSON, Arrow IPC, Avro, O
 
 ## Help while you work
 
-Press <kbd>?</kbd> for the current screen's keys. The bottom bar shows its main
-actions. <kbd>Esc</kbd> backs out; <kbd>Ctrl</kbd>+<kbd>Q</kbd> quits.
+Press <kbd>?</kbd> for the current screen's keys. The footer says what is in
+effect, and the keys of whatever mode is active. <kbd>Esc</kbd> backs out; <kbd>Ctrl</kbd>+<kbd>Q</kbd> quits.
 The search button above searches this manual.
 
 [Choose another version](https://derekwisong.github.io/datui/#versions), [watch the demos](demos.md), or

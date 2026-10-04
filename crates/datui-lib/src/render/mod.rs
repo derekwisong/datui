@@ -3,6 +3,7 @@ pub mod chart_view;
 pub mod context;
 pub mod datatable_main;
 pub mod datatable_view;
+pub mod footer;
 pub mod help;
 pub mod hex_view;
 pub mod home_view;

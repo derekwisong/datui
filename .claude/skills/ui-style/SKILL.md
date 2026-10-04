@@ -1,6 +1,6 @@
 ---
 name: ui-style
-description: The canon for how datui looks, reads and responds. Load before any change to render/, widgets/, control bars, the key registry, keybinds, or before designing a new modal, form, sidebar or screen. Carries the hard rules, the component patterns, the keybind compatibility contract, and the acceptance checklist every UI PR must pass.
+description: The canon for how datui looks, reads and responds. Load before any change to render/, widgets/, the footer, the key registry, keybinds, or before designing a new modal, form, sidebar or screen. Carries the hard rules, the component patterns, the keybind compatibility contract, and the acceptance checklist every UI PR must pass.
 ---
 
 # The datui visual style
@@ -112,9 +112,42 @@ how the wrong aggregation gets exported. The selection carries the rail and
 the tint while the list is focused, and only the accent when it is not:
 inside one Surface the rail means focus, and Tab visibly moves it.
 
-**HintBar** — the chip row. One renderer shared by the global control bar
-and every Surface footer. Primary action first, Esc last; only keys that
-work right now; nothing a first session needs may live only in `?`.
+**HintBar** — the chip row of every Surface footer. Primary action first,
+Esc last; only keys that work right now.
+
+**Status footer** — `render/footer.rs`, the bottom of every screen: a thin
+rule in `table_column_separator`, then one line with no fill.
+
+- Left, in pipeline order: dataset › `query` (the label only; `:` shows the
+  text) › other stages (`pivoted`, `not the Delta table`) › filters · sort
+  (`prcp > 0 · date ▼`), then background work behind its spinner and quiet
+  facts (`following · 3s ago`, `find "x" · match 3`). Separators are the
+  `trail` and `middot` glyphs.
+- Right: the position (`41,208 / 1,204,331`, led by `col 3/40` on a wide
+  table), the mode's keys, then `? keys` (`F1 keys` where `?` types). Hints
+  are quiet: the key in the accent, bold, the label plain; no chip fill.
+- At rest only `? keys`. A mode offers its two or three keys only while it
+  is active, labels read from the key registry (`registry_hint`): column
+  cursor moved → `+/- Filter  [/] Sort  F Counts`; find in effect → `n/N
+  Next  Esc Clear`; a wait Esc stops → `Esc Stop`; a `by` view → `Enter
+  Drill`. A screen's own (analysis, chart, value counts, hex) are its first
+  three, Esc kept. A surface with its own footer (dialog, sidebar,
+  inspector) adds none.
+- When the line is short, segments yield in a fixed order (`Footer::fit`):
+  the dataset's name (middle-elided, and the first to go for a message),
+  filters/sort (counted: `2 filters · sorted`), notes, background work (its
+  spinner alone), stages, the position (`41,208 / 1.2M`, then gone), the
+  message (cut), `? keys` → `?`, then the mode's keys from the right; help never goes.
+- A message (flash) takes room from those segments; it never adds a line.
+  Errors stay in the error modal.
+- The footer grows, at most three lines, only for something ongoing: a
+  prompt being typed (find, the command line: `render/input_strip.rs`) or a
+  job with counts (`ProgressLine`: counts done / total, a bar when a total is
+  known, `Esc Stop` when it stops). It grows upward, taking table rows from
+  the bottom; the view's top stays put. A framed takeover (the inspector)
+  needs no rule: its border sets it off.
+- Every footer key is a click target (`Footer::render_line` returns where
+  each landed).
 
 **Section rule** — the home screen's `TITLE ── count` line. The way to
 divide space inside a Surface without borders.
@@ -140,7 +173,8 @@ Four shapes, chosen by what the user needs to keep seeing:
 - **Centered dialog** (small): a commitment — confirm, export, errors.
 - **Takeover** (full screen): a different way of looking — analysis, chart
   canvas.
-- **Strip** (bottom): text entry — query, go-to-line.
+- **Footer prompt** (bottom): text entry — the command line, find. It lives
+  in the status footer, which grows a line for it.
 
 A feature gets one shape. Hints, tabs, focus and footers work identically
 across shapes.
@@ -191,10 +225,10 @@ the user must do about the information, never by which feature sent it:
    re-announced in a message.
 2. **Completions get a flash.** An action that finished and needs no
    decision — a copy, an export, a saved view — shows one plain sentence in
-   the control bar's status region, without a spinner, cleared after about
+   the footer's status line, without a spinner, cleared after about
    two seconds or on the next keypress, whichever comes first. Appearing
-   and expiring move nothing around it: the flash renders exactly where the
-   busy status message renders.
+   and expiring move nothing to the right of it: the flash takes the
+   dataset's name's room first, never the mode's keys.
 3. **Validation stays inline.** A form that cannot apply says why on its
    own status line inside the Surface, `warning` at most. Enter on an
    invalid form re-accents that line; it never raises a modal.
@@ -235,8 +269,8 @@ loss down to roughly 60×20. When width or height runs out, elements
 yield in reverse order of importance: branding first (the home wordmark
 already steps down to the one-line title on short or narrow terminals),
 then conveniences, then primary actions; the way out (Esc/quit chip) goes
-last, the data never — which is why the control bar is
-built most-important-leftmost and cut from the right. Sidebars cap their
+last, the data never — which is why the footer gives up its segments in a
+fixed order and keeps the mode's keys and help to the end. Sidebars cap their
 share of the width and collapse before the table does; overlays scroll
 inside a capped frame rather than growing past the screen; nothing ever
 wraps a table row. When height runs out, footers and headers stay, content
@@ -261,19 +295,22 @@ Frozen — users may be retrained on form internals, never on moving and
 leaving:
 
 - Arrows and `h/j/k/l`; `PgUp/PgDn` (and `Ctrl+F/B`, `Ctrl+D/U` at the
-  table); `Home/End` (`G`); `:` go-to-line. At the table `h/l` and `←/→`
-  move the column cursor, and the columns scroll only when it would leave
-  the screen; `[ ] { }` and `g` move it too (#574 made the change; before,
-  `h/l` scrolled the view a column).
+  table); `Home/End` (`G`); `:` and digits go to a row (the command line,
+  `row:`). At the table `h/l` and `←/→` move the column cursor, and the
+  columns scroll only when it would leave the screen; `Shift+←/→`, `{ }` and
+  `g` move it too (#574 made the change; before, `h/l` scrolled the view a
+  column). `[ ]` sort by the cursor's column (the UX sprint moved paging to
+  Shift+←/→ alone).
 - Esc's layered back-out; `q` pops to home when the dataset was opened
-  from it and quits otherwise (the control bar says which); `Ctrl+Q` quits
+  from it and quits otherwise (help says which); `Ctrl+Q` quits
   and `Ctrl+C` from anywhere, a text field included (#649; a field copies
   with `Alt+W`); `Q` quits
   at the table and during a load, and is an ordinary key inside other
   surfaces (chart deliberately has no quit key); `Ctrl+O` home. (#320
   landed the approved `q` evolution.)
 - `?` and F1 for help, including home's empty-filter `?`.
-- The feature keys: `/ f n N s c a p e i v V r R # F , D H L + -`,
+- The feature keys: `/ f n N s c a p e i v V r R # F , D H L + - [ ]`
+  (`/` and `f` find; `:` is the command line: a row, SQL or q),
   Enter-to-drill (where there is no group to drill into, Enter inspects the
   row, as Space does; #542).
   (#317 moved the views list from `t`/`T` to `v`/`V` with the rename;
@@ -281,7 +318,8 @@ leaving:
   #558 gave `F` to value counts and moved digit grouping to `,`;
   #737 gave `H`/`L` to moving the cursor's column and `+`/`-` to filtering
   on its cell, and moved the CSV header toggle to `H` on the Info panel's
-  Schema tab.)
+  Schema tab; the UX sprint made `/` find and `:` the command line, folded
+  the query's Text mode into find's Ctrl+G, and gave `[`/`]` to sorting.)
 - Text fields keep their readline bindings.
 - Home's type-to-filter: every printable except `?` and Space (empty filter
   only) and `~` goes to the filter. Never assign a letter key on the home

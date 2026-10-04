@@ -37,8 +37,8 @@ datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins
 
 ## 2. Group by species
 
-Which species is heaviest? Press <kbd>/</kbd>; the prompt opens on **SQL**.
-Type this, then press <kbd>Enter</kbd>:
+Which species is heaviest? Press <kbd>:</kbd>; the command line opens at
+`sql:`. Type this, then press <kbd>Enter</kbd>:
 
 ```sql,dataset=penguins,network,rows=3
 SELECT species, AVG(body_mass_g) AS mean_mass_g, COUNT(*) AS penguins
@@ -60,14 +60,14 @@ table is named `df`. Press <kbd>Enter</kbd> on Gentoo to see its 124 penguins,
 and <kbd>Esc</kbd> to come back.
 
 The same summary is one line in **q**, a subset of q that evaluates right
-to left. Press <kbd>/</kbd>, then <kbd>Ctrl</kbd>+<kbd>T</kbd> twice:
+to left. Press <kbd>:</kbd>, then <kbd>Ctrl</kbd>+<kbd>T</kbd> for `q:`:
 
 ```q,dataset=penguins,network,rows=3
 select mean_mass_g: avg body_mass_g by species
 ```
 
 A new query starts a fresh view, clearing sidebar filters and sort. See
-[querying](../user-guide/querying-data.md) for Text queries and more SQL.
+[querying](../user-guide/querying-data.md) for more SQL and q.
 
 ## 3. Chart the measurements
 

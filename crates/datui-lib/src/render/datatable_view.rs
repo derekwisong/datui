@@ -48,36 +48,25 @@ impl ActiveSidebar {
 }
 
 /// Layout for datatable view internals.
-/// This splits the main view into content area, optional sidebar, and optional input strip.
+/// This splits the main view into the content area and an optional sidebar.
 #[derive(Debug, Clone, Copy)]
 pub struct DatatableLayout {
     /// Area for table content (and breadcrumb if drilled down).
     pub content_area: Rect,
     /// Area for sidebar (when active).
     pub sidebar_area: Option<Rect>,
-    pub input_strip_area: Option<Rect>,
 }
 
 impl DatatableLayout {
-    /// Splits main_view into content (and optional sidebar) plus optional input strip at bottom.
+    /// Splits main_view into content and an optional sidebar.
     pub fn compute(
         main_view: Rect,
         active_sidebar: ActiveSidebar,
-        input_strip_visible: bool,
-        input_strip_height: u16,
         sidebar_width_override: Option<u16>,
     ) -> Self {
         use ratatui::layout::{Constraint, Direction, Layout};
 
-        let (content_region, input_strip_area) = if input_strip_visible && input_strip_height > 0 {
-            let layout = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Min(0), Constraint::Length(input_strip_height)])
-                .split(main_view);
-            (layout[0], Some(layout[1]))
-        } else {
-            (main_view, None)
-        };
+        let content_region = main_view;
 
         let (content_area, sidebar_area) = if active_sidebar != ActiveSidebar::None {
             // The data never yields to chrome: a sidebar takes its preferred
@@ -105,7 +94,6 @@ impl DatatableLayout {
         DatatableLayout {
             content_area,
             sidebar_area,
-            input_strip_area,
         }
     }
 }
@@ -164,21 +152,19 @@ mod tests {
     #[test]
     fn test_datatable_layout_no_sidebar_no_input() {
         let main_view = Rect::new(0, 0, 100, 50);
-        let layout = DatatableLayout::compute(main_view, ActiveSidebar::None, false, 0, None);
+        let layout = DatatableLayout::compute(main_view, ActiveSidebar::None, None);
 
         assert_eq!(layout.content_area, main_view);
         assert_eq!(layout.sidebar_area, None);
-        assert_eq!(layout.input_strip_area, None);
     }
 
     #[test]
     fn test_datatable_layout_with_sidebar() {
         let main_view = Rect::new(0, 0, 110, 50);
-        let layout = DatatableLayout::compute(main_view, ActiveSidebar::Info, false, 0, None);
+        let layout = DatatableLayout::compute(main_view, ActiveSidebar::Info, None);
 
         assert_eq!(layout.content_area.width, 38);
         assert_eq!(layout.sidebar_area.unwrap().width, 72);
-        assert_eq!(layout.input_strip_area, None);
     }
 
     /// The data never yields to chrome: every sidebar leaves the table a
@@ -194,7 +180,7 @@ mod tests {
             for (width, height) in [(60u16, 20u16), (80, 24), (160, 40)] {
                 for config in [None, Some(100u16)] {
                     let main_view = Rect::new(0, 0, width, height);
-                    let layout = DatatableLayout::compute(main_view, sidebar, false, 0, config);
+                    let layout = DatatableLayout::compute(main_view, sidebar, config);
                     let bar = layout.sidebar_area.unwrap();
                     assert!(
                         layout.content_area.width >= 30,
@@ -210,47 +196,8 @@ mod tests {
         // Below the floor the two split evenly rather than the sidebar
         // taking the whole terminal.
         let tiny = Rect::new(0, 0, 44, 16);
-        let layout = DatatableLayout::compute(tiny, ActiveSidebar::Views, false, 0, None);
+        let layout = DatatableLayout::compute(tiny, ActiveSidebar::Views, None);
         assert_eq!(layout.sidebar_area.unwrap().width, 22);
         assert_eq!(layout.content_area.width, 22);
-    }
-
-    #[test]
-    fn test_datatable_layout_with_input_strip() {
-        let main_view = Rect::new(0, 0, 100, 50);
-        let layout = DatatableLayout::compute(main_view, ActiveSidebar::None, true, 5, None);
-
-        assert_eq!(layout.content_area.height, 45);
-        assert_eq!(layout.sidebar_area, None);
-        let strip = layout.input_strip_area.unwrap();
-        assert_eq!(strip.height, 5);
-        assert_eq!(
-            layout.content_area.y + layout.content_area.height,
-            strip.y,
-            "content and input_strip adjacent"
-        );
-    }
-
-    #[test]
-    fn test_datatable_layout_with_sidebar_and_input() {
-        let main_view = Rect::new(0, 0, 100, 50);
-        let layout = DatatableLayout::compute(main_view, ActiveSidebar::SortFilter, true, 3, None);
-
-        assert_eq!(layout.content_area.width, 50);
-        assert_eq!(layout.content_area.height, 47);
-        assert_eq!(layout.sidebar_area.unwrap().width, 50);
-        assert_eq!(layout.sidebar_area.unwrap().height, 47);
-        let strip = layout.input_strip_area.unwrap();
-        assert_eq!(strip.height, 3);
-        assert_eq!(
-            layout.content_area.y + layout.content_area.height,
-            strip.y,
-            "content and input_strip adjacent"
-        );
-        assert_eq!(
-            strip.y + strip.height,
-            main_view.y + main_view.height,
-            "input_strip fills bottom of main_view"
-        );
     }
 }

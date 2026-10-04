@@ -12,7 +12,7 @@ that explains it.
 | Boxes, arrows and rails show as `?` or garbage | The terminal does not take UTF-8, or its font lacks the glyphs: [Glyphs or ASCII](../user-guide/configuration.md#glyphs-or-ascii) |
 | Header and row stripes near-black on a light background | Set `theme.mode = "light"`: [Light and dark](../user-guide/configuration.md#light-and-dark) |
 | Everything monochrome, or colors off | `NO_COLOR` is set, or the terminal does not take 24-bit color: [Configure datui](../user-guide/configuration.md#troubleshooting) |
-| Header or control bar garbled in VS Code's terminal | [Configure datui](../user-guide/configuration.md#troubleshooting) |
+| Header or chips garbled in VS Code's terminal | [Configure datui](../user-guide/configuration.md#troubleshooting) |
 
 ## Opening data
 

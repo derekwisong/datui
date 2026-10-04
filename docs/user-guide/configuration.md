@@ -349,7 +349,7 @@ warning on stderr. Name it `datui.override.toml`: a file named `datui.toml`
 | An import does not apply | Check the file exists at the resolved path, and that nothing later in the chain, a `-c` or a flag, overrides it |
 | `Invalid color value for 'accent': Unknown color name` | A typo in a name. Names ignore case; hex needs six digits; indexed is `indexed(0)` to `indexed(255)` |
 | Colors look wrong | The terminal may not take true color, so hex is approximated; try names or `indexed(...)`. Everything monochrome: `NO_COLOR` is set |
-| Header or control bar text cut off or garbled in VS Code's terminal or on `xterm-256color` | Some terminals mishandle a background color on those rows; set them to the terminal's own, below |
+| Header or chip text cut off or garbled in VS Code's terminal or on `xterm-256color` | Some terminals mishandle a background color on those rows; set them to the terminal's own, below |
 | Start over | `datui config init --force` rewrites the file with the defaults; with no file, datui runs on them |
 
 ```toml

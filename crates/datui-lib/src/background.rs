@@ -172,7 +172,8 @@ impl LenCount {
             });
         }
         match &self.count_dir {
-            Some(dir) => DataTableState::count_rows_from_parquet_dir(dir, &self.meter)
+            Some(dir) => crate::dataset_files::LocalFiles::new(dir)
+                .count_rows(&self.meter)
                 .map(Counted::from)
                 .map_err(|e| log::warn!(target: "datui", "row count failed: {e:#}")),
             None => {
@@ -329,6 +330,12 @@ impl CacheWrites {
         let (count, ended) = &*self.0;
         let count = count.lock().unwrap_or_else(|e| e.into_inner());
         let _ = ended.wait_timeout_while(count, Self::SETTLE, |n| *n > 0);
+    }
+}
+
+impl std::fmt::Debug for CacheWrites {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CacheWrites")
     }
 }
 

@@ -75,6 +75,7 @@ pub mod copy_modal;
 pub mod csv_dialect;
 pub mod data_quality;
 pub mod dataflash;
+mod dataset_files;
 pub mod dbc;
 pub mod delimited_spec;
 pub mod discover;
@@ -232,7 +233,7 @@ pub use unfinished::ExitSweep;
 pub use view::{SavedView, ViewManager, Views};
 use widgets::column_widths::WidthChoice;
 use widgets::controls::Controls;
-use widgets::datatable::{DataTableState, DatasetAtOpen, DrillRow, OpenFacts};
+use widgets::datatable::{DataTableState, DrillRow, OpenFacts};
 use widgets::debug::DebugState;
 use widgets::text_input::TextInput;
 use widgets::view_modal::{FormFocus, ViewModal, ViewModalMode, ViewRow};
@@ -5689,6 +5690,7 @@ impl App {
         let formats = self.formats.clone();
         let runtime = self.runtime.clone();
         let cache = self.cache.clone();
+        let writes = self.cache_writes.clone();
         // The table's rows: the screen less the title, the header and the control bar.
         let visible = (screen_height as usize).saturating_sub(3).max(1);
         let owed = self.owed_answer(AppEvent::HomePreviewReady {
@@ -5702,8 +5704,9 @@ impl App {
             owed.run(|| {
                 let began = std::time::Instant::now();
                 let read_at = crate::home_preview::Stamp::of_file(&path);
-                let read =
-                    Self::read_home_preview(&path, &cloud, &formats, &runtime, cache, visible);
+                let read = Self::read_home_preview(
+                    &path, &cloud, &formats, &runtime, cache, writes, visible,
+                );
                 log::debug!(
                     target: "datui",
                     "home preview of {}: {:.1?}",
@@ -5735,6 +5738,7 @@ impl App {
         formats: &crate::formats::Registry,
         runtime: &tokio::runtime::Handle,
         cache: CacheManager,
+        writes: CacheWrites,
         visible: usize,
     ) -> Option<(
         crate::home_preview::PreviewRows,
@@ -5757,6 +5761,7 @@ impl App {
             progress: progress.clone(),
             meter: Arc::new(crate::measurements::Meter::default()),
             remembered: Some(cache),
+            writes,
         };
         let read = Self::read_schema_for_open(
             *lf,
@@ -9099,6 +9104,7 @@ impl App {
                     progress,
                     meter: Arc::new(crate::measurements::Meter::default()),
                     remembered: Some(self.cache.clone()),
+                    writes: self.cache_writes.clone(),
                 };
                 self.spawn_job(job, Some("Reading schema..."), move |_| {
                     Self::read_schema_for_open(*lf, path, options, &cloud, &runtime, &report, made)
@@ -9254,192 +9260,6 @@ pub(crate) fn hoist_partition_columns(
     lf.select(exprs)
 }
 
-/// A local Hive directory as its listing found it: what every set of its footers is
-/// read against.
-struct LocalHive {
-    dir: PathBuf,
-    /// Every file, sorted, as listed.
-    files: Arc<Vec<PathBuf>>,
-    partition_columns: Vec<String>,
-    /// The first and newest files' partition values, which type the partition columns.
-    values: Vec<(String, String)>,
-    skipped: crate::schema_union::SkippedFiles,
-    /// What the listing says the directory is now, past one wave of files: what its
-    /// shape is kept against.
-    fingerprint: Option<String>,
-    /// The open's meter, which the count's reads are tallied into.
-    meter: Arc<crate::measurements::Meter>,
-    remembered: Option<crate::cache::CacheManager>,
-}
-
-/// A local dataset as some set of its footers describes it, and the scan that reads it.
-struct LocalDataset {
-    dataset: crate::schema_union::DatasetSchema,
-    lf: LazyFrame,
-    /// Each file's rows, or empty when they are not all known.
-    file_rows: Vec<usize>,
-    /// Every file, in scan order.
-    paths: Vec<String>,
-    /// Each readable file's rows, one group a file, or empty unless every footer was
-    /// read: the count, without a pass of its own.
-    row_groups: Vec<Vec<usize>>,
-    /// The readable files, a scan of any of them, and their count: once every footer is
-    /// known a page reads only the files holding its rows (#659). The count reads only
-    /// the footers not yet read, once, and keeps the shape when they are all in.
-    by_file: crate::widgets::datatable::RemoteRead,
-}
-
-impl LocalHive {
-    /// The key the shape cache keeps this directory under.
-    fn key(&self) -> String {
-        self.dir.to_string_lossy().into_owned()
-    }
-
-    /// Keep the directory's footers, if every one was read and parsed.
-    fn remember(&self, read: &[usize], footers: &[Option<crate::schema_union::FileSchema>]) {
-        remember_local_shape(
-            self.remembered.as_ref(),
-            &self.key(),
-            self.fingerprint.as_deref(),
-            self.files.len(),
-            read,
-            footers,
-        );
-    }
-
-    /// What the footers at `read` say about the dataset. Shared by the open, which may
-    /// have read only the two ends, and the pass that reads the rest: the two differ
-    /// only in how much they know. `None` when nothing could be read.
-    fn dataset(
-        self: &Arc<Self>,
-        read: &[usize],
-        footers: &[Option<crate::schema_union::FileSchema>],
-    ) -> Option<LocalDataset> {
-        let files = &self.files;
-        let mut dataset = crate::schema_union::union_sampled(files.len(), read, footers);
-        if dataset.schema.is_empty() {
-            return None;
-        }
-        dataset.schema = Arc::new(crate::schema_union::with_partition_columns(
-            &dataset.schema,
-            &self.partition_columns,
-            &self.values,
-        ));
-        let paths: Vec<String> = files
-            .iter()
-            .map(|f| f.to_string_lossy().into_owned())
-            .collect();
-        let every_footer = read.len() == files.len();
-        // Numbering rows needs every file's row count; a sampled dataset has not read
-        // them all, so it forgoes the distinction rather than guessing at it.
-        let file_rows: Vec<usize> = if every_footer {
-            footers
-                .iter()
-                .map(|f| f.as_ref().map(|f| f.rows))
-                .collect::<Option<Vec<_>>>()
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        // Over the readable files only, as the scan is: a file mid-write is in neither.
-        let row_groups: Vec<Vec<usize>> = if every_footer {
-            footers.iter().flatten().map(|f| vec![f.rows]).collect()
-        } else {
-            Vec::new()
-        };
-        let drift = crate::schema_union::ScanDrift::new(&paths, &dataset, &file_rows);
-        let schema = dataset.schema.clone();
-        // Over the files that will open. `drift` is keyed by path, so a scan of fewer
-        // of them still knows what each one holds.
-        let readable = crate::schema_union::readable_paths(&paths, &dataset.unreadable);
-        // Belt and braces: a dataset with nothing readable has an empty schema and has
-        // already been handed back above.
-        if readable.is_empty() {
-            return None;
-        }
-        let scan: crate::widgets::datatable::FileScan = {
-            let (schema, partition_columns, drift) = (
-                schema.clone(),
-                self.partition_columns.clone(),
-                drift.map(Arc::new),
-            );
-            Arc::new(
-                move |files: &[String], as_text: &[polars::prelude::PlSmallStr]| {
-                    let lf = crate::schema_union::lenient_scan(
-                        files,
-                        schema.clone(),
-                        None,
-                        drift.as_deref(),
-                        as_text,
-                    )?;
-                    Ok(hoist_partition_columns(
-                        lf,
-                        &schema,
-                        &partition_columns,
-                        drift.is_some(),
-                    ))
-                },
-            )
-        };
-        let lf = scan(&readable, &[]).ok()?;
-        let count: crate::widgets::datatable::FileCounter = if row_groups.is_empty() {
-            // Over the same files as the scan, as the cloud count is, so its answer
-            // fits the list beside it.
-            let counted: Vec<usize> = (0..files.len())
-                .filter(|index| dataset.unreadable.binary_search(index).is_err())
-                .collect();
-            if counted.len() != readable.len() {
-                return None;
-            }
-            self.counter(crate::schema_union::FooterCount::new(
-                files.len(),
-                counted,
-                read.iter().copied().zip(footers.iter().cloned()),
-            ))
-        } else {
-            // The rows are in the footers, so the counter answers without reading.
-            let counted = row_groups.clone();
-            Arc::new(move || Ok(counted.clone()))
-        };
-        let by_file = crate::widgets::datatable::RemoteRead {
-            urls: readable.into_owned(),
-            scan,
-            count,
-        };
-        let dataset = dataset
-            .with_partition_layouts(&self.dir.to_string_lossy(), &paths)
-            .with_skipped(self.skipped);
-        Some(LocalDataset {
-            dataset,
-            lf,
-            file_rows,
-            paths,
-            row_groups,
-            by_file,
-        })
-    }
-
-    /// The counter for a dataset whose open did not read every footer: it reads the
-    /// rest, once, and keeps the shape when they are all in, so a reopen reads none.
-    fn counter(
-        self: &Arc<Self>,
-        count: crate::schema_union::FooterCount<crate::schema_union::FileSchema>,
-    ) -> crate::widgets::datatable::FileCounter {
-        let (hive, count) = (self.clone(), Arc::new(count));
-        Arc::new(move || {
-            let counted = count.count(
-                |missing| DataTableState::footers_for_count(&hive.files, missing, &hive.meter),
-                |footer| vec![footer.rows],
-            );
-            if let Some(whole) = counted.whole.as_deref() {
-                let every: Vec<usize> = (0..hive.files.len()).collect();
-                hive.remember(&every, whole);
-            }
-            Ok(counted.row_groups)
-        })
-    }
-}
-
 /// A number for each walk the home search starts, so scorings of one are never taken
 /// for another's, even when the two walked the same place.
 fn next_search_epoch() -> u64 {
@@ -9447,61 +9267,11 @@ fn next_search_epoch() -> u64 {
     NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Keep a local dataset's footers against its listing's fingerprint, if every one was
-/// read and parsed — the same two conditions the cloud cache keeps, for the same
-/// reasons (see `App::remember_dataset_shape`). No fingerprint, no keeping: a dataset
-/// within one wave is not worth it, and one whose files moved under the listing has
-/// none.
-fn remember_local_shape(
-    cache: Option<&crate::cache::CacheManager>,
-    key: &str,
-    fingerprint: Option<&str>,
-    files: usize,
-    read: &[usize],
-    footers: &[Option<crate::schema_union::FileSchema>],
-) {
-    let (Some(cache), Some(fingerprint)) = (cache, fingerprint) else {
-        return;
-    };
-    if read.len() != files || !footers.iter().all(Option::is_some) {
-        return;
-    }
-    let (cached, schemas) = crate::schema_union::footers_to_cache(footers);
-    cache.save_dataset_shape(
-        key,
-        crate::cache::DatasetShape {
-            fingerprint: fingerprint.to_string(),
-            files: cached,
-            schemas,
-            taken_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or_default(),
-        },
-    );
-}
-
 /// What a pass behind a staged open reported, and which dataset it was reading for.
 /// `None` where the footers are: a pass that could not read them says so, so the
 /// dataset stops waiting.
 type FootersReported = Option<(u64, Option<crate::widgets::datatable::FootersFound>)>;
 
-/// A cloud dataset as some set of its footers describes it.
-///
-/// The open builds one from the two ends of the listing and the pass behind it builds
-/// another from every footer; what tells them apart is only how much they know.
-#[cfg(feature = "cloud")]
-struct CloudDataset {
-    dataset: crate::schema_union::DatasetSchema,
-    /// Each file's rows, or empty when they are not all known — the same condition
-    /// under which the scan declines to number its rows.
-    file_rows: Vec<usize>,
-    urls: Vec<String>,
-    /// Each file's row groups, or empty unless every footer was read and parsed.
-    row_groups: Vec<Vec<usize>>,
-    scan: crate::widgets::datatable::FileScan,
-    partition_columns: Vec<String>,
-}
 impl App {
     /// Schema for a local directory of Parquet files: every column any of them has, from
     /// their footers, instead of `collect_schema()` over the whole set or one file's
@@ -9523,164 +9293,7 @@ impl App {
             return None;
         }
         let p = path.filter(|p| p.is_dir() && options.hive)?;
-        // The listing and the stat behind it are one wait, counted on the loading
-        // screen as the cloud listing is, and an abandoned open stops both.
-        let listing = report.progress.listing();
-        let (files, skipped) = DataTableState::list_parquet_dir(p, &report.meter, Some(&listing));
-        // Up to a wave the footers cost one round of reads either way, so the dataset
-        // opens whole and nothing is worth remembering.
-        let wave = files.len() > crate::schema_union::FOOTERS_AT_ONCE;
-        let stat_began = std::time::Instant::now();
-        let stats = if wave {
-            DataTableState::stat_files(&files, &report.progress)
-        } else {
-            Vec::new()
-        };
-        let stat_took = stat_began.elapsed();
-        drop(listing);
-        if report.progress.is_cancelled() {
-            return None;
-        }
-        let (first, newest) = (files.first()?, files.last()?);
-        // From the listing, as a cloud prefix's are: the newest file names the columns
-        // and the two ends type them, so the tree is the same table from a disk or a
-        // bucket, and no directory is read twice to find them.
-        let below = |file: &Path| -> String {
-            file.strip_prefix(p)
-                .unwrap_or(file)
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy())
-                .collect::<Vec<_>>()
-                .join("/")
-        };
-        let (partition_columns, values) =
-            crate::schema_union::partitions_of_listing(&below(first), &below(newest));
-        let files = Arc::new(files);
-        let key = p.to_string_lossy().into_owned();
-        // None when a file went between the listing and its stat: that listing
-        // describes nothing worth keeping.
-        let sizes: Option<Vec<u64>> = stats.iter().map(|s| s.map(|(size, _)| size)).collect();
-        let fingerprint = wave
-            .then(|| {
-                let stats: Vec<(u64, u64)> = stats.iter().copied().collect::<Option<_>>()?;
-                let paths: Vec<String> = files
-                    .iter()
-                    .map(|f| f.to_string_lossy().into_owned())
-                    .collect();
-                Some(crate::cache::DatasetShape::fingerprint_of(
-                    paths
-                        .iter()
-                        .zip(&stats)
-                        .map(|(path, (size, modified))| (path.as_str(), *size, *modified, None)),
-                ))
-            })
-            .flatten();
-        let hive = Arc::new(LocalHive {
-            dir: p.to_path_buf(),
-            files: files.clone(),
-            partition_columns,
-            values,
-            skipped,
-            fingerprint,
-            meter: report.meter.clone(),
-            remembered: report.remembered.clone(),
-        });
-        let remembered = hive
-            .fingerprint
-            .as_ref()
-            .zip(report.remembered.as_ref())
-            .and_then(|(fingerprint, cache)| cache.dataset_shape(&key, fingerprint))
-            .zip(sizes.as_ref())
-            .and_then(|(shape, sizes)| {
-                crate::schema_union::footers_from_cache(&shape.files, &shape.schemas, sizes)
-            });
-        let from_cache = remembered.is_some();
-        let staged = !from_cache && wave;
-        let read = if from_cache {
-            (0..files.len()).collect()
-        } else if staged {
-            crate::schema_union::ends_of(files.len())
-        } else {
-            crate::schema_union::footers_to_read(files.len())
-        };
-        let footers = match remembered {
-            Some(footers) => footers,
-            None => {
-                DataTableState::read_local_footers(&files, &read, &report.progress, &report.meter)
-            }
-        };
-        if !from_cache {
-            hive.remember(&read, &footers);
-        }
-        log::debug!(
-            target: "datui",
-            "local hive: {} files, stat in {stat_took:.1?}, {} footers {}",
-            files.len(),
-            read.len(),
-            if from_cache {
-                "from the shape cache"
-            } else if staged {
-                "read, the rest behind"
-            } else {
-                "read"
-            }
-        );
-        let opened = hive.dataset(&read, &footers)?;
-        let state = DataTableState::from_schema_and_lazyframe(
-            opened.dataset.schema.clone(),
-            opened.lf,
-            options,
-            Some(hive.partition_columns.clone()),
-        )
-        .ok()?;
-        let mut facts = OpenFacts {
-            remote_files: Some(opened.by_file.into()),
-            // The footers just read say how wide each column is, as the cloud object's
-            // do: a binary column's width is known nowhere else.
-            column_bytes: crate::schema_union::column_bytes_per_row(&footers),
-            // The count is in the footers just read, so no pass reads them again for it.
-            row_groups: opened.row_groups,
-            dataset: Some(DatasetAtOpen {
-                schema: opened.dataset,
-                file_rows: opened.file_rows,
-                files: opened.paths,
-            }),
-            ..Default::default()
-        };
-        if staged {
-            let ends = read;
-            facts.footers_pending = Some(Arc::new(move |progress: &Arc<_>| {
-                let read = crate::schema_union::footers_to_read(files.len());
-                // The ends were read by the open; a footer is read once.
-                let rest: Vec<usize> = read.iter().copied().filter(|i| !ends.contains(i)).collect();
-                let mut fresh =
-                    DataTableState::read_local_footers(&files, &rest, progress, &hive.meter)
-                        .into_iter();
-                if progress.is_cancelled() {
-                    return None;
-                }
-                let footers: Vec<Option<_>> = read
-                    .iter()
-                    .map(|i| match ends.iter().position(|e| e == i) {
-                        Some(at) => footers[at].clone(),
-                        None => fresh.next().flatten(),
-                    })
-                    .collect();
-                hive.remember(&read, &footers);
-                // Past `MAX_FOOTER_READS` this read a sample, and the dataset has no
-                // row groups until its count reads the rest — only the rest.
-                let whole = hive.dataset(&read, &footers)?;
-                Some(crate::widgets::datatable::FootersFound {
-                    dataset: whole.dataset,
-                    lf: whole.lf,
-                    file_rows: whole.file_rows,
-                    files: whole.paths,
-                    row_groups: whole.row_groups,
-                    remote: Some(whole.by_file),
-                })
-            }));
-        }
-        Some((state, facts))
+        dataset_files::open(Arc::new(dataset_files::LocalFiles::new(p)), options, report)
     }
 
     /// The same one-file trick against an object store. This is the route that used to
@@ -9780,489 +9393,18 @@ impl App {
         report: &crate::measurements::OpenReport,
     ) -> Option<(DataTableState, OpenFacts)> {
         let CloudTarget { full, key, pattern } = target;
-        // Kept before the listing takes ownership of it: this is the prefix that was
-        // listed, and the notes measure every file's path against it.
-        let root = cloud_hive::url_of_key(full, &key).unwrap_or_else(|| full.to_string());
-        let (files, skipped) = {
-            let store = store.clone();
-            // The listing is one `list` whose pages object_store turns over itself, so
-            // this brackets the whole of it: the first request to the last page. The
-            // request count is not datui's to give — the paging happens inside the
-            // store — so the listing reports a time and the data files it found, and
-            // leaves requests and bytes to the footer pass, which does issue its own.
-            // The count is after the filtering: what is reported is the dataset's
-            // files, not every object under the prefix.
-            let listing_began = std::time::Instant::now();
-            let pattern = pattern.cloned();
-            let progress = report.progress.clone();
-            let plan = cloud_hive::ListShards::for_url(full);
-            let (files, skipped) = wait_on_runtime(runtime, async move {
-                cloud_hive::list_dataset_files_reporting(
-                    &store,
-                    &key,
-                    pattern.as_ref(),
-                    plan,
-                    &progress,
-                )
-                .await
-            })?
-            .ok()?;
-            report
-                .meter
-                .listed(listing_began.elapsed(), Some(files.len()), false);
-            (Arc::new(files), skipped)
-        };
-        // Past one wave of concurrent reads the footers stop being free: the two ends
-        // open the dataset and the rest are read behind it, joining when they land. Up
-        // to a wave they cost one round trip either way, so the dataset opens whole —
-        // rows numbered, absent cells marked, notes complete.
-        // What the listing says this dataset is now. Taking it costs nothing — the
-        // listing has already happened, and it is the only thing that has to — and it
-        // is what decides whether the footers can be skipped entirely.
-        let fingerprint = crate::cache::DatasetShape::fingerprint_of(
-            files
-                .iter()
-                .map(|f| (f.key.as_str(), f.size, f.stamp, f.etag.as_deref())),
-        );
-        let remembered = report
-            .remembered
-            .as_ref()
-            .and_then(|cache| cache.dataset_shape(full, &fingerprint))
-            // A damaged file can carry the right header and the wrong count; refuse it
-            // rather than index past the listing.
-            .filter(|shape| shape.files.len() == files.len())
-            .and_then(|shape| cloud_hive::footers_from_cache(&shape.files, &shape.schemas));
-
-        let staged = remembered.is_none() && files.len() > cloud_hive::FOOTERS_AT_ONCE;
-        let read = if remembered.is_some() {
-            // Every file, because the cache holds every file: a remembered dataset
-            // opens whole, with its rows numbered and its notes complete, however large
-            // it is. That is the point of remembering it.
-            (0..files.len()).collect()
-        } else if staged {
-            crate::schema_union::ends_of(files.len())
-        } else {
-            crate::schema_union::footers_to_read(files.len())
-        };
-        let from_cache = remembered.is_some();
-        let footers = match remembered {
-            Some(cached) => cached,
-            None => Self::cloud_footers(
-                store.clone(),
-                files.clone(),
-                read.clone(),
+        dataset_files::open(
+            Arc::new(dataset_files::StoreFiles::new(
+                full,
+                key,
+                pattern.cloned(),
+                store,
+                cloud_opts,
                 runtime,
-                report.progress.clone(),
-                report.meter.clone(),
-            )?,
-        };
-        // A shape just found needs no storing again: the lookup has dated it.
-        Self::remember_dataset_shape(
-            report.remembered.as_ref(),
-            full,
-            (!from_cache).then_some(fingerprint.as_str()),
-            &read,
-            &files,
-            &footers,
-        );
-        let opened =
-            Self::cloud_dataset_from_footers(full, &root, &files, &read, &footers, &cloud_opts)?;
-        let CloudDataset {
-            dataset,
-            file_rows,
-            urls,
-            row_groups,
-            scan,
-            partition_columns,
-        } = opened;
-        let schema = dataset.schema.clone();
-        // The objects that will open. One whose footer would not read is one Polars
-        // cannot read either, and left in the scan it takes the whole prefix down with
-        // it on the first page.
-        //
-        // A staged open can only leave out what it has read: two footers, so an object
-        // that will not parse anywhere but the two ends is in this scan and the first
-        // page fails on it. That is a window, not a lost guarantee — the pass behind
-        // the open finds it and the join swaps in a scan without it — but for a directory
-        // with a file mid-write, a prefix over sixty-four objects shows an error where
-        // a smaller one shows rows.
-        let readable = crate::schema_union::readable_paths(&urls, &dataset.unreadable);
-        // Everything downstream describes the same list or none of it. The counter
-        // returns one entry per object it is given and `OpenFacts::row_groups` wants one
-        // per url, so a counter over the full listing beside a shorter url list is not
-        // a wrong count, it is no count at all: the lengths disagree, the answer is
-        // dropped without a word, and the dataset spends the rest of the session
-        // re-counting itself and never reaching an end to jump to.
-        let counted: Vec<usize> = (0..files.len())
-            // Searched rather than scanned, for the same reason `readable_paths` does:
-            // a prefix can be hundreds of thousands of objects.
-            .filter(|index| dataset.unreadable.binary_search(index).is_err())
-            .collect();
-        // Belt and braces, both of them: a prefix with nothing readable has no schema
-        // and was handed back above, and the two lists are filtered from the same
-        // indices so they cannot come out different lengths. Kept because the cost of
-        // the invariant quietly breaking is a dataset that counts itself forever and
-        // never finds its end, which is not a thing to leave to a comment.
-        if readable.is_empty() || readable.len() != counted.len() {
-            return None;
-        }
-        // The same meter again: the count's reads are footer requests and belong in the
-        // same tally. It starts from the footers read here, and reads only the rest.
-        let count = Self::cloud_file_counter(
-            runtime,
-            store.clone(),
-            report.meter.clone(),
-            cloud_hive::FooterCount::new(files.clone(), counted, read.iter().copied().zip(footers)),
-            Self::shape_keeper(report.remembered.clone(), full, &fingerprint, files.clone()),
-        );
-        let lf = scan(&readable, &[]).ok()?;
-        let state =
-            DataTableState::from_schema_and_lazyframe(schema, lf, options, Some(partition_columns))
-                .ok()?;
-        let mut facts = OpenFacts {
-            remote_files: Some(crate::widgets::datatable::RemoteFiles {
-                urls: Arc::new(readable.into_owned()),
-                scan,
-                count,
-                offsets: None,
-            }),
-            // The listing's sizes: what a full scan's local copy would fetch, known
-            // before it fetches anything.
-            remote_objects: files
-                .iter()
-                .filter_map(|file| {
-                    Some(crate::local_copy::RemoteObject {
-                        url: cloud_hive::url_of_key(full, &file.key)?,
-                        size: file.size,
-                        etag: file.etag.clone(),
-                    })
-                })
-                .collect(),
-            // The footers just read hold the count too, so the dataset opens counted —
-            // but `cloud_dataset_from_footers` gives row groups only when every file was
-            // read and every footer parsed. A footer sampled past or failed would count
-            // as no rows, which both undercounts the dataset and puts that file's rows
-            // out of reach of a windowed scan; leaving the count to `RemoteFiles::count`
-            // means it is retried instead.
-            row_groups,
-            dataset: Some(DatasetAtOpen {
-                schema: dataset.with_skipped(skipped),
-                file_rows,
-                files: urls,
-            }),
-            ..Default::default()
-        };
-        if staged {
-            // Everything the pass behind the open needs, held as one closure the way
-            // the scan and the counter are: the store and the listing it already has,
-            // so it neither lists the prefix again nor has to be told what it is
-            // reading.
-            let (store, cloud_opts, runtime) = (store.clone(), cloud_opts.clone(), runtime.clone());
-            let (files, full) = (files.clone(), full.to_string());
-            // The same meter the open is writing into, not a new one: this pass reads
-            // the dataset's footers over again — including the two ends the open
-            // already read, since the whole dataset is built from one set of them, and
-            // a sample of them past `MAX_FOOTER_READS` — and what the footers cost is
-            // both passes added up, re-reads and all. It is held rather than handed
-            // in because it belongs to this dataset: the next open builds its own state
-            // and its own meter, and this closure goes with the state it was built for.
-            let meter = report.meter.clone();
-            // This is the pass that reads a large dataset's footers, so this is where a
-            // large dataset gets remembered. The open above it has read two and has
-            // nothing worth keeping; leaving the saving there meant the cache only ever
-            // held datasets small enough to open in one wave — the ones that cost least
-            // to read in the first place.
-            let remembered = report.remembered.clone();
-            let fingerprint = fingerprint.clone();
-            facts.footers_pending = Some(Arc::new(move |progress: &Arc<_>| {
-                let read = crate::schema_union::footers_to_read(files.len());
-                let footers = Self::cloud_footers(
-                    store.clone(),
-                    files.clone(),
-                    read.clone(),
-                    &runtime,
-                    progress.clone(),
-                    meter.clone(),
-                )?;
-                Self::remember_dataset_shape(
-                    remembered.as_ref(),
-                    &full,
-                    Some(&fingerprint),
-                    &read,
-                    &files,
-                    &footers,
-                );
-                let whole = Self::cloud_dataset_from_footers(
-                    &full,
-                    &root,
-                    &files,
-                    &read,
-                    &footers,
-                    &cloud_opts,
-                )?;
-                // The same exclusion the open makes: a footer that would not read on
-                // this pass either is a file Polars cannot read, and scanning it takes
-                // the prefix down. This pass can find one the open could not — it only
-                // read two footers — so the exclusion belongs on both sides.
-                let readable =
-                    crate::schema_union::readable_paths(&whole.urls, &whole.dataset.unreadable)
-                        .into_owned();
-                let lf = (whole.scan)(&readable, &[]).ok()?;
-                // Over the same files, so the count it answers with fits the list the
-                // dataset is about to hold.
-                let counted: Vec<usize> = (0..files.len())
-                    .filter(|index| whole.dataset.unreadable.binary_search(index).is_err())
-                    .collect();
-                if counted.len() != readable.len() {
-                    return None;
-                }
-                // Past `MAX_FOOTER_READS` this pass read a sample, and the dataset has
-                // no row groups until the count reads the rest. It reads only the rest,
-                // and once it has every footer the dataset is remembered whole, so a
-                // reopen reads none.
-                let count = Self::cloud_file_counter(
-                    &runtime,
-                    store.clone(),
-                    meter.clone(),
-                    cloud_hive::FooterCount::new(
-                        files.clone(),
-                        counted,
-                        read.into_iter().zip(footers),
-                    ),
-                    Self::shape_keeper(remembered.clone(), &full, &fingerprint, files.clone()),
-                );
-                Some(crate::widgets::datatable::FootersFound {
-                    // What the listing passed over travels with the pass, or the note
-                    // about it is on screen from the open and gone the moment the
-                    // columns join — which on a prefix of more than a wave of files is
-                    // every prefix there is.
-                    dataset: whole.dataset.with_skipped(skipped),
-                    lf,
-                    file_rows: whole.file_rows,
-                    // Every file listed: the dataset's per-file findings index this.
-                    files: whole.urls,
-                    row_groups: whole.row_groups,
-                    remote: Some(crate::widgets::datatable::RemoteRead {
-                        urls: readable,
-                        scan: whole.scan,
-                        count,
-                    }),
-                })
-            }));
-        }
-        Some((state, facts))
-    }
-
-    /// The counter for a cloud dataset's rows, which reads the footers `count` does not
-    /// already hold and hands every footer to `remember` once it has them all.
-    #[cfg(feature = "cloud")]
-    fn cloud_file_counter(
-        runtime: &tokio::runtime::Handle,
-        store: Arc<dyn object_store::ObjectStore>,
-        meter: Arc<crate::measurements::Meter>,
-        count: cloud_hive::FooterCount,
-        remember: impl Fn(&[Option<cloud_hive::FileFooter>]) + Send + Sync + 'static,
-    ) -> crate::widgets::datatable::FileCounter {
-        let (runtime, count) = (runtime.clone(), Arc::new(count));
-        Arc::new(move || {
-            let (store, count, meter) = (store.clone(), count.clone(), meter.clone());
-            let counted =
-                wait_on_runtime(&runtime, async move { count.count(&store, &meter).await })
-                    .ok_or_else(|| "cancelled".to_string())?;
-            if let Some(whole) = counted.whole.as_deref() {
-                remember(whole);
-            }
-            Ok(counted.row_groups)
-        })
-    }
-
-    /// What keeps a cloud dataset's shape once a pass has read every footer of it.
-    #[cfg(feature = "cloud")]
-    fn shape_keeper(
-        cache: Option<crate::cache::CacheManager>,
-        full: &str,
-        fingerprint: &str,
-        files: Arc<Vec<cloud_hive::DatasetFile>>,
-    ) -> impl Fn(&[Option<cloud_hive::FileFooter>]) + Send + Sync + 'static {
-        let (full, fingerprint) = (full.to_string(), fingerprint.to_string());
-        move |footers| {
-            let read: Vec<usize> = (0..files.len()).collect();
-            Self::remember_dataset_shape(
-                cache.as_ref(),
-                &full,
-                Some(&fingerprint),
-                &read,
-                &files,
-                footers,
-            );
-        }
-    }
-
-    /// The footers at `read`, fetched on the runtime. `None` if the open was abandoned.
-    ///
-    /// Everything is cloned into the future rather than borrowed: it outlives this
-    /// frame, and the counter is shared with whoever is rendering anyway.
-    #[cfg(feature = "cloud")]
-    fn cloud_footers(
-        store: Arc<dyn object_store::ObjectStore>,
-        files: Arc<Vec<cloud_hive::DatasetFile>>,
-        read: Vec<usize>,
-        runtime: &tokio::runtime::Handle,
-        progress: Arc<crate::schema_union::FooterProgress>,
-        meter: Arc<crate::measurements::Meter>,
-    ) -> Option<Vec<Option<cloud_hive::FileFooter>>> {
-        wait_on_runtime(runtime, async move {
-            cloud_hive::footers_of_files_reporting(&store, &files, &read, &progress, &meter).await
-        })
-    }
-
-    /// What a set of a cloud dataset's footers says, and the scan that reads it.
-    ///
-    /// Shared by the open, which has read the two ends, and the pass behind it, which
-    /// has read them all: the two differ only in how much they know, and a dataset
-    /// built from a sample already says so — it forgoes numbering its rows and scopes
-    /// its notes to the footers it saw.
-    #[cfg(feature = "cloud")]
-    /// Keep what this pass learned, if it learned the whole of it.
-    ///
-    /// Two conditions, and both matter.
-    ///
-    /// Every footer must have been read. A staged open has read two of them and a
-    /// sampled one a spread, and either kept as though it were the whole dataset would
-    /// hand the next open a smaller dataset than it asked for, with nothing to say that
-    /// is what happened.
-    ///
-    /// Every footer must have *parsed*. A footer read can fail because the file is
-    /// corrupt, and it can fail because the store throttled the request or a token
-    /// expired — and nothing here can tell those apart. Remembering the failure turns a
-    /// moment's trouble into a file that is missing from the dataset on every open from
-    /// now until something else in the prefix changes, which is not a trade a cache is
-    /// allowed to make. Read them again next time; the one that was really corrupt
-    /// costs a read and says the same thing.
-    ///
-    /// No `fingerprint` keeps the facts only, as a reopen from the shape does.
-    fn remember_dataset_shape(
-        cache: Option<&crate::cache::CacheManager>,
-        full: &str,
-        fingerprint: Option<&str>,
-        read: &[usize],
-        files: &[cloud_hive::DatasetFile],
-        footers: &[Option<cloud_hive::FileFooter>],
-    ) {
-        let Some(cache) = cache else {
-            return;
-        };
-        // The dataset index too, which is what the home screen reads. A dataset opened
-        // straight from a bucket used to be recorded here, by the URL it was opened as,
-        // and nowhere else — so its recent row showed no shape, no size and no label,
-        // and looked broken beside the local rows. Written before the shape, because a
-        // sampled read still says what the columns are, and the shape below wants
-        // every footer. A sampled read does not replace a whole one, though: the shape
-        // cache is the smaller of the two and forgets a dataset long before the index
-        // does, and a reopen that finds its shape gone reads a sample first.
-        if let Some((path, facts)) = Self::facts_from_cloud_footers(full, files, read, footers)
-            && Self::facts_worth_recording(cache.dataset_facts(&path).as_ref(), &facts)
-        {
-            cache.record_dataset_facts(&[(path, facts)]);
-        }
-        let Some(fingerprint) = fingerprint else {
-            return;
-        };
-        if read.len() != files.len() || !footers.iter().all(Option::is_some) {
-            return;
-        }
-        let (cached, schemas) = cloud_hive::footers_to_cache(footers);
-        cache.save_dataset_shape(
-            full,
-            crate::cache::DatasetShape {
-                fingerprint: fingerprint.to_string(),
-                files: cached,
-                schemas,
-                taken_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or_default(),
-            },
-        );
-    }
-
-    /// What the home screen can say about a cloud dataset from the footers an open
-    /// read: its columns, its rows when every footer was read, its kind, and what it
-    /// holds. Keyed by the URL as opened, which is what the recents store holds.
-    ///
-    /// A remote row has no fingerprint to check, so `mtime` is the newest object's
-    /// stamp and `size` the total, for the record's own sake.
-    #[cfg(feature = "cloud")]
-    fn facts_from_cloud_footers(
-        full: &str,
-        files: &[cloud_hive::DatasetFile],
-        read: &[usize],
-        footers: &[Option<cloud_hive::FileFooter>],
-    ) -> Option<(PathBuf, crate::cache::DatasetFacts)> {
-        let (dataset, partition_columns) =
-            cloud_hive::dataset_schema_from_footers(files, read, footers).ok()?;
-        let columns: Vec<String> = dataset
-            .schema
-            .iter_names()
-            .map(|name| name.to_string())
-            .collect();
-        let every_footer = read.len() == files.len() && footers.iter().all(Option::is_some);
-        let rows = every_footer.then(|| {
-            footers
-                .iter()
-                .flatten()
-                .map(|f| f.row_group_rows.iter().sum::<usize>())
-                .sum()
-        });
-        // A directory of files, unless the listing came back with the one object the URL
-        // names — which is what `--hive` on a single object gets. The trailing slash is
-        // not asked about: this route is entered for `--hive s3://bucket/sales` too.
-        let directory = !(files.len() == 1 && full.trim_end_matches('/').ends_with(&files[0].key));
-        let kind = if !directory {
-            discover::EntryKind::File
-        } else if !partition_columns.is_empty() {
-            discover::EntryKind::Hive
-        } else {
-            discover::EntryKind::MultiFile
-        };
-        let holds = if directory {
-            discover::Holds {
-                formats: vec![("parquet".to_string(), files.len())],
-                ..Default::default()
-            }
-        } else {
-            Default::default()
-        };
-        Some((
-            PathBuf::from(full),
-            crate::cache::DatasetFacts {
-                mtime: files.iter().map(|f| f.stamp).max().unwrap_or_default(),
-                size: files.iter().map(|f| f.size).sum(),
-                rows,
-                cols: Some(columns.len()),
-                cols_sampled: !every_footer,
-                columns,
-                kind: Some(kind),
-                classified_by: discover::CLASSIFIER_VERSION,
-                cost: Default::default(),
-                holds,
-            },
-        ))
-    }
-
-    /// Whether a record learned from a cloud open should replace what the index has:
-    /// anything replaces nothing, a whole read replaces anything, and a sampled read
-    /// replaces only another sample.
-    #[cfg(feature = "cloud")]
-    fn facts_worth_recording(
-        existing: Option<&crate::cache::DatasetFacts>,
-        new: &crate::cache::DatasetFacts,
-    ) -> bool {
-        match existing {
-            None => true,
-            Some(_) if new.rows.is_some() => true,
-            Some(old) => old.rows.is_none(),
-        }
+            )),
+            options,
+            report,
+        )
     }
 
     /// What the home screen can say about one object opened from a bucket: its rows
@@ -10275,7 +9417,7 @@ impl App {
     fn record_cloud_object_facts(
         cache: Option<&crate::cache::CacheManager>,
         full: &str,
-        footer: &cloud_hive::ParquetFooter,
+        footer: &cloud_hive::FileFooter,
     ) {
         let Some(cache) = cache else {
             return;
@@ -10293,7 +9435,7 @@ impl App {
                     .map(|d| d.as_secs())
                     .unwrap_or_default(),
                 size: 0,
-                rows: Some(footer.row_group_rows.iter().sum()),
+                rows: Some(footer.rows()),
                 cols: Some(columns.len()),
                 cols_sampled: false,
                 columns,
@@ -10306,85 +9448,6 @@ impl App {
                 holds: Default::default(),
             },
         )]);
-    }
-
-    #[cfg(feature = "cloud")]
-    fn cloud_dataset_from_footers(
-        full: &str,
-        // The literal part of `full`, which for a glob is everything before its star.
-        // The layout and column-range notes work by taking each file's path relative to
-        // the dataset's root, so a root with a star in it is a prefix of nothing and
-        // every note goes quietly empty.
-        root: &str,
-        files: &[cloud_hive::DatasetFile],
-        read: &[usize],
-        footers: &[Option<cloud_hive::FileFooter>],
-        cloud_opts: &CloudOptions,
-    ) -> Option<CloudDataset> {
-        let (dataset, partition_columns) =
-            cloud_hive::dataset_schema_from_footers(files, read, footers).ok()?;
-        let urls: Vec<String> = files
-            .iter()
-            .filter_map(|f| cloud_hive::url_of_key(full, &f.key))
-            .collect();
-        if urls.is_empty() || urls.len() != files.len() {
-            return None;
-        }
-        // A file that stores a column in a type the dataset's column cannot hold is not
-        // read for it; its rows are null there rather than failing the scan, and carry
-        // their file's drift group so the null can be told from a real one.
-        let file_rows: Vec<usize> = if read.len() == files.len() {
-            footers
-                .iter()
-                .map(|f| f.as_ref().map(|f| f.row_group_rows.iter().sum()))
-                .collect::<Option<Vec<_>>>()
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        let row_groups: Vec<Vec<usize>> =
-            if read.len() == files.len() && footers.iter().all(Option::is_some) {
-                footers
-                    .iter()
-                    .flatten()
-                    .map(|f| f.row_group_rows.clone())
-                    .collect()
-            } else {
-                Vec::new()
-            };
-        let drift = crate::schema_union::ScanDrift::new(&urls, &dataset, &file_rows);
-        let schema = dataset.schema.clone();
-        let scan: crate::widgets::datatable::FileScan = {
-            let (schema, partition_columns, drift, cloud_opts) = (
-                schema.clone(),
-                partition_columns.clone(),
-                drift.map(Arc::new),
-                cloud_opts.clone(),
-            );
-            Arc::new(
-                move |urls: &[String], as_text: &[polars::prelude::PlSmallStr]| {
-                    let drifts = drift.is_some();
-                    cloud_hive::lenient_scan(
-                        urls,
-                        schema.clone(),
-                        Some(cloud_opts.clone()),
-                        drift.as_deref(),
-                        as_text,
-                    )
-                    .map(|lf| {
-                        Self::hoist_partition_columns(lf, &schema, &partition_columns, drifts)
-                    })
-                },
-            )
-        };
-        Some(CloudDataset {
-            dataset: dataset.with_partition_layouts(root, &urls),
-            file_rows,
-            urls,
-            row_groups,
-            scan,
-            partition_columns,
-        })
     }
 
     /// General schema route: ask the frame itself. Slow for a wide hive dataset, which
@@ -10644,7 +9707,7 @@ impl App {
             return Err(color_eyre::eyre::eyre!("a bucket, not an object"));
         }
         let meter = report.meter.clone();
-        let footer = wait_on_runtime(runtime, async move {
+        let (footer, etag) = wait_on_runtime(runtime, async move {
             cloud_hive::footer_of_cloud_parquet(store, &key, &meter).await
         })
         .ok_or_else(|| color_eyre::eyre::eyre!("cancelled"))??;
@@ -10661,18 +9724,15 @@ impl App {
         // The commonest cloud open, and the one the dataset index never heard about:
         // the prefix route records what it read, and this one read a footer too.
         Self::record_cloud_object_facts(report.remembered.as_ref(), &full, &footer);
+        let column_bytes = crate::schema_union::column_bytes_per_row(&[Some(footer.clone())]);
         let facts = OpenFacts {
+            remote_objects: vec![crate::local_copy::RemoteObject {
+                url: full,
+                size: footer.file_bytes as u64,
+                etag,
+            }],
             row_groups: vec![footer.row_group_rows],
-            remote_objects: footer
-                .object_bytes
-                .map(|size| crate::local_copy::RemoteObject {
-                    url: full,
-                    size,
-                    etag: footer.object_etag,
-                })
-                .into_iter()
-                .collect(),
-            column_bytes: footer.column_bytes_per_row,
+            column_bytes,
             ..Default::default()
         };
         Ok((state, facts))
@@ -10709,6 +9769,7 @@ impl App {
             progress: report.progress.clone(),
             meter: Arc::new(crate::measurements::Meter::default()),
             remembered: report.remembered.clone(),
+            writes: report.writes.clone(),
         };
 
         let local = attempt(report);
@@ -18569,7 +17630,7 @@ fn summarize_cloud_failure(error: &str) -> (String, String) {
 /// runtime is dropped by the shutdown instead of polled, so the wait ends with `None`
 /// and the abandoned request goes quietly.
 #[cfg(feature = "cloud")]
-fn wait_on_runtime<F>(runtime: &tokio::runtime::Handle, future: F) -> Option<F::Output>
+pub(crate) fn wait_on_runtime<F>(runtime: &tokio::runtime::Handle, future: F) -> Option<F::Output>
 where
     F: std::future::Future + Send + 'static,
     F::Output: Send + 'static,

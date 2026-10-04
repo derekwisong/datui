@@ -1570,7 +1570,7 @@ pub fn look_into(entry: &Entry) -> Entry {
 /// from the home screen is made with.
 pub fn look_into_as(entry: &Entry, as_read: &crate::schema_union::ReadAs) -> Entry {
     let mut probe = classify_row(entry);
-    measure_row(&mut probe, entry, as_read);
+    measure_row(&mut probe, entry, as_read, None);
     probe
 }
 
@@ -1585,9 +1585,15 @@ fn classify_row(entry: &Entry) -> Entry {
     probe
 }
 
-/// The second half of [`look_into`]: what is in it, from the files themselves.
-fn measure_row(probe: &mut Entry, entry: &Entry, as_read: &crate::schema_union::ReadAs) {
-    discover::enrich_as(probe, as_read);
+/// The second half of [`look_into`]: what is in it, from the files themselves, or from
+/// what an open kept of them in `remembered`.
+fn measure_row(
+    probe: &mut Entry,
+    entry: &Entry,
+    as_read: &crate::schema_union::ReadAs,
+    remembered: Option<&crate::cache::CacheManager>,
+) {
+    discover::enrich_with(probe, as_read, remembered);
     probe.size = probe.size.or(entry.size);
     probe.modified = probe.modified.or(entry.modified);
 }
@@ -1621,7 +1627,7 @@ pub fn look_into_batch(
 
     let mut facts = Vec::new();
     for (mut probe, entry) in classified {
-        measure_row(&mut probe, &entry, &as_read);
+        measure_row(&mut probe, &entry, &as_read, Some(cache));
         facts.extend(facts_for(&probe));
         each(entry.path.clone(), measured_from(&probe, &entry));
     }

@@ -65,6 +65,11 @@ impl Listing<'_> {
     pub fn is_cancelled(&self) -> bool {
         self.0.is_cancelled()
     }
+
+    /// The flag itself, for listing tasks that outlive the borrow.
+    pub fn cancel_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.0.cancel_flag()
+    }
 }
 
 impl Drop for Listing<'_> {
@@ -201,13 +206,13 @@ impl FooterProgress {
     }
 }
 
-/// What one file's footer said, short of the data.
+/// What one file's footer said, short of the data: the one footer type, wherever the
+/// file is and whichever pass read it.
 #[derive(Debug, Clone)]
-pub struct FileSchema {
+pub struct FileFooter {
     pub schema: Arc<Schema>,
-    pub rows: usize,
-    /// The file's size on disk or in the store.
-    pub file_bytes: usize,
+    /// Rows in each row group, in file order.
+    pub row_group_rows: Vec<usize>,
     /// Compressed bytes of each row group, in file order: what crosses the wire for
     /// that group, not what it occupies once decoded.
     ///
@@ -215,9 +220,65 @@ pub struct FileSchema {
     /// costs the whole of it. How big they are is therefore what a remote dataset
     /// costs to scroll, and it is in the footer datui already reads.
     pub row_group_bytes: Vec<usize>,
-    /// Uncompressed bytes of each column, from [`parquet_column_bytes`]. Empty when
-    /// the footer did not carry them this far.
+    /// The file's size on disk or in the store.
+    pub file_bytes: usize,
+    /// Uncompressed bytes of each column, from [`parquet_column_bytes`]. Empty where
+    /// the read did not keep them: a dataset in a store does not, so its remembered
+    /// shape stays small.
     pub column_bytes: Vec<(String, usize)>,
+}
+
+impl FileFooter {
+    /// What a footer's metadata says about a file of `file_bytes`, with each column's
+    /// width where `widths` asks for it.
+    pub fn from_metadata(
+        schema: Schema,
+        metadata: &polars_parquet::parquet::metadata::FileMetadata,
+        file_bytes: usize,
+        widths: bool,
+    ) -> Self {
+        let column_bytes = if widths {
+            parquet_column_bytes(&schema, metadata)
+        } else {
+            Vec::new()
+        };
+        FileFooter {
+            schema: Arc::new(schema),
+            row_group_rows: metadata.row_groups.iter().map(|rg| rg.num_rows()).collect(),
+            row_group_bytes: metadata
+                .row_groups
+                .iter()
+                .map(|rg| rg.compressed_size())
+                .collect(),
+            file_bytes,
+            column_bytes,
+        }
+    }
+
+    /// The footer at the end of `tail`, which holds at least the file's last bytes up
+    /// to and including its footer.
+    pub fn from_tail(tail: &[u8], file_bytes: usize, widths: bool) -> color_eyre::Result<Self> {
+        use polars::prelude::{ParquetReader, SchemaExt, SerReader};
+        let mut cursor = std::io::Cursor::new(tail);
+        let mut reader = ParquetReader::new(&mut cursor);
+        let arrow_schema = reader
+            .schema()
+            .map_err(|e| color_eyre::eyre::eyre!("Parquet schema read failed: {e}"))?;
+        let metadata = reader
+            .get_metadata()
+            .map_err(|e| color_eyre::eyre::eyre!("Parquet footer read failed: {e}"))?;
+        Ok(Self::from_metadata(
+            Schema::from_arrow_schema(arrow_schema.as_ref()),
+            metadata,
+            file_bytes,
+            widths,
+        ))
+    }
+
+    /// The rows in the file.
+    pub fn rows(&self) -> usize {
+        self.row_group_rows.iter().sum()
+    }
 }
 
 /// Uncompressed bytes of each column in a Parquet footer, summed over the row groups
@@ -243,8 +304,8 @@ pub fn parquet_column_bytes(
 
 /// Uncompressed bytes per row of each column over the footers read. A file without a
 /// column counts its rows at nothing, since they read as null there.
-pub fn column_bytes_per_row(footers: &[Option<FileSchema>]) -> Vec<(String, usize)> {
-    let rows: usize = footers.iter().flatten().map(|f| f.rows).sum();
+pub fn column_bytes_per_row(footers: &[Option<FileFooter>]) -> Vec<(String, usize)> {
+    let rows: usize = footers.iter().flatten().map(FileFooter::rows).sum();
     if rows == 0 {
         return Vec::new();
     }
@@ -369,9 +430,8 @@ pub struct SkippedFiles {
     /// Objects with nothing in them, whose name says they are data. Not a file anyone
     /// left on purpose: a write that stopped, which is the skip most worth saying.
     ///
-    /// Only ever counted from a store listing, which knows a size. The same file on
-    /// disk is opened and turns up as a footer that would not read, which says the same
-    /// thing in another note's words.
+    /// A store's listing knows each size; a directory knows it from the stat past one
+    /// wave, or from the footer that would not read within one.
     pub empty: usize,
 }
 
@@ -1158,11 +1218,12 @@ impl DatasetSchema {
 /// A dataset of more files than this opens from its ends and reads the rest behind.
 pub const FOOTERS_AT_ONCE: usize = 64;
 
-/// Local footers in the form the shape cache keeps them, the schemas gathered into a
-/// table as the cloud ones are. A file's rows are kept as one group: the local scan
-/// reads by file, so its row groups are never planned against.
+/// Footers in the form the shape cache keeps them: the schemas gathered into a table
+/// and referred to by index, since a dataset of ten thousand files usually has one
+/// schema, and writing each file's columns out in full would make the cache larger
+/// than the footers it saves reading.
 pub fn footers_to_cache(
-    footers: &[Option<FileSchema>],
+    footers: &[Option<FileFooter>],
 ) -> (
     Vec<crate::cache::CachedFooter>,
     Vec<Vec<(String, DataType)>>,
@@ -1177,7 +1238,7 @@ pub fn footers_to_cache(
                     &mut schemas,
                     &f.schema,
                 )),
-                row_group_rows: vec![f.rows],
+                row_group_rows: f.row_group_rows.clone(),
                 row_group_bytes: f.row_group_bytes.clone(),
                 column_bytes: f.column_bytes.iter().map(|(_, bytes)| *bytes).collect(),
             },
@@ -1186,17 +1247,24 @@ pub fn footers_to_cache(
     (cached, schemas)
 }
 
-/// The local footers a cache kept, as a fresh pass would have read them. `file_bytes`
-/// is each file's size from the listing, which the cache does not hold. `None` when
-/// the entry disagrees with itself or with the listing, and is then refused whole.
+/// The footers a cache kept, as a fresh pass would have read them. `file_bytes` is
+/// each file's size from the listing, which the cache does not hold.
+///
+/// `None` for a file whose footer would not read, which is how the pass reports one
+/// and so how the cache has to give it back. The whole entry is refused when it
+/// disagrees with itself or with the listing.
 pub fn footers_from_cache(
     cached: &[crate::cache::CachedFooter],
     schemas: &[Vec<(String, DataType)>],
     file_bytes: &[u64],
-) -> Option<Vec<Option<FileSchema>>> {
+) -> Option<Vec<Option<FileFooter>>> {
     if cached.len() != file_bytes.len() {
         return None;
     }
+    // One schema shared by every file that has it, as a fresh pass shares them.
+    let shared: Vec<Arc<Schema>> = (0..schemas.len())
+        .map(|at| crate::cache::DatasetShape::schema_at(schemas, at).map(Arc::new))
+        .collect::<Option<_>>()?;
     cached
         .iter()
         .zip(file_bytes)
@@ -1204,17 +1272,17 @@ pub fn footers_from_cache(
             let Some(at) = f.schema else {
                 return Some(None);
             };
-            let schema = crate::cache::DatasetShape::schema_at(schemas, at)?;
+            let schema = shared.get(at)?;
             let column_bytes = schema
                 .iter_names()
                 .zip(&f.column_bytes)
                 .map(|(name, bytes)| (name.to_string(), *bytes))
                 .collect();
-            Some(Some(FileSchema {
-                schema: Arc::new(schema),
-                rows: f.row_group_rows.iter().sum(),
-                file_bytes: bytes as usize,
+            Some(Some(FileFooter {
+                schema: schema.clone(),
+                row_group_rows: f.row_group_rows.clone(),
                 row_group_bytes: f.row_group_bytes.clone(),
+                file_bytes: bytes as usize,
                 column_bytes,
             }))
         })
@@ -1328,7 +1396,7 @@ pub fn ends_of(files: usize) -> Vec<usize> {
 pub fn union_sampled(
     files: usize,
     read: &[usize],
-    footers: &[Option<FileSchema>],
+    footers: &[Option<FileFooter>],
 ) -> DatasetSchema {
     let origin = if read.len() == files {
         SchemaOrigin::AllFooters(files)
@@ -1383,7 +1451,7 @@ pub fn readable_paths<'a>(paths: &'a [String], unreadable: &[usize]) -> Cow<'a, 
 
 /// Fold every file's footer into one schema. `files` is in scan order, so the last
 /// readable entry is the newest file; `None` is a file whose footer could not be read.
-pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) -> DatasetSchema {
+pub fn union_file_schemas(files: &[Option<FileFooter>], origin: SchemaOrigin) -> DatasetSchema {
     let unreadable = files
         .iter()
         .enumerate()
@@ -1417,7 +1485,7 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
             let Some(&index) = seen.get(name) else {
                 continue;
             };
-            sightings[index].push((dtype.clone(), file.rows));
+            sightings[index].push((dtype.clone(), file.rows()));
         }
     }
 
@@ -1493,7 +1561,7 @@ pub fn union_file_schemas(files: &[Option<FileSchema>], origin: SchemaOrigin) ->
         file_group,
         origin,
         read_as_text: Vec::new(),
-        empty_files: files.iter().flatten().filter(|f| f.rows == 0).count(),
+        empty_files: files.iter().flatten().filter(|f| f.rows() == 0).count(),
         median_file_bytes: median(files.iter().flatten().map(|f| f.file_bytes)),
         column_ranges: HashMap::new(),
         skipped: SkippedFiles::default(),
@@ -1850,8 +1918,7 @@ pub fn partitions_of_listing(first: &str, newest: &str) -> (Vec<String>, Vec<(St
 ///
 /// It starts from the footers the open already read — the two ends, or a sample — and
 /// reads only the rest. Once every file's footer is in, the whole set is handed back
-/// once, for the shape cache, so a reopen reads none. Shared by local directories and
-/// cloud prefixes; `F` is the route's footer.
+/// once, for the shape cache, so a reopen reads none.
 pub struct FooterCount<F> {
     files: usize,
     /// The files the count answers for, as indices, in order: those whose footer the
@@ -1891,41 +1958,23 @@ impl<F: Clone> FooterCount<F> {
     }
 
     /// Count, reading the footers not yet in with `read`, which answers in the order it
-    /// is asked. One that would not read before is tried again: a read can fail for a
-    /// moment's trouble as well as a broken file. Holds the footers while it reads, so
-    /// two counts at once do not both read the same ones.
+    /// is asked, or `None` when the reads were abandoned. One that would not read before
+    /// is tried again: a read can fail for a moment's trouble as well as a broken file.
+    /// Holds the footers while it reads, so two counts at once do not both read the
+    /// same ones.
     pub fn count(
         &self,
-        read: impl FnOnce(&[usize]) -> Vec<Option<F>>,
+        read: impl FnOnce(&[usize]) -> Option<Vec<Option<F>>>,
         row_groups: impl Fn(&F) -> Vec<usize>,
-    ) -> Counted<F> {
+    ) -> Option<Counted<F>> {
         let mut footers = self.footers.lock().unwrap_or_else(|e| e.into_inner());
         let missing = self.missing(&mut footers);
         let read = if missing.is_empty() {
             Vec::new()
         } else {
-            read(&missing)
+            read(&missing)?
         };
-        self.settle(&mut footers, missing, read, row_groups)
-    }
-
-    /// The footers a count has yet to read, for a caller that reads them where it
-    /// cannot hold a lock (across an `await`) and so serializes its counts itself.
-    /// [`Self::settle_now`] takes what it read.
-    pub fn missing_now(&self) -> Vec<usize> {
-        let mut footers = self.footers.lock().unwrap_or_else(|e| e.into_inner());
-        self.missing(&mut footers)
-    }
-
-    /// The count, given `read`, the footers at `missing` from [`Self::missing_now`].
-    pub fn settle_now(
-        &self,
-        missing: Vec<usize>,
-        read: Vec<Option<F>>,
-        row_groups: impl Fn(&F) -> Vec<usize>,
-    ) -> Counted<F> {
-        let mut footers = self.footers.lock().unwrap_or_else(|e| e.into_inner());
-        self.settle(&mut footers, missing, read, row_groups)
+        Some(self.settle(&mut footers, missing, read, row_groups))
     }
 
     fn missing(&self, footers: &mut Vec<Option<F>>) -> Vec<usize> {
@@ -2404,14 +2453,14 @@ mod tests {
         assert_eq!(names("b.csv", "a|b\n1|2\n", Csv, Some(b'|')), ["a", "b"]);
     }
 
-    fn file(columns: &[(&str, DataType)], rows: usize) -> Option<FileSchema> {
+    fn file(columns: &[(&str, DataType)], rows: usize) -> Option<FileFooter> {
         let mut schema = Schema::with_capacity(columns.len());
         for (name, dtype) in columns {
             schema.with_column((*name).into(), dtype.clone());
         }
-        Some(FileSchema {
+        Some(FileFooter {
             schema: Arc::new(schema),
-            rows,
+            row_group_rows: vec![rows],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
@@ -2668,7 +2717,7 @@ mod tests {
         assert!(is_nested(&cols(&[&[], &[]])), "nothing to disagree about");
     }
 
-    fn union(files: &[Option<FileSchema>]) -> DatasetSchema {
+    fn union(files: &[Option<FileFooter>]) -> DatasetSchema {
         union_file_schemas(files, SchemaOrigin::AllFooters(files.len()))
     }
 
@@ -2712,7 +2761,7 @@ mod tests {
         // conflict with it, and then there would be only one conflict to show.
         write("c.parquet", df!("id" => &[4i64], "n" => &[true]).unwrap());
 
-        let footers: Vec<Option<FileSchema>> = vec![
+        let footers: Vec<Option<FileFooter>> = vec![
             file(&[("id", DataType::Int64), ("n", DataType::Int64)], 3),
             file(&[("id", DataType::Int64), ("n", DataType::String)], 1),
             file(&[("id", DataType::Int64), ("n", DataType::Boolean)], 1),
@@ -2812,7 +2861,7 @@ mod tests {
         write("c.parquet", stamps(types[1].clone()));
         write("d.parquet", stamps(types[2].clone()));
 
-        let footers: Vec<Option<FileSchema>> = [DataType::String]
+        let footers: Vec<Option<FileFooter>> = [DataType::String]
             .into_iter()
             .chain(types)
             .enumerate()
@@ -2869,7 +2918,7 @@ mod tests {
         write("b.parquet", df!("id" => &[2i64]).unwrap());
         write("c.parquet", df!("id" => &[3i64], "n" => &["x"]).unwrap());
 
-        let footers: Vec<Option<FileSchema>> = vec![
+        let footers: Vec<Option<FileFooter>> = vec![
             file(&[("id", DataType::Int64), ("n", DataType::Int64)], 2),
             file(&[("id", DataType::Int64)], 1),
             file(&[("id", DataType::Int64), ("n", DataType::String)], 1),
@@ -2989,7 +3038,7 @@ mod tests {
         );
         write("b.parquet", df!("id" => &[2i64], "n" => &["x"]).unwrap());
 
-        let footers: Vec<Option<FileSchema>> = vec![
+        let footers: Vec<Option<FileFooter>> = vec![
             file(&[("id", DataType::Int64), ("n", DataType::Binary)], 2),
             file(&[("id", DataType::Int64), ("n", DataType::String)], 1),
         ];
@@ -3063,7 +3112,7 @@ mod tests {
                 .unwrap(),
         );
 
-        let footers: Vec<Option<FileSchema>> = vec![
+        let footers: Vec<Option<FileFooter>> = vec![
             file(&[("id", DataType::Int64), ("n", DataType::Int64)], 3),
             file(
                 &[
@@ -3202,12 +3251,12 @@ mod tests {
     fn row_groups_are_noted_by_their_middle_size_and_only_when_it_is_large() {
         const MIB: usize = 1024 * 1024;
         let note = |groups: &[&[usize]]| -> Option<String> {
-            let files: Vec<Option<FileSchema>> = groups
+            let files: Vec<Option<FileFooter>> = groups
                 .iter()
                 .map(|sizes| {
-                    Some(FileSchema {
+                    Some(FileFooter {
                         schema: Arc::new(Schema::with_capacity(0)),
-                        rows: 1,
+                        row_group_rows: vec![1],
                         file_bytes: 0,
                         row_group_bytes: sizes.to_vec(),
                         column_bytes: Vec::new(),
@@ -3296,11 +3345,9 @@ mod tests {
             .finish(&mut frame)
             .unwrap();
 
-        let (files, read, footers) =
-            crate::widgets::datatable::DataTableState::footers_of_parquet_dir(dir.path());
-        assert_eq!((files.len(), read.len()), (1, 1));
-        let footer = footers[0].as_ref().expect("the footer reads");
-        assert_eq!(footer.rows, 20_000);
+        let footer = crate::dataset_files::local_footer(&dir.path().join("wide.parquet"))
+            .expect("the footer reads");
+        assert_eq!(footer.rows(), 20_000);
         assert_eq!(footer.row_group_bytes.len(), 1, "one row group");
 
         // The file's own size comes from the same read, and is the size on disk: the
@@ -3332,14 +3379,14 @@ mod tests {
         // `sizes` is the shape of the footers read, repeated to fill `read` of them:
         // the note says how many were read, so the fixture has to have that many.
         let note = |files: usize, read: usize, sizes: &[usize]| -> Option<String> {
-            let footers: Vec<Option<FileSchema>> = sizes
+            let footers: Vec<Option<FileFooter>> = sizes
                 .iter()
                 .cycle()
                 .take(if sizes.is_empty() { 0 } else { read })
                 .map(|bytes| {
-                    Some(FileSchema {
+                    Some(FileFooter {
                         schema: Arc::new(Schema::with_capacity(0)),
-                        rows: 1,
+                        row_group_rows: vec![1],
                         file_bytes: *bytes,
                         row_group_bytes: Vec::new(),
                         column_bytes: Vec::new(),
@@ -3401,16 +3448,16 @@ mod tests {
         // stops the middle size reading as a fact about half a million files.
         let sampled = union_file_schemas(
             &[
-                Some(FileSchema {
+                Some(FileFooter {
                     schema: Arc::new(Schema::with_capacity(0)),
-                    rows: 1,
+                    row_group_rows: vec![1],
                     file_bytes: 40 * KIB,
                     row_group_bytes: Vec::new(),
                     column_bytes: Vec::new(),
                 }),
-                Some(FileSchema {
+                Some(FileFooter {
                     schema: Arc::new(Schema::with_capacity(0)),
-                    rows: 1,
+                    row_group_rows: vec![1],
                     file_bytes: 40 * KIB,
                     row_group_bytes: Vec::new(),
                     column_bytes: Vec::new(),
@@ -3499,9 +3546,9 @@ mod tests {
     fn directories_that_partition_differently_are_counted_each_way() {
         let note = |root: &str, paths: &[&str]| -> Option<crate::notes::Note> {
             let footers = vec![
-                Some(FileSchema {
+                Some(FileFooter {
                     schema: Arc::new(Schema::with_capacity(0)),
-                    rows: 1,
+                    row_group_rows: vec![1],
                     file_bytes: 1,
                     row_group_bytes: Vec::new(),
                     column_bytes: Vec::new(),
@@ -3608,9 +3655,9 @@ mod tests {
         };
         let note = |paths: &[&str]| -> String {
             let footers = vec![
-                Some(FileSchema {
+                Some(FileFooter {
                     schema: Arc::new(Schema::with_capacity(0)),
-                    rows: 1,
+                    row_group_rows: vec![1],
                     file_bytes: 1,
                     row_group_bytes: Vec::new(),
                     column_bytes: Vec::new(),
@@ -3773,16 +3820,16 @@ mod tests {
     #[test]
     fn absent_columns_alone_never_split_the_scan() {
         let files = 64;
-        let per_file: Vec<Option<FileSchema>> = (0..files)
+        let per_file: Vec<Option<FileFooter>> = (0..files)
             .map(|i| {
                 let mut s = Schema::with_capacity(2);
                 s.with_column("id".into(), DataType::Int64);
                 if i % 2 == 1 {
                     s.with_column("extra".into(), DataType::String);
                 }
-                Some(FileSchema {
+                Some(FileFooter {
                     schema: Arc::new(s),
-                    rows: 1,
+                    row_group_rows: vec![1],
                     file_bytes: 0,
                     row_group_bytes: Vec::new(),
                     column_bytes: Vec::new(),
@@ -3805,9 +3852,9 @@ mod tests {
         let mut with_conflict = per_file.clone();
         let mut odd = Schema::with_capacity(2);
         odd.with_column("id".into(), DataType::String);
-        with_conflict[7] = Some(FileSchema {
+        with_conflict[7] = Some(FileFooter {
             schema: Arc::new(odd),
-            rows: 1,
+            row_group_rows: vec![1],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),

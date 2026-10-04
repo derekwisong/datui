@@ -1571,13 +1571,24 @@ pub fn enrich(entry: &mut Entry) {
 /// `datui --no-header directory/` came to open the home screen for a directory the flag
 /// reads perfectly as one table.
 pub fn enrich_as(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
+    enrich_with(entry, as_read, None)
+}
+
+/// As [`enrich_as`], taking a dataset's measure from the shape an open kept of it in
+/// `remembered`, where its files are as they were then, rather than from a sample of
+/// its footers.
+pub fn enrich_with(
+    entry: &mut Entry,
+    as_read: &crate::schema_union::ReadAs,
+    remembered: Option<&crate::cache::CacheManager>,
+) {
     match entry.kind {
         EntryKind::File => {
             enrich_parquet(entry);
             enrich_tables(entry);
             enrich_arrow(entry);
         }
-        EntryKind::Hive | EntryKind::MultiFile => enrich_dataset(entry, as_read),
+        EntryKind::Hive | EntryKind::MultiFile => enrich_dataset(entry, as_read, remembered),
         // Nothing to read for a plain directory, and nothing that *may* be read for
         // one that has not been looked at. Nor for a lake table: summing the footers
         // under one counts tombstoned rows, every rewritten version and both sides of
@@ -1588,7 +1599,11 @@ pub fn enrich_as(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
 }
 
 /// Sum footers across a bounded set of Parquet files under `entry`.
-fn enrich_dataset(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
+fn enrich_dataset(
+    entry: &mut Entry,
+    as_read: &crate::schema_union::ReadAs,
+    remembered: Option<&crate::cache::CacheManager>,
+) {
     // A directory of JSON is not described by the Parquet under it. The walk below
     // recurses — it has to, because that is what opening the directory reads — so for a
     // directory whose own files are a format this cannot count, every number it produced
@@ -1644,8 +1659,16 @@ fn enrich_dataset(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
     // leave it behind to be read as an answer.
     entry.size = None;
 
-    let mut files = Vec::new();
-    collect_parquet_files(&entry.path, 0, &mut files);
+    let files = parquet_files_under(&entry.path);
+    // Past the budget the footers are not read here, but an open that read them all
+    // kept them: listing the dataset again says whether they still describe it.
+    if files.len() > MAX_FOOTERS_PER_DATASET
+        && let Some((listed, footers)) = remembered
+            .and_then(|cache| crate::dataset_files::remembered_footers(&entry.path, cache))
+    {
+        measure_from_footers(entry, &listed, &footers);
+        return;
+    }
     if files.is_empty() || files.len() > MAX_FOOTERS_PER_DATASET {
         // Whether these are one table is still worth asking, and it does not need
         // every footer: three files spread across the directory answer it. Without this a
@@ -1963,87 +1986,72 @@ fn union_of(per_file: &[Vec<String>]) -> Vec<String> {
         .collect()
 }
 
-/// Names taken from one directory before reading the rest stops being worth the walk.
-/// Past it the spread `sample_footers` takes is over the names this listing saw rather
-/// than over the directory — the bug this bound is a compromise with — and the row count
-/// is long out of reach either way. Twenty thousand is the size `schema_union`'s own
-/// measurements take as the large case.
-const MAX_NAMES_PER_DIR: usize = 20_000;
+/// The Parquet files under `dir`, sorted, as far down as a dataset goes: one past the
+/// budget when there are more, which is what says there are too many to count. The
+/// open's own walk, stopped once it has seen enough.
+fn parquet_files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut files = crate::dataset_files::LocalFiles::new(dir)
+        .first_files(MAX_WALK_DEPTH as usize + 1, MAX_FOOTERS_PER_DATASET);
+    // The walk takes a directory entry's own type; a file this reads must be one.
+    files.retain(|p| is_regular_file(p));
+    files
+}
 
-/// Collect Parquet files under `dir`, breadth-bounded and depth-bounded, stopping
-/// once the cap is exceeded so a huge dataset costs the same as a small one.
-fn collect_parquet_files(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
-    if depth > MAX_WALK_DEPTH || out.len() > MAX_FOOTERS_PER_DATASET {
+/// Measure a dataset from every file's footer as an open kept them: its rows, width,
+/// size and row groups, and whether its files are one table, with none read here.
+fn measure_from_footers(
+    entry: &mut Entry,
+    files: &[crate::dataset_files::DatasetFile],
+    footers: &[Option<crate::schema_union::FileFooter>],
+) {
+    let per_file: Vec<Vec<String>> = footers
+        .iter()
+        .flatten()
+        .map(|f| f.schema.iter_names().map(|n| n.to_string()).collect())
+        .collect();
+    let columns = union_of(&per_file);
+    if entry.kind == EntryKind::MultiFile && !crate::schema_union::is_nested(&per_file) {
+        // As a read of every footer judges it: the label counts the directory's own
+        // files, and so do the width and the size beside it.
+        let own: Vec<usize> = files
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| Path::new(&f.key).parent() == Some(entry.path.as_path()))
+            .map(|(i, _)| i)
+            .collect();
+        entry.size = Some(own.iter().map(|&i| files[i].size).sum());
+        let own_columns = union_of(
+            &own.iter()
+                .filter_map(|&i| footers[i].as_ref())
+                .map(|f| f.schema.iter_names().map(|n| n.to_string()).collect())
+                .collect::<Vec<_>>(),
+        );
+        entry.columns = columns;
+        entry.cols_sampled = false;
+        downgrade_to_directory(
+            entry,
+            (!own_columns.is_empty()).then_some(own_columns.len()),
+        );
         return;
     }
-    let Ok(iter) = std::fs::read_dir(dir) else {
-        return;
+    let footers: Vec<&crate::schema_union::FileFooter> = footers.iter().flatten().collect();
+    let uncompressed: u64 = footers
+        .iter()
+        .flat_map(|f| &f.column_bytes)
+        .map(|(_, bytes)| *bytes as u64)
+        .sum();
+    let row_groups: usize = footers.iter().map(|f| f.row_group_rows.len()).sum();
+    entry.rows = Some(footers.iter().map(|f| f.rows()).sum());
+    entry.cols = Some(columns.len() + partition_columns_beyond(entry, &columns));
+    entry.size = Some(files.iter().map(|f| f.size).sum());
+    entry.columns = columns;
+    entry.cols_sampled = false;
+    entry.cost = Cost {
+        uncompressed: (uncompressed > 0).then_some(uncompressed),
+        row_groups: (row_groups > 0).then_some(row_groups),
+        partitions: entry.cost.partitions.take(),
+        ..Cost::default()
     };
-    let mut subdirs = Vec::new();
-    // Every candidate in this directory, sorted before any is kept — not the first
-    // handful the directory read happened to return. A directory read gives its entries
-    // in whatever order the filesystem holds them, and every caller of this list reads
-    // order as meaning something: the ends and the middle are the spread
-    // `sample_footers` takes, and the last file is the newest in a directory written over
-    // time. Truncating first and sorting after would sort an arbitrary subset, which is
-    // the same wrong answer with the appearance of an order.
-    //
-    // Names only here: the `is_regular_file` stat that used to run on every candidate
-    // now runs only on the ones actually kept. Reading the whole directory to sort it is
-    // not free either — one `getdents` walk and one sort, where the old shape stopped at
-    // the sixty-fifth entry — and that is what the sample meaning what it says costs.
-    let mut files = Vec::new();
-    for entry in iter.flatten() {
-        let path = entry.path();
-        // A table format's own files are not the table's. Delta writes its checkpoints
-        // as Parquet holding the table's own columns, so counted here the home screen
-        // promises a row count the table does not have — which is what opening it then
-        // disagrees with. The same test the open makes, so the two agree.
-        if path
-            .file_name()
-            .map(|n| n.to_string_lossy())
-            .as_deref()
-            .is_some_and(crate::discover::is_bookkeeping)
-        {
-            continue;
-        }
-        // The type the directory read already returned, rather than a `stat` per entry: a
-        // directory of two hundred thousand files is visited whole here, and `is_dir` on
-        // every one of them is the cost of doing so. A symlink still gets the stat,
-        // because whether to walk into one is a question `d_type` cannot answer.
-        let is_dir = match entry.file_type() {
-            Ok(kind) if kind.is_symlink() => path.is_dir(),
-            Ok(kind) => kind.is_dir(),
-            Err(_) => path.is_dir(),
-        };
-        if is_dir {
-            subdirs.push(path);
-        } else if is_parquet_key(&directory_and_name(&path)) {
-            // The same test the classifier and the open path make, so a directory offered
-            // as a dataset is one whose files this can find. Extensionless part files
-            // inside a `.parquet` directory were classified `multi` and then measured at
-            // nothing: `? rows` and an empty schema pane, for ever.
-            files.push(path);
-            if files.len() >= MAX_NAMES_PER_DIR {
-                break;
-            }
-        }
-    }
-    files.sort();
-    // One past the budget is deliberate: the callers read `len() > MAX` as "too many to
-    // count", so the list has to be able to say so.
-    let room = (MAX_FOOTERS_PER_DATASET + 1).saturating_sub(out.len());
-    out.extend(files.into_iter().filter(|p| is_regular_file(p)).take(room));
-    if out.len() > MAX_FOOTERS_PER_DATASET {
-        return;
-    }
-    subdirs.sort();
-    for sub in subdirs {
-        collect_parquet_files(&sub, depth + 1, out);
-        if out.len() > MAX_FOOTERS_PER_DATASET {
-            return;
-        }
-    }
 }
 
 /// Fill in row and column counts for a Parquet file from its footer.
@@ -4231,8 +4239,7 @@ mod classification_tests {
         for name in ["c.parquet", "a.parquet", "d.parquet", "b.parquet"] {
             write(dir.path(), name, &["id"]);
         }
-        let mut files = Vec::new();
-        collect_parquet_files(dir.path(), 0, &mut files);
+        let files = parquet_files_under(dir.path());
         let names: Vec<String> = files
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
@@ -4257,8 +4264,7 @@ mod classification_tests {
         for part in 0..MAX_FOOTERS_PER_DATASET * 3 {
             write(dir.path(), &format!("part-{part:04}.parquet"), &["id"]);
         }
-        let mut files = Vec::new();
-        collect_parquet_files(dir.path(), 0, &mut files);
+        let files = parquet_files_under(dir.path());
 
         assert_eq!(
             files.len(),

@@ -1000,6 +1000,12 @@ impl CacheManager {
         Store::<Shapes>::new(self).get(path, fingerprint)
     }
 
+    /// Whether a shape is kept for `path` at all, whatever it was taken against: one
+    /// stat, so a caller can tell whether listing the dataset could find it.
+    pub fn has_dataset_shape(&self, path: &str) -> bool {
+        Store::<Shapes>::new(self).file(path).exists()
+    }
+
     /// Remember one dataset's shape, keeping the others while they fit the budget.
     pub fn save_dataset_shape(&self, path: &str, shape: DatasetShape) {
         Store::<Shapes>::new(self).put(path, &shape.fingerprint, &shape);

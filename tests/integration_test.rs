@@ -16,6 +16,9 @@ mod can;
 #[cfg(feature = "cloud")]
 #[path = "cloud/download.rs"]
 mod cloud_download;
+#[cfg(feature = "cloud")]
+#[path = "cloud/parity.rs"]
+mod cloud_parity;
 mod common;
 #[path = "formats/elf.rs"]
 mod elf;

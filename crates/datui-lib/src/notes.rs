@@ -771,7 +771,7 @@ fn widening_note(column: &ColumnDrift, chosen: &str, scope: &str) -> Option<Note
 mod tests {
     use super::*;
 
-    use crate::schema_union::{FileSchema, union_file_schemas};
+    use crate::schema_union::{FileFooter, union_file_schemas};
     use polars::prelude::{DataType, Field, Schema, TimeUnit, TimeZone};
     use std::sync::Arc;
 
@@ -891,14 +891,14 @@ mod tests {
         );
     }
 
-    fn file(columns: &[(&str, DataType)], rows: usize) -> Option<FileSchema> {
+    fn file(columns: &[(&str, DataType)], rows: usize) -> Option<FileFooter> {
         let mut schema = Schema::with_capacity(columns.len());
         for (name, dtype) in columns {
             schema.with_column((*name).into(), dtype.clone());
         }
-        Some(FileSchema {
+        Some(FileFooter {
             schema: Arc::new(schema),
-            rows,
+            row_group_rows: vec![rows],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
@@ -909,7 +909,7 @@ mod tests {
     #[derive(Default)]
     struct Shape {
         what: &'static str,
-        files: Vec<Option<FileSchema>>,
+        files: Vec<Option<FileFooter>>,
         /// `Some(total)` when the footers stand in for a larger dataset.
         sampled: Option<usize>,
         /// The file names, where the shape is about how they are laid out rather than

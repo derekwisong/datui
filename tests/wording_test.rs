@@ -4,7 +4,7 @@
 //! when a word the glossary retired, or a claim datui cannot keep ("opens
 //! anything", #687), appears anywhere a user reads: the UI's strings, the help
 //! strings, the docs, the READMEs, the next release's notes, `--help` (which the
-//! shell completions are built from) and the generated manpage. A real use goes in `ALLOWED`, with the
+//! shell completions are built from) and the manpages. A real use goes in `ALLOWED`, with the
 //! file and the text that makes it real; an entry nothing matches fails too, so the
 //! list never outlives what it excuses.
 
@@ -399,10 +399,9 @@ fn texts() -> Vec<Text> {
         let name = format!("datui {} --help", sub.get_name());
         texts.push(generated(&name, &sub.render_long_help().to_string()));
     }
-    texts.push(generated(
-        "datui.1",
-        include_str!(concat!(env!("OUT_DIR"), "/datui.1")),
-    ));
+    for page in datui_cli::man::PAGES {
+        texts.push(generated(&page.path(), &page.roff()));
+    }
     texts
 }
 

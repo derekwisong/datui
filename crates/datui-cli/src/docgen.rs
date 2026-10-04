@@ -18,9 +18,14 @@ use std::path::{Path, PathBuf};
 use crate::formats::{FileFormat, RemoteRead, Stored};
 use crate::settings;
 
-/// What renders a generated part. `help` reads a help string by name, from
-/// `crates/datui-lib/src/help-strings`.
+/// What renders a generated part. Its argument reads a repository file by its path
+/// from the root, line endings as LF.
 type Render = fn(&dyn Fn(&str) -> String) -> String;
+
+/// A help string's path from the repository's root.
+fn help_path(name: &str) -> String {
+    format!("crates/datui-lib/src/help-strings/{name}.txt")
+}
 
 /// A page, or a region of one, written from the code.
 pub struct Generated {
@@ -51,7 +56,7 @@ pub const GENERATED: &[Generated] = &[
     Generated {
         file: "docs/reference/keyboard-shortcuts.md",
         region: Some("keys"),
-        render: |help| crate::keys::render_markdown(help),
+        render: |read| crate::keys::render_markdown(&|name| read(&help_path(name))),
     },
     Generated {
         file: "docs/formats/index.md",
@@ -77,6 +82,11 @@ pub const GENERATED: &[Generated] = &[
         file: "docs/reference/python-api.md",
         region: Some("options"),
         render: |_| render_python_options_markdown(),
+    },
+    Generated {
+        file: "docs/reference/manual-pages.md",
+        region: Some("pages"),
+        render: |_| crate::man::render_markdown_index(),
     },
 ];
 
@@ -123,13 +133,22 @@ pub fn read_help(root: &Path, name: &str) -> String {
         .replace("\r\n", "\n")
 }
 
+/// A repository file's text, by its path from the root, line endings as LF.
+pub fn read_file(root: &Path, path: &str) -> String {
+    let full = root.join(path);
+    std::fs::read_to_string(&full)
+        .unwrap_or_else(|e| panic!("{}: {e}", full.display()))
+        .replace("\r\n", "\n")
+}
+
 /// What each generated file should hold: the file and its text, every region filled.
+/// The manpages are whole files, after the docs.
 pub fn render_all(root: &Path) -> Result<Vec<(PathBuf, String)>, String> {
-    let help = |name: &str| read_help(root, name);
+    let read = |path: &str| read_file(root, path);
     let mut out: Vec<(PathBuf, String)> = Vec::new();
     for part in GENERATED {
         let path = root.join(part.file);
-        let content = (part.render)(&help);
+        let content = (part.render)(&read);
         let current = match out.iter().position(|(p, _)| *p == path) {
             Some(i) => out.remove(i).1,
             None if part.region.is_none() => String::new(),
@@ -145,6 +164,9 @@ pub fn render_all(root: &Path) -> Result<Vec<(PathBuf, String)>, String> {
             }
         };
         out.push((path, text));
+    }
+    for page in crate::man::PAGES {
+        out.push((root.join(page.path()), page.render(&read)));
     }
     Ok(out)
 }

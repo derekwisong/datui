@@ -139,7 +139,8 @@ jobs:
           # indexes did not fetch, it fails there, for the right reason.
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config libfontconfig1-dev python3-dev
+          # mandoc renders the manpages into the docs (reference/man/).
+          sudo apt-get install -y pkg-config libfontconfig1-dev python3-dev mandoc
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -174,9 +175,7 @@ jobs:
         run: cargo build --release --locked --workspace -p datui
 
       - name: Verify release artifacts
-        run: |
-          test -f target/release/datui || (echo "Release binary not found" && exit 1)
-          test -f target/release/datui.1 || (echo "Manpage not found" && exit 1)
+        run: test -f target/release/datui || (echo "Release binary not found" && exit 1)
 
       - name: Cache cargo packaging tools
         id: cache-cargo-tools
@@ -210,9 +209,13 @@ jobs:
           cp LICENSE python/LICENSE
 
       - name: Build Python wheel
+        # With the manpages as data files, installed under the prefix's share/man.
+        # pyproject.toml is put back after: the docs step checks out older tags.
         run: |
           pip install maturin
-          cd python && maturin build --release --out dist
+          python3 scripts/packaging/wheel_manpages.py
+          (cd python && maturin build --release --out dist)
+          git checkout -- python/pyproject.toml
 
       - name: Install Python dependencies
         run: |
@@ -367,9 +370,7 @@ jobs:
         run: cargo build --release --locked --workspace -p datui
 
       - name: Verify release artifacts
-        run: |
-          test -f target/release/datui || (echo "Release binary not found" && exit 1)
-          test -f target/release/datui.1 || (echo "Manpage not found" && exit 1)
+        run: test -f target/release/datui || (echo "Release binary not found" && exit 1)
 
       - name: Cache cargo packaging tools
         id: cache-cargo-tools
@@ -394,27 +395,26 @@ jobs:
         run: python3 scripts/packaging/build_package.py rpm --no-build
 
       - name: Stage and pack tarball
-        # Same members and paths as the cargo-aur tarball the x86_64 job ships,
-        # which install.sh relies on (it reads target/release/datui.1.gz from
-        # inside the archive). Version from Cargo.toml, as cargo-deb and
-        # cargo-generate-rpm name theirs.
+        # Same members and paths as the AUR tarball the x86_64 job ships, which
+        # install.sh relies on: the binary, man/manN/ and completions/ at the root.
+        # build_package.py staged man/ and completions/ in target/dist. Version from
+        # Cargo.toml, as cargo-deb and cargo-generate-rpm name theirs.
         run: |
           set -euo pipefail
           VERSION=$(cargo metadata --no-deps --format-version 1 \
             | jq -r '.packages[] | select(.name == "datui") | .version')
           ARCH=$(uname -m)
           test "$ARCH" = "aarch64" || (echo "Expected an aarch64 runner, got $ARCH" && exit 1)
-          test -f target/release/datui.1.gz || gzip -9 -k -f target/release/datui.1
           STAGING="$RUNNER_TEMP/tarball"
-          mkdir -p "$STAGING/target/release" "$STAGING/scripts/packaging"
+          mkdir -p "$STAGING/scripts/packaging"
           cp target/release/datui "$STAGING/"
           chmod +x "$STAGING/datui"
           cp LICENSE "$STAGING/"
-          cp target/release/datui.1.gz "$STAGING/target/release/"
+          cp -r target/dist/man target/dist/completions "$STAGING/"
           cp scripts/packaging/datui.desktop "$STAGING/scripts/packaging/"
           mkdir -p dist-linux-aarch64
           tar czvf "dist-linux-aarch64/datui-${VERSION}-${ARCH}.tar.gz" -C "$STAGING" \
-            datui LICENSE target/release/datui.1.gz scripts/packaging/datui.desktop
+            datui LICENSE man completions scripts/packaging/datui.desktop
           cp target/debian/*.deb target/generate-rpm/*.rpm dist-linux-aarch64/
           ls -l dist-linux-aarch64
 
@@ -487,6 +487,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $staging
           Copy-Item target/release/datui.exe $staging/
           Copy-Item LICENSE $staging/
+          # completions/ (PowerShell's _datui.ps1 among them) and man/, as every archive has
+          cargo run --locked -q -p datui-cli --bin gen_docs -- dist $staging
           Compress-Archive -Path "$staging/*" -DestinationPath "datui-${version}-windows-x86_64.zip"
 
       - name: Upload Windows artifacts
@@ -548,9 +550,7 @@ jobs:
         run: cargo build --release --locked -p datui --target ${{ matrix.target }}
 
       - name: Verify release artifacts
-        run: |
-          test -f target/${{ matrix.target }}/release/datui || (echo "Release binary not found" && exit 1)
-          test -f target/${{ matrix.target }}/release/datui.1 || (echo "Manpage not found" && exit 1)
+        run: test -f target/${{ matrix.target }}/release/datui || (echo "Release binary not found" && exit 1)
 
       - name: Stage and pack tarball
         env:
@@ -561,8 +561,9 @@ jobs:
           mkdir -p "$STAGING"
           cp LICENSE "$STAGING/"
           cp "target/${TARGET}/release/datui" "$STAGING/"
-          cp "target/${TARGET}/release/datui.1" "$STAGING/"
           chmod +x "$STAGING/datui"
+          # man/manN/ and completions/, from gen_docs built for this host
+          cargo run --locked -q -p datui-cli --bin gen_docs -- dist "$STAGING"
           tar czvf "datui-${VERSION}-${TARGET}.tar.gz" -C "$STAGING" .
 
       - name: Bundle CLI for wheel
@@ -574,6 +575,7 @@ jobs:
 
       - name: Build Python wheel
         run: |
+          python3 scripts/packaging/wheel_manpages.py
           cd python
           maturin build --release --out dist --target ${{ matrix.target }}
 

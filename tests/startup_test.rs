@@ -417,6 +417,59 @@ fn an_unusable_config_ends_the_run_with_its_error() {
     assert!(out.contains("Fix the configuration"), "{out}");
 }
 
+/// Each exit status `datui_cli::exit` documents (and the manpages list), one test
+/// per status. Quitting is 0 (`rows_arrive_on_a_terminal_that_never_answers`), a
+/// missing path 1 (`a_missing_path_ends_the_run_with_its_name`).
+mod exit_status {
+    use super::*;
+    use datui_cli::exit;
+
+    #[test]
+    fn an_unknown_option_is_a_usage_error() {
+        let out = Command::new(env!("CARGO_BIN_EXE_datui"))
+            .arg("--no-such-option")
+            .stdin(Stdio::null())
+            .output()
+            .expect("the binary runs");
+        assert_eq!(out.status.code(), Some(exit::USAGE));
+        let out = Command::new(env!("CARGO_BIN_EXE_datui"))
+            .args(["config", "nope"])
+            .stdin(Stdio::null())
+            .output()
+            .expect("the binary runs");
+        assert_eq!(out.status.code(), Some(exit::USAGE));
+    }
+
+    /// A signal ends the session as a quit does, the terminal handed back, with
+    /// 128 + the signal's number.
+    fn ended_by(signal: libc::c_int, status: i32) {
+        let dirs = Dirs::new();
+        let csv = dirs.csv();
+        let mut session = dirs.spawn(&[&csv]);
+        session.wait_for(b"ROWMARK");
+        let pid = session.child.id() as libc::pid_t;
+        // SAFETY: a plain kill of the child this test started and still holds.
+        assert_eq!(unsafe { libc::kill(pid, signal) }, 0);
+        assert_eq!(session.wait_exit().code(), Some(status));
+        assert_eq!(session.count(POP), 1, "the terminal is handed back");
+    }
+
+    #[test]
+    fn sigint_is_interrupted() {
+        ended_by(libc::SIGINT, exit::INTERRUPTED);
+    }
+
+    #[test]
+    fn sigterm_is_terminated() {
+        ended_by(libc::SIGTERM, exit::TERMINATED);
+    }
+
+    #[test]
+    fn sighup_is_hangup() {
+        ended_by(libc::SIGHUP, exit::HANGUP);
+    }
+}
+
 /// The files in `dir`.
 fn files_in(dir: &Path) -> usize {
     std::fs::read_dir(dir).unwrap().count()

@@ -90,6 +90,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `datui views rm NAME` | Remove one saved view by name |
 | `datui views clear` | Remove every saved view |
 | `datui completions` | Print the shell completion script for SHELL |
+| `datui man` | Show a manual page, list them, or write them all under a directory |
 
 ## Examples
 
@@ -108,3 +109,4 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `datui -c display.row_numbers=true https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv` | Any config key, for this run |
 | `datui config init` | Write the config file, every key commented out at its default |
 | `datui formats` | List the format specs and dictionaries datui finds |
+| `datui man keys` | The keys of every screen, as a manual page |

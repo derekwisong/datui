@@ -199,12 +199,18 @@ def example_blocks() -> list[Block]:
     out = []
     text = (ROOT / "crates/datui-cli/examples.toml").read_text(encoding="utf-8").splitlines()
     for example in data["example"]:
-        line = next((n + 1 for n, l in enumerate(text) if l.startswith("command") and example["command"] in l.encode().decode("unicode_escape")), 1)
+        line = next((n + 1 for n, l in enumerate(text) if l.startswith("command") and tomllib.loads(l)["command"] == example["command"]), 1)
         attrs = set()
         if example["test"] in ("network", "interactive"):
             attrs.add(example["test"])
         values = {"expect": example["expect"]} if "expect" in example else {}
-        out.append(Block(ROOT / "crates/datui-cli/examples.toml", line, "bash", attrs, values, example["command"] + "\n", example["description"]))
+        where = ROOT / "crates/datui-cli/examples.toml"
+        # Its files, written into its directory before it runs, as a page's file blocks are.
+        files = [
+            Block(where, line, Path(f["name"]).suffix.lstrip(".") or "text", set(), {"file": f["name"]}, f["text"])
+            for f in example.get("files", [])
+        ]
+        out.append(Block(where, line, "bash", attrs, values, example["command"] + "\n", example["description"], files))
     return out
 
 
@@ -213,7 +219,7 @@ def known_flags() -> set[str]:
     page = (ROOT / "docs/reference/command-line-options.md").read_text(encoding="utf-8")
     flags = set(re.findall(r"`(?:-\w, )?(--[a-z][a-z0-9-]*)", page))
     flags |= set(re.findall(r"`(-[a-zA-Z])\b", page))
-    flags |= {"--help", "-h", "--version", "-V", "--force", "--recents"}
+    flags |= {"--help", "-h", "--version", "-V", "--force", "--recents", "--list", "--dir"}
     return flags
 
 
@@ -304,6 +310,11 @@ def environment(work: Path, real: str | None) -> dict[str, str]:
         env["PATH"] = f"{shim_dir}{os.pathsep}{env['PATH']}"
     env["DATUI_CONFIG_DIR"] = str(work / ".config")
     env["DATUI_CACHE_DIR"] = str(work / ".cache")
+    # A block that installs for the user (`~/.local/share/man`, a completion script)
+    # installs into its own directory, not the home of whoever runs this.
+    env["HOME"] = str(work)
+    for xdg in ("XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME"):
+        env.pop(xdg, None)
     env.pop("DATUI_FORMATS_PATH", None)
     env.pop("DATUI_DOC_EXPECT", None)
     return env

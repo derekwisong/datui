@@ -9,6 +9,8 @@ Updated files:
   - crates/datui-pyo3/Cargo.toml
   - python/pyproject.toml
   - README.md (version badge; release only)
+  - crates/datui-cli/release-date.txt and the manpages in crates/datui-cli/man
+    (their title line carries the version and this date)
 
 With -dev suffix workflow:
   1. During development: version is "X.Y.Z-dev"
@@ -70,6 +72,8 @@ Examples:
 """
 
 import argparse
+import datetime
+import os
 import re
 import subprocess
 import sys
@@ -296,6 +300,30 @@ def get_current_version(cargo_toml_path: Path) -> str:
     return match.group(1)
 
 
+def update_manpages(project_root: Path) -> None:
+    """Date the manpages today (or at SOURCE_DATE_EPOCH) and render them again."""
+    date_file = project_root / "crates" / "datui-cli" / "release-date.txt"
+    if not date_file.exists():
+        return
+    epoch = os.environ.get("SOURCE_DATE_EPOCH")
+    when = (
+        datetime.datetime.fromtimestamp(int(epoch), datetime.timezone.utc)
+        if epoch
+        else datetime.datetime.now(datetime.timezone.utc)
+    )
+    date_file.write_text(when.strftime("%Y-%m-%d") + "\n")
+    try:
+        subprocess.run(
+            ["cargo", "run", "--quiet", "-p", "datui-cli", "--bin", "gen_docs", "--", "write"],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+        )
+        print(f"Manpages dated {when:%Y-%m-%d} and rendered for the new version")
+    except subprocess.CalledProcessError as e:
+        print(f"Warning: gen_docs write failed; run it before committing: {e}", file=sys.stderr)
+
+
 def commit_version_changes(project_root: Path, version: str, script_name: str, is_release: bool) -> None:
     """Commit version changes to git."""
     try:
@@ -311,6 +339,8 @@ def commit_version_changes(project_root: Path, version: str, script_name: str, i
                 files_to_add.append(notes_rel)
         if (project_root / "crates" / "datui-cli" / "Cargo.toml").exists():
             files_to_add.append("crates/datui-cli/Cargo.toml")
+        if (project_root / "crates" / "datui-cli" / "release-date.txt").exists():
+            files_to_add += ["crates/datui-cli/release-date.txt", "crates/datui-cli/man"]
         if (project_root / "crates" / "datui-lib" / "Cargo.toml").exists():
             files_to_add.append("crates/datui-lib/Cargo.toml")
         if (project_root / "crates" / "datui-pyo3" / "Cargo.toml").exists():
@@ -820,6 +850,11 @@ Start next dev cycle:
                     f"Warning: Failed to refresh the lockfile for {manifest}: {e}",
                     file=sys.stderr,
                 )
+
+        # The manpages carry the version and the date in their title line. The date
+        # is the release's, not the build's, so a page is the same wherever it is
+        # built; SOURCE_DATE_EPOCH, when set, picks it.
+        update_manpages(project_root)
 
         # Handle git operations if requested
         if args.commit:

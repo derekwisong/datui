@@ -62,6 +62,51 @@ def run(cmd: list[str], cwd: Path | None = None, env: dict | None = None) -> sub
     return subprocess.run(cmd, cwd=cwd, env=env or os.environ.copy(), capture_output=True, text=True)
 
 
+# The manpages' HTML, beside docs/reference/manual-pages.md, which links them.
+MAN_CSS = """body { max-width: 52em; margin: 2em auto; padding: 0 1em;
+  font-family: system-ui, sans-serif; line-height: 1.45; color: #222; background: #fff; }
+@media (prefers-color-scheme: dark) { body { color: #ddd; background: #1d1f21; } a { color: #8ab4f8; } }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+table.head, table.foot { width: 100%; opacity: 0.7; }
+td.head-rtitle, td.foot-os { text-align: right; }
+td.head-vol { text-align: center; }
+h1.Sh { font-size: 1.1em; margin-top: 1.6em; }
+h2.Ss { font-size: 1em; }
+dt { font-weight: normal; margin-top: 0.6em; }
+dd { margin-left: 2.5em; }
+"""
+
+
+def render_manpages(build_dir: Path, output_path: Path) -> None:
+    """crates/datui-cli/man/* as HTML in reference/man/, with mandoc (or groff).
+
+    The same roff `man` shows, so the web page and the terminal agree. A build of a
+    version from before the pages, or with neither tool, skips them with a warning.
+    """
+    pages = sorted((build_dir / "crates" / "datui-cli" / "man").glob("*.[0-9]"))
+    if not pages:
+        return
+    mandoc = shutil.which("mandoc")
+    groff = shutil.which("groff")
+    if not mandoc and not groff:
+        print("  Warning: neither mandoc nor groff found; manual pages not rendered")
+        return
+    dest = output_path / "reference" / "man"
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "man.css").write_text(MAN_CSS, encoding="utf-8")
+    for page in pages:
+        if mandoc:
+            cmd = [mandoc, "-T", "html", "-O", "style=man.css", str(page)]
+        else:
+            cmd = [groff, "-man", "-Thtml", "-P", "-l", str(page)]
+        proc = run(cmd)
+        if proc.returncode != 0:
+            print(f"  Warning: {page.name} not rendered: {proc.stderr.strip()}")
+            continue
+        (dest / f"{page.name}.html").write_text(proc.stdout, encoding="utf-8")
+    print(f"Rendered {len(pages)} manual pages with {'mandoc' if mandoc else 'groff'}")
+
+
 def get_current_branch(cwd: Path | None = None) -> str:
     """Return current branch name, or 'main' if detached / not a repo."""
     try:
@@ -175,6 +220,8 @@ def main() -> int:
             print(f"Error: mdbook build failed for {version_name}", file=sys.stderr)
             return 1
         print(f"Built docs for {version_name}")
+
+    render_manpages(build_dir, output_path)
 
     # Copy demos into this version's output
     demos_src = build_dir / "demos"

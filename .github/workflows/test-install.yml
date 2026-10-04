@@ -34,7 +34,7 @@ jobs:
       - name: Remove one-line install for Homebrew test
         run: |
           sudo rm -f /usr/local/bin/datui
-          sudo rm -f /usr/local/share/man/man1/datui.1*
+          sudo rm -f /usr/local/share/man/man*/datui*
 
       - name: Homebrew tap install
         run: |
@@ -56,6 +56,13 @@ jobs:
 
       - name: Verify install
         run: datui --version
+
+      # From 0.4.0 the archive and the deb carry every page (#705).
+      - name: Verify manpages
+        run: |
+          man -w datui
+          man -w 5 datui-config
+          man -w datui-keys
 
   install-fedora-oneline:
     name: RPM-based Linux

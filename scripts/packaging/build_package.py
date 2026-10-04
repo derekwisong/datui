@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import gzip
 import hashlib
 import re
 import shutil
@@ -57,20 +58,59 @@ def run(cmd: list[str], cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
 
 
-def ensure_gzipped_manpage(repo_root: Path) -> bool:
-    """Ensure target/release/datui.1.gz exists. Create from .1 if needed. Return True on success."""
-    man = repo_root / "target" / "release" / "datui.1"
-    gz = repo_root / "target" / "release" / "datui.1.gz"
-    if gz.exists():
-        return True
-    if not man.exists():
-        return False
-    proc = run(["gzip", "-9", "-k", "-f", str(man)], cwd=repo_root)
+def stage_dist(repo_root: Path) -> bool:
+    """Stage the manpages and completions in target/dist for the packages.
+
+    `gen_docs dist` writes target/dist/man/manN/PAGE.N (as committed in
+    crates/datui-cli/man) and target/dist/completions/. The deb and rpm take the
+    gzipped copies in target/dist/gz/manN/, compressed with no timestamp so the
+    package is reproducible; the AUR tarball takes man/ and completions/ as they are
+    (makepkg compresses manpages itself). Returns True on success.
+    """
+    dist = repo_root / "target" / "dist"
+    if dist.exists():
+        shutil.rmtree(dist)
+    proc = run(
+        ["cargo", "run", "--locked", "-q", "-p", "datui-cli", "--bin", "gen_docs", "--", "dist", str(dist)],
+        cwd=repo_root,
+    )
     if proc.returncode != 0:
-        if proc.stderr:
-            sys.stderr.write(proc.stderr)
+        sys.stderr.write(proc.stderr)
         return False
-    return (repo_root / "target" / "release" / "datui.1.gz").exists()
+    for page in sorted((dist / "man").glob("man*/*")):
+        gz = dist / "gz" / page.parent.name / (page.name + ".gz")
+        gz.parent.mkdir(parents=True, exist_ok=True)
+        with page.open("rb") as src, gzip.GzipFile(gz, "wb", compresslevel=9, mtime=0) as out:
+            shutil.copyfileobj(src, out)
+    return any((dist / "gz").glob("man1/*.gz"))
+
+
+# Where the AUR package installs what stage_dist wrote, from the tarball's root.
+AUR_INSTALLS = [
+    'install -Dm644 man/man1/*.1 -t "$pkgdir/usr/share/man/man1"',
+    'install -Dm644 man/man5/*.5 -t "$pkgdir/usr/share/man/man5"',
+    'install -Dm644 man/man7/*.7 -t "$pkgdir/usr/share/man/man7"',
+    'install -Dm644 completions/datui.bash "$pkgdir/usr/share/bash-completion/completions/datui"',
+    'install -Dm644 completions/_datui "$pkgdir/usr/share/zsh/site-functions/_datui"',
+    'install -Dm644 completions/datui.fish "$pkgdir/usr/share/fish/vendor_completions.d/datui.fish"',
+]
+
+
+def add_pkgbuild_installs(pkgbuild: Path) -> bool:
+    """Add the manpage and completion installs to the PKGBUILD's package()."""
+    lines = pkgbuild.read_text().splitlines()
+    try:
+        start = next(i for i, l in enumerate(lines) if l.strip().startswith("package()"))
+        end = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == "}")
+    except StopIteration:
+        return False
+    if any("share/man/man1" in l for l in lines[start:end]):
+        return True
+    indent = "    "
+    lines[end:end] = [indent + l for l in AUR_INSTALLS]
+    pkgbuild.write_text("\n".join(lines) + "\n")
+    print("Added manpage and completion installs to PKGBUILD")
+    return True
 
 
 def rpm_version_override(repo_root: Path) -> str | None:
@@ -179,33 +219,32 @@ def save_release_binary(repo_root: Path) -> Path | None:
     return backup
 
 
-def restore_unstripped_binary(repo_root: Path, backup: Path) -> bool:
-    """Undo cargo-aur's strip: restore the binary and repack the AUR tarball.
+def repack_aur_tarball(repo_root: Path, backup: Path | None) -> bool:
+    """Finish the AUR tarball: undo cargo-aur's strip, and add man/ and completions/.
 
-    Puts the unstripped binary back at target/release/datui (for later steps), swaps it
-    into the generated tarball, and refreshes the PKGBUILD sha256sum so it still matches
-    the tarball that gets uploaded to the release. Returns True on success.
+    With `backup`, puts the unstripped binary back at target/release/datui (for later
+    steps, such as the wheel) and in the tarball. Adds target/dist's man/ and
+    completions/ at the tarball's root, as the macOS and arm64 tarballs have them, then
+    refreshes the PKGBUILD's sha256sum to match. Returns True on success.
     """
-    if not backup.exists():
-        return False
-
     aur_dir = repo_root / "target" / "cargo-aur"
     binary = repo_root / "target" / "release" / "datui"
+    dist = repo_root / "target" / "dist"
 
-    # 1. Restore the shared build output for downstream steps (wheel bundling).
-    shutil.copy2(backup, binary)
+    if backup is not None and backup.exists():
+        # 1. Restore the shared build output for downstream steps (wheel bundling).
+        shutil.copy2(backup, binary)
 
     tarballs = list(aur_dir.glob("*.tar.gz"))
     if len(tarballs) != 1:
-        sys.stderr.write(
-            f"warning: expected exactly 1 AUR tarball, found {len(tarballs)}; "
-            "leaving it stripped\n"
-        )
-        backup.unlink(missing_ok=True)
+        sys.stderr.write(f"warning: expected exactly 1 AUR tarball, found {len(tarballs)}\n")
+        if backup is not None:
+            backup.unlink(missing_ok=True)
         return False
     tarball = tarballs[0]
 
-    # 2. Repack the tarball with the unstripped binary, preserving entry order/modes.
+    # 2. Repack: the unstripped binary, then man/ and completions/, entry order and
+    # modes kept.
     with tempfile.TemporaryDirectory() as tmp:
         staging = Path(tmp) / "staging"
         with tarfile.open(tarball, "r:gz") as tar:
@@ -213,22 +252,32 @@ def restore_unstripped_binary(repo_root: Path, backup: Path) -> bool:
             tar.extractall(staging)
 
         staged_binary = staging / "datui"
-        if not staged_binary.exists():
-            sys.stderr.write("warning: no 'datui' entry in AUR tarball; leaving it stripped\n")
-            backup.unlink(missing_ok=True)
-            return False
+        if backup is not None and backup.exists():
+            if not staged_binary.exists():
+                sys.stderr.write("warning: no 'datui' entry in AUR tarball; leaving it stripped\n")
+            else:
+                mode = staged_binary.stat().st_mode
+                shutil.copy2(backup, staged_binary)
+                staged_binary.chmod(mode)
 
-        mode = staged_binary.stat().st_mode
-        shutil.copy2(backup, staged_binary)
-        staged_binary.chmod(mode)
+        for tree in ("man", "completions"):
+            if (dist / tree).is_dir() and tree not in members:
+                shutil.copytree(dist / tree, staging / tree)
+                members.append(tree)
 
         with tarfile.open(tarball, "w:gz") as tar:
             for name in members:
-                tar.add(staging / name, arcname=name, recursive=False)
+                tar.add(staging / name, arcname=name, recursive=name in ("man", "completions"))
 
-    # 3. Refresh the checksum in the PKGBUILD so it matches the repacked tarball.
+    if backup is not None:
+        backup.unlink(missing_ok=True)
+
+    # 3. Install them, and refresh the checksum to match the repacked tarball.
     pkgbuild = aur_dir / "PKGBUILD"
     if pkgbuild.exists():
+        if not add_pkgbuild_installs(pkgbuild):
+            sys.stderr.write("warning: no package() in PKGBUILD to add the manpages to\n")
+            return False
         digest = hashlib.sha256(tarball.read_bytes()).hexdigest()
         content = pkgbuild.read_text()
         updated = re.sub(
@@ -239,12 +288,9 @@ def restore_unstripped_binary(repo_root: Path, backup: Path) -> bool:
         )
         if updated == content:
             sys.stderr.write("warning: could not update sha256sums in PKGBUILD\n")
-            backup.unlink(missing_ok=True)
             return False
         pkgbuild.write_text(updated)
-        print(f"Repacked AUR tarball unstripped; sha256 now {digest[:16]}...")
-
-    backup.unlink(missing_ok=True)
+        print(f"Repacked AUR tarball with man/ and completions/; sha256 now {digest[:16]}...")
     return True
 
 
@@ -278,7 +324,7 @@ def main() -> int:
     subcmd, check_cmd, out_spec, label = PKG_CONFIG[args.pkg]
     out_dir_or_aur = out_spec
 
-    # 1. Build release (and manpage) unless --no-build. Build datui so binary and manpage exist.
+    # 1. Build release unless --no-build.
     if not args.no_build:
         proc = run(
             ["cargo", "build", "--release", "--locked", "--workspace", "-p", "datui"],
@@ -289,17 +335,10 @@ def main() -> int:
                 sys.stderr.write(proc.stderr)
             sys.stderr.write("error: cargo build --release failed\n")
             return 1
-        man = repo_root / "target" / "release" / "datui.1"
-        if not man.exists():
-            sys.stderr.write("error: manpage target/release/datui.1 not found after build\n")
-            return 1
 
-    # 2. Ensure gzipped manpage exists
-    if not ensure_gzipped_manpage(repo_root):
-        sys.stderr.write(
-            "error: target/release/datui.1.gz missing; "
-            "ensure target/release/datui.1 exists and gzip is available\n"
-        )
+    # 2. Stage the manpages and completions
+    if not stage_dist(repo_root):
+        sys.stderr.write("error: could not stage the manpages and completions in target/dist\n")
         return 1
 
     # 3. Check packaging tool is installed
@@ -341,8 +380,9 @@ def main() -> int:
             sys.stderr.write("warning: failed to fix PKGBUILD for Arch compatibility\n")
         if not add_pkgbuild_options(repo_root):
             sys.stderr.write("warning: failed to add options=(!strip !debug) to PKGBUILD\n")
-        if saved_binary is not None and not restore_unstripped_binary(repo_root, saved_binary):
-            sys.stderr.write("warning: AUR tarball left stripped by cargo-aur\n")
+        if not repack_aur_tarball(repo_root, saved_binary):
+            sys.stderr.write("error: could not finish the AUR tarball\n")
+            return 1
 
     # 6. Verify outputs and print paths
     if out_dir_or_aur == "aur":

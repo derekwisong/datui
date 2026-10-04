@@ -20,6 +20,7 @@ notes
 python/dist/
 python/datui_bin/
 python/LICENSE
+python/datui.data/
 # Maturin-built extension and generated stubs (maturin develop/build output)
 python/datui/*.so
 python/datui/*.pyd

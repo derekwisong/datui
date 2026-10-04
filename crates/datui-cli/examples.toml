@@ -1,4 +1,4 @@
-# The examples `datui --help`, the manpage, the command-line reference and the
+# The examples `datui --help`, the manpages, the command-line reference and the
 # README show, in order. Each runs exactly as written, on a fresh install.
 #
 # command      What to type.
@@ -12,6 +12,12 @@
 #              table shows rows; the default when it opens something), `screen`
 #              (a screen that stays up, such as the home screen), `exit` (a command
 #              that prints and exits 0; the default for subcommands)
+# pages        The manpages whose EXAMPLES show it, as NAME.SECTION (default
+#              ["datui.1"]); `datui --help` shows those of datui.1, and
+#              `datui COMMAND --help` those of datui-COMMAND.1
+# files        Files the command reads, written into its directory first and shown
+#              above it: [{ name = "config.toml", text = """...""" }]. Never
+#              create a file in the command itself
 
 [[example]]
 command = "datui"
@@ -74,8 +80,108 @@ test = "network"
 command = "datui config init"
 description = "Write the config file, every key commented out at its default"
 test = "run"
+pages = ["datui.1", "datui-config.1", "datui-config.5"]
 
 [[example]]
 command = "datui formats"
 description = "List the format specs and dictionaries datui finds"
 test = "run"
+pages = ["datui.1", "datui-formats.1"]
+
+[[example]]
+command = "datui man keys"
+description = "The keys of every screen, as a manual page"
+test = "run"
+pages = ["datui.1", "datui-man.1", "datui-keys.7"]
+
+[[example]]
+command = "datui config path"
+description = "The config files read, lowest precedence first"
+test = "run"
+pages = ["datui-config.1", "datui-config.5"]
+
+[[example]]
+command = "datui config keys -c display.row_numbers=true"
+description = "Every key: its type, default, the value in effect and what set it, here -c"
+test = "run"
+pages = ["datui-config.1"]
+
+[[example]]
+command = "DATUI_CONFIG_DIR=. datui config keys"
+files = [
+  { name = "config.toml", text = """
+[display]
+row_numbers = true
+""" },
+]
+description = "The values a config file in the current directory sets"
+test = "run"
+pages = ["datui-config.5"]
+
+[[example]]
+command = "datui cache clear --recents"
+description = "Forget the recent datasets and keep the rest of the cache"
+test = "run"
+pages = ["datui-cache.1"]
+
+[[example]]
+command = "datui cache clear"
+description = "Clear the whole cache: recents, prompt history, schemas and copies"
+test = "run"
+pages = ["datui-cache.1"]
+
+[[example]]
+command = "datui views list"
+description = "The saved views: name, the files each matches, when last used"
+test = "run"
+pages = ["datui-views.1"]
+
+[[example]]
+command = "python3 make_pairs.py && datui formats check ./pairs.toml t.pairs"
+files = [
+  { name = "pairs.toml", text = """
+name = "demo.pairs"
+match = { glob = ["*.pairs"] }
+
+[records]
+fields = [{ name = "a", type = "u1" }, { name = "b", type = "u1" }]
+""" },
+  { name = "make_pairs.py", text = """
+# Two records of two one-byte fields: (1, 2) and (3, 4).
+with open("t.pairs", "wb") as f:
+    f.write(bytes([1, 2, 3, 4]))
+""" },
+]
+description = "Check a format spec of two one-byte fields against a file of two records, and print the rows it reads"
+test = "run"
+pages = ["datui-formats.1"]
+
+[[example]]
+command = "mkdir -p ~/.local/share/bash-completion/completions && datui completions bash > ~/.local/share/bash-completion/completions/datui"
+description = "Bash completion for your user; new shells load it through bash-completion"
+test = "run"
+pages = ["datui-completions.1"]
+
+[[example]]
+command = "mkdir -p ~/.config/fish/completions && datui completions fish > ~/.config/fish/completions/datui.fish"
+description = "fish completion for your user"
+test = "run"
+pages = ["datui-completions.1"]
+
+[[example]]
+command = "mkdir -p ~/.zfunc && datui completions zsh > ~/.zfunc/_datui"
+description = "zsh completion; add fpath+=~/.zfunc before compinit in ~/.zshrc"
+test = "run"
+pages = ["datui-completions.1"]
+
+[[example]]
+command = "datui man --list"
+description = "The manual pages and what each covers"
+test = "run"
+pages = ["datui-man.1"]
+
+[[example]]
+command = "datui man --dir ~/.local/share/man"
+description = "Write every page where man finds them for your user, as after cargo install"
+test = "run"
+pages = ["datui-man.1"]

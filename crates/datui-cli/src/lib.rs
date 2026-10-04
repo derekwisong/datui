@@ -1,15 +1,17 @@
 //! Shared CLI definitions for datui.
 //!
-//! Used by the main application and by the build script (manpage) and
-//! gen_docs binary (command-line-options markdown).
+//! Used by the main application and by the gen_docs binary, which writes the
+//! generated docs and the manpages from these definitions.
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use std::path::Path;
 
 pub mod docgen;
+pub mod exit;
 mod formats;
 pub use formats::*;
 pub mod keys;
+pub mod man;
 pub mod settings;
 pub mod units;
 
@@ -94,6 +96,17 @@ pub struct Example {
     pub test: ExampleTest,
     /// What counts as working, when not the default: `rows`, `screen` or `exit`.
     pub expect: Option<String>,
+    /// The manpages that show it, as `NAME.SECTION`: `datui.1`, `datui-config.5`.
+    pub pages: Vec<String>,
+    /// Files the command reads, written before it runs and shown above it.
+    pub files: Vec<ExampleFile>,
+}
+
+/// A file an [`Example`] reads: its name and its text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExampleFile {
+    pub name: String,
+    pub text: String,
 }
 
 /// The entries of [`EXAMPLES_TOML`], in order. Panics on a malformed entry, which
@@ -110,7 +123,10 @@ pub fn examples() -> Vec<Example> {
             let table = entry.as_table().expect("an [[example]] is a table");
             for key in table.keys() {
                 assert!(
-                    matches!(key.as_str(), "command" | "description" | "test" | "expect"),
+                    matches!(
+                        key.as_str(),
+                        "command" | "description" | "test" | "expect" | "pages" | "files"
+                    ),
                     "examples.toml: unknown key {key}"
                 );
             }
@@ -131,21 +147,82 @@ pub fn examples() -> Vec<Example> {
                 description: text("description").expect("an example's description"),
                 test,
                 expect: text("expect"),
+                pages: match table.get("pages") {
+                    None => vec!["datui.1".to_string()],
+                    Some(pages) => pages
+                        .as_array()
+                        .expect("an example's pages are a list")
+                        .iter()
+                        .map(|p| p.as_str().expect("a page is NAME.SECTION").to_string())
+                        .collect(),
+                },
+                files: table
+                    .get("files")
+                    .and_then(toml::Value::as_array)
+                    .map(|files| {
+                        files
+                            .iter()
+                            .map(|f| {
+                                let text = |key: &str| {
+                                    f.get(key)
+                                        .and_then(toml::Value::as_str)
+                                        .unwrap_or_else(|| panic!("an example's file has a {key}"))
+                                        .to_string()
+                                };
+                                ExampleFile {
+                                    name: text("name"),
+                                    text: text("text"),
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             }
         })
+        .collect()
+}
+
+/// The examples of manpage `page` (`datui.1`), in order.
+pub fn examples_of(page: &str) -> Vec<Example> {
+    examples()
+        .into_iter()
+        .filter(|e| e.pages.iter().any(|p| p == page))
         .collect()
 }
 
 /// The examples as `--help` shows them, after the options.
 pub fn examples_help() -> String {
     let mut out = String::from("Examples:\n");
-    for example in examples() {
+    for example in examples_of("datui.1") {
         out.push_str(&format!(
             "  {}\n      {}\n",
             example.command, example.description
         ));
     }
-    out.push_str("\nDocs: https://derekwisong.github.io/datui/\n");
+    out.push_str("\nDocs: https://derekwisong.github.io/datui/ and `datui man`\n");
+    out
+}
+
+/// A command's examples, as `datui COMMAND --help` shows them.
+fn command_examples(command: &str) -> String {
+    let mut out = String::from("Examples:\n");
+    for example in examples_of(&format!("datui-{command}.1")) {
+        out.push_str(&format!(
+            "  {}\n      {}\n",
+            example.command, example.description
+        ));
+    }
+    let files: Vec<String> = examples_of(&format!("datui-{command}.1"))
+        .into_iter()
+        .flat_map(|e| e.files.into_iter().map(|f| f.name))
+        .collect();
+    if !files.is_empty() {
+        out.push_str(&format!(
+            "\nThe files they read ({}) are in the manual.",
+            files.join(", ")
+        ));
+    }
+    out.push_str(&format!("\nManual: datui man {command}\n"));
     out
 }
 
@@ -477,29 +554,47 @@ fn parse_format(text: &str) -> Result<FormatChoice, String> {
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
     /// List the format specs and dictionaries (FIX, DBC) on the search path: each one's name, what it matches, its file, and the copies it overrides
+    #[command(after_help = command_examples("formats"))]
     Formats {
         #[command(subcommand)]
         action: Option<FormatsAction>,
     },
     /// Write the default config file, list the files read, or list every key
+    #[command(after_help = command_examples("config"))]
     Config {
         #[command(subcommand)]
         action: ConfigAction,
     },
     /// Clear the cache: recents, history, schemas and copies
+    #[command(after_help = command_examples("cache"))]
     Cache {
         #[command(subcommand)]
         action: CacheAction,
     },
     /// List or remove saved views
+    #[command(after_help = command_examples("views"))]
     Views {
         #[command(subcommand)]
         action: ViewsAction,
     },
     /// Print the shell completion script for SHELL
+    #[command(after_help = command_examples("completions"))]
     Completions {
         #[arg(value_name = "SHELL")]
         shell: clap_complete::Shell,
+    },
+    /// Show a manual page, list them, or write them all under a directory
+    #[command(after_help = command_examples("man"))]
+    Man {
+        /// The page: datui (the default), a command (config, cache, views, formats, completions, man), config.5, keys, query or formats.7
+        #[arg(value_name = "PAGE")]
+        page: Option<String>,
+        /// List the pages and what each covers
+        #[arg(long, conflicts_with_all = ["page", "dir"])]
+        list: bool,
+        /// Write every page under DIR, in man1, man5 and man7, where man looks for them: ~/.local/share/man
+        #[arg(long, value_name = "DIR", conflicts_with = "page")]
+        dir: Option<std::path::PathBuf>,
     },
 }
 
@@ -517,6 +612,16 @@ pub enum ConfigAction {
     /// List every key: its type, default, the value in effect and what set it
     Keys,
 }
+
+/// Each shell's completion script and the file name its shell loads it by: what a
+/// package or the release archive installs.
+pub const COMPLETION_FILES: &[(clap_complete::Shell, &str)] = &[
+    (clap_complete::Shell::Bash, "datui.bash"),
+    (clap_complete::Shell::Zsh, "_datui"),
+    (clap_complete::Shell::Fish, "datui.fish"),
+    (clap_complete::Shell::PowerShell, "_datui.ps1"),
+    (clap_complete::Shell::Elvish, "datui.elv"),
+];
 
 /// The completion script for `shell`, built from `Args`, for `datui completions`.
 pub fn completions(shell: clap_complete::Shell) -> String {
@@ -718,7 +823,7 @@ pub fn render_options_markdown() -> String {
     }
 
     out.push_str("\n## Examples\n\n| Command | Does |\n|---|---|\n");
-    for example in examples() {
+    for example in examples_of("datui.1") {
         out.push_str(&format!(
             "| `{}` | {} |\n",
             escape_table_cell(&example.command),
@@ -748,20 +853,29 @@ mod tests {
                 ),
                 "{example:?}"
             );
-            // The datui command in it: a pipe into datui is a command too.
-            let command = example
-                .command
-                .rsplit_once("| ")
-                .map_or(example.command.as_str(), |(_, c)| c);
-            let words = shell_words(command);
-            assert_eq!(
-                words.first().map(String::as_str),
-                Some("datui"),
-                "{example:?}"
-            );
-            if let Err(e) = Args::try_parse_from(&words) {
-                panic!("{}: {e}", example.command);
+            // Every datui command in it: after a pipe or `&&`, behind `VAR=value`,
+            // up to a redirection.
+            let mut any = false;
+            for part in example.command.split("&&").flat_map(|p| p.split(" | ")) {
+                let mut words = shell_words(part);
+                while words
+                    .first()
+                    .is_some_and(|w| w.contains('=') && !w.starts_with('-'))
+                {
+                    words.remove(0);
+                }
+                if let Some(at) = words.iter().position(|w| w == ">") {
+                    words.truncate(at);
+                }
+                if words.first().map(String::as_str) != Some("datui") {
+                    continue;
+                }
+                any = true;
+                if let Err(e) = Args::try_parse_from(&words) {
+                    panic!("{}: {e}", example.command);
+                }
             }
+            assert!(any, "no datui command: {example:?}");
         }
         assert!(examples_help().contains("| datui"), "the help shows a pipe");
     }

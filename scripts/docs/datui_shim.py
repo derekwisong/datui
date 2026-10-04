@@ -39,7 +39,7 @@ import tempfile
 import termios
 import time
 
-SUBCOMMANDS = {"formats", "config", "cache", "views", "completions", "help"}
+SUBCOMMANDS = {"formats", "config", "cache", "views", "completions", "man", "help"}
 CTRL_Q = b"\x11"
 
 

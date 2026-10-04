@@ -96,10 +96,29 @@ cargo build --release --locked --no-default-features --features sql,streaming
 
 Public datasets lists only what the build can open.
 
+## Manual pages
+
+The `.deb`, `.rpm`, AUR package, Homebrew formula and release archives install
+the [manual pages](../reference/manual-pages.md): `man datui`, `man
+datui-config`, `man 5 datui-config`, `man datui-keys`. `pip install datui` puts
+them in the environment's `share/man`, which `man` searches while its `bin` is
+on your `PATH`.
+
+After `cargo install` or a build from source, `datui man` shows them, and this
+installs them where `man` finds them for your user:
+
+```bash
+datui man --dir ~/.local/share/man
+```
+
+`datui man --list` lists the pages.
+
 ## Shell completions
 
-`datui completions SHELL` prints the completion script for the flags, commands
-and format names. Set it up once per shell:
+The packages, Homebrew and the release archives (`completions/`) install the
+completion scripts for bash, zsh and fish. Otherwise `datui completions SHELL`
+prints the script for the flags, commands and format names. Set it up once per
+shell:
 
 | Shell | Setup |
 |---|---|

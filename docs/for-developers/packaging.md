@@ -9,9 +9,9 @@ python3 scripts/packaging/build_package.py rpm
 python3 scripts/packaging/build_package.py aur
 ```
 
-It runs `cargo build --release`, gzips the manpage the build writes
-(`target/release/datui.1`), runs the packaging tool and prints where the
-package went. Install the tools as needed:
+It runs `cargo build --release`, stages the manpages and shell completions in
+`target/dist` (below), runs the packaging tool and prints where the package
+went. Install the tools as needed:
 
 ```bash,repo
 cargo install cargo-deb
@@ -23,6 +23,39 @@ cargo install cargo-aur
 |---|---|
 | `--no-build` | Skip `cargo build --release`; the release artifacts must exist |
 | `--repo-root PATH` | The repository root, when not the one `git` finds |
+
+## Manpages and completions
+
+The manpages are rendered from the sources the docs are (clap's definitions, the
+option and environment registries, the format descriptors, the help strings,
+`examples.toml`, the query and format-spec references) by `gen_docs write`, and
+committed in `crates/datui-cli/man/`. Committed, they need no build step: a
+crates.io build cannot read the help strings or the docs, and every channel ships
+the same files. `the_generated_docs_are_current` fails while one is stale;
+`crates/datui-cli/src/man/tests.rs` checks their sections and that every flag,
+command, key, setting, variable and exit status appears; CI's
+`scripts/docs/lint_manpages.py --require` runs mandoc and groff over them. Their
+date is `crates/datui-cli/release-date.txt`, which `bump_version.py` sets.
+
+`cargo run -p datui-cli --bin gen_docs -- dist DIR` stages them for a package:
+`DIR/man/manN/` and `DIR/completions/` (`datui.bash`, `_datui`, `datui.fish`,
+`_datui.ps1`, `datui.elv`).
+
+| Channel | Manpages | Completions | Staged by |
+|---|---|---|---|
+| deb | `/usr/share/man/man{1,5,7}`, gzipped | bash, zsh (`vendor-completions`), fish | `build_package.py` (`target/dist`) |
+| rpm | `/usr/share/man/man{1,5,7}`, gzipped | bash, zsh (`site-functions`), fish | `build_package.py` |
+| AUR | `/usr/share/man/man{1,5,7}` (makepkg gzips them) | bash, zsh, fish | `build_package.py` adds `man/` and `completions/` to the tarball and their `install` lines to the PKGBUILD |
+| Linux and macOS archives | `man/manN/` | `completions/` | `release.yml`; `install.sh` installs the pages |
+| Windows zip | `man/manN/` | `completions/` (`_datui.ps1`) | `release.yml` |
+| Homebrew | `man1`, `man5`, `man7` | bash, zsh, fish | the formula, from the macOS archive |
+| PyPI wheel | `<prefix>/share/man/manN/` | none | `scripts/packaging/wheel_manpages.py` (Linux and macOS wheels) |
+| `cargo install` | `datui man`, or `datui man --dir ~/.local/share/man` | `datui completions SHELL` | the binary |
+| winget | none: Windows has no `man` | none | |
+
+The docs build (`build_single_version_docs.py`) renders the same pages to HTML
+with mandoc (groff when mandoc is missing) into `reference/man/`, linked from
+[Manual pages](../reference/manual-pages.md).
 
 ## License and metadata
 

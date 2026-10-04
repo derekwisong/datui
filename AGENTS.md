@@ -81,7 +81,7 @@ on a sleep or a quiet channel.
 |---|---|
 | `Cargo.toml` (root) | The `datui` binary. `src/main.rs` parses args and runs `datui_lib::run` |
 | `crates/datui-lib/src/` | Everything else. `lib.rs` holds `App`, the event loop and key handling; `render/` draws each screen; `widgets/` are the Ratatui widgets; `*_modal.rs` hold modal state |
-| `crates/datui-cli/` | Clap `Args` shared by the binary, `build.rs` (manpage) and `gen_docs` (command-line reference) |
+| `crates/datui-cli/` | Clap `Args` shared by the binary and `gen_docs`, which writes the generated docs and the manpages (`man/`, committed) |
 | `crates/datui-pyo3/`, `python/` | Python bindings and wheel. Not a workspace member; see `docs/for-developers/python-bindings.md` |
 | `fuzz/` | cargo-fuzz targets, own workspace; `docs/for-developers/fuzzing.md` |
 | `crates/datui-lib/src/help-strings/*.txt` | The text shown by `?` on each screen. Update it when keys change |

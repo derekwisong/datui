@@ -1953,6 +1953,7 @@ pub(crate) const NO_RANGES: &str = "The server does not send byte ranges, so the
 /// spec reads local bytes, so one object it reads is downloaded whatever its name.
 #[cfg(any(feature = "http", feature = "cloud"))]
 fn remote_download(src: &source::InputSource, options: &OpenOptions) -> Option<PendingDownload> {
+    #[cfg(feature = "cloud")]
     let spec = options.spec_file.is_some() || options.spec_name.is_some();
     #[cfg(feature = "cloud")]
     let should_download =

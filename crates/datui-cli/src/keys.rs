@@ -705,13 +705,15 @@ pub const SCREENS: &[Screen] = &[
                 k("← / → (h/l)", "Tab", "Previous or next tab (Shift+Tab / Tab too)")
                     .more("Previous or next tab, from anywhere in the panel; Shift+Tab and Tab do the same. The panel is a viewer, not a form: its body always has the keys"),
                 k("↑ / ↓ (j/k)", "Move", "Move the cursor, or scroll the list")
-                    .more("Schema or Notes tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list"),
+                    .more("Schema, Notes or Documentation tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list"),
                 k("PgUp / PgDn", "Page", "Scroll the list a page")
                     .more("Model, Audio, MIDI, Metadata and format tabs: scroll the list a page"),
                 k("Home / End", "Top, end", "The top or the end of the list")
                     .more("Model, Audio, MIDI, Metadata and format tabs: the top or the end of the list"),
-                k("Enter", "Take", "Notes tab: take the note's offer")
-                    .more("Notes tab: take the offer on the note, where it has one"),
+                k("Enter", "Take", "Notes: take the offer; Documentation: a legend")
+                    .more("Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor"),
+                k("y", "Copy", "Documentation tab: copy the line's link or value")
+                    .more("Documentation tab: copy the link or value on the cursor's line, whole, however it is cut on screen"),
                 k("H", "Header", "Schema tab, CSV: first row as data or names")
                     .more("Schema tab, CSV, TSV, PSV: read the first row as data, under column_1, column_2, …; again to read it as column names. Reads the file again, so the query, filters and sort are cleared, and the panel closes"),
                 k("x", "Hex", "Show the file's bytes in the hex view"),

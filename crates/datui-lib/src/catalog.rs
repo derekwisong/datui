@@ -603,7 +603,7 @@ impl Dataset {
                 "path:{}",
                 crate::config::path_place(&self.local_path().unwrap_or_default()).display()
             ),
-            (None, Some(url)) => format!("url:{}", crate::source::canonical_cloud_place(url)),
+            (None, Some(url)) => url_key(url),
             (None, None) => String::new(),
         }
     }
@@ -718,8 +718,14 @@ pub fn place_key_of(location: &Path) -> String {
     ) {
         format!("path:{}", crate::config::path_place(location).display())
     } else {
-        format!("url:{}", crate::source::canonical_cloud_place(&text))
+        url_key(&text)
     }
+}
+
+/// A URL's place key: the place, whichever source a `s3://<id>@bucket` spelling names.
+fn url_key(url: &str) -> String {
+    let (_, plain) = crate::source::split_source_id(url);
+    format!("url:{}", crate::source::canonical_cloud_place(&plain))
 }
 
 /// The bundled `public` catalog.
@@ -803,7 +809,7 @@ impl NewDataset {
     fn as_dataset(&self, dir: Option<&Path>) -> Dataset {
         Dataset {
             id: "new".to_string(),
-            name: self.name.clone(),
+            name: self.name.trim().to_string(),
             path: self.path.clone(),
             url: self.url.clone(),
             auth: self.auth.clone(),
@@ -850,11 +856,15 @@ fn write_whole(file: &Path, text: &str) -> color_eyre::Result<()> {
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir)?;
     }
+    // Its own temporary name, so two datui writing at once cannot share one.
     let mut temp = file.as_os_str().to_owned();
-    temp.push(".tmp");
+    temp.push(format!(".{}.tmp", std::process::id()));
     let temp = PathBuf::from(temp);
     std::fs::write(&temp, text)?;
-    std::fs::rename(&temp, file)?;
+    if let Err(e) = std::fs::rename(&temp, file) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(e.into());
+    }
     Ok(())
 }
 
@@ -883,12 +893,14 @@ pub fn add(file: &Path, dataset: &NewDataset) -> color_eyre::Result<String> {
         ));
     }
     // Names are unique in a catalog: a second `data.csv` is named by where it is.
-    let mut name = dataset.name.clone();
+    let mut name = candidate.name.clone();
     if existing.datasets.iter().any(|d| d.name == name) {
         name = candidate.location_text().to_string();
     }
     let mut doc: toml_edit::DocumentMut = text.parse()?;
-    let taken: Vec<String> = doc.iter().map(|(k, _)| k.to_string()).collect();
+    // The top-level keys are not ids either.
+    let mut taken: Vec<String> = doc.iter().map(|(k, _)| k.to_string()).collect();
+    taken.extend(["label".to_string(), "description".to_string()]);
     let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
     let id = id_for(&dataset.name, &taken);
     let mut table = toml_edit::Table::new();
@@ -918,6 +930,10 @@ pub fn add(file: &Path, dataset: &NewDataset) -> color_eyre::Result<String> {
     if !out.ends_with('\n') {
         out.push('\n');
     }
+    // Never write a file the next start cannot read.
+    parse(&out, MINE, Origin::Mine, Some(file)).map_err(|e| {
+        color_eyre::eyre::eyre!("not added: {}", e.in_file(&file.display().to_string()))
+    })?;
     write_whole(file, &out)?;
     Ok(id)
 }
@@ -1023,6 +1039,15 @@ pub fn command(
                 }
                 return (table(&rows), SUCCESS);
             };
+            if name == MINE && !catalogs.iter().any(|c| c.id == MINE) {
+                return (
+                    format!(
+                        "No {MINE_FILE} yet. Ctrl+D on a home row, or datui config init, \
+                         writes it\n"
+                    ),
+                    FAILURE,
+                );
+            }
             let Some(catalog) = catalogs.iter().find(|c| c.id == *name) else {
                 let ids: Vec<&str> = catalogs.iter().map(|c| c.id.as_str()).collect();
                 return (
@@ -1050,12 +1075,11 @@ pub fn command(
                 Origin::Listed
             };
             let parsed = parse(&text, &id_of_file(file), origin, Some(file)).and_then(|c| {
-                // Connections are the config's; without one, every name is unknown.
-                let connections = config
-                    .as_ref()
-                    .map(|c| c.cloud.connections.clone())
-                    .unwrap_or_default();
-                c.check_connections(&connections).map(|()| c)
+                // Connections are the config's: with no config to read, they go unchecked.
+                match &config {
+                    Ok(config) => c.check_connections(&config.cloud.connections).map(|()| c),
+                    Err(_) => Ok(c),
+                }
             });
             match parsed {
                 Err(e) => (format!("{}\n", e.in_file(&name)), FAILURE),
@@ -1213,9 +1237,8 @@ mod tests {
         let cache = crate::cache::CacheManager::with_dir(cache_dir.path().to_path_buf());
         let places = [PathBuf::from("/data/lake"), PathBuf::from("/mnt/nas/share")];
         cache.save_remembered_places(&places).unwrap();
-        let taken = cache.take_remembered_places();
+        let taken = cache.load_remembered_places();
         assert_eq!(taken, places);
-        assert!(cache.take_remembered_places().is_empty(), "taken once");
         let file = config_dir.path().join(MINE_FILE);
         assert_eq!(move_places(&file, &taken).unwrap(), 2);
         assert_eq!(move_places(&file, &taken).unwrap(), 0, "never twice");
@@ -1265,6 +1288,37 @@ mod tests {
         assert!(
             text.contains("team.toml:1: [a]: no [[cloud.connections]]"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn an_added_row_never_breaks_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(MINE_FILE);
+        let new = |name: &str, path: &str| NewDataset {
+            name: name.into(),
+            path: Some(path.into()),
+            ..Default::default()
+        };
+        // Not the top level's keys.
+        assert_eq!(
+            add(&file, &new("Description", "/d")).unwrap(),
+            "description-2"
+        );
+        assert_eq!(add(&file, &new("Label", "/l")).unwrap(), "label-2");
+        // A name that is another's once trimmed is named by where it is.
+        add(&file, &new("Sales", "/a.csv")).unwrap();
+        add(&file, &new(" Sales ", "/b.csv")).unwrap();
+        let catalog = read(&file, MINE, Origin::Mine).unwrap().unwrap();
+        let names: Vec<&str> = catalog.datasets.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["Description", "Label", "Sales", "/b.csv"]);
+    }
+
+    #[test]
+    fn a_url_through_a_named_source_is_the_same_place() {
+        assert_eq!(
+            place_key_of(Path::new("s3://lab@bucket/dir/")),
+            place_key_of(Path::new("s3://bucket/dir"))
         );
     }
 

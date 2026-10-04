@@ -297,10 +297,11 @@ Where a dataset opens.
 | Key | Action |
 |---|---|
 | `← / → (h/l)` | Previous or next tab, from anywhere in the panel; Shift+Tab and Tab do the same. The panel is a viewer, not a form: its body always has the keys |
-| `↑ / ↓ (j/k)` | Schema or Notes tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list |
+| `↑ / ↓ (j/k)` | Schema, Notes or Documentation tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list |
 | `PgUp / PgDn` | Model, Audio, MIDI, Metadata and format tabs: scroll the list a page |
 | `Home / End` | Model, Audio, MIDI, Metadata and format tabs: the top or the end of the list |
-| `Enter` | Notes tab: take the offer on the note, where it has one |
+| `Enter` | Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor |
+| `y` | Documentation tab: copy the link or value on the cursor's line, whole, however it is cut on screen |
 | `H` | Schema tab, CSV, TSV, PSV: read the first row as data, under column_1, column_2, …; again to read it as column names. Reads the file again, so the query, filters and sort are cleared, and the panel closes |
 | `x` | Show the file's bytes in the hex view |
 | `Esc / i` | Close the panel |

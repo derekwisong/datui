@@ -6845,8 +6845,15 @@ impl App {
             ));
             return;
         }
-        // A row of catalog.toml goes from the file, as Ctrl+D on it does.
-        if let Some((location, _)) = self.home_row_for_catalog()
+        // A row of catalog.toml's own section goes from the file, as Ctrl+D on it does.
+        // The same place under Recent is a recent, and Delete forgets only that.
+        let in_mine = self
+            .home
+            .selected_section()
+            .and_then(|i| self.home.sections.get(i))
+            .is_some_and(|s| s.origin == Some("catalog.toml"));
+        if in_mine
+            && let Some((location, _)) = self.home_row_for_catalog()
             && let Some((id, name)) = self.mine_entry_at(&location)
         {
             self.home_forget_from_catalog(&id, &name);
@@ -6895,7 +6902,16 @@ impl App {
                 Some((path, name))
             }
             home::Row::Door { entry, .. } => {
-                let path: PathBuf = entry.path.components().collect();
+                // A local door's trailing slash goes; a URL keeps its `//`, which
+                // `components` would fold into a local path.
+                let path: PathBuf = if matches!(
+                    source::input_source(&entry.path),
+                    source::InputSource::Local(_)
+                ) {
+                    entry.path.components().collect()
+                } else {
+                    entry.path.clone()
+                };
                 Some((path.clone(), home::display_path(&path)))
             }
             home::Row::Entry { entry, .. } => (entry.table.is_none()
@@ -6941,6 +6957,18 @@ impl App {
         self.app_config
             .read_catalog_files(dir.as_deref())
             .map_err(|e| e.to_string())?;
+        // The open dataset's notes and Documentation tab follow the file.
+        let shown = home::catalogs(&self.app_config);
+        let path = self.path.clone();
+        self.codebook = path.as_deref().and_then(|p| home::codebook_for(&shown, p));
+        self.catalog_entry = path
+            .as_deref()
+            .and_then(|p| home::catalog_entry_for(&shown, p));
+        self.info_documentation.close();
+        if let Some((label, entry)) = &self.catalog_entry {
+            self.info_documentation
+                .open(entry.clone(), label.clone(), None);
+        }
         self.home_refresh();
         Ok(())
     }
@@ -6983,14 +7011,7 @@ impl App {
         let text = location.to_string_lossy();
         let (id, plain) = source::split_source_id(&text);
         new.url = Some(plain.into_owned());
-        if let Some(id) = id
-            && self
-                .app_config
-                .cloud
-                .connections
-                .iter()
-                .any(|c| c.name == id)
-        {
+        if let Some(id) = id {
             new.connection = Some(id.to_string());
         }
         new
@@ -7011,6 +7032,21 @@ impl App {
             return;
         };
         let new = self.new_catalog_dataset(&location, &name);
+        // A source found on the machine, not one of the config's connections, cannot
+        // be named in a catalog: without it the URL would be read elsewhere.
+        if let Some(connection) = &new.connection
+            && !self
+                .app_config
+                .cloud
+                .connections
+                .iter()
+                .any(|c| c.name == *connection)
+        {
+            self.home.status = Some(format!(
+                "Not added: {connection} is not a [[cloud.connections]] entry in the config"
+            ));
+            return;
+        }
         if let Err(why) = new.check() {
             self.home.status = Some(format!("Not added: {why}"));
             return;
@@ -7051,15 +7087,20 @@ impl App {
         if std::mem::replace(&mut self.remembered_moved, true) {
             return;
         }
-        let places = self.cache.take_remembered_places();
+        let places = self.cache.load_remembered_places();
         if places.is_empty() {
             return;
         }
         let Some(file) = self.mine_catalog_file() else {
             return;
         };
-        if let Err(e) = catalog::move_places(&file, &places) {
-            log::warn!(target: "datui", "moving remembered places into catalog.toml: {e:#}");
+        // The cache's list goes only once every place is in catalog.toml: a failure
+        // leaves it for the next run.
+        match catalog::move_places(&file, &places) {
+            Ok(_) => self.cache.clear_remembered_places(),
+            Err(e) => {
+                log::warn!(target: "datui", "moving remembered places into catalog.toml: {e:#}")
+            }
         }
         let dir = file.parent().map(Path::to_path_buf);
         if let Err(e) = self.app_config.read_catalog_files(dir.as_deref()) {
@@ -7736,13 +7777,15 @@ impl App {
         // already said what it is and what it weighs. A URL the user typed still asks.
         let unasked = self
             .home
-            .catalog_dataset(&path)
-            .filter(|(catalog, _)| {
-                !jump
-                    && catalog.origin == catalog::Origin::Bundled
-                    && matches!(source::input_source(&path), source::InputSource::Http(_))
+            .catalogs
+            .iter()
+            .filter(|c| c.origin == catalog::Origin::Bundled)
+            .flat_map(|c| c.datasets.iter())
+            .find(|d| d.location == path)
+            .filter(|_| {
+                !jump && matches!(source::input_source(&path), source::InputSource::Http(_))
             })
-            .map(|(_, dataset)| UnaskedDownload {
+            .map(|dataset| UnaskedDownload {
                 limit: UnaskedDownload::LIMIT,
                 listed: dataset.size,
             });
@@ -12541,7 +12584,13 @@ impl App {
                 None
             }
             AppEvent::HomeSized { path, measured } => {
-                self.home.enriched.insert(path.clone(), measured.clone());
+                // Only the size: a measurement that landed meanwhile keeps the rest.
+                match self.home.enriched.get_mut(path) {
+                    Some(known) => known.size = measured.size,
+                    None => {
+                        self.home.enriched.insert(path.clone(), measured.clone());
+                    }
+                }
                 self.home.apply_measurements();
                 None
             }

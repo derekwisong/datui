@@ -13399,6 +13399,21 @@ fn test_ctrl_d_adds_to_the_catalog_and_forgets() {
     app.home.selected = row;
     app.event(&ctrl('d'));
     assert!(listed(&recents[2]), "a file row adds the file");
+
+    // Delete on the same file under Recent forgets the recent, not the catalog entry.
+    let row = app
+        .home
+        .visible()
+        .iter()
+        .position(|r| {
+            matches!(r, datui::home::Row::Entry { section, entry, .. }
+                if entry.path == recents[2]
+                    && app.home.sections[*section].title == datui::home::HomeState::RECENT_SECTION)
+        })
+        .expect("the recent is still listed");
+    app.home.selected = row;
+    app.event(&key(KeyCode::Delete));
+    assert!(listed(&recents[2]), "the catalog keeps it");
 }
 
 /// The places Ctrl+D kept in the cache before catalogs move into catalog.toml the
@@ -13430,7 +13445,7 @@ fn test_remembered_places_move_into_catalog_toml() {
     .unwrap()
     .expect("catalog.toml written");
     assert!(catalog.dataset_at(&kept).is_some(), "{catalog:?}");
-    assert!(cache.take_remembered_places().is_empty(), "moved once");
+    assert!(cache.load_remembered_places().is_empty(), "moved once");
     assert!(
         app.home.catalogs.iter().any(|c| c.label == "My datasets"),
         "listed at once"

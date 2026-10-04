@@ -460,7 +460,7 @@ Copy the focused item: text as itself, a JSON object or array indented
 Previous or next tab, from anywhere in the panel; Shift+Tab and Tab do the same. The panel is a viewer, not a form: its body always has the keys
 .TP
 \fB\(ua / \(da (j/k)\fR
-Schema or Notes tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list
+Schema, Notes or Documentation tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list
 .TP
 \fBPgUp / PgDn\fR
 Model, Audio, MIDI, Metadata and format tabs: scroll the list a page
@@ -469,7 +469,10 @@ Model, Audio, MIDI, Metadata and format tabs: scroll the list a page
 Model, Audio, MIDI, Metadata and format tabs: the top or the end of the list
 .TP
 \fBEnter\fR
-Notes tab: take the offer on the note, where it has one
+Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor
+.TP
+\fBy\fR
+Documentation tab: copy the link or value on the cursor's line, whole, however it is cut on screen
 .TP
 \fBH\fR
 Schema tab, CSV, TSV, PSV: read the first row as data, under column_1, column_2, \[u2026]; again to read it as column names. Reads the file again, so the query, filters and sort are cleared, and the panel closes

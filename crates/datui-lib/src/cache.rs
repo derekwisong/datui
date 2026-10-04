@@ -1046,20 +1046,26 @@ impl CacheManager {
     }
 
     /// The directories Ctrl+D kept here before 0.4.0, which keeps them in
-    /// `catalog.toml`, in the order they were added. The file goes with the reading, so
-    /// this is empty once taken.
-    pub fn take_remembered_places(&self) -> Vec<PathBuf> {
+    /// `catalog.toml`, in the order they were added.
+    pub fn load_remembered_places(&self) -> Vec<PathBuf> {
         let file = self.cache_file(&format!("home_remembered{HISTORY_SUFFIX}"));
         if !file.exists() {
             return Vec::new();
         }
-        let places = self
-            .load_history_or_log("home_remembered")
+        self.load_history_or_log("home_remembered")
             .into_iter()
             .map(PathBuf::from)
-            .collect();
-        let _ = std::fs::remove_file(&file);
-        places
+            .collect()
+    }
+
+    /// Drop the list [`Self::load_remembered_places`] reads, once it is moved.
+    pub fn clear_remembered_places(&self) {
+        let file = self.cache_file(&format!("home_remembered{HISTORY_SUFFIX}"));
+        if let Err(e) = std::fs::remove_file(&file)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            log::warn!(target: "datui", "remove {}: {e}", file.display());
+        }
     }
 
     /// Write `places` where Ctrl+D kept them before 0.4.0, for the migration's tests.

@@ -327,7 +327,9 @@ mod tests {
                     .map(|t| t.replace("\r\n", "\n"))
                     .ok()
                     .as_deref()
-                    != Some(text.as_str())
+                    // The rendered text is built from help strings and docs that a
+                    // Windows checkout may hold with CRLF, so normalize both sides.
+                    != Some(text.replace("\r\n", "\n").as_str())
             })
             .map(|(path, _)| path.display().to_string())
             .collect();

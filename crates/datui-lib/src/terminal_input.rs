@@ -103,7 +103,7 @@ fn read(tx: Sender<AppEvent>, stop: &AtomicBool) {
 
 /// Hand one event to the loop. Only presses are keys: a terminal speaking the kitty
 /// protocol may report releases and repeats too, and the app acts on presses alone.
-/// Of the mouse, only what the app acts on: a left press and the wheel.
+/// Of the mouse, only what the app acts on ([`crate::pointer::wanted`]).
 fn forward(tx: &Sender<AppEvent>, event: Event) -> Result<(), ()> {
     let event = match event {
         Event::Key(key) if !key.is_press() => return Ok(()),
@@ -122,10 +122,11 @@ mod tests {
     };
     use std::sync::mpsc;
 
-    /// Releases and repeats never reach the app; presses, resizes, left clicks and the
-    /// wheel do, in order. Motion, drags, releases and other buttons do not.
+    /// Key releases and repeats never reach the app; key presses, resizes, a left
+    /// press with its drag and release, a right press and the wheel do, in order.
+    /// Motion with no button down does not.
     #[test]
-    fn only_presses_resizes_clicks_and_the_wheel_are_forwarded() {
+    fn only_presses_resizes_the_mouse_buttons_and_the_wheel_are_forwarded() {
         let (tx, rx) = mpsc::channel();
         let press = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
         let mut release = press;
@@ -167,6 +168,9 @@ mod tests {
             got,
             vec![
                 Event::Key(press),
+                Event::Mouse(mouse(MouseEventKind::Drag(MouseButton::Left))),
+                Event::Mouse(mouse(MouseEventKind::Up(MouseButton::Left))),
+                Event::Mouse(mouse(MouseEventKind::Down(MouseButton::Right))),
                 Event::Mouse(click),
                 Event::Mouse(wheel),
                 Event::Resize(80, 24)

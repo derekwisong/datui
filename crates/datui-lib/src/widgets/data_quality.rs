@@ -23,9 +23,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Cell, Paragraph, Row, StatefulWidget, Table, TableState, Tabs, Widget, Wrap,
-};
+use ratatui::widgets::{Cell, Paragraph, Row, StatefulWidget, Table, TableState, Widget, Wrap};
 
 /// What Setup says about the draft beside its rows, all of it known without a read.
 #[derive(Debug, Clone, Default)]
@@ -245,6 +243,15 @@ pub fn render(
         QualityPage::Detail => render_detail(&config, table_state, body, buf),
     }
 
+    // An overlay owns the keys: what it covers takes no clicks.
+    if config.intent_form.is_some()
+        || config.export_form.is_some()
+        || config.show_access
+        || config.observation_detail
+        || config.confirm_run
+    {
+        crate::pointer::record(area, crate::pointer::Hit::Modal);
+    }
     if let Some(form) = config.intent_form {
         crate::widgets::quality_intent::render_form(form, &config, area, buf);
     } else if let Some(form) = config.export_form {
@@ -256,10 +263,12 @@ pub fn render(
     } else if config.confirm_run {
         render_run_confirmation(&config, area, buf);
     } else if sidebar_width == 0 && config.focus == AnalysisFocus::Sidebar {
+        crate::pointer::record(area, crate::pointer::Hit::Modal);
         render_narrow_tool_picker(&config, sidebar_state, area, buf);
     }
     // A staged read of rows sits over whatever asked for it: a finding or a count.
     if let Some(read) = config.evidence_read {
+        crate::pointer::record(area, crate::pointer::Hit::Modal);
         render_evidence_read(&config, read, area, buf);
     }
 }
@@ -345,16 +354,35 @@ fn render_tabs(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffe
         return;
     }
     let shown = config.page.tab();
-    Tabs::new(QualityPage::TABS.iter().map(|page| page.title()))
-        .style(Style::default().fg(config.theme.get("dimmed")))
-        .highlight_style(
-            Style::default()
-                .fg(config.theme.get("accent"))
-                .add_modifier(Modifier::BOLD),
-        )
-        .select(QualityPage::TABS.iter().position(|page| *page == shown))
-        .divider(" ")
-        .render(area, buf);
+    let dimmed = Style::default().fg(config.theme.get("dimmed"));
+    let accent = Style::default()
+        .fg(config.theme.get("accent"))
+        .add_modifier(Modifier::BOLD);
+    // Each title padded a space each side, a space between: a click on one presses
+    // its number, as typed.
+    let mut spans = Vec::new();
+    let mut clicks = Vec::new();
+    for (i, page) in QualityPage::TABS.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" ", dimmed));
+        }
+        spans.push(Span::styled(" ", dimmed));
+        clicks.push((
+            spans.len(),
+            crate::pointer::Hit::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(char::from(b'1' + i as u8)),
+                crossterm::event::KeyModifiers::NONE,
+            )),
+        ));
+        spans.push(Span::styled(
+            page.title(),
+            if *page == shown { accent } else { dimmed },
+        ));
+        spans.push(Span::styled(" ", dimmed));
+    }
+    let line = Line::from(spans);
+    crate::pointer::record_spans(area, &line, clicks);
+    Paragraph::new(line).style(dimmed).render(area, buf);
 }
 /// One line of Setup, top to bottom.
 enum SetupLine {
@@ -3710,6 +3738,7 @@ fn render_expected_windows(config: &DataQualityWidgetConfig<'_>, area: Rect, buf
                 label_width: 10,
             }
             .render(row_area, buf, ctx);
+            crate::pointer::record_field::<crate::analysis_modal::ExpectedForm>(row_area, field);
         }
         y += 1;
     }
@@ -4108,7 +4137,9 @@ fn render_narrow_tool_picker(
     ];
     let popup = centered_rect(28, tools.len() as u16 + 2, area);
     let content = Surface::new("Analysis Tools").render(popup, buf, config.ctx);
-    Picker::new(tools, sidebar_state.selected(), true).render(content, buf, config.ctx);
+    Picker::new(tools, sidebar_state.selected(), true)
+        .on_click(crate::widgets::ui::Clicks::Tool)
+        .render(content, buf, config.ctx);
 }
 
 /// What a run of the plan will read and write, before it runs.

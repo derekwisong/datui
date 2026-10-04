@@ -1916,7 +1916,9 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         // stays, keeping the names where they were.
         let tabs = InfoTab::visible(offered);
         let active = tabs[tab.index(offered)];
+        let current = tab.index(offered);
         let mut spans = Vec::new();
+        let mut clicks = Vec::new();
         for (i, t) in tabs.iter().enumerate() {
             let is_active = *t == active;
             if i > 0 {
@@ -1938,15 +1940,26 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
                 (InfoTab::Format, None) => self.ctx.facts_tab.unwrap_or(t.title()),
                 _ => t.title(),
             };
+            // A click steps the tabs there, as ← / → do from anywhere here.
+            clicks.push((
+                spans.len(),
+                crate::pointer::Hit::Option {
+                    field: None,
+                    index: i,
+                    current,
+                },
+            ));
             spans.push(Span::styled(title, style));
         }
-        Paragraph::new(Line::from(spans)).render(
-            Rect {
-                height: tab_rows,
-                ..content
-            },
-            buf,
-        );
+        let tab_area = Rect {
+            height: tab_rows,
+            ..content
+        };
+        let line = Line::from(spans);
+        if tab_rows > 0 {
+            crate::pointer::record_spans(tab_area, &line, clicks);
+        }
+        Paragraph::new(line).render(tab_area, buf);
 
         // A blank row under the tabs rather than a rule: the tab line is state,
         // not a section.

@@ -212,7 +212,8 @@ impl ProgressLine {
     }
 }
 
-/// Where a segment the user can click landed, and what it names: a hint's key.
+/// Where a segment the user can click landed, and the key a click on it presses: a
+/// hint's key, help's, or the `query` stage's and the filters' (see [`Footer::query_key`]).
 pub type Drawn = Vec<(Rect, String)>;
 
 /// Everything the status line says.
@@ -236,6 +237,10 @@ pub struct Footer {
     pub hints: Vec<Hint>,
     /// The key that opens help: `?`, or `F1` where `?` types.
     pub help: Option<&'static str>,
+    /// The key a click on the `query` stage presses: the command line, on its text.
+    pub query_key: Option<&'static str>,
+    /// The key a click on the filters and sort presses: the sidebar that lists them.
+    pub view_key: Option<&'static str>,
     /// The spinner frame, for pending counts and the shrunk work segment.
     pub spinner: &'static str,
 }
@@ -490,7 +495,7 @@ impl Footer {
         fit
     }
 
-    /// Draw the status line into `area` (one row). Returns where each hint landed,
+    /// Draw the status line into `area` (one row). Returns where each key landed,
     /// for a click.
     pub fn render_line(&self, area: Rect, buf: &mut Buffer, ctx: &RenderContext) -> Drawn {
         if area.width == 0 || area.height == 0 {
@@ -512,9 +517,14 @@ impl Footer {
         if let (Some(w), Some(name)) = (fit.dataset, &self.dataset) {
             steps.push(vec![Span::styled(elide_middle(name, w), label)]);
         }
+        // The steps a click presses a key on, by their place among the steps.
+        let mut step_keys: Vec<(usize, &'static str)> = Vec::new();
         if fit.stages {
             for (i, stage) in self.stages.iter().enumerate() {
                 let style = if i == 0 && stage == QUERY_STAGE {
+                    if let Some(key) = self.query_key {
+                        step_keys.push((steps.len(), key));
+                    }
                     accent
                 } else {
                     label
@@ -544,6 +554,9 @@ impl Footer {
                 };
                 spans.push(Span::styled(part, style));
             }
+            if let Some(key) = self.view_key {
+                step_keys.push((steps.len(), key));
+            }
             steps.push(spans);
         }
         let throbber = Style::default().fg(ctx.throbber);
@@ -568,12 +581,31 @@ impl Footer {
         }
         let mut left = vec![Span::raw(" ")];
         let any_step = !steps.is_empty();
+        let mut keys: Vec<(usize, usize, String)> = Vec::new();
         for (i, spans) in steps.into_iter().enumerate() {
             if i > 0 {
                 left.push(step.clone());
             }
+            let at: usize = left.iter().map(Span::width).sum();
+            let w: usize = spans.iter().map(Span::width).sum();
+            if let Some((_, key)) = step_keys.iter().find(|(s, _)| *s == i) {
+                keys.push((at, w, key.to_string()));
+            }
             left.extend(spans);
         }
+        // Where the left's keys landed, cut at the edge of the line.
+        let mut drawn: Drawn = keys
+            .into_iter()
+            .filter_map(|(at, w, key)| {
+                let x = area.x.checked_add(at as u16)?;
+                (x < area.right()).then(|| {
+                    (
+                        Rect::new(x, area.y, (w as u16).min(area.right() - x), 1),
+                        key,
+                    )
+                })
+            })
+            .collect();
         if let (Some(w), Some(message)) = (fit.message, &self.message) {
             if any_step {
                 left.push(Span::raw("   "));
@@ -641,17 +673,16 @@ impl Footer {
             },
             buf,
         );
-        keys.into_iter()
-            .filter_map(|(at, w, key)| {
-                let x = x.checked_add(at as u16)?;
-                (x < area.right()).then(|| {
-                    (
-                        Rect::new(x, area.y, (w as u16).min(area.right() - x), 1),
-                        key,
-                    )
-                })
+        drawn.extend(keys.into_iter().filter_map(|(at, w, key)| {
+            let x = x.checked_add(at as u16)?;
+            (x < area.right()).then(|| {
+                (
+                    Rect::new(x, area.y, (w as u16).min(area.right() - x), 1),
+                    key,
+                )
             })
-            .collect()
+        }));
+        drawn
     }
 }
 
@@ -800,8 +831,46 @@ mod tests {
             }),
             hints: vec![Hint::new("n/N", "Next"), Hint::new("Esc", "Clear")],
             help: Some("?"),
+            query_key: None,
+            view_key: None,
             spinner: "|",
         }
+    }
+
+    /// The `query` stage and the filters are keys to click where the footer says
+    /// so, cut at the edge; elsewhere they are only text.
+    #[test]
+    fn the_query_and_the_filters_are_clickable_where_given_keys() {
+        let ctx = RenderContext::for_test();
+        let drawn = |footer: &Footer, width: u16| {
+            let area = Rect::new(0, 3, width, 1);
+            let mut buf = Buffer::empty(area);
+            let drawn = footer.render_line(area, &mut buf, &ctx);
+            let text: String = (0..width).map(|x| buf[(x, 3)].symbol()).collect();
+            (drawn, text)
+        };
+        let plain = busy_footer();
+        let (keys, _) = drawn(&plain, 140);
+        assert!(keys.iter().all(|(_, k)| k != ":" && k != "s"), "{keys:?}");
+
+        let footer = Footer {
+            query_key: Some(":"),
+            view_key: Some("s"),
+            ..busy_footer()
+        };
+        let (keys, text) = drawn(&footer, 140);
+        let find = |key: &str| keys.iter().find(|(_, k)| k == key).map(|(r, _)| *r);
+        let query = find(":").expect("the query is a key");
+        let at = text.find(QUERY_STAGE).unwrap();
+        assert_eq!(
+            (query.x, query.y, query.width),
+            (text[..at].chars().count() as u16, 3, 5)
+        );
+        let view = find("s").expect("the filters are a key");
+        let from = text[..text.find("prcp").unwrap()].chars().count() as u16;
+        let to = text[..text.find("date ▼").unwrap()].chars().count() as u16 + 6;
+        assert_eq!((view.x, view.right()), (from, to), "{text}");
+        assert!(find("?").is_some(), "help is still a key");
     }
 
     #[test]

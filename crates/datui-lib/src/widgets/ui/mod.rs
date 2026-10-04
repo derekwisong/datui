@@ -15,7 +15,7 @@ mod working;
 
 pub use form_row::{FormRow, FormValue};
 pub use hintbar::HintBar;
-pub use picker::{Picker, PickerState};
+pub use picker::{Clicks, Picker, PickerState};
 pub use section_rule::SectionRule;
 pub use surface::Surface;
 pub use working::Working;

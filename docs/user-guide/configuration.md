@@ -248,8 +248,8 @@ spinner = ["◐", "◓", "◑", "◒"]
 
 ## Mouse and text selection
 
-datui takes the mouse by default: the wheel scrolls and a click selects
-([The mouse](table.md#the-mouse)). To select text with the
+datui takes the mouse by default: the wheel scrolls, a click selects, and a
+drag moves or sizes a column ([The mouse](mouse.md)). To select text with the
 terminal meanwhile, hold its bypass modifier as you drag:
 
 | Terminal | Select text |

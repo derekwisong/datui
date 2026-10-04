@@ -41,6 +41,7 @@ pub fn render_copy_modal(area: Rect, buf: &mut Buffer, modal: &mut CopyModal, ct
                 .hint_weighted("Esc", "Cancel", 4)
         }
     };
+    crate::pointer::record(area, crate::pointer::Hit::Modal);
     let content = Surface::new("Copy").footer(&footer).render(area, buf, ctx);
     if content.height < 3 || content.width < 10 {
         return;
@@ -64,27 +65,27 @@ pub fn render_copy_modal(area: Rect, buf: &mut Buffer, modal: &mut CopyModal, ct
                 None => FormValue::Placeholder("none"),
             },
         };
+        let row_area = Rect {
+            y,
+            height: 1,
+            ..content
+        };
         FormRow {
             label: row_label(row),
             value,
             focused: modal.focus == row,
             label_width: LABEL_WIDTH,
         }
-        .render(
-            Rect {
-                y,
-                height: 1,
-                ..content
-            },
-            buf,
-            ctx,
-        );
+        .render(row_area, buf, ctx);
+        crate::pointer::record_field::<CopyModal>(row_area, row);
         y += 1;
     }
 
     // The focused row's Picker drops in below the rows and reaches down to
     // the spec line.
     if let Some(state) = &modal.picker {
+        // It owns the keys even with no room to draw: the rows take no clicks.
+        crate::pointer::record(content, crate::pointer::Hit::Picker);
         let picker_y = y + 1;
         if picker_y < spec_y {
             let picker_area = Rect {

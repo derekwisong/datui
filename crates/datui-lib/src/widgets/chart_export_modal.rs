@@ -22,6 +22,7 @@ pub fn render_chart_export_modal(
         .hint_weighted("Enter", "Export", 3)
         .hint_weighted("Tab", "Next", 1)
         .hint_weighted("Esc", "Cancel", 4);
+    crate::pointer::record(area, crate::pointer::Hit::Modal);
     let content = Surface::new("Export Chart")
         .footer(&footer)
         .render(area, buf, ctx);
@@ -58,21 +59,19 @@ pub fn render_chart_export_modal(
                 None => continue,
             },
         };
+        let row = Rect {
+            y: content.y + (i - first) as u16,
+            height: 1,
+            ..content
+        };
         FormRow {
             label: field.label(),
             value,
             focused: *field == focus,
             label_width: LABEL_WIDTH,
         }
-        .render(
-            Rect {
-                y: content.y + (i - first) as u16,
-                height: 1,
-                ..content
-            },
-            buf,
-            ctx,
-        );
+        .render(row, buf, ctx);
+        crate::pointer::record_field::<ChartExportModal>(row, *field);
     }
 }
 

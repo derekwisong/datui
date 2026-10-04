@@ -4,6 +4,7 @@
 //! rail marks focus.
 
 use crate::filter_modal::{FilterEditStep, FilterModal};
+use crate::pointer::{FieldId, Hit};
 use crate::render::context::RenderContext;
 use crate::sort_filter_modal::{SortFilterField, SortFilterModal, SortFilterTab};
 use crate::widgets::column_widths::WidthChoice;
@@ -68,13 +69,29 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
         Span::styled(mark(columns_tab), Style::default().fg(ctx.accent)),
         Span::styled("Columns", tab_style(columns_tab)),
     ]);
-    Paragraph::new(tab_line).render(
-        Rect {
-            height: 1,
-            ..content
-        },
-        buf,
+    let tab_area = Rect {
+        height: 1,
+        ..content
+    };
+    let field = Some(FieldId::of::<SortFilterModal>(SortFilterField::TabBar));
+    let current = usize::from(columns_tab);
+    crate::pointer::record_spans(
+        tab_area,
+        &tab_line,
+        [1, 4]
+            .into_iter()
+            .enumerate()
+            .map(|(index, span)| {
+                let hit = Hit::Option {
+                    field: field.clone(),
+                    index,
+                    current,
+                };
+                (span, hit)
+            })
+            .collect(),
     );
+    Paragraph::new(tab_line).render(tab_area, buf);
 
     // One context line of keys sits directly above the Surface footer.
     let hints_area = Rect {
@@ -211,6 +228,12 @@ fn render_in_effect(
             ..area
         };
         y += 1;
+        let field = if row == entries.len() {
+            SortFilterField::AddSort
+        } else {
+            SortFilterField::Sort(row)
+        };
+        crate::pointer::record_field::<SortFilterModal>(row_area, field);
         let focused = match modal.focus {
             SortFilterField::Sort(i) => i == row,
             SortFilterField::AddSort => row == entries.len(),
@@ -257,6 +280,8 @@ fn render_in_effect(
         .render(row_area, buf);
     }
     if let Some(picker) = &modal.sort_picker {
+        // It owns the keys even with no room to draw: the rows take no clicks.
+        crate::pointer::record(area, Hit::Picker);
         let rows = (area.y + 1 + shown as u16).min(bottom).saturating_sub(y);
         if rows > 0 {
             Picker::from_state(picker, true).render(
@@ -330,6 +355,10 @@ fn render_columns_tab(
         Span::styled("find: ", label_style),
     ]))
     .render(Rect { height: 1, ..area }, buf);
+    crate::pointer::record_field::<SortFilterModal>(
+        Rect { height: 1, ..area },
+        SortFilterField::Find,
+    );
     let input_area = Rect {
         x: area.x + 7,
         width: area.width.saturating_sub(7),
@@ -399,6 +428,7 @@ fn render_columns_tab(
                 .render(row_area, buf);
             break;
         }
+        crate::pointer::record_field::<SortFilterModal>(row_area, SortFilterField::Column(i));
         let (_, column) = &filtered[i];
         let lock = if column.is_locked {
             g.dot_full
@@ -510,6 +540,8 @@ fn render_filters(
                 && row == filter.statements.len());
 
         if under_edit {
+            // While a filter is edited in place, it alone takes clicks.
+            crate::pointer::record(row_area, Hit::Editor);
             let rows_owed = (filter.row_count() - row - 1) as u16;
             let editor = filter.editor.as_mut().expect("checked above");
             // The row under edit: the three steps on one line, the active one
@@ -594,6 +626,12 @@ fn render_filters(
         } else {
             " "
         };
+        let field = if row == filter.statements.len() {
+            SortFilterField::AddFilter
+        } else {
+            SortFilterField::Filter(row)
+        };
+        crate::pointer::record_field::<SortFilterModal>(row_area, field);
         if row == filter.statements.len() {
             // The add row: the standing offer, dimmed until it is taken.
             let style = if is_cursor {

@@ -91,6 +91,14 @@ pub trait Form {
         (true, true)
     }
 
+    /// Whether `field` is a row of a list (a sort, a filter, a column) rather than a
+    /// setting. A click on a list row only focuses it, so it can be picked to move or
+    /// remove without changing it; a click on it once focused acts. A setting (a
+    /// checkbox, a choice, a button) acts on the first click.
+    fn list_row(&self, _field: Self::Field) -> bool {
+        false
+    }
+
     /// The focused field's kind; `None` when focus is on a field not shown.
     fn focused_kind(&self) -> Option<FieldKind> {
         let focused = self.focused();

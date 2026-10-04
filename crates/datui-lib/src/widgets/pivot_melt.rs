@@ -9,6 +9,7 @@ use crate::pivot_melt_modal::{
     PREVIEW_INPUT_ROWS, PREVIEW_WIDE_PIVOT, PivotMeltFocus, PivotMeltModal, PivotMeltTab,
     PreviewFrame, ReshapePreview,
 };
+use crate::pointer::{FieldId, Hit};
 use crate::render::context::RenderContext;
 use crate::render::footer::{Hint, registry_hint_in};
 use crate::widgets::ui::{FormRow, FormValue, Picker, SectionRule, Surface};
@@ -168,7 +169,26 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut PivotMeltModal, ctx: &R
         Span::styled(mark(!pivot_tab), Style::default().fg(ctx.accent)),
         Span::styled("Melt", tab_style(!pivot_tab)),
     ]);
-    Paragraph::new(tab_line).render(Rect { height: 1, ..area }, buf);
+    let tab_area = Rect { height: 1, ..area };
+    let field = Some(FieldId::of::<PivotMeltModal>(PivotMeltFocus::TabBar));
+    let current = usize::from(!pivot_tab);
+    crate::pointer::record_spans(
+        tab_area,
+        &tab_line,
+        [1, 4]
+            .into_iter()
+            .enumerate()
+            .map(|(index, span)| {
+                let hit = Hit::Option {
+                    field: field.clone(),
+                    index,
+                    current,
+                };
+                (span, hit)
+            })
+            .collect(),
+    );
+    Paragraph::new(tab_line).render(tab_area, buf);
 
     // The spec line sits on the form's last row.
     let spec_y = area.y + area.height - 1;
@@ -219,27 +239,27 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut PivotMeltModal, ctx: &R
             PivotMeltFocus::MeltValue => FormValue::Input(&modal.melt_value_input),
             PivotMeltFocus::TabBar => continue,
         };
+        let row_area = Rect {
+            y,
+            height: 1,
+            ..area
+        };
         FormRow {
             label: row_label(row),
             value,
             focused: modal.focus == row,
             label_width: LABEL_WIDTH,
         }
-        .render(
-            Rect {
-                y,
-                height: 1,
-                ..area
-            },
-            buf,
-            ctx,
-        );
+        .render(row_area, buf, ctx);
+        crate::pointer::record_field::<PivotMeltModal>(row_area, row);
         y += 1;
     }
 
     // The focused row's Picker drops in below the rows and reaches down to the
     // spec line; the selection carries the rail while the list is up.
     if let Some(state) = &modal.picker {
+        // It owns the keys even with no room to draw: the rows take no clicks.
+        crate::pointer::record(area, Hit::Picker);
         let picker_y = y + 1;
         if picker_y < spec_y {
             let picker_area = Rect {
@@ -867,6 +887,24 @@ mod tests {
             keys[0],
             ("Space".to_string(), "Toggle".to_string()),
             "the footer says Space toggles: {keys:?}"
+        );
+    }
+
+    /// An open Picker owns the clicks even on a terminal too short to draw it, so a
+    /// click cannot move focus off the row it belongs to.
+    #[test]
+    fn an_open_picker_with_no_room_still_takes_the_clicks() {
+        let mut m = modal_with_columns(&["dept", "region", "salary"]);
+        m.focus = PivotMeltFocus::PivotIndex;
+        m.open_picker();
+        let hits = crate::pointer::recording(|| {
+            render_rows(&mut m, 120, 9);
+        });
+        assert!(hits.iter().any(|(_, h)| *h == Hit::Picker), "{hits:?}");
+        assert!(
+            !hits
+                .iter()
+                .any(|(_, h)| matches!(h, Hit::PickerItem { .. }))
         );
     }
 

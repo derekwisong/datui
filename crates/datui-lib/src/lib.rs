@@ -73,6 +73,7 @@ pub mod codebook;
 pub mod commands;
 pub mod config;
 pub mod config_command;
+pub mod context_menu;
 mod copy_keys;
 pub mod copy_modal;
 pub mod csv_dialect;
@@ -1115,6 +1116,8 @@ pub struct App {
     help: help::Help,
     /// What the mouse can land on in the last frame, and the last click.
     pointer: pointer::Pointing,
+    /// The menu a right click on a cell opened, while it is open.
+    context_menu: Option<context_menu::ContextMenu>,
     cache: CacheManager,
     /// The recent and the shape an open writes, which the home listing waits on.
     cache_writes: CacheWrites,
@@ -3840,7 +3843,7 @@ impl App {
     /// nothing and is dropped by the caller. Nothing is classified by keycode alone:
     /// the `h` in a typed `/hello` never scrolls.
     pub fn key_acts_while_busy(&self, key: &KeyEvent) -> bool {
-        if self.hard_escape_while_busy(key) {
+        if self.hard_escape_while_busy(key) || self.menu_takes(key) {
             return true;
         }
         if !self.in_normal_table_view() {
@@ -3889,7 +3892,7 @@ impl App {
     }
 
     /// The plain table view: Normal mode with no help overlay, modal, or in-view modal
-    /// (view, analysis) drawn over it.
+    /// (view, analysis) or context menu drawn over it.
     pub fn in_normal_table_view(&self) -> bool {
         self.input_mode == InputMode::Normal
             && !self.help.is_open()
@@ -3897,6 +3900,127 @@ impl App {
             && !self.analysis_modal.active
             && !self.error_modal.active
             && !self.confirmation_modal.active
+            && self.context_menu.is_none()
+    }
+
+    /// While a header is dragged over another column, a rule on the header where it
+    /// would land: after that column when it moves right, before it when left.
+    fn render_drop_mark(&self, buf: &mut Buffer, ctx: &crate::render::context::RenderContext) {
+        let Some(pointer::Drag::Move { column, over }) = self.pointer.drag() else {
+            return;
+        };
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let Some((header, columns)) = state.drawn_header() else {
+            return;
+        };
+        let order = state.get_column_order();
+        let (Some(from), Some(to)) = (
+            order.iter().position(|c| c == column),
+            order.iter().position(|c| c == over),
+        ) else {
+            return;
+        };
+        // Only where a drop would land: frozen among frozen, scrolling among scrolling.
+        let locked = state.locked_columns_count().min(order.len());
+        if from == to || (from < locked) != (to < locked) {
+            return;
+        }
+        let Some((left, right, _)) = columns.iter().find(|(_, _, name)| name == over) else {
+            return;
+        };
+        let x = if to > from {
+            *right
+        } else {
+            left.saturating_sub(1)
+        };
+        if !(header.x..header.right()).contains(&x) {
+            return;
+        }
+        let g = crate::glyphs::get();
+        for y in header.y..header.bottom() {
+            let cell = &mut buf[(x, y)];
+            cell.set_symbol(g.rule);
+            cell.set_style(Style::default().fg(ctx.accent));
+        }
+    }
+
+    /// The context menu is open over the plain table view, nothing over it.
+    pub(crate) fn menu_showing(&self) -> bool {
+        self.context_menu.is_some()
+            && self.input_mode == InputMode::Normal
+            && self.data_table_state.is_some()
+            && !self.help.is_open()
+            && !self.view_modal.active
+            && !self.analysis_modal.active
+            && !self.error_modal.active
+            && !self.confirmation_modal.active
+    }
+
+    /// Whether `key` is one the open menu answers itself (moving, choosing, closing),
+    /// which reads nothing and so acts while busy.
+    pub(crate) fn menu_takes(&self, key: &KeyEvent) -> bool {
+        self.menu_showing()
+            && key.modifiers.is_empty()
+            && matches!(
+                key.code,
+                KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::Char('j')
+                    | KeyCode::Char('k')
+                    | KeyCode::Enter
+                    | KeyCode::Esc
+            )
+    }
+
+    /// Open the context menu at `at`, over the cell the cursor was just put on.
+    pub fn open_context_menu(&mut self, at: ratatui::layout::Position) {
+        self.context_menu = Some(context_menu::ContextMenu::new(at));
+    }
+
+    /// Close the context menu, if it is open.
+    pub fn close_context_menu(&mut self) {
+        self.context_menu = None;
+    }
+
+    /// The line `i` of the open menu, chosen: the menu closes and its key is
+    /// pressed, offered as typed.
+    pub fn choose_from_menu(&mut self, i: usize) -> Option<AppEvent> {
+        self.context_menu.take()?;
+        context_menu::ITEMS
+            .get(i)
+            .map(|item| AppEvent::Press(item.key_event()))
+    }
+
+    /// A header dropped on another column: the order with `column` moved to where
+    /// `onto` is, as `H` / `L` would leave it pressed that many times. A frozen column
+    /// moves among the frozen ones only, and a scrolling one among the scrolling.
+    pub fn drop_column(&mut self, column: &str, onto: &str) -> Option<AppEvent> {
+        let state = self.data_table_state.as_ref()?;
+        let mut order = state.headers();
+        let locked = state.locked_columns_count().min(order.len());
+        let from = order.iter().position(|c| c == column)?;
+        let to = order.iter().position(|c| c == onto)?;
+        if from == to || (from < locked) != (to < locked) {
+            return None;
+        }
+        self.flash = None;
+        self.data_table_state.as_mut()?.set_current_column(column);
+        let moving = order.remove(from);
+        order.insert(to, moving);
+        // The sidebar places hidden columns by the order it last applied; the column
+        // moves there too, so the shown order agrees with the table (a hidden one may
+        // sit otherwise than repeated H / L would leave it).
+        let applied = &mut self.sort_filter_modal.sort.applied_order;
+        if let (Some(i), Some(j)) = (
+            applied.iter().position(|c| c == column),
+            applied.iter().position(|c| c == onto),
+        ) {
+            let moving = applied.remove(i);
+            applied.insert(j, moving);
+        }
+        Some(AppEvent::ColumnOrder(order, locked))
     }
 
     /// Whether a text field currently owns typed characters, so the wheel and `?` leave
@@ -5502,6 +5626,7 @@ impl App {
             pending_quality_export: None,
             help: help::Help::default(),
             pointer: pointer::Pointing::default(),
+            context_menu: None,
             cache,
             cache_writes: CacheWrites::default(),
             view_manager,
@@ -11352,6 +11477,8 @@ impl App {
         // A completion flash lives until the next key: whatever this key does,
         // the bar's line about the last action is stale now.
         self.flash = None;
+        // A key puts back a header being carried, so a release later moves nothing.
+        self.cancel_drag();
 
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
         // Ctrl-Q quits from anywhere, before any mode gets a say — including a mode
@@ -11364,6 +11491,28 @@ impl App {
         // the field copies with Alt+W instead.
         if ctrl && event.code == KeyCode::Char('c') {
             return Some(AppEvent::Exit);
+        }
+
+        // The context menu takes its keys first. A line chosen closes it and presses
+        // its key, offered as typed (as Enter on a help line is); any other key closes
+        // it and then acts as it would have. A menu something else has covered since
+        // (an error, a load's screen) is gone.
+        if !self.menu_showing() {
+            self.context_menu = None;
+        }
+        if let Some(menu) = self.context_menu.as_mut() {
+            match menu.key(event) {
+                context_menu::MenuKey::Moved => return None,
+                context_menu::MenuKey::Close => {
+                    self.context_menu = None;
+                    return None;
+                }
+                context_menu::MenuKey::Run(key) => {
+                    self.context_menu = None;
+                    return Some(AppEvent::Press(key));
+                }
+                context_menu::MenuKey::Other => self.context_menu = None,
+            }
         }
 
         // Acts at once (see `hard_escape_while_busy`), ahead of the keys held behind
@@ -17632,6 +17781,14 @@ impl Widget for &mut App {
         Clear.render(main_area, buf);
 
         crate::render::main_view_render::render_main_view(area, main_area, buf, self, &ctx);
+        if self.in_normal_table_view() {
+            self.render_drop_mark(buf, &ctx);
+        }
+        if self.menu_showing()
+            && let Some(menu) = self.context_menu
+        {
+            menu.render(main_area, buf, &ctx);
+        }
 
         // Status messages are shown inline in the control bar (no overlay popups).
 
@@ -17691,6 +17848,7 @@ impl Widget for &mut App {
         if let Some(debug_area) = app_layout.debug {
             self.debug.render(debug_area, buf);
         }
+        self.pointer.drawn();
 
         // Last line of defence, and deliberately the last statement here.
         //
@@ -18255,9 +18413,7 @@ fn run_impl(
     glyphs::init_with_overrides(config.display.unicode, &config.glyphs.overrides);
 
     // Taken once the settings say so; handed back with the screen.
-    if config.display.mouse {
-        let _ = crossterm::execute!(std::io::stdout(), pointer::EnableMouse);
-    }
+    pointer::capture(config.display.mouse, &mut std::io::stdout());
 
     let mut app = App::new_with_views(tx.clone(), rt_handle, theme, config, views);
     if let Some(out) = passed {
@@ -18370,9 +18526,7 @@ fn open_externally(
                 crossterm::cursor::Hide
             );
             push_keyboard_flags();
-            if mouse {
-                let _ = crossterm::execute!(std::io::stdout(), pointer::EnableMouse);
-            }
+            pointer::capture(mouse, &mut std::io::stdout());
             let _ = terminal.clear();
             match terminal_input::TerminalInput::start(tx.clone()) {
                 Ok(started) => *reader = started,

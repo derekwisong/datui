@@ -13,6 +13,7 @@
 - [Home screen](user-guide/home-screen.md)
 - [Open files and directories](user-guide/open-files.md)
 - [The table](user-guide/table.md)
+- [The mouse](user-guide/mouse.md)
 - [Pipes and growing files](user-guide/pipes-and-follow.md)
 - [Connect to cloud storage](user-guide/remote-data.md)
 - [Info panel](user-guide/dataset-info.md)

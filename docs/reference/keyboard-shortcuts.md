@@ -17,6 +17,8 @@ These keys work on every screen.
 | `? / F1` | This screen's keys. In a text field ? types, and F1 opens the help |
 | `Ctrl+O` | The home screen; abandons a load |
 | `Ctrl+Q / Ctrl+C` | Quit from anywhere; Ctrl+C quits from a text field too, where Alt+W copies |
+| `Click a field` | Focus a form's field and act as Space: a checkbox flips, a choice steps, a picker opens, a button runs; a text field takes the cursor. A row of a list (a sort, a filter, a column) takes focus on the first click and acts on the second. A click on a picker's line chooses it, on a tab switches to it, and on a key in the footer presses it. A click outside a dialog does nothing. The mouse is the terminal's with display.mouse = false (or --mouse false); in most terminals Shift+drag selects text either way |
+| `Right-click a field` | Step a choice back, as ← does; else focus it |
 
 ## Help
 
@@ -109,7 +111,10 @@ Where a dataset opens.
 | `Double-click` | Enter on the row |
 | `Wheel` | ↑ / ↓, three rows a notch; the same in help, the inspector and the sidebars |
 | `Shift+wheel` | ← / →, the column cursor (a sideways wheel too) |
-| `Click a key` | Press a key the footer shows |
+| `Click a key` | Press a key the footer shows; a click on the filters and sort presses s, on query presses : |
+| `Drag a header` | Drag a column's header onto another column to move it there, as H / L do; a rule on the header marks where it lands |
+| `Drag a header's edge` | Drag the gap right of a column's header to set its width by hand, as &lt; / &gt; do, from 4 to 240 cells |
+| `Right-click` | Right-click a cell: the cursor goes there and a menu lists the keys that act on it (+, -, F, [, ], y, Space), each with its key. ↑ / ↓ and Enter, or a click, run a line as its key does; Esc or a click elsewhere closes it |
 
 ## Home screen
 

@@ -204,20 +204,99 @@ impl EventPump {
     /// down waits for nothing. A click moves the cursor where ↓ would act at once: at
     /// an idle table with nothing held, and on the home screen, which keeps its keys.
     /// Returns whether the app changed.
+    ///
+    /// The rest stand for keys and act where those keys would: focusing a form's field
+    /// where ↓ would, a dragged width where `>` would, a dropped header where `L`
+    /// would, opening the context menu where ↓ would at the table, and a menu line or
+    /// a tool pressing its key as typed.
     pub fn terminal_mouse(&mut self, mouse: MouseEvent) -> Result<bool> {
         self.discard_stale();
+        let acts = |p: &Self, code: KeyCode| {
+            matches!(
+                p.classify(&KeyEvent::new(code, KeyModifiers::NONE)),
+                Act::Now
+            )
+        };
         match self.app.pointer(&mouse, std::time::Instant::now()) {
             Pointer::Nothing => Ok(false),
             Pointer::Keys(keys) => self.press_now(keys),
             Pointer::Point(target, then) => {
-                let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
-                if !matches!(self.classify(&down), Act::Now) {
+                if !acts(self, KeyCode::Down) {
                     // Not a click the next one can make a double click of.
                     self.app.forget_click();
                     return Ok(false);
                 }
                 self.app.point(&target);
                 self.press_now(then)?;
+                Ok(true)
+            }
+            Pointer::Form { field, act, keys } => {
+                if !acts(self, KeyCode::Down) {
+                    return Ok(false);
+                }
+                let mut then = keys;
+                if let Some(id) = field {
+                    let Some(clicked) = self.app.focus_field(&id) else {
+                        return Ok(false);
+                    };
+                    if let Some(back) = act.filter(|_| clicked.acts) {
+                        then.extend(crate::pointer::act_key(clicked.kind, back));
+                    }
+                }
+                self.press_now(then)?;
+                Ok(true)
+            }
+            Pointer::Tool(tool) => {
+                if !acts(self, KeyCode::Enter) {
+                    return Ok(false);
+                }
+                self.app.point_at_tool(tool);
+                self.press_now([KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)])?;
+                Ok(true)
+            }
+            Pointer::Resize { column, x } => {
+                if !acts(self, KeyCode::Char('>')) {
+                    return Ok(false);
+                }
+                self.app.start_resize(column, x);
+                Ok(false)
+            }
+            Pointer::Width { column, width } => {
+                if !self.app.in_normal_table_view() || !acts(self, KeyCode::Char('>')) {
+                    return Ok(false);
+                }
+                self.app.set_dragged_width(column, width);
+                Ok(true)
+            }
+            Pointer::Drop { column, onto } => {
+                if !self.app.in_normal_table_view() || !acts(self, KeyCode::Char('L')) {
+                    return Ok(false);
+                }
+                if let Some(event) = self.app.drop_column(&column, &onto) {
+                    self.queue_continuation(event);
+                }
+                Ok(true)
+            }
+            Pointer::Menu(hit, at) => {
+                if !acts(self, KeyCode::Down) {
+                    return Ok(false);
+                }
+                // Only on the cell the cursor landed on: rows that moved since they
+                // were drawn are not the ones clicked.
+                if self.app.point_for_menu(&hit) {
+                    self.app.open_context_menu(at);
+                }
+                Ok(true)
+            }
+            Pointer::MenuChoose(i) => {
+                if let Some(AppEvent::Press(key)) = self.app.choose_from_menu(i) {
+                    self.press_now([key])?;
+                }
+                Ok(true)
+            }
+            Pointer::Redraw => Ok(true),
+            Pointer::CloseMenu => {
+                self.app.close_context_menu();
                 Ok(true)
             }
         }
@@ -247,6 +326,11 @@ impl EventPump {
             if key.code == KeyCode::Esc && self.app.finding() {
                 return Act::StopFind;
             }
+            return Act::Now;
+        }
+        // The open menu reads nothing: its own keys act at once. A line chosen
+        // presses its key as typed, and that key waits as typed.
+        if self.app.menu_takes(key) {
             return Act::Now;
         }
         let queued = !self.held.is_empty();
@@ -445,9 +529,20 @@ impl EventPump {
                         progress_only = false;
                         break;
                     }
-                    let Some(input) = self.typed.pop_front() else {
+                    let Some(mut input) = self.typed.pop_front() else {
                         break;
                     };
+                    // A drag reports every cell the pointer crosses; only where it is
+                    // now matters, so the moves waiting behind it are one.
+                    while let (Input::Mouse(now), Some(Input::Mouse(next))) =
+                        (input, self.typed.front())
+                        && is_drag(&now)
+                        && is_drag(next)
+                    {
+                        input = Input::Mouse(*next);
+                        self.typed.pop_front();
+                        self.early = self.early.saturating_sub(1);
+                    }
                     self.since_key = 0;
                     self.early = self.early.saturating_sub(1);
                     // One key per frame, as when the loop read the terminal itself: a
@@ -551,6 +646,8 @@ impl EventPump {
     /// Offer one key to the app, the way the channel drain does, then reconcile the
     /// keys queued behind it with the screen it left.
     fn dispatch(&mut self, key: KeyEvent) -> Result<()> {
+        // The key may change the screen: a click waits for the frame that shows it.
+        self.app.pointer.changed();
         let gen_before = self.app.screen_generation();
         match self.app.handle(&AppEvent::Key(key)) {
             Ok(Some(follow_up)) => self.queue_continuation(follow_up),
@@ -775,6 +872,10 @@ fn replays_each_press(key: &KeyEvent) -> bool {
             | KeyCode::Char('n')
             | KeyCode::Char('N')
     )
+}
+
+fn is_drag(mouse: &MouseEvent) -> bool {
+    matches!(mouse.kind, crossterm::event::MouseEventKind::Drag(_))
 }
 
 /// Keys that move the view and are commonly held down. The column cursor's keys
@@ -3529,5 +3630,503 @@ mod tests {
         settle(&mut p);
         p.terminal_key(plain(KeyCode::Char('?'))).unwrap();
         assert_eq!(p.app.help_context(), Some(datui_cli::keys::Context::Views));
+    }
+
+    // ----- The mouse on forms, tabs, the footer, the header and the menu -----
+
+    fn right_click(at: (u16, u16)) -> MouseEvent {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        mouse(MouseEventKind::Down(MouseButton::Right), at)
+    }
+
+    fn drag(at: (u16, u16)) -> MouseEvent {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        mouse(MouseEventKind::Drag(MouseButton::Left), at)
+    }
+
+    fn release(at: (u16, u16)) -> MouseEvent {
+        use crossterm::event::{MouseButton, MouseEventKind};
+        mouse(MouseEventKind::Up(MouseButton::Left), at)
+    }
+
+    /// Where the table's header drew `column`: its cells across, `[from, to)`, and the
+    /// header's first row.
+    fn header_of(p: &mut EventPump, column: &str) -> (u16, u16, u16) {
+        rendered(&mut p.app);
+        let state = p.app.data_table_state.as_ref().unwrap();
+        let (area, columns) = state.drawn_header().expect("the table was drawn");
+        let (from, to, _) = columns
+            .into_iter()
+            .find(|(_, _, name)| name == column)
+            .expect("the column is drawn");
+        (from, to, area.y)
+    }
+
+    fn order(p: &EventPump) -> Vec<String> {
+        p.app.data_table_state.as_ref().unwrap().headers()
+    }
+
+    /// In the export dialog a click on a row focuses it and acts as Space: a
+    /// checkbox flips, a choice steps, a text field only takes the cursor. A click on
+    /// a format in the list chooses it.
+    #[test]
+    fn a_click_focuses_a_form_row_and_acts_on_it() {
+        use crate::export_modal::{ExportFocus, ExportFormat};
+        let (mut p, _dir) = loaded_pump();
+        p.terminal_key(plain(KeyCode::Char('e'))).unwrap();
+        assert_eq!(p.app.input_mode, InputMode::Export);
+        assert_eq!(p.app.export_modal.selected_format, ExportFormat::Csv);
+        let header = p.app.export_modal.csv_include_header;
+
+        let at = on_screen(&mut p.app, "Include header:");
+        assert!(p.terminal_mouse(click(at)).unwrap());
+        assert_eq!(p.app.export_modal.focus, ExportFocus::CsvIncludeHeader);
+        assert_eq!(p.app.export_modal.csv_include_header, !header, "toggled");
+
+        let compression = p.app.export_modal.csv_compression;
+        let at = on_screen(&mut p.app, "Compression:");
+        p.terminal_mouse(click(at)).unwrap();
+        assert_eq!(p.app.export_modal.focus, ExportFocus::Compression);
+        assert_ne!(p.app.export_modal.csv_compression, compression, "stepped");
+        // A right click steps it back.
+        p.terminal_mouse(right_click(at)).unwrap();
+        assert_eq!(p.app.export_modal.csv_compression, compression);
+
+        let path = p.app.export_modal.path_input.value().to_string();
+        let at = on_screen(&mut p.app, "Path:");
+        p.terminal_mouse(click(at)).unwrap();
+        assert_eq!(p.app.export_modal.focus, ExportFocus::PathInput);
+        assert_eq!(p.app.export_modal.path_input.value(), path, "nothing typed");
+
+        let at = on_screen(&mut p.app, "Parquet");
+        p.terminal_mouse(click(at)).unwrap();
+        assert_eq!(p.app.export_modal.selected_format, ExportFormat::Parquet);
+        assert_eq!(p.app.input_mode, InputMode::Export, "still open");
+    }
+
+    /// A click on a tab switches to it: the Sort & Filter sidebar's, through its tab
+    /// bar field, and the Info panel's, which switch from anywhere.
+    #[test]
+    fn a_click_on_a_tab_switches_to_it() {
+        use crate::sort_filter_modal::{SortFilterField, SortFilterTab};
+        let (mut p, _dir) = loaded_pump();
+        p.terminal_key(plain(KeyCode::Char('s'))).unwrap();
+        assert_eq!(p.app.input_mode, InputMode::SortFilter);
+        let at = on_screen(&mut p.app, "Columns");
+        assert!(p.terminal_mouse(click(at)).unwrap());
+        assert_eq!(p.app.sort_filter_modal.active_tab, SortFilterTab::Columns);
+        assert_eq!(p.app.sort_filter_modal.focus, SortFilterField::TabBar);
+        // The tab, not the sidebar's title.
+        let tab = format!("Sort & Filter {}", crate::glyphs::get().rule);
+        let at = on_screen(&mut p.app, &tab);
+        p.terminal_mouse(click(at)).unwrap();
+        assert_eq!(p.app.sort_filter_modal.active_tab, SortFilterTab::InEffect);
+
+        p.terminal_key(plain(KeyCode::Esc)).unwrap();
+        p.terminal_key(plain(KeyCode::Char('i'))).unwrap();
+        assert_eq!(p.app.input_mode, InputMode::Info);
+        let at = on_screen(&mut p.app, "Resources");
+        p.terminal_mouse(click(at)).unwrap();
+        assert_eq!(
+            p.app.info_modal.active_tab,
+            crate::widgets::info::InfoTab::Resources
+        );
+    }
+
+    /// The footer's filters open the sidebar that lists them, and its `query`
+    /// opens the command line on the query's text.
+    #[test]
+    fn the_footer_filters_and_query_are_clickable() {
+        let (mut p, _dir) = loaded_pump();
+        p.terminal_key(plain(KeyCode::Char('+'))).unwrap();
+        settle(&mut p);
+        let at = on_screen(&mut p.app, "name = ");
+        assert!(p.terminal_mouse(click(at)).unwrap());
+        assert_eq!(
+            p.app.input_mode,
+            InputMode::SortFilter,
+            "the sidebar opened"
+        );
+        p.terminal_key(plain(KeyCode::Esc)).unwrap();
+        settle(&mut p);
+
+        p.terminal_key(plain(KeyCode::Char(':'))).unwrap();
+        type_keys(&mut p, "select age");
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        settle(&mut p);
+        assert_eq!(p.app.input_mode, InputMode::Normal);
+        let at = on_screen(&mut p.app, " query ");
+        assert!(p.terminal_mouse(click((at.0 + 1, at.1))).unwrap());
+        assert_eq!(p.app.input_mode, InputMode::Editing);
+        assert_eq!(p.app.query_input.value(), "select age");
+    }
+
+    /// A click outside a dialog does nothing: the table under the sidebar keeps its
+    /// cursor and the sidebar stays.
+    #[test]
+    fn a_click_outside_a_dialog_does_nothing() {
+        let (mut p, _dir) = loaded_pump();
+        let alan = on_screen(&mut p.app, "alan");
+        p.terminal_key(plain(KeyCode::Char('s'))).unwrap();
+        rendered(&mut p.app);
+        assert!(!p.terminal_mouse(click(alan)).unwrap());
+        assert!(!p.terminal_mouse(right_click(alan)).unwrap());
+        assert_eq!(cell(&p), (Some(0), Some("name".to_string())));
+        assert_eq!(p.app.input_mode, InputMode::SortFilter);
+        assert!(p.app.context_menu.is_none());
+
+        // Over a dialog the table is covered, and so is anything else drawn under it.
+        p.terminal_key(plain(KeyCode::Esc)).unwrap();
+        p.terminal_key(plain(KeyCode::Char('e'))).unwrap();
+        rendered(&mut p.app);
+        let focus = p.app.export_modal.focus;
+        let header = p.app.export_modal.csv_include_header;
+        assert!(!p.terminal_mouse(click((0, 0))).unwrap());
+        assert!(!p.terminal_mouse(click(alan)).unwrap());
+        assert_eq!(p.app.export_modal.focus, focus);
+        assert_eq!(p.app.export_modal.csv_include_header, header);
+        assert_eq!(p.app.input_mode, InputMode::Export);
+    }
+
+    /// A header dragged over another column moves there on release, as `L` would,
+    /// with a rule on the header where it lands while it is carried.
+    #[test]
+    fn dragging_a_header_moves_its_column() {
+        let (mut p, _dir) = loaded_pump();
+        let (from, _, y) = header_of(&mut p, "name");
+        let (age, age_to, _) = header_of(&mut p, "age");
+        assert!(p.terminal_mouse(click((from + 1, y))).unwrap());
+        assert_eq!(cell(&p).1.as_deref(), Some("name"));
+        assert!(
+            p.terminal_mouse(drag((age + 1, y))).unwrap(),
+            "a frame is due for the drop mark"
+        );
+        assert!(
+            !p.terminal_mouse(drag((age + 2, y))).unwrap(),
+            "still over age: nothing new to draw"
+        );
+        let area = Rect::new(0, 0, 100, 20);
+        let mut buf = Buffer::empty(area);
+        p.app.render(area, &mut buf);
+        assert_eq!(
+            buf[(age_to, y)].symbol(),
+            crate::glyphs::get().rule,
+            "the drop mark, after age"
+        );
+        p.terminal_mouse(release((age + 1, y))).unwrap();
+        settle(&mut p);
+        assert_eq!(order(&p), ["age", "name"]);
+        assert_eq!(cell(&p).1.as_deref(), Some("name"), "the cursor came along");
+
+        // Let go where it was picked up: nothing moves.
+        let (from, _, y) = header_of(&mut p, "name");
+        p.terminal_mouse(click((from + 1, y))).unwrap();
+        p.terminal_mouse(release((from + 1, y))).unwrap();
+        settle(&mut p);
+        assert_eq!(order(&p), ["age", "name"]);
+    }
+
+    /// The gap after a header dragged sideways sets its width by hand, within the
+    /// bounds `<` and `>` keep.
+    #[test]
+    fn dragging_a_header_edge_resizes_its_column() {
+        use crate::widgets::column_widths::{MAX_WIDTH, MIN_WIDTH, WidthChoice};
+        let (mut p, _dir) = loaded_pump();
+        let (from, to, y) = header_of(&mut p, "name");
+        let width = to - from;
+        assert!(!p.terminal_mouse(click((to, y))).unwrap(), "a press only");
+        assert!(p.terminal_mouse(drag((to + 5, y))).unwrap());
+        let choice = |p: &EventPump| {
+            p.app
+                .data_table_state
+                .as_ref()
+                .unwrap()
+                .width_choice("name")
+        };
+        assert_eq!(choice(&p), WidthChoice::Manual(width + 5));
+        p.terminal_mouse(drag((0, y))).unwrap();
+        assert_eq!(choice(&p), WidthChoice::Manual(MIN_WIDTH));
+        p.terminal_mouse(drag((99, y))).unwrap();
+        assert!(matches!(choice(&p), WidthChoice::Manual(w) if w <= MAX_WIDTH));
+        p.terminal_mouse(release((99, y))).unwrap();
+        assert_eq!(order(&p), ["name", "age"], "a resize moves no column");
+        // Without a press first, a drag does nothing.
+        let before = choice(&p);
+        p.terminal_mouse(drag((to + 9, y))).unwrap();
+        assert_eq!(choice(&p), before);
+    }
+
+    /// A key handled marks the frame on screen out of date, so a click read after it
+    /// waits for the frame that shows what the key did, a replayed key included.
+    #[test]
+    fn a_key_handled_puts_the_next_click_behind_a_frame() {
+        let (mut p, _dir) = loaded_pump();
+        rendered(&mut p.app);
+        p.app.frame_painted();
+        assert!(p.app.pointer.on_screen());
+        p.terminal_key(plain(KeyCode::Char('j'))).unwrap();
+        assert!(!p.app.pointer.on_screen());
+    }
+
+    /// The chart's panel takes clicks on its rows: a click focuses one and acts as
+    /// Space, so the type steps and a toggle flips.
+    #[test]
+    fn a_click_on_the_chart_panel_focuses_and_acts() {
+        use crate::chart_modal::ChartFocus;
+        let (mut p, _dir) = loaded_pump();
+        p.terminal_key(plain(KeyCode::Char('c'))).unwrap();
+        settle(&mut p);
+        assert_eq!(p.app.input_mode, InputMode::Chart);
+        let mark = p.app.chart_modal.spec.mark;
+        let at = on_screen(&mut p.app, "Type");
+        assert!(p.terminal_mouse(click(at)).unwrap());
+        settle(&mut p);
+        assert_eq!(p.app.chart_modal.focus, ChartFocus::Type);
+        assert_ne!(p.app.chart_modal.spec.mark, mark, "the type stepped");
+        let grid = p.app.chart_modal.grid;
+        let at = on_screen(&mut p.app, "Grid");
+        p.terminal_mouse(click(at)).unwrap();
+        settle(&mut p);
+        assert_eq!(p.app.chart_modal.focus, ChartFocus::Grid);
+        assert_ne!(p.app.chart_modal.grid, grid, "the grid flipped");
+    }
+
+    /// A header carried off the columns is over itself again: let go there, nothing
+    /// moves. A key while carrying puts it back too.
+    #[test]
+    fn a_header_drag_is_cancelled_off_the_columns_or_by_a_key() {
+        let (mut p, _dir) = loaded_pump();
+        let (from, _, y) = header_of(&mut p, "name");
+        let (age, _, _) = header_of(&mut p, "age");
+        p.terminal_mouse(click((from + 1, y))).unwrap();
+        p.terminal_mouse(drag((age + 1, y))).unwrap();
+        assert!(
+            p.terminal_mouse(drag((age + 1, 19))).unwrap(),
+            "the mark goes"
+        );
+        p.terminal_mouse(release((age + 1, 19))).unwrap();
+        settle(&mut p);
+        assert_eq!(order(&p), ["name", "age"]);
+
+        p.terminal_mouse(click((from + 1, y))).unwrap();
+        p.terminal_mouse(drag((age + 1, y))).unwrap();
+        p.terminal_key(plain(KeyCode::Char('#'))).unwrap();
+        assert!(p.app.pointer.drag().is_none());
+        p.terminal_mouse(release((age + 1, y))).unwrap();
+        settle(&mut p);
+        assert_eq!(order(&p), ["name", "age"]);
+    }
+
+    /// The last column reaches the right side, so no gap follows it: its last
+    /// header cell is its edge.
+    #[test]
+    fn the_last_column_resizes_from_the_right_side() {
+        use crate::widgets::column_widths::WidthChoice;
+        let (mut p, _dir) = loaded_pump();
+        // Wide enough to be cut at the right side.
+        p.terminal_key(plain(KeyCode::Char('l'))).unwrap();
+        for _ in 0..30 {
+            p.terminal_key(plain(KeyCode::Char('>'))).unwrap();
+        }
+        let (from, to, y) = header_of(&mut p, "age");
+        assert_eq!(to, 100, "age reaches the right side");
+        let choice = |p: &EventPump| p.app.data_table_state.as_ref().unwrap().width_choice("age");
+        let WidthChoice::Manual(set) = choice(&p) else {
+            panic!("set by hand: {:?}", choice(&p));
+        };
+        assert!(set > to - from, "cut at the side");
+        assert!(
+            !p.terminal_mouse(click((to - 1, y))).unwrap(),
+            "a press on the edge"
+        );
+        p.terminal_mouse(drag((to - 31, y))).unwrap();
+        assert_eq!(choice(&p), WidthChoice::Manual(set - 30));
+    }
+
+    /// A right click on a choice steps it back; on a checkbox it only focuses.
+    #[test]
+    fn a_right_click_on_a_checkbox_only_focuses_it() {
+        use crate::export_modal::ExportFocus;
+        let (mut p, _dir) = loaded_pump();
+        p.terminal_key(plain(KeyCode::Char('e'))).unwrap();
+        let header = p.app.export_modal.csv_include_header;
+        let at = on_screen(&mut p.app, "Include header:");
+        p.terminal_mouse(right_click(at)).unwrap();
+        assert_eq!(p.app.export_modal.focus, ExportFocus::CsvIncludeHeader);
+        assert_eq!(p.app.export_modal.csv_include_header, header, "not toggled");
+    }
+
+    /// A row of a list (a sort, a column) takes focus on the first click and acts on
+    /// the second, so it can be picked out without changing it.
+    #[test]
+    fn a_list_row_focuses_first_and_acts_on_a_second_click() {
+        use crate::sort_filter_modal::{SortFilterField, SortFilterTab};
+        let (mut p, _dir) = loaded_pump();
+        p.terminal_key(plain(KeyCode::Char('['))).unwrap();
+        settle(&mut p);
+        p.terminal_key(plain(KeyCode::Char('s'))).unwrap();
+        assert_eq!(p.app.sort_filter_modal.active_tab, SortFilterTab::InEffect);
+        p.app.sort_filter_modal.focus = SortFilterField::TabBar;
+        let descending = |p: &EventPump| {
+            let m = &p.app.sort_filter_modal.sort;
+            m.columns[m.sort_entries()[0]].sort_descending
+        };
+        let before = descending(&p);
+        let row = format!(" 1 {} name", crate::glyphs::get().sort_asc);
+        let at = on_screen(&mut p.app, &row);
+        p.terminal_mouse(click(at)).unwrap();
+        assert_eq!(p.app.sort_filter_modal.focus, SortFilterField::Sort(0));
+        assert_eq!(descending(&p), before, "the first click only focuses");
+        p.terminal_mouse(click(at)).unwrap();
+        assert_ne!(descending(&p), before, "the second flips it");
+    }
+
+    /// The menu opens only on the cell the cursor landed on: rows drawn before the
+    /// view scrolled are not the ones clicked.
+    #[test]
+    fn the_menu_opens_only_where_the_cursor_lands() {
+        let (mut p, _dir) = numbered_pump(50);
+        let at = on_screen(&mut p.app, "r0002");
+        // The view scrolled since the frame on screen was drawn.
+        p.terminal_key(plain(KeyCode::End)).unwrap();
+        settle(&mut p);
+        let row = cell(&p).0;
+        p.terminal_mouse(right_click(at)).unwrap();
+        assert_eq!(cell(&p).0, row, "the cursor stays");
+        assert!(p.app.context_menu.is_none());
+    }
+
+    /// While a job runs, the open menu's own keys still act: they read nothing.
+    #[test]
+    fn the_menus_keys_act_while_busy() {
+        let (mut p, _dir) = loaded_pump();
+        let alan = on_screen(&mut p.app, "alan");
+        p.terminal_mouse(right_click(alan)).unwrap();
+        p.app.busy = true;
+        assert!(p.terminal_key(plain(KeyCode::Down)).unwrap());
+        assert_eq!(p.app.context_menu.map(|m| m.selected), Some(1));
+        assert!(p.terminal_key(plain(KeyCode::Esc)).unwrap());
+        assert!(p.app.context_menu.is_none());
+        assert!(held(&p).is_empty());
+    }
+
+    /// Drags read together are one: only the last place counts.
+    #[test]
+    fn drags_waiting_together_are_one() {
+        let (mut p, _dir) = loaded_pump();
+        let (from, _, y) = header_of(&mut p, "name");
+        let (age, _, _) = header_of(&mut p, "age");
+        p.app.frame_painted();
+        for event in [
+            click((from + 1, y)),
+            drag((age + 1, y)),
+            drag((from + 1, y)),
+            drag((age + 1, y)),
+            release((age + 1, y)),
+        ] {
+            p.send(AppEvent::Terminal(Event::Mouse(event))).unwrap();
+        }
+        for _ in 0..6 {
+            p.drain().unwrap();
+            rendered(&mut p.app);
+            p.app.frame_painted();
+        }
+        settle(&mut p);
+        assert_eq!(order(&p), ["age", "name"]);
+    }
+
+    /// A right click on a cell puts the cursor there and opens the menu; Enter runs
+    /// its line by pressing the line's key, and the menu closes.
+    #[test]
+    fn a_right_click_opens_the_menu_and_enter_runs_a_line() {
+        let (mut p, _dir) = loaded_pump();
+        let alan = on_screen(&mut p.app, "alan");
+        assert!(p.terminal_mouse(right_click(alan)).unwrap());
+        assert_eq!(cell(&p), (Some(2), Some("name".to_string())));
+        assert!(p.app.context_menu.is_some());
+        let text = rendered(&mut p.app);
+        assert!(text.contains("Filter to this value"), "the menu is drawn");
+        // The menu takes the arrows; the table's cursor stays.
+        p.terminal_key(plain(KeyCode::Down)).unwrap();
+        p.terminal_key(plain(KeyCode::Up)).unwrap();
+        assert_eq!(cell(&p).0, Some(2));
+        p.terminal_key(plain(KeyCode::Enter)).unwrap();
+        settle(&mut p);
+        assert!(p.app.context_menu.is_none());
+        let state = p.app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.view_filters().len(), 1, "+ filtered to the value");
+        assert_eq!(state.num_rows(), 1);
+    }
+
+    /// A click on a line runs it; a click outside closes the menu and does nothing
+    /// more; Esc closes it.
+    #[test]
+    fn a_click_chooses_from_the_menu_and_outside_closes_it() {
+        let (mut p, _dir) = loaded_pump();
+        let grace = on_screen(&mut p.app, "grace");
+        p.terminal_mouse(right_click(grace)).unwrap();
+        let counts = on_screen(&mut p.app, "Value counts");
+        assert!(p.terminal_mouse(click(counts)).unwrap());
+        assert!(p.app.context_menu.is_none());
+        assert_eq!(p.app.input_mode, InputMode::ValueCounts, "F ran");
+        p.terminal_key(plain(KeyCode::Esc)).unwrap();
+        settle(&mut p);
+
+        let alan = on_screen(&mut p.app, "alan");
+        p.terminal_mouse(right_click(alan)).unwrap();
+        rendered(&mut p.app);
+        assert!(p.terminal_mouse(click((0, 0))).unwrap());
+        assert!(p.app.context_menu.is_none(), "closed");
+        assert_eq!(cell(&p).0, Some(2), "and nothing else moved");
+        p.terminal_mouse(right_click(alan)).unwrap();
+        p.terminal_key(plain(KeyCode::Esc)).unwrap();
+        assert!(p.app.context_menu.is_none());
+        assert_eq!(p.app.input_mode, InputMode::Normal);
+    }
+
+    /// Busy, the mouse acts only where a typed key would act at once: no menu opens,
+    /// a dropped header moves nothing and a menu line presses nothing, while a width
+    /// drag acts, as `>` does at a busy table.
+    #[test]
+    fn mouse_actions_while_busy_obey_the_key_rules() {
+        use crate::widgets::column_widths::WidthChoice;
+        let (mut p, _dir) = loaded_pump();
+        let alan = on_screen(&mut p.app, "alan");
+        let (from, to, y) = header_of(&mut p, "name");
+        let (age, _, _) = header_of(&mut p, "age");
+        p.app.busy = true;
+        assert!(!p.terminal_mouse(right_click(alan)).unwrap());
+        assert!(p.app.context_menu.is_none());
+
+        p.app.busy = false;
+        p.terminal_mouse(click((from + 1, y))).unwrap();
+        p.terminal_mouse(drag((age + 1, y))).unwrap();
+        p.app.busy = true;
+        p.terminal_mouse(release((age + 1, y))).unwrap();
+        assert!(held(&p).is_empty(), "the mouse is never held");
+        p.app.busy = false;
+        settle(&mut p);
+        assert_eq!(order(&p), ["name", "age"], "dropped");
+
+        p.app.busy = true;
+        p.terminal_mouse(click((to, y))).unwrap();
+        p.terminal_mouse(drag((to + 3, y))).unwrap();
+        let state = p.app.data_table_state.as_ref().unwrap();
+        assert_eq!(
+            state.width_choice("name"),
+            WidthChoice::Manual(to - from + 3)
+        );
+
+        p.app.busy = false;
+        p.terminal_mouse(right_click(alan)).unwrap();
+        rendered(&mut p.app);
+        let line = on_screen(&mut p.app, "Filter to this value");
+        p.app.busy = true;
+        p.terminal_mouse(click(line)).unwrap();
+        assert!(p.app.context_menu.is_none(), "the menu closes");
+        p.app.busy = false;
+        settle(&mut p);
+        let state = p.app.data_table_state.as_ref().unwrap();
+        assert!(state.view_filters().is_empty(), "and its key was dropped");
     }
 }

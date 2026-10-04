@@ -1659,14 +1659,13 @@ pub(crate) fn render_sidebar(
         if is_cursor {
             line = line.style(ctx.highlight_style());
         }
-        line.render(
-            Rect {
-                y: content.y + idx as u16,
-                height: 1,
-                ..content
-            },
-            buf,
-        );
+        let row = Rect {
+            y: content.y + idx as u16,
+            height: 1,
+            ..content
+        };
+        line.render(row, buf);
+        crate::pointer::record(row, crate::pointer::Hit::Tool(idx));
     }
 }
 

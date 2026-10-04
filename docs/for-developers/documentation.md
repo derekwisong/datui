@@ -139,7 +139,7 @@ The examples `datui --help`, the manpages and the command-line reference show
 are `crates/datui-cli/examples.toml`: each entry's `command`, `description`,
 `test` (`run`, `network` or `interactive`), an optional `expect`, and the
 `pages` whose EXAMPLES show it (`datui.1` when not given; `datui COMMAND --help`
-shows those of `datui-COMMAND.1`). Every command page needs one. Each runs with
+shows those of `datui-COMMAND.1`). Every command page needs one. Files a command reads are a `files` list (`[{ name, text }]`): the runner writes them and the pages show each under its name, never a `printf` into a file. Each runs with
 `HOME` set to its own directory, so an example may install into `~`.
 
 ### Run the checks

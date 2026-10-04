@@ -6,9 +6,11 @@ format records, how it is stored and read, and what datui noticed about it.
 <kbd>i</kbd> opens on the Notes tab; after that, on Model, Audio, MIDI or VCD
 for those files, and on Schema for anything else.
 
-The panel's footer names the keys that work now. When the schema is taller
-than the panel, the footer counts the columns out of view. The rail marks
-focus: beside the active tab, or on the schema's current row.
+The panel's footer names the keys that work now. <kbd>←</kbd> <kbd>→</kbd>
+(or <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd>) switch tabs from anywhere,
+and the body always has the keys: the rail marks the schema's current row.
+When the schema is taller than the panel, the footer counts the columns out of
+view.
 
 ![Info Panel Demo](../demos/03-info.gif)
 

@@ -250,15 +250,6 @@ impl ExpectedForm {
         self.error = None;
     }
 
-    pub fn move_field(&mut self, forward: bool) {
-        self.field = if forward {
-            (self.field + 1).min(EXPECTED_ROWS.len() - 1)
-        } else {
-            self.field.saturating_sub(1)
-        };
-        self.sync_focus();
-    }
-
     /// Whether the row under the cursor is one typed into.
     pub fn typing(&self) -> bool {
         self.field > 0
@@ -295,6 +286,34 @@ impl ExpectedForm {
             Some(problem) => Err(problem),
             None => Ok(Some(expected)),
         }
+    }
+}
+
+impl crate::form::Form for ExpectedForm {
+    /// The row, in [`EXPECTED_ROWS`].
+    type Field = usize;
+
+    fn fields(&self) -> Vec<(usize, crate::form::FieldKind)> {
+        use crate::form::FieldKind;
+        (0..EXPECTED_ROWS.len())
+            .map(|row| {
+                let kind = if row == 0 {
+                    FieldKind::Choice
+                } else {
+                    FieldKind::Text
+                };
+                (row, kind)
+            })
+            .collect()
+    }
+
+    fn focused(&self) -> usize {
+        self.field
+    }
+
+    fn set_focused(&mut self, field: usize) {
+        self.field = field;
+        self.sync_focus();
     }
 }
 

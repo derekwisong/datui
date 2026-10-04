@@ -19,19 +19,11 @@ pub struct SortColumn {
     pub shown_width: Option<u16>,
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Clone, Copy)]
-pub enum SortFocus {
-    #[default]
-    Filter,
-    ColumnList,
-}
-
 pub struct SortModal {
     pub active: bool,
     pub filter_input: TextInput,
     pub columns: Vec<SortColumn>,
     pub table_state: TableState,
-    pub focus: SortFocus,
     pub has_unapplied_changes: bool,
     pub history_limit: usize,
     /// Why the last key did nothing, for the sidebar's status line; the next key
@@ -53,7 +45,6 @@ impl Default for SortModal {
             filter_input: TextInput::new(),
             columns: Vec::new(),
             table_state: TableState::default(),
-            focus: SortFocus::default(),
             has_unapplied_changes: false,
             history_limit: 1000,
             status: None,
@@ -171,6 +162,90 @@ impl SortModal {
                 self.has_unapplied_changes = true;
             }
         }
+    }
+
+    /// ← on a column: the cycle of Space backwards, none → descending → ascending →
+    /// none.
+    pub fn cycle_sort_back(&mut self) {
+        let Some(idx) = self.table_state.selected() else {
+            return;
+        };
+        let Some(&(real_idx, _)) = self.filtered_columns().get(idx) else {
+            return;
+        };
+        let col = &self.columns[real_idx];
+        match (col.sort_order, col.sort_descending) {
+            (None, _) => {
+                let max_order = self.columns.iter().filter_map(|c| c.sort_order).max();
+                self.columns[real_idx].sort_order = Some(max_order.unwrap_or(0) + 1);
+                self.columns[real_idx].sort_descending = true;
+            }
+            (Some(_), true) => self.columns[real_idx].sort_descending = false,
+            (Some(_), false) => self.unsort_index(real_idx),
+        }
+        self.has_unapplied_changes = true;
+    }
+
+    /// The sort, as indices into `columns`, first key first.
+    pub fn sort_entries(&self) -> Vec<usize> {
+        let mut entries: Vec<(usize, usize)> = self
+            .columns
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| c.sort_order.map(|o| (o, i)))
+            .collect();
+        entries.sort_unstable();
+        entries.into_iter().map(|(_, i)| i).collect()
+    }
+
+    /// Flip the direction of the sort's `entry`th key.
+    pub fn flip_sort(&mut self, entry: usize) {
+        if let Some(&i) = self.sort_entries().get(entry) {
+            self.columns[i].sort_descending = !self.columns[i].sort_descending;
+            self.has_unapplied_changes = true;
+        }
+    }
+
+    /// Drop the sort's `entry`th key; the keys after it move up.
+    pub fn remove_sort_entry(&mut self, entry: usize) {
+        if let Some(&i) = self.sort_entries().get(entry) {
+            self.unsort_index(i);
+            self.has_unapplied_changes = true;
+        }
+    }
+
+    /// Move the sort's `entry`th key one place earlier or later. Returns where it is
+    /// now.
+    pub fn move_sort_entry(&mut self, entry: usize, earlier: bool) -> usize {
+        let entries = self.sort_entries();
+        let to = if earlier {
+            entry.checked_sub(1)
+        } else {
+            Some(entry + 1).filter(|to| *to < entries.len())
+        };
+        let (Some(to), Some(&from_i)) = (to, entries.get(entry)) else {
+            return entry;
+        };
+        let to_i = entries[to];
+        let a = self.columns[from_i].sort_order;
+        self.columns[from_i].sort_order = self.columns[to_i].sort_order;
+        self.columns[to_i].sort_order = a;
+        self.has_unapplied_changes = true;
+        to
+    }
+
+    /// Add the column named `name` as the sort's last key, ascending. Returns its
+    /// place in the sort; `None` when no column has that name. A column already
+    /// sorted keeps its place.
+    pub fn add_sort(&mut self, name: &str) -> Option<usize> {
+        let i = self.columns.iter().position(|c| c.name == name)?;
+        if self.columns[i].sort_order.is_none() {
+            let max_order = self.columns.iter().filter_map(|c| c.sort_order).max();
+            self.columns[i].sort_order = Some(max_order.unwrap_or(0) + 1);
+            self.columns[i].sort_descending = false;
+            self.has_unapplied_changes = true;
+        }
+        self.sort_entries().iter().position(|&e| e == i)
     }
 
     /// Del on a column: drop it from the sort outright, wherever in the cycle
@@ -442,25 +517,6 @@ impl SortModal {
         }
     }
 
-    /// Advance focus within body only (Filter → ColumnList). Returns true if we were
-    /// at the end and the caller should wrap to the tab bar.
-    pub fn next_body_focus(&mut self) -> bool {
-        match self.focus {
-            SortFocus::ColumnList => return true,
-            SortFocus::Filter => self.focus = SortFocus::ColumnList,
-        }
-        false
-    }
-
-    /// Retreat focus within body only. Returns true if we were on Filter and caller should move to TabBar.
-    pub fn prev_body_focus(&mut self) -> bool {
-        match self.focus {
-            SortFocus::Filter => return true,
-            SortFocus::ColumnList => self.focus = SortFocus::Filter,
-        }
-        false
-    }
-
     pub fn clear_selection(&mut self) {
         // Reset all column state: clear sorting, unlock all, reset display order
         for (idx, col) in self.columns.iter_mut().enumerate() {
@@ -679,7 +735,6 @@ mod tests {
         assert_eq!(modal.filter_input.value(), "");
         assert!(modal.columns.is_empty());
         assert!(modal.table_state.selected().is_none());
-        assert_eq!(modal.focus, SortFocus::Filter);
     }
 
     #[test]
@@ -812,15 +867,38 @@ mod tests {
     }
 
     #[test]
-    fn body_focus_walks_find_then_list() {
+    fn the_sort_list_flips_moves_and_drops_entries() {
         let mut modal = SortModal::new();
-        assert_eq!(modal.focus, SortFocus::Filter);
-        assert!(!modal.next_body_focus());
-        assert_eq!(modal.focus, SortFocus::ColumnList);
-        assert!(modal.next_body_focus(), "the list is the end of the body");
-        assert!(!modal.prev_body_focus());
-        assert_eq!(modal.focus, SortFocus::Filter);
-        assert!(modal.prev_body_focus(), "find is the start of the body");
+        modal.columns = columns(&["A", "B", "C"]);
+        assert_eq!(modal.add_sort("C"), Some(0));
+        assert_eq!(modal.add_sort("A"), Some(1));
+        assert_eq!(
+            modal.add_sort("A"),
+            Some(1),
+            "a sorted column keeps its place"
+        );
+        assert_eq!(modal.get_sorted_columns(), ["C", "A"]);
+        modal.flip_sort(1);
+        assert_eq!(modal.sorted_columns_and_directions().1, [false, true]);
+        assert_eq!(modal.move_sort_entry(1, true), 0);
+        assert_eq!(modal.get_sorted_columns(), ["A", "C"]);
+        assert_eq!(modal.move_sort_entry(0, true), 0, "the first stays first");
+        modal.remove_sort_entry(0);
+        assert_eq!(modal.get_sorted_columns(), ["C"]);
+        assert_eq!(modal.columns[2].sort_order, Some(1), "renumbered");
+    }
+
+    #[test]
+    fn the_sort_cycles_both_ways() {
+        let mut modal = SortModal::new();
+        modal.columns = columns(&["A"]);
+        modal.table_state.select(Some(0));
+        modal.cycle_sort_back();
+        assert_eq!(modal.sorted_columns_and_directions().1, [true]);
+        modal.cycle_sort_back();
+        assert_eq!(modal.sorted_columns_and_directions().1, [false]);
+        modal.cycle_sort_back();
+        assert!(modal.get_sorted_columns().is_empty());
     }
 
     #[test]

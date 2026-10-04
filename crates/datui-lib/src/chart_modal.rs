@@ -357,23 +357,6 @@ impl ChartModal {
         }
     }
 
-    pub fn next_focus(&mut self) {
-        let order = self.row_order();
-        self.focus = match order.iter().position(|&f| f == self.focus) {
-            Some(pos) => order[(pos + 1) % order.len()],
-            None => order[0],
-        };
-    }
-
-    pub fn prev_focus(&mut self) {
-        let order = self.row_order();
-        self.focus = match order.iter().position(|&f| f == self.focus) {
-            Some(pos) if pos > 0 => order[pos - 1],
-            Some(_) => order[order.len() - 1],
-            None => order[0],
-        };
-    }
-
     /// Switch the chart kind directly (the 1-6 keys). Focus lands on the new
     /// form's first row; a Picker open for the old form dies with it.
     pub fn set_chart_kind(&mut self, kind: ChartKind) {
@@ -522,6 +505,24 @@ impl ChartModal {
             state.select_original(i);
         }
         self.picker = Some(state);
+    }
+
+    /// ←/→ on a pick-one column row: the next or previous column, chosen at once.
+    /// A row with nothing chosen yet starts at the first (→) or the last (←).
+    pub fn step_picker_row(&mut self, delta: i8) {
+        if !self.is_picker_row(self.focus) || self.is_multi_row(self.focus) {
+            return;
+        }
+        let chosen = self.focused_row_index(&self.picker_items()).is_some();
+        self.open_picker();
+        if let Some(picker) = self.picker.as_mut() {
+            if delta < 0 {
+                picker.move_up();
+            } else if chosen {
+                picker.move_down();
+            }
+        }
+        self.picker_choose();
     }
 
     /// The item under the open Picker's cursor.
@@ -847,6 +848,38 @@ impl ChartModal {
     }
 }
 
+impl crate::form::Form for ChartModal {
+    type Field = ChartFocus;
+
+    fn fields(&self) -> Vec<(ChartFocus, crate::form::FieldKind)> {
+        use crate::form::FieldKind;
+        self.row_order()
+            .iter()
+            .map(|&row| {
+                let kind = if self.is_multi_row(row) {
+                    FieldKind::Picker { multi: true }
+                } else if self.is_picker_row(row) {
+                    FieldKind::Picker { multi: false }
+                } else if self.is_toggle_row(row) {
+                    FieldKind::Checkbox
+                } else {
+                    // The style, the ranges and the numbers step.
+                    FieldKind::Choice
+                };
+                (row, kind)
+            })
+            .collect()
+    }
+
+    fn focused(&self) -> ChartFocus {
+        self.focus
+    }
+
+    fn set_focused(&mut self, field: ChartFocus) {
+        self.focus = field;
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -862,6 +895,7 @@ mod tests {
 
     use super::{ChartColumns, ChartFocus, ChartKind, ChartModal, ChartType, Y_SERIES_MAX};
     use crate::chart_data::{BarOrder, BarValue};
+    use crate::form::Form;
 
     fn columns<'a>(numeric: &'a [String], datetime: &'a [String]) -> ChartColumns<'a> {
         ChartColumns {
@@ -914,7 +948,7 @@ mod tests {
         let mut modal = open_modal();
         let walked: Vec<ChartFocus> = (0..8)
             .map(|_| {
-                modal.next_focus();
+                modal.focus_next();
                 modal.focus
             })
             .collect();
@@ -931,7 +965,7 @@ mod tests {
                 ChartFocus::Style,
             ]
         );
-        modal.prev_focus();
+        modal.focus_prev();
         assert_eq!(modal.focus, ChartFocus::LimitRows);
     }
 
@@ -1178,7 +1212,7 @@ mod tests {
         modal.picker_choose();
         assert_eq!(modal.bar_category.as_deref(), Some("year"));
 
-        modal.next_focus();
+        modal.focus_next();
         assert_eq!(
             modal.picker_items(),
             ["Count", "delay"],
@@ -1202,7 +1236,7 @@ mod tests {
         modal.picker = None;
         assert!(modal.can_export());
 
-        modal.next_focus();
+        modal.focus_next();
         assert_eq!(modal.bar_order, BarOrder::Value);
         modal.adjust_number_row(1);
         assert_eq!(modal.bar_order, BarOrder::Label);

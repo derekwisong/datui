@@ -2070,15 +2070,13 @@ mod tests {
     #[test]
     fn ctrl_c_quits_from_the_sort_and_chart_search_boxes() {
         use crate::chart_modal::ChartFocus;
-        use crate::sort_filter_modal::{SortFilterFocus, SortFilterTab};
-        use crate::sort_modal::SortFocus;
+        use crate::sort_filter_modal::{SortFilterField, SortFilterTab};
 
         let (mut p, _dir) = loaded_pump();
         p.app.input_mode = InputMode::SortFilter;
         p.app.sort_filter_modal.active = true;
-        p.app.sort_filter_modal.active_tab = SortFilterTab::Sort;
-        p.app.sort_filter_modal.focus = SortFilterFocus::Body;
-        p.app.sort_filter_modal.sort.focus = SortFocus::Filter;
+        p.app.sort_filter_modal.active_tab = SortFilterTab::Columns;
+        p.app.sort_filter_modal.focus = SortFilterField::Find;
         assert!(
             p.app.text_field_focused(),
             "the sort search is a text field"
@@ -3234,7 +3232,11 @@ mod tests {
         use datui_cli::keys::{self, Context};
         let ch = |c: char| plain(KeyCode::Char(c));
         let shift = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
-        let tab = plain(KeyCode::Tab);
+        let (up, down, right) = (
+            plain(KeyCode::Up),
+            plain(KeyCode::Down),
+            plain(KeyCode::Right),
+        );
         // How each screen is reached from the table, and the groups it opens on.
         let screens: Vec<(Context, Vec<KeyEvent>, &[&str])> = vec![
             (
@@ -3254,15 +3256,27 @@ mod tests {
                 vec![shift('F')],
                 &["Explore", "Output"],
             ),
-            // The body, past the tab bar (and, for Sort & Filter, its find field).
+            // What is in effect, where Sort & Filter opens; then the Columns tab's
+            // list: up to the tab bar, across, and down past find.
             (
                 Context::SortFilter,
-                vec![ch('s'), tab, tab],
-                &["Sidebar", "Columns"],
+                vec![ch('s')],
+                &["Sidebar", "In effect"],
             ),
-            (Context::PivotMelt, vec![ch('p'), tab], &["Form"]),
+            (
+                Context::SortFilter,
+                vec![ch('s'), up, right, down, down],
+                &["Columns"],
+            ),
+            // On the tab bar, a choice, for ← / → to step.
+            (Context::PivotMelt, vec![ch('p')], &["Form"]),
             (Context::Chart, vec![ch('c')], &["Options", "Plot"]),
-            (Context::Export, vec![ch('e')], &["Form"]),
+            // Back from the path to the format, a choice, for ← / → to step.
+            (
+                Context::Export,
+                vec![ch('e'), plain(KeyCode::BackTab)],
+                &["Form"],
+            ),
             (Context::Copy, vec![ch('y')], &["Form"]),
             (Context::Views, vec![ch('v')], &["List"]),
             // Not the home screen: what it lists, and so what a key there changes, is
@@ -3299,8 +3313,13 @@ mod tests {
             // A sample, a followed file.
             (Context::ValueCounts, "a"),
             (Context::ValueCounts, "t"),
-            // The Filters tab.
-            (Context::SortFilter, "a"),
+            // Nothing in effect: the sidebar opens on "add sort", which has no value
+            // to step, and there is nothing to remove or clear.
+            (Context::SortFilter, "← / →"),
+            (Context::SortFilter, "d / Del"),
+            (Context::SortFilter, "C"),
+            // History: none in a fresh session.
+            (Context::Export, "Ctrl+P / Ctrl+N"),
             // A range: Enter in the help presses its first.
             (Context::SortFilter, "1-9"),
             (Context::Chart, "1-6"),

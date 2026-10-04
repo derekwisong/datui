@@ -48,6 +48,7 @@
 - [Command-line options](reference/command-line-options.md)
 - [Manual pages](reference/manual-pages.md)
 - [Keyboard shortcuts](reference/keyboard-shortcuts.md)
+- [Dialogs](reference/dialogs.md)
 - [Settings](reference/settings.md)
 - [Environment variables](reference/environment.md)
 - [Query syntax](reference/query-syntax.md)

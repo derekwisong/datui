@@ -3,8 +3,16 @@
 <kbd>s</kbd> opens the **Sort & Filter** sidebar, where you sort, filter,
 hide, move, freeze and size columns.
 
-It has two tabs, **Columns** and **Filters**; <kbd>←</kbd> <kbd>→</kbd> switch
-them, and <kbd>Tab</kbd> moves between the tab bar and the body.
+It opens on what is in effect: the [sort and the filters](#sort--filter-tab),
+one row each. The [Columns tab](#columns-tab) beside it lists every column.
+The tab bar is the first row: <kbd>←</kbd> <kbd>→</kbd> there switch tabs.
+The sidebar takes the keys every [dialog](../reference/dialogs.md) takes:
+
+| Key | Does |
+|---|---|
+| <kbd>↓</kbd> <kbd>↑</kbd> or <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Next or previous row, wrapping |
+| <kbd>←</kbd> <kbd>→</kbd> | Change the row's value: the tab, a sort's direction, a filter's and/or, a column's sort |
+| <kbd>Space</kbd> | Act on the row: flip a sort, edit a filter, add one, step a column's sort |
 
 ## Filter, sort and hide columns
 
@@ -14,14 +22,14 @@ from eight chains, nutrients per item. Find the chicken dishes with at least
 
 1. Press <kbd>/</kbd>, then <kbd>Ctrl</kbd>+<kbd>T</kbd> for **Text**. Type
    `chicken` and press <kbd>Enter</kbd>: 178 of 515.
-2. Press <kbd>s</kbd>, <kbd>→</kbd> for **Filters**, <kbd>Tab</kbd> into the
-   list and <kbd>Enter</kbd> on `add filter…`. Type `protein` and press
+2. Press <kbd>s</kbd>: the sidebar opens on `add sort…`. Press <kbd>↓</kbd>
+   to `add filter…` and <kbd>Space</kbd>. Type `protein` and press
    <kbd>Enter</kbd>, `>=` and <kbd>Enter</kbd>, `40` and <kbd>Enter</kbd>.
-3. Press <kbd>Shift</kbd>+<kbd>Tab</kbd>, <kbd>←</kbd> for **Columns** and
-   <kbd>Tab</kbd> into the find field. Type `calories`, press <kbd>↓</kbd> to
-   reach the row, then <kbd>Space</kbd> twice for descending.
-4. Press <kbd>Shift</kbd>+<kbd>Tab</kbd> back to the find field and
-   <kbd>Ctrl</kbd>+<kbd>U</kbd> to clear it. Type `vit`, then <kbd>↓</kbd>
+3. Press <kbd>↑</kbd> to `add sort…` and <kbd>Space</kbd>. Type `calories`
+   and press <kbd>Enter</kbd>, then <kbd>Space</kbd> on the new sort for
+   descending.
+4. Press <kbd>↑</kbd> to the tab bar, <kbd>→</kbd> for **Columns** and
+   <kbd>↓</kbd> into the find field. Type `vit`, then <kbd>↓</kbd>
    <kbd>v</kbd> <kbd>↓</kbd> <kbd>v</kbd> to hide `vit_a` and `vit_c`.
 5. Press <kbd>Enter</kbd> to apply.
 
@@ -39,7 +47,7 @@ cross.
 | <kbd>+</kbd> | Keep the rows whose value in this column is the cell's; on a null cell, keep the nulls |
 | <kbd>-</kbd> | Drop those rows; on a null cell, drop the nulls |
 
-Each press adds a row to the [Filters tab](#filters-tab), joined to the others
+Each press adds a filter to the [Sort & Filter tab](#sort--filter-tab), joined to the others
 with **and**, so you can edit or delete it there and <kbd>R</kbd> clears it. The
 value is the cell's exactly as stored: a float to its last digit, so `0.1 + 0.2`
 and `0.3` are two values even where the table draws both as `0.3`, and a date
@@ -50,10 +58,10 @@ binary cell has no value to compare; the bar says so.
 
 | Key | Does |
 |---|---|
-| <kbd>Enter</kbd> | Apply everything staged and close (on the Filters tab it adds or edits; <kbd>a</kbd> applies there, outside the row editor) |
+| <kbd>Enter</kbd> | Apply everything staged and close, from any row (in the filter editor, <kbd>Enter</kbd> takes the step) |
 | <kbd>Ctrl</kbd>+<kbd>Enter</kbd> or <kbd>Ctrl</kbd>+<kbd>J</kbd> | Apply from anywhere, including mid-edit — the row in progress is saved. <kbd>Ctrl</kbd>+<kbd>Enter</kbd> needs a terminal that tells it from <kbd>Enter</kbd>; <kbd>Ctrl</kbd>+<kbd>J</kbd> works on every terminal |
-| <kbd>Esc</kbd> | Close without changing anything |
-| <kbd>C</kbd> | Clear the current tab's staged state (with the body focused) |
+| <kbd>Esc</kbd> | Close an open picker or filter editor; otherwise close without changing anything |
+| <kbd>C</kbd> | Clear the current tab's staged state |
 
 Sidebar filters and sort apply to the current query or reshape result. Running
 a new query clears them, so apply the query first and the sidebar settings
@@ -69,12 +77,13 @@ is actually applied.
 One row per column, with its lock, its place and direction in the sort
 (`1▲`, `2▼`), a width set by hand, and a `⊘` when it is hidden. Each sorted column's header in the
 table carries its own direction mark (▲/▼), so the sort and <kbd>r</kbd>
-reversing it are visible at a glance. Type in the find field to narrow the
-list, then:
+reversing it are visible at a glance. <kbd>↓</kbd> from the tab bar reaches
+the find field; type in it to narrow the list, and <kbd>↓</kbd> again goes to
+the list, on the table's column cursor (or the first match), then:
 
 | Key | Action |
 |---|---|
-| <kbd>Space</kbd> | Cycle this column's sort: none, ascending, descending |
+| <kbd>Space</kbd> <kbd>→</kbd> | Cycle this column's sort: none, ascending, descending (<kbd>←</kbd> steps back) |
 | <kbd>Del</kbd> | Remove this column from the sort |
 | <kbd>1</kbd> to <kbd>9</kbd> | Put this column at that position in the sort order; <kbd>0</kbd> removes it. A digit past the end of the order says so on the status line |
 | <kbd>[</kbd> <kbd>]</kbd> | Move this column earlier or later in the sort order |
@@ -110,7 +119,7 @@ the first page they show.
 At the table, the [column cursor](#move-across-a-wide-table)'s column takes
 <kbd>&lt;</kbd> <kbd>&gt;</kbd> (4 cells narrower or wider), <kbd>=</kbd> (fit
 to the rows on screen) and <kbd>w</kbd> (automatic) at once, so you see each
-change as you make it. The Sort tab stages the same keys for any column until
+change as you make it. The Columns tab stages the same keys for any column until
 <kbd>Enter</kbd>.
 
 A width set with <kbd>&lt;</kbd> <kbd>&gt;</kbd>, <kbd>=</kbd> or <kbd>f</kbd> is kept through
@@ -193,26 +202,33 @@ The bottom bar says where the cursor is: `col 43 of 300` (`col 43/300` on a
 bar under 100 cells). It counts the columns the table shows, frozen first;
 hidden columns are not counted.
 
-## Filters tab
+## Sort & Filter tab
 
 ![Adding filters in the sidebar](../demos/07-filtering.gif)
 
-Each filter is one row: column, operator, value, and how it joins the row
-above (**and**/**or**). The cursor walks the rows plus a trailing
-`add filter…` row.
+What is in effect, under two rules: **Sort**, one row per key in order
+(`1 ▲ restaurant`), then `add sort…`; **Filters**, one row per filter
+(column, operator, value, and how it joins the row above: **and**/**or**),
+then `add filter…`.
 
-| Key | Action |
-|---|---|
-| <kbd>Enter</kbd> | Edit this row, or start a new filter on the add row |
-| <kbd>Space</kbd> | Toggle and/or on this row |
-| <kbd>d</kbd> <kbd>Del</kbd> | Delete this row |
+| Key | On a sort | On a filter |
+|---|---|---|
+| <kbd>Space</kbd> | Flip ascending and descending | Edit it: column, operator, value |
+| <kbd>←</kbd> <kbd>→</kbd> | Flip ascending and descending | Toggle **and**/**or** |
+| <kbd>[</kbd> <kbd>]</kbd> | Move it earlier or later in the sort | Move it up or down the list |
+| <kbd>d</kbd> <kbd>Del</kbd> | Remove it | Remove it |
 
-Editing walks three steps on the row: pick the column (type to narrow,
+<kbd>Space</kbd> on `add sort…` opens a list of the columns not sorted yet, on
+the table's column cursor: type to narrow, <kbd>Enter</kbd> adds the column as
+the last key, ascending. <kbd>Space</kbd> on `add filter…` starts a new
+filter on the column cursor's column. <kbd>C</kbd> removes every sort and
+filter.
+
+Editing a filter walks three steps on the row: pick the column (type to narrow,
 <kbd>↑</kbd> <kbd>↓</kbd> move, <kbd>Enter</kbd> chooses), pick the operator
 the same way, then type the value — <kbd>Enter</kbd> saves the row, and
-<kbd>Esc</kbd> abandons the edit and only the edit. That sequence works on
-every terminal: finish the row with <kbd>Enter</kbd>, then press
-<kbd>a</kbd> to apply.
+<kbd>Esc</kbd> abandons the edit and only the edit. Then <kbd>Enter</kbd>
+applies.
 
 | Operator | Meaning |
 |---|---|

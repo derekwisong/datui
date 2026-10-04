@@ -1,16 +1,19 @@
 //! The view modal's keys.
 
+use crate::form::FormKey;
 use crate::widgets::view_modal::{FormFocus, ViewModalMode};
 use crate::{App, AppEvent};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 
 impl App {
     /// Keys while the view modal is open.
     pub(crate) fn view_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let form = self.view_modal.mode != ViewModalMode::List;
-        let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
         // The list's status line is about the last key; this one replaces it.
         self.view_modal.status = None;
+        if form && !self.view_modal.delete_confirm && self.view_modal.score_details.is_none() {
+            return self.view_form_key(event);
+        }
         match event.code {
             KeyCode::Esc => {
                 if self.view_modal.score_details.is_some() {
@@ -84,32 +87,24 @@ impl App {
             KeyCode::Char('i') if !form => {
                 self.view_modal.score_details = self.view_score_details();
             }
-            // The form.
-            KeyCode::Tab if form => self.view_modal.next_focus(),
-            KeyCode::BackTab if form => self.view_modal.prev_focus(),
-            // Ctrl+J too: it works on every terminal, and some send
-            // Ctrl+Enter as Ctrl+J.
-            KeyCode::Enter | KeyCode::Char('j') if form && ctrl => self.save_view_form(),
-            KeyCode::Enter if form => {
-                // Enter saves from anywhere; inside the multiline
-                // description it types, and the footer names Ctrl+J.
-                if self.view_modal.form_focus == FormFocus::Description {
-                    let event = KeyEvent::new(KeyCode::Enter, KeyModifiers::empty());
-                    self.view_modal.description_input.handle_key(&event, None);
-                } else {
-                    self.save_view_form();
-                }
+            _ => {}
+        }
+        None
+    }
+
+    /// Keys in the save/edit form: the shared form keys (`crate::form`), then what
+    /// each row does with them.
+    fn view_form_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+        match crate::form::key(&mut self.view_modal, event) {
+            // Back to the list; the form's staged edits die with it.
+            FormKey::Cancel => self.view_modal.exit_form(),
+            FormKey::Submit => self.save_view_form(),
+            FormKey::Act(FormFocus::Matching) => self.view_modal.toggle_matching(),
+            FormKey::Act(FormFocus::SchemaMatch) => {
+                self.view_modal.schema_match_enabled = !self.view_modal.schema_match_enabled;
             }
-            KeyCode::Up | KeyCode::Down
-                if form && self.view_modal.form_focus == FormFocus::Description =>
-            {
-                let event = KeyEvent::new(event.code, KeyModifiers::empty());
-                self.view_modal.description_input.handle_key(&event, None);
-            }
-            KeyCode::Up if form => self.view_modal.prev_focus(),
-            KeyCode::Down if form => self.view_modal.next_focus(),
-            KeyCode::PageUp | KeyCode::PageDown
-                if form && self.view_modal.form_focus == FormFocus::Description =>
+            FormKey::Text(FormFocus::Description)
+                if matches!(event.code, KeyCode::PageUp | KeyCode::PageDown) =>
             {
                 // PageUp/PageDown move through the description five lines at a time.
                 const DESCRIPTION_PAGE_LINES: isize = 5;
@@ -122,34 +117,13 @@ impl App {
                     .description_input
                     .move_cursor_by_lines(delta);
             }
-            KeyCode::Char(' ') if form && self.view_modal.form_focus == FormFocus::Matching => {
-                self.view_modal.toggle_matching();
-            }
-            KeyCode::Char(' ') if form && self.view_modal.form_focus == FormFocus::SchemaMatch => {
-                self.view_modal.schema_match_enabled = !self.view_modal.schema_match_enabled;
-            }
-            KeyCode::Char(_) if form => {
-                if self.view_modal.form_focus == FormFocus::Name {
+            FormKey::Text(field) => {
+                if field == FormFocus::Name {
                     // The error clears as soon as the name changes.
                     self.view_modal.name_error = None;
                 }
-                // The event goes through whole: text fields keep their
-                // readline bindings, so Ctrl+W must arrive as Ctrl+W.
-                if let Some(input) = self.view_modal.focused_input_mut() {
-                    input.handle_key(event, None);
-                }
-            }
-            KeyCode::Backspace
-            | KeyCode::Delete
-            | KeyCode::Left
-            | KeyCode::Right
-            | KeyCode::Home
-            | KeyCode::End
-                if form =>
-            {
-                if self.view_modal.form_focus == FormFocus::Name {
-                    self.view_modal.name_error = None;
-                }
+                // The event goes through whole: text fields keep their readline
+                // bindings, so Ctrl+W must arrive as Ctrl+W.
                 if let Some(input) = self.view_modal.focused_input_mut() {
                     input.handle_key(event, None);
                 }

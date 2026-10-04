@@ -130,11 +130,15 @@ A renamed field keeps its original name as its `doc` in the file's schema.
 
 ## Keys
 
+The dialog opens on the path and takes the keys every
+[dialog](../reference/dialogs.md) takes:
+
 | Key | Action |
 |---|---|
-| <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between format, path and options |
-| <kbd>↑</kbd> <kbd>↓</kbd> | Change the format, or the compression |
-| <kbd>Space</kbd> | Toggle a checkbox |
+| <kbd>↓</kbd> <kbd>↑</kbd> or <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd> | Move between format, path and options |
+| <kbd>←</kbd> <kbd>→</kbd> | Change the format, or the compression; in the path, move the cursor |
+| <kbd>Space</kbd> | Toggle a checkbox; the next format or compression |
+| <kbd>Ctrl</kbd>+<kbd>P</kbd> <kbd>Ctrl</kbd>+<kbd>N</kbd> | In the path: the paths exported to before |
 | <kbd>Enter</kbd> | Export, from anywhere in the form. On a blank path the form says "Enter a file path." instead |
 | <kbd>?</kbd> | Help |
 | <kbd>Esc</kbd> | Close without exporting |
@@ -152,7 +156,7 @@ path intact. The chart's export dialog asks the same way.
 The CSV **Delimiter** starts as `--delimiter` when given, else a comma. Only
 its first ASCII character counts, and <kbd>Tab</kbd> moves focus, so a tab
 cannot be typed there: pick TSV. On a narrow terminal the dialog stacks into
-one column, format first; <kbd>↑</kbd> <kbd>↓</kbd> still change it.
+one column, format first; <kbd>←</kbd> <kbd>→</kbd> still change it.
 
 ## Overwriting
 

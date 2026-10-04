@@ -1,46 +1,39 @@
-//! Sort & Filter sidebar: a Columns tab (every per-column property in one
-//! flat list) and a Filters tab (one row per statement, edited inline through
-//! Pickers). Built on the `widgets::ui` kit; the rail marks focus.
+//! Sort & Filter sidebar: what is in effect first — the sorts, then the filters,
+//! each a row, the filters edited inline through Pickers — and a Columns tab with
+//! every per-column property in one flat list. Built on the `widgets::ui` kit; the
+//! rail marks focus.
 
 use crate::filter_modal::{FilterEditStep, FilterModal};
 use crate::render::context::RenderContext;
-use crate::sort_filter_modal::{SortFilterFocus, SortFilterModal, SortFilterTab};
-use crate::sort_modal::SortFocus;
+use crate::sort_filter_modal::{SortFilterField, SortFilterModal, SortFilterTab};
 use crate::widgets::column_widths::WidthChoice;
-use crate::widgets::ui::{HintBar, Picker, Surface};
+use crate::widgets::ui::{HintBar, Picker, SectionRule, Surface};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
-// (the inline pickers size themselves to the room below the edit row)
-
 /// Render the Sort & Filter sidebar into the given area.
 pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &RenderContext) {
-    let sort_tab = modal.active_tab == SortFilterTab::Sort;
-    let editing = modal.filter.editor.is_some();
+    let columns_tab = modal.active_tab == SortFilterTab::Columns;
+    let editing = modal.filter.editor.is_some() || modal.sort_picker.is_some();
 
-    // The footer names what Enter does right now: apply, or — while the
-    // Filters list or its editor owns Enter — the apply key that still works.
-    // That is Ctrl+J, not Ctrl+Enter: without the keyboard-enhancement
-    // protocol many terminals send Ctrl+Enter as a plain Enter.
+    // The footer names what Enter does right now: apply, or — while the filter
+    // editor owns Enter — the apply key that still works. That is Ctrl+J, not
+    // Ctrl+Enter: without the keyboard-enhancement protocol many terminals send
+    // Ctrl+Enter as a plain Enter.
     let footer = if editing {
         HintBar::from_ctx(ctx).hint_weighted("^J", "Apply", 2)
-    } else if sort_tab {
-        HintBar::from_ctx(ctx)
-            .hint_weighted("Enter", "Apply", 3)
-            .hint_weighted("Tab", "Next", 1)
-            .hint_weighted("Esc", "Cancel", 4)
     } else {
         HintBar::from_ctx(ctx)
-            .hint_weighted("a", "Apply", 3)
+            .hint_weighted("Enter", "Apply", 3)
             .hint_weighted("Tab", "Next", 1)
             .hint_weighted("Esc", "Cancel", 4)
     };
     let footer = if !editing && modal.sort.has_unapplied_changes {
         // Staged edits give the apply chip a quiet accent: something is waiting.
-        footer.accent(if sort_tab { "Enter" } else { "a" })
+        footer.accent("Enter")
     } else {
         footer
     };
@@ -54,7 +47,7 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
     // Tab line: the active tab carries the accent; the rail says the tab bar
     // itself holds focus.
     let g = crate::glyphs::get();
-    let on_tab_bar = modal.focus == SortFilterFocus::TabBar;
+    let on_tab_bar = modal.focus == SortFilterField::TabBar;
     // The rail sits beside the active tab's name, so it never reads as
     // marking a tab the surface is not on. The slot is reserved either way,
     // so focus arriving or leaving moves nothing.
@@ -69,11 +62,11 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
         }
     };
     let tab_line = Line::from(vec![
-        Span::styled(mark(sort_tab), Style::default().fg(ctx.accent)),
-        Span::styled("Columns", tab_style(sort_tab)),
+        Span::styled(mark(!columns_tab), Style::default().fg(ctx.accent)),
+        Span::styled("Sort & Filter", tab_style(!columns_tab)),
         Span::styled(format!(" {}", g.rule), Style::default().fg(ctx.dimmed)),
-        Span::styled(mark(!sort_tab), Style::default().fg(ctx.accent)),
-        Span::styled("Filters", tab_style(!sort_tab)),
+        Span::styled(mark(columns_tab), Style::default().fg(ctx.accent)),
+        Span::styled("Columns", tab_style(columns_tab)),
     ]);
     Paragraph::new(tab_line).render(
         Rect {
@@ -94,50 +87,217 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
         height: content.height.saturating_sub(2),
         ..content
     };
-    let hints = if sort_tab {
+    if columns_tab {
         render_columns_tab(body, buf, modal, ctx);
-        // Why the last key did nothing takes the hint line until the next key,
-        // so arriving and leaving move nothing.
-        if let Some(status) = &modal.sort.status {
-            Paragraph::new(status.as_str())
-                .style(Style::default().fg(ctx.warning))
-                .render(hints_area, buf);
-            return;
-        }
-        HintBar::from_ctx(ctx)
+    } else {
+        render_in_effect(body, buf, modal, ctx);
+    }
+    // Why the last key did nothing, or a value that does not read as its column's
+    // type, takes the hint line until the next key, so arriving and leaving move
+    // nothing.
+    if let Some(status) = &modal.sort.status {
+        Paragraph::new(status.as_str())
+            .style(Style::default().fg(ctx.warning))
+            .render(hints_area, buf);
+        return;
+    }
+    let lr = g.updown_lr;
+    let hints = match (modal.focus, modal.filter.editor.as_ref().map(|e| e.step)) {
+        (_, Some(FilterEditStep::Value)) => HintBar::from_ctx(ctx)
+            .hint_weighted("Enter", "Save", 2)
+            .hint_weighted("Esc", "Back", 1),
+        (_, Some(_)) => HintBar::from_ctx(ctx)
+            .hint_weighted("type", "Narrow", 1)
+            .hint_weighted("Enter", "Next", 3)
+            .hint_weighted("Esc", "Back", 2),
+        _ if modal.sort_picker.is_some() => HintBar::from_ctx(ctx)
+            .hint_weighted("type", "Narrow", 1)
+            .hint_weighted("Enter", "Add", 3)
+            .hint_weighted("Esc", "Back", 2),
+        (SortFilterField::TabBar, _) => HintBar::from_ctx(ctx).hint_weighted(lr, "Tabs", 1),
+        (SortFilterField::Sort(_), _) => HintBar::from_ctx(ctx)
+            .hint_weighted("Space", "Flip", 4)
+            .hint_weighted("[ ]", "Move", 3)
+            .hint_weighted("d", "Remove", 2)
+            .hint_weighted("C", "Clear", 1),
+        // The first filter joins nothing, so it has no and/or to toggle.
+        (SortFilterField::Filter(0), _) => HintBar::from_ctx(ctx)
+            .hint_weighted("Space", "Edit", 5)
+            .hint_weighted("[ ]", "Move", 3)
+            .hint_weighted("d", "Remove", 2)
+            .hint_weighted("C", "Clear", 1),
+        (SortFilterField::Filter(_), _) => HintBar::from_ctx(ctx)
+            .hint_weighted("Space", "Edit", 5)
+            .hint_weighted(lr, "And/Or", 4)
+            .hint_weighted("[ ]", "Move", 3)
+            .hint_weighted("d", "Remove", 2)
+            .hint_weighted("C", "Clear", 1),
+        (SortFilterField::AddSort | SortFilterField::AddFilter, _) => HintBar::from_ctx(ctx)
+            .hint_weighted("Space", "Add", 2)
+            .hint_weighted("C", "Clear", 1),
+        (SortFilterField::Find, _) => HintBar::from_ctx(ctx).hint_weighted("type", "Find", 1),
+        (SortFilterField::Column(_), _) => HintBar::from_ctx(ctx)
             .hint_weighted("Space", "Sort", 7)
             .hint_weighted("1-9", "Jump", 3)
             .hint_weighted("L", "Lock", 6)
             .hint_weighted("v", "Hide", 4)
             .hint_weighted("<>", "Width", 5)
             .hint_weighted("f", "Fit", 2)
-            .hint_weighted("C", "Clear", 1)
-    } else {
-        let filters_focused = modal.focus == SortFilterFocus::Body;
-        render_filters_tab(body, buf, &mut modal.filter, filters_focused, ctx);
-        // A value that does not read as its column's type, until the next key.
-        if let Some(status) = &modal.sort.status {
-            Paragraph::new(status.as_str())
-                .style(Style::default().fg(ctx.warning))
-                .render(hints_area, buf);
-            return;
-        }
-        match modal.filter.editor.as_ref().map(|editor| editor.step) {
-            None => HintBar::from_ctx(ctx)
-                .hint_weighted("Enter", "Add/Edit", 5)
-                .hint_weighted("Space", "And/Or", 3)
-                .hint_weighted("d", "Delete", 4)
-                .hint_weighted("C", "Clear", 2),
-            Some(FilterEditStep::Value) => HintBar::from_ctx(ctx)
-                .hint_weighted("Enter", "Save", 2)
-                .hint_weighted("Esc", "Back", 1),
-            Some(_) => HintBar::from_ctx(ctx)
-                .hint_weighted("type", "Narrow", 1)
-                .hint_weighted("Enter", "Next", 3)
-                .hint_weighted("Esc", "Back", 2),
-        }
+            .hint_weighted("C", "Clear", 1),
     };
     hints.render_flush(hints_area, buf);
+}
+
+/// The Sort & Filter tab: the sort's keys in order and the add-sort row under a
+/// rule, then the filters and their add row under another. The add-sort Picker
+/// drops in below its row.
+fn render_in_effect(
+    area: Rect,
+    buf: &mut Buffer,
+    modal: &mut SortFilterModal,
+    ctx: &RenderContext,
+) {
+    let g = crate::glyphs::get();
+    if area.height == 0 {
+        return;
+    }
+    let entries = modal.sort.sort_entries();
+    let sort_focused = matches!(
+        modal.focus,
+        SortFilterField::Sort(_) | SortFilterField::AddSort
+    );
+    let filter_focused = matches!(
+        modal.focus,
+        SortFilterField::Filter(_) | SortFilterField::AddFilter
+    ) || modal.filter.editor.is_some();
+
+    let count = entries.len().to_string();
+    SectionRule {
+        title: "Sort",
+        chip: (!entries.is_empty()).then_some(count.as_str()),
+        focused: sort_focused,
+    }
+    .render(Rect { height: 1, ..area }, buf, ctx);
+
+    // The sort section takes what its rows need (and the add-sort Picker, while
+    // open), leaving the filters a blank row, their rule and two rows; the rows
+    // scroll to keep focus in view.
+    let bottom = area.y + area.height;
+    let sort_rows = entries.len() + 1;
+    let picker_want = if modal.sort_picker.is_some() { 8 } else { 0 };
+    // An open Picker takes the filters' room too: it is what the keys are on.
+    let room = if modal.sort_picker.is_some() {
+        usize::from(area.height.saturating_sub(1))
+    } else {
+        usize::from(area.height.saturating_sub(1)).saturating_sub(4)
+    };
+    let shown = (sort_rows + picker_want).min(room).max(1);
+    let list_rows = sort_rows.min(shown.saturating_sub(picker_want).max(1));
+    let focus_row = match modal.focus {
+        SortFilterField::Sort(i) => i,
+        SortFilterField::AddSort => entries.len(),
+        _ => 0,
+    };
+    let offset = focus_row.saturating_sub(list_rows - 1);
+    let name_room = usize::from(area.width).saturating_sub(6);
+    let mut y = area.y + 1;
+    for row in offset..(offset + list_rows).min(sort_rows) {
+        if y >= bottom {
+            break;
+        }
+        let row_area = Rect {
+            y,
+            height: 1,
+            ..area
+        };
+        y += 1;
+        let focused = match modal.focus {
+            SortFilterField::Sort(i) => i == row,
+            SortFilterField::AddSort => row == entries.len(),
+            _ => false,
+        } && modal.sort_picker.is_none();
+        let rail = if focused { g.rail } else { " " };
+        if row == entries.len() {
+            let style = if focused {
+                Style::default().fg(ctx.accent)
+            } else {
+                Style::default().fg(ctx.dimmed)
+            };
+            Paragraph::new(Line::from(vec![
+                Span::styled(rail, Style::default().fg(ctx.accent)),
+                Span::styled(format!("add sort{}", g.ellipsis), style),
+            ]))
+            .render(row_area, buf);
+            continue;
+        }
+        let column = &modal.sort.columns[entries[row]];
+        let arrow = if column.sort_descending {
+            g.sort_desc
+        } else {
+            g.sort_asc
+        };
+        let name = crate::glyphs::fit_cells(&column.name, name_room, g.ellipsis);
+        let mut style = if focused {
+            Style::default().fg(ctx.accent)
+        } else {
+            Style::default().fg(ctx.text_primary)
+        };
+        if focused {
+            style = style.patch(ctx.highlight_style());
+        }
+        Paragraph::new(Line::from(vec![
+            Span::styled(rail, Style::default().fg(ctx.accent)),
+            Span::styled(format!("{:>2} {arrow} {name}", row + 1), style),
+        ]))
+        .style(if focused {
+            ctx.highlight_style()
+        } else {
+            Style::default()
+        })
+        .render(row_area, buf);
+    }
+    if let Some(picker) = &modal.sort_picker {
+        let rows = (area.y + 1 + shown as u16).min(bottom).saturating_sub(y);
+        if rows > 0 {
+            Picker::from_state(picker, true).render(
+                Rect {
+                    x: area.x + 2,
+                    y,
+                    width: area.width.saturating_sub(2),
+                    height: rows,
+                },
+                buf,
+                ctx,
+            );
+        }
+    }
+
+    // The filters, a blank row below the sort.
+    let rule_y = area.y + 1 + shown as u16 + 1;
+    if rule_y >= bottom || modal.sort_picker.is_some() {
+        return;
+    }
+    let count = modal.filter.statements.len().to_string();
+    SectionRule {
+        title: "Filters",
+        chip: (!modal.filter.statements.is_empty()).then_some(count.as_str()),
+        focused: filter_focused,
+    }
+    .render(
+        Rect {
+            y: rule_y,
+            height: 1,
+            ..area
+        },
+        buf,
+        ctx,
+    );
+    let filters_area = Rect {
+        y: rule_y + 1,
+        height: bottom.saturating_sub(rule_y + 1),
+        ..area
+    };
+    render_filters(filters_area, buf, &mut modal.filter, filter_focused, ctx);
 }
 
 /// Cells before a column's name in the Columns list: the rail, a space, the lock
@@ -155,9 +315,8 @@ fn render_columns_tab(
     ctx: &RenderContext,
 ) {
     let g = crate::glyphs::get();
-    let on_body = modal.focus == SortFilterFocus::Body;
-    let on_find = on_body && modal.sort.focus == SortFocus::Filter;
-    let on_list = on_body && modal.sort.focus == SortFocus::ColumnList;
+    let on_find = modal.focus == SortFilterField::Find;
+    let on_list = matches!(modal.focus, SortFilterField::Column(_));
 
     // find row
     let find_rail = if on_find { g.rail } else { " " };
@@ -310,8 +469,9 @@ fn render_columns_tab(
     }
 }
 
-/// The Filters tab: one row per statement, the add row, and the inline editor.
-fn render_filters_tab(
+/// The filters: one row per statement, the add row, and the inline editor. The
+/// cursor row carries the rail and the tint only while the filters have focus.
+fn render_filters(
     area: Rect,
     buf: &mut Buffer,
     filter: &mut FilterModal,
@@ -341,7 +501,7 @@ fn render_filters_tab(
             ..area
         };
         y += 1;
-        let is_cursor = row == filter.cursor;
+        let is_cursor = focused && row == filter.cursor;
         let under_edit = filter
             .editor
             .as_ref()
@@ -425,9 +585,7 @@ fn render_filters_tab(
             continue;
         }
 
-        // The rail means focus: with the tab bar holding it, the cursor row
-        // keeps its place but not the rail.
-        let rail = if is_cursor && focused && filter.editor.is_none() {
+        let rail = if is_cursor && filter.editor.is_none() {
             g.rail
         } else {
             " "
@@ -476,5 +634,90 @@ fn render_filters_tab(
             Span::styled(text, style),
         ]))
         .render(row_area, buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use crate::sort_modal::SortColumn;
+
+    fn modal() -> SortFilterModal {
+        let mut m = SortFilterModal::new();
+        m.sort.columns = ["restaurant", "calories", "protein"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| SortColumn {
+                name: name.to_string(),
+                sort_order: (i == 1).then_some(1),
+                sort_descending: true,
+                display_order: i,
+                is_locked: false,
+                is_to_be_locked: false,
+                is_visible: true,
+                width: WidthChoice::Auto,
+                shown_width: None,
+            })
+            .collect();
+        m.filter.statements = vec![FilterStatement {
+            column: "protein".to_string(),
+            operator: FilterOperator::GtEq,
+            value: "40".to_string(),
+            logical_op: LogicalOperator::And,
+        }];
+        m.filter.available_columns = vec!["restaurant".into(), "calories".into()];
+        let theme = crate::config::Theme::from_config(&crate::config::ThemeConfig::default())
+            .expect("theme");
+        m.open(10, &theme, Some("restaurant"));
+        m
+    }
+
+    fn painted(m: &mut SortFilterModal, width: u16, height: u16) -> Vec<String> {
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        render(area, &mut buf, m, &RenderContext::for_test());
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// What is in effect, top to bottom: the sort's keys, its add row, then the
+    /// filters and theirs; the focused row carries the rail.
+    #[test]
+    fn the_sidebar_lists_what_is_in_effect() {
+        let g = crate::glyphs::get();
+        let mut m = modal();
+        let rows = painted(&mut m, 40, 20);
+        let at = |needle: &str| {
+            rows.iter()
+                .position(|r| r.contains(needle))
+                .unwrap_or_else(|| panic!("{needle:?} not drawn: {rows:#?}"))
+        };
+        let sort = at(&format!("1 {} calories", g.sort_desc));
+        assert!(rows[sort].contains(g.rail), "focus opens on the first sort");
+        assert_eq!(at("add sort"), sort + 1);
+        assert!(at("Filters") > sort + 1);
+        assert!(at("protein") > at("Filters"));
+        assert!(at("add filter") > at("protein"));
+        assert!(rows.iter().any(|r| r.contains("Flip")), "{rows:#?}");
+    }
+
+    /// The add-sort Picker drops in under its row, at any size without a panic.
+    #[test]
+    fn the_add_sort_picker_opens_in_place() {
+        let mut m = modal();
+        m.focus = SortFilterField::AddSort;
+        m.open_sort_picker();
+        for (w, h) in [(40, 20), (30, 12), (24, 8), (12, 4)] {
+            let rows = painted(&mut m, w, h);
+            if h >= 12 {
+                assert!(rows.iter().any(|r| r.contains("restaurant")), "{rows:#?}");
+            }
+        }
     }
 }

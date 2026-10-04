@@ -49,6 +49,13 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut PivotMeltModal, ctx: &Re
             .hint_weighted("Space", "Edit", 2)
             .hint_weighted("Tab", "Next", 1)
             .hint_weighted("Esc", "Cancel", 4),
+        None if modal.focus == PivotMeltFocus::TabBar || modal.is_choice_row(modal.focus) => {
+            HintBar::from_ctx(ctx)
+                .hint_weighted("Enter", "Apply", 3)
+                .hint_weighted(crate::glyphs::get().updown_lr, "Change", 2)
+                .hint_weighted("Tab", "Next", 1)
+                .hint_weighted("Esc", "Cancel", 4)
+        }
         None => HintBar::from_ctx(ctx)
             .hint_weighted("Enter", "Apply", 3)
             .hint_weighted("Tab", "Next", 1)

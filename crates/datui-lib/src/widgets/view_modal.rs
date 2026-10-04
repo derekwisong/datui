@@ -107,7 +107,7 @@ impl ViewModal {
     }
 
     /// The form rows Tab walks right now, in order.
-    fn focus_order(&self) -> &'static [FormFocus] {
+    pub fn focus_order(&self) -> &'static [FormFocus] {
         if self.matching_expanded {
             &[
                 FormFocus::Name,
@@ -122,24 +122,6 @@ impl ViewModal {
         } else {
             &[FormFocus::Name, FormFocus::Description, FormFocus::Matching]
         }
-    }
-
-    pub fn next_focus(&mut self) {
-        let order = self.focus_order();
-        let at = order
-            .iter()
-            .position(|f| *f == self.form_focus)
-            .unwrap_or(0);
-        self.form_focus = order[(at + 1) % order.len()];
-    }
-
-    pub fn prev_focus(&mut self) {
-        let order = self.focus_order();
-        let at = order
-            .iter()
-            .position(|f| *f == self.form_focus)
-            .unwrap_or(0);
-        self.form_focus = order[(at + order.len() - 1) % order.len()];
     }
 
     /// Collapsing while focus sits on a hidden criteria row pulls it back to
@@ -264,9 +246,44 @@ impl ViewModal {
     }
 }
 
+impl crate::form::Form for ViewModal {
+    type Field = FormFocus;
+
+    fn fields(&self) -> Vec<(FormFocus, crate::form::FieldKind)> {
+        use crate::form::FieldKind;
+        self.focus_order()
+            .iter()
+            .map(|&row| {
+                let kind = match row {
+                    FormFocus::Description => FieldKind::MultilineText,
+                    FormFocus::Matching => FieldKind::Button,
+                    FormFocus::SchemaMatch => FieldKind::Checkbox,
+                    _ => FieldKind::Text,
+                };
+                (row, kind)
+            })
+            .collect()
+    }
+
+    fn focused(&self) -> FormFocus {
+        self.form_focus
+    }
+
+    fn set_focused(&mut self, field: FormFocus) {
+        self.form_focus = field;
+    }
+
+    fn text_edge(&self, _field: FormFocus) -> (bool, bool) {
+        let line = self.description_input.cursor_line();
+        let last = self.description_input.line_count().saturating_sub(1);
+        (line == 0, line >= last)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::form::Form;
 
     /// Collapsed, Tab walks name → description → matching and wraps; the five
     /// criteria only join the walk once the section is expanded.
@@ -274,18 +291,18 @@ mod tests {
     fn tab_walks_the_criteria_only_when_expanded() {
         let mut modal = ViewModal::new();
         modal.form_focus = FormFocus::Name;
-        modal.next_focus();
-        modal.next_focus();
+        modal.focus_next();
+        modal.focus_next();
         assert_eq!(modal.form_focus, FormFocus::Matching);
-        modal.next_focus();
+        modal.focus_next();
         assert_eq!(modal.form_focus, FormFocus::Name, "collapsed wraps early");
 
         modal.form_focus = FormFocus::Matching;
         modal.toggle_matching();
-        modal.next_focus();
+        modal.focus_next();
         assert_eq!(modal.form_focus, FormFocus::ExactPath);
-        modal.prev_focus();
-        modal.prev_focus();
+        modal.focus_prev();
+        modal.focus_prev();
         assert_eq!(modal.form_focus, FormFocus::Description);
     }
 

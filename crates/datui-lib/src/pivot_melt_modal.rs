@@ -326,28 +326,6 @@ impl PivotMeltModal {
         }
     }
 
-    pub fn next_focus(&mut self) {
-        let order = self.row_order();
-        self.focus = match self.focus {
-            PivotMeltFocus::TabBar => order[0],
-            f => match order.iter().position(|&x| x == f) {
-                Some(pos) if pos + 1 < order.len() => order[pos + 1],
-                _ => PivotMeltFocus::TabBar,
-            },
-        };
-    }
-
-    pub fn prev_focus(&mut self) {
-        let order = self.row_order();
-        self.focus = match self.focus {
-            PivotMeltFocus::TabBar => order[order.len() - 1],
-            f => match order.iter().position(|&x| x == f) {
-                Some(pos) if pos > 0 => order[pos - 1],
-                _ => PivotMeltFocus::TabBar,
-            },
-        };
-    }
-
     pub fn switch_tab(&mut self) {
         self.active_tab = match self.active_tab {
             PivotMeltTab::Pivot => PivotMeltTab::Melt,
@@ -367,9 +345,62 @@ impl PivotMeltModal {
         )
     }
 
-    /// Rows edited through the Picker.
+    /// Rows whose value steps through a short list: the aggregation, the melt
+    /// strategy and its type.
+    pub fn is_choice_row(&self, focus: PivotMeltFocus) -> bool {
+        matches!(
+            focus,
+            PivotMeltFocus::PivotAggregation
+                | PivotMeltFocus::MeltStrategy
+                | PivotMeltFocus::MeltType
+        )
+    }
+
+    /// Rows edited through the Picker: the column rows.
     pub fn is_picker_row(&self, focus: PivotMeltFocus) -> bool {
-        !self.is_text_row(focus) && focus != PivotMeltFocus::TabBar
+        !self.is_text_row(focus) && !self.is_choice_row(focus) && focus != PivotMeltFocus::TabBar
+    }
+
+    /// ←/→ (and Space) on a choice row: the next or previous value, wrapping. A
+    /// new strategy changes which melt rows follow it.
+    pub fn step_choice(&mut self, delta: i8) {
+        use crate::form::step_value;
+        match self.focus {
+            PivotMeltFocus::PivotAggregation => {
+                self.aggregation = step_value(&PivotAggregation::ALL, self.aggregation, delta);
+            }
+            PivotMeltFocus::MeltStrategy => {
+                self.melt_value_strategy =
+                    step_value(&MeltValueStrategy::ALL, self.melt_value_strategy, delta);
+            }
+            PivotMeltFocus::MeltType => {
+                self.melt_type_filter =
+                    step_value(&MeltTypeFilter::ALL, self.melt_type_filter, delta);
+            }
+            _ => {}
+        }
+    }
+
+    /// ←/→ on a pick-one column row: the next or previous column, chosen at once.
+    /// A row with nothing chosen yet starts at the first (→) or the last (←).
+    pub fn step_picker_row(&mut self, delta: i8) {
+        if !self.is_picker_row(self.focus) || self.is_multi_row(self.focus) {
+            return;
+        }
+        let chosen = match self.focus {
+            PivotMeltFocus::PivotColumn => self.pivot_column.is_some(),
+            PivotMeltFocus::PivotValue => self.value_column.is_some(),
+            _ => false,
+        };
+        self.open_picker();
+        if let Some(picker) = self.picker.as_mut() {
+            if delta < 0 {
+                picker.move_up();
+            } else if chosen {
+                picker.move_down();
+            }
+        }
+        self.picker_choose();
     }
 
     /// Rows where the Picker toggles several choices rather than picking one.
@@ -744,9 +775,42 @@ impl PivotMeltModal {
     }
 }
 
+impl crate::form::Form for PivotMeltModal {
+    type Field = PivotMeltFocus;
+
+    /// The tab bar, then the active tab's rows. Melt's value rows follow its strategy.
+    fn fields(&self) -> Vec<(PivotMeltFocus, crate::form::FieldKind)> {
+        use crate::form::FieldKind;
+        std::iter::once(PivotMeltFocus::TabBar)
+            .chain(self.row_order().iter().copied())
+            .map(|row| {
+                let kind = if row == PivotMeltFocus::TabBar || self.is_choice_row(row) {
+                    FieldKind::Choice
+                } else if self.is_text_row(row) {
+                    FieldKind::Text
+                } else {
+                    FieldKind::Picker {
+                        multi: self.is_multi_row(row),
+                    }
+                };
+                (row, kind)
+            })
+            .collect()
+    }
+
+    fn focused(&self) -> PivotMeltFocus {
+        self.focus
+    }
+
+    fn set_focused(&mut self, field: PivotMeltFocus) {
+        self.focus = field;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::form::Form;
 
     fn modal_with_columns(columns: &[&str]) -> PivotMeltModal {
         let mut m = PivotMeltModal::new();
@@ -783,7 +847,7 @@ mod tests {
     #[test]
     fn test_switch_tab_returns_to_the_tab_bar() {
         let mut m = modal_with_columns(&["a", "b"]);
-        m.next_focus();
+        m.focus_next();
         m.switch_tab();
         assert!(matches!(m.active_tab, PivotMeltTab::Melt));
         assert!(matches!(m.focus, PivotMeltFocus::TabBar));
@@ -796,7 +860,7 @@ mod tests {
         let mut m = modal_with_columns(&["a", "b"]);
         let walked: Vec<PivotMeltFocus> = (0..5)
             .map(|_| {
-                m.next_focus();
+                m.focus_next();
                 m.focus
             })
             .collect();
@@ -810,7 +874,7 @@ mod tests {
                 PivotMeltFocus::TabBar,
             ]
         );
-        m.prev_focus();
+        m.focus_prev();
         assert_eq!(m.focus, PivotMeltFocus::PivotAggregation);
     }
 
@@ -874,11 +938,42 @@ mod tests {
     #[test]
     fn the_picker_opens_on_the_current_choice() {
         let mut m = modal_with_columns(&["a", "b", "c"]);
-        m.aggregation = PivotAggregation::Avg;
-        m.focus = PivotMeltFocus::PivotAggregation;
+        m.pivot_column = Some("c".to_string());
+        m.focus = PivotMeltFocus::PivotColumn;
         m.open_picker();
         let state = m.picker.as_ref().unwrap();
-        assert_eq!(state.selected_original(), Some(4), "avg is item 4");
+        assert_eq!(state.selected_original(), Some(2), "c is item 2");
+    }
+
+    #[test]
+    fn choice_rows_step_and_wrap() {
+        let mut m = modal_with_columns(&["a", "b", "c"]);
+        m.focus = PivotMeltFocus::PivotAggregation;
+        m.step_choice(-1);
+        assert_eq!(m.aggregation, PivotAggregation::Count, "last wraps back");
+        m.step_choice(1);
+        assert_eq!(m.aggregation, PivotAggregation::Last);
+        m.switch_tab();
+        m.focus = PivotMeltFocus::MeltStrategy;
+        m.step_choice(1);
+        assert_eq!(m.melt_value_strategy, MeltValueStrategy::ByPattern);
+        assert!(m.row_order().contains(&PivotMeltFocus::MeltPattern));
+    }
+
+    #[test]
+    fn a_column_row_steps_through_its_own_pool() {
+        let mut m = modal_with_columns(&["a", "b", "c"]);
+        m.index_columns = vec!["a".to_string()];
+        m.focus = PivotMeltFocus::PivotColumn;
+        m.step_picker_row(1);
+        assert_eq!(
+            m.pivot_column.as_deref(),
+            Some("b"),
+            "the index is not offered"
+        );
+        m.step_picker_row(1);
+        assert_eq!(m.pivot_column.as_deref(), Some("c"));
+        assert!(m.picker.is_none(), "stepping never leaves the picker open");
     }
 
     #[test]

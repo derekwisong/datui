@@ -1,4 +1,5 @@
-//! Chart export modal: format (PNG/EPS), optional chart title, and file path. Used from Chart view only.
+//! Chart export modal: format, file path, optional chart title, and size. Used from the
+//! chart view only; its keys are the shared form keys (`crate::form`).
 
 use crate::chart_export::ChartExportFormat;
 use crate::widgets::text_input::TextInput;
@@ -34,7 +35,9 @@ impl ChartExportModal {
         self.focus = ChartExportFocus::PathInput;
         self.title_input = TextInput::new().with_theme(theme);
         self.title_input.clear();
+        // Ctrl+P / Ctrl+N recall the paths exported to before.
         self.path_input = TextInput::new()
+            .with_history("chart_export_path".to_string())
             .with_history_limit(history_limit)
             .with_theme(theme);
         self.path_input.clear();
@@ -70,24 +73,21 @@ impl ChartExportModal {
         self.active = true;
     }
 
-    pub fn next_focus(&mut self) {
-        self.focus = match self.focus {
-            ChartExportFocus::FormatSelector => ChartExportFocus::PathInput,
-            ChartExportFocus::PathInput => ChartExportFocus::TitleInput,
-            ChartExportFocus::TitleInput => ChartExportFocus::WidthInput,
-            ChartExportFocus::WidthInput => ChartExportFocus::HeightInput,
-            ChartExportFocus::HeightInput => ChartExportFocus::FormatSelector,
-        };
+    /// Step the format through what a chart exports as.
+    pub fn step_format(&mut self, delta: i8) {
+        self.selected_format =
+            crate::form::step_value(&ChartExportFormat::ALL, self.selected_format, delta);
     }
 
-    pub fn prev_focus(&mut self) {
-        self.focus = match self.focus {
-            ChartExportFocus::FormatSelector => ChartExportFocus::HeightInput,
-            ChartExportFocus::PathInput => ChartExportFocus::FormatSelector,
-            ChartExportFocus::TitleInput => ChartExportFocus::PathInput,
-            ChartExportFocus::WidthInput => ChartExportFocus::TitleInput,
-            ChartExportFocus::HeightInput => ChartExportFocus::WidthInput,
-        };
+    /// The focused field's input, for a key the form hands it.
+    pub fn focused_input_mut(&mut self) -> Option<&mut TextInput> {
+        match self.focus {
+            ChartExportFocus::FormatSelector => None,
+            ChartExportFocus::PathInput => Some(&mut self.path_input),
+            ChartExportFocus::TitleInput => Some(&mut self.title_input),
+            ChartExportFocus::WidthInput => Some(&mut self.width_input),
+            ChartExportFocus::HeightInput => Some(&mut self.height_input),
+        }
     }
 
     /// Parse width/height from inputs; default to 1024x768 on parse error, clamped to 1..=8192.
@@ -113,6 +113,29 @@ impl ChartExportModal {
             .map(|n| n.clamp(MIN, MAX))
             .unwrap_or(DEFAULT_H);
         (w, h)
+    }
+}
+
+impl crate::form::Form for ChartExportModal {
+    type Field = ChartExportFocus;
+
+    fn fields(&self) -> Vec<(ChartExportFocus, crate::form::FieldKind)> {
+        use crate::form::FieldKind::{Choice, Text};
+        vec![
+            (ChartExportFocus::FormatSelector, Choice),
+            (ChartExportFocus::PathInput, Text),
+            (ChartExportFocus::TitleInput, Text),
+            (ChartExportFocus::WidthInput, Text),
+            (ChartExportFocus::HeightInput, Text),
+        ]
+    }
+
+    fn focused(&self) -> ChartExportFocus {
+        self.focus
+    }
+
+    fn set_focused(&mut self, field: ChartExportFocus) {
+        self.focus = field;
     }
 }
 

@@ -426,19 +426,11 @@ impl InfoTab {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum InfoFocus {
-    #[default]
-    TabBar,
-    Body,
-}
-
 /// Modal state for the Info panel: focus, tab, schema table selection/scroll.
 #[derive(Default)]
 pub struct InfoModal {
     pub active: bool,
     pub active_tab: InfoTab,
-    pub focus: InfoFocus,
     pub schema_selected_index: usize,
     pub schema_scroll_offset: usize,
     pub schema_table_state: ratatui::widgets::TableState,
@@ -470,7 +462,6 @@ impl InfoModal {
     pub fn open_on(&mut self, tab: InfoTab) {
         self.active = true;
         self.active_tab = tab;
-        self.focus = InfoFocus::Body;
         self.schema_selected_index = 0;
         self.schema_scroll_offset = 0;
         self.schema_table_state.select(Some(0));
@@ -483,20 +474,6 @@ impl InfoModal {
         self.active = false;
     }
 
-    pub fn next_focus(&mut self) {
-        self.focus = match self.focus {
-            InfoFocus::TabBar => InfoFocus::Body,
-            InfoFocus::Body => InfoFocus::TabBar,
-        };
-    }
-
-    pub fn prev_focus(&mut self) {
-        self.focus = match self.focus {
-            InfoFocus::TabBar => InfoFocus::Body,
-            InfoFocus::Body => InfoFocus::TabBar,
-        };
-    }
-
     /// Switch to the next of the tabs on offer.
     pub fn switch_tab(&mut self, offered: TabsOffered) {
         self.active_tab = self.active_tab.next(offered);
@@ -504,8 +481,6 @@ impl InfoModal {
             self.schema_selected_index = 0;
             self.schema_scroll_offset = 0;
             self.schema_table_state.select(Some(0));
-        } else {
-            self.focus = InfoFocus::TabBar;
         }
     }
 
@@ -516,8 +491,6 @@ impl InfoModal {
             self.schema_selected_index = 0;
             self.schema_scroll_offset = 0;
             self.schema_table_state.select(Some(0));
-        } else {
-            self.focus = InfoFocus::TabBar;
         }
     }
 
@@ -995,8 +968,9 @@ impl<'a> DataTableInfo<'a> {
         let header = Row::new(header_cells).bold();
 
         let total_rows = self.state.schema().len();
-        // Focus is the accent on the section rule, and the rail on the row.
-        let body_focused = self.modal.focus == InfoFocus::Body;
+        // The body always has the keys: the tabs switch from anywhere, so the
+        // rule is accented and the row carries the rail.
+        let body_focused = true;
         let title = format!("Schema: {src}");
         SectionRule {
             title: &title,
@@ -1513,7 +1487,7 @@ impl<'a> DataTableInfo<'a> {
         SectionRule {
             title,
             chip: Some(&count),
-            focused: self.modal.focus == InfoFocus::Body,
+            focused: true,
         }
         .render(
             Rect {
@@ -1876,13 +1850,12 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         let ctx = self.theme;
         let offered = TabsOffered::of(self.state, self.ctx.facts_tab);
         let tab = self.modal.active_tab;
-        let on_tab_bar = self.modal.focus == InfoFocus::TabBar;
 
         // The panel's own keys, said where they work and only while they work:
         // nothing here may live only in `?`.
         let g = crate::glyphs::get();
         let scrolls = match tab {
-            InfoTab::Schema => !on_tab_bar,
+            InfoTab::Schema => true,
             InfoTab::Notes => offered.notes,
             InfoTab::Metadata => offered.metadata,
             InfoTab::Format => offered.format,
@@ -1892,11 +1865,8 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         if scrolls {
             footer = footer.hint_weighted(g.updown, "Scroll", 2);
         }
-        if tab == InfoTab::Schema {
-            footer = footer.hint_weighted("Tab", "Focus", 1);
-            if self.header_toggle {
-                footer = footer.hint_weighted("H", "Header", -1);
-            }
+        if tab == InfoTab::Schema && self.header_toggle {
+            footer = footer.hint_weighted("H", "Header", -1);
         }
         if self.hex {
             footer = footer.hint_weighted("x", "Hex", 0);
@@ -1919,9 +1889,9 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         let tab_rows = u16::from(content.height >= 4);
         let gap = u16::from(content.height >= 6);
 
-        // Tab line: the active tab carries the accent, and the rail sits beside
-        // its name while the tab bar holds focus. The slot is reserved either
-        // way, so focus arriving or leaving moves nothing.
+        // Tab line: the active tab carries the accent. The tab bar never takes
+        // focus (the tabs switch from anywhere), so it carries no rail; the slot
+        // stays, keeping the names where they were.
         let tabs = InfoTab::visible(offered);
         let active = tabs[tab.index(offered)];
         let mut spans = Vec::new();
@@ -1933,8 +1903,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
                     Style::default().fg(ctx.dimmed),
                 ));
             }
-            let mark = if on_tab_bar && is_active { g.rail } else { " " };
-            spans.push(Span::styled(mark, Style::default().fg(ctx.accent)));
+            spans.push(Span::raw(" "));
             let style = if is_active {
                 Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
             } else {
@@ -2631,11 +2600,11 @@ mod tests {
         assert!(has("below"), "the rest is counted: {text:#?}");
     }
 
-    /// Focus is the accent: in the schema, the section rule brightens and the row
-    /// carries the rail; on the tab bar, the rail sits beside the active tab and
-    /// the row keeps only the accent. One frame either way, the footer inside it.
+    /// The body has the keys: the schema's rule is bright and the row carries the
+    /// rail, and the tab line, which never takes focus, has none. One frame, the
+    /// footer inside it.
     #[test]
-    fn focus_moves_the_accent_between_the_tab_bar_and_the_schema() {
+    fn the_body_has_the_accent_and_the_tab_bar_none() {
         use crate::widgets::datatable::DataTableState;
         use polars::prelude::*;
 
@@ -2656,12 +2625,11 @@ mod tests {
         let theme = RenderContext::for_test();
         let g = crate::glyphs::get();
 
-        let paint = |focus: InfoFocus| {
+        let paint = || {
             let area = Rect::new(0, 0, 50, 16);
             let mut buf = Buffer::empty(area);
             let mut modal = InfoModal::default();
             modal.open();
-            modal.focus = focus;
             let mut panel = DataTableInfo::new(
                 &state,
                 InfoContext {
@@ -2694,9 +2662,7 @@ mod tests {
             (x as u16, y as u16)
         };
 
-        // The body has focus: the rule is bright, the id row carries the rail,
-        // and the tab line has none.
-        let (buf, text) = paint(InfoFocus::Body);
+        let (buf, text) = paint();
         let (x, y) = find(&text, "Schema: Inferred");
         assert_eq!(buf[(x, y)].fg, theme.accent_bright, "{text:#?}");
         let (_, id_row) = find(&text, " id ");
@@ -2708,20 +2674,6 @@ mod tests {
             theme.accent,
             "an inactive tab is not accented"
         );
-
-        // The tab bar has focus: the rail moves beside the active tab, and the
-        // row the cursor is on keeps the accent without the rail.
-        let (buf, text) = paint(InfoFocus::TabBar);
-        let (_, tab_row) = find(&text, "Resources");
-        assert!(
-            text[tab_row as usize].contains(&format!("{}Schema", g.rail)),
-            "{text:#?}"
-        );
-        let (x, y) = find(&text, "Schema: Inferred");
-        assert_eq!(buf[(x, y)].fg, theme.accent, "{text:#?}");
-        let (id_x, id_row) = find(&text, " id ");
-        assert!(!text[id_row as usize].contains(g.rail), "{text:#?}");
-        assert_eq!(buf[(id_x + 1, id_row)].fg, theme.accent, "{text:#?}");
 
         // One frame: its corners on the first and last rows and nowhere else,
         // the footer on the last row inside it.

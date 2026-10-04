@@ -241,6 +241,30 @@ impl FilterModal {
         }
     }
 
+    /// Move statement `i` one place earlier or later. Each and/or stays where it
+    /// was, between the same two places, so `a or b` reordered is `b or a`, not
+    /// `b and a`. Returns where it is now.
+    pub fn move_statement(&mut self, i: usize, earlier: bool) -> usize {
+        let to = if earlier {
+            i.checked_sub(1)
+        } else {
+            Some(i + 1).filter(|to| *to < self.statements.len())
+        };
+        match to {
+            Some(to) if i < self.statements.len() => {
+                let (a, b) = (
+                    self.statements[i].logical_op,
+                    self.statements[to].logical_op,
+                );
+                self.statements.swap(i, to);
+                self.statements[i].logical_op = a;
+                self.statements[to].logical_op = b;
+                to
+            }
+            _ => i,
+        }
+    }
+
     /// Delete the statement under the cursor; the add row deletes nothing.
     pub fn delete_at_cursor(&mut self) {
         if self.cursor < self.statements.len() {
@@ -383,6 +407,33 @@ mod tests {
         m.delete_at_cursor();
         assert_eq!(m.statements.len(), 1);
         assert_eq!(m.statements[0].column, "name");
+    }
+
+    #[test]
+    fn moving_a_filter_keeps_each_and_or_in_its_place() {
+        let mut m = modal();
+        m.statements = vec![
+            FilterStatement {
+                column: "salary".into(),
+                operator: FilterOperator::Gt,
+                value: "1".into(),
+                logical_op: LogicalOperator::And,
+            },
+            FilterStatement {
+                column: "name".into(),
+                operator: FilterOperator::Eq,
+                value: "ann".into(),
+                logical_op: LogicalOperator::Or,
+            },
+        ];
+        assert_eq!(m.move_statement(1, true), 0);
+        assert_eq!(m.statements[0].column, "name");
+        assert_eq!(
+            m.statements[1].logical_op,
+            LogicalOperator::Or,
+            "still an or"
+        );
+        assert_eq!(m.move_statement(0, true), 0, "the first stays first");
     }
 
     #[test]

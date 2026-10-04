@@ -164,7 +164,8 @@ The `publish-winget` job in `.github/workflows/publish-packages.yml` uses
 
 | Secret | Description |
 |--------|-------------|
-| `WINGET_TOKEN` | Classic PAT with `public_repo` scope. Fine-grained PATs do not work — they cannot open a cross-fork PR against a repo you don't own. |
+| `WINGET_TOKEN` | Classic PAT with `public_repo` scope. Fine-grained PATs do not work here — they cannot open a cross-fork PR against a repo you don't own. |
+| `WINGET_SYNC_TOKEN` | Fine-grained PAT, repository access limited to `derekwisong/winget-pkgs`, with **Contents: Read and write** and **Workflows: Read and write**. It only syncs the fork. Optional, but without it a release can stop on a fork sync (below). |
 
 At least one version of `derekwisong.datui` must already exist in winget-pkgs; the
 action refuses to create a brand-new package.
@@ -185,8 +186,8 @@ permissions problem, but **`WINGET_TOKEN` is fine; do not rotate it.**
 We can't just add the scope: GitHub's classic-PAT UI force-selects full `repo`
 (private repos included) whenever `workflow` is checked.
 
-The preflight step attempts the sync itself and, when blocked, fails fast with these
-steps in the job log:
+Without `WINGET_SYNC_TOKEN`, the preflight step attempts the sync with
+`WINGET_TOKEN` and, when blocked, fails fast with these steps in the job log:
 
 1. Open <https://github.com/derekwisong/winget-pkgs> and click **Sync fork** →
    **Update branch**. A browser session has permissions the PAT doesn't.
@@ -198,6 +199,12 @@ steps in the job log:
 Being a few commits behind upstream at job start is harmless — winget-pkgs merges
 manifest PRs constantly and those never touch workflow files.
 
-If this becomes a recurring nuisance, the durable fix is a dedicated machine account
-that owns the fork and holds a `repo` + `workflow` PAT (full `repo` scope is harmless
-on an account with no private repos), wired up via the action's `fork-user` input.
+With `WINGET_SYNC_TOKEN` set, none of this happens: the preflight syncs with that
+token, which may update workflow files on the fork and touches nothing else, and
+`.github/workflows/winget-fork-sync.yml` also syncs the fork every Monday (or on
+demand: `gh workflow run winget-fork-sync.yml`).
+
+To create it: GitHub → Settings → Developer settings → Fine-grained tokens →
+Generate new token. Resource owner `derekwisong`, repository access **Only select
+repositories** → `winget-pkgs`, permissions Contents and Workflows **Read and
+write**. Then `gh secret set WINGET_SYNC_TOKEN --repo derekwisong/datui`.

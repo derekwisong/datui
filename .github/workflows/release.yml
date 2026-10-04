@@ -803,6 +803,7 @@ jobs:
       AUR_EMAIL: ${{ secrets.AUR_EMAIL }}
       AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
       WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+      WINGET_SYNC_TOKEN: ${{ secrets.WINGET_SYNC_TOKEN }}
       GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
       GPG_EMAIL: ${{ secrets.GPG_EMAIL }}
       DATUI_APT_TOKEN: ${{ secrets.DATUI_APT_TOKEN }}

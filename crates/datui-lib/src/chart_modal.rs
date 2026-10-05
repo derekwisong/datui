@@ -219,6 +219,10 @@ pub struct ColorEncoding {
     /// The values given a series each, in color order. Empty: the largest
     /// [`COLOR_MAX`] by rows. `None` is the rows with no value.
     pub values: Vec<Option<String>>,
+    /// Whether every other value's rows make one more series, Other. Unset: on for a
+    /// scatter, off otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other: Option<bool>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -686,6 +690,21 @@ impl ChartModal {
     /// Whether the color splits the chart into series.
     pub fn colored(&self) -> bool {
         Self::colored_in(&self.spec)
+    }
+
+    /// Whether a colored `spec` draws Other: as set, or on for a scatter, whose
+    /// cloud keeps its shape with every point drawn.
+    pub fn shows_other_in(spec: &ChartSpec) -> bool {
+        Self::colored_in(spec)
+            && spec
+                .encoding
+                .color
+                .other
+                .unwrap_or(spec.mark == Mark::Scatter)
+    }
+
+    pub fn shows_other(&self) -> bool {
+        Self::shows_other_in(&self.spec)
     }
 
     /// The panel's rows for the chart on screen, in Tab order. A dimmed shelf is
@@ -1178,6 +1197,10 @@ impl ChartModal {
             ChartFocus::LogScale => self.log_scale = !self.log_scale,
             ChartFocus::ShowLegend => self.show_legend = !self.show_legend,
             ChartFocus::Grid => self.grid = !self.grid,
+            // The values line: Space picks them, ←/→ turn Other on or off.
+            ChartFocus::ColorValues => {
+                self.spec.encoding.color.other = Some(!self.shows_other());
+            }
             focus => {
                 if self.picker_for(focus).is_some() {
                     self.step_picker_row(delta);

@@ -84,6 +84,7 @@ pub fn render(
             names: &c.names,
             x_axis_kind: c.x_axis_kind,
             x_bounds: None,
+            other: c.other,
             numbers: xy_numbers(),
         },
         (Mark::Line | Mark::Scatter, Some(ChartPrepared::XRange(c))) => ChartRenderData::XY {
@@ -93,6 +94,7 @@ pub fn render(
             names: NO_NAMES,
             x_axis_kind: c.x_axis_kind,
             x_bounds: Some((c.x_min, c.x_max)),
+            other: false,
             numbers: xy_numbers(),
         },
         // Still on its way: empty axes, typed from the schema so the labels are right.
@@ -108,6 +110,7 @@ pub fn render(
                 names: NO_NAMES,
                 x_axis_kind,
                 x_bounds: None,
+                other: false,
                 numbers: xy_numbers(),
             }
         }

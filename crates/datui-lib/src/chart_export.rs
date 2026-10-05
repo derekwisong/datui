@@ -248,6 +248,8 @@ pub struct Palette {
     pub text_secondary: Rgb,
     pub grid: Rgb,
     pub series: [Rgb; 7],
+    /// Other: the rows of every value of a color without a series of its own.
+    pub other: Rgb,
     /// A heatmap's cells, from the fewest rows to the most.
     pub ramp: [Rgb; 7],
     /// Whether the background is dark: the ramp then starts dark.
@@ -287,6 +289,7 @@ impl Palette {
             text_secondary: Rgb(0x5b, 0x61, 0x70),
             grid: Rgb(0xe3, 0xe5, 0xea),
             series: LIGHT_SERIES,
+            other: Rgb(0xa8, 0xad, 0xb8),
             ramp: BLUE_RAMP,
             dark: false,
         }
@@ -346,6 +349,7 @@ impl Palette {
             text_secondary: get(&colors.text_secondary, Rgb(0x9a, 0xa5, 0xce)),
             grid: get(&colors.chart_grid, Rgb(0x3d, 0x47, 0x85)),
             series,
+            other: get(&colors.dimmed, Rgb(0x56, 0x5f, 0x89)),
             ramp,
             dark: true,
         }
@@ -421,6 +425,8 @@ pub struct Series {
     pub points: Vec<(f64, f64)>,
     /// Where a line starts again after a gap (see `chart_data::segments`).
     pub breaks: Vec<usize>,
+    /// Other: every value of a color without a series of its own.
+    pub other: bool,
 }
 
 /// What a figure plots.
@@ -622,6 +628,8 @@ struct Canvas<'a> {
     pt: f64,
     /// Body text size in px.
     body: f64,
+    /// Where Other is among the series, drawn in the palette's `other`.
+    other: Option<usize>,
 }
 
 impl Canvas<'_> {
@@ -688,6 +696,9 @@ impl Canvas<'_> {
     }
 
     fn color(&self, i: usize) -> Rgb {
+        if self.other == Some(i) {
+            return self.palette.other;
+        }
         self.palette.series[i % self.palette.series.len()]
     }
 }
@@ -811,6 +822,7 @@ pub fn svg(figure: &Figure, options: &ExportOptions) -> Result<String> {
         palette,
         pt,
         body,
+        other: None,
     };
     let margin = (body * 2.0).min(w / 10.0);
     if let Some(bg) = palette.background {
@@ -905,9 +917,22 @@ fn legend_names(figure: &Figure) -> Vec<String> {
     }
 }
 
+/// Where Other is among the figure's series: last, when it has one.
+fn other_at(figure: &Figure) -> Option<usize> {
+    let (other, n) = match &figure.plot {
+        Plot::Lines { series, .. } => return series.iter().position(|s| s.other),
+        Plot::Bars { data, .. } => (data.other, data.groups.len()),
+        Plot::Histogram { data, .. } => (data.other, data.groups.len()),
+        Plot::Kde { data, .. } => (data.other, data.series.len()),
+        Plot::Box { .. } | Plot::Heatmap { .. } => (false, 0),
+    };
+    (other && n > 0).then(|| n - 1)
+}
+
 /// The plot in `frame`: axes, grid, marks, and the legend.
 fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame: Area) {
     let names = legend_names(figure);
+    c.other = other_at(figure);
     let is_lines = matches!(
         figure.plot,
         Plot::Lines { scatter: false, .. } | Plot::Kde { .. }
@@ -960,7 +985,10 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
             );
             let width = 1.5 * c.pt;
             let mut ends = Vec::new();
-            for (i, s) in series.iter().enumerate() {
+            // Other first, under the series drawn over it.
+            let mut order: Vec<(usize, &Series)> = series.iter().enumerate().collect();
+            order.sort_by_key(|(_, s)| !s.other);
+            for (i, s) in order {
                 let color = c.color(i);
                 if *scatter {
                     for &(px, py) in &s.points {
@@ -1621,7 +1649,7 @@ fn draw_bars(c: &mut Canvas<'_>, frame: Area, data: &BarData, value: &Axis, grid
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chart_data::{Bar, BoxPlotStats, HistogramBin, HistogramGroup, RowsRead};
+    use crate::chart_data::{Bar, BoxPlotStats, HistogramBin, HistogramGroup, OTHER, RowsRead};
 
     fn lines(names: &[&str]) -> Figure {
         Figure {
@@ -1633,6 +1661,7 @@ mod tests {
                         name: n.to_string(),
                         points: (0..10).map(|x| (x as f64, (x * (i + 1)) as f64)).collect(),
                         breaks: Vec::new(),
+                        other: *n == OTHER,
                     })
                     .collect(),
                 scatter: false,
@@ -1680,6 +1709,34 @@ mod tests {
         }
         assert!(svg.contains("fill=\"#2a78d6\""), "light palette: {svg}");
         assert!(svg.contains("fill=\"#ffffff\""), "a white background");
+        roxmltree_ok(&svg);
+    }
+
+    /// Other is the legend's last entry, in the palette's neutral color and not a
+    /// series color, and a scatter draws it under the rest.
+    #[test]
+    fn an_export_names_other_last_in_its_neutral_color() {
+        let mut figure = lines(&["AAPL", "MSFT", OTHER]);
+        if let Plot::Lines { scatter, .. } = &mut figure.plot {
+            *scatter = true;
+        }
+        let svg = svg(
+            &figure,
+            &ExportOptions {
+                legend: LegendPlace::TopRight,
+                ..options()
+            },
+        )
+        .unwrap();
+        let (aapl, other) = (svg.find(">AAPL<").unwrap(), svg.find(">Other<").unwrap());
+        assert!(aapl < other, "Other last: {svg}");
+        let grey = format!("fill=\"{}\"", Palette::light().other.hex());
+        let third = format!("fill=\"{}\"", Palette::light().series[2].hex());
+        assert!(svg.contains(&grey), "{svg}");
+        assert!(!svg.contains(&third), "Other takes no series color: {svg}");
+        // Its dots come before the first series' dots.
+        let blue = format!("fill=\"{}\"", Palette::light().series[0].hex());
+        assert!(svg.find(&grey).unwrap() < svg.find(&blue).unwrap(), "{svg}");
         roxmltree_ok(&svg);
     }
 
@@ -1810,7 +1867,8 @@ mod tests {
             rows,
             value_dtype: polars::prelude::DataType::Float64,
             counted: None,
-            groups: vec!["EWR".to_string(), "JFK".to_string()],
+            groups: vec!["EWR".to_string(), "Other".to_string()],
+            other: true,
             rows_note: None,
         };
         let histogram = HistogramData {
@@ -1831,6 +1889,7 @@ mod tests {
                     counts: vec![0.4, 0.3, 0.2, 0.1],
                 },
             ],
+            other: true,
             share: true,
             x_min: 0.0,
             x_max: 4.0,

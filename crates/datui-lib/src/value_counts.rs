@@ -327,6 +327,7 @@ fn histogram_of(
             })
             .collect(),
         groups: Vec::new(),
+        other: false,
         share: false,
         x_min,
         x_max: x_min + bins as f64 * width,

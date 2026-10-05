@@ -218,7 +218,9 @@ impl ChartRequest {
         // Whether color splits the chart is read from the spec charted, a Y the
         // picker previews included.
         let colored = ChartModal::colored_in(&spec);
-        if !colored {
+        if colored {
+            spec.encoding.color.other = Some(ChartModal::shows_other_in(&spec));
+        } else {
             spec.encoding.color = Default::default();
         }
         if x_only {
@@ -283,10 +285,16 @@ impl ChartRequest {
         let groups = counts
             .as_ref()
             .map(|(_, rows)| chart_data::color_groups(rows, &encoding.color.values));
+        // Other only when some value is left without a series of its own.
+        let other = encoding.color.other == Some(true);
         let split = counts
             .as_ref()
             .zip(groups.as_ref())
-            .map(|((column, _), groups)| ColorSplit { column, groups });
+            .map(|((column, rows), groups)| ColorSplit {
+                column,
+                groups,
+                other: other && rows.values.iter().any(|(v, _)| !groups.contains(v)),
+            });
         let picker = counts.as_ref().map(|(column, rows)| ColorCounts {
             column: column.to_string(),
             values: rows.values.clone(),
@@ -330,9 +338,11 @@ impl ChartRequest {
                         breaks: r.breaks,
                         x_axis_kind: r.x_axis_kind,
                         rows: r.rows,
+                        other: false,
                     }
                 };
                 ChartPrepared::XY(ChartCacheXY {
+                    other: grouped.other,
                     x_column: x.to_string(),
                     names: grouped.names,
                     series: grouped.series,
@@ -344,7 +354,7 @@ impl ChartRequest {
                         rows_note(
                             grouped.rows.total_rows,
                             sampling.known_total == Some(grouped.rows.total_rows),
-                            split.is_some(),
+                            split.is_some_and(|s| !s.other),
                         )
                     }),
                 })
@@ -363,7 +373,11 @@ impl ChartRequest {
                     sampling,
                 )?;
                 // Every category is a bar, a null one too: uncolored, it is every row.
-                data.rows_note = Some(rows_note(data.rows.total_rows, true, split.is_some()));
+                data.rows_note = Some(rows_note(
+                    data.rows.total_rows,
+                    true,
+                    split.is_some_and(|s| !s.other),
+                ));
                 ChartPrepared::Bar(data)
             }
             Mark::Bar => ChartPrepared::Bar(chart_data::prepare_bar_data(
@@ -398,6 +412,7 @@ impl ChartRequest {
                             ColorSplit {
                                 column: by,
                                 groups: &groups,
+                                other: false,
                             },
                             self.range,
                             sampling,
@@ -544,9 +559,10 @@ pub(crate) struct ChartCacheXY {
     pub(crate) series_log: Option<Vec<Vec<(f64, f64)>>>,
     pub(crate) x_axis_kind: chart_data::XAxisTemporalKind,
     pub(crate) rows: chart_data::RowsRead,
-    /// How Y was made of the rows, when it was aggregated over all of them.
-    /// What an aggregate over every row read, said under the plot.
+    /// What an aggregate over every row read, said in the title row.
     pub(crate) rows_note: Option<String>,
+    /// The last series is Other.
+    pub(crate) other: bool,
 }
 
 /// What an aggregate read, under the plot: every row of the view (`all 336,776

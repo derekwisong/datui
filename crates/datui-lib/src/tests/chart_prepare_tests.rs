@@ -22,6 +22,7 @@ fn prepared_histogram(column: &str) -> ChartPrepared {
         column: column.to_string(),
         bins: Vec::new(),
         groups: Vec::new(),
+        other: false,
         share: false,
         x_min: 0.0,
         x_max: 1.0,
@@ -349,6 +350,7 @@ fn xy_request(x: &str) -> ChartRequest {
 
 fn prepared_xy(x: &str) -> ChartPrepared {
     ChartPrepared::XY(ChartCacheXY {
+        other: false,
         x_column: x.to_string(),
         names: vec!["y".to_string()],
         series: vec![vec![(0.0, 1.0)]],

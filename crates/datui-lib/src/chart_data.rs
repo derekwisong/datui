@@ -754,6 +754,8 @@ pub struct HistogramData {
     pub bins: Vec<HistogramBin>,
     /// Per color group, on the same bins: drawn as outlines over one another.
     pub groups: Vec<HistogramGroup>,
+    /// The last group is Other: every value of the color without a group of its own.
+    pub other: bool,
     /// Each bin is a share of its group's rows (or of all rows), not a count.
     pub share: bool,
     pub x_min: f64,
@@ -773,6 +775,8 @@ pub struct KdeSeries {
 #[derive(Clone, Debug)]
 pub struct KdeData {
     pub series: Vec<KdeSeries>,
+    /// The last series is Other: every value of the color without a series of its own.
+    pub other: bool,
     pub x_min: f64,
     pub x_max: f64,
     pub y_max: f64,
@@ -1162,6 +1166,7 @@ pub fn prepare_histogram_by(
         column: column.to_string(),
         bins: Vec::new(),
         groups: Vec::new(),
+        other: false,
         share,
         x_min: 0.0,
         x_max: 1.0,
@@ -1191,7 +1196,7 @@ pub fn prepare_histogram_by(
             (((v - lo) / bin_width).floor().max(0.0) as usize).min(bin_count - 1)
         }
     };
-    let groups = color.map_or(0, |c| c.groups.len());
+    let groups = color.map_or(0, |c| c.series());
     let mut total = vec![0.0_f64; bin_count];
     let mut by_group = vec![vec![0.0_f64; bin_count]; groups];
     for (v, group) in values {
@@ -1231,14 +1236,12 @@ pub fn prepare_histogram_by(
     let max = |counts: &[f64]| counts.iter().copied().fold(0.0_f64, f64::max);
     if let Some(color) = color {
         data.groups = color
-            .groups
-            .iter()
+            .names()
+            .into_iter()
             .zip(by_group)
-            .map(|(name, counts)| HistogramGroup {
-                name: group_label(name),
-                counts,
-            })
+            .map(|(name, counts)| HistogramGroup { name, counts })
             .collect();
+        data.other = color.other;
         data.max_count = data
             .groups
             .iter()
@@ -1410,6 +1413,7 @@ fn kde_data(series: Vec<KdeSeries>, rows: RowsRead, clipped: Option<Clipped>) ->
     }
     KdeData {
         series,
+        other: false,
         x_min,
         x_max,
         y_max,
@@ -1458,7 +1462,7 @@ pub fn prepare_kde_by(
         (Some(&lo), Some(&hi)) => (lo, hi),
         _ => (f64::INFINITY, f64::NEG_INFINITY),
     };
-    let mut groups = vec![Vec::new(); color.groups.len()];
+    let mut groups = vec![Vec::new(); color.series()];
     for (v, group) in values {
         if let Some(g) = group
             && (lo..=hi).contains(&v)
@@ -1466,16 +1470,24 @@ pub fn prepare_kde_by(
             groups[g].push(v);
         }
     }
+    let last = color.series().saturating_sub(1);
+    let mut other = false;
     let series = color
-        .groups
-        .iter()
+        .names()
+        .into_iter()
         .zip(groups)
-        .filter_map(|(name, mut values)| {
+        .enumerate()
+        .filter_map(|(i, (name, mut values))| {
             values.sort_by(f64::total_cmp);
-            kde_series(group_label(name), &values, bandwidth_factor)
+            let series = kde_series(name, &values, bandwidth_factor)?;
+            other = color.other && i == last;
+            Some(series)
         })
         .collect();
-    Ok(kde_data(series, rows, clipped(range, outside)))
+    Ok(KdeData {
+        other,
+        ..kde_data(series, rows, clipped(range, outside))
+    })
 }
 
 /// Prepare heatmap data for two numeric columns. A row counts when both are present.
@@ -1638,6 +1650,8 @@ pub struct BarData {
     pub counted: Option<usize>,
     /// The color groups each bar is split into, in color order; empty when not split.
     pub groups: Vec<String>,
+    /// The last group is Other: every value of the color without a group of its own.
+    pub other: bool,
     /// What an aggregate read, said under the plot: `all 336,776 rows`.
     pub rows_note: Option<String>,
 }
@@ -1761,6 +1775,7 @@ pub fn prepare_bar_data(
         value_dtype: df.column(value)?.dtype().clone(),
         counted: None,
         groups: Vec::new(),
+        other: false,
         rows_note: None,
     })
 }
@@ -1887,6 +1902,7 @@ fn count_bars(
         value_dtype: DataType::UInt64,
         counted: sampling.limit.is_some_and(|n| total > n).then_some(total),
         groups: Vec::new(),
+        other: false,
         rows_note: None,
     };
     let Some(counts) = counts else {
@@ -2116,11 +2132,32 @@ fn stream_counts(
 // ----- Color: one series per value -----
 
 /// A column a chart is split by, and the values given a group each, in color order.
-/// `None` is the rows with no value.
+/// `None` is the rows with no value. With `other`, every other value's rows make one
+/// more group after them, [`OTHER`].
 #[derive(Clone, Copy, Debug)]
 pub struct ColorSplit<'a> {
     pub column: &'a str,
     pub groups: &'a [Option<String>],
+    pub other: bool,
+}
+
+/// The name of the group of every value not given one of its own.
+pub const OTHER: &str = "Other";
+
+impl ColorSplit<'_> {
+    /// How many groups the rows fall in: the values', and Other.
+    pub fn series(&self) -> usize {
+        self.groups.len() + usize::from(self.other)
+    }
+
+    /// Each group's name, as a legend writes it: Other last.
+    pub fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.groups.iter().map(group_label).collect();
+        if self.other {
+            names.push(OTHER.to_string());
+        }
+        names
+    }
 }
 
 /// A group's name as a legend writes it.
@@ -2128,8 +2165,9 @@ pub fn group_label(value: &Option<String>) -> String {
     value.clone().unwrap_or_else(|| "null".to_string())
 }
 
-/// Each row's group: its place among `split.groups`, or `None` for a value that has
-/// none. Values are compared as text, as the value picker lists them.
+/// Each row's group: its place among `split.groups`, Other's after them, or `None`
+/// for a value that has none. Values are compared as text, as the value picker lists
+/// them.
 fn row_groups(df: &DataFrame, split: ColorSplit<'_>) -> Result<Vec<Option<usize>>> {
     let series = df.column(split.column)?.as_materialized_series();
     let text = crate::past_calendar::cast_text(series, CastOptions::NonStrict)?;
@@ -2139,7 +2177,12 @@ fn row_groups(df: &DataFrame, split: ColorSplit<'_>) -> Result<Vec<Option<usize>
         .enumerate()
         .map(|(i, g)| (g.as_deref(), i))
         .collect();
-    Ok(text.str()?.iter().map(|v| index.get(&v).copied()).collect())
+    let other = split.other.then_some(split.groups.len());
+    Ok(text
+        .str()?
+        .iter()
+        .map(|v| index.get(&v).copied().or(other))
+        .collect())
 }
 
 /// Values with the group each is in, and what was read for them.
@@ -2239,11 +2282,14 @@ pub fn color_groups(rows: &ValueRows, picked: &[Option<String>]) -> Vec<Option<S
         .collect()
 }
 
-/// In a plan: each row's group as its place among `split.groups` (UInt32), null for
-/// a value that has none.
+/// In a plan: each row's group as its place among `split.groups` (UInt32), Other's
+/// after them, null for a value that has none.
 fn group_expr(split: ColorSplit<'_>) -> Expr {
     let text = crate::past_calendar::text_expr(col(split.column), CastOptions::NonStrict);
-    let mut out = lit(NULL).cast(DataType::UInt32);
+    let mut out = match split.other {
+        true => lit(split.groups.len() as u32).cast(DataType::UInt32),
+        false => lit(NULL).cast(DataType::UInt32),
+    };
     for (i, group) in split.groups.iter().enumerate().rev() {
         let matches = match group {
             Some(value) => text.clone().eq(lit(value.clone())),
@@ -2263,6 +2309,8 @@ pub struct GroupedSeries {
     pub breaks: Vec<Vec<usize>>,
     pub x_axis_kind: XAxisTemporalKind,
     pub rows: RowsRead,
+    /// The last series is Other: every value of the color without a series of its own.
+    pub other: bool,
 }
 
 /// A line or scatter chart of `y` split by `color`, from the rows a chart samples:
@@ -2288,7 +2336,7 @@ pub fn prepare_xy_by(
         .filter_map(|(i, x)| x.map(|x| (x, i)))
         .collect();
     order.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let n = color.groups.len();
+    let n = color.series();
     let mut series = vec![Vec::new(); n];
     let mut breaks = vec![Vec::new(); n];
     let mut gap = vec![false; n];
@@ -2306,11 +2354,12 @@ pub fn prepare_xy_by(
         }
     }
     Ok(GroupedSeries {
-        names: color.groups.iter().map(group_label).collect(),
+        names: color.names(),
         series,
         breaks,
         x_axis_kind: x_axis_temporal_kind(x_dtype),
         rows,
+        other: color.other,
     })
 }
 
@@ -2508,7 +2557,7 @@ pub fn prepare_aggregate_xy(
             .collect::<Result<_>>()?
     };
     let names: Vec<String> = match spec.color {
-        Some(color) => color.groups.iter().map(group_label).collect(),
+        Some(color) => color.names(),
         None if count => vec!["count".to_string()],
         None => ys.to_vec(),
     };
@@ -2559,6 +2608,7 @@ pub fn prepare_aggregate_xy(
             sample_size: None,
             envelope_steps: None,
         },
+        other: spec.color.is_some_and(|c| c.other),
     })
 }
 
@@ -2706,6 +2756,7 @@ pub fn prepare_bar_aggregate(
         },
         counted: None,
         groups: Vec::new(),
+        other: false,
         rows_note: None,
     };
     let too_many = || {
@@ -2731,7 +2782,7 @@ pub fn prepare_bar_aggregate(
     for (row, label) in labels.iter().enumerate() {
         let i = *at.entry(*label).or_insert_with(|| {
             firsts.push(row as IdxSize);
-            rows_of.push(vec![None; color.groups.len()]);
+            rows_of.push(vec![None; color.series()]);
             rows_of.len() - 1
         });
         if let Some(g) = groups[row] {
@@ -2771,7 +2822,8 @@ pub fn prepare_bar_aggregate(
     data.bars = bars;
     data.more = more;
     data.no_value = no_value;
-    data.groups = color.groups.iter().map(group_label).collect();
+    data.groups = color.names();
+    data.other = color.other;
     Ok(data)
 }
 
@@ -4056,6 +4108,7 @@ mod tests {
         let split = ColorSplit {
             column: "symbol",
             groups: &groups,
+            other: false,
         };
         let sum = aggregate(
             &lf,
@@ -4112,6 +4165,7 @@ mod tests {
         let split = ColorSplit {
             column: "symbol",
             groups: &groups,
+            other: false,
         };
         let running = aggregate(
             &lf,
@@ -4256,11 +4310,94 @@ mod tests {
         let split = ColorSplit {
             column: "c",
             groups: &groups,
+            other: false,
         };
         let out = prepare_xy_by(&lf, schema.as_ref(), "x", "y", split, &all_rows()).unwrap();
         assert_eq!(out.names, ["a", "b"]);
         assert_eq!(out.series[0], [(1.0, 10.0), (2.0, 20.0), (3.0, 30.0)]);
         assert_eq!(out.series[1], [(1.0, 1.0)]);
+    }
+
+    /// With Other, every value without a group of its own (a null among them) is one
+    /// more series, last: a scatter keeps every point, a line and a bar aggregate the
+    /// rest as they do a group. Off, those rows are left out.
+    #[test]
+    fn other_gathers_every_value_without_a_series() {
+        use crate::chart_modal::{Aggregate, Cumulative, TimeUnit};
+        let lf = df!(
+            "x" => [1i64, 1, 2, 2, 3, 3],
+            "y" => [10.0, 1.0, 20.0, 2.0, 30.0, 4.0],
+            "c" => [Some("a"), Some("b"), Some("a"), Some("z"), Some("a"), None]
+        )
+        .unwrap()
+        .lazy();
+        let schema = lf.clone().collect_schema().unwrap();
+        let groups = [Some("a".to_string())];
+        let split = |other| ColorSplit {
+            column: "c",
+            groups: &groups,
+            other,
+        };
+        // Scatter.
+        let out = prepare_xy_by(&lf, schema.as_ref(), "x", "y", split(true), &all_rows()).unwrap();
+        assert_eq!(out.names, ["a", OTHER]);
+        assert!(out.other);
+        assert_eq!(out.series[1], [(1.0, 1.0), (2.0, 2.0), (3.0, 4.0)]);
+        let out = prepare_xy_by(&lf, schema.as_ref(), "x", "y", split(false), &all_rows()).unwrap();
+        assert_eq!(out.names, ["a"]);
+        assert!(!out.other);
+        // A line of the sum per x.
+        let ys = ["y".to_string()];
+        let line = |other| {
+            prepare_aggregate_xy(
+                &lf,
+                schema.as_ref(),
+                &AggregateSpec {
+                    x: "x",
+                    time_unit: TimeUnit::None,
+                    ys: &ys,
+                    aggregate: Aggregate::Sum,
+                    cumulative: Cumulative::Off,
+                    color: Some(split(other)),
+                },
+                &all_rows(),
+            )
+            .unwrap()
+        };
+        let on = line(true);
+        assert_eq!(on.names, ["a", OTHER]);
+        assert_eq!(on.series[1], [(1.0, 1.0), (2.0, 2.0), (3.0, 4.0)]);
+        assert_eq!(on.rows.total_rows, 6, "every row is in a series");
+        let off = line(false);
+        assert_eq!(off.names, ["a"]);
+        assert_eq!(off.rows.total_rows, 3);
+        // A bar of the mean per x.
+        let bars = |other| {
+            let spec = BarAggregate {
+                category: "x",
+                value: Some("y"),
+                aggregate: Aggregate::Mean,
+                color: Some(split(other)),
+                order: BarOrder::Label,
+                cap: BAR_CAP,
+            };
+            prepare_bar_aggregate(&lf, &spec, &all_rows()).unwrap()
+        };
+        let on = bars(true);
+        assert_eq!(on.groups, ["a", OTHER]);
+        assert!(on.other);
+        let by: Vec<Vec<Option<f64>>> = on.bars.iter().map(|b| b.by_group.clone()).collect();
+        assert_eq!(
+            by,
+            [
+                vec![Some(10.0), Some(1.0)],
+                vec![Some(20.0), Some(2.0)],
+                vec![Some(30.0), Some(4.0)]
+            ]
+        );
+        let off = bars(false);
+        assert_eq!(off.groups, ["a"]);
+        assert!(off.bars.iter().all(|b| b.by_group.len() == 1));
     }
 
     /// A bar of the mean per category, split by color: a value per group in each
@@ -4279,6 +4416,7 @@ mod tests {
         let split = ColorSplit {
             column: "origin",
             groups: &groups,
+            other: false,
         };
         let spec = BarAggregate {
             category: "carrier",
@@ -4358,6 +4496,7 @@ mod tests {
         let split = ColorSplit {
             column: "g",
             groups: &groups,
+            other: false,
         };
         let data =
             prepare_histogram_by(&lf, "v", 3, ValueRange::All, true, Some(split), &all_rows())
@@ -4384,6 +4523,7 @@ mod tests {
         let split = ColorSplit {
             column: "k",
             groups: &groups,
+            other: false,
         };
         let data = prepare_box_by(&lf, "v", split, ValueRange::All, &all_rows()).unwrap();
         let names: Vec<&str> = data.stats.iter().map(|s| s.name.as_str()).collect();

@@ -93,12 +93,18 @@ rows, most first: type to narrow, <kbd>Space</kbd> toggles a value (up to
 seven), <kbd>Enter</kbd> charts the ones picked. The values are counted over
 the whole view.
 
+**Other** gathers every value without a series of its own into one more
+series, the legend's last entry, in `dimmed`. <kbd>←</kbd> <kbd>→</kbd> on the
+line under **Color** turn it on or off; the line then reads `top 7 + 9 other`
+or `3 picked + 4,809 other`. It starts on for a scatter and off for the other
+types. When every value has a series there is no Other.
+
 | Type | With Color |
 |---|---|
-| Line, Scatter | A line or set of points per value. Several Y columns are already one series each, so Color is dimmed |
-| Bar | A bar per value in each category's row, under a legend of the values. Needs an aggregate |
-| Histogram | Each value's bins as an outline over the others, which filled bars would hide. **Y** can be **share of group**: each bin's share of its group's rows inside the range, so groups of different sizes compare. The range (**p1-p99**) is the whole column's |
-| KDE | A curve per value |
+| Line, Scatter | A line or set of points per value. Other is one more line, aggregated over the rest as the others are; on a scatter its points are drawn under the colored ones, so the cloud keeps its shape. Several Y columns are already one series each, so Color is dimmed |
+| Bar | A bar per value in each category's row, under a legend of the values; Other is one more bar per category. Needs an aggregate |
+| Histogram | Each value's bins as an outline over the others, which filled bars would hide. **Y** can be **share of group**: each bin's share of its group's rows inside the range, so groups of different sizes compare. Other is one more outline. The range (**p1-p99**) is the whole column's |
+| KDE | A curve per value; Other is one more |
 | Box | Dimmed: a category on **X** already makes a box per value, seven by rows |
 | Heatmap | Dimmed |
 

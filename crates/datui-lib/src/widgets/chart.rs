@@ -69,6 +69,8 @@ pub enum ChartRenderData<'a> {
         x_axis_kind: XAxisTemporalKind,
         x_bounds: Option<(f64, f64)>,
         numbers: PlotNumbers,
+        /// The last series is Other, drawn in `dimmed` under the rest.
+        other: bool,
     },
     Histogram {
         data: Option<&'a HistogramData>,
@@ -352,9 +354,10 @@ fn rows_value(modal: &ChartModal) -> String {
     }
 }
 
-/// The line under Color: which of the column's values have a series.
+/// The line under Color: which of the column's values have a series, and with
+/// Other on, how many values it gathers: `top 7 + 9 other`.
 fn color_values_line(modal: &ChartModal, ctx: &RenderContext) -> Vec<Span<'static>> {
-    let picked = modal.spec.encoding.color.values.len();
+    let picked = &modal.spec.encoding.color.values;
     let Some(counts) = modal
         .color_counts
         .as_ref()
@@ -364,19 +367,27 @@ fn color_values_line(modal: &ChartModal, ctx: &RenderContext) -> Vec<Span<'stati
     };
     let total = counts.values.len();
     let of = crate::numfmt::group_chrome(total);
-    if picked > 0 {
-        vec![
-            plain(format!("{picked} picked"), ctx),
-            quiet(format!(" of {of}"), ctx),
-        ]
-    } else if total <= crate::chart_modal::COLOR_MAX {
-        vec![plain(format!("all {total}"), ctx)]
+    let (drawn, rest) = if picked.is_empty() {
+        let drawn = total.min(crate::chart_modal::COLOR_MAX);
+        (format!("top {drawn}"), total - drawn)
     } else {
-        vec![
-            plain(format!("top {}", crate::chart_modal::COLOR_MAX), ctx),
-            quiet(format!(" of {of} by rows"), ctx),
-        ]
+        let rest = counts
+            .values
+            .iter()
+            .filter(|(v, _)| !picked.contains(v))
+            .count();
+        (format!("{} picked", picked.len()), rest)
+    };
+    if picked.is_empty() && rest == 0 {
+        return vec![plain(format!("all {total}"), ctx)];
     }
+    // With Other every value is drawn: the rest is counted, not the whole.
+    if modal.shows_other() && rest > 0 {
+        let rest = crate::numfmt::group_chrome(rest);
+        return vec![plain(drawn, ctx), plain(format!(" + {rest} other"), ctx)];
+    }
+    let by_rows = if picked.is_empty() { " by rows" } else { "" };
+    vec![plain(drawn, ctx), quiet(format!(" of {of}{by_rows}"), ctx)]
 }
 
 /// The panel: its lines, with the blank ones given up first when the height runs
@@ -737,6 +748,7 @@ fn render_plot(
             x_axis_kind,
             x_bounds,
             numbers,
+            other,
         } => {
             let xy = XYData {
                 series,
@@ -746,6 +758,7 @@ fn render_plot(
                 x_axis_kind,
                 x_bounds,
                 numbers,
+                other,
             };
             return render_xy_chart(area, buf, modal, theme, xy, text_secondary, g);
         }
@@ -978,17 +991,15 @@ fn render_grouped_bars(
 ) {
     let width = area.width as usize;
     let groups = data.groups.len();
-    let color = |i: usize| theme.get(SERIES_COLORS[i % SERIES_COLORS.len()]);
+    let other = other_at(data.other, groups);
+    let color = |i: usize| series_style(theme, i, other);
     // The legend: a swatch and a name per group.
     let mut names = vec![Span::styled(
         format!("{}  ", data.value_column),
         Style::default().fg(ctx.text_secondary),
     )];
     for (i, name) in data.groups.iter().enumerate().filter(|_| legend) {
-        names.push(Span::styled(
-            g.bar_eighths[7].repeat(2),
-            Style::default().fg(color(i)),
-        ));
+        names.push(Span::styled(g.bar_eighths[7].repeat(2), color(i)));
         names.push(Span::styled(
             format!(" {name}  "),
             Style::default().fg(ctx.text_primary),
@@ -1052,13 +1063,7 @@ fn render_grouped_bars(
                 let cells = cells.min(zero);
                 (bar_x + zero - cells, cells)
             };
-            put(
-                buf,
-                x,
-                y,
-                &g.bar_eighths[7].repeat(cells),
-                Style::default().fg(color(k)),
-            );
+            put(buf, x, y, &g.bar_eighths[7].repeat(cells), color(k));
         }
     }
     let hidden = total - shown;
@@ -1087,6 +1092,7 @@ struct XYData<'a> {
     x_axis_kind: XAxisTemporalKind,
     x_bounds: Option<(f64, f64)>,
     numbers: PlotNumbers,
+    other: bool,
 }
 
 /// One XY series with where its line breaks.
@@ -1116,7 +1122,9 @@ fn render_xy_chart(
         x_axis_kind,
         x_bounds,
         numbers,
+        other,
     } = xy;
+    let other_at = other.then(|| names.len().saturating_sub(1));
     let scatter = modal.mark() == Mark::Scatter;
     let graph_type = if scatter {
         GraphType::Scatter
@@ -1215,11 +1223,17 @@ fn render_xy_chart(
 
             // A series is drawn as its runs between gaps, so a line never bridges a
             // missing value.
+            // Other first, so the series drawn over it keep their colors.
             let datasets: Vec<Dataset> = names_and_points
                 .iter()
+                .filter(|s| Some(s.index) == other_at)
+                .chain(
+                    names_and_points
+                        .iter()
+                        .filter(|s| Some(s.index) != other_at),
+                )
                 .flat_map(|series| {
-                    let color = SERIES_COLORS[series.index % SERIES_COLORS.len()];
-                    let style = Style::default().fg(theme.get(color));
+                    let style = series_style(theme, series.index, other_at);
                     segments(series.points, series.breaks)
                         .into_iter()
                         .map(move |run| {
@@ -1296,7 +1310,7 @@ fn render_xy_chart(
                 show_legend,
                 names_and_points
                     .iter()
-                    .map(|s| (s.name, series_style(theme, s.index))),
+                    .map(|s| (s.name, series_style(theme, s.index, other_at))),
             );
             let x_bounds = [x_min_bounds, x_max_bounds];
             let sub = resolution(marker).0;
@@ -1317,6 +1331,7 @@ fn render_xy_chart(
                         &numbers.y,
                         values,
                         names,
+                        other_at,
                     );
                     crosshair::readout_lines(&entries, area.width as usize, g)
                 })
@@ -1355,6 +1370,7 @@ fn readout_entries(
     y: &AxisNumbers,
     series: &[Vec<(f64, f64)>],
     names: &[String],
+    other_at: Option<usize>,
 ) -> Vec<crosshair::Entry> {
     let value_style = Style::default().fg(theme.get("text_primary"));
     let x_title = if x_title.is_empty() { "x" } else { x_title };
@@ -1369,14 +1385,13 @@ fn readout_entries(
         .zip(names)
         .enumerate()
     {
-        let color = SERIES_COLORS[i % SERIES_COLORS.len()];
         let (value, value_style) = match value {
             Some(v) => (crosshair::format_number(v, y), value_style),
             None => (g.null.to_string(), Style::default().fg(theme.get("dimmed"))),
         };
         entries.push(crosshair::Entry {
             name: name.clone(),
-            name_style: Style::default().fg(theme.get(color)),
+            name_style: series_style(theme, i, other_at),
             value,
             value_style,
         });
@@ -1418,9 +1433,19 @@ fn legend<'a>(show: bool, entries: impl Iterator<Item = (&'a str, Style)>) -> Op
     (show && entries.len() > 1).then_some(Legend { entries })
 }
 
-/// The style series `i` draws in.
-fn series_style(theme: &Theme, i: usize) -> Style {
-    Style::default().fg(theme.get(SERIES_COLORS[i % SERIES_COLORS.len()]))
+/// The style series `i` draws in: its palette color, or `dimmed` for Other, the
+/// rows of every value without a series of its own.
+fn series_style(theme: &Theme, i: usize, other_at: Option<usize>) -> Style {
+    let slot = match other_at {
+        Some(at) if at == i => "dimmed",
+        _ => SERIES_COLORS[i % SERIES_COLORS.len()],
+    };
+    Style::default().fg(theme.get(slot))
+}
+
+/// Where Other is among `n` series, when the last one is.
+fn other_at(other: bool, n: usize) -> Option<usize> {
+    (other && n > 0).then(|| n - 1)
 }
 
 /// A histogram: filled bars, or split by a color, each group's bins as a step
@@ -1501,23 +1526,28 @@ fn render_histogram_chart(
     );
     if !data.groups.is_empty() {
         let steps = step_outlines(data);
-        let datasets: Vec<Dataset> = steps
+        let other = other_at(data.other, steps.len());
+        // Other first, under the rest.
+        let mut datasets: Vec<(usize, Dataset)> = steps
             .iter()
             .enumerate()
             .map(|(i, points)| {
-                Dataset::default()
+                let dataset = Dataset::default()
                     .graph_type(GraphType::Line)
                     .marker(marker)
-                    .style(series_style(theme, i))
-                    .data(points)
+                    .style(series_style(theme, i, other))
+                    .data(points);
+                (i, dataset)
             })
             .collect();
+        datasets.sort_by_key(|(i, _)| Some(*i) != other);
+        let datasets: Vec<Dataset> = datasets.into_iter().map(|(_, d)| d).collect();
         axes.legend = legend(
             look.legend,
             data.groups
                 .iter()
                 .enumerate()
-                .map(|(i, group)| (group.name.as_str(), series_style(theme, i))),
+                .map(|(i, group)| (group.name.as_str(), series_style(theme, i, other))),
         );
         axes.render(Chart::new(datasets), area, buf, g);
         return;
@@ -1597,18 +1627,23 @@ fn render_kde_chart(
         return;
     }
 
-    let datasets: Vec<Dataset> = data
+    let other = other_at(data.other, data.series.len());
+    let mut datasets: Vec<(usize, Dataset)> = data
         .series
         .iter()
         .enumerate()
         .map(|(i, s)| {
-            Dataset::default()
+            let dataset = Dataset::default()
                 .graph_type(GraphType::Line)
                 .marker(g.plot.line)
-                .style(series_style(theme, i))
-                .data(&s.points)
+                .style(series_style(theme, i, other))
+                .data(&s.points);
+            (i, dataset)
         })
         .collect();
+    // Other first, under the rest.
+    datasets.sort_by_key(|(i, _)| Some(*i) != other);
+    let datasets: Vec<Dataset> = datasets.into_iter().map(|(_, d)| d).collect();
 
     let x_title = modal.x().map(|x| modal.axis_title(x)).unwrap_or_default();
     let mut axes = plot_axes(
@@ -1623,7 +1658,7 @@ fn render_kde_chart(
         data.series
             .iter()
             .enumerate()
-            .map(|(i, s)| (s.name.as_str(), series_style(theme, i))),
+            .map(|(i, s)| (s.name.as_str(), series_style(theme, i, other))),
     );
     axes.render(Chart::new(datasets), area, buf, g);
 }
@@ -1867,6 +1902,7 @@ mod tests {
                     names: names(),
                     x_axis_kind: XAxisTemporalKind::Numeric,
                     x_bounds: None,
+                    other: false,
                     numbers: PlotNumbers::default(),
                 },
                 notes: Vec::new(),
@@ -1944,6 +1980,7 @@ mod tests {
                     names: names(),
                     x_axis_kind: XAxisTemporalKind::Numeric,
                     x_bounds: None,
+                    other: false,
                     numbers: PlotNumbers::default(),
                 },
                 notes: Vec::new(),
@@ -2052,6 +2089,98 @@ mod tests {
         assert!(text.contains("same as X"), "{text}");
     }
 
+    /// The line under Color says how many values Other gathers while it is on: on by
+    /// default for a scatter, off for a line; ←/→ on the line turn it over.
+    #[test]
+    fn the_values_line_counts_other() {
+        let mut modal = open_modal();
+        modal.set_mark(Mark::Scatter);
+        modal.spec.encoding.x.field = Some("price".to_string());
+        modal.spec.encoding.y.field = vec!["volume".to_string()];
+        modal.spec.encoding.color.field = Some("carrier".to_string());
+        modal.color_counts = Some(crate::chart_modal::ColorCounts {
+            column: "carrier".to_string(),
+            values: (0..16)
+                .map(|i| (Some(format!("C{i}")), 100 - i as u64))
+                .collect(),
+        });
+        let line = |modal: &mut ChartModal| -> String {
+            let rows = render_rows(modal, 100, 30);
+            let at = rows.iter().position(|r| r.contains("Color")).unwrap();
+            rows[at + 1]
+                .chars()
+                .take(40)
+                .collect::<String>()
+                .trim()
+                .to_string()
+        };
+        assert_eq!(line(&mut modal), "top 7 + 9 other");
+        modal.step(ChartFocus::ColorValues, 1);
+        assert_eq!(line(&mut modal), "top 7 of 16 by rows");
+        modal.spec.encoding.color.other = None;
+        modal.set_mark(Mark::Line);
+        assert_eq!(line(&mut modal), "top 7 of 16 by rows");
+        modal.step(ChartFocus::ColorValues, -1);
+        assert_eq!(line(&mut modal), "top 7 + 9 other");
+        modal.spec.encoding.color.values = vec![Some("C3".to_string()), Some("C9".to_string())];
+        assert_eq!(line(&mut modal), "2 picked + 14 other");
+    }
+
+    /// Other is the legend's last entry and is drawn in `dimmed`, under the series.
+    #[test]
+    fn other_is_the_legends_last_entry() {
+        let mut modal = open_modal();
+        modal.set_mark(Mark::Scatter);
+        modal.spec.encoding.x.field = Some("price".to_string());
+        modal.spec.encoding.y.field = vec!["volume".to_string()];
+        modal.show_legend = true;
+        let series: Vec<Vec<(f64, f64)>> = (0..3)
+            .map(|s| (0..5).map(|i| (i as f64, (i * 10 + s) as f64)).collect())
+            .collect();
+        let names: Vec<String> = ["UA", "B6", crate::chart_data::OTHER]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let ctx = RenderContext::for_test();
+        let theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        let area = Rect::new(0, 0, 60, 24);
+        let mut buf = Buffer::empty(area);
+        render_plot(
+            area,
+            &mut buf,
+            &modal,
+            &theme,
+            &ctx,
+            ChartRenderData::XY {
+                series: Some(&series),
+                breaks: None,
+                values: None,
+                names: &names,
+                x_axis_kind: XAxisTemporalKind::Numeric,
+                x_bounds: None,
+                numbers: PlotNumbers::default(),
+                other: true,
+            },
+            crate::glyphs::unicode(),
+        );
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        let at = |name: &str| {
+            rows.iter()
+                .position(|r| r.contains(&format!("█ {name}")))
+                .unwrap_or_else(|| panic!("{name}: {rows:#?}"))
+        };
+        assert_eq!(at("UA") + 1, at("B6"));
+        assert_eq!(at("B6") + 1, at("Other"));
+        let row = at("Other") as u16;
+        let swatch = (0..area.width)
+            .find(|&x| buf[(x, row)].symbol() == "█")
+            .unwrap();
+        assert_eq!(buf[(swatch, row)].fg, theme.get("dimmed"));
+    }
+
     /// The open Picker drops over the panel under its row, with a checkbox per item
     /// where it takes several, and each value's rows beside it.
     #[test]
@@ -2119,6 +2248,7 @@ mod tests {
                     names: names(),
                     x_axis_kind: XAxisTemporalKind::Numeric,
                     x_bounds: None,
+                    other: false,
                     numbers: PlotNumbers::default(),
                 },
                 notes: vec![note.to_string()],
@@ -2189,6 +2319,7 @@ mod tests {
                     names: names(),
                     x_axis_kind: XAxisTemporalKind::Numeric,
                     x_bounds: None,
+                    other: false,
                     numbers: PlotNumbers::default(),
                 },
                 notes: Vec::new(),
@@ -2221,6 +2352,7 @@ mod tests {
                         names: names(),
                         x_axis_kind: XAxisTemporalKind::Numeric,
                         x_bounds: None,
+                        other: false,
                         numbers: PlotNumbers::default(),
                     },
                     notes: Vec::new(),
@@ -2264,6 +2396,7 @@ mod tests {
             value_dtype: polars::prelude::DataType::Float64,
             counted: None,
             groups: Vec::new(),
+            other: false,
             rows_note: None,
         }
     }
@@ -2452,6 +2585,7 @@ mod tests {
         let histogram = HistogramData {
             column: "price".to_string(),
             groups: Vec::new(),
+            other: false,
             share: false,
             bins: (0..10)
                 .map(|i| HistogramBin {
@@ -2466,6 +2600,7 @@ mod tests {
             clipped: None,
         };
         let kde = KdeData {
+            other: false,
             series: vec![KdeSeries {
                 name: "price".to_string(),
                 points: (0..=100)
@@ -2506,6 +2641,7 @@ mod tests {
                             names: names(),
                             x_axis_kind: XAxisTemporalKind::Date,
                             x_bounds: None,
+                            other: false,
                             numbers: PlotNumbers::default(),
                         },
                         "date",
@@ -2521,6 +2657,7 @@ mod tests {
                             names: names(),
                             x_axis_kind: XAxisTemporalKind::Numeric,
                             x_bounds: None,
+                            other: false,
                             numbers: PlotNumbers::default(),
                         },
                         "volume",
@@ -2585,6 +2722,7 @@ mod tests {
         modal.show_legend = false;
 
         let kde = KdeData {
+            other: false,
             series: vec![KdeSeries {
                 name: "price".to_string(),
                 points: (0..=100)
@@ -2621,6 +2759,7 @@ mod tests {
             names: names(),
             x_axis_kind: XAxisTemporalKind::Numeric,
             x_bounds: None,
+            other: false,
             numbers: PlotNumbers {
                 x: AxisNumbers::default(),
                 y: AxisNumbers {
@@ -2731,6 +2870,7 @@ mod tests {
         let histogram = HistogramData {
             column: "passengers".to_string(),
             groups: Vec::new(),
+            other: false,
             share: false,
             bins: (0..7)
                 .map(|i| HistogramBin {
@@ -2767,6 +2907,7 @@ mod tests {
             names: names(),
             x_axis_kind: XAxisTemporalKind::Numeric,
             x_bounds: None,
+            other: false,
             numbers,
         };
         let numbers = PlotNumbers {
@@ -2813,6 +2954,7 @@ mod tests {
             names: names(),
             x_axis_kind: XAxisTemporalKind::Numeric,
             x_bounds: None,
+            other: false,
             numbers: PlotNumbers::default(),
         };
         for (chart_type, mark) in [(Mark::Line, '*'), (Mark::Scatter, 'o')] {
@@ -2830,6 +2972,7 @@ mod tests {
         let histogram = HistogramData {
             column: "price".to_string(),
             groups: Vec::new(),
+            other: false,
             share: false,
             bins: (0..10)
                 .map(|i| HistogramBin {
@@ -2874,6 +3017,7 @@ mod tests {
         check("box plot", &plot_text(&modal, data, ascii), &['o']);
 
         let kde = KdeData {
+            other: false,
             series: vec![KdeSeries {
                 name: "price".to_string(),
                 points: (0..=100)
@@ -2926,6 +3070,7 @@ mod tests {
                     names: names(),
                     x_axis_kind: XAxisTemporalKind::Numeric,
                     x_bounds: None,
+                    other: false,
                     numbers: PlotNumbers::default(),
                 },
                 g,
@@ -2962,6 +3107,7 @@ mod tests {
             names: names(),
             x_axis_kind: XAxisTemporalKind::Date,
             x_bounds: None,
+            other: false,
             numbers: PlotNumbers::default(),
         }
     }
@@ -3137,6 +3283,7 @@ mod tests {
                 names: names(),
                 x_axis_kind: XAxisTemporalKind::Numeric,
                 x_bounds: None,
+                other: false,
                 numbers: PlotNumbers::default(),
             };
             render_plot(area, &mut buf, &modal, &theme, &ctx, data, g);
@@ -3202,6 +3349,7 @@ mod tests {
                 names: names(),
                 x_axis_kind: XAxisTemporalKind::Date,
                 x_bounds: None,
+                other: false,
                 numbers: PlotNumbers::default(),
             };
             let place = render_plot(area, &mut buf, modal, &theme, &ctx, data, g);
@@ -3266,6 +3414,7 @@ mod tests {
                 names: names(),
                 x_axis_kind: XAxisTemporalKind::Numeric,
                 x_bounds: None,
+                other: false,
                 numbers: PlotNumbers::default(),
             };
             plot_text_in(&modal, data, g, Rect::new(0, 0, 60, 20))
@@ -3291,6 +3440,7 @@ mod tests {
         let histogram = HistogramData {
             column: "price".to_string(),
             groups: Vec::new(),
+            other: false,
             share: false,
             bins: (0..4)
                 .map(|i| HistogramBin {

@@ -14567,15 +14567,18 @@ impl App {
                 } else {
                     cache.series.clone()
                 };
+                let last = cache.names.len().saturating_sub(1);
                 let series: Vec<Series> = points
                     .into_iter()
                     .zip(&cache.names)
                     .zip(&cache.breaks)
-                    .filter(|((points, _), _)| !points.is_empty())
-                    .map(|((points, name), breaks)| Series {
+                    .enumerate()
+                    .filter(|(_, ((points, _), _))| !points.is_empty())
+                    .map(|(i, ((points, name), breaks))| Series {
                         name: name.clone(),
                         points,
                         breaks: breaks.clone(),
+                        other: cache.other && i == last,
                     })
                     .collect();
                 if series.is_empty() {

@@ -7,10 +7,13 @@ filtered and sorted.
 
 1. Open **Premier League (2020-21)** from **Example datasets** and run the
    [goals query](querying-data.md#dates-and-messy-text).
-2. Press <kbd>e</kbd> and type `goals.csv` in **Path**.
+2. Press <kbd>e</kbd> and type `goals.csv` in **Path**. The field starts
+   with a suggested name, the dataset's with `-export`; typing replaces it,
+   and <kbd>Enter</kbd> takes it as it stands.
 3. Press <kbd>Enter</kbd>. If the file exists, confirm whether to overwrite it.
 
-The status line says `Exported to goals.csv`. The file holds a header and 380
+The status line says `Exported to goals.csv`; a long path is cut from its
+start, so the file name stays. The file holds a header and 380
 matches, in the query's order:
 
 ```text

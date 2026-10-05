@@ -3039,6 +3039,7 @@ mod tests {
     fn long_flash(app: &mut App) {
         app.flash = Some(crate::Flash {
             message: "guard".to_string(),
+            path_from: None,
             expires: Instant::now() + Duration::from_secs(120),
         });
     }

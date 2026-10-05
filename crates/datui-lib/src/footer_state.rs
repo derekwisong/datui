@@ -20,6 +20,7 @@ impl App {
             help: crate::render::main_view::help_key(self, content),
             spinner,
             message: self.flash.as_ref().map(|f| f.message.clone()),
+            message_path: self.flash.as_ref().and_then(|f| f.path_from),
             ..Footer::default()
         };
         // A progress line says what the work is doing, with numbers; the status line
@@ -255,6 +256,40 @@ impl App {
             label = format!("{label}/{table}");
         }
         Some(label)
+    }
+
+    /// The dataset's name as a file stem, for a name an export suggests:
+    /// `daily` for `weather/daily.csv.gz`, `shop_orders` for a table in `shop.db`.
+    pub(crate) fn dataset_stem(&self) -> String {
+        if self.reads_stdin() {
+            return "stdin".to_string();
+        }
+        let Some(name) = self
+            .path
+            .as_deref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+        else {
+            return "data".to_string();
+        };
+        // The compression's extension, then the format's.
+        let mut stem = name.as_str();
+        for _ in 0..2 {
+            if let Some((rest, _)) = stem.rsplit_once('.')
+                && !rest.is_empty()
+            {
+                stem = rest;
+            }
+        }
+        let mut stem = stem.to_string();
+        if let Some(table) = self.view_table()
+            && table != name
+        {
+            stem = format!("{stem}_{table}");
+        }
+        stem.chars()
+            .map(|c| if c == '/' || c == '\\' { '_' } else { c })
+            .collect()
     }
 
     /// What the background work is doing, in words: the open in flight, an export,

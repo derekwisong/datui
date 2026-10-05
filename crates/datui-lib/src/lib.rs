@@ -3742,6 +3742,11 @@ impl App {
         self.flash = Some(Flash::new(message));
     }
 
+    /// A completion flash that ends in the path written: `Exported to …/out.csv`.
+    fn flash_path(&mut self, prefix: &str, path: &std::path::Path) {
+        self.flash = Some(Flash::path(prefix, path));
+    }
+
     /// The completion flash on the control bar, if one is showing.
     pub fn flash_message(&self) -> Option<&str> {
         self.flash.as_ref().map(|f| f.message.as_str())
@@ -13133,6 +13138,9 @@ impl App {
                         &self.theme,
                         self.original_file_delimiter,
                     );
+                    // A name to start from, beside the source's rather than on it.
+                    let stem = self.dataset_stem();
+                    self.export_modal.suggest_path(&format!("{stem}-export"));
                     if let Some(state) = self.data_table_state.as_ref() {
                         self.export_modal.offer_source_file = state.can_name_source_files();
                         self.export_modal.nested_columns = state
@@ -15122,7 +15130,7 @@ impl App {
         self.busy = false;
         match result {
             Ok(()) => {
-                self.flash_note(format!("Chart exported to {}", path.display()));
+                self.flash_path("Chart exported to ", path);
                 self.chart_export_modal.close();
             }
             // The form comes back as it was, the reason on its status line.
@@ -16048,7 +16056,7 @@ impl App {
                 self.export_counts = None;
                 if current {
                     self.export_progress = None;
-                    self.flash_note(format!("Exported to {}", path.display()));
+                    self.flash_path("Exported to ", &path);
                 }
                 None
             }
@@ -16062,7 +16070,7 @@ impl App {
             Answer::QualityReportWritten(path) => {
                 self.analysis_modal.data_quality_export = None;
                 if current {
-                    self.flash_note(format!("Report written to {}", path.display()));
+                    self.flash_path("Report written to ", &path);
                 }
                 None
             }
@@ -17309,6 +17317,8 @@ impl App {
             &self.theme,
             self.original_file_delimiter,
         );
+        let stem = self.dataset_stem();
+        self.export_modal.suggest_path(&format!("{stem}-counts"));
         self.export_modal.offer_source_file = false;
         self.export_modal.nested_columns = false;
         self.export_modal.avro_renames = table

@@ -286,6 +286,8 @@ pub struct Footer {
     pub notes: Vec<(String, bool)>,
     /// A completion flash.
     pub message: Option<String>,
+    /// Where a path the message ends in starts: a cut keeps its file name.
+    pub message_path: Option<usize>,
     pub position: Option<Position>,
     /// The active mode's keys.
     pub hints: Vec<Hint>,
@@ -665,7 +667,7 @@ impl Footer {
                 left.push(Span::raw("   "));
             }
             left.push(Span::styled(
-                crate::glyphs::fit_cells(message, w, "...").into_owned(),
+                cut_message(message, self.message_path, w),
                 Style::default().fg(ctx.text_primary),
             ));
         }
@@ -742,6 +744,24 @@ impl Footer {
 
 /// The stage a query in effect shows as.
 pub const QUERY_STAGE: &str = "query";
+
+/// A message in `width` columns. One that ends in a path keeps what it says and
+/// the path's end, `Exported to ...daily/out.csv`; any other is cut at its end.
+pub fn cut_message(message: &str, path_from: Option<usize>, width: usize) -> String {
+    if crate::glyphs::display_width(message) <= width {
+        return message.to_string();
+    }
+    if let Some((prefix, path)) = path_from.and_then(|at| message.split_at_checked(at)) {
+        let mark = "...";
+        let lead = crate::glyphs::display_width(prefix) + mark.len();
+        // Room for a file name's worth of the path, or the plain cut.
+        if width >= lead + 8 {
+            let tail = crate::glyphs::take_columns_end(path, width - lead);
+            return format!("{prefix}{mark}{tail}");
+        }
+    }
+    crate::glyphs::fit_cells(message, width, "...").into_owned()
+}
 
 /// `text` in `width` columns, cut from the middle: `weather/…/daily`.
 pub fn elide_middle(text: &str, width: usize) -> String {
@@ -876,6 +896,7 @@ mod tests {
             work: Some("Reading footers: 3 of 40...".to_string()),
             notes: Vec::new(),
             message: None,
+            message_path: None,
             position: Some(Position {
                 row: 41_208,
                 total: Total::Known(1_204_331),
@@ -983,6 +1004,23 @@ mod tests {
         for text in [&wide, &w80, &w60, &w40] {
             assert!(!text.contains("Clea "), "nothing is cut mid-word: {text}");
         }
+    }
+
+    /// A flash that ends in a path keeps what it says and the file name when cut;
+    /// any other is cut at its end.
+    #[test]
+    fn a_path_flash_keeps_its_file_name() {
+        let message = "Exported to /home/someone/projects/weather/daily/out.csv";
+        let cut = super::cut_message(message, Some("Exported to ".len()), 32);
+        assert!(cut.starts_with("Exported to ..."), "{cut}");
+        assert!(cut.ends_with("/out.csv"), "{cut}");
+        assert_eq!(crate::glyphs::display_width(&cut), 32);
+        let plain = super::cut_message("Copied 3 rows to the clipboard", None, 12);
+        assert!(
+            plain.starts_with("Copied") && plain.ends_with("..."),
+            "{plain}"
+        );
+        assert_eq!(super::cut_message(message, Some(12), 200), message);
     }
 
     #[test]

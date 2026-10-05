@@ -260,7 +260,15 @@ impl ExportModal {
     /// receives Parquet bytes from the picker side either. A path whose extension
     /// names no format is left alone. A compression suffix survives when the new
     /// format supports one and is dropped when it cannot.
+    /// Offer `stem` with the format's extension as the path: Enter takes it as it
+    /// stands, typing replaces it, and stepping the format carries it along.
+    pub fn suggest_path(&mut self, stem: &str) {
+        let path = format!("{stem}.{}", self.selected_format.extension());
+        self.path_input.suggest(path);
+    }
+
     pub fn sync_path_to_format(&mut self) {
+        let suggested = self.path_input.is_suggested();
         let value = self.path_input.value().trim().to_string();
         if value.is_empty() || ExportFormat::from_path(&value).is_none() {
             return;
@@ -289,7 +297,11 @@ impl ExportModal {
             ),
             None => format!("{base}.{}", self.selected_format.extension()),
         };
-        self.path_input.set_value(new_path);
+        if suggested {
+            self.path_input.suggest(new_path);
+        } else {
+            self.path_input.set_value(new_path);
+        }
     }
 
     /// Set the compression field the given format reads at export time.
@@ -404,6 +416,22 @@ impl Default for ExportModal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The suggested name follows the format as it steps, and stays a suggestion:
+    /// typing still replaces it whole.
+    #[test]
+    fn a_suggested_path_follows_the_format() {
+        let mut modal = ExportModal::new();
+        modal.selected_format = ExportFormat::Csv;
+        modal.suggest_path("people-export");
+        assert_eq!(modal.path_input.value(), "people-export.csv");
+        modal.step_format(1);
+        assert_eq!(
+            modal.path_input.value(),
+            format!("people-export.{}", modal.selected_format.extension())
+        );
+        assert!(modal.path_input.is_suggested());
+    }
 
     #[test]
     fn from_path_reads_the_extension_and_looks_through_compression() {

@@ -37,6 +37,9 @@ impl ErrorModal {
 /// key could not do and why, which has to survive until it is read.
 pub struct Flash {
     pub message: String,
+    /// Where a path the message ends in starts: cut short, the path loses its
+    /// beginning rather than its file name.
+    pub(crate) path_from: Option<usize>,
     pub(crate) expires: std::time::Instant,
 }
 
@@ -44,8 +47,16 @@ impl Flash {
     pub(crate) fn new(message: String) -> Self {
         Self {
             message,
+            path_from: None,
             expires: std::time::Instant::now() + std::time::Duration::from_secs(2),
         }
+    }
+
+    /// `prefix` then `path`, as in `Exported to /data/out.csv`.
+    pub(crate) fn path(prefix: &str, path: &std::path::Path) -> Self {
+        let mut flash = Self::new(format!("{prefix}{}", path.display()));
+        flash.path_from = Some(prefix.len());
+        flash
     }
 
     pub(crate) fn expired(&self) -> bool {

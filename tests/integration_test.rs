@@ -2381,6 +2381,10 @@ fn declining_an_overwrite_keeps_the_export_form() {
 
     key(&mut app, KeyCode::Char('e'));
     assert!(app.export_modal.active);
+    // The form suggests a name; Backspace takes it away.
+    assert_eq!(app.export_modal.path_input.value(), "people-export.parquet");
+    key(&mut app, KeyCode::Backspace);
+    assert_eq!(app.export_modal.path_input.value(), "");
 
     // Enter on the empty form says why inline instead of doing nothing,
     // and typing is the correction that clears it.
@@ -19266,7 +19270,8 @@ fn ctrl_p_recalls_the_last_export_path_and_up_moves_on() {
     ));
 
     press(&mut app, KeyCode::Char('e'));
-    assert_eq!(app.export_modal.path_input.value(), "");
+    let suggested = app.export_modal.path_input.value().to_string();
+    assert_eq!(suggested, "forms_export_history-export.csv");
     press(&mut app, KeyCode::Up);
     assert_eq!(
         app.export_modal.focus,
@@ -19275,7 +19280,7 @@ fn ctrl_p_recalls_the_last_export_path_and_up_moves_on() {
     );
     assert_eq!(
         app.export_modal.path_input.value(),
-        "",
+        suggested,
         "and recalls nothing"
     );
     press(&mut app, KeyCode::Down);
@@ -19292,7 +19297,7 @@ fn ctrl_p_recalls_the_last_export_path_and_up_moves_on() {
         KeyCode::Char('n'),
         KeyModifiers::CONTROL,
     )));
-    assert_eq!(app.export_modal.path_input.value(), "");
+    assert_eq!(app.export_modal.path_input.value(), suggested);
 }
 
 /// Sort & Filter lists what is in effect: a sort flips with Space, moves with

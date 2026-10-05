@@ -246,7 +246,12 @@ impl App {
             Some(parent) if !parent.ends_with(':') => format!("{parent}/{name}"),
             _ => name,
         };
-        if let Some(table) = self.view_table() {
+        // A table opened at its place (`shop.db/orders`) is named by the path already.
+        if let Some(table) = self.view_table()
+            && path
+                .file_name()
+                .is_none_or(|n| n.to_string_lossy() != table)
+        {
             label = format!("{label}/{table}");
         }
         Some(label)

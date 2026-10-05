@@ -92,6 +92,11 @@ fn t_opens_another_worksheet_of_a_workbook() {
     assert_eq!(column_names(&app), ["month", "total", "note"]);
     assert_eq!(current_rows(&app), 12);
     assert_eq!(app.open_path(), Some(book.join("2023").as_path()));
+    let line = footer(&mut app);
+    assert!(
+        line.contains("sheets.xlsx/2023") && !line.contains("2023/2023"),
+        "the footer names the sheet once: {line}"
+    );
 
     // From there, the picker marks the sheet now open.
     press(&mut app, KeyCode::Char('T'));

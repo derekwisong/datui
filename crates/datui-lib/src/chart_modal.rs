@@ -266,11 +266,13 @@ impl ChartSpec {
     }
 }
 
-/// Series a color splits a chart into, at most: one per palette color.
-pub const COLOR_MAX: usize = 7;
+/// Series a color splits a chart into, at most: one per palette color
+/// (`chart_1` to `chart_10`). A terminal of fewer colors draws fewer:
+/// [`ChartModal::series_max`].
+pub const COLOR_MAX: usize = 10;
 
 /// Most Y columns a line or scatter chart draws at once.
-pub const Y_SERIES_MAX: usize = 7;
+pub const Y_SERIES_MAX: usize = COLOR_MAX;
 
 /// Default histogram bin count.
 pub const HISTOGRAM_DEFAULT_BINS: usize = 40;
@@ -384,6 +386,9 @@ fn format_usize_with_commas(n: usize) -> String {
 pub struct ChartModal {
     pub active: bool,
     pub spec: ChartSpec,
+    /// The distinct colors the series slots come out as on this terminal
+    /// (`Theme::series_colors`); `None` before the app says, read as [`COLOR_MAX`].
+    pub series_cap: Option<usize>,
     /// The cursor column's type when `c` chose the chart (`f64`), shown under Type
     /// until the type is changed.
     pub suggested: Option<String>,
@@ -437,6 +442,12 @@ pub struct ChartModal {
 impl ChartModal {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Most series a chart draws: one per distinct series color, up to [`COLOR_MAX`].
+    /// A 16-color terminal draws fewer rather than two in one color.
+    pub fn series_max(&self) -> usize {
+        self.series_cap.unwrap_or(COLOR_MAX).clamp(1, COLOR_MAX)
     }
 
     /// An axis title for `column`: its name, and its unit when it has one.
@@ -1073,10 +1084,11 @@ impl ChartModal {
                 else {
                     return;
                 };
+                let most = Y_SERIES_MAX.min(self.series_max());
                 let field = &mut self.spec.encoding.y.field;
                 if let Some(pos) = field.iter().position(|c| *c == item) {
                     field.remove(pos);
-                } else if field.len() < Y_SERIES_MAX {
+                } else if field.len() < most {
                     field.push(item);
                 }
             }
@@ -1084,10 +1096,11 @@ impl ChartModal {
                 let Some(value) = self.color_value_at(i) else {
                     return;
                 };
+                let most = self.series_max();
                 let values = &mut self.spec.encoding.color.values;
                 if let Some(pos) = values.iter().position(|v| *v == value) {
                     values.remove(pos);
-                } else if values.len() < COLOR_MAX {
+                } else if values.len() < most {
                     values.push(value);
                 }
             }
@@ -1600,14 +1613,14 @@ mod tests {
         assert!(modal.picker.is_none());
         modal.color_counts = Some(ColorCounts {
             column: "carrier".to_string(),
-            values: (0..10)
+            values: (0..COLOR_MAX + 2)
                 .map(|i| (Some(format!("C{i}")), 100 - i as u64))
                 .chain([(None, 1)])
                 .collect(),
         });
         modal.open_picker();
         assert_eq!(modal.picker_details[0], "100");
-        for _ in 0..9 {
+        for _ in 0..COLOR_MAX + 2 {
             modal.picker_toggle();
             modal.picker.as_mut().unwrap().move_down();
         }

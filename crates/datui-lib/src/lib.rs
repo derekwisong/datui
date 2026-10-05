@@ -12782,6 +12782,7 @@ impl App {
                         })
                         .map(|(name, _)| name.to_string())
                         .collect();
+                    self.chart_modal.series_cap = Some(self.theme.series_colors().len());
                     self.chart_modal.open(
                         ChartColumns {
                             numeric: &numeric_columns,
@@ -17470,6 +17471,7 @@ impl App {
         match built {
             Ok(built) => {
                 self.theme = built;
+                self.chart_modal.series_cap = Some(self.theme.series_colors().len());
                 self.app_config.theme = next;
                 // The prompts live as long as the app and keep the colors they were
                 // given; a dialog's fields take the theme each time it opens.

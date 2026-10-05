@@ -927,7 +927,7 @@ pub const SCREENS: &[Screen] = &[
                 keys: &[
                     k("↑ / ↓", "Move", "Move; typing narrows"),
                     k("Enter / Space", "Choose", "Choose (Y, Color values: Space toggles one)")
-                        .more("Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 7)"),
+                        .more("Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 10, fewer on a terminal of fewer colors)"),
                     k("Tab / Shift+Tab", "Next", "Choose and move to the next or previous row"),
                     k("Esc", "Back", "Back out of the picker alone"),
                 ],

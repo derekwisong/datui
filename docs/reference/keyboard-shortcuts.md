@@ -444,7 +444,7 @@ Where a dataset opens.
 | Key | Action |
 |---|---|
 | `↑ / ↓` | Move; typing narrows |
-| `Enter / Space` | Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 7) |
+| `Enter / Space` | Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 10, fewer on a terminal of fewer colors) |
 | `Tab / Shift+Tab` | Choose and move to the next or previous row |
 | `Esc` | Back out of the picker alone |
 

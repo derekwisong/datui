@@ -247,7 +247,9 @@ pub struct Palette {
     pub text: Rgb,
     pub text_secondary: Rgb,
     pub grid: Rgb,
-    pub series: [Rgb; 7],
+    /// The series colors, a color repeated in the theme given once: fewer than
+    /// [`SERIES`] when it repeats.
+    pub series: Vec<Rgb>,
     /// Other: the rows of every value of a color without a series of its own.
     pub other: Rgb,
     /// A heatmap's cells, from the fewest rows to the most.
@@ -259,8 +261,10 @@ pub struct Palette {
 /// The light style's series colors: a categorical order whose neighbors stay
 /// apart under the common color-vision deficiencies (checked with a CVD
 /// simulation: worst adjacent pair 9.1 ΔE). Three of them sit under 3:1 on white,
-/// so lines are named at their ends and bars carry a legend.
-const LIGHT_SERIES: [Rgb; 7] = [
+/// so lines are named at their ends and bars carry a legend. The last three (a
+/// teal, a plum, a dark olive) are 22 ΔE or more from every other, 11 under
+/// deuteranopia.
+const LIGHT_SERIES: [Rgb; SERIES] = [
     Rgb(0x2a, 0x78, 0xd6),
     Rgb(0xeb, 0x68, 0x34),
     Rgb(0x1b, 0xaf, 0x7a),
@@ -268,7 +272,13 @@ const LIGHT_SERIES: [Rgb; 7] = [
     Rgb(0xe8, 0x7b, 0xa4),
     Rgb(0x00, 0x83, 0x00),
     Rgb(0x4a, 0x3a, 0xa7),
+    Rgb(0x0f, 0x8a, 0x96),
+    Rgb(0x9c, 0x1f, 0x6e),
+    Rgb(0x5c, 0x4a, 0x00),
 ];
+
+/// Series colors a palette has: as many as the theme's chart slots.
+pub const SERIES: usize = 10;
 
 /// One blue, light to dark.
 const BLUE_RAMP: [Rgb; 7] = [
@@ -288,7 +298,7 @@ impl Palette {
             text: Rgb(0x1f, 0x24, 0x30),
             text_secondary: Rgb(0x5b, 0x61, 0x70),
             grid: Rgb(0xe3, 0xe5, 0xea),
-            series: LIGHT_SERIES,
+            series: LIGHT_SERIES.to_vec(),
             other: Rgb(0xa8, 0xad, 0xb8),
             ramp: BLUE_RAMP,
             dark: false,
@@ -327,6 +337,9 @@ impl Palette {
             Rgb(0x7a, 0xa2, 0xf7),
             Rgb(0xf7, 0x76, 0x8e),
             Rgb(0xff, 0x9e, 0x64),
+            Rgb(0x1a, 0xbc, 0x9c),
+            Rgb(0xff, 0x5f, 0xd2),
+            Rgb(0xf4, 0xef, 0x8a),
         ];
         let configured = [
             &colors.chart_1,
@@ -336,10 +349,17 @@ impl Palette {
             &colors.chart_5,
             &colors.chart_6,
             &colors.chart_7,
+            &colors.chart_8,
+            &colors.chart_9,
+            &colors.chart_10,
         ];
-        let mut series = defaults;
-        for (slot, value) in series.iter_mut().zip(configured) {
-            *slot = get(value, *slot);
+        // A color the theme gives two slots draws one series, as on screen.
+        let mut series: Vec<Rgb> = Vec::with_capacity(SERIES);
+        for (fallback, value) in defaults.into_iter().zip(configured) {
+            let color = get(value, fallback);
+            if !series.contains(&color) {
+                series.push(color);
+            }
         }
         let mut ramp = BLUE_RAMP;
         ramp.reverse();
@@ -1791,6 +1811,30 @@ mod tests {
 
     /// The three formats come out as what they say: a PNG of the size asked, an
     /// SVG whose text is outlines, a PDF.
+    /// Ten series colors in every style; a theme that gives two slots one color
+    /// exports them as one, as the screen draws them.
+    #[test]
+    fn palettes_have_ten_series_and_a_repeat_counts_once() {
+        let mut colors = crate::config::ColorConfig::default();
+        assert_eq!(Palette::light().series.len(), SERIES);
+        assert_eq!(Palette::dark(&colors).series.len(), SERIES);
+        colors.chart_5 = colors.chart_1.clone();
+        let dark = Palette::dark(&colors);
+        assert_eq!(dark.series.len(), SERIES - 1);
+        assert_eq!(dark.series[4], Rgb(0xf7, 0x76, 0x8e), "chart_6 moves up");
+        // On screen too, whatever this terminal makes of the colors.
+        let theme = crate::config::Theme::from_config(&crate::config::ThemeConfig {
+            colors,
+            ..Default::default()
+        })
+        .unwrap();
+        let shown = theme.series_colors();
+        for (i, color) in shown.iter().enumerate() {
+            assert!(!shown[..i].contains(color), "{shown:?}");
+        }
+        assert!(shown.len() < SERIES, "{shown:?}");
+    }
+
     #[test]
     fn png_svg_and_pdf_are_what_they_say() {
         let figure = lines(&["AAPL", "MSFT"]);

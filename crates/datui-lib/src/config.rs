@@ -1685,6 +1685,9 @@ pub struct ColorConfig {
     pub chart_5: String,
     pub chart_6: String,
     pub chart_7: String,
+    pub chart_8: String,
+    pub chart_9: String,
+    pub chart_10: String,
     /// The chart grid, a shade dimmer than `dimmed`.
     pub chart_grid: String,
     /// The one colour that means "this is the thing": focused titles, key chips, the
@@ -1963,6 +1966,12 @@ impl ColorConfig {
             chart_5: "#7aa2f7".to_string(),
             chart_6: "#f7768e".to_string(),
             chart_7: "#ff9e64".to_string(),
+            // Tokyo Night's teal, a pink-magenta and a light yellow: apart from the
+            // seven by lightness as much as hue, so they stay apart under the common
+            // color-vision deficiencies.
+            chart_8: "#1abc9c".to_string(),
+            chart_9: "#ff5fd2".to_string(),
+            chart_10: "#f4ef8a".to_string(),
             // Dimmer than `dimmed`, and still blue rather than black on a 16-color
             // terminal, where black is the background.
             chart_grid: "#3d4785".to_string(),
@@ -2035,6 +2044,10 @@ impl ColorConfig {
             chart_5: "#007197".to_string(),
             chart_6: "#f52a65".to_string(),
             chart_7: "#b15c00".to_string(),
+            // A yellow does not read on white: a deep navy takes its place.
+            chart_8: "#118c74".to_string(),
+            chart_9: "#d1188c".to_string(),
+            chart_10: "#24357a".to_string(),
             // The theme's cyan halfway to the background: a grey this light is white
             // on a 16-color terminal, and the grid vanished into the background.
             chart_grid: "#70aabf".to_string(),
@@ -3235,6 +3248,9 @@ pub struct Theme {
     pub colors: HashMap<String, Color>,
 }
 
+/// The theme's chart series slots, `chart_1` to `chart_10`.
+pub const CHART_SERIES_SLOTS: usize = 10;
+
 impl Theme {
     /// Create a Theme from a ThemeConfig by parsing all color strings
     pub fn from_config(config: &ThemeConfig) -> Result<Self> {
@@ -3269,6 +3285,21 @@ impl Theme {
     /// Get a color by name, returns None if not found
     pub fn get_optional(&self, name: &str) -> Option<Color> {
         self.colors.get(name).copied()
+    }
+
+    /// The colors chart series are drawn in: `chart_1` to `chart_10` as this terminal
+    /// shows them, each once. Slots that come out the same (a theme that repeats a
+    /// color, a 16-color terminal, `NO_COLOR`) are one color, so two series never
+    /// share one: a chart draws at most this many.
+    pub fn series_colors(&self) -> Vec<Color> {
+        let mut colors: Vec<Color> = Vec::with_capacity(CHART_SERIES_SLOTS);
+        for i in 1..=CHART_SERIES_SLOTS {
+            let color = self.get(&format!("chart_{i}"));
+            if !colors.contains(&color) {
+                colors.push(color);
+            }
+        }
+        colors
     }
 
     /// Style of the row or item the cursor is on: the theme's tint, or reversed video

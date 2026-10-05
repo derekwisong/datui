@@ -2270,14 +2270,18 @@ pub fn value_rows(lf: &LazyFrame, column: &str, sampling: &ChartSampling) -> Res
 }
 
 /// The groups a color makes: the values picked, in the order picked, or else the
-/// largest by rows, one per palette color.
-pub fn color_groups(rows: &ValueRows, picked: &[Option<String>]) -> Vec<Option<String>> {
+/// largest by rows; at most `most`, one per series color.
+pub fn color_groups(
+    rows: &ValueRows,
+    picked: &[Option<String>],
+    most: usize,
+) -> Vec<Option<String>> {
     if !picked.is_empty() {
-        return picked.to_vec();
+        return picked.iter().take(most).cloned().collect();
     }
     rows.values
         .iter()
-        .take(crate::chart_modal::COLOR_MAX)
+        .take(most)
         .map(|(value, _)| value.clone())
         .collect()
 }
@@ -4281,7 +4285,7 @@ mod tests {
         assert_eq!(rows.values.len(), 9);
         assert_eq!(rows.rows, 10 + 11 + 12 + 13 + 14 + 15 + 16 + 17 + 18 + 1);
         assert_eq!(rows.values[0], (Some("v8".to_string()), 18));
-        let top = color_groups(&rows, &[]);
+        let top = color_groups(&rows, &[], 7);
         assert_eq!(
             top,
             ["v8", "v7", "v6", "v5", "v4", "v3", "v2"]
@@ -4291,7 +4295,10 @@ mod tests {
         // v0 has 11 rows, as many as v1: the column's order breaks the tie.
         assert_eq!(rows.values[7], (Some("v0".to_string()), 11));
         let picked = [Some("v1".to_string()), None];
-        assert_eq!(color_groups(&rows, &picked), picked);
+        assert_eq!(color_groups(&rows, &picked, 7), picked);
+        // A terminal of fewer colors draws fewer.
+        assert_eq!(color_groups(&rows, &[], 3).len(), 3);
+        assert_eq!(color_groups(&rows, &picked, 1), [Some("v1".to_string())]);
     }
 
     /// A line or scatter split by color without an aggregate: the sampled rows, a

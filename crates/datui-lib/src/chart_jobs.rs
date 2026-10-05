@@ -178,6 +178,8 @@ pub(crate) struct ChartRequest {
     pub(crate) envelope: bool,
     /// Only an X is picked: its range gives the empty axes their bounds.
     pub(crate) x_only: bool,
+    /// Most series drawn: one per distinct series color on this terminal.
+    pub(crate) series_cap: usize,
 }
 
 impl ChartRequest {
@@ -217,6 +219,10 @@ impl ChartRequest {
         // Leave out what this chart does not read, so a change to it asks for nothing.
         // Whether color splits the chart is read from the spec charted, a Y the
         // picker previews included.
+        // No more series than there are colors to tell them apart.
+        let series_cap = modal.series_max();
+        spec.encoding.y.field.truncate(series_cap);
+        spec.encoding.color.values.truncate(series_cap);
         let colored = ChartModal::colored_in(&spec);
         if colored {
             spec.encoding.color.other = Some(ChartModal::shows_other_in(&spec));
@@ -256,6 +262,7 @@ impl ChartRequest {
             envelope: mark == Mark::Line && !aggregates && !colored,
             x_only,
             spec,
+            series_cap,
         })
     }
 
@@ -282,9 +289,9 @@ impl ChartRequest {
             .as_deref()
             .map(|c| chart_data::value_rows(lf, c, sampling).map(|rows| (c, rows)))
             .transpose()?;
-        let groups = counts
-            .as_ref()
-            .map(|(_, rows)| chart_data::color_groups(rows, &encoding.color.values));
+        let groups = counts.as_ref().map(|(_, rows)| {
+            chart_data::color_groups(rows, &encoding.color.values, self.series_cap)
+        });
         // Other only when some value is left without a series of its own.
         let other = encoding.color.other == Some(true);
         let split = counts
@@ -405,7 +412,7 @@ impl ChartRequest {
                     // One box per category: the largest by rows.
                     Some(by) => {
                         let rows = chart_data::value_rows(lf, by, sampling)?;
-                        let groups = chart_data::color_groups(&rows, &[]);
+                        let groups = chart_data::color_groups(&rows, &[], self.series_cap);
                         let mut data = chart_data::prepare_box_by(
                             lf,
                             y,
@@ -514,7 +521,7 @@ impl ChartPrepared {
                 if d.of > 0 {
                     notes.push(format!(
                         "the {} largest of {} categories",
-                        crate::chart_modal::COLOR_MAX,
+                        d.stats.len(),
                         numfmt::group_chrome(d.of)
                     ));
                 }

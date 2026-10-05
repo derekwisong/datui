@@ -36,11 +36,6 @@ const LABEL_WIDTH: u16 = 13;
 const HEATMAP_TITLE_HEIGHT: u16 = 1;
 const HEATMAP_X_LABEL_HEIGHT: u16 = 2;
 
-/// The series colors, in order: one per palette slot.
-pub const SERIES_COLORS: [&str; 7] = [
-    "chart_1", "chart_2", "chart_3", "chart_4", "chart_5", "chart_6", "chart_7",
-];
-
 /// What the chart area shows: the plot, the notes over it about its input, or the
 /// reason it could not be prepared.
 pub struct ChartView<'a> {
@@ -355,7 +350,7 @@ fn rows_value(modal: &ChartModal) -> String {
 }
 
 /// The line under Color: which of the column's values have a series, and with
-/// Other on, how many values it gathers: `top 7 + 9 other`.
+/// Other on, how many values it gathers: `top 10 + 6 other`.
 fn color_values_line(modal: &ChartModal, ctx: &RenderContext) -> Vec<Span<'static>> {
     let picked = &modal.spec.encoding.color.values;
     let Some(counts) = modal
@@ -368,7 +363,7 @@ fn color_values_line(modal: &ChartModal, ctx: &RenderContext) -> Vec<Span<'stati
     let total = counts.values.len();
     let of = crate::numfmt::group_chrome(total);
     let (drawn, rest) = if picked.is_empty() {
-        let drawn = total.min(crate::chart_modal::COLOR_MAX);
+        let drawn = total.min(modal.series_max());
         (format!("top {drawn}"), total - drawn)
     } else {
         let rest = counts
@@ -578,7 +573,7 @@ fn render_picker(
         && list.height > 1
     {
         Paragraph::new(quiet(
-            format!("default: top {} by rows", crate::chart_modal::COLOR_MAX),
+            format!("default: top {} by rows", modal.series_max()),
             ctx,
         ))
         .render(Rect { height: 1, ..list }, buf);
@@ -1436,11 +1431,11 @@ fn legend<'a>(show: bool, entries: impl Iterator<Item = (&'a str, Style)>) -> Op
 /// The style series `i` draws in: its palette color, or `dimmed` for Other, the
 /// rows of every value without a series of its own.
 fn series_style(theme: &Theme, i: usize, other_at: Option<usize>) -> Style {
-    let slot = match other_at {
-        Some(at) if at == i => "dimmed",
-        _ => SERIES_COLORS[i % SERIES_COLORS.len()],
-    };
-    Style::default().fg(theme.get(slot))
+    if other_at == Some(i) {
+        return Style::default().fg(theme.get("dimmed"));
+    }
+    let colors = theme.series_colors();
+    Style::default().fg(colors[i % colors.len()])
 }
 
 /// Where Other is among `n` series, when the last one is.
@@ -1687,7 +1682,7 @@ fn render_box_plot_chart(
     let cap_half = 0.2;
     for (i, stat) in data.stats.iter().enumerate() {
         let x = i as f64;
-        let style = Style::default().fg(theme.get(SERIES_COLORS[i % SERIES_COLORS.len()]));
+        let style = series_style(theme, i, None);
         segments.push(vec![
             (x - box_half, stat.q1),
             (x + box_half, stat.q1),
@@ -2114,16 +2109,143 @@ mod tests {
                 .trim()
                 .to_string()
         };
-        assert_eq!(line(&mut modal), "top 7 + 9 other");
+        assert_eq!(line(&mut modal), "top 10 + 6 other");
         modal.step(ChartFocus::ColorValues, 1);
-        assert_eq!(line(&mut modal), "top 7 of 16 by rows");
+        assert_eq!(line(&mut modal), "top 10 of 16 by rows");
         modal.spec.encoding.color.other = None;
         modal.set_mark(Mark::Line);
-        assert_eq!(line(&mut modal), "top 7 of 16 by rows");
+        assert_eq!(line(&mut modal), "top 10 of 16 by rows");
         modal.step(ChartFocus::ColorValues, -1);
-        assert_eq!(line(&mut modal), "top 7 + 9 other");
+        assert_eq!(line(&mut modal), "top 10 + 6 other");
         modal.spec.encoding.color.values = vec![Some("C3".to_string()), Some("C9".to_string())];
         assert_eq!(line(&mut modal), "2 picked + 14 other");
+    }
+
+    /// Ten series take ten colors, each its own, and the legend names all ten.
+    #[test]
+    fn ten_series_take_ten_colors() {
+        let mut modal = open_modal();
+        modal.set_mark(Mark::Line);
+        modal.spec.encoding.x.field = Some("price".to_string());
+        modal.spec.encoding.y.field = vec!["volume".to_string()];
+        modal.show_legend = true;
+        let series: Vec<Vec<(f64, f64)>> = (0..10)
+            .map(|s| (0..5).map(|i| (i as f64, (i * 10 + s) as f64)).collect())
+            .collect();
+        let names: Vec<String> = (0..10).map(|i| format!("s{i}")).collect();
+        let ctx = RenderContext::for_test();
+        let theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        // Hex all the way, as a true-color terminal shows them.
+        let mut theme = theme;
+        let config = crate::config::ColorConfig::default();
+        let hex = [
+            &config.chart_1,
+            &config.chart_2,
+            &config.chart_3,
+            &config.chart_4,
+            &config.chart_5,
+            &config.chart_6,
+            &config.chart_7,
+            &config.chart_8,
+            &config.chart_9,
+            &config.chart_10,
+        ];
+        for (i, value) in hex.iter().enumerate() {
+            let channel = |at: usize| u8::from_str_radix(&value[at..at + 2], 16).unwrap();
+            let color = ratatui::style::Color::Rgb(channel(1), channel(3), channel(5));
+            theme.colors.insert(format!("chart_{}", i + 1), color);
+        }
+        assert_eq!(theme.series_colors().len(), 10);
+        let area = Rect::new(0, 0, 80, 30);
+        let mut buf = Buffer::empty(area);
+        render_plot(
+            area,
+            &mut buf,
+            &modal,
+            &theme,
+            &ctx,
+            ChartRenderData::XY {
+                series: Some(&series),
+                breaks: None,
+                values: None,
+                names: &names,
+                x_axis_kind: XAxisTemporalKind::Numeric,
+                x_bounds: None,
+                numbers: PlotNumbers::default(),
+                other: false,
+            },
+            crate::glyphs::unicode(),
+        );
+        let mut swatches = Vec::new();
+        for y in 0..area.height {
+            let row: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
+            if let Some(name) = names.iter().find(|n| row.contains(&format!("█ {n} "))) {
+                let x = (0..area.width)
+                    .find(|&x| buf[(x, y)].symbol() == "█")
+                    .unwrap();
+                swatches.push((name.clone(), buf[(x, y)].fg));
+            }
+        }
+        assert_eq!(swatches.len(), 10, "{swatches:?}");
+        let mut colors: Vec<_> = swatches.iter().map(|(_, c)| format!("{c:?}")).collect();
+        colors.dedup();
+        assert_eq!(colors.len(), 10, "{swatches:?}");
+    }
+
+    /// A 16-color terminal shows the ten slots as fewer colors: the chart draws one
+    /// series per color, and the line under Color says how many.
+    #[test]
+    fn sixteen_colors_cap_the_series() {
+        let sixteen = |hex: &str| {
+            let channel = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap();
+            crate::config::rgb_to_basic_ansi(channel(1), channel(3), channel(5))
+        };
+        let config = crate::config::ColorConfig::default();
+        let mut theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        for (i, value) in [
+            &config.chart_1,
+            &config.chart_2,
+            &config.chart_3,
+            &config.chart_4,
+            &config.chart_5,
+            &config.chart_6,
+            &config.chart_7,
+            &config.chart_8,
+            &config.chart_9,
+            &config.chart_10,
+        ]
+        .iter()
+        .enumerate()
+        {
+            theme
+                .colors
+                .insert(format!("chart_{}", i + 1), sixteen(value));
+        }
+        let colors = theme.series_colors();
+        assert!((2..10).contains(&colors.len()), "{colors:?}");
+        let mut modal = open_modal();
+        modal.series_cap = Some(colors.len());
+        modal.set_mark(Mark::Line);
+        modal.spec.encoding.x.field = Some("price".to_string());
+        modal.spec.encoding.y.field = vec!["volume".to_string()];
+        modal.spec.encoding.color.field = Some("carrier".to_string());
+        modal.color_counts = Some(crate::chart_modal::ColorCounts {
+            column: "carrier".to_string(),
+            values: (0..16)
+                .map(|i| (Some(format!("C{i}")), 100 - i as u64))
+                .collect(),
+        });
+        let rows = render_rows(&mut modal, 100, 30);
+        let at = rows.iter().position(|r| r.contains("Color")).unwrap();
+        assert!(
+            rows[at + 1].contains(&format!("top {} of 16 by rows", colors.len())),
+            "{}",
+            rows[at + 1]
+        );
+        let request = crate::chart_jobs::ChartRequest::from_modal(&modal).unwrap();
+        assert_eq!(request.series_cap, colors.len());
     }
 
     /// Other is the legend's last entry and is drawn in `dimmed`, under the series.

@@ -25,7 +25,7 @@ the options. A shelf the type does not use stays in place, dimmed, with why
 | **Type** | Line, Scatter, Bar, Histogram, Box, KDE, Heatmap | `suggested for <type>` |
 | **X** | A column: what the type takes on X | The time bucket of a date X on a line or scatter; the bar order; the histogram's bins |
 | **Y** | A column, several on a line or scatter (one series each); on a histogram, count or share | On a line, scatter or bar, the **Aggregate** row, and cumulative when it is on |
-| **Color** | A category column: one series per value | Which values: `top 7 of 16 by rows`, `all 3`, `3 picked of 4,812` |
+| **Color** | A category column: one series per value | Which values: `top 10 of 16 by rows`, `all 3`, `3 picked of 4,812` |
 
 The plot's title row says how the chart is made of the rows: `mean by month,
 running sum, colored by carrier`, `count per bin`, `one box per carrier`. The
@@ -86,16 +86,16 @@ grow left of zero.
 ## Color
 
 **Color** splits a chart into one series per value of a category column, each
-in its own palette color. Without a pick, the seven values with the most rows
+in its own palette color. Without a pick, the ten values with the most rows
 are drawn (all of them, when the view is filtered to fewer); the line under
 **Color** says which. <kbd>Space</kbd> on that line lists every value with its
 rows, most first: type to narrow, <kbd>Space</kbd> toggles a value (up to
-seven), <kbd>Enter</kbd> charts the ones picked. The values are counted over
+ten), <kbd>Enter</kbd> charts the ones picked. The values are counted over
 the whole view.
 
 **Other** gathers every value without a series of its own into one more
 series, the legend's last entry, in `dimmed`. <kbd>←</kbd> <kbd>→</kbd> on the
-line under **Color** turn it on or off; the line then reads `top 7 + 9 other`
+line under **Color** turn it on or off; the line then reads `top 10 + 6 other`
 or `3 picked + 4,809 other`. It starts on for a scatter and off for the other
 types. When every value has a series there is no Other.
 
@@ -105,7 +105,7 @@ types. When every value has a series there is no Other.
 | Bar | A bar per value in each category's row, under a legend of the values; Other is one more bar per category. Needs an aggregate |
 | Histogram | Each value's bins as an outline over the others, which filled bars would hide. **Y** can be **share of group**: each bin's share of its group's rows inside the range, so groups of different sizes compare. Other is one more outline. The range (**p1-p99**) is the whole column's |
 | KDE | A curve per value; Other is one more |
-| Box | Dimmed: a category on **X** already makes a box per value, seven by rows |
+| Box | Dimmed: a category on **X** already makes a box per value, ten by rows |
 | Heatmap | Dimmed |
 
 A null value is a series of its own, named `null`.
@@ -114,8 +114,8 @@ A null value is a series of its own, named `null`.
 
 | Type | Plots | X | Y |
 |---|---|---|---|
-| **Line** | Lines in X order | A number, date or time | Up to seven numeric columns, or a count |
-| **Scatter** | Points | A number, date or time | Up to seven numeric columns, or a count |
+| **Line** | Lines in X order | A number, date or time | Up to ten numeric columns, or a count |
+| **Scatter** | Points | A number, date or time | Up to ten numeric columns, or a count |
 | **Bar** | One horizontal bar per category | A text, categorical, boolean or integer column | A numeric column with an aggregate, a count, or a column already one row per category |
 | **Histogram** | Rows per bin | A number | Count or share |
 | **Box** | Quartiles and whiskers | A category, one box per value, or none | A number |
@@ -294,8 +294,15 @@ exports up to its first 100 bars and counts the rest.
 
 ## Colors
 
-Series take `chart_1` through `chart_7` from the
+Series take `chart_1` through `chart_10` from the
 [theme](../reference/settings.md#colors), in order; bars and histograms take
-`chart_1`, and the grid `chart_grid`. The **Dark** export takes the same
-slots, its background `background`, and its text `text_primary` and
+`chart_1`, Other `dimmed`, and the grid `chart_grid`. The **Dark** export takes
+the same slots, its background `background`, and its text `text_primary` and
 `text_secondary`.
+
+Two series never share a color. A slot the theme gives the same color as an
+earlier one is skipped, and on a 256- or 16-color terminal, or under
+`NO_COLOR`, the slots are counted as the terminal shows them: a chart draws one
+series per distinct color, so a 16-color terminal draws fewer (`top 4 of 16 by
+rows`), with Other for the rest when it is on. A **Dark** export skips a
+repeated slot too, and otherwise always has all ten.

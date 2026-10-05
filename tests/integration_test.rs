@@ -1087,9 +1087,11 @@ fn chart_color_splits_and_the_value_picker_lists_by_rows() {
         let request = app.chart_names();
         request.expect("a line chart is prepared")
     };
-    // Nine carriers of 100 rows each: the first seven by rows (equal counts in
-    // the column's order).
-    assert_eq!(names(&app), ["AA", "B6", "DL", "EV", "F9", "MQ", "UA"]);
+    // Nine carriers of 100 rows each: by rows (equal counts in the column's
+    // order), as many as the terminal has colors to tell apart.
+    let carriers = ["AA", "B6", "DL", "EV", "F9", "MQ", "UA", "US", "WN"];
+    let cap = app.chart_modal.series_max();
+    assert_eq!(names(&app), carriers[..cap.min(9)]);
 
     // The value picker: every value with its rows.
     app.chart_modal.focus = ChartFocus::ColorValues;

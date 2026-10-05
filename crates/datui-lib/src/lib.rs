@@ -139,6 +139,7 @@ pub mod midi;
 pub mod model_files;
 pub mod nested_json;
 pub mod notes;
+pub mod nul_tail;
 pub mod numfmt;
 pub mod numpy;
 mod open_options;

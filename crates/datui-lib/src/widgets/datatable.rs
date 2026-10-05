@@ -3716,9 +3716,7 @@ impl DataTableState {
         header: Option<&[String]>,
     ) -> Result<Option<NullValues>> {
         Self::build_null_values_with(options, header, || {
-            let reader = LazyCsvReader::new(PlRefPath::try_from_path(path)?)
-                .with_glob(crate::source::expands_as_glob(path));
-            Self::csv_schema_for_null_values(reader, options)
+            Self::csv_schema_for_null_values(Self::csv_reader_of(path)?, options)
         })
     }
 
@@ -3798,6 +3796,21 @@ impl DataTableState {
         )?))
     }
 
+    /// A lazy CSV reader of the file at `path`, by its path; or, when the file ends in
+    /// a run of NULs, of its text before them, mapped and read in place.
+    pub(crate) fn csv_reader_of(path: &Path) -> Result<LazyCsvReader> {
+        let glob = crate::source::expands_as_glob(path);
+        if !glob
+            && path.is_file()
+            && let Ok(Some(text)) = crate::nul_tail::text_buffer(path)
+        {
+            return Ok(LazyCsvReader::new_with_sources(
+                polars::lazy::dsl::ScanSources::Buffers(Arc::from([text])),
+            ));
+        }
+        Ok(LazyCsvReader::new(PlRefPath::try_from_path(path)?).with_glob(glob))
+    }
+
     /// [`Self::csv_header_names`] for a file on disk, compressed with `compression`
     /// or not.
     pub(crate) fn csv_header_names_of(
@@ -3813,7 +3826,13 @@ impl DataTableState {
         path: &Path,
         compression: Option<CompressionFormat>,
     ) -> std::io::Result<Box<dyn std::io::BufRead>> {
-        let file = BufReader::new(File::open(path)?);
+        let file = File::open(path)?;
+        if compression.is_none()
+            && let Some(len) = crate::nul_tail::text_len(&file)?
+        {
+            return Ok(Box::new(BufReader::new(file.take(len))));
+        }
+        let file = BufReader::new(file);
         Ok(match compression {
             None => Box::new(file),
             Some(CompressionFormat::Gzip) => {
@@ -4431,6 +4450,7 @@ impl DataTableState {
                         } else {
                             xz2::read::XzDecoder::new(file).read_to_end(&mut decompressed)?;
                         }
+                        crate::nul_tail::trim(&mut decompressed);
                         let header = Self::csv_header_names(options, || {
                             Ok(std::io::Cursor::new(decompressed.as_slice()))
                         })?;
@@ -4531,8 +4551,7 @@ impl DataTableState {
     fn scan_csv_file(path: &Path, options: &OpenOptions) -> Result<Self> {
         let header = Self::csv_header_names_of(options, path, None)?;
         let nv = Self::build_null_values_for_csv(options, path, header.as_deref())?;
-        let reader = LazyCsvReader::new(PlRefPath::try_from_path(path)?)
-            .with_glob(crate::source::expands_as_glob(path));
+        let reader = Self::csv_reader_of(path)?;
         let lf = Self::configure_csv_reader(reader, options, nv.as_ref()).finish()?;
         let mut read = Vec::new();
         let lf = Self::finish_csv_frame(lf, options, header.as_deref(), &mut read)?;
@@ -4591,8 +4610,7 @@ impl DataTableState {
             let p = p.as_ref();
             let header = Self::csv_header_names_of(options, p, None)?;
             let nv = Self::build_null_values_for_csv(options, p, header.as_deref())?;
-            let reader = LazyCsvReader::new(PlRefPath::try_from_path(p)?)
-                .with_glob(crate::source::expands_as_glob(p));
+            let reader = Self::csv_reader_of(p)?;
             let lf = Self::configure_csv_reader(reader, options, nv.as_ref()).finish()?;
             let record = (i == 0).then_some(&mut read);
             lazy_frames.push(Self::name_csv_columns(lf, header.as_deref(), record)?);

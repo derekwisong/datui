@@ -425,3 +425,74 @@ fn a_typed_delimiter_wins_over_the_spec() {
     };
     assert_eq!(opened(typed), ["a", "b;c"], "typed, the flag wins");
 }
+
+/// `text` followed by `nuls` NUL bytes, as a logger that preallocates its file leaves it.
+fn padded(text: &str, nuls: usize) -> Vec<u8> {
+    let mut bytes = text.as_bytes().to_vec();
+    bytes.resize(bytes.len() + nuls, 0);
+    bytes
+}
+
+/// A run of NULs after the last line ends the file: no junk row, the numbers stay
+/// numbers, and the count agrees with the rows shown. A NUL inside the text is kept.
+#[test]
+fn a_nul_tail_ends_a_csv() {
+    let dir = common::fixture_dir().join("nul_tail");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("padded.csv");
+    std::fs::write(
+        &path,
+        padded("id,volts,name\n1,25.1,a\n2,25.2,b\n3,25.3,c\n", 4096),
+    )
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    pump_until_idle(&mut app, &rx, &tx);
+    let df = collected(&app);
+    assert_eq!(df.height(), 3);
+    assert_eq!(df.column("id").unwrap().dtype(), &DataType::Int64);
+    assert_eq!(df.column("volts").unwrap().dtype(), &DataType::Float64);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(
+        state.num_rows_if_valid(),
+        Some(3),
+        "the count is of the rows shown"
+    );
+
+    let inside = dir.join("inside.csv");
+    std::fs::write(&inside, "id,name\n1,a\0b\n2,c\n").unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![inside], OpenOptions::default());
+    let df = collected(&app);
+    assert_eq!(df.height(), 2);
+    let name = df
+        .column("name")
+        .unwrap()
+        .str()
+        .unwrap()
+        .get(0)
+        .unwrap()
+        .to_string();
+    assert_eq!(name, "a\0b", "an interior NUL is the text's");
+}
+
+/// A spec's log padded with NULs reads its header lines and its rows up to the padding,
+/// typed, without `comment = "\u0000"`.
+#[test]
+fn a_padded_log_reads_through_its_spec() {
+    let path = common::fixture_dir().join("delimited_spec_padded.csv");
+    std::fs::write(&path, padded(&log_text("2024-03-01", 5), 32768)).unwrap();
+    let (mut app, rx, tx) = app_with_spec();
+    open(&mut app, &rx, path, OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    let df = collected(&app);
+    assert_eq!(df.height(), 6, "the blank row and five readings");
+    assert_eq!(df.column("cht1").unwrap().dtype(), &DataType::Float64);
+    assert_eq!(df.column("Latitude").unwrap().dtype(), &DataType::Float64);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.num_rows_if_valid(), Some(6));
+    assert_eq!(state.unit_of("cht1"), Some("deg F"));
+}

@@ -82,6 +82,8 @@ datui --header-rows 3 log.csv
   `--infer-types=off`. With the flag, cells of spaces are null in text columns
   too, and `--null` matches a value without its padding.
 - A file with nothing after its header lines opens with its columns and no rows.
+- A run of NUL bytes at the end of a file ends it. Loggers that preallocate a
+  file at a fixed size leave one. A NUL inside the text is kept.
 
 A [delimited format spec](format-specs.md#delimited-text) keeps these options
 for a family of files, with their units and metadata line, so they open with

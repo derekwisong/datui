@@ -297,15 +297,22 @@ impl ChartRequest {
         let groups = counts.as_ref().map(|(_, rows)| {
             chart_data::color_groups(rows, &encoding.color.values, self.series_cap)
         });
-        // Other only when some value is left without a series of its own.
-        let other = encoding.color.other == Some(true);
+        // Some value without a series of its own: Other takes its rows, or they are
+        // left out and the note says the rows are the groups'.
+        let left_out = counts
+            .as_ref()
+            .zip(groups.as_ref())
+            .is_some_and(|((_, rows), groups)| {
+                rows.values.iter().any(|(v, _)| !groups.contains(v))
+            });
+        let other = encoding.color.other == Some(true) && left_out;
         let split = counts
             .as_ref()
             .zip(groups.as_ref())
-            .map(|((column, rows), groups)| ColorSplit {
+            .map(|((column, _), groups)| ColorSplit {
                 column,
                 groups,
-                other: other && rows.values.iter().any(|(v, _)| !groups.contains(v)),
+                other,
             });
         let picker = counts.as_ref().map(|(column, rows)| ColorCounts {
             column: column.to_string(),
@@ -367,7 +374,7 @@ impl ChartRequest {
                         rows_note(
                             grouped.rows.total_rows,
                             sampling.known_total == Some(grouped.rows.total_rows),
-                            split.is_some_and(|s| !s.other),
+                            left_out && !other,
                         )
                     }),
                 })
@@ -387,11 +394,7 @@ impl ChartRequest {
                     sampling,
                 )?;
                 // Every category is a bar, a null one too: uncolored, it is every row.
-                data.rows_note = Some(rows_note(
-                    data.rows.total_rows,
-                    true,
-                    split.is_some_and(|s| !s.other),
-                ));
+                data.rows_note = Some(rows_note(data.rows.total_rows, true, left_out && !other));
                 ChartPrepared::Bar(data)
             }
             Mark::Bar => ChartPrepared::Bar(chart_data::prepare_bar_data(

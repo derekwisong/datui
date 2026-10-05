@@ -66,7 +66,7 @@ The **Aggregate** row under **Y**, on a line, scatter or bar: <kbd>←</kbd>
 min, max, first and last. With
 one, the rows that share an X (and a color) are made one point, or one bar, over every row of the view, in one
 group-by in the background; the chart says how many rows in its title row (`all
-336,776 rows`, or `rows in the groups shown` under a color),
+336,776 rows`, or `rows in the groups shown` when a color leaves values out without Other),
 and the footer `Grouping 337k rows...` while it runs. Without one, a
 chart samples, and says so.
 

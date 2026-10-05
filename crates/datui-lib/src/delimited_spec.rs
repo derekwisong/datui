@@ -156,7 +156,11 @@ impl DelimitedRead {
             .as_ref()
             .map_or_else(|| "the spec".to_string(), |p| p.display().to_string());
         let mut notes = vec![note(
-            format!("read as {}, chosen by {}", self.spec.name, self.by.words()),
+            format!(
+                "read as {}, {}",
+                self.spec.name,
+                crate::formats::chosen_words(&self.spec, self.by)
+            ),
             format!("from {from}"),
         )];
         if !self.also.is_empty() {

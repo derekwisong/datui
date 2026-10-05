@@ -7467,11 +7467,10 @@ fn a_spec_files_details_name_the_spec_and_its_columns() {
         "acme.mktd file",
         spec_path.as_str(),
         "match ",
-        "magic \"MKTD\", header.version = 1",
+        "[magic MKTD] [version 1]",
         "2 variants (spec)",
-        "order_add",
-        "5 columns",
-        "3 columns",
+        "status 3",
+        "order_add 5",
     ] {
         assert!(shown.contains(said), "{said:?} in\n{shown}");
     }
@@ -7480,7 +7479,7 @@ fn a_spec_files_details_name_the_spec_and_its_columns() {
     let shown = screen(&mut app, "ticks");
     for said in [
         "acme.ticks file",
-        "magic \"TICK\"",
+        "[magic TICK]",
         "3 columns (spec)",
         "datetime[ns]",
         "f64",
@@ -7493,6 +7492,298 @@ fn a_spec_files_details_name_the_spec_and_its_columns() {
     let shown = screen(&mut app, "model.bin");
     assert!(shown.contains("data file"), "{shown}");
     assert!(!shown.contains("(spec)"), "{shown}");
+}
+
+/// A market-data recorder's spec, as one is written in the wild: magic and a header
+/// version, a header that says its own length, length-prefixed records of five
+/// variants with enums, scales, padding and timestamps.
+const DEMO_MKTDATA: &str = r#"name = "demo.mktdata"
+description = "Demo market data v1"
+match = { magic = "MKTD", where = { "header.version" = 1 } }
+endian = "le"
+
+[header]
+size = "header_len"
+fields = [
+  { name = "magic", type = "str", size = 4 },
+  { name = "version", type = "u2" },
+  { name = "header_len", type = "u2" },
+  { name = "start_timestamp_ns", type = "u8", time = "ns" },
+]
+
+[records]
+framing = "length_prefixed"
+size = "msg_len"
+type = "msg_type"
+fields = [
+  { name = "msg_len", type = "u2" },
+  { name = "msg_type", type = "u1" },
+  { name = "flags", type = "u1" },
+  { name = "timestamp_ns", type = "u8", time = "ns" },
+]
+
+[[variants]]
+name = "Status"
+when = 1
+fields = [
+  { name = "symbol_id", type = "u4" },
+  { name = "status", type = "u1", enum = { 1 = "PreOpen", 2 = "Open" } },
+  { type = "pad", size = 3 },
+]
+
+[[variants]]
+name = "OrderAdd"
+when = 2
+fields = [
+  { name = "order_id", type = "u8" },
+  { name = "price", type = "s8", scale = 4 },
+  { name = "symbol_id", type = "u4" },
+  { name = "qty", type = "u4" },
+  { name = "side", type = "u1", enum = { 66 = "Buy", 83 = "Sell" } },
+  { type = "pad", size = 3 },
+]
+
+[[variants]]
+name = "OrderCancel"
+when = 3
+fields = [
+  { name = "order_id", type = "u8" },
+  { name = "canceled_qty", type = "u4" },
+  { type = "pad", size = 4 },
+]
+
+[[variants]]
+name = "Trade"
+when = 4
+fields = [
+  { name = "match_id", type = "u8" },
+  { name = "price", type = "s8", scale = 4 },
+  { name = "symbol_id", type = "u4" },
+  { name = "qty", type = "u4" },
+  { name = "aggressor_side", type = "u1", enum = { 66 = "Buy", 83 = "Sell" } },
+  { type = "pad", size = 3 },
+]
+
+[[variants]]
+name = "Fill"
+when = 5
+fields = [
+  { name = "order_id", type = "u8" },
+  { name = "match_id", type = "u8" },
+  { name = "price", type = "s8", scale = 4 },
+  { name = "qty", type = "u4" },
+  { name = "side", type = "u1", enum = { 66 = "Buy", 83 = "Sell" } },
+  { type = "pad", size = 3 },
+]
+"#;
+
+/// A file of [`DEMO_MKTDATA`]: its header and a few status messages.
+fn demo_mktdata_bytes() -> Vec<u8> {
+    let mut out = b"MKTD".to_vec();
+    out.extend(1u16.to_le_bytes());
+    out.extend(16u16.to_le_bytes());
+    out.extend(1_700_000_000_000_000_000u64.to_le_bytes());
+    for i in 0..4u64 {
+        out.extend(20u16.to_le_bytes());
+        out.extend([1, 0]);
+        out.extend(i.to_le_bytes());
+        out.extend(7u32.to_le_bytes());
+        out.extend([2, 0, 0, 0]);
+    }
+    out
+}
+
+/// The details pane's lines, right of its rule, drawn `width` wide.
+fn details_pane(app: &mut datui::App, width: u16) -> (usize, Vec<String>) {
+    use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+    let area = Rect::new(0, 0, width, 40);
+    let mut buf = Buffer::empty(area);
+    Widget::render(&mut *app, area, &mut buf);
+    let rows: Vec<Vec<String>> = (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buf[(x, y)].symbol().to_string())
+                .collect()
+        })
+        .collect();
+    let heading = rows
+        .iter()
+        .find_map(|r| {
+            r.concat()
+                .find("DETAILS")
+                .map(|at| r.concat()[..at].chars().count())
+        })
+        .expect("a details pane");
+    let pane: Vec<String> = rows
+        .iter()
+        .map(|r| r[heading..].concat().trim_end().to_string())
+        .collect();
+    (width as usize - heading, pane)
+}
+
+/// A file a spec's glob names is listed by its name alone, its header unread, so its
+/// pane shows the glob and no `where` value nothing checked: `day.gl` at header version
+/// 2 is not shown as `[version 3]`.
+#[test]
+fn a_glob_named_files_pane_shows_the_glob_alone() {
+    common::isolate_cache();
+    let formats = TempDir::new().unwrap();
+    fs::write(
+        formats.path().join("globbed.toml"),
+        r#"name = "acme.globbed"
+match = { glob = "*.gl", where = { "header.version" = 3 } }
+endian = "le"
+
+[header]
+fields = [{ name = "version", type = "u2" }]
+
+[records]
+fields = [{ name = "x", type = "u1" }]
+"#,
+    )
+    .unwrap();
+    let registry = datui::formats::Registry::load(&[formats.path().to_path_buf()]);
+    assert!(registry.errors.is_empty(), "{:?}", registry.errors);
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("day.gl"), [2, 0, 1, 2, 3]).unwrap();
+
+    let mut config = datui::config::AppConfig::default();
+    config.home.desktop_recents = false;
+    config.cloud.hide = ["s3-default", "gcs-default", "az", "azure-env"]
+        .map(String::from)
+        .to_vec();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = datui::App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: std::collections::HashMap::new(),
+        },
+        config,
+    );
+    app.set_formats(registry);
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.enter_home();
+    listed(&mut app, &rx, |app| {
+        visible_names(&app.home).contains(&"day.gl".to_string())
+    });
+    common::drain_events(&mut app, &rx);
+    let row = app.home.selected_entry().expect("day.gl under the cursor");
+    assert_eq!(row.format_spec.as_deref(), Some("acme.globbed"));
+    let (_, pane) = details_pane(&mut app, 168);
+    let shown = pane.join("\n");
+    assert!(shown.contains("[glob *.gl]"), "{shown}");
+    assert!(!shown.contains("version"), "{shown}");
+}
+
+/// The pane of a file a variants spec's magic names, at 40 and 80 columns: the spec's
+/// path cut in its middle on one line, the match as whole chips, and the variants with
+/// their column counts. A record of the file cached without the spec's variant count,
+/// as a build before the spec named it wrote one, leaves both in place.
+#[test]
+fn a_variant_spec_files_pane_shows_chips_and_variants_at_any_width() {
+    common::isolate_cache();
+    let formats = TempDir::new().unwrap();
+    let dir = formats.path().join(".config/datui/formats");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("demo-mktdata.toml"), DEMO_MKTDATA).unwrap();
+    let registry = datui::formats::Registry::load(std::slice::from_ref(&dir));
+    assert!(registry.errors.is_empty(), "{:?}", registry.errors);
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("data.bin");
+    fs::write(&path, demo_mktdata_bytes()).unwrap();
+
+    let meta = fs::metadata(&path).unwrap();
+    let mtime = meta
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    datui::cache::CacheManager::new("datui")
+        .unwrap()
+        .record_dataset_facts(&[(
+            path.clone(),
+            datui::cache::DatasetFacts {
+                mtime,
+                size: meta.len(),
+                rows: Some(4),
+                kind: Some(EntryKind::File),
+                classified_by: datui::discover::CLASSIFIER_VERSION,
+                ..Default::default()
+            },
+        )]);
+
+    let mut config = datui::config::AppConfig::default();
+    config.home.desktop_recents = false;
+    config.cloud.hide = ["s3-default", "gcs-default", "az", "azure-env"]
+        .map(String::from)
+        .to_vec();
+    let theme = datui::Theme::from_config(&config.theme).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = datui::App::new_with_config(tx, common::test_runtime(), theme, config);
+    app.set_formats(registry);
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.enter_home();
+    listed(&mut app, &rx, |app| {
+        visible_names(&app.home).contains(&"data.bin".to_string())
+    });
+    common::drain_events(&mut app, &rx);
+    let row = app
+        .home
+        .selected_entry()
+        .expect("data.bin under the cursor");
+    assert_eq!(row.path, path);
+    assert_eq!(
+        row.cost.tables,
+        Some(5),
+        "the spec's count outlives the record"
+    );
+
+    let ellipsis = datui::glyphs::get().ellipsis;
+    let middot = datui::glyphs::get().middot;
+    // 110 columns leave the pane its 40; 168, 80.
+    for (width, pane_w) in [(110, 40), (168, 80)] {
+        let (drawn_w, pane) = details_pane(&mut app, width);
+        assert!(
+            drawn_w.abs_diff(pane_w) <= 1,
+            "{drawn_w} for {pane_w}: {pane:#?}"
+        );
+        let shown = pane.join("\n");
+        // The spec's path: one line, the name kept, the middle cut where it must be.
+        let spec: Vec<&String> = pane.iter().filter(|l| l.starts_with("spec ")).collect();
+        assert_eq!(spec.len(), 1, "{shown}");
+        assert!(spec[0].ends_with("/demo-mktdata.toml"), "{shown}");
+        if pane_w == 40 {
+            assert!(spec[0].contains(&format!("/{ellipsis}/")), "{shown}");
+        }
+        let at = pane.iter().position(|l| l.starts_with("spec ")).unwrap();
+        assert!(
+            pane[at + 1].starts_with("match "),
+            "nothing wraps under the path: {shown}"
+        );
+        // Every chip whole on one line.
+        let match_line = &pane[at + 1];
+        assert!(match_line.contains("magic MKTD"), "{shown}");
+        assert!(pane.iter().any(|l| l.contains("version 1")), "{shown}");
+        assert!(!shown.contains("header."), "{shown}");
+        // The variants, with their column counts.
+        assert!(shown.contains("5 variants (spec)"), "{shown}");
+        for item in [
+            "Status 6",
+            "OrderAdd 9",
+            "OrderCancel 6",
+            "Trade 9",
+            "Fill 9",
+        ] {
+            assert!(shown.contains(item), "{item:?} in\n{shown}");
+        }
+        assert!(
+            shown.contains(&format!("Status 6 {middot} OrderAdd 9")),
+            "{shown}"
+        );
+        assert!(!shown.contains("on open"), "{shown}");
+    }
 }
 
 /// A file row that is not read lazily where it is says how it is read, dim, beside

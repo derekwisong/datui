@@ -3329,7 +3329,7 @@ impl Theme {
 
 /// Whether a tint can be told from the terminal's own background: a 16-color terminal
 /// turns the default tints into black or white, and `NO_COLOR` into none.
-fn tint_shows(tint: Option<Color>) -> Option<Color> {
+pub fn tint_shows(tint: Option<Color>) -> Option<Color> {
     tint.filter(|c| !matches!(c, Color::Reset | Color::Black | Color::White))
 }
 

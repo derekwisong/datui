@@ -22,6 +22,7 @@
 //! palette and sits in the same visual family as the rest of the system.
 
 use crate::discover::{self, Entry, EntryKind};
+use crate::formats::MatchChip;
 use crate::glyphs;
 use crate::render::context::RenderContext;
 use ratatui::buffer::Buffer;
@@ -2226,16 +2227,13 @@ fn preview_head_keyed(
     if !kind.is_empty() {
         facts.push(("kind", kind, plain));
     }
-    // The spec that reads it, and what about the file says so.
-    if let Some(spec) = spec {
-        if let Some(path) = &spec.path {
-            facts.push(("spec", crate::home::display_path(path), plain));
-        }
-        let said = spec.match_summary();
-        if !said.is_empty() {
-            facts.push(("match", said, plain));
-        }
-    }
+    // The spec that reads it, and what about the file says so: drawn after `kind`, a
+    // path cut in its middle and the conditions as chips, neither wrapped mid-word.
+    let spec_at = facts.len();
+    let spec_path = spec
+        .and_then(|s| s.path.as_deref())
+        .map(crate::home::display_path);
+    let chips = spec.map(|s| s.match_chips_for(&entry.path));
     if let Some(how) = discover::how_read(entry) {
         facts.push(("read", read_words(how), plain));
     }
@@ -2362,16 +2360,168 @@ fn preview_head_keyed(
         }
     }
 
-    let key_w = key_column(facts.iter().map(|(k, _, _)| *k)).max(key_w);
-    if !facts.is_empty() {
+    let spec_keys = spec_path
+        .as_ref()
+        .map(|_| "spec")
+        .into_iter()
+        .chain(chips.as_ref().map(|_| "match"));
+    let key_w = key_column(facts.iter().map(|(k, _, _)| *k).chain(spec_keys)).max(key_w);
+    if !facts.is_empty() || chips.is_some() {
         lines.push(Line::from(""));
         lines.push(pane_heading("DETAILS", width, ctx));
-        for (key, value, style) in facts {
+        let mut spec_lines = Vec::new();
+        if let Some(path) = &spec_path {
+            let room = width.saturating_sub(key_w + 2);
+            spec_lines.extend(fact_lines(
+                "spec",
+                elide_path(path, room),
+                key_w,
+                width,
+                plain,
+                ctx,
+            ));
+        }
+        if let Some(chips) = &chips {
+            let filled = chips_filled(ctx);
+            spec_lines.extend(chip_fact_lines("match", chips, key_w, width, filled, ctx));
+        }
+        let mut spec_lines = Some(spec_lines);
+        for (i, (key, value, style)) in facts.into_iter().enumerate() {
+            if i == spec_at {
+                lines.extend(spec_lines.take().unwrap_or_default());
+            }
             lines.extend(fact_lines(key, value, key_w, width, style, ctx));
         }
+        lines.extend(spec_lines.take().unwrap_or_default());
     }
 
     (lines, key_w)
+}
+
+/// `path` in `width` columns, cut between its components so the file name stays:
+/// `~/…/formats/demo-mktdata.toml`. The first component stays when there is room for it;
+/// a name too long on its own keeps its end.
+fn elide_path(path: &str, width: usize) -> String {
+    if glyphs::display_width(path) <= width {
+        return path.to_string();
+    }
+    let ellipsis = glyphs::get().ellipsis;
+    let parts: Vec<&str> = path.split('/').collect();
+    let Some(last) = parts.last() else {
+        return truncate_start(path, width);
+    };
+    // The most trailing components that fit after `first/…/`, then after `…/`.
+    let first = parts.first().copied().unwrap_or_default();
+    for head in [format!("{first}/{ellipsis}/"), format!("{ellipsis}/")] {
+        for keep in (1..parts.len().saturating_sub(1)).rev() {
+            let tail = parts[parts.len() - keep..].join("/");
+            let cut = format!("{head}{tail}");
+            if glyphs::display_width(&cut) <= width {
+                return cut;
+            }
+        }
+    }
+    truncate_start(last, width)
+}
+
+/// Whether chips are drawn on the chrome tier: a UTF-8 terminal whose header tint
+/// shows. Otherwise they are bracketed, and text values quoted.
+fn chips_filled(ctx: &RenderContext) -> bool {
+    glyphs::get().unicode && crate::config::tint_shows(Some(ctx.table_header_bg)).is_some()
+}
+
+/// One condition of a spec's match as spans, at most `room` columns: a flat chip on the
+/// header tier, name dimmed and value in its type's color, or `[name value]` where no
+/// tint shows. Too long for the line, the name is cut before the value, which keeps at
+/// least its first character.
+fn chip_spans(
+    chip: &MatchChip,
+    room: usize,
+    filled: bool,
+    ctx: &RenderContext,
+) -> (Vec<Span<'static>>, usize) {
+    use crate::formats::ChipKind;
+    let value_color = match chip.kind {
+        ChipKind::Int | ChipKind::Hex => ctx.int_col,
+        ChipKind::Magic | ChipKind::Text | ChipKind::Glob => ctx.str_col,
+    };
+    let base = if filled {
+        Style::default().bg(ctx.table_header_bg)
+    } else {
+        Style::default()
+    };
+    let dim = base.fg(ctx.dimmed);
+    let (open, close) = if filled { (" ", " ") } else { ("[", "]") };
+    let ellipsis = glyphs::get().ellipsis;
+    let value = chip.value_text(!filled);
+    let (name_w, value_w) = (
+        glyphs::display_width(&chip.name),
+        glyphs::display_width(&value),
+    );
+    let inner = room.saturating_sub(3);
+    // A chip that says `exchange_feed_sequence_version` and not its number says
+    // nothing: the value keeps up to half the chip, the name what is left (a letter
+    // and the marker at least), and a long value takes what the name leaves.
+    let name_floor = name_w.min(1 + glyphs::display_width(ellipsis));
+    let name_room = name_w.min(inner.saturating_sub(value_w.min(inner / 2)).max(name_floor));
+    let name = glyphs::fit_cells(&chip.name, name_room, ellipsis).into_owned();
+    let name_w = glyphs::display_width(&name);
+    let value = glyphs::fit_cells(&value, inner.saturating_sub(name_w), ellipsis).into_owned();
+    let value_w = glyphs::display_width(&value);
+    let width = 3 + name_w + value_w;
+    let spans = vec![
+        Span::styled(open, dim),
+        Span::styled(name, dim),
+        Span::styled(" ", base),
+        Span::styled(value, base.fg(value_color)),
+        Span::styled(close, dim),
+    ];
+    (spans, width)
+}
+
+/// The `match` fact: its chips laid out under the value column, wrapping between whole
+/// chips and never inside one. `no match` when the spec has none.
+fn chip_fact_lines(
+    key: &str,
+    chips: &[MatchChip],
+    key_w: usize,
+    width: usize,
+    filled: bool,
+    ctx: &RenderContext,
+) -> Vec<Line<'static>> {
+    if chips.is_empty() {
+        let said = crate::formats::FORMAT_ONLY.to_string();
+        let style = Style::default().fg(ctx.text_secondary);
+        return fact_lines(key, said, key_w, width, style, ctx);
+    }
+    let indent = key_w + 2;
+    let room = width.saturating_sub(indent).max(1);
+    let mut rows: Vec<(Vec<Span<'static>>, usize)> = vec![(Vec::new(), 0)];
+    for chip in chips {
+        let (spans, w) = chip_spans(chip, room, filled, ctx);
+        let row = rows.last_mut().expect("one row at least");
+        if row.1 > 0 && row.1 + 1 + w > room {
+            rows.push((spans, w));
+        } else {
+            if row.1 > 0 {
+                row.0.push(Span::raw(" "));
+                row.1 += 1;
+            }
+            row.0.extend(spans);
+            row.1 += w;
+        }
+    }
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, (spans, _))| {
+            let lead = if i == 0 {
+                Span::styled(format!("{key:<key_w$}  "), Style::default().fg(ctx.dimmed))
+            } else {
+                Span::raw(" ".repeat(indent))
+            };
+            Line::from(std::iter::once(lead).chain(spans).collect::<Vec<_>>())
+        })
+        .collect()
 }
 
 /// The details pane for a cloud source: what it points at, how it logs in, and when
@@ -2652,7 +2802,11 @@ fn render_preview(
                 EntryKind::File if entry.enter_lists_tables() => {
                     vec![("Enter", "its tables".to_string())]
                 }
-                EntryKind::File if entry.cost.tables.is_some_and(|n| n > 1) => {
+                // The spec's variants are the spec's to say, whatever a measurement or a
+                // cached record left in the row's count.
+                EntryKind::File
+                    if variants.is_some() || entry.cost.tables.is_some_and(|n| n > 1) =>
+                {
                     let opens = opens.filter(|_| entry.cost.opens_one);
                     let mut notes = vec![
                         ("Enter", opens.unwrap_or("every record").to_string()),
@@ -2700,6 +2854,7 @@ fn render_preview(
                 lines.extend(spec_schema_lines(
                     variants.as_deref(),
                     spec_columns.as_deref(),
+                    note_w + 2,
                     width,
                     room,
                     ctx,
@@ -2713,59 +2868,110 @@ fn render_preview(
         .render(area, buf);
 }
 
-/// What a spec says a file holds, under its `schema` line: each variant and its column
-/// count, or each column and its type, as many as `room` rows hold.
+/// What a spec says a file holds, under its `schema` line: its variants and their
+/// column counts packed under the value column (`Status 6 · OrderAdd 9 · …`), wrapping
+/// between whole items; or each column and its type. As many as `room` rows hold.
 fn spec_schema_lines(
     variants: Option<&[crate::members::Table]>,
     columns: Option<&[(String, polars::prelude::DataType)]>,
+    indent: usize,
+    width: usize,
+    room: usize,
+    ctx: &RenderContext,
+) -> Vec<Line<'static>> {
+    if let Some(variants) = variants {
+        return variant_lines(variants, indent, width, room, ctx);
+    }
+    let Some(columns) = columns else {
+        return Vec::new();
+    };
+    let name_w = columns
+        .iter()
+        .map(|(n, _)| n.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(22);
+    let (_, mut lines) = schema_lines(columns, name_w, width, room, ctx);
+    if columns.len() > lines.len() {
+        if lines.len() == room && !lines.is_empty() {
+            lines.pop();
+        }
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{} {} more",
+                glyphs::get().ellipsis,
+                columns.len() - lines.len()
+            ),
+            Style::default().fg(ctx.dimmed),
+        )));
+    }
+    lines
+}
+
+/// A spec's variants as `name count` items under the value column, ` · ` between them,
+/// a line breaking only between items; `… N more` when `room` rows do not hold them.
+fn variant_lines(
+    variants: &[crate::members::Table],
+    indent: usize,
     width: usize,
     room: usize,
     ctx: &RenderContext,
 ) -> Vec<Line<'static>> {
     let g = glyphs::get();
-    let (total, mut lines) = match (variants, columns) {
-        (Some(variants), _) => {
-            let name_w = variants
-                .iter()
-                .map(|v| v.name.chars().count())
-                .max()
-                .unwrap_or(0)
-                .min(22);
-            let mut lines = Vec::new();
-            for variant in variants.iter().take(room) {
-                let name = glyphs::fit_cells(&variant.name, name_w, g.ellipsis);
-                let n = variant.columns.len();
-                let what = if n == 1 { "column" } else { "columns" };
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("{name:<name_w$}  "),
-                        Style::default().fg(ctx.text_secondary),
-                    ),
-                    Span::styled(format!("{n} {what}"), Style::default().fg(ctx.dimmed)),
-                ]));
+    let avail = width.saturating_sub(indent).max(1);
+    let sep = format!(" {} ", g.middot);
+    let sep_w = glyphs::display_width(&sep);
+    let name_style = Style::default().fg(ctx.text_secondary);
+    let count_style = Style::default().fg(ctx.dimmed);
+    let mut rows: Vec<(Vec<Span<'static>>, usize, usize)> = Vec::new();
+    for variant in variants {
+        let count = variant.columns.len().to_string();
+        let count_w = count.len() + 1;
+        let name = glyphs::fit_cells(&variant.name, avail.saturating_sub(count_w), g.ellipsis)
+            .into_owned();
+        let w = glyphs::display_width(&name) + count_w;
+        let item = [
+            Span::styled(name, name_style),
+            Span::styled(format!(" {count}"), count_style),
+        ];
+        match rows.last_mut() {
+            Some((spans, used, n)) if *used + sep_w + w <= avail => {
+                spans.push(Span::styled(sep.clone(), count_style));
+                spans.extend(item);
+                *used += sep_w + w;
+                *n += 1;
             }
-            (variants.len(), lines)
+            _ => rows.push((item.to_vec(), w, 1)),
         }
-        (None, Some(columns)) => {
-            let name_w = columns
-                .iter()
-                .map(|(n, _)| n.chars().count())
-                .max()
-                .unwrap_or(0)
-                .min(22);
-            let (_, lines) = schema_lines(columns, name_w, width, room, ctx);
-            (columns.len(), lines)
-        }
-        (None, None) => return Vec::new(),
-    };
-    if total > lines.len() {
-        if lines.len() == room && !lines.is_empty() {
+    }
+    if room == 0 {
+        return Vec::new();
+    }
+    let mut shown = 0;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let lead = || Span::raw(" ".repeat(indent));
+    for (spans, _, n) in rows.iter().take(room) {
+        lines.push(Line::from(
+            std::iter::once(lead())
+                .chain(spans.iter().cloned())
+                .collect::<Vec<_>>(),
+        ));
+        shown += n;
+    }
+    if shown < variants.len() {
+        if lines.len() == room {
+            if let Some((_, _, n)) = rows.get(lines.len() - 1) {
+                shown -= n;
+            }
             lines.pop();
         }
-        lines.push(Line::from(Span::styled(
-            format!("{} {} more", g.ellipsis, total - lines.len()),
-            Style::default().fg(ctx.dimmed),
-        )));
+        lines.push(Line::from(vec![
+            lead(),
+            Span::styled(
+                format!("{} {} more", g.ellipsis, variants.len() - shown),
+                count_style,
+            ),
+        ]));
     }
     lines
 }
@@ -4639,5 +4845,219 @@ mod tests {
             wide.contains("same_schema (3 Parquet files, one schema)"),
             "{wide:?}"
         );
+    }
+
+    fn texts(lines: &[Line]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    /// A path too long for the pane loses its middle, between components, and keeps its
+    /// file name; one that fits is left alone.
+    #[test]
+    fn a_long_path_is_cut_in_the_middle_not_wrapped() {
+        let e = glyphs::get().ellipsis;
+        let path = "~/.config/datui/formats/demo-mktdata.toml";
+        assert_eq!(elide_path(path, 60), path);
+        assert_eq!(
+            elide_path(path, 30),
+            format!("~/{e}/formats/demo-mktdata.toml")
+        );
+        assert!(elide_path(path, 30).chars().count() <= 30);
+        assert_eq!(elide_path(path, 22), format!("~/{e}/demo-mktdata.toml"));
+        assert_eq!(
+            elide_path("/a/b/c/long-name.toml", 17),
+            format!("/{e}/long-name.toml")
+        );
+        // Only the name's end fits.
+        let cut = elide_path(path, 10);
+        assert!(cut.ends_with("ta.toml"), "{cut}");
+        assert!(glyphs::display_width(&cut) <= 10, "{cut}");
+    }
+
+    fn spec_chips() -> Vec<MatchChip> {
+        let spec = crate::formats::Spec::parse(
+            r#"name = "acme.chips"
+match = { glob = ["*.bin", "*.dat"], magic = "MKTD", where = { "header.version" = 1, "header.kind" = "A" } }
+[header]
+fields = [
+  { name = "magic", type = "str", size = 4 },
+  { name = "version", type = "u2" },
+  { name = "kind", type = "str", size = 1 },
+]
+[records]
+fields = [{ name = "x", type = "u1" }]
+"#,
+            None,
+        )
+        .unwrap();
+        spec.match_chips()
+    }
+
+    /// The match line wraps between chips, never inside one, at any width; on the
+    /// chrome tier where the tint shows, bracketed with text quoted where it does not.
+    #[test]
+    fn match_chips_wrap_between_whole_chips() {
+        let ctx = RenderContext::for_test();
+        let chips = spec_chips();
+        for filled in [true, false] {
+            for width in [24, 30, 40, 80] {
+                let lines = chip_fact_lines("match", &chips, 5, width, filled, &ctx);
+                let shown = texts(&lines);
+                for line in &shown {
+                    assert!(
+                        glyphs::display_width(line) <= width,
+                        "{line:?} wider than {width}"
+                    );
+                }
+                let kind = if filled { "kind A" } else { "kind \"A\"" };
+                let whole: &[&str] = if width < 30 {
+                    &[]
+                } else {
+                    &["magic MKTD", "version 1", kind, "glob *.bin *.dat"]
+                };
+                for chip in whole {
+                    assert!(
+                        shown.iter().any(|l| l.contains(chip)),
+                        "{chip:?} whole on one line at {width}: {shown:#?}"
+                    );
+                }
+                assert!(shown[0].starts_with("match  "), "{shown:?}");
+                assert!(
+                    shown[1..].iter().all(|l| l.starts_with("       ")),
+                    "wrapped under the value: {shown:#?}"
+                );
+            }
+        }
+        let wide = texts(&chip_fact_lines("match", &chips, 5, 80, false, &ctx));
+        assert_eq!(
+            wide,
+            ["match  [magic MKTD] [kind \"A\"] [version 1] [glob *.bin *.dat]"]
+        );
+        let wide = chip_fact_lines("match", &chips, 5, 80, true, &ctx);
+        let magic = &wide[0].spans[1..6];
+        assert!(
+            magic
+                .iter()
+                .all(|s| s.style.bg == Some(ctx.table_header_bg)),
+            "{magic:?}"
+        );
+        assert_eq!(magic[1].style.fg, Some(ctx.dimmed));
+        assert_eq!(magic[3].style.fg, Some(ctx.str_col));
+        let one = wide[0]
+            .spans
+            .iter()
+            .find(|s| s.content == "1")
+            .expect("the version");
+        assert_eq!(one.style.fg, Some(ctx.int_col), "{wide:?}");
+    }
+
+    #[test]
+    fn a_spec_without_a_match_says_so() {
+        let ctx = RenderContext::for_test();
+        let lines = chip_fact_lines("match", &[], 5, 40, true, &ctx);
+        assert_eq!(texts(&lines), ["match  no match"]);
+    }
+
+    /// A field name too long for the line is cut, not the value, and the chip stays on
+    /// its line whole: never past the pane, never broken in two.
+    #[test]
+    fn a_long_field_name_is_cut_before_its_value() {
+        use crate::formats::ChipKind;
+        let ctx = RenderContext::for_test();
+        let e = glyphs::get().ellipsis;
+        let chips = [
+            MatchChip {
+                name: "magic".to_string(),
+                value: "MKTD".to_string(),
+                kind: ChipKind::Magic,
+                offset: None,
+            },
+            MatchChip {
+                name: "exchange_feed_sequence_version".to_string(),
+                value: "3".to_string(),
+                kind: ChipKind::Int,
+                offset: None,
+            },
+        ];
+        for filled in [true, false] {
+            let shown = texts(&chip_fact_lines("match", &chips, 8, 40, filled, &ctx));
+            assert_eq!(shown.len(), 2, "{shown:#?}");
+            for line in &shown {
+                assert!(glyphs::display_width(line) <= 40, "{line:?}");
+            }
+            let long = &shown[1];
+            assert!(long.starts_with("          "), "{shown:#?}");
+            let chip = long.trim();
+            let (open, close) = if filled { ("", "") } else { ("[", "]") };
+            assert!(
+                chip.starts_with(&format!("{open}exchange_feed")),
+                "{chip:?}"
+            );
+            assert!(chip.ends_with(&format!("{e} 3{close}")), "{chip:?}");
+        }
+        // A long value with a short name still cuts the value.
+        let glob = MatchChip {
+            name: "glob".to_string(),
+            value: "*.alpha *.bravo *.charlie *.delta *.echo".to_string(),
+            kind: ChipKind::Glob,
+            offset: None,
+        };
+        let shown = texts(&chip_fact_lines("match", &[glob], 5, 30, false, &ctx));
+        assert_eq!(shown.len(), 1, "{shown:#?}");
+        assert!(shown[0].starts_with("match  [glob *.alpha"), "{shown:#?}");
+        assert!(shown[0].ends_with(&format!("{e}]")), "{shown:#?}");
+        assert_eq!(glyphs::display_width(&shown[0]), 30, "{shown:#?}");
+    }
+
+    /// Variants pack under the value column, `name count` each, a line breaking only
+    /// between them, counted when the rows run out.
+    #[test]
+    fn variants_pack_densely_and_break_between_items() {
+        let ctx = RenderContext::for_test();
+        let table = |name: &str, n: usize| crate::members::Table {
+            name: name.to_string(),
+            kind: "variant".to_string(),
+            internal: false,
+            columns: (0..n).map(|i| (format!("c{i}"), String::new())).collect(),
+        };
+        let variants = [
+            table("Status", 6),
+            table("OrderAdd", 9),
+            table("OrderCancel", 6),
+            table("Trade", 9),
+            table("Fill", 9),
+        ];
+        let m = glyphs::get().middot;
+        let wide = texts(&variant_lines(&variants, 8, 80, 10, &ctx));
+        assert_eq!(
+            wide,
+            [format!(
+                "        Status 6 {m} OrderAdd 9 {m} OrderCancel 6 {m} Trade 9 {m} Fill 9"
+            )]
+        );
+        let narrow = texts(&variant_lines(&variants, 8, 40, 10, &ctx));
+        assert!(narrow.len() > 1, "{narrow:#?}");
+        for line in &narrow {
+            assert!(glyphs::display_width(line) <= 40, "{line:?}");
+            assert!(!line.trim_end().ends_with(m), "{line:?}");
+        }
+        for item in [
+            "Status 6",
+            "OrderAdd 9",
+            "OrderCancel 6",
+            "Trade 9",
+            "Fill 9",
+        ] {
+            assert!(
+                narrow.iter().any(|l| l.contains(item)),
+                "{item}: {narrow:#?}"
+            );
+        }
+        let cut = texts(&variant_lines(&variants, 8, 30, 2, &ctx));
+        assert_eq!(cut.len(), 2, "{cut:#?}");
+        assert!(cut[1].trim_start().ends_with("more"), "{cut:#?}");
     }
 }

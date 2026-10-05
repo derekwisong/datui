@@ -37,7 +37,7 @@ pub fn run(input: &[u8]) {
             return;
         }
     };
-    let _ = spec.match_summary();
+    let _ = datui_lib::formats::chips_plain(&spec.match_chips());
     let _ = spec.glob_matches(Path::new("dir/day.l2"));
     let _ = spec.magic_matches(data);
     let _ = spec.header_matches(data);

@@ -27,6 +27,9 @@ forms (Sample, Expected, a column's intent).
   <kbd>Tab</kbd> chooses and moves to the next field.
 - The chart's options apply as they change, so <kbd>Enter</kbd> there acts as
   <kbd>Space</kbd> does.
+- A dialog that cannot do what <kbd>Enter</kbd> asked says why on its last
+  line: a blank path, or an export that could not write. The dialog stays as
+  you left it, to fix and press <kbd>Enter</kbd> again.
 
 The [Info panel](../user-guide/dataset-info.md) is a viewer, not a dialog:
 <kbd>←</kbd> <kbd>→</kbd> and <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd>

@@ -293,8 +293,12 @@ the user must do about the information, never by which feature sent it:
    own status line inside the Surface, `warning` at most. Enter on an
    invalid form re-accents that line; it never raises a modal.
 4. **Only a failure that stops the user gets a modal** — a load that
-   failed, an export that could not write, an auth that was refused.
-   Acknowledge to continue. The modal is a Surface like any other.
+   failed, an auth that was refused. Acknowledge to continue. The modal is
+   a Surface like any other.
+5. **A failed write keeps its form.** An export that could not write brings
+   its dialog back as it was, every value intact, the reason on the status
+   line: the fix is typed where the reason is read. The form is suspended
+   while it writes, never closed until the write lands.
 
 One flash component serves every screen: the home status line is the same
 component, not a sibling, so duration, clearing and styling cannot drift.

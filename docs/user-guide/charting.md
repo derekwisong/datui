@@ -279,7 +279,8 @@ path exported to before. A path ending `.png`, `.svg` or `.pdf` takes that
 format; any other path gets **Format**'s extension after it (`chart.v2` writes
 `chart.v2.png`). You are asked before an
 existing file is overwritten, and a failed export leaves it as it was
-([Overwriting](exporting-data.md#overwriting)).
+([Overwriting](exporting-data.md#overwriting)). A blank path, or a failed
+write, keeps the dialog open with the reason under the fields.
 
 | Field | What it sets |
 |---|---|

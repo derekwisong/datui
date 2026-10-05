@@ -173,9 +173,9 @@ pub struct ExportModal {
     // NDJSON options
     pub ndjson_compression: Option<CompressionFormat>,
     pub history_limit: usize,
-    /// Why the form cannot export yet, said inline on its own status line.
-    /// Set by Enter on an invalid form, cleared by typing in the path.
-    pub path_error: Option<&'static str>,
+    /// Why the form cannot export, or why its last write failed, said inline on
+    /// its own status line. Cleared by typing in the path.
+    pub path_error: Option<String>,
 }
 
 impl ExportModal {
@@ -224,6 +224,7 @@ impl ExportModal {
         self.active = false;
         self.focus = ExportFocus::FormatSelector;
         self.path_input.clear();
+        self.path_error = None;
     }
 
     /// Hide behind a child confirmation without discarding the form; `resume`

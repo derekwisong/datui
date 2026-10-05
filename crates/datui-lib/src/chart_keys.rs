@@ -183,6 +183,10 @@ impl App {
                         | KeyCode::End => true,
                         _ => false,
                     };
+                if field == ChartExportFocus::PathInput {
+                    // Typing is the correction the message asked for.
+                    self.chart_export_modal.error = None;
+                }
                 if allowed && let Some(input) = self.chart_export_modal.focused_input_mut() {
                     let _ = input.handle_key(event, Some(&self.cache));
                     if size {
@@ -196,11 +200,12 @@ impl App {
     }
 
     /// Enter, from any field of the chart's export dialog: build the export from the
-    /// state every row already echoes. A blank path exports nothing.
+    /// state every row already echoes. A blank path says so inline.
     fn submit_chart_export(&mut self) -> Option<AppEvent> {
         let modal = &self.chart_export_modal;
         let path_str = modal.path_input.value().trim();
         if path_str.is_empty() {
+            self.chart_export_modal.error = Some("Enter a file path.".to_string());
             crate::form::Form::focus(&mut self.chart_export_modal, ChartExportFocus::PathInput);
             return None;
         }

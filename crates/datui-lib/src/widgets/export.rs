@@ -158,7 +158,7 @@ pub fn render_export_modal(
     // at most, never a modal. Otherwise the line says how a format without
     // nesting writes the view's list and struct columns, or that Avro renames.
     // The last line, not under the rows, so it stays put as rows come and go.
-    let status = match modal.path_error {
+    let status = match modal.path_error.as_deref() {
         Some(message) => Some((message, ctx.warning)),
         None if modal.nested_columns && !modal.selected_format.holds_nesting() => {
             Some((NESTED_NOTE, ctx.dimmed))
@@ -168,17 +168,35 @@ pub fn render_export_modal(
         }
         None => None,
     };
-    let y = content.bottom() - 1;
-    if let Some((message, color)) = status
-        && y >= content.y + fields.len() as u16
-    {
+    let Some((message, color)) = status else {
+        return;
+    };
+    // A failed write's reason can run longer than the line: it wraps upward into
+    // the rows the format leaves free, keeping a blank under the last field, and
+    // is cut with an ellipsis past that.
+    let width = content.width.saturating_sub(1) as usize;
+    let first_free = content.y + fields.len() as u16 + 1;
+    let room = content.bottom().saturating_sub(first_free).max(1) as usize;
+    let mut lines = crate::widgets::info::wrap_to(message, width);
+    if lines.len() > room {
+        lines.truncate(room);
+        if let Some(last) = lines.last_mut() {
+            let cut = format!("{last} {}", crate::glyphs::get().ellipsis);
+            *last = crate::widgets::data_quality::fit(&cut, width);
+        }
+    }
+    let top = content.bottom() - lines.len() as u16;
+    if top < content.y + fields.len() as u16 {
+        return;
+    }
+    for (i, line) in lines.iter().enumerate() {
         // Under the labels, past the rail gutter.
         ratatui::widgets::Widget::render(
-            ratatui::widgets::Paragraph::new(message)
+            ratatui::widgets::Paragraph::new(line.as_str())
                 .style(ratatui::style::Style::default().fg(color)),
             Rect {
                 x: content.x + 1,
-                y,
+                y: top + i as u16,
                 width: content.width - 1,
                 height: 1,
             },
@@ -400,7 +418,7 @@ mod tests {
     fn the_blank_path_message_renders_inline() {
         let mut modal = ExportModal::new();
         modal.active = true;
-        modal.path_error = Some("Enter a file path.");
+        modal.path_error = Some("Enter a file path.".to_string());
         for format in [ExportFormat::Csv, ExportFormat::Parquet] {
             modal.selected_format = format;
             for width in [50u16, MAX_WIDTH] {

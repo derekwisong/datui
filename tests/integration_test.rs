@@ -857,6 +857,27 @@ fn test_chart_export_waits_for_the_current_selection_not_a_failed_one() {
     assert!(app.chart_data_ready());
 }
 
+/// Enter on the chart's export dialog with no path says so on the dialog's status
+/// line, and typing a path takes the reason away.
+#[test]
+fn test_chart_export_with_a_blank_path_says_why() {
+    let (mut app, rx, tx) = open_chart_view("chart_export_blank_path_test.csv");
+    select_line(&mut app);
+    app.event(&AppEvent::Resize(80, 24));
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    press(&mut app, KeyCode::Char('e'));
+    assert!(app.chart_export_modal.active);
+    assert!(app.chart_export_modal.path_input.value().is_empty());
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    assert!(app.chart_export_modal.active, "the dialog stays");
+    assert_eq!(
+        app.chart_export_modal.error.as_deref(),
+        Some("Enter a file path.")
+    );
+    press(&mut app, KeyCode::Char('c'));
+    assert_eq!(app.chart_export_modal.error, None);
+}
+
 /// A chart export uses the prepared data and writes the file off-thread; if the data is
 /// not ready yet the export waits for it rather than collecting on the UI thread.
 #[test]
@@ -918,13 +939,19 @@ fn test_chart_export_replaces_only_what_was_agreed() {
         std::fs::write(&path, "theirs").unwrap();
         let request = chart_export_request(&path, format);
         run_to_idle(&mut app, &rx, &tx, AppEvent::ChartExport(request.clone()));
+        // The form comes back with the reason on its status line, not a modal.
+        assert_eq!(app.error_message(), None, "{name}");
+        assert!(app.chart_export_modal.active, "{name}");
         assert!(
-            app.error_message().is_some_and(|m| m.contains("appeared")),
+            app.chart_export_modal
+                .error
+                .as_deref()
+                .is_some_and(|m| m.contains("appeared")),
             "{name}: the clash reaches the app"
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs", "{name}");
         press(&mut app, KeyCode::Esc);
-        assert_eq!(app.error_message(), None);
+        assert!(!app.chart_export_modal.active);
 
         let replace = ChartExportRequest {
             overwrite: Overwrite::Replace,
@@ -2211,7 +2238,10 @@ fn declining_an_overwrite_keeps_the_export_form() {
     // and typing is the correction that clears it.
     key(&mut app, KeyCode::Enter);
     assert!(app.export_modal.active, "an empty path raises no modal");
-    assert_eq!(app.export_modal.path_error, Some("Enter a file path."));
+    assert_eq!(
+        app.export_modal.path_error.as_deref(),
+        Some("Enter a file path.")
+    );
     key(&mut app, KeyCode::Char('x'));
     assert_eq!(app.export_modal.path_error, None);
     key(&mut app, KeyCode::Backspace);
@@ -8303,6 +8333,10 @@ fn export_as(
     });
     run_to_idle(app, rx, tx, start);
     assert_eq!(app.error_message(), None, "the export to {path:?} failed");
+    assert_eq!(
+        app.export_modal.path_error, None,
+        "the export to {path:?} failed"
+    );
 }
 
 /// Feed `first` to the app and pump until nothing is left to do.
@@ -8408,9 +8442,12 @@ fn test_a_file_that_appears_during_an_export_is_left_alone() {
     run_to_idle(&mut app, &rx, &tx, export);
 
     assert!(
-        app.error_message().is_some_and(|m| m.contains("appeared")),
-        "the failure reaches the app: {:?}",
-        app.error_message()
+        app.export_modal
+            .path_error
+            .as_deref()
+            .is_some_and(|m| m.contains("appeared")),
+        "the failure reaches the form: {:?}",
+        app.export_modal.path_error
     );
     assert!(
         !app.flash_message()
@@ -8420,6 +8457,61 @@ fn test_a_file_that_appears_during_an_export_is_left_alone() {
     assert!(!app.is_busy());
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "theirs");
     assert!(leftovers(dir.path(), &["out.csv"]).is_empty());
+}
+
+/// A write that fails brings the dialog back as it was: the typed path, the
+/// format and its options, with the reason on the dialog's status line instead
+/// of a modal over an empty form.
+#[test]
+fn test_a_failed_export_reopens_the_form_as_it_was() {
+    use datui::export_modal::ExportFormat;
+    let (mut app, rx, tx) = open_query_filter_fixture("export_reopens.csv");
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("missing").join("out.csv");
+
+    press(&mut app, KeyCode::Char('e'));
+    app.export_modal
+        .path_input
+        .set_value(target.display().to_string());
+    app.export_modal.sync_format_to_path();
+    app.export_modal.csv_include_header = false;
+    let export = press(&mut app, KeyCode::Enter).expect("the export starts");
+    assert!(!app.export_modal.active, "out of the way while it writes");
+    run_to_idle(&mut app, &rx, &tx, export);
+
+    assert_eq!(app.error_message(), None, "no modal");
+    assert!(app.export_modal.active);
+    assert_eq!(app.input_mode, datui::InputMode::Export);
+    assert_eq!(
+        app.export_modal.path_input.value(),
+        target.display().to_string()
+    );
+    assert_eq!(app.export_modal.selected_format, ExportFormat::Csv);
+    assert!(!app.export_modal.csv_include_header);
+    assert!(
+        app.export_modal
+            .path_error
+            .as_deref()
+            .is_some_and(|m| m.starts_with("Cannot write")),
+        "{:?}",
+        app.export_modal.path_error
+    );
+    // The fix is typed where the reason is read, and Enter writes.
+    std::fs::create_dir(dir.path().join("missing")).unwrap();
+    press(&mut app, KeyCode::Char('x'));
+    press(&mut app, KeyCode::Backspace);
+    assert_eq!(
+        app.export_modal.path_error, None,
+        "typing clears the reason"
+    );
+    let export = press(&mut app, KeyCode::Enter).expect("the export starts again");
+    run_to_idle(&mut app, &rx, &tx, export);
+    assert!(target.exists());
+    assert!(!app.export_modal.active);
+    assert!(
+        app.flash_message()
+            .is_some_and(|m| m.starts_with("Exported to "))
+    );
 }
 
 /// A view whose rows fail part way through, over an agreed overwrite, by both
@@ -8465,9 +8557,12 @@ fn test_a_failed_export_keeps_the_old_file() {
         run_to_idle(&mut app, &rx, &tx, AppEvent::Export(request));
 
         assert!(
-            app.error_message().is_some_and(|m| m.contains("injected")),
-            "{name}: the failure reaches the app: {:?}",
-            app.error_message()
+            app.export_modal
+                .path_error
+                .as_deref()
+                .is_some_and(|m| m.contains("injected")),
+            "{name}: the failure reaches the form: {:?}",
+            app.export_modal.path_error
         );
         assert!(!app.is_busy());
         assert!(

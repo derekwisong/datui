@@ -88,6 +88,9 @@ pub struct ChartExportModal {
     pub notes_input: TextInput,
     pub source_input: TextInput,
     pub byline_input: TextInput,
+    /// Why Enter did not write: a blank path, or the failed write's reason. Said
+    /// on the dialog's status line; cleared by typing in the path.
+    pub error: Option<String>,
 }
 
 impl ChartExportModal {
@@ -105,6 +108,7 @@ impl ChartExportModal {
     ) {
         self.active = true;
         self.focus = ChartExportFocus::PathInput;
+        self.error = None;
         let input = || TextInput::new().with_theme(theme);
         // Ctrl+P / Ctrl+N recall the paths exported to before.
         self.path_input = TextInput::new()
@@ -149,6 +153,7 @@ impl ChartExportModal {
         self.active = false;
         self.focus = ChartExportFocus::PathInput;
         self.path_input.clear();
+        self.error = None;
     }
 
     /// Hide behind a child confirmation without discarding the form; `resume`
@@ -301,6 +306,7 @@ impl Default for ChartExportModal {
             notes_input: TextInput::new(),
             source_input: TextInput::new(),
             byline_input: TextInput::new(),
+            error: None,
         }
     }
 }

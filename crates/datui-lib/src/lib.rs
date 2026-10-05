@@ -1837,7 +1837,8 @@ impl App {
                             "Overwrite",
                         );
                     } else {
-                        self.analysis_modal.data_quality_export = None;
+                        // The dialog stays up while the report is written: a failed
+                        // write says why on its status line, the path still there.
                         return Some(AppEvent::QualityReportExport(
                             path,
                             format,
@@ -12217,7 +12218,6 @@ impl App {
                         // file it asked about, and only through that answer.
                         if let Some((path, format)) = self.pending_quality_export.take() {
                             self.confirmation_modal.hide();
-                            self.analysis_modal.data_quality_export = None;
                             return Some(AppEvent::QualityReportExport(
                                 path,
                                 format,
@@ -12979,6 +12979,7 @@ impl App {
             }
             KeyCode::Char('e') => {
                 if self.data_table_state.is_some() && self.input_mode == InputMode::Normal {
+                    self.export_counts = None;
                     self.export_modal.open(
                         self.original_file_format,
                         self.history_limit,
@@ -14499,7 +14500,7 @@ impl App {
                     Some("Writing the report..."),
                     move |_| {
                         crate::quality_export::write(&path, &results, &plan, format, overwrite)
-                            .map_err(|error| Self::format_export_error(&error, &path))?;
+                            .map_err(|error| Self::format_export_error(&error))?;
                         Ok(Answer::QualityReportWritten(path))
                     },
                 );
@@ -14606,7 +14607,8 @@ impl App {
                     self.busy = false;
                     return None;
                 };
-                let frame = match self.export_counts.take() {
+                // Cloned, not taken: a failed write reopens the dialog on the same counts.
+                let frame = match self.export_counts.clone() {
                     Some(counts) => crate::widgets::datatable::ExportFrame::of(
                         polars::prelude::IntoLazy::lazy(counts),
                     ),
@@ -14638,7 +14640,7 @@ impl App {
                         .into_lazy()
                         .map_err(color_eyre::eyre::Report::from)
                         .and_then(|lf| crate::export::run(lf, &request, streaming, written))
-                        .map_err(|e| Self::format_export_error(&e, &request.path))?;
+                        .map_err(|e| Self::format_export_error(&e))?;
                     // Success is reported only once the file is committed.
                     Ok(Answer::Exported(request.path))
                 });
@@ -14934,14 +14936,14 @@ impl App {
                     } = request;
                     ChartExportJob { figure, options }
                         .write(&path, format, overwrite)
-                        .map_err(|e| Self::format_export_error(&e, &path))?;
+                        .map_err(|e| Self::format_export_error(&e))?;
                     Ok(Answer::ChartExported)
                 });
             }
             // Still being prepared; `BackgroundChartReady` comes back here.
             Ok(None) => self.chart_export_waiting = Some(request),
             Err(e) => {
-                let message = Self::format_export_error(&e, &request.path);
+                let message = Self::format_export_error(&e);
                 self.finish_chart_export(&request.path, request.format, Err(message));
             }
         }
@@ -14962,9 +14964,10 @@ impl App {
                 self.flash_note(format!("Chart exported to {}", path.display()));
                 self.chart_export_modal.close();
             }
+            // The form comes back as it was, the reason on its status line.
             Err(message) => {
-                self.error_modal.show(message);
                 self.chart_export_modal.reopen_with_path(path, format);
+                self.chart_export_modal.error = Some(message);
             }
         }
     }
@@ -15868,6 +15871,9 @@ impl App {
                 None
             }
             Answer::Exported(path) => {
+                // Written: the dialog held for a failure is done with.
+                self.export_modal.close();
+                self.export_counts = None;
                 if current {
                     self.export_progress = None;
                     self.flash_note(format!("Exported to {}", path.display()));
@@ -15882,6 +15888,7 @@ impl App {
                 None
             }
             Answer::QualityReportWritten(path) => {
+                self.analysis_modal.data_quality_export = None;
                 if current {
                     self.flash_note(format!("Report written to {}", path.display()));
                 }
@@ -15991,9 +15998,18 @@ impl App {
                 }
             }
             // The form stays up with its spec, to be fixed.
-            Job::Pivot | Job::Copy | Job::QualityReport => {
+            Job::Pivot | Job::Copy => {
                 if current {
                     self.error_modal.show(message.to_string());
+                }
+            }
+            // The dialog is still up, the reason on its status line under the path.
+            Job::QualityReport => {
+                if current {
+                    match self.analysis_modal.data_quality_export.as_mut() {
+                        Some(form) => form.error = Some(message.to_string()),
+                        None => self.error_modal.show(message.to_string()),
+                    }
                 }
             }
             Job::ViewPivot(_) => {
@@ -16086,10 +16102,17 @@ impl App {
                     }
                 }
             }
+            // The form comes back as it was, the reason on its status line, to fix
+            // the path and press Enter again.
             Job::Export => {
                 if current {
                     self.export_progress = None;
-                    self.error_modal.show(message.to_string());
+                    self.export_modal.resume();
+                    self.export_modal.path_error = Some(message.to_string());
+                    self.input_mode = InputMode::Export;
+                } else {
+                    self.export_modal.close();
+                    self.export_counts = None;
                 }
             }
             Job::ChartExport { path, format } => {
@@ -16561,7 +16584,9 @@ impl App {
     }
 
     /// What the error modal says when writing an export, report or chart fails.
-    fn format_export_error(error: &color_eyre::eyre::Report, path: &Path) -> String {
+    /// Why an export did not write, for the dialog's status line, which sits under
+    /// the path it is about.
+    fn format_export_error(error: &color_eyre::eyre::Report) -> String {
         use std::io::{self, ErrorKind};
 
         for cause in error.chain() {
@@ -16578,7 +16603,7 @@ impl App {
                     (None, ErrorKind::IsADirectory) => "it is a directory.".to_string(),
                     (None, _) => crate::error_display::user_message_from_io(io_err, None),
                 };
-                return format!("Cannot write to {}: {}", path.display(), msg);
+                return format!("Cannot write: {msg}");
             }
             if let Some(pe) = cause.downcast_ref::<polars::prelude::PolarsError>() {
                 let msg = crate::error_display::user_message_from_polars(pe);

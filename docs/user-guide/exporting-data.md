@@ -172,7 +172,7 @@ the compressed file's end, is written and synced to disk. The status line says
 
 | Case | Result |
 |---|---|
-| The export fails | The old file keeps its bytes and permissions; a new export leaves no file. The hidden file is removed |
+| The export fails | The old file keeps its bytes and permissions; a new export leaves no file. The hidden file is removed. The dialog comes back as you left it, the reason under the fields: fix the path and press <kbd>Enter</kbd> |
 | You confirmed the overwrite | The file is replaced whole. On Linux and macOS it keeps its permission bits |
 | A file appears at the path after you pressed <kbd>Enter</kbd> without being asked | It is left alone and the export fails |
 | The file is read-only or you may not write it, or the path is a directory, a pipe or a device | The export fails before anything is written |

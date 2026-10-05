@@ -656,13 +656,12 @@ fn the_format_read_beats_the_extension() {
 /// does not borrow its wording.
 #[test]
 fn export_errors_name_a_refusal_only_for_a_refusal() {
-    let path = Path::new("out.csv.gz");
     let refused: std::io::Error = crate::output_file::Refused::NotAFile.into();
     assert_eq!(
-        App::format_export_error(&refused.into(), path),
-        "Cannot write to out.csv.gz: it is not a regular file."
+        App::format_export_error(&refused.into()),
+        "Cannot write: it is not a regular file."
     );
     let encoder = std::io::Error::new(std::io::ErrorKind::InvalidInput, "stream error");
-    let message = App::format_export_error(&encoder.into(), path);
+    let message = App::format_export_error(&encoder.into());
     assert!(!message.contains("regular file"), "{message}");
 }

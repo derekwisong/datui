@@ -47,7 +47,7 @@ impl App {
     fn submit_export(&mut self) -> Option<AppEvent> {
         let path_str = self.export_modal.path_input.value().trim().to_string();
         if path_str.is_empty() {
-            self.export_modal.path_error = Some("Enter a file path.");
+            self.export_modal.path_error = Some("Enter a file path.".to_string());
             crate::form::Form::focus(&mut self.export_modal, ExportFocus::PathInput);
             return None;
         }
@@ -100,7 +100,9 @@ impl App {
             self.input_mode = self.export_returns_to();
             return None;
         }
-        self.export_modal.close();
+        // Suspended while it writes: a failed write brings the form back as it was,
+        // with the reason on its status line.
+        self.export_modal.suspend();
         self.input_mode = self.export_returns_to();
         Some(AppEvent::Export(request))
     }

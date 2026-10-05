@@ -1587,9 +1587,9 @@ mod tests {
         }
     }
 
-    /// #455: an export whose worker dies ends: the reason on screen, the keyboard
-    /// back, nothing of its own left set, no file and the generation free. The
-    /// next export writes its file.
+    /// #455: an export whose worker dies ends: the reason on the export dialog's
+    /// status line, the keyboard back, nothing of its own left set, no file and
+    /// the generation free. The next export writes its file.
     #[test]
     fn an_export_whose_worker_dies_ends_and_the_next_one_writes() {
         let (mut p, dir) = loaded_pump();
@@ -1602,18 +1602,17 @@ mod tests {
         p.send(AppEvent::Export(csv_export(&out))).unwrap();
 
         let deadline = std::time::Instant::now() + Duration::from_secs(300);
-        while !p.app.error_modal.active {
+        while p.app.export_modal.path_error.is_none() {
             assert!(
                 std::time::Instant::now() < deadline,
                 "the export never ended"
             );
             p.wait_and_drain(Duration::from_millis(50)).unwrap();
         }
-        assert!(
-            p.app.error_modal.message.contains("worker died"),
-            "{}",
-            p.app.error_modal.message
-        );
+        let reason = p.app.export_modal.path_error.clone().unwrap_or_default();
+        assert!(reason.contains("worker died"), "{reason}");
+        assert!(p.app.export_modal.active);
+        assert!(!p.app.error_modal.active);
         assert!(!p.app.is_busy());
         assert!(p.app.status_message.is_none());
         assert!(p.app.nothing_loading());
@@ -1624,10 +1623,11 @@ mod tests {
         );
 
         p.terminal_key(plain(KeyCode::Esc)).unwrap();
-        assert!(!p.app.error_modal.active);
+        assert!(!p.app.export_modal.active);
         p.send(AppEvent::Export(csv_export(&out))).unwrap();
         settle(&mut p);
         assert!(!p.app.error_modal.active, "{}", p.app.error_modal.message);
+        assert_eq!(p.app.export_modal.path_error, None);
         assert!(out.exists(), "the next export writes its file");
         assert!(p.app.nothing_loading());
     }

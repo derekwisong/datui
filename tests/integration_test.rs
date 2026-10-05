@@ -1001,9 +1001,14 @@ fn quick_chart_picks_the_type_from_the_cursor_column() {
         let area = Rect::new(0, 0, 100, 30);
         let mut buf = Buffer::empty(area);
         Widget::render(&mut app, area, &mut buf);
-        assert!(
-            rendered_text(&buf).contains(&format!("suggested for {suggested}")),
-            "{x}"
+        let text = rendered_text(&buf);
+        assert!(text.contains(&format!("suggested for {suggested}")), "{x}");
+        // The first frame's plot is the chart the panel names, before its data lands:
+        // a histogram only where the panel says Histogram.
+        assert_eq!(
+            text.contains("count per bin"),
+            mark == Mark::Histogram,
+            "{x}: {text}"
         );
         press(&mut app, KeyCode::Esc);
         // Back to the first column.

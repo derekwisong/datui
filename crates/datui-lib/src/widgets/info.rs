@@ -14,7 +14,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::Stylize;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Gauge, HighlightSpacing, Paragraph, Row, StatefulWidget, Table, Widget};
+use ratatui::widgets::{HighlightSpacing, Paragraph, Row, StatefulWidget, Table, Widget};
 
 use super::datatable::DataTableState;
 use crate::export_modal::ExportFormat;
@@ -710,11 +710,12 @@ pub struct InfoContext<'a> {
 }
 
 impl<'a> InfoContext<'a> {
+    /// Where the column types came from, as the Schema rule's chip says it.
     pub fn schema_source(&self) -> &'static str {
         if self.declared_types {
-            "Known"
+            "types declared"
         } else {
-            "Inferred"
+            "types inferred"
         }
     }
 
@@ -964,7 +965,7 @@ impl<'a> DataTableInfo<'a> {
             Some(dataset) => dataset.origin.to_string(),
             // A model's, an audio file's or MIDI's columns are datui's own.
             None if self.state.format_detail().is_some_and(|d| d.own_columns) => {
-                "Known".to_string()
+                "types declared".to_string()
             }
             None => self.ctx.schema_source().to_string(),
         };
@@ -1010,10 +1011,11 @@ impl<'a> DataTableInfo<'a> {
         // The body always has the keys: the tabs switch from anywhere, so the
         // rule is accented and the row carries the rail.
         let body_focused = true;
-        let title = format!("Schema: {src}");
+        // A noun on the rule, and where its types came from in the chip, as every
+        // section rule says a fact about its section.
         SectionRule {
-            title: &title,
-            chip: None,
+            title: "Schema",
+            chip: Some(&src),
         }
         .render(Rect { height: 1, ..area }, buf, self.theme);
         let inner = Rect {
@@ -1288,14 +1290,10 @@ impl<'a> DataTableInfo<'a> {
             .constraints([label_constraint, value_constraint])
             .split(row_area);
         Paragraph::new("Buffer (Rows):").render(row_chunks[0], buf);
+        // Values start in the value column, as every other row's do.
         if max_rows > 0 {
-            let ratio = (buf_rows as f64 / max_rows as f64).min(1.0);
             let label = format!("{} / {}", format_int(buf_rows), format_int(max_rows));
-            Gauge::default()
-                .gauge_style(Style::default().fg(self.theme.text_primary))
-                .ratio(ratio)
-                .label(Span::raw(label))
-                .render(row_chunks[1], buf);
+            Paragraph::new(label).render(row_chunks[1], buf);
         } else {
             Paragraph::new(format_int(buf_rows)).render(row_chunks[1], buf);
         }
@@ -1321,17 +1319,11 @@ impl<'a> DataTableInfo<'a> {
             .split(mb_area);
         Paragraph::new("Buffer (MB):").render(mb_chunks[0], buf);
         if max_mb > 0 {
-            let current_mb = buf_mb.unwrap_or(0);
-            let ratio = (current_mb as f64 / max_mb as f64).min(1.0);
             let label = match buf_mb {
                 Some(m) => format!("{:.1} / {} MiB", m as f64, max_mb),
                 None => crate::glyphs::get().dash.to_string(),
             };
-            Gauge::default()
-                .gauge_style(Style::default().fg(self.theme.text_primary))
-                .ratio(ratio)
-                .label(Span::raw(label))
-                .render(mb_chunks[1], buf);
+            Paragraph::new(label).render(mb_chunks[1], buf);
         } else {
             let value = buf_mb
                 .map(|m| format!("{:.1} MiB", m as f64))
@@ -1382,7 +1374,11 @@ impl<'a> DataTableInfo<'a> {
             return;
         }
         *y += 1;
-        Paragraph::new("Measurements").render(
+        SectionRule {
+            title: "Measurements",
+            chip: None,
+        }
+        .render(
             Rect {
                 y: *y,
                 width: area.width,
@@ -1390,6 +1386,7 @@ impl<'a> DataTableInfo<'a> {
                 ..area
             },
             buf,
+            self.theme,
         );
         *y += 1;
         for (label, line) in rows {
@@ -2517,6 +2514,30 @@ mod tests {
             shown.contains("Total:") && shown.contains("3.88s"),
             "the total is a time: {shown}"
         );
+        // Every value starts in the one value column, the buffer's too.
+        for label in [
+            "File size:",
+            "Buffer (Rows):",
+            "Buffer (MB):",
+            "Listing:",
+            "Total:",
+        ] {
+            let line = shown
+                .lines()
+                .find(|l| l.starts_with(label))
+                .unwrap_or_else(|| panic!("{label} in {shown}"));
+            let cells: Vec<char> = line.chars().collect();
+            assert!(
+                cells[label.len()..17].iter().all(|c| *c == ' ') && cells[17] != ' ',
+                "{label} value at column 17: {line:?}"
+            );
+        }
+        assert!(
+            shown
+                .lines()
+                .any(|l| l.starts_with("Measurements ") && l.contains(crate::glyphs::get().rule_h)),
+            "the heading is a section rule: {shown}"
+        );
         assert!(
             !shown.contains("13,082"),
             "and not the two file counts added together, which is not the size of \
@@ -2801,7 +2822,7 @@ mod tests {
         };
 
         let (buf, text) = paint();
-        let (x, y) = find(&text, "Schema: Inferred");
+        let (x, y) = find(&text, "Schema  types inferred");
         // The rule's title in the plain accent: the rail marks focus, not the rule.
         assert_eq!(buf[(x, y)].fg, theme.accent, "{text:#?}");
         let (_, id_row) = find(&text, " id ");

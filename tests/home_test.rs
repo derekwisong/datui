@@ -6915,6 +6915,106 @@ mod landing {
         assert!(app.data_table_state.is_some(), "the directory opened");
     }
 
+    /// Esc on a filter clears it and selects the first dataset, as at launch, not
+    /// the first section's header.
+    #[test]
+    fn esc_after_a_filter_selects_the_first_entry() {
+        let tmp = TempDir::new().unwrap();
+        fixtures(tmp.path());
+        let (mut app, _rx) = home_over(tmp.path());
+        for c in "same".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        assert!(press(&mut app, KeyCode::Esc).is_none());
+        assert!(app.home.filter.is_empty());
+        assert!(
+            !app.home.selection_is_header(),
+            "{:?}",
+            app.home.selected_row()
+        );
+        assert!(app.home.selected_entry().is_some());
+    }
+
+    /// "No match." offers no Enter: there is nothing to open or explain.
+    #[test]
+    fn no_match_offers_no_enter() {
+        let tmp = TempDir::new().unwrap();
+        fixtures(tmp.path());
+        let (mut app, _rx) = home_over(tmp.path());
+        for c in "zqzqzq".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        assert_eq!(app.what_enter_does(), datui::WhatEnter::Nothing);
+        let area = ratatui::layout::Rect::new(0, 0, 100, 20);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        ratatui::widgets::Widget::render(&mut app, area, &mut buf);
+        let bar: String = (0..area.width)
+            .map(|x| buf[(x, area.height - 1)].symbol())
+            .collect();
+        assert!(!bar.contains("About"), "{bar}");
+    }
+
+    /// Back home with Ctrl+O, the filter that found the dataset is kept, selected,
+    /// on the dataset's row: `~` opens the path prompt rather than typing into it,
+    /// a character starts a new filter, and an arrow keeps it.
+    #[test]
+    fn ctrl_o_selects_the_old_filter() {
+        let tmp = TempDir::new().unwrap();
+        fixtures(tmp.path());
+        let same = tmp.path().join("same_schema");
+        let (mut app, rx) = home_over(tmp.path());
+        for c in "same_schema".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        select(&mut app, &same);
+        enter_and_load(&mut app, &rx);
+        app.event(&AppEvent::Key(crossterm::event::KeyEvent::new(
+            KeyCode::Char('o'),
+            crossterm::event::KeyModifiers::CONTROL,
+        )));
+        let back_home = |app: &mut App| {
+            app.event(&AppEvent::Key(crossterm::event::KeyEvent::new(
+                KeyCode::Char('o'),
+                crossterm::event::KeyModifiers::CONTROL,
+            )));
+            assert_eq!(app.input_mode, datui::InputMode::Home);
+            assert_eq!(app.home.filter, "same_schema");
+            assert!(app.home.filter_selected);
+        };
+        assert_eq!(app.input_mode, datui::InputMode::Home);
+        assert_eq!(app.home.filter, "same_schema");
+        assert!(app.home.filter_selected);
+        assert_eq!(
+            app.home.selected_entry().map(|e| e.path),
+            Some(same.clone())
+        );
+        press(&mut app, KeyCode::Char('~'));
+        assert!(app.home.path_input_active, "~ opens the prompt");
+        assert!(app.home.filter.is_empty());
+        press(&mut app, KeyCode::Esc);
+
+        // A character starts a new filter.
+        app.home.filter = "same_schema".to_string();
+        app.home.sync_search_section();
+        select(&mut app, &same);
+        enter_and_load(&mut app, &rx);
+        back_home(&mut app);
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.home.filter, "d");
+        assert!(!app.home.filter_selected);
+
+        // An arrow keeps it, and typing then adds to it.
+        app.home.filter = "same_schema".to_string();
+        app.home.sync_search_section();
+        select(&mut app, &same);
+        enter_and_load(&mut app, &rx);
+        back_home(&mut app);
+        press(&mut app, KeyCode::Down);
+        assert!(!app.home.filter_selected);
+        press(&mut app, KeyCode::Char('x'));
+        assert_eq!(app.home.filter, "same_schemax");
+    }
+
     #[test]
     fn a_hive_table_lands_on_its_row_and_opens_with_its_partition_columns() {
         let tmp = TempDir::new().unwrap();
@@ -8593,6 +8693,26 @@ mod path_prompt {
             app.home.browsing.as_deref(),
             Some(tmp.path().join("src").as_path())
         );
+    }
+
+    /// The first name that matches is picked as the list lands and stays picked
+    /// after Tab completes it, so the list always shows what Enter takes; ↑ from
+    /// the first takes the path as typed.
+    #[test]
+    fn the_first_candidate_is_picked_and_kept_after_tab() {
+        let tmp = project();
+        let (mut app, rx) = home_app(datui::config::AppConfig::default());
+        press(&mut app, KeyCode::Char('~'));
+        type_text(&mut app, &format!("{}/su", tmp.path().display()));
+        listed(&mut app, &rx);
+        assert_eq!(app.home.path_pick, Some(0));
+        let summary = format!("{}/summary.csv", tmp.path().display());
+        assert_eq!(app.home.picked_path().as_deref(), Some(summary.as_str()));
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.home.path_input, summary);
+        assert_eq!(app.home.path_pick, Some(0), "the pick stays after Tab");
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.home.path_pick, None, "the path as typed");
     }
 
     /// One candidate left: Tab completes it whole, a directory with its separator, so

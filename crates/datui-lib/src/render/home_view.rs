@@ -460,7 +460,13 @@ fn render_prompt(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderCon
             .fg(ctx.keybind_hints)
             .add_modifier(Modifier::BOLD),
     )];
-    spans.push(Span::styled(value, Style::default().fg(ctx.text_primary)));
+    // A filter kept from before is shown selected: typing replaces it.
+    let value_style = if !home.path_input_active && home.filter_selected {
+        app.theme.text_selection_style()
+    } else {
+        Style::default().fg(ctx.text_primary)
+    };
+    spans.push(Span::styled(value, value_style));
     spans.push(Span::styled(
         g.cursor,
         Style::default().fg(ctx.keybind_hints),

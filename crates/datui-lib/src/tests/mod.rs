@@ -1845,7 +1845,7 @@ fn a_parked_end_does_not_put_its_message_on_the_home_screen() {
         "the home bar is the home screen's: {bar:?}"
     );
     assert!(
-        bar.contains("Enter"),
+        bar.contains("keys"),
         "and it still has its keys rather than a sentence: {bar:?}"
     );
 

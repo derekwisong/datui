@@ -15,7 +15,7 @@ These keys work on every screen.
 | Key | Action |
 |---|---|
 | `? / F1` | This screen's keys. In a text field ? types, and F1 opens the help |
-| `Ctrl+O` | The home screen; abandons a load |
+| `Ctrl+O` | The home screen, on the dataset left, its filter kept and selected (typing replaces it); abandons a load |
 | `Ctrl+Q / Ctrl+C` | Quit from anywhere; Ctrl+C quits from a text field too, where Alt+W copies |
 | `Click a field` | Focus a form's field and act as Space: a checkbox flips, a choice steps, a picker opens, a button runs; a text field takes the cursor. A row of a list (a sort, a filter, a column) takes focus on the first click and acts on the second. A click on a picker's line chooses it, on a tab switches to it, and on a key in the footer presses it. A click outside a dialog does nothing. The mouse is the terminal's with display.mouse = false (or --mouse false); in most terminals Shift+drag selects text either way |
 | `Right-click a field` | Step a choice back, as ← does; else focus it |
@@ -141,14 +141,14 @@ Where a dataset opens.
 |---|---|
 | `Enter` | What the footer says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them |
 | `Backspace` | Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a catalog's remote dataset, back here) |
-| `Esc` | Back out one layer: the path prompt, the filter, the directory (back to the row it was entered from), then to the open table |
+| `Esc` | Back out one layer: the path prompt, the filter (onto the first dataset), the directory (back to the row it was entered from), then to the open table |
 
 ### Home screen · Find
 
 | Key | Action |
 |---|---|
 | `(type)` | Narrow by name or column; fuzzy, so "sal" finds "sales". What you open often ranks first. Typing also searches below the directory you are inside and the listed bucket names; matches appear under "Found" |
-| `~` | While the filter is empty: type a path or URL by hand. The list shows the directory being typed, narrowed by the name after the last /. The prompt is a plain editor: characters, Backspace, Ctrl+U clears, Tab completes the one name left or what the names share, ↑ / ↓ pick a name, Enter opens a file or goes inside a directory, Esc closes. s3://, gs:// and az:// complete from buckets and prefixes already known. With a filter typed, ~ types into it |
+| `~` | While the filter is empty: type a path or URL by hand. The list shows the directory being typed, narrowed by the name after the last /. The prompt is a plain editor: characters, Backspace, Ctrl+U clears, The first name that matches is picked. Tab completes the one name left or what the names share, or a name picked further down; ↑ / ↓ pick a name, and ↑ from the first takes the path as typed; Enter opens the picked name or the typed path: a file opens, a directory is gone inside; Esc closes. s3://, gs:// and az:// complete from buckets and prefixes already known. With a filter typed, ~ types into it |
 | `Ctrl+U` | Clear the filter or path input |
 | `Ctrl+R` | List again what is on screen |
 

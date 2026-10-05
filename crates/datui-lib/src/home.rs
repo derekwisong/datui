@@ -1299,6 +1299,10 @@ pub struct HomeState {
     pub sections: Vec<Section>,
     /// Fuzzy filter over every row in every section.
     pub filter: String,
+    /// The filter kept from before a dataset was opened, shown selected: the next
+    /// character typed replaces it, and `~` opens the path prompt, rather than both
+    /// adding to a search that is done. Any other key keeps it.
+    pub filter_selected: bool,
     /// The most search matches listed under `Found`: `[home.search] max_results`.
     pub search_limit: usize,
     /// The filter `Found`'s rows were scored for, and the score of each of its first
@@ -1567,6 +1571,7 @@ impl Default for HomeState {
             path_input: String::new(),
             path_listing: None,
             path_pick: None,
+            filter_selected: false,
             browsing: None,
             browse_start: None,
             status: None,
@@ -3945,6 +3950,13 @@ impl HomeState {
             .collect();
         matched.sort_by(|(a, sa), (b, sb)| sb.cmp(sa).then_with(|| a.name.cmp(&b.name)));
         matched.into_iter().map(|(n, _)| n).collect()
+    }
+
+    /// Put the `~` prompt's pick on the first name that matches what is typed, or on
+    /// none when nothing does: the list always shows which name Enter and Tab take.
+    /// ↑ from the first takes the typed path as it is.
+    pub fn pick_first_path(&mut self) {
+        self.path_pick = (!self.path_candidates().is_empty()).then_some(0);
     }
 
     /// The path the picked candidate names, with its separator when it is a directory.

@@ -683,7 +683,8 @@ impl App {
             Some(home::Row::Header { .. }) => return WhatEnter::FoldsSection,
             Some(home::Row::More { .. }) => return WhatEnter::ShowsMore,
             Some(home::Row::Hidden { .. }) => return WhatEnter::ShowsHidden,
-            None => return WhatEnter::Explains,
+            // "No match.": nothing to open and nothing to say about it.
+            None => return WhatEnter::Nothing,
             // The door reads the directory it names whatever that directory is labelled —
             // the lake tables included, which is the one row that reads them at all.
             Some(home::Row::Door { .. }) => return WhatEnter::OpensDirectory,
@@ -7328,6 +7329,9 @@ impl App {
             state.stop_following();
         }
         self.home.status = None;
+        // The search that found the dataset comes back, selected: the next character
+        // typed starts a new one, and `~` opens the path prompt.
+        self.home.filter_selected = !self.home.filter.is_empty();
         self.home.folds_owed = true;
         self.home_refresh();
         if let Some(open_path) = self.path.clone() {
@@ -7362,8 +7366,8 @@ impl App {
         if !self.home.filter.is_empty() {
             self.home.filter.clear();
             self.home.sync_search_section();
-            self.home.selected = 0;
-            self.home.clamp_selection();
+            // On a dataset, as at launch, not on the first section's header.
+            self.home.select_first_entry();
             return None;
         }
         if self.home.browsing.is_some() {
@@ -8853,13 +8857,14 @@ impl App {
                     self.home.status = None;
                 }
                 KeyCode::Char('u') if ctrl => self.home.path_input.clear(),
-                // The picked name, or what the names listed agree on. Before the
-                // listing is in, completion reads the directory on a worker.
+                // What the names listed agree on, as a shell completes, or a name
+                // picked further down with ↓. Before the listing is in, completion
+                // reads the directory on a worker.
                 KeyCode::Tab => {
-                    let completed = self
-                        .home
-                        .picked_path()
-                        .or_else(|| self.home.path_completion());
+                    let completed = match self.home.path_pick {
+                        Some(i) if i > 0 => self.home.picked_path(),
+                        _ => self.home.path_completion(),
+                    };
                     let listed = self
                         .home
                         .path_listing
@@ -8877,13 +8882,31 @@ impl App {
                 }
                 _ => {}
             }
-            // Whatever changed what is typed takes the pick away, and a new directory
-            // is listed.
-            if !matches!(event.code, KeyCode::Up | KeyCode::Down) {
-                self.home.path_pick = None;
-            }
+            // Whatever changed what is typed puts the pick back on the first name
+            // that matches, and a new directory is listed.
             self.list_the_typed_directory();
+            if !matches!(event.code, KeyCode::Up | KeyCode::Down) {
+                self.home.pick_first_path();
+            }
             return None;
+        }
+
+        // A filter kept from before is selected: a character, Backspace or Delete
+        // replaces it, as a selection in any field; any other key keeps it.
+        if std::mem::take(&mut self.home.filter_selected) {
+            let replaces = match event.code {
+                KeyCode::Char(_) => !ctrl,
+                KeyCode::Backspace => true,
+                _ => false,
+            };
+            if replaces {
+                self.home.filter.clear();
+                self.home.sync_search_section();
+                self.home.select_first_entry();
+                if event.code == KeyCode::Backspace {
+                    return None;
+                }
+            }
         }
 
         // Every plain character types into the filter, so no letter or bracket is
@@ -9025,6 +9048,7 @@ impl App {
                 self.home.path_listing = None;
                 self.home.path_pick = None;
                 self.list_the_typed_directory();
+                self.home.pick_first_path();
             }
             // The one printable that is a key, and only before typing starts: a
             // filter beginning with a literal `?` matches nothing anyway, and this
@@ -13505,6 +13529,9 @@ impl App {
                     && home::typed_dir(&self.home.path_input) == listing.dir
                 {
                     self.home.path_listing = Some((**listing).clone());
+                    if self.home.path_pick.is_none() {
+                        self.home.pick_first_path();
+                    }
                 }
                 None
             }
@@ -13527,6 +13554,7 @@ impl App {
                         self.flash_note(format!("{candidates} matches"));
                     }
                     self.home.path_input = completed.clone();
+                    self.home.pick_first_path();
                 }
                 None
             }

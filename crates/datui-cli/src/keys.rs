@@ -282,7 +282,8 @@ pub const GLOBAL: Group = Group {
         k("? / F1", "Help", "This screen's keys (F1 in text fields)")
             .more("This screen's keys. In a text field ? types, and F1 opens the help")
             .run("F1"),
-        k("Ctrl+O", "Home", "The home screen; abandons a load"),
+        k("Ctrl+O", "Home", "The home screen; abandons a load")
+            .more("The home screen, on the dataset left, its filter kept and selected (typing replaces it); abandons a load"),
         k(
             "Ctrl+Q / Ctrl+C",
             "Quit",
@@ -526,7 +527,7 @@ pub const SCREENS: &[Screen] = &[
                     k("Backspace", "Up", "Delete a filter character, or up a level")
                         .more("Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a catalog's remote dataset, back here)"),
                     k("Esc", "Back", "Path prompt, filter, directory, then the table")
-                        .more("Back out one layer: the path prompt, the filter, the directory (back to the row it was entered from), then to the open table"),
+                        .more("Back out one layer: the path prompt, the filter (onto the first dataset), the directory (back to the row it was entered from), then to the open table"),
                 ],
             },
             Group {
@@ -536,7 +537,7 @@ pub const SCREENS: &[Screen] = &[
                         .more("Narrow by name or column; fuzzy, so \"sal\" finds \"sales\". What you open often ranks first. Typing also searches below the directory you are inside and the listed bucket names; matches appear under \"Found\"")
                         .no_run(),
                     k("~", "Path", "Type a path or URL (on an empty filter)")
-                        .more("While the filter is empty: type a path or URL by hand. The list shows the directory being typed, narrowed by the name after the last /. The prompt is a plain editor: characters, Backspace, Ctrl+U clears, Tab completes the one name left or what the names share, ↑ / ↓ pick a name, Enter opens a file or goes inside a directory, Esc closes. s3://, gs:// and az:// complete from buckets and prefixes already known. With a filter typed, ~ types into it"),
+                        .more("While the filter is empty: type a path or URL by hand. The list shows the directory being typed, narrowed by the name after the last /. The prompt is a plain editor: characters, Backspace, Ctrl+U clears, The first name that matches is picked. Tab completes the one name left or what the names share, or a name picked further down; ↑ / ↓ pick a name, and ↑ from the first takes the path as typed; Enter opens the picked name or the typed path: a file opens, a directory is gone inside; Esc closes. s3://, gs:// and az:// complete from buckets and prefixes already known. With a filter typed, ~ types into it"),
                     k("Ctrl+U", "Clear", "Clear the filter or path input"),
                     k("Ctrl+R", "Refresh", "List again what is on screen"),
                 ],

@@ -8,8 +8,11 @@ data.
 datui
 ```
 
-<kbd>Ctrl</kbd>+<kbd>O</kbd> returns here from anywhere. Typing narrows the
-list; <kbd>Enter</kbd> does what the footer names for the row. Every key is
+<kbd>Ctrl</kbd>+<kbd>O</kbd> returns here from anywhere, on the dataset you
+left. A filter typed before comes back selected: typing replaces it, and
+<kbd>~</kbd> opens the path prompt. Typing narrows the list; <kbd>Esc</kbd> clears
+the filter and selects the first dataset; <kbd>Enter</kbd> does what the footer
+names for the row. Every key is
 in the [keyboard reference](../reference/keyboard-shortcuts.md#home-screen).
 
 ## Open a file or directory
@@ -19,13 +22,14 @@ in the [keyboard reference](../reference/keyboard-shortcuts.md#home-screen).
 3. To browse a directory rather than read it as one table, press <kbd>→</kbd>.
 
 To type a path or URL, press <kbd>~</kbd> with the filter empty. The list
-shows the directory being typed, narrowed by the name after the last `/`.
+shows the directory being typed, narrowed by the name after the last `/`, with
+the first name picked.
 
 | Key at the `~` prompt | Does |
 |---|---|
-| <kbd>Tab</kbd> | Completes the one name left, with `/` for a directory, or what the names share |
-| <kbd>↑</kbd> <kbd>↓</kbd> | Picks a name from the list |
-| <kbd>Enter</kbd> | Opens a file, or goes inside a directory as <kbd>→</kbd> does |
+| <kbd>Tab</kbd> | Completes the one name left, with `/` for a directory, or what the names share; a name picked further down, that name |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Picks a name from the list; <kbd>↑</kbd> from the first takes the path as typed |
+| <kbd>Enter</kbd> | Opens the picked name, or the path as typed: a file opens, a directory is gone inside as <kbd>→</kbd> does |
 | <kbd>Esc</kbd> | Closes the prompt |
 
 `s3://`, `gs://` and `az://` complete from names datui already knows (listed

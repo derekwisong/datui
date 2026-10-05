@@ -138,7 +138,7 @@ opens on its first row, Pivot or Melt.
 | <kbd>Space</kbd> | On a choice, its next value; on a column row, open its picker (type to narrow) |
 | <kbd>↑</kbd> <kbd>↓</kbd> in the picker | Move; <kbd>Space</kbd> chooses, or toggles where several can be chosen |
 | <kbd>Enter</kbd> | In the picker, choose; otherwise apply, from anywhere |
-| <kbd>Esc</kbd> | Stop a pivot being computed and keep the builder; close the picker alone, keeping the toggles made in it; otherwise close without applying |
+| <kbd>Esc</kbd> | Stop a pivot being computed and keep the builder; close the picker alone, undoing the toggles made since it opened (<kbd>Enter</kbd> keeps them); otherwise close without applying |
 | <kbd>?</kbd> | Help |
 
 ## Views

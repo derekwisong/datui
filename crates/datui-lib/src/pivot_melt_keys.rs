@@ -181,7 +181,7 @@ impl App {
             .is_multi_row(self.pivot_melt_modal.focus);
         if let Some(picker) = self.pivot_melt_modal.picker.as_mut() {
             match crate::form::picker_key(picker, multi, event) {
-                PickerKey::Close => self.pivot_melt_modal.picker = None,
+                PickerKey::Close => self.pivot_melt_modal.picker_cancel(),
                 PickerKey::Choose => self.pivot_melt_modal.picker_choose(),
                 PickerKey::Toggle => self.pivot_melt_modal.picker_toggle(),
                 PickerKey::ChooseAndMove(forward) => {

@@ -18956,6 +18956,31 @@ fn esc_closes_the_picker_then_the_dialog() {
     assert!(!app.pivot_melt_modal.active);
 }
 
+/// A several-choice picker keeps its level: Enter keeps the toggles made in it, Esc
+/// undoes them, as Esc discards the innermost level everywhere.
+#[test]
+fn esc_in_a_toggle_picker_undoes_its_toggles() {
+    use datui::pivot_melt_modal::PivotMeltFocus;
+    let (mut app, _rx, _tx) = open_query_filter_fixture("forms_picker_toggles.csv");
+    press(&mut app, KeyCode::Char('p'));
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.pivot_melt_modal.focus, PivotMeltFocus::PivotIndex);
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(app.pivot_melt_modal.index_columns.len(), 1, "toggled in");
+    press(&mut app, KeyCode::Esc);
+    assert!(app.pivot_melt_modal.picker.is_none());
+    assert!(
+        app.pivot_melt_modal.index_columns.is_empty(),
+        "Esc undid the toggle"
+    );
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.pivot_melt_modal.picker.is_none());
+    assert_eq!(app.pivot_melt_modal.index_columns.len(), 1, "Enter kept it");
+}
+
 /// Enter submits from any field: on an incomplete pivot it re-accents the spec line
 /// rather than leaving or raising a modal, from the tab bar and from a row alike.
 #[test]

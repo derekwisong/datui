@@ -416,7 +416,7 @@ Where a dataset opens.
 | `↑ / ↓` | Move; typing narrows |
 | `Enter` | Choose; on a several-choice row, done |
 | `Space` | Choose; toggle a column on a several-choice row |
-| `Esc` | Back out of the picker, keeping toggles |
+| `Esc` | Back out of the picker; the toggles made since it opened are undone (Enter keeps them) |
 
 ## Chart
 

@@ -897,7 +897,8 @@ pub const SCREENS: &[Screen] = &[
                     k("↑ / ↓", "Move", "Move; typing narrows"),
                     k("Enter", "Choose", "Choose; on a several-choice row, done"),
                     k("Space", "Toggle", "Choose; toggle a column on a several-choice row"),
-                    k("Esc", "Back", "Back out of the picker, keeping toggles"),
+                    k("Esc", "Back", "Back out of the picker, undoing its toggles")
+                        .more("Back out of the picker; the toggles made since it opened are undone (Enter keeps them)"),
                 ],
             },
         ],

@@ -9343,6 +9343,7 @@ impl App {
             delimited: None,
             table: None,
             guessed: false,
+            read_notes: Vec::new(),
         };
         // A followed file reads every row it can and counts the rest: a row
         // that does not fit the schema never stops the follow.
@@ -9414,6 +9415,7 @@ impl App {
             tail,
             table: report.table.or_else(|| options.table.clone()),
             format_guessed: options.format_guessed || report.guessed,
+            read_notes: report.read_notes,
             ..options
         };
         // The spec's dialect stays with the dataset, so a read again (`H`,
@@ -10446,6 +10448,7 @@ impl App {
             facts.open_notes.extend(read.notes());
             facts.delimited = Some(read.clone());
         }
+        facts.open_notes.extend(options.read_notes.iter().cloned());
         facts.read_mode = options.read_mode;
         facts.read_as = options.format;
         // The display path of a downloaded object is its URL too; only a scan that
@@ -11167,7 +11170,7 @@ impl App {
         if options.delimited.is_none()
             && options.format.is_none()
             && found.separator().is_some()
-            && let Some(first) = files.first()
+            && let Some(first) = files.iter().find(|f| !crate::nul_tail::holds_nothing(f))
             && let Some(choice) = Self::delimited_spec_of(first, options, formats)?
         {
             let nested = OpenOptions {

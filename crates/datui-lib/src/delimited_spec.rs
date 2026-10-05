@@ -352,24 +352,37 @@ pub fn read_facts(
     paths: &[std::path::PathBuf],
     options: &crate::OpenOptions,
 ) -> color_eyre::Result<DelimitedRead> {
-    let Some(file) = paths.first() else {
-        return Ok(read.clone());
-    };
-    let compression = options
-        .compression
-        .or_else(|| crate::CompressionFormat::from_extension(file));
-    let source = crate::widgets::datatable::DataTableState::text_source(file, compression)
-        .map_err(|e| crate::error_display::in_file(file, e.into()))?;
     let separator = options.separator_or(
         options
             .format
             .and_then(crate::FileFormat::separator)
             .unwrap_or(b','),
     );
-    let HeadFacts { units, metadata } = read
-        .delimited()
-        .facts(source, separator, &options.header_join)
-        .map_err(|e| crate::error_display::in_file(file, e))?;
+    let facts_of = |file: &std::path::Path| -> color_eyre::Result<HeadFacts> {
+        let compression = options
+            .compression
+            .or_else(|| crate::CompressionFormat::from_extension(file));
+        let source = crate::widgets::datatable::DataTableState::text_source(file, compression)
+            .map_err(|e| crate::error_display::in_file(file, e.into()))?;
+        read.delimited()
+            .facts(source, separator, &options.header_join)
+            .map_err(|e| crate::error_display::in_file(file, e))
+    };
+    // From the first file with a header: of several, one with nothing in it is
+    // passed over by the read too.
+    let mut found = None;
+    for file in paths {
+        match facts_of(file) {
+            Err(e) if paths.len() > 1 && crate::csv_dialect::is_blank_file(&e) => continue,
+            facts => {
+                found = Some((file, facts?));
+                break;
+            }
+        }
+    }
+    let Some((file, HeadFacts { units, metadata })) = found else {
+        return Ok(read.clone());
+    };
     Ok(DelimitedRead {
         units,
         metadata,

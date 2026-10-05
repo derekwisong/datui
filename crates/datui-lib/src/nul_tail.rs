@@ -55,6 +55,19 @@ pub fn text_len(file: &File) -> std::io::Result<Option<u64>> {
     Ok(mapped(file, len)?.map(|(_, end)| end as u64))
 }
 
+/// Whether the file at `path` holds no text: empty, or nothing but NULs. One byte read
+/// for a file that ends in anything else.
+pub fn holds_nothing(path: &Path) -> bool {
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    match file.metadata() {
+        Ok(m) if m.len() == 0 => true,
+        Ok(_) => text_len(&file).is_ok_and(|len| len == Some(0)),
+        Err(_) => false,
+    }
+}
+
 /// The text of the file at `path` as a buffer Polars scans in place, when the file
 /// ends in NULs; `None` when it does not, and the file is scanned by its path.
 pub fn text_buffer(path: &Path) -> std::io::Result<Option<polars_buffer::Buffer<u8>>> {

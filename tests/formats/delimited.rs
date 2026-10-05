@@ -496,3 +496,124 @@ fn a_padded_log_reads_through_its_spec() {
     assert_eq!(state.num_rows_if_valid(), Some(6));
     assert_eq!(state.unit_of("cht1"), Some("deg F"));
 }
+
+/// A fresh directory under the fixture directory, emptied of a run before.
+fn fresh_dir(name: &str) -> PathBuf {
+    let dir = common::fixture_dir().join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn open_dir(app: &mut App, rx: &mpsc::Receiver<AppEvent>, dir: PathBuf) {
+    let options = OpenOptions {
+        hive: true,
+        parse_strings: Some(datui::ParseStringsTarget::All),
+        ..OpenOptions::default()
+    };
+    pump_open_until_loaded(app, rx, vec![dir], options);
+}
+
+fn note_summaries(app: &App) -> Vec<String> {
+    let state = app.data_table_state.as_ref().unwrap();
+    state.notes().into_iter().map(|n| n.summary).collect()
+}
+
+/// A file with no header in a directory, all NUL or empty, is passed over with a note;
+/// the rest open as one table, and a first file with nothing in it gives up its place
+/// as the one the units are read from.
+#[test]
+fn a_file_with_no_header_is_skipped_in_a_directory() {
+    let dir = fresh_dir("delimited_spec_no_header");
+    std::fs::write(dir.join("log_000.csv"), vec![0u8; 32768]).unwrap();
+    std::fs::write(
+        dir.join("log_001.csv"),
+        padded(&log_text("2024-03-01", 3), 4096),
+    )
+    .unwrap();
+    std::fs::write(dir.join("log_002.csv"), "").unwrap();
+    std::fs::write(dir.join("log_003.csv"), log_text("2024-03-02", 3)).unwrap();
+    let (mut app, rx, tx) = app_with_spec();
+    open_dir(&mut app, &rx, dir.clone());
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.num_rows_if_valid(), Some(8));
+    assert_eq!(state.unit_of("cht1"), Some("deg F"));
+    let read = state.delimited_read().unwrap();
+    assert_eq!(read.facts_from.as_deref(), Some("log_001.csv"));
+    let notes = note_summaries(&app);
+    assert!(
+        notes
+            .iter()
+            .any(|n| n == "2 files with no header skipped: log_000.csv, log_002.csv"),
+        "{notes:?}"
+    );
+
+    // Without a spec, a plain CSV directory passes them over too.
+    let plain = fresh_dir("csv_no_header");
+    std::fs::write(plain.join("a.csv"), vec![0u8; 100]).unwrap();
+    std::fs::write(plain.join("b.csv"), "x,y\n1,2\n").unwrap();
+    std::fs::write(plain.join("c.csv"), " \n").unwrap();
+    std::fs::write(plain.join("d.csv"), "x,y\n3,4\n").unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    open_dir(&mut app, &rx, plain);
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    assert_eq!(collected(&app).height(), 2);
+    let notes = note_summaries(&app);
+    assert!(
+        notes
+            .iter()
+            .any(|n| n == "2 files with no header skipped: a.csv, c.csv"),
+        "{notes:?}"
+    );
+}
+
+/// Every file empty is an error that says so; one all-NUL file opened alone says its
+/// header is past its end, as an empty file does; a short file with text still fails
+/// a directory read, by its name.
+#[test]
+fn files_with_no_header_alone_are_an_error() {
+    let dir = fresh_dir("delimited_spec_all_empty");
+    for name in ["log_000.csv", "log_001.csv", "log_002.csv"] {
+        std::fs::write(dir.join(name), vec![0u8; 4096]).unwrap();
+    }
+    std::fs::write(dir.join("log_003.csv"), "").unwrap();
+    let (mut app, rx, _tx) = app_with_spec();
+    // Nothing matches the spec's magic in a file of NULs: read as plain CSV.
+    open_dir(&mut app, &rx, dir.clone());
+    let message = app.error_message().expect("an error");
+    assert!(
+        message.contains("one of these 4 files has a header"),
+        "{message}"
+    );
+
+    let one = dir.join("log_000.csv");
+    let (mut app, rx, _tx) = app_with_spec();
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![one],
+        OpenOptions {
+            spec_name: Some("acme.instrument-log".into()),
+            ..OpenOptions::default()
+        },
+    );
+    let message = app.error_message().expect("an error");
+    assert!(
+        message.contains("log_000.csv") && message.contains("past the end of the file"),
+        "{message}"
+    );
+
+    let short = fresh_dir("delimited_spec_short");
+    std::fs::write(short.join("log_001.csv"), log_text("2024-03-01", 3)).unwrap();
+    std::fs::write(short.join("log_002.csv"), "#device_info, a=\"1\"\n#units\n").unwrap();
+    let (mut app, rx, _tx) = app_with_spec();
+    open_dir(&mut app, &rx, short);
+    let message = app.error_message().expect("a short file with text fails");
+    assert!(
+        message.contains("log_002.csv") && message.contains("past the end of the file"),
+        "names the file: {message}"
+    );
+}

@@ -432,6 +432,9 @@ pub struct DataTableState {
     /// What the open did to the rows its reader gave, as Python method calls: names
     /// trimmed, text columns typed.
     read_python: Vec<String>,
+    /// What the read of several files has to say of them: files passed over, columns
+    /// not every file has. Carried to the dataset's notes.
+    read_notes: Vec<crate::notes::Note>,
     /// How `reshaped_lf` was built, while there is one: what SQL runs over.
     reshape_steps: Option<Vec<Step>>,
     /// Which loaded column each column of the base is (see [`Lineage`]).
@@ -2046,6 +2049,7 @@ impl DataTableState {
             reshape_source: None,
             base_steps: Vec::new(),
             read_python: Vec::new(),
+            read_notes: Vec::new(),
             reshape_steps: None,
             lineage: None,
             reshape_lineage: None,
@@ -2216,6 +2220,7 @@ impl DataTableState {
             reshape_source: None,
             base_steps: Vec::new(),
             read_python: Vec::new(),
+            read_notes: Vec::new(),
             reshape_steps: None,
             lineage: None,
             reshape_lineage: None,
@@ -4606,14 +4611,51 @@ impl DataTableState {
         let mut lazy_frames = Vec::with_capacity(paths.len());
         // Python reads the files as one scan: the first file's renames stand for all.
         let mut read = Vec::new();
-        for (i, p) in paths.iter().enumerate() {
+        // Files with nothing in them: no header, so no columns to stack.
+        let mut no_header: Vec<&Path> = Vec::new();
+        for p in paths {
             let p = p.as_ref();
-            let header = Self::csv_header_names_of(options, p, None)?;
-            let nv = Self::build_null_values_for_csv(options, p, header.as_deref())?;
-            let reader = Self::csv_reader_of(p)?;
-            let lf = Self::configure_csv_reader(reader, options, nv.as_ref()).finish()?;
-            let record = (i == 0).then_some(&mut read);
-            lazy_frames.push(Self::name_csv_columns(lf, header.as_deref(), record)?);
+            let in_file = |e: color_eyre::Report| crate::error_display::in_file(p, e);
+            let header = match Self::csv_header_names_of(options, p, None) {
+                Err(e) if crate::csv_dialect::is_blank_file(&e) => {
+                    no_header.push(p);
+                    continue;
+                }
+                header => header.map_err(in_file)?,
+            };
+            let nv =
+                Self::build_null_values_for_csv(options, p, header.as_deref()).map_err(in_file)?;
+            let reader = Self::csv_reader_of(p).map_err(in_file)?;
+            let lf = Self::configure_csv_reader(reader, options, nv.as_ref())
+                .finish()
+                .map_err(|e| in_file(e.into()))?;
+            let record = lazy_frames.is_empty().then_some(&mut read);
+            // Polars reads the header line itself: a file with none has no columns, or
+            // one with a blank name.
+            if header.is_none() {
+                let raw = lf.clone().collect_schema();
+                let headless = match &raw {
+                    Err(PolarsError::NoData(_)) => true,
+                    Ok(schema) => {
+                        schema.is_empty()
+                            || (schema.len() == 1
+                                && schema.iter_names().all(|n| n.trim().is_empty()))
+                    }
+                    Err(_) => false,
+                };
+                if headless && Self::is_blank_text(p) {
+                    no_header.push(p);
+                    continue;
+                }
+            }
+            let named = Self::name_csv_columns(lf, header.as_deref(), record).map_err(in_file)?;
+            lazy_frames.push(named);
+        }
+        if lazy_frames.is_empty() {
+            return Err(color_eyre::eyre::eyre!(
+                "none of these {} files has a header: each is empty, or blank",
+                paths.len()
+            ));
         }
         let lf = Self::finish_csv_values(
             polars::prelude::concat(lazy_frames.as_slice(), Self::union_of_files())?,
@@ -4631,7 +4673,18 @@ impl DataTableState {
         state.row_numbers = options.row_numbers;
         state.row_start_index = options.row_start_index;
         state.read_python = read;
+        state.read_notes.extend(crate::notes::no_header(&no_header));
         Ok(state)
+    }
+
+    /// Whether the text of the file at `path`, to its NUL padding, is no more than
+    /// white space. Read up to a bound: past it, the file holds something.
+    fn is_blank_text(path: &Path) -> bool {
+        const MOST: u64 = 64 << 10;
+        let mut text = Vec::new();
+        Self::text_source(path, None)
+            .and_then(|source| source.take(MOST + 1).read_to_end(&mut text))
+            .is_ok_and(|n| n as u64 <= MOST && text.iter().all(u8::is_ascii_whitespace))
     }
 
     pub fn from_json(path: &Path, options: &OpenOptions) -> Result<Self> {
@@ -9496,6 +9549,11 @@ impl DataTableState {
     /// What the open did to the rows its reader gave, as Python method calls.
     pub fn read_python(&self) -> &[String] {
         &self.read_python
+    }
+
+    /// See the field: the notes the read made, for the open to carry to the dataset.
+    pub fn read_notes(&self) -> &[crate::notes::Note] {
+        &self.read_notes
     }
 
     /// How `lf` was built: the base's steps, then the filters and the sort.

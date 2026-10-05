@@ -498,6 +498,47 @@ fn note_about_skipped(skipped: SkippedFiles) -> Option<Note> {
     })
 }
 
+/// The most names a note lists before it cuts the rest with an ellipsis.
+const NAMES_SHOWN: usize = 3;
+
+/// `names`, the first few of them, joined, and an ellipsis for the rest.
+pub fn some_names<S: AsRef<str>>(names: &[S]) -> String {
+    let mut said: Vec<&str> = names.iter().take(NAMES_SHOWN).map(AsRef::as_ref).collect();
+    let ellipsis = crate::glyphs::get().ellipsis;
+    if names.len() > NAMES_SHOWN {
+        said.push(ellipsis);
+    }
+    said.join(", ")
+}
+
+/// The files a read of several passed over because they hold no header: empty, blank,
+/// or nothing but NUL padding.
+pub fn no_header(files: &[&std::path::Path]) -> Option<Note> {
+    if files.is_empty() {
+        return None;
+    }
+    let names: Vec<String> = files
+        .iter()
+        .map(|f| {
+            f.file_name().map_or_else(
+                || f.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            )
+        })
+        .collect();
+    let what = if files.len() == 1 { "file" } else { "files" };
+    Some(Note {
+        summary: format!(
+            "{} {what} with no header skipped: {}",
+            files.len(),
+            some_names(&names)
+        ),
+        scope: "empty, blank, or only NUL padding".to_string(),
+        read_as_text: None,
+        passed_over: None,
+    })
+}
+
 /// What the open itself has to say, before a footer has been read.
 ///
 /// Two facts, both decided by the route that opened the directory rather than by anything

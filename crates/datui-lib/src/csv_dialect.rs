@@ -65,19 +65,22 @@ pub fn named_lines(mut source: impl BufRead, rows: &[usize]) -> color_eyre::Resu
     let last = rows.iter().copied().max().unwrap_or(0);
     // Only the named lines are kept; the others are passed over without being held.
     let mut lines: Vec<Vec<u8>> = vec![Vec::new(); last];
+    // Whether every byte so far is blank: a file of nothing has no header, which a
+    // read of several files passes over, where a short file of text is an error.
+    let mut blank = true;
     for (i, line) in lines.iter_mut().enumerate() {
         let n = i + 1;
         let read = if rows.contains(&n) {
-            (&mut source)
+            let read = (&mut source)
                 .take(MAX_HEADER_LINE + 1)
-                .read_until(b'\n', line)?
+                .read_until(b'\n', line)?;
+            blank &= line.iter().all(u8::is_ascii_whitespace);
+            read
         } else {
-            source.skip_until(b'\n')?
+            skip_line(&mut source, &mut blank)?
         };
         if read == 0 {
-            return Err(color_eyre::eyre::eyre!(
-                "header line {last} is past the end of the file"
-            ));
+            return Err(NoHeader { line: last, blank }.into());
         }
         if line.len() as u64 > MAX_HEADER_LINE {
             return Err(color_eyre::eyre::eyre!(
@@ -95,6 +98,49 @@ pub fn named_lines(mut source: impl BufRead, rows: &[usize]) -> color_eyre::Resu
                 .unwrap_or_default()
         })
         .collect())
+}
+
+/// A file that ends before the header line a read needs. `blank` when all it holds
+/// is white space, or nothing.
+#[derive(Debug)]
+pub struct NoHeader {
+    pub line: usize,
+    pub blank: bool,
+}
+
+impl std::fmt::Display for NoHeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "header line {} is past the end of the file", self.line)
+    }
+}
+
+impl std::error::Error for NoHeader {}
+
+/// Whether `e` says the file holds nothing but white space where its header should be.
+pub fn is_blank_file(e: &color_eyre::Report) -> bool {
+    e.chain()
+        .any(|cause| cause.downcast_ref::<NoHeader>().is_some_and(|h| h.blank))
+}
+
+/// Pass over one line of `source` without holding it, noting whether it is blank.
+fn skip_line(source: &mut impl BufRead, blank: &mut bool) -> std::io::Result<usize> {
+    let mut read = 0;
+    loop {
+        let buf = source.fill_buf()?;
+        if buf.is_empty() {
+            return Ok(read);
+        }
+        let (used, done) = match memchr::memchr(b'\n', buf) {
+            Some(at) => (at + 1, true),
+            None => (buf.len(), false),
+        };
+        *blank &= buf[..used].iter().all(u8::is_ascii_whitespace);
+        source.consume(used);
+        read += used;
+        if done {
+            return Ok(read);
+        }
+    }
 }
 
 /// Header line `row`'s fields, trimmed: without a byte-order mark on line 1, its line
@@ -310,6 +356,11 @@ mod tests {
         let err = header_names("a,b\n".as_bytes(), &[1, 5], " ", b',', None).unwrap_err();
         assert!(err.to_string().contains("past the end"), "{err}");
         assert!(header_names("".as_bytes(), &[1], " ", b',', None).is_err());
+        let blank = |text: &str| is_blank_file(&named_lines(text.as_bytes(), &[3]).unwrap_err());
+        assert!(blank(""), "empty");
+        assert!(blank(" \n\t\r\n"), "white space");
+        assert!(!blank("#a\n"), "text, too short");
+        assert!(!blank("\nx\n"), "text on a line passed over");
         // The last line needs no line break.
         assert_eq!(names("#u\na,b", &[2], None), ["a", "b"]);
     }

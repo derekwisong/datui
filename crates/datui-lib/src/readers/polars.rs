@@ -123,6 +123,7 @@ fn said(e: &polars::prelude::PolarsError) -> String {
 /// Copy as Python.
 fn frame(state: DataTableState, input: ScanIn<'_>) -> Result<Scan> {
     input.report.read_python = state.read_python().to_vec();
+    input.report.read_notes = state.read_notes().to_vec();
     Ok(state.into_lf().into())
 }
 

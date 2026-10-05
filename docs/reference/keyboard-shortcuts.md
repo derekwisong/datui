@@ -179,6 +179,7 @@ Where a dataset opens.
 | `PgUp / PgDn` | A page |
 | `g / G` | The first or last line (Home / End too) |
 | `Enter / Space / →` | Open or close the value legend of the column under the cursor: a catalog's values, or a spec's enum |
+| `o` | Open the link on the cursor's line in the system browser. Only http and https links open, and only after a question showing the whole URL (Enter opens, Esc does not). Off over SSH or without a display: y copies the link instead |
 | `y` | Copy the link or value on the cursor's line, whole, however it is cut on screen |
 | `Esc / q / ←` | Back to the home screen |
 
@@ -309,6 +310,7 @@ Where a dataset opens.
 | `PgUp / PgDn` | Model, Audio, MIDI, Metadata and format tabs: scroll the list a page |
 | `Home / End` | Model, Audio, MIDI, Metadata and format tabs: the top or the end of the list |
 | `Enter` | Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor |
+| `o` | Documentation tab: open the link on the cursor's line in the system browser. Only http and https links open, and only after a question showing the whole URL. Off over SSH or without a display |
 | `y` | Documentation tab: copy the link or value on the cursor's line, whole, however it is cut on screen |
 | `H` | Schema tab, CSV, TSV, PSV: read the first row as data, under column_1, column_2, …; again to read it as column names. Reads the file again, so the query, filters and sort are cleared, and the panel closes |
 | `c` | A dataset of more files than read.exact_count_files shows a row count estimated from a sample of its footers; c reads every footer for the exact count. The footer shows how far it has got, and Esc at the table stops it |

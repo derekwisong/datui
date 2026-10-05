@@ -128,6 +128,7 @@ pub mod ipc_stream;
 mod jobs;
 pub mod journal;
 pub mod lines;
+pub mod link_open;
 mod loading;
 pub mod local_copy;
 pub mod locality;
@@ -473,6 +474,9 @@ pub enum AppEvent {
         header: bool,
     },
     ChartExport(ChartExportRequest),
+    /// A documentation link the user confirmed, checked by `link_open::checked_url`:
+    /// start the browser on it.
+    OpenLink(String),
     /// Deferred: run the chart export once its phase is drawn.
     DoChartExport(ChartExportRequest),
     Collect,
@@ -957,6 +961,11 @@ pub struct App {
     home_search_generation: u64,
     /// Set while the confirmation modal is asking about forgetting every recent.
     pending_clear_recents: bool,
+    /// The checked link the confirmation modal is asking about opening.
+    pending_link: Option<String>,
+    /// Whether a browser opened here opens in front of the user: `o` on a
+    /// documentation link is offered only then (`link_open::local_desktop`).
+    pub local_desktop: bool,
     /// The place whose recents the confirmation modal is asking about forgetting.
     pending_forget_place: Option<PathBuf>,
     /// Why the last open failed, shown on the home screen when the error is dismissed
@@ -5873,6 +5882,10 @@ impl App {
             home_schema_inflight: Vec::new(),
             last_load_error: None,
             pending_clear_recents: false,
+            pending_link: None,
+            local_desktop: link_open::local_desktop(link_open::Platform::current(), |name| {
+                std::env::var(name).ok()
+            }),
             pending_forget_place: None,
             home_schema_cache: HashMap::new(),
             home_previews: crate::home_preview::Previews::default(),
@@ -7596,6 +7609,7 @@ impl App {
             name,
         ) {
             self.info_documentation.open(doc, None);
+            self.info_documentation.links_open = self.local_desktop;
         }
     }
 
@@ -7619,6 +7633,7 @@ impl App {
             })
             .and_then(|e| e.size);
         self.documentation.open(doc, measured);
+        self.documentation.links_open = self.local_desktop;
     }
 
     /// What Ctrl+E documents for the row under the cursor, with the row's path: the
@@ -7691,6 +7706,10 @@ impl App {
                 self.documentation.toggle_legend();
             }
             KeyCode::Char('y') => self.copy_documentation_line(),
+            KeyCode::Char('o') => {
+                let link = self.documentation.link();
+                self.ask_to_open_link(link);
+            }
             // The view takes no text, so ? is help here, as at the table.
             KeyCode::Char('?') => self.open_help_overlay(),
             _ => {}
@@ -7702,6 +7721,27 @@ impl App {
         match self.documentation.copy_text() {
             Some(text) => self.copy_documentation_text(text),
             None => self.flash_note("Nothing to copy on this line".to_string()),
+        }
+    }
+
+    /// `o` on a Documentation page: ask, with the whole URL, before the browser
+    /// opens it. Nothing on a line without a link; a status line where no local
+    /// browser would show it, or the link is not http or https.
+    pub(crate) fn ask_to_open_link(&mut self, link: Option<String>) {
+        let Some(link) = link else {
+            return;
+        };
+        if !self.local_desktop {
+            self.flash_note("o opens links on a local desktop; y copies it".to_string());
+            return;
+        }
+        match link_open::checked_url(&link) {
+            Ok(url) => {
+                self.confirmation_modal
+                    .show_choice(format!("Open {url}?"), "Open", "Cancel");
+                self.pending_link = Some(url);
+            }
+            Err(why) => self.flash_note(format!("Not opened: {why}; y copies it")),
         }
     }
 
@@ -12050,6 +12090,10 @@ impl App {
                             };
                             return self.apply_sample(sample);
                         }
+                        if let Some(url) = self.pending_link.take() {
+                            self.confirmation_modal.hide();
+                            return Some(AppEvent::OpenLink(url));
+                        }
                         if self.pending_clear_recents {
                             self.pending_clear_recents = false;
                             self.confirmation_modal.hide();
@@ -12105,6 +12149,7 @@ impl App {
                         }
                     } else {
                         self.pending_clear_recents = false;
+                        self.pending_link = None;
                         self.pending_read_all = false;
                         self.pending_forget_place = None;
                         // Declining an overwrite returns to the filled form:
@@ -12130,6 +12175,7 @@ impl App {
                     // Disarmed on every exit from the modal, so a declined confirmation
                     // cannot fire against whatever the *next* one is asking about.
                     self.pending_clear_recents = false;
+                    self.pending_link = None;
                     self.pending_read_all = false;
                     self.pending_forget_place = None;
                     // Staying: the recording goes on, and so does the view.
@@ -14439,6 +14485,14 @@ impl App {
                     // Success is reported only once the file is committed.
                     Ok(Answer::Exported(request.path))
                 });
+                None
+            }
+            AppEvent::OpenLink(url) => {
+                // Started, not waited on; a browser that will not start is a line,
+                // not an error to acknowledge.
+                if link_open::open(url).is_err() {
+                    self.flash_note("Couldn't open the link; y copies it".to_string());
+                }
                 None
             }
             AppEvent::CopyTable { format, header } => {

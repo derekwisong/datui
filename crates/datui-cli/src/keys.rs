@@ -569,6 +569,8 @@ pub const SCREENS: &[Screen] = &[
                 k("g / G", "Ends", "The first or last line (Home / End too)"),
                 k("Enter / Space / →", "Values", "Open or close the column's value legend")
                     .more("Open or close the value legend of the column under the cursor: a catalog's values, or a spec's enum"),
+                k("o", "Open", "Open the line's link in the browser, after asking")
+                    .more("Open the link on the cursor's line in the system browser. Only http and https links open, and only after a question showing the whole URL (Enter opens, Esc does not). Off over SSH or without a display: y copies the link instead"),
                 k("y", "Copy", "Copy the line's link or value, whole")
                     .more("Copy the link or value on the cursor's line, whole, however it is cut on screen"),
                 k("Esc / q / ←", "Back", "Back to the home screen"),
@@ -739,6 +741,8 @@ pub const SCREENS: &[Screen] = &[
                     .more("Model, Audio, MIDI, Metadata and format tabs: the top or the end of the list"),
                 k("Enter", "Take", "Notes: take the offer; Documentation: a legend")
                     .more("Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor"),
+                k("o", "Open", "Documentation tab: open the line's link")
+                    .more("Documentation tab: open the link on the cursor's line in the system browser. Only http and https links open, and only after a question showing the whole URL. Off over SSH or without a display"),
                 k("y", "Copy", "Documentation tab: copy the line's link or value")
                     .more("Documentation tab: copy the link or value on the cursor's line, whole, however it is cut on screen"),
                 k("H", "Header", "Schema tab, CSV: first row as data or names")

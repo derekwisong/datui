@@ -1904,9 +1904,15 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             footer = footer.hint_weighted(g.updown, "Scroll", 2);
         }
         if tab == InfoTab::Documentation && offered.documentation {
-            footer = footer
-                .hint_weighted("Enter", "Values", 1)
-                .hint_weighted("y", "Copy", 1);
+            footer = footer.hint_weighted("Enter", "Values", 1);
+            if self
+                .documentation
+                .as_deref()
+                .is_some_and(|d| d.offers_open())
+            {
+                footer = footer.hint_weighted("o", "Open", 1);
+            }
+            footer = footer.hint_weighted("y", "Copy", 1);
         }
         if tab == InfoTab::Schema && self.header_toggle {
             footer = footer.hint_weighted("H", "Header", -1);

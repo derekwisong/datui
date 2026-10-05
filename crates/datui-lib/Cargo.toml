@@ -42,6 +42,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 supports-color = "3.0"
 toml = "1.1"
+# A documentation link is parsed before the browser sees it (link_open.rs).
+url = "2.5.8"
 bzip2 = "0.6"
 # static: liblzma compiled in, so a release binary needs no liblzma.so.5 on the
 # host; bzip2, flate2 and zstd already build their C code in.

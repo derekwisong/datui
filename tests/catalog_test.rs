@@ -937,3 +937,129 @@ columns.shares = {{ unit = "lots" }}
         assert!(!text.contains(unsaid), "{unsaid} in\n{text}");
     }
 }
+
+/// `o` on a documentation link asks with the whole URL, as the browser will get it,
+/// and Enter hands it on; nothing happens on other lines, a link that is not http or
+/// https says so, and where no local browser would show it, `o` says that instead.
+/// Enter's `OpenLink` is never handled here, so no browser starts.
+#[test]
+fn o_opens_a_documentation_link_after_asking() {
+    let data = tempfile::TempDir::new().unwrap();
+    let csv = data.path().join("a.csv");
+    std::fs::write(&csv, "x\n1\n").unwrap();
+    let other = data.path().join("b.csv");
+    std::fs::write(&other, "x\n2\n").unwrap();
+    let long = format!("https://bücher.example/{}?q=1&r=^2", "docs/".repeat(30));
+    let (mut app, rx, _dir) = home_with_mine(&format!(
+        r#"label = "Mine"
+
+[linked]
+name = "Linked"
+path = "{csv}"
+homepage = "http://example.org/x"
+documentation = "{long}"
+
+[odd]
+name = "Odd"
+path = "{other}"
+homepage = "https://user:pw@example.com/"
+"#,
+        csv = toml_path(&csv),
+        other = toml_path(&other),
+    ));
+    pump(&mut app, &rx, |app| {
+        app.home.sections.iter().any(|s| s.title == "Mine")
+    });
+    // The page's own chips: the line holding Copy and Back.
+    let chips = |app: &mut App| {
+        screen(app)
+            .lines()
+            .find(|l| l.contains("Copy") && l.contains("Back"))
+            .expect("the page's footer")
+            .to_string()
+    };
+    let to_link = |app: &mut App, label: &str| {
+        drive(app, key(KeyCode::Char('g')));
+        for _ in 0..40 {
+            let lines = app.documentation.lines();
+            if matches!(lines.get(app.documentation.cursor),
+                Some(datui::widgets::documentation::DocLine::Link(l, _)) if *l == label)
+            {
+                return;
+            }
+            drive(app, key(KeyCode::Char('j')));
+        }
+        panic!("no {label} link");
+    };
+
+    // No local desktop: no `o` in the footer, and `o` says why.
+    app.local_desktop = false;
+    select(&mut app, "Linked");
+    drive(&mut app, ctrl('e'));
+    to_link(&mut app, "documentation");
+    let line = chips(&mut app);
+    assert!(!line.contains("Open"), "{line}");
+    drive(&mut app, key(KeyCode::Char('o')));
+    assert!(!app.confirmation_modal.active);
+    assert_eq!(
+        app.flash_message(),
+        Some("o opens links on a local desktop; y copies it")
+    );
+    drive(&mut app, key(KeyCode::Esc));
+
+    app.local_desktop = true;
+    select(&mut app, "Linked");
+    drive(&mut app, ctrl('e'));
+    // The first line is the description, not a link: `o` does nothing there.
+    assert!(app.documentation.link().is_none());
+    assert!(!chips(&mut app).contains("Open"));
+    drive(&mut app, key(KeyCode::Char('o')));
+    assert!(!app.confirmation_modal.active);
+    assert_eq!(app.flash_message(), None);
+
+    to_link(&mut app, "documentation");
+    let line = chips(&mut app);
+    assert!(line.find("Open") < line.find("Copy"), "{line}");
+    assert!(line.contains("Open"), "{line}");
+    drive(&mut app, key(KeyCode::Char('o')));
+    assert!(app.confirmation_modal.active);
+    let url = format!(
+        "https://xn--bcher-kva.example/{}?q=1&r=^2",
+        "docs/".repeat(30)
+    );
+    assert_eq!(app.confirmation_modal.message, format!("Open {url}?"));
+    // Wrapped in the dialog, never cut: every character is on screen.
+    let shown: String = screen(&mut app)
+        .chars()
+        .filter(|c| !c.is_whitespace() && !"│╭╮╰╯─".contains(*c))
+        .collect();
+    assert!(shown.contains(&format!("Open{url}?")), "{shown}");
+    // Enter hands the checked URL on; the run loop starts the browser.
+    let next = app.event(&key(KeyCode::Enter));
+    match next {
+        Some(AppEvent::OpenLink(sent)) => assert_eq!(sent, url),
+        _ => panic!("Enter on Open hands the link on"),
+    }
+    assert!(!app.confirmation_modal.active);
+
+    // http asks the same way; Esc declines and nothing is pending after.
+    to_link(&mut app, "homepage");
+    drive(&mut app, key(KeyCode::Char('o')));
+    assert_eq!(app.confirmation_modal.message, "Open http://example.org/x?");
+    drive(&mut app, key(KeyCode::Esc));
+    assert!(!app.confirmation_modal.active);
+    assert!(app.documentation.is_open(), "Esc closed only the question");
+    drive(&mut app, key(KeyCode::Esc));
+
+    // A link with a password in it is never offered to the browser. (Catalogs
+    // already refuse another scheme here.)
+    select(&mut app, "Odd");
+    drive(&mut app, ctrl('e'));
+    to_link(&mut app, "homepage");
+    drive(&mut app, key(KeyCode::Char('o')));
+    assert!(!app.confirmation_modal.active);
+    assert_eq!(
+        app.flash_message(),
+        Some("Not opened: a user name or password; y copies it")
+    );
+}

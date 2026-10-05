@@ -346,6 +346,8 @@ pub struct DocState {
     pub expanded: HashSet<String>,
     /// Rows the last frame had room for, for paging.
     pub view_height: usize,
+    /// Whether `o` opens a link here: set by the app when it opens the page.
+    pub links_open: bool,
 }
 
 impl DocState {
@@ -430,6 +432,20 @@ impl DocState {
             self.cursor = at;
         }
         true
+    }
+
+    /// The link on the cursor's line, as the page has it: what `o` offers to open.
+    /// Only a Link line's; a value or a bookmark is never opened.
+    pub fn link(&self) -> Option<String> {
+        match self.lines().get(self.cursor) {
+            Some(DocLine::Link(_, url)) => Some(url.clone()),
+            _ => None,
+        }
+    }
+
+    /// Whether the footer offers `o`: on a link, where a browser would show it.
+    pub fn offers_open(&self) -> bool {
+        self.links_open && self.link().is_some()
     }
 
     /// What `y` copies at the cursor.
@@ -730,6 +746,9 @@ pub fn render_view(state: &mut DocState, area: Rect, buf: &mut Buffer, ctx: &Ren
             footer = footer.hint("Enter", "Values");
         }
         _ => {}
+    }
+    if state.offers_open() {
+        footer = footer.hint("o", "Open");
     }
     footer = footer.hint("y", "Copy").hint("Esc", "Back");
     let title = format!("Documentation {} {title}", glyphs::get().trail);

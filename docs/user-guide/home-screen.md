@@ -264,8 +264,17 @@ only the spec notes, and its record types, stay.
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd>, <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Move between lines |
 | <kbd>Enter</kbd> | Open or close a column's value legend |
+| <kbd>o</kbd> | Open the line's link in the browser, after asking |
 | <kbd>y</kbd> | Copy the line's link or value, whole |
 | <kbd>Esc</kbd> | Back to the list |
+
+<kbd>o</kbd> opens only the page's links (`homepage`, `documentation`,
+`url`), and only `http://` and `https://` ones, without a user name or
+password. It first asks `Open <URL>?` with the whole URL, a host that is not
+ASCII in its `xn--` form; <kbd>Enter</kbd> opens it, <kbd>Esc</kbd> does not.
+Over SSH, or on Linux and the BSDs without `DISPLAY` or `WAYLAND_DISPLAY`,
+the browser would not open in front of you, so <kbd>o</kbd> is not offered:
+<kbd>y</kbd> copies the link.
 
 <kbd>Ctrl</kbd>+<kbd>E</kbd> takes the place of readline's end of line: the
 filter has no cursor, and is edited at its end.

@@ -1281,6 +1281,7 @@ dependencies = [
  "toml_edit",
  "unicode-width",
  "ureq",
+ "url",
  "windows-sys 0.61.2",
  "xz2",
  "zip",

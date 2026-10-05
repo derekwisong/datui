@@ -88,6 +88,10 @@ impl App {
             KeyCode::Enter | KeyCode::Char(' ') if event.is_press() && documentation_tab => {
                 self.info_documentation.toggle_legend();
             }
+            KeyCode::Char('o') if event.is_press() && documentation_tab => {
+                let link = self.info_documentation.link();
+                self.ask_to_open_link(link);
+            }
             KeyCode::Char('y') if event.is_press() && documentation_tab => {
                 match self.info_documentation.copy_text() {
                     Some(text) => self.copy_documentation_text(text),

@@ -3412,6 +3412,7 @@ mod tests {
             (Context::Info, "Enter"),
             // The Documentation tab: a dataset no catalog lists has none.
             (Context::Info, "y"),
+            (Context::Info, "o"),
             // A sample, a followed file, a number column.
             (Context::ValueCounts, "a"),
             (Context::ValueCounts, "c"),

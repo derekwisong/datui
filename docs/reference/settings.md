@@ -188,7 +188,7 @@ lives, imports, the theme and troubleshooting.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `theme.mode` | auto \| dark \| light | unset |  | Which built-in palette to start from. auto reads COLORFGBG and falls back to dark. |
+| `theme.mode` | auto \| dark \| light | unset |  | Which built-in palette to use. auto asks the terminal for its background, then reads COLORFGBG, then falls back to dark; it asks again when the terminal regains focus. |
 
 ## Colors
 

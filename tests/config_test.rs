@@ -1693,6 +1693,31 @@ fn test_an_explicit_auto_mode_beats_an_imported_one() {
     assert_eq!(config.theme.colors, ColorConfig::for_mode(resolved));
 }
 
+/// `auto` follows the terminal and keeps the configured slots apart, so a palette
+/// for either mode can be built with them laid over it; an explicit mode does not
+/// follow.
+#[test]
+fn test_auto_mode_keeps_its_overrides_for_either_palette() {
+    let config = layered(&["[theme.colors]\ntable_header_bg = \"#123456\"\n"]);
+    assert!(config.theme.follow);
+    assert_eq!(config.theme.colors.table_header_bg, "#123456");
+    for (mode, stock) in [
+        (ThemeMode::Light, ColorConfig::light()),
+        (ThemeMode::Dark, ColorConfig::dark()),
+    ] {
+        let colors = config.theme.palette_for(mode).expect("palette builds");
+        assert_eq!(colors.table_header_bg, "#123456", "{mode:?}");
+        assert_eq!(colors.controls_bg, stock.controls_bg, "{mode:?}");
+    }
+
+    for mode in ["light", "dark"] {
+        let config = layered(&[&format!("[theme]\nmode = \"{mode}\"\n")]);
+        assert!(!config.theme.follow, "{mode}");
+    }
+    let config = layered(&["[theme]\nmode = \"light\"\n", "[theme]\nmode = \"auto\"\n"]);
+    assert!(config.theme.follow);
+}
+
 #[test]
 fn test_cloud_s3_settings_come_from_the_environment() {
     use datui::config::CloudConfig;

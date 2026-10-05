@@ -187,6 +187,7 @@ pub mod statistics;
 pub mod stdin;
 pub mod tee;
 mod terminal;
+mod terminal_color;
 pub mod terminal_input;
 pub mod text_formats;
 pub mod typed_value;
@@ -202,7 +203,8 @@ pub mod widgets;
 pub use cache::CacheManager;
 pub use cli::Args;
 pub use config::{
-    AppConfig, ColorParser, ConfigManager, QueryMode, Theme, rgb_to_256_color, rgb_to_basic_ansi,
+    AppConfig, ColorParser, ConfigManager, QueryMode, Theme, ThemeMode, rgb_to_256_color,
+    rgb_to_basic_ansi,
 };
 
 use analysis_modal::{AnalysisModal, AnalysisProgress};
@@ -233,7 +235,7 @@ use quality_memory::{QUALITY_RELEASED_REMEMBERED, QualityCacheEntry, QualityCopy
 use scan::Scan;
 use sort_filter_modal::SortFilterModal;
 use sort_modal::{SortColumn, order_with_hidden};
-use terminal::{QuietTerminal, TakenTerminal, push_keyboard_flags, restore_terminal};
+use terminal::{QuietTerminal, TakenTerminal, follow_focus, push_keyboard_flags, restore_terminal};
 pub use unfinished::ExitSweep;
 pub use view::{SavedView, ViewManager, Views};
 use widgets::column_widths::WidthChoice;
@@ -271,6 +273,12 @@ pub enum AppEvent {
     /// Something polled rather than sent changed (a background panic, a Polars
     /// warning): the loop should look. Handled as nothing.
     Wake,
+    /// The terminal said what its background is (an OSC 11 reply, taken off the input
+    /// stream by [`terminal_input`]). Under `theme.mode = "auto"` the palette follows.
+    TerminalBackground(ThemeMode),
+    /// The terminal window came back into focus: under `auto` the background is asked
+    /// again, since the scheme may have changed while it was away.
+    TerminalFocused,
     /// The settings `run` reads on a worker before it can build the app. Never reaches
     /// the app: `run` waits for it before there is one.
     SettingsRead(Box<Result<startup::Settings>>),
@@ -1247,6 +1255,8 @@ pub struct App {
     status_message: Option<String>,
     analysis_computation: Option<AnalysisComputationState>,
     app_config: AppConfig,
+    /// The terminal should be asked for its background before the next frame.
+    background_query: bool,
     /// The format specs on the search path, read when the app was built.
     formats: Arc<crate::formats::Registry>,
 }
@@ -5941,6 +5951,7 @@ impl App {
             status_message: None,
             analysis_computation: None,
             app_config,
+            background_query: false,
             formats,
         }
     }
@@ -14324,6 +14335,14 @@ impl App {
                 }
                 None
             }
+            AppEvent::TerminalBackground(mode) => {
+                self.follow_terminal_background(*mode);
+                None
+            }
+            AppEvent::TerminalFocused => {
+                self.background_query |= self.app_config.theme.follow;
+                None
+            }
             _ => None,
         }
     }
@@ -17283,6 +17302,56 @@ impl App {
         });
     }
 
+    /// Under `theme.mode = "auto"`, switch to the built-in palette for the terminal's
+    /// background, keeping the configured `theme.colors` over it as at startup. An
+    /// explicit mode ignores the terminal.
+    pub fn follow_terminal_background(&mut self, mode: ThemeMode) {
+        let theme = &self.app_config.theme;
+        if !theme.follow || theme.mode == Some(mode) {
+            return;
+        }
+        let mut next = theme.clone();
+        let built = theme.palette_for(mode).and_then(|colors| {
+            next.colors = colors;
+            next.mode = Some(mode);
+            Theme::from_config(&next)
+        });
+        match built {
+            Ok(built) => {
+                self.theme = built;
+                self.app_config.theme = next;
+                // The prompts live as long as the app and keep the colors they were
+                // given; a dialog's fields take the theme each time it opens.
+                for input in [
+                    &mut self.query_input,
+                    &mut self.sql_input,
+                    &mut self.find.input,
+                ] {
+                    *input = std::mem::take(input).with_theme(&self.theme);
+                }
+            }
+            // The configured colors parsed at startup, so this is not expected; the
+            // palette in use stays.
+            Err(e) => log::warn!("cannot switch to the {mode:?} palette: {e}"),
+        }
+    }
+
+    /// Whether the run loop should ask the terminal for its background, once. Asked by
+    /// [`AppEvent::TerminalFocused`] under `auto`.
+    pub fn take_background_query(&mut self) -> bool {
+        std::mem::take(&mut self.background_query)
+    }
+
+    /// The colors the next frame is drawn with.
+    pub fn theme(&self) -> &Theme {
+        &self.theme
+    }
+
+    /// Whether the palette follows the terminal (`theme.mode = "auto"`).
+    pub fn follows_terminal(&self) -> bool {
+        self.app_config.theme.follow
+    }
+
     /// The value the inspector wrote for another program, for the run loop.
     pub fn take_external_open(&mut self) -> Option<external_open::ExternalOpen> {
         self.external_open.take()
@@ -18633,6 +18702,14 @@ fn run_impl(
     // to the log until this drops, on every way out of this function.
     let session = logging::TuiSession::begin(restore_terminal);
     push_keyboard_flags();
+    // Asked before the settings are read, so the answer is usually in by the time they
+    // are; under an explicit `theme.mode` it is read and dropped. The reader takes it
+    // off the input stream, so nothing waits here.
+    let asked_at = (terminal_color::supported()
+        && config.as_ref().is_none_or(|c| c.theme.follow)
+        && terminal_color::ask(&mut std::io::stdout()))
+    .then(std::time::Instant::now);
+    let mut background = None;
     let (tx, rx) = mpsc::channel::<AppEvent>();
     {
         let tx = tx.clone();
@@ -18672,6 +18749,7 @@ fn run_impl(
         };
         match rx.recv_timeout(timeout) {
             Ok(AppEvent::SettingsRead(read)) => break *read,
+            Ok(AppEvent::TerminalBackground(mode)) => background = Some(mode),
             Ok(AppEvent::Terminal(crossterm::event::Event::Key(key)))
                 if key.modifiers.contains(KeyModifiers::CONTROL)
                     && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('q')) =>
@@ -18729,6 +18807,25 @@ fn run_impl(
         }
     };
 
+    // Under `auto`, the first frame waits a moment for the terminal's answer, so it is
+    // drawn in the palette it ends up in. What arrives meanwhile is handled after.
+    if let Some(asked_at) = asked_at.filter(|_| config.theme.follow && background.is_none()) {
+        let until = asked_at + terminal_color::STARTUP_WAIT;
+        while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
+            match rx.recv_timeout(left) {
+                Ok(AppEvent::TerminalBackground(mode)) => {
+                    background = Some(mode);
+                    break;
+                }
+                Ok(event) => backlog.push(event),
+                Err(_) => break,
+            }
+        }
+    }
+    if config.theme.follow && terminal_color::supported() {
+        follow_focus(&mut std::io::stdout());
+    }
+
     // Choose the glyph alphabet before the first frame: on a terminal that is not
     // doing UTF-8, box-drawing characters render as replacement boxes and make the
     // UI harder to read rather than prettier.
@@ -18738,6 +18835,9 @@ fn run_impl(
     pointer::capture(config.display.mouse, &mut std::io::stdout());
 
     let mut app = App::new_with_views(tx.clone(), rt_handle, theme, config, views);
+    if let Some(mode) = background {
+        app.follow_terminal_background(mode);
+    }
     if let Some(out) = passed {
         app.pass_stdout_to(out);
     }
@@ -18785,8 +18885,13 @@ fn run_impl(
     let end = pump.run(|app| {
         if let Some(open) = app.take_external_open() {
             let mouse = app.mouse_enabled();
-            let note = open_externally(&open, &mut reader, &input_tx, mouse, terminal.get());
+            let focus = app.follows_terminal() && terminal_color::supported();
+            let note = open_externally(&open, &mut reader, &input_tx, mouse, focus, terminal.get());
             app.external_opened(&open, note);
+        }
+        // Between frames, so the question is never written into the middle of one.
+        if app.take_background_query() && terminal_color::supported() {
+            terminal_color::ask(&mut std::io::stdout());
         }
         terminal
             .get()
@@ -18832,6 +18937,7 @@ fn open_externally(
     reader: &mut terminal_input::TerminalInput,
     tx: &std::sync::mpsc::Sender<AppEvent>,
     mouse: bool,
+    focus: bool,
     terminal: &mut ratatui::DefaultTerminal,
 ) -> Option<String> {
     let program = external_open::program_for(open.document, |name| std::env::var(name).ok());
@@ -18849,6 +18955,9 @@ fn open_externally(
             );
             push_keyboard_flags();
             pointer::capture(mouse, &mut std::io::stdout());
+            if focus {
+                follow_focus(&mut std::io::stdout());
+            }
             let _ = terminal.clear();
             match terminal_input::TerminalInput::start(tx.clone()) {
                 Ok(started) => *reader = started,

@@ -1354,8 +1354,9 @@ impl ThemeMode {
     ///
     /// Detection reads `COLORFGBG`, which several terminals set to `fg;bg` using
     /// ANSI colour numbers — a background of 7 or 15 (white) means a light terminal.
-    /// Terminals that do not set it (Alacritty, Kitty and Ghostty among them) fall
-    /// back to `Dark`, which is why `mode` can also be set explicitly.
+    /// Terminals that do not set it fall back to `Dark`. This is the guess before the
+    /// terminal is asked: its own answer about its background, when it gives one,
+    /// replaces it ([`crate::terminal_color`]).
     pub fn resolve(self) -> Self {
         match self {
             Self::Auto => detect_terminal_mode(),
@@ -1513,6 +1514,26 @@ pub struct ThemeConfig {
     /// is treated as `Auto`; a loaded config holds the resolved mode.
     pub mode: Option<ThemeMode>,
     pub colors: ColorConfig,
+    /// The mode was `auto`: the palette follows what the terminal says about its
+    /// background, at startup and when asked again. Set by `from_layers`.
+    #[serde(skip)]
+    pub follow: bool,
+    /// The `theme.colors` slots the configuration set, laid over the built-in
+    /// palette whichever mode it is for.
+    #[serde(skip)]
+    pub overrides: toml::Table,
+}
+
+impl ThemeConfig {
+    /// The built-in palette for `mode` with the configured slots laid over it.
+    pub fn palette_for(&self, mode: ThemeMode) -> Result<ColorConfig> {
+        let mut palette = match toml::Value::try_from(ColorConfig::for_mode(mode))? {
+            toml::Value::Table(palette) => palette,
+            _ => unreachable!("a struct serializes to a table"),
+        };
+        palette.extend(self.overrides.clone());
+        Ok(toml::Value::Table(palette).try_into()?)
+    }
 }
 
 /// Color configuration for the application theme: one slot per role, each a name
@@ -2581,15 +2602,12 @@ impl AppConfig {
 
         let mut config: AppConfig = toml::Value::Table(table).try_into()?;
 
-        let mut palette = match toml::Value::try_from(ColorConfig::for_mode(resolved))? {
-            toml::Value::Table(palette) => palette,
-            _ => unreachable!("a struct serializes to a table"),
-        };
         if let Some(toml::Value::Table(colors)) = colors {
-            palette.extend(colors);
+            config.theme.overrides = colors;
         }
-        config.theme.colors = toml::Value::Table(palette).try_into()?;
+        config.theme.colors = config.theme.palette_for(resolved)?;
         config.theme.mode = Some(resolved);
+        config.theme.follow = mode == ThemeMode::Auto;
         config.sync_dataset_access();
         Ok(config)
     }

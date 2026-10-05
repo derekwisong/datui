@@ -25030,3 +25030,56 @@ fn the_footer_says_what_is_in_effect_and_the_mode_s_keys() {
     );
     assert!(found.contains("match 1"), "{found}");
 }
+
+/// Under `theme.mode = "auto"` the terminal's answer about its background picks the
+/// palette, whatever `COLORFGBG` guessed at startup, and the configured
+/// `theme.colors` stay over it. Focus coming back asks again, once. An explicit
+/// mode ignores both.
+#[test]
+fn test_terminal_background_switches_the_palette_under_auto() {
+    use datui::config::{AppConfig, ColorConfig, ConfigLayer, Theme, ThemeMode};
+    let hex = |s: &str| datui::ColorParser::new().parse(s).expect("color parses");
+    let config = |text: &str| {
+        AppConfig::from_layers([ConfigLayer::parse(text).expect("layer parses")]).expect("resolves")
+    };
+    let auto = config("[theme.colors]\naccent = \"#123456\"\n");
+    let theme = Theme::from_config(&auto.theme).expect("theme builds");
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new_with_config(tx, common::test_runtime(), theme, auto);
+    let area = Rect::new(0, 0, 80, 24);
+
+    for (mode, stock) in [
+        (ThemeMode::Light, ColorConfig::light()),
+        (ThemeMode::Dark, ColorConfig::dark()),
+        (ThemeMode::Light, ColorConfig::light()),
+    ] {
+        app.event(&AppEvent::TerminalBackground(mode));
+        assert_eq!(
+            app.theme().get("table_header_bg"),
+            hex(&stock.table_header_bg),
+            "{mode:?}"
+        );
+        assert_eq!(app.theme().get("dimmed"), hex(&stock.dimmed), "{mode:?}");
+        assert_eq!(app.theme().get("accent"), hex("#123456"), "{mode:?}");
+        // Drawn with it.
+        let mut buf = Buffer::empty(area);
+        Widget::render(&mut app, area, &mut buf);
+    }
+
+    assert!(!app.take_background_query());
+    app.event(&AppEvent::TerminalFocused);
+    assert!(app.take_background_query());
+    assert!(!app.take_background_query(), "asked once");
+
+    let light = config("[theme]\nmode = \"light\"\n");
+    let theme = Theme::from_config(&light.theme).expect("theme builds");
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new_with_config(tx, common::test_runtime(), theme, light);
+    app.event(&AppEvent::TerminalBackground(ThemeMode::Dark));
+    assert_eq!(
+        app.theme().get("table_header_bg"),
+        hex(&ColorConfig::light().table_header_bg)
+    );
+    app.event(&AppEvent::TerminalFocused);
+    assert!(!app.take_background_query());
+}

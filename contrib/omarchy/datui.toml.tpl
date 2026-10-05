@@ -95,6 +95,11 @@ chart_4 = "{{ yellow }}"
 chart_5 = "{{ blue }}"
 chart_6 = "{{ red }}"
 chart_7 = "{{ orange }}"
+# Cyan, then lighter shades of two hues above. A slot that comes out the same
+# color as an earlier one (cyan as the accent) is skipped, never drawn twice.
+chart_8  = "{{ cyan }}"
+chart_9  = "{{ mix magenta foreground 45% }}"
+chart_10 = "{{ mix yellow foreground 45% }}"
 # The grid sits a shade under muted, so it never competes with a series.
 chart_grid = "{{ mix background foreground 30% }}"
 

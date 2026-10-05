@@ -391,18 +391,20 @@ pub const KDE_BANDWIDTH_MIN: f64 = 0.2;
 pub const KDE_BANDWIDTH_MAX: f64 = 5.0;
 pub const KDE_BANDWIDTH_STEP: f64 = 0.1;
 
-/// Chart sample size bounds (the Rows row). Down to 0, which is every row (None).
-pub const CHART_ROW_LIMIT_MIN: usize = 0;
-/// Maximum applicable limit (Polars slice takes u32).
+/// The largest sample size (Polars slice takes u32).
 pub const CHART_ROW_LIMIT_MAX: usize = u32::MAX as usize;
-/// PgUp/PgDown step for the sample size.
-pub const CHART_ROW_LIMIT_PAGE_STEP: usize = 100_000;
-/// Default numeric limit when switching from every row with + or PgUp.
-pub const DEFAULT_CHART_ROW_LIMIT: usize = 10_000;
-/// Below this limit, +/- step is CHART_ROW_LIMIT_STEP_SMALL; at or above, CHART_ROW_LIMIT_STEP_LARGE.
-pub const CHART_ROW_LIMIT_STEP_THRESHOLD: usize = 20_000;
-pub const CHART_ROW_LIMIT_STEP_SMALL: i32 = 1_000;
-pub const CHART_ROW_LIMIT_STEP_LARGE: i32 = 5_000;
+
+/// A change to the Rows row not yet read: ←/→ or a typed size waits for Enter, or
+/// for focus to leave the row, so the chart reads once rather than per key.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RowsDraft {
+    /// Every row rather than a sample.
+    pub every: bool,
+    /// The sample size being typed, as typed (`50k`).
+    pub typed: Option<String>,
+    /// Why the typed size cannot be read, until it is edited.
+    pub error: Option<&'static str>,
+}
 
 /// One row of the panel: a shelf, the line under it, or an option.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -481,10 +483,6 @@ pub enum PickerFor {
 /// The item a Picker offers for "nothing": no Color, no category on a box plot.
 pub const NONE_ITEM: &str = "none";
 
-fn format_usize_with_commas(n: usize) -> String {
-    crate::numfmt::group_chrome(n)
-}
-
 /// Chart view state: the spec, the options, and the panel's focus.
 #[derive(Default)]
 pub struct ChartModal {
@@ -513,8 +511,14 @@ pub struct ChartModal {
     pub value_range: ValueRange,
     pub bar_order: BarOrder,
     /// Rows a chart that samples reads: up to this many, spread across the table.
-    /// None = every row.
+    /// None = every row. What the chart reads; the Rows row edits `rows_draft`.
     pub row_limit: Option<usize>,
+    /// The sample size Sample returns to, kept while Every row is chosen.
+    pub sample_rows: usize,
+    /// The Rows row's pending change, if any.
+    pub rows_draft: Option<RowsDraft>,
+    /// The view's row count when the table knows it, for Every row's cost.
+    pub view_rows: Option<usize>,
     pub focus: ChartFocus,
     /// The one Picker, open for the focused row; None while the form has the keys.
     pub picker: Option<PickerState>,
@@ -604,6 +608,7 @@ impl ChartModal {
         self.numeric_candidates = columns.numeric.to_vec();
         self.category_candidates = columns.category.to_vec();
         self.plot_focus = false;
+        self.rows_draft = None;
         let opened_on = cursor.map(|(name, _)| name.to_string());
         if self.dataset == Some(dataset) && self.opened_on == opened_on {
             self.keep_existing_choices();
@@ -630,6 +635,9 @@ impl ChartModal {
                 Some(n.clamp(1, CHART_ROW_LIMIT_MAX))
             }
         });
+        self.sample_rows = self
+            .row_limit
+            .unwrap_or(crate::config::DEFAULT_CHART_ROW_LIMIT);
         self.hist_bins = HISTOGRAM_DEFAULT_BINS;
         self.kde_bandwidth_factor = 1.0;
         self.heatmap_bins = HEATMAP_DEFAULT_BINS;
@@ -674,6 +682,7 @@ impl ChartModal {
         self.active = false;
         self.close_picker();
         self.plot_focus = false;
+        self.rows_draft = None;
     }
 
     pub fn close_picker(&mut self) {
@@ -1336,7 +1345,7 @@ impl ChartModal {
             ChartFocus::Bandwidth => {
                 self.adjust_kde_bandwidth_factor(f64::from(delta) * KDE_BANDWIDTH_STEP)
             }
-            ChartFocus::LimitRows => self.adjust_row_limit(delta.into()),
+            ChartFocus::LimitRows => self.toggle_rows(),
             ChartFocus::YStartsAtZero => self.y_starts_at_zero = !self.y_starts_at_zero,
             ChartFocus::LogScale => self.log_scale = !self.log_scale,
             ChartFocus::ShowLegend => self.show_legend = !self.show_legend,
@@ -1353,6 +1362,7 @@ impl ChartModal {
         }
         if !self.row_order().contains(&self.focus) {
             self.focus = ChartFocus::Type;
+            self.leave_rows();
         }
     }
 
@@ -1394,60 +1404,117 @@ impl ChartModal {
             ChartFocus::Bandwidth => {
                 self.adjust_kde_bandwidth_factor(delta as f64 * KDE_BANDWIDTH_STEP)
             }
-            ChartFocus::LimitRows => self.adjust_row_limit(delta),
             _ => {}
         }
     }
 
-    /// Display string for the sample size: "every row" or a number with commas.
-    pub fn row_limit_display(&self) -> String {
-        match self.row_limit {
-            None => "every row".to_string(),
-            Some(n) => format_usize_with_commas(n),
+    // ----- The Rows row -----
+
+    /// What the Rows row shows: the pending change, or what the chart reads.
+    pub fn rows_shown(&self) -> RowsDraft {
+        self.rows_draft.clone().unwrap_or(RowsDraft {
+            every: self.row_limit.is_none(),
+            ..RowsDraft::default()
+        })
+    }
+
+    /// Whether the Rows row holds a change the chart has not read.
+    pub fn rows_pending(&self) -> bool {
+        self.rows_draft
+            .as_ref()
+            .is_some_and(|draft| draft.typed.is_some() || draft.every != self.row_limit.is_none())
+    }
+
+    /// ←/→ or Space on Rows: Sample or Every row, pending until Enter. A size being
+    /// typed is taken first; one that cannot be read stays to be fixed.
+    pub fn toggle_rows(&mut self) {
+        if !self.take_typed_size() {
+            return;
+        }
+        let mut draft = self.rows_shown();
+        draft.every = !draft.every;
+        self.rows_draft = Some(draft);
+    }
+
+    /// A key typed on Rows: part of a sample size (`50k`). Typing chooses Sample.
+    pub fn type_rows(&mut self, c: char) {
+        let mut draft = self.rows_shown();
+        draft.every = false;
+        draft.error = None;
+        draft.typed.get_or_insert_with(String::new).push(c);
+        self.rows_draft = Some(draft);
+    }
+
+    /// Whether a size is being typed on Rows.
+    pub fn typing_rows(&self) -> bool {
+        self.rows_draft.as_ref().is_some_and(|d| d.typed.is_some())
+    }
+
+    /// Backspace on Rows: one character of the typed size off.
+    pub fn backspace_rows(&mut self) {
+        if let Some(draft) = self.rows_draft.as_mut()
+            && let Some(typed) = draft.typed.as_mut()
+        {
+            typed.pop();
+            draft.error = None;
+            if typed.is_empty() {
+                draft.typed = None;
+            }
         }
     }
 
-    /// Adjust row limit by delta (+/-). Step size depends on current value. None = every row.
-    pub fn adjust_row_limit(&mut self, delta: i32) {
-        let current = match self.row_limit {
-            None if delta > 0 => {
-                self.row_limit = Some(DEFAULT_CHART_ROW_LIMIT);
-                return;
-            }
-            None => return,
-            Some(n) => n,
-        };
-        let step = if current < CHART_ROW_LIMIT_STEP_THRESHOLD {
-            CHART_ROW_LIMIT_STEP_SMALL as usize
-        } else {
-            CHART_ROW_LIMIT_STEP_LARGE as usize
-        };
-        let next = match delta.cmp(&0) {
-            std::cmp::Ordering::Greater => current.saturating_add(step).min(CHART_ROW_LIMIT_MAX),
-            std::cmp::Ordering::Less => current.saturating_sub(step),
-            std::cmp::Ordering::Equal => current,
-        };
-        self.row_limit = if next == 0 { None } else { Some(next) };
+    /// Esc on Rows with a change pending: put back what the chart reads.
+    pub fn discard_rows(&mut self) {
+        self.rows_draft = None;
     }
 
-    /// Adjust row limit by 100,000 (PgUp / PgDown). None = every row.
-    pub fn adjust_row_limit_page(&mut self, delta: i32) {
-        let current = match self.row_limit {
-            None if delta > 0 => {
-                self.row_limit = Some(DEFAULT_CHART_ROW_LIMIT);
-                return;
+    /// Resolve a typed size into the draft's sample size. False, with the reason on
+    /// the row, when it cannot be read.
+    fn take_typed_size(&mut self) -> bool {
+        let Some(draft) = self.rows_draft.as_mut() else {
+            return true;
+        };
+        let Some(typed) = draft.typed.take() else {
+            return true;
+        };
+        match crate::sampling::parse_size(&typed) {
+            Ok(rows) => {
+                let rows = rows.min(CHART_ROW_LIMIT_MAX);
+                // A sample of at least every row is every row.
+                if self.view_rows.is_some_and(|total| rows >= total) {
+                    draft.every = true;
+                } else {
+                    draft.every = false;
+                    self.sample_rows = rows;
+                }
+                true
             }
-            None => return,
-            Some(n) => n,
-        };
-        let next = match delta.cmp(&0) {
-            std::cmp::Ordering::Greater => current
-                .saturating_add(CHART_ROW_LIMIT_PAGE_STEP)
-                .min(CHART_ROW_LIMIT_MAX),
-            std::cmp::Ordering::Less => current.saturating_sub(CHART_ROW_LIMIT_PAGE_STEP),
-            std::cmp::Ordering::Equal => current,
-        };
-        self.row_limit = if next == 0 { None } else { Some(next) };
+            Err(e) => {
+                draft.error = Some(e.short());
+                draft.typed = Some(typed);
+                false
+            }
+        }
+    }
+
+    /// Enter on Rows: read what it says. False when a typed size cannot be read,
+    /// which stays on the row with why.
+    pub fn commit_rows(&mut self) -> bool {
+        if !self.take_typed_size() {
+            return false;
+        }
+        if let Some(draft) = self.rows_draft.take() {
+            self.row_limit = (!draft.every).then_some(self.sample_rows);
+        }
+        true
+    }
+
+    /// Focus left the Rows row: what it says is read, and a size that cannot be
+    /// is dropped.
+    pub fn leave_rows(&mut self) {
+        if !self.commit_rows() {
+            self.rows_draft = None;
+        }
     }
 
     /// Whether the spec names everything its chart needs.
@@ -1544,6 +1611,9 @@ impl crate::form::Form for ChartModal {
     }
 
     fn set_focused(&mut self, field: ChartFocus) {
+        if field != ChartFocus::LimitRows {
+            self.leave_rows();
+        }
         self.focus = field;
     }
 }
@@ -1966,9 +2036,65 @@ mod tests {
         modal.focus = ChartFocus::Bins;
         modal.adjust_number_row(-1);
         assert_eq!(modal.heatmap_bins, HEATMAP_DEFAULT_BINS - 1);
+    }
+
+    /// Rows: ←/→ switch between a sample and every row, a typed size edits the
+    /// sample, and nothing reaches what the chart reads until Enter or focus leaves.
+    #[test]
+    fn rows_change_is_read_on_enter() {
+        let mut modal = open_on(Some(("delay", &DataType::Float64)));
+        modal.view_rows = Some(36_800_000);
         modal.focus = ChartFocus::LimitRows;
-        modal.adjust_number_row(-1);
-        assert_eq!(modal.row_limit, Some(9_000));
+        assert_eq!(modal.row_limit, Some(10_000));
+        modal.step(ChartFocus::LimitRows, 1);
+        assert!(modal.rows_shown().every && modal.rows_pending());
+        assert_eq!(modal.row_limit, Some(10_000), "pending until Enter");
+        modal.step(ChartFocus::LimitRows, -1);
+        assert!(!modal.rows_pending(), "back where it was");
+        modal.step(ChartFocus::LimitRows, 1);
+        assert!(modal.commit_rows());
+        assert_eq!(modal.row_limit, None);
+
+        // Typing a size chooses Sample; Backspace edits; Esc puts it back.
+        for c in "250kx".chars() {
+            modal.type_rows(c);
+        }
+        modal.backspace_rows();
+        assert_eq!(modal.rows_shown().typed.as_deref(), Some("250k"));
+        assert!(!modal.rows_shown().every);
+        modal.discard_rows();
+        assert_eq!(modal.row_limit, None);
+        assert!(modal.rows_shown().every);
+
+        for c in "250k".chars() {
+            modal.type_rows(c);
+        }
+        assert!(modal.commit_rows());
+        assert_eq!(modal.row_limit, Some(250_000));
+        assert_eq!(modal.rows_draft, None);
+
+        // A size it cannot read stays on the row with why, and changes nothing.
+        modal.type_rows('0');
+        assert!(!modal.commit_rows());
+        assert!(modal.rows_shown().error.is_some());
+        assert_eq!(modal.row_limit, Some(250_000));
+        modal.backspace_rows();
+        modal.type_rows('2');
+        modal.type_rows('m');
+        // Leaving the row reads it.
+        crate::form::Form::focus(&mut modal, ChartFocus::Type);
+        assert_eq!(modal.row_limit, Some(2_000_000));
+
+        // At least every row is Every row; Sample remembers its size.
+        modal.focus = ChartFocus::LimitRows;
+        for c in "40m".chars() {
+            modal.type_rows(c);
+        }
+        assert!(modal.commit_rows());
+        assert_eq!(modal.row_limit, None);
+        modal.step(ChartFocus::LimitRows, 1);
+        assert!(modal.commit_rows());
+        assert_eq!(modal.row_limit, Some(2_000_000));
     }
 
     /// A bucket goes with its aggregate: none takes the bucket away. A time of day

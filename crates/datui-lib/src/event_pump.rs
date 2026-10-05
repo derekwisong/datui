@@ -3427,9 +3427,7 @@ mod tests {
             // A range: Enter in the help presses its first.
             (Context::SortFilter, "1-9"),
             (Context::Chart, "1-7"),
-            // The Sample size row and the number rows; columns picked; a followed
-            // file.
-            (Context::Chart, "PgUp / PgDn"),
+            // The number rows; columns picked; a followed file.
             (Context::Chart, "+ / -"),
             (Context::Chart, "x"),
             (Context::Chart, "e"),

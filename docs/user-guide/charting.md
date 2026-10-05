@@ -140,7 +140,7 @@ A null value is a series of its own, named `null`.
 | **Y from zero**, **Log scale** | Line, Scatter | The Y axis from zero; ln(1 + y), its ticks naming y |
 | **Legend** | Line, Scatter, Bar, Histogram, KDE | **auto** or **off** |
 | **Grid** | Line, Scatter, Histogram, Box, KDE | Lines at the labeled ticks |
-| **Rows** | Charts that sample | The sample size; an aggregate reads every row and says `all, exact` |
+| **Rows** | Charts that sample | **Sample** of a size, or **Every row**; an aggregate reads every row and says `all, exact`. See [Large tables](#large-tables) |
 
 ## Axes, grid and legend
 
@@ -223,7 +223,7 @@ Each starts from the dataset of that name under **Example datasets**.
 | Three names | US baby names, the [pivot](reshaping.md#pivot) of Emma, Jennifer and Olivia | Line; X `year`, Y `Emma`, `Jennifer`, `Olivia` | Jennifer's peak of 63,604 in 1972; Emma and Olivia rising after 2000. Emma and Olivia start in 1880; Jennifer, with no published counts before 1916, starts there |
 | Launches per year | Space launches, the [count pivot](reshaping.md#count-with-a-pivot) | Line; X `launch_year`, Y `F`, `O` | `O`, launches that reached orbit, near 130 a year from the late 1960s to the mid-1980s, then a slump in the 1990s; `F`, failures, along the bottom |
 | Central Park highs | NOAA daily weather, `by_year/YEAR=2024/ELEMENT=TMAX`, the [station query](remote-data.md#examples-on-public-data) | Line; X `day`, Y `high_c` | 366 daily highs from −6.0 to 35.0 °C |
-| Earthquakes on a map | Earthquakes (past month), no query | Scatter; X `longitude`, Y `latitude` | The Pacific Ring of Fire. A sample of 10,000; set **Rows** to every row for all of them |
+| Earthquakes on a map | Earthquakes (past month), no query | Scatter; X `longitude`, Y `latitude` | The Pacific Ring of Fire. A sample of 10,000; set **Rows** to **Every row** for all of them |
 | Calories by chain | Food nutrition, the [restaurant summary](copying.md#copy-a-table-into-a-note) | Bar; X `restaurant`, Y `avg_calories`, none | Mcdonalds first at 640, Chick Fil-A last at 384 |
 
 ## Large tables
@@ -232,6 +232,21 @@ Each starts from the dataset of that name under **Example datasets**.
 |---|---|
 | **Rows** | Rows a chart without an aggregate reads. A larger table is sampled across all of it, and the chart says so at the right of the title row: `sample of 10,000 of 3.5M rows`. Every row reads the whole view. A **Line** over a larger table is not sampled: see below |
 | Aggregate | Reads every row, whatever the sample size |
+
+On **Rows**:
+
+| Key | Does |
+|---|---|
+| <kbd>←</kbd> <kbd>→</kbd> or <kbd>Space</kbd> | Switch between **Sample 10,000** and **Every row (36.8M)**, which names the view's rows once the table has counted them |
+| Digits | Type a sample size in place: `50000`, `50,000`, `50k`, `250k`, `2m`. A size of at least the view's rows is **Every row** |
+| <kbd>Backspace</kbd> | Edit the size being typed |
+| <kbd>Enter</kbd> | Read what the row says. Leaving the row reads it too |
+| <kbd>Esc</kbd> | Put the row back as it was, without reading |
+
+Nothing is read while the row is being changed: the chart stays as drawn, and
+the line under the row says `Enter to read`. A size that is not one (`12x`, `0`)
+says why there and is not read. **Sample** keeps its size while **Every row** is
+chosen.
 
 The sample is drawn as the [analysis tools](analysis-features.md#sampling)
 draw theirs, with the same seed: 50 runs of one Parquet or IPC file, or one

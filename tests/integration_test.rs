@@ -1113,6 +1113,8 @@ fn shelves_dim_by_type() {
         ('7', Mark::Heatmap, Some("density")),
         ('3', Mark::Bar, None),
     ] {
+        // Off Rows, where digits type a sample size.
+        app.chart_modal.focus = ChartFocus::Type;
         press(&mut app, KeyCode::Char(key));
         assert_eq!(app.chart_modal.mark(), mark);
         let text = screen(&mut app);
@@ -1240,6 +1242,67 @@ fn aggregates_run_over_every_row() {
     assert!(!text.contains("sample of"), "{text}");
     // F9 is carrier 8 of 9: its delays are 8 and 9, half each, a mean of 8.5.
     assert!(text.contains("F9") && text.contains("8.50"), "{text}");
+}
+
+/// Rows: a typed size, or Every row, is read on Enter and not before; while it
+/// waits the chart stays as drawn and the row says so.
+#[test]
+fn chart_rows_are_read_on_enter() {
+    use datui::chart_modal::{ChartFocus, Mark};
+    let (mut app, rx, tx) = open_flights("chart_rows_enter_test.parquet");
+    press(&mut app, KeyCode::Char('c'));
+    app.chart_modal.set_mark(Mark::Histogram);
+    app.chart_modal.spec.encoding.x.field = Some("delay".to_string());
+    app.chart_modal.row_limit = Some(100);
+    app.chart_modal.focus = ChartFocus::LimitRows;
+    app.event(&AppEvent::Resize(120, 30));
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let area = Rect::new(0, 0, 120, 30);
+    let screen = |app: &mut App| {
+        let mut buf = Buffer::empty(area);
+        Widget::render(app, area, &mut buf);
+        rendered_text(&buf)
+    };
+    assert!(screen(&mut app).contains("sample of 100 of 900 rows"));
+
+    // A size typed waits for Enter.
+    for c in "250".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    assert!(!app.chart_preparing(), "a pending size reads nothing");
+    assert_eq!(app.chart_modal.row_limit, Some(100));
+    let text = screen(&mut app);
+    assert!(text.contains("Sample 250"), "{text}");
+    assert!(text.contains("Enter to read"), "{text}");
+    assert!(text.contains("sample of 100 of 900 rows"), "{text}");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.chart_modal.row_limit, Some(250));
+    assert!(app.chart_preparing());
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let text = screen(&mut app);
+    assert!(text.contains("sample of 250 of 900 rows"), "{text}");
+    assert!(text.contains("Sample 250"), "{text}");
+
+    // Every row is one key away, and read on Enter too.
+    press(&mut app, KeyCode::Right);
+    assert!(!app.chart_preparing(), "a pending switch reads nothing");
+    let text = screen(&mut app);
+    assert!(text.contains("Every row (900)"), "{text}");
+    assert!(text.contains("sample of 250 of 900 rows"), "{text}");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.chart_modal.row_limit, None);
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let text = screen(&mut app);
+    assert!(!text.contains("sample of"), "{text}");
+
+    // Esc puts a pending change back and leaves the chart open.
+    press(&mut app, KeyCode::Char('5'));
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.input_mode, InputMode::Chart);
+    assert_eq!(app.chart_modal.row_limit, None);
+    assert!(screen(&mut app).contains("Every row (900)"));
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.input_mode, InputMode::Normal);
 }
 
 /// The export dialog: the chart's legend setting carries over, a size preset sets

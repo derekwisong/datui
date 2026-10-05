@@ -10,11 +10,20 @@ use crate::output_file::Overwrite;
 use crate::widgets::crosshair::{self, Move};
 use crate::{App, AppEvent, InputMode, home};
 use crate::{ChartPrepared, ChartRequest};
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 impl App {
     /// Keys in the chart view.
     pub(crate) fn chart_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+        let out = self.chart_key_inner(event);
+        // A Rows change is read once focus leaves the row, however it left.
+        if self.chart_modal.focus != ChartFocus::LimitRows || self.chart_modal.plot_focus {
+            self.chart_modal.leave_rows();
+        }
+        out
+    }
+
+    fn chart_key_inner(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         if !event.is_press() {
             return None;
         }
@@ -64,6 +73,13 @@ impl App {
                 KeyCode::Char('1'..='7' | '[' | ']' | 'g' | 'e' | 't' | '?') => {}
                 _ => return None,
             }
+        }
+
+        if self.chart_modal.focus == ChartFocus::LimitRows
+            && !self.chart_modal.plot_focus
+            && self.chart_rows_key(event)
+        {
+            return None;
         }
 
         // The panel is a form, but one that applies as it changes: Enter acts on the
@@ -120,15 +136,36 @@ impl App {
             KeyCode::Char('?') => self.open_help_overlay(),
             KeyCode::Char('+') | KeyCode::Char('=') => self.chart_modal.adjust_number_row(1),
             KeyCode::Char('-') => self.chart_modal.adjust_number_row(-1),
-            KeyCode::PageUp if self.chart_modal.focus == ChartFocus::LimitRows => {
-                self.chart_modal.adjust_row_limit_page(1);
-            }
-            KeyCode::PageDown if self.chart_modal.focus == ChartFocus::LimitRows => {
-                self.chart_modal.adjust_row_limit_page(-1);
-            }
             _ => {}
         }
         None
+    }
+
+    /// The Rows row's own keys: digits type a sample size (`50k`, `2m`), Backspace
+    /// edits it, Enter reads the row, and Esc puts a pending change back rather than
+    /// closing the chart. Returns whether the key was the row's.
+    fn chart_rows_key(&mut self, event: &KeyEvent) -> bool {
+        let plain = !event
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let modal = &mut self.chart_modal;
+        let typing = modal.typing_rows();
+        match event.code {
+            KeyCode::Char(c)
+                if plain
+                    && (c.is_ascii_digit()
+                        || (typing && matches!(c, 'k' | 'K' | 'm' | 'M' | ',' | '_' | '.'))) =>
+            {
+                modal.type_rows(c);
+            }
+            KeyCode::Backspace if typing => modal.backspace_rows(),
+            KeyCode::Esc if modal.rows_draft.is_some() => modal.discard_rows(),
+            KeyCode::Enter => {
+                modal.commit_rows();
+            }
+            _ => return false,
+        }
+        true
     }
 
     /// Space (or Enter) on a panel row: a shelf opens its Picker, a toggle flips, a

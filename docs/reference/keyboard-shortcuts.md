@@ -426,15 +426,15 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `1-7` | Switch the chart type directly: Line, Scatter, Bar, Histogram, Box, KDE, Heatmap ([ / ] step). The shelves keep what the new type takes |
+| `1-7` | Switch the chart type directly: Line, Scatter, Bar, Histogram, Box, KDE, Heatmap ([ / ] step). The shelves keep what the new type takes. On Rows, digits type a sample size instead |
 | `[ / ]` | Previous or next chart type |
 | `Tab / Shift+Tab (↑ / ↓)` | Next or previous row of the panel, wrapping (j/k too). A shelf the type does not use is dimmed and skipped |
-| `Space / Enter` | On X, Y or Color: open its picker. On the line under Color: pick the values that get a series, by rows. On an option: toggle it or take its next value. The panel applies as it changes, so Enter acts as Space does |
-| `← / → (h/l)` | Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, stdev, quantile, min, max, first, last) and a quantile's percentile, cumulative, bins, range, order or sample size; on a shelf that takes one column, the previous or next column; on the line under Color, turn Other (every value without a series) on or off; flip a toggle |
-| `+ / -` | Bins, bandwidth or sample size |
-| `PgUp / PgDn` | Adjust the sample size in bigger steps |
+| `Space / Enter` | On X, Y or Color: open its picker. On the line under Color: pick the values that get a series, by rows. On an option: toggle it or take its next value. The panel applies as it changes, so Enter acts as Space does, except on Rows: Space switches between Sample and Every row, and Enter reads what the row says |
+| `← / → (h/l)` | Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, stdev, quantile, min, max, first, last) and a quantile's percentile, cumulative, bins, range or order; on Rows, switch between Sample and Every row (read on Enter); on a shelf that takes one column, the previous or next column; on the line under Color, turn Other (every value without a series) on or off; flip a toggle |
+| `+ / -` | Bins or bandwidth |
+| `0-9` | On Rows: type a sample size, like 50000, 50,000, 50k, 250k or 2m. Backspace edits, Enter reads it, Esc puts the row back as it was. A size of at least the table's rows is Every row. Nothing is read until Enter or focus leaves the row |
 | `g` | Grid on or off at the labeled ticks: Line, Scatter, Histogram, Box and KDE. [analysis] chart_grid sets where it starts |
-| `Esc` | Back to the table |
+| `Esc` | Back to the table; on Rows with a change waiting, put the row back first |
 
 ### Chart · Plot
 

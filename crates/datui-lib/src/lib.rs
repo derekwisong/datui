@@ -13360,6 +13360,11 @@ impl App {
         if self.input_mode != InputMode::Chart || !self.chart_modal.active {
             return;
         }
+        // What Every row costs, as the table counted it.
+        self.chart_modal.view_rows = self
+            .data_table_state
+            .as_ref()
+            .and_then(|state| state.num_rows_if_valid());
         let request = ChartRequest::from_modal(&self.chart_modal);
         if let Some(inflight) = self.chart_inflight.as_ref()
             && !request

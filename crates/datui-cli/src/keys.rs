@@ -912,20 +912,23 @@ pub const SCREENS: &[Screen] = &[
                 name: "Shelves",
                 keys: &[
                     k("1-7", "Type", "Chart type, in order: Line to Heatmap")
-                        .more("Switch the chart type directly: Line, Scatter, Bar, Histogram, Box, KDE, Heatmap ([ / ] step). The shelves keep what the new type takes")
+                        .more("Switch the chart type directly: Line, Scatter, Bar, Histogram, Box, KDE, Heatmap ([ / ] step). The shelves keep what the new type takes. On Rows, digits type a sample size instead")
                         .run("1"),
                     k("[ / ]", "Type", "Previous or next chart type"),
                     k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous row")
                         .more("Next or previous row of the panel, wrapping (j/k too). A shelf the type does not use is dimmed and skipped"),
                     k("Space / Enter", "Act", "Open a shelf's picker, toggle, or step the row")
-                        .more("On X, Y or Color: open its picker. On the line under Color: pick the values that get a series, by rows. On an option: toggle it or take its next value. The panel applies as it changes, so Enter acts as Space does"),
+                        .more("On X, Y or Color: open its picker. On the line under Color: pick the values that get a series, by rows. On an option: toggle it or take its next value. The panel applies as it changes, so Enter acts as Space does, except on Rows: Space switches between Sample and Every row, and Enter reads what the row says"),
                     k("← / → (h/l)", "Change", "Step the type, bucket, aggregate or option")
-                        .more("Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, stdev, quantile, min, max, first, last) and a quantile's percentile, cumulative, bins, range, order or sample size; on a shelf that takes one column, the previous or next column; on the line under Color, turn Other (every value without a series) on or off; flip a toggle"),
-                    k("+ / -", "Adjust", "Bins, bandwidth or sample size"),
-                    k("PgUp / PgDn", "Step", "Adjust the sample size in bigger steps"),
+                        .more("Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, stdev, quantile, min, max, first, last) and a quantile's percentile, cumulative, bins, range or order; on Rows, switch between Sample and Every row (read on Enter); on a shelf that takes one column, the previous or next column; on the line under Color, turn Other (every value without a series) on or off; flip a toggle"),
+                    k("+ / -", "Adjust", "Bins or bandwidth"),
+                    k("0-9", "Size", "On Rows: type a sample size, like 50k or 2m")
+                        .more("On Rows: type a sample size, like 50000, 50,000, 50k, 250k or 2m. Backspace edits, Enter reads it, Esc puts the row back as it was. A size of at least the table's rows is Every row. Nothing is read until Enter or focus leaves the row")
+                        .no_run(),
                     k("g", "Grid", "Grid on or off")
                         .more("Grid on or off at the labeled ticks: Line, Scatter, Histogram, Box and KDE. [analysis] chart_grid sets where it starts"),
-                    k("Esc", "Back", "Back to the table"),
+                    k("Esc", "Back", "Back to the table")
+                        .more("Back to the table; on Rows with a change waiting, put the row back first"),
                 ],
             },
             Group {

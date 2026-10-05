@@ -342,7 +342,14 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
                 plain(if modal.show_legend { "auto" } else { "off" }, ctx),
             ),
             ChartFocus::Grid => ("Grid", on_off(modal.grid)),
-            ChartFocus::LimitRows => ("Rows", plain(rows_value(modal), ctx)),
+            ChartFocus::LimitRows => {
+                lines.push(row("Rows", rows_value(modal, ctx), Some(field), false));
+                // The row's keys, or what is waiting on them, while it has focus.
+                if modal.focus == field && !modal.plot_focus {
+                    lines.push(sub(rows_hint(modal, ctx), None, false));
+                }
+                continue;
+            }
             _ => continue,
         };
         lines.push(row(label, vec![value], Some(field), false));
@@ -353,12 +360,49 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
     lines
 }
 
-/// The Rows option: how many rows a chart that samples reads.
-fn rows_value(modal: &ChartModal) -> String {
-    match modal.row_limit {
-        None => "every row".to_string(),
-        Some(_) => format!("sample {}", modal.row_limit_display()),
+/// The Rows option: how many rows a chart that samples reads, `Sample 10,000` or
+/// `Every row (36.8M)`; a size being typed shows as typed, with the cursor.
+fn rows_value(modal: &ChartModal, ctx: &RenderContext) -> Vec<Span<'static>> {
+    let shown = modal.rows_shown();
+    if let Some(typed) = shown.typed {
+        return vec![
+            plain(format!("Sample {typed}"), ctx),
+            Span::styled(crate::glyphs::get().cursor, Style::default().fg(ctx.accent)),
+        ];
     }
+    if shown.every {
+        let mut spans = vec![plain("Every row", ctx)];
+        if let Some(rows) = modal.view_rows {
+            spans.push(quiet(
+                format!(" ({})", crate::discover::format_rows(rows)),
+                ctx,
+            ));
+        }
+        return spans;
+    }
+    vec![plain(
+        format!("Sample {}", crate::numfmt::group_chrome(modal.sample_rows)),
+        ctx,
+    )]
+}
+
+/// Under the focused Rows row: why a typed size cannot be read, that a change
+/// waits for Enter, or the row's keys.
+fn rows_hint(modal: &ChartModal, ctx: &RenderContext) -> Vec<Span<'static>> {
+    let g = crate::glyphs::get();
+    if let Some(error) = modal.rows_shown().error {
+        return vec![Span::styled(error, Style::default().fg(ctx.warning))];
+    }
+    if modal.rows_pending() {
+        return vec![quiet("Enter to read", ctx)];
+    }
+    vec![quiet(
+        format!(
+            "{}/{} switch {} type a size",
+            g.arrow_left, g.arrow_right, g.middot
+        ),
+        ctx,
+    )]
 }
 
 /// The line under Color: which of the column's values have a series, and with
@@ -1953,8 +1997,37 @@ mod tests {
         assert!(text.contains("by row"), "the bucket under a date X: {text}");
         assert!(text.contains("Options"));
         assert!(line("Y from zero").contains("off"));
-        assert!(line("Rows").contains("sample 10,000"));
+        assert!(line("Rows").contains("Sample 10,000"));
         assert!(line("Aggregate").contains("none"));
+        assert!(
+            !text.contains("type a size"),
+            "the row's keys only under focus"
+        );
+
+        // Focused, the line under Rows names its keys; a change waits for Enter.
+        modal.focus = ChartFocus::LimitRows;
+        modal.view_rows = Some(36_800_000);
+        let under = |rows: &[String]| {
+            let at = rows
+                .iter()
+                .position(|r| r.contains("Sample") || r.contains("Every row"));
+            rows[at.unwrap() + 1].clone()
+        };
+        let rows = render_rows(&mut modal, 100, 30);
+        assert!(under(&rows).contains("switch · type a size"), "{rows:?}");
+        modal.step(ChartFocus::LimitRows, 1);
+        let rows = render_rows(&mut modal, 100, 30);
+        assert!(
+            rows.iter().any(|r| r.contains("Every row (36.8M)")),
+            "{rows:?}"
+        );
+        assert!(under(&rows).contains("Enter to read"), "{rows:?}");
+        modal.type_rows('5');
+        modal.type_rows('x');
+        modal.commit_rows();
+        let rows = render_rows(&mut modal, 100, 30);
+        assert!(rows.iter().any(|r| r.contains("Sample 5x")), "{rows:?}");
+        assert!(under(&rows).contains("not a size"), "{rows:?}");
     }
 
     /// With a row's picker open, the picker's line carries the one rail on

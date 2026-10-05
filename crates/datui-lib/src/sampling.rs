@@ -19,6 +19,68 @@ pub const DEFAULT_SAMPLE_ROWS: usize = 100_000;
 /// The sizes the Sample form steps through with ←/→.
 pub const SAMPLE_SIZES: [usize; 6] = [1_000, 10_000, 50_000, 100_000, 500_000, 1_000_000];
 
+/// Why a typed sample size cannot be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SizeError {
+    NotASize,
+    Zero,
+}
+
+impl SizeError {
+    /// A few words, for a row with little room.
+    pub fn short(self) -> &'static str {
+        match self {
+            Self::NotASize => "not a size (50k, 2m)",
+            Self::Zero => "at least 1 row",
+        }
+    }
+}
+
+impl std::fmt::Display for SizeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NotASize => "Sample size is a number of rows, like 50000, 50k or 2m",
+            Self::Zero => "Sample size is at least 1 row",
+        })
+    }
+}
+
+/// A typed sample size: `50000`, `50,000`, `50_000`, `50k`, `2m`, `2.5M`. A size of
+/// no rows is refused; past `usize` it saturates and the caller clamps.
+pub fn parse_size(text: &str) -> Result<usize, SizeError> {
+    let refuse = || SizeError::NotASize;
+    let cleaned: String = text
+        .trim()
+        .chars()
+        .filter(|c| !matches!(c, ',' | '_'))
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let (number, scale) = match cleaned.strip_suffix('k') {
+        Some(n) => (n, 1e3),
+        None => match cleaned.strip_suffix('m') {
+            Some(n) => (n, 1e6),
+            None => (cleaned.as_str(), 1.0),
+        },
+    };
+    if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return Err(refuse());
+    }
+    let rows = if scale == 1.0 {
+        // Whole digits: exact, however long.
+        if number.contains('.') {
+            return Err(refuse());
+        }
+        number.parse::<usize>().unwrap_or(usize::MAX)
+    } else {
+        let value: f64 = number.parse().map_err(|_| refuse())?;
+        (value * scale).round() as usize
+    };
+    if rows == 0 {
+        return Err(SizeError::Zero);
+    }
+    Ok(rows)
+}
+
 /// A per-partition sample keeps at most this many partitions and rows in memory. Past
 /// the rows it keeps fewer of each value; past the partitions it is refused, which a
 /// column with that many values meets within its first few batches.
@@ -720,6 +782,30 @@ impl GroupState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_size_takes_shorthand() {
+        use super::parse_size;
+        for (text, rows) in [
+            ("50000", 50_000),
+            ("50,000", 50_000),
+            ("1_000", 1_000),
+            ("50k", 50_000),
+            ("250K", 250_000),
+            ("2m", 2_000_000),
+            ("2.5M", 2_500_000),
+            (" 7 ", 7),
+            ("99999999999999999999999", usize::MAX),
+        ] {
+            assert_eq!(parse_size(text), Ok(rows), "{text}");
+        }
+        for bad in ["", "k", "12x", "1.5", "-3", "1e6", "2mm"] {
+            assert_eq!(parse_size(bad), Err(super::SizeError::NotASize), "{bad}");
+        }
+        for zero in ["0", "0k", "0.0001k"] {
+            assert_eq!(parse_size(zero), Err(super::SizeError::Zero), "{zero}");
+        }
+    }
+
     use super::*;
 
     fn table() -> LazyFrame {

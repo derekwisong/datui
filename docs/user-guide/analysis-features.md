@@ -203,6 +203,11 @@ cancelled run is still finishing, no tool starts another read: <kbd>a</kbd>,
 <kbd>r</kbd>, <kbd>v</kbd> and a new run wait. Data Quality reads the same
 sample, at the same size, as every other tool.
 
+A view with its own [sample](sampling.md) (<kbd>S</kbd> at the table) is read
+whole by every tool: the header says `Reads the view's sample 100,000 of
+3.48M`, and <kbd>s</kbd> edits the view's sample, drawing it again before the
+tool runs; **Every row** there takes it away.
+
 The sample's starting size is [`analysis.sample_rows`](../reference/settings.md#analysis);
 `0` starts at every row. For one run, `--sample-rows N`:
 

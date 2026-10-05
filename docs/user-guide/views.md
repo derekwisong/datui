@@ -1,8 +1,8 @@
 # Save and apply views
 
-A view saves the active query, filters, sort, column layout, frozen columns
-and reshape, and applies them to the next file of the same shape. <kbd>v</kbd>
-opens the views list.
+A view saves the active sample, query, filters, sort, column layout, frozen
+columns, reshape and chart, and applies them to the next file of the same
+shape. <kbd>v</kbd> opens the views list.
 
 ## Save and reuse a query
 
@@ -23,7 +23,12 @@ Central Park's daily highs, in NOAA's public weather data, for 2024 and then
 The view runs the query on 2023: 365 rows, 2023-01-01 to 2023-12-31.
 
 A view stores transformations, not a copy of the data. The next file produces
-its own results. Saving is unavailable until the current table has a change
+its own results.
+
+| A view with | When applied |
+|---|---|
+| A [sample](sampling.md) | Draws it again from its scope, method, size and seed: the same rows, never stored. Its query, filters and sort go on as the rows arrive |
+| A [chart](charting.md) | Lands on the table; <kbd>c</kbd> draws the chart, with its options and how it was last exported. The footer offers <kbd>c</kbd> | Saving is unavailable until the current table has a change
 to store. In the description field, <kbd>Enter</kbd> inserts a newline;
 <kbd>Ctrl</kbd>+<kbd>J</kbd> saves from there, or <kbd>Tab</kbd> out and press <kbd>Enter</kbd>.
 The form takes the keys every [dialog](../reference/dialogs.md) takes; in the

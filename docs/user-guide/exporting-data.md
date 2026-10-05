@@ -29,6 +29,10 @@ result alone is a datetime and exports as `2020-10-04T00:00:00.000000`.
 The file contains all matching rows and displayed columns, not just the page
 on screen. Numbers use their raw values, without display formatting.
 
+A view with a [sample](sampling.md) writes the sample's rows: <kbd>S</kbd> on a
+remote table, then <kbd>e</kbd> to `sample.parquet`, keeps a local sample of it.
+The export waits until the sample is drawn.
+
 | Format | Extension | Options |
 |---|---|---|
 | CSV | `.csv` | Delimiter, header, compression |

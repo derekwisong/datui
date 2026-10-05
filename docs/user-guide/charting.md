@@ -233,6 +233,7 @@ Each starts from the dataset of that name under **Example datasets**.
 |---|---|
 | **Rows** | Rows a chart without an aggregate reads. A larger table is sampled across all of it, and the chart says so at the right of the title row, with the sample's seed: `sample of 10,000 of 3.5M rows · seed 42891`. Every row reads the whole view. A **Line** over a larger table is not sampled: see below |
 | Aggregate | Reads every row, whatever the sample size |
+| The view's [sample](sampling.md) | Read whole: the **Rows** row goes, and the title row names the sample and its seed: `sample 100,000 of 3.48M · seed 42891` |
 
 On **Rows**:
 
@@ -311,6 +312,7 @@ write, keeps the dialog open with the reason under the fields.
 | **Title**, **Description** | Over the chart. The description starts as the title row's words, how the chart is made: `Mean by month, colored by carrier`; empty when it has none. The Y column is named over the plot's left edge, as on screen |
 | **Notes** | Under the chart, after what the chart says about its rows (a sample, values a range left out) |
 | **Source**, **Byline** | The last line: `Source: …` and the byline. Source starts from the catalog entry when the dataset came from one: its name, publisher and license |
+| **Recipe** | **Include** (the default, from [`chart.export_recipe`](../reference/settings.md#chart)) writes how the chart was made into the file; **Omit** writes no datui metadata at all |
 
 | Size | Pixels | Prints at |
 |---|---|---|
@@ -320,6 +322,22 @@ write, keeps the dialog open with the reason under the fields.
 | Single column | 1050 × 788 | 3.5 × 2.6 in, 300 dpi |
 | Double column | 2100 × 1300 | 7 × 4.3 in, 300 dpi |
 | Custom | 16 to 8,192 a side | the last preset's resolution |
+
+The recipe is a [view](views.md)'s JSON: the datui version, the source path or
+URL, the query, filters and sort, the sample (size, seed, scope, method) or
+every row, the chart, and the export's settings. Saved as a view, it draws the
+chart again. The image is the same either way; the recipe can carry paths,
+bucket names and query values, so Omit before sharing a file that should not.
+
+| Format | Recipe in |
+|---|---|
+| PNG | An `iTXt` chunk, keyword `datui-recipe` |
+| SVG | A `<metadata>` element, the root's first child |
+| PDF | The document info, `/DatuiRecipe` |
+
+```bash,expect=screen
+datui -c chart.export_recipe=false
+```
 
 Text is set in IBM Plex Sans, bundled with datui, so a chart comes out the same
 on every machine; a character it lacks falls back to a system font. Its size

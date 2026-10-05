@@ -54,7 +54,7 @@ building from source.
 
 - Rust on [Polars](https://pola.rs). Every table is a `LazyFrame` until it is drawn.
 - Only the rows on screen and a lookahead buffer are collected. Sort, filter
-  and query build on the lazy plan; analyses read a sample, 100,000 rows by default.
+  and query build on the lazy plan.
 - A Parquet file in S3, GCS or Azure is read in place: footers for the schema
   and row count, then only the row groups the screen needs.
 - The row count runs in the background; the table is usable before it is done.
@@ -82,7 +82,6 @@ rows once 1,000 lines have arrived, sooner from a slower producer.
 | Run SQL or q | `:` | [Queries][query-guide] |
 | Sort by the cursor's column; keep or drop its value | `[` `]`, `+` `-` | [Sort and filter][filter-guide] |
 | Value counts of a column | `F` | [Value counts][counts-guide] |
-| Describe, distributions, correlation, data quality | `a` | [Analysis][analysis-guide] |
 | Chart; export it to PNG, SVG or PDF | `c`, then `e` | [Charts][chart-guide] |
 | Pivot or melt | `p` | [Reshaping][reshape-guide] |
 | Change a column's type | `i`, Enter on the Schema tab | [Column types][types-guide] |
@@ -154,7 +153,6 @@ Released under the [MIT license](LICENSE).
 [filter-guide]: https://derekwisong.github.io/datui/latest/user-guide/filtering-sorting.html
 [counts-guide]: https://derekwisong.github.io/datui/latest/user-guide/value-counts.html
 [chart-guide]: https://derekwisong.github.io/datui/latest/user-guide/charting.html
-[analysis-guide]: https://derekwisong.github.io/datui/latest/user-guide/analysis-features.html
 [reshape-guide]: https://derekwisong.github.io/datui/latest/user-guide/reshaping.html
 [types-guide]: https://derekwisong.github.io/datui/latest/user-guide/dataset-info.html#column-types
 [copy-guide]: https://derekwisong.github.io/datui/latest/user-guide/copying.html

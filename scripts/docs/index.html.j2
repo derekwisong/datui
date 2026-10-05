@@ -7,7 +7,7 @@
 {% set format_count = 27 %}
 {% set format_sentence = "datui reads 27 formats: Parquet, CSV, TSV, PSV, JSON, NDJSON, Arrow IPC, Avro, ORC, Excel, SafeTensors, GGUF, NMEA, GPX, WAV/AIFF audio, MIDI, SQLite, VCD, FIX, SDF, NumPy, ELF, ULog, DataFlash, candump, plain text, systemd journal, and binary formats you describe in a format spec." %}
 {# end generated: format-count #}
-  <meta name="description" content="Explore tabular data in your terminal: {{ format_count }} formats, on disk or in S3, GCS, Azure and HTTP. Query with SQL, chart, analyze and export.">
+  <meta name="description" content="Explore tabular data in your terminal: {{ format_count }} formats, on disk or in S3, GCS, Azure and HTTP. Query with SQL, chart and export.">
   <meta name="theme-color" content="#1a1b26">
   <title>datui — Explore tabular data in your terminal</title>
   <script>
@@ -218,7 +218,7 @@ sudo apt install datui</code></pre>
         <h2 id="proof-title">How it stays fast</h2>
         <ul class="section-lead">
           <li>Rust on Polars. Every table is a <code>LazyFrame</code> until it is drawn.</li>
-          <li>Only the rows on screen and a lookahead buffer are collected. Sort, filter and query build on the lazy plan; analyses read a sample, 100,000 rows by default.</li>
+          <li>Only the rows on screen and a lookahead buffer are collected. Sort, filter and query build on the lazy plan.</li>
           <li>A Parquet file in S3, GCS or Azure is read in place: footers for the schema and row count, then only the row groups the screen needs.</li>
           <li>The row count runs in the background; the table is usable before it is done.</li>
         </ul>
@@ -256,10 +256,10 @@ sudo apt install datui</code></pre>
             <a href="{{ guide('user-guide/querying-data') }}">Query data →</a>
           </div>
           <div>
-            <div class="placeholder" role="img" aria-label="Screenshot to come">STILL PLACEHOLDER (#356)<br>A chart, Analysis</div>
-            <h3>Analyze and chart</h3>
-            <p>Value counts (<kbd>F</kbd>), Analysis (<kbd>a</kbd>): Describe, Distribution, Correlation and Data Quality. Charts (<kbd>c</kbd>) export to PNG, SVG or PDF.</p>
-            <a href="{{ guide('user-guide/analysis-features') }}">Analysis →</a> · <a href="{{ guide('user-guide/charting') }}">Charts →</a>
+            <div class="placeholder" role="img" aria-label="Screenshot to come">STILL PLACEHOLDER (#356)<br>A chart</div>
+            <h3>Chart</h3>
+            <p><kbd>c</kbd> charts the column under the cursor: line, scatter, bar, histogram, box, KDE or heatmap, of the rows the query and filters leave. <kbd>e</kbd> exports it to PNG, SVG or PDF.</p>
+            <a href="{{ guide('user-guide/charting') }}">Charts →</a>
           </div>
           <div>
             <div class="placeholder" role="img" aria-label="Screenshot to come">STILL PLACEHOLDER (#356)<br>Pivot, column types</div>

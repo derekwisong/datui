@@ -11,6 +11,11 @@ on:
   push:
     tags:
       - 'v*'
+  # A dry run: builds every asset and runs the Linux gate, and publishes
+  # nothing. The fuzz replay and the docs are skipped; they do not depend on
+  # how the binaries are built. Run it from a branch to try a change to the
+  # builds before a tag depends on it.
+  workflow_dispatch: {}
 
 env:
   MDBOOK_VERSION: "0.5.2"
@@ -21,6 +26,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Require successful CI for this commit
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -35,10 +41,17 @@ jobs:
           fi
           echo "CI run $CI_SUCCESS passed for this commit."
 
+      - name: Dry run
+        if: github.event_name != 'push'
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: echo "Dry run from $REF_NAME, building and checking; nothing is published."
+
   fuzz:
     name: Fuzz corpus replay (ASan)
     runs-on: ubuntu-latest
     needs: [check-ci-passed]
+    if: github.event_name == 'push'
     # Slowest Nightly fuzz job in the last 50 runs: 47m48s (run 36274717293).
     # Above 1.5x that time, with room to link and replay all six targets.
     timeout-minutes: 90
@@ -73,7 +86,7 @@ jobs:
         run: |
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config libfontconfig1-dev
+          sudo apt-get install -y pkg-config
 
       # Restore Nightly's registry and tools only; the ASan target dir is too large.
       - name: Cache cargo dependencies
@@ -100,18 +113,24 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # The Linux binaries are linked by zig against glibc 2.28 (cargo zigbuild's
+  # `TRIPLE.2.28`), whatever glibc the runner has, so a release runs on Debian 10,
+  # Ubuntu 20.04, RHEL 8 and everything newer. Built natively on each
+  # architecture's runner: zig only lowers the glibc, and the packagers (cargo-deb's
+  # dpkg-shlibdeps, cargo-generate-rpm's ldd) then read the binary on the
+  # architecture it is for. The wheel's extension is built the same way, as a
+  # manylinux_2_28 wheel. `linux-gate` proves both before anything is published.
   linux:
     runs-on: ubuntu-latest
     timeout-minutes: 75
     needs: [check-ci-passed]
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      TARGET: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
-          fetch-tags: true
 
       - name: Free disk space (Ubuntu)
         # SHA-pinned to defend against upstream takeover; bump deliberately.
@@ -139,20 +158,17 @@ jobs:
           # indexes did not fetch, it fails there, for the right reason.
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          # mandoc renders the manpages into the docs (reference/man/).
-          sudo apt-get install -y pkg-config libfontconfig1-dev python3-dev mandoc
+          sudo apt-get install -y pkg-config python3-dev
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.x'
           cache: 'pip'
-          cache-dependency-path: |
-            scripts/requirements.txt
-            scripts/requirements-fixtures.txt
-            scripts/requirements-wheel.txt
-            scripts/requirements-wheel-windows.txt
-            python/pyproject.toml
+          cache-dependency-path: scripts/requirements-release.txt
+
+      - name: Install zig, cargo-zigbuild and maturin
+        run: pip install -r scripts/requirements-release.txt
 
       - name: Cache cargo dependencies
         # Restores what the Nightly workflow built on main, and never saves. A
@@ -171,18 +187,18 @@ jobs:
           save-if: false
           cache-workspace-crates: true
 
-      - name: Build release binary
-        run: cargo build --release --locked --workspace -p datui
+      - name: Build release binary against glibc 2.28
+        run: cargo zigbuild --release --locked -p datui --target "$TARGET.2.28"
 
-      - name: Verify release artifacts
-        run: test -f target/release/datui || (echo "Release binary not found" && exit 1)
+      - name: Place the binary where the packagers read it
+        run: install -D "target/$TARGET/release/datui" target/release/datui
 
       - name: Cache cargo packaging tools
         id: cache-cargo-tools
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin
-          key: ${{ runner.os }}-cargo-packaging-tools-v1
+          key: ${{ runner.os }}-cargo-packaging-tools-v2
           restore-keys: |
             ${{ runner.os }}-cargo-packaging-tools-
 
@@ -190,7 +206,6 @@ jobs:
         run: |
           command -v cargo-deb || cargo install cargo-deb
           command -v cargo-generate-rpm || cargo install cargo-generate-rpm
-          command -v cargo-aur || cargo install cargo-aur
 
       - name: Build deb package
         run: python3 scripts/packaging/build_package.py deb --no-build
@@ -198,7 +213,7 @@ jobs:
       - name: Build rpm package
         run: python3 scripts/packaging/build_package.py rpm --no-build
 
-      - name: Build AUR package
+      - name: Build tarball and AUR PKGBUILD
         run: python3 scripts/packaging/build_package.py aur --no-build
 
       - name: Bundle CLI for wheel
@@ -208,14 +223,366 @@ jobs:
           chmod +x python/datui_bin/datui
           cp LICENSE python/LICENSE
 
-      - name: Build Python wheel
+      - name: Build Python wheel (manylinux_2_28)
         # With the manpages as data files, installed under the prefix's share/man.
-        # pyproject.toml is put back after: the docs step checks out older tags.
         run: |
-          pip install maturin
           python3 scripts/packaging/wheel_manpages.py
-          (cd python && maturin build --release --out dist)
-          git checkout -- python/pyproject.toml
+          cd python && maturin build --release --out dist --target "$TARGET" --zig --manylinux 2_28
+
+      - name: Collect release assets
+        run: |
+          mkdir -p dist
+          cp target/debian/*.deb target/generate-rpm/*.rpm target/tarball/*.tar.gz \
+             target/aur/PKGBUILD python/dist/*.whl dist/
+          ls -l dist
+
+      - name: Upload linux artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: datui-linux-artifacts
+          path: dist/*
+
+  linux-arm64:
+    # The linux job on a native arm64 runner, without the AUR PKGBUILD (the
+    # package is x86_64 only). Its outputs are what install.sh asks for on an
+    # aarch64 machine: datui_<ver>-1_arm64.deb, datui-<ver>-1.aarch64.rpm,
+    # datui-v<ver>-aarch64-unknown-linux-gnu.tar.gz, and the aarch64 wheel.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    needs: [check-ci-passed]
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      TARGET: aarch64-unknown-linux-gnu
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+      - name: Run sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      - name: Install system dependencies
+        timeout-minutes: 5
+        run: |
+          # See the linux job for why `apt-get update` is allowed to fail here.
+          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
+          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
+          sudo apt-get install -y pkg-config python3-dev
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.x'
+          cache: 'pip'
+          cache-dependency-path: scripts/requirements-release.txt
+
+      - name: Install zig, cargo-zigbuild and maturin
+        run: pip install -r scripts/requirements-release.txt
+
+      # No rust-cache step: Nightly writes its entry from an x86_64 runner, and
+      # the key includes the host triple, so this job would never hit it.
+
+      - name: Build release binary against glibc 2.28
+        run: cargo zigbuild --release --locked -p datui --target "$TARGET.2.28"
+
+      - name: Place the binary where the packagers read it
+        run: install -D "target/$TARGET/release/datui" target/release/datui
+
+      - name: Cache cargo packaging tools
+        id: cache-cargo-tools
+        # runner.arch is in the key: the linux job's entry holds x86_64 binaries,
+        # which would restore here and fail to execute.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-packaging-tools-v2
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-cargo-packaging-tools-
+
+      - name: Install cargo packaging tools
+        run: |
+          command -v cargo-deb || cargo install cargo-deb
+          command -v cargo-generate-rpm || cargo install cargo-generate-rpm
+
+      - name: Build deb package
+        run: python3 scripts/packaging/build_package.py deb --no-build
+
+      - name: Build rpm package
+        run: python3 scripts/packaging/build_package.py rpm --no-build
+
+      - name: Build tarball
+        run: python3 scripts/packaging/build_package.py tarball --no-build
+
+      - name: Bundle CLI for wheel
+        run: |
+          mkdir -p python/datui_bin
+          cp target/release/datui python/datui_bin/
+          chmod +x python/datui_bin/datui
+          cp LICENSE python/LICENSE
+
+      - name: Build Python wheel (manylinux_2_28)
+        run: |
+          python3 scripts/packaging/wheel_manpages.py
+          cd python && maturin build --release --out dist --target "$TARGET" --zig --manylinux 2_28
+
+      - name: Collect release assets
+        run: |
+          mkdir -p dist
+          cp target/debian/*.deb target/generate-rpm/*.rpm target/tarball/*.tar.gz python/dist/*.whl dist/
+          ls -l dist
+
+      - name: Upload linux arm64 artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: datui-linux-aarch64-artifacts
+          path: dist/*
+
+  # Proves the Linux assets on the systems they are for, before publish can run:
+  # no GLIBC symbol above 2.28 and no shared library beyond glibc and libgcc_s in
+  # the binary, the wheel's copy of it and the wheel's extension; then each asset
+  # on Ubuntu 20.04 and 22.04, Debian 11 and 12, Rocky 8 and 9 and Amazon Linux
+  # 2023, in containers, on both architectures: the tarball's binary runs and
+  # reads a file, and the .deb or .rpm installs and runs, so its dependencies
+  # resolve there.
+  linux-gate:
+    name: Linux assets on glibc 2.28 (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    needs: [linux, linux-arm64]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+            artifact: datui-linux-artifacts
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+            artifact: datui-linux-aarch64-artifacts
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the Linux assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ matrix.artifact }}
+          path: assets
+
+      - name: Check the symbol versions and shared libraries
+        run: |
+          set -euo pipefail
+          mkdir -p tarball wheel
+          tar xzf assets/datui-v*-"$ARCH"-unknown-linux-gnu.tar.gz -C tarball
+          unzip -q -o assets/datui-*.whl 'datui_bin/datui' 'datui/_datui*.so' -d wheel
+          python3 scripts/packaging/check_linux_release.py symbols \
+            tarball/datui wheel/datui_bin/datui wheel/datui/_datui*.so
+          echo "--- deb"; dpkg-deb -f assets/datui_*.deb Package Version Architecture Depends
+          echo "--- wheel"; ls assets/datui-*.whl
+
+      - name: Run the assets on each distro
+        run: python3 scripts/packaging/check_linux_release.py smoke assets
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 100
+    needs: [check-ci-passed]
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.x'
+          cache: 'pip'
+          cache-dependency-path: scripts/requirements-wheel-windows.txt
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Cache cargo dependencies
+        # Nightly's entry from main, restore only. See the linux job.
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: nightly
+          save-if: false
+          cache-workspace-crates: true
+
+      - name: Build release binary
+        run: cargo build --release --locked -p datui
+
+      - name: Bundle CLI for wheel
+        run: |
+          New-Item -ItemType Directory -Force -Path python/datui_bin
+          Copy-Item target/release/datui.exe python/datui_bin/
+          Copy-Item LICENSE python/LICENSE
+
+      - name: Build Python wheel
+        run: |
+          cd python
+          maturin build --release --out dist
+
+      - name: Create Windows zip
+        # Named by the target triple, as the Linux and macOS archives are; the
+        # version from Cargo.toml, as theirs. install.sh, the winget regex in
+        # publish-packages.yml and [package.metadata.binstall] all know the name.
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 --locked | ConvertFrom-Json).packages |
+            Where-Object { $_.name -eq 'datui' } | Select-Object -ExpandProperty version
+          $staging = "datui-v${version}-x86_64-pc-windows-msvc"
+          New-Item -ItemType Directory -Force -Path $staging
+          Copy-Item target/release/datui.exe $staging/
+          Copy-Item LICENSE $staging/
+          # completions/ (PowerShell's _datui.ps1 among them) and man/, as every archive has
+          cargo run --locked -q -p datui-cli --bin gen_docs -- dist $staging
+          New-Item -ItemType Directory -Force -Path dist
+          Compress-Archive -Path "$staging/*" -DestinationPath "dist/$staging.zip"
+          Copy-Item python/dist/*.whl dist/
+          Get-ChildItem dist
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: datui-windows-artifacts
+          path: dist/*
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    needs: [check-ci-passed]
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.x'
+          cache: 'pip'
+          cache-dependency-path: scripts/requirements-wheel.txt
+
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Cache cargo dependencies
+        # Nightly's entry from main, restore only. See the linux job.
+        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: nightly-${{ matrix.target }}
+          save-if: false
+          cache-workspace-crates: true
+
+      - name: Build release binary
+        run: cargo build --release --locked -p datui --target ${{ matrix.target }}
+
+      - name: Verify release artifacts
+        run: test -f target/${{ matrix.target }}/release/datui || (echo "Release binary not found" && exit 1)
+
+      - name: Stage and pack tarball
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          VERSION=$(cargo metadata --no-deps --format-version 1 --locked \
+            | jq -r '.packages[] | select(.name == "datui") | .version')
+          STAGING="datui-v${VERSION}-${TARGET}"
+          mkdir -p "$STAGING" dist
+          cp LICENSE "$STAGING/"
+          cp "target/${TARGET}/release/datui" "$STAGING/"
+          chmod +x "$STAGING/datui"
+          # man/manN/ and completions/, from gen_docs built for this host
+          cargo run --locked -q -p datui-cli --bin gen_docs -- dist "$STAGING"
+          tar czvf "dist/$STAGING.tar.gz" -C "$STAGING" .
+
+      - name: Bundle CLI for wheel
+        run: |
+          mkdir -p python/datui_bin
+          cp "target/${{ matrix.target }}/release/datui" python/datui_bin/
+          chmod +x python/datui_bin/datui
+          cp LICENSE python/LICENSE
+
+      - name: Build Python wheel
+        run: |
+          python3 scripts/packaging/wheel_manpages.py
+          cd python
+          maturin build --release --out dist --target ${{ matrix.target }}
+          cp dist/*.whl ../dist/
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: datui-macos-${{ matrix.target }}-artifacts
+          path: dist/*
+
+  docs:
+    # The documentation site for every tag plus main as dev, deployed to Pages
+    # by publish. Needs no release build: mdbook, mandoc and the docs scripts.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [check-ci-passed]
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: stable
+
+      - name: Install system dependencies
+        timeout-minutes: 5
+        run: |
+          # See the linux job for why `apt-get update` is allowed to fail here.
+          # mandoc renders the manpages into the docs (reference/man/).
+          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
+          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
+          sudo apt-get install -y mandoc
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.x'
+          cache: 'pip'
+          cache-dependency-path: |
+            scripts/requirements.txt
+            scripts/requirements-fixtures.txt
 
       - name: Install Python dependencies
         run: |
@@ -238,7 +605,7 @@ jobs:
       - name: Compute docs cache key
         id: compute-docs-key
         run: |
-          VERSION_SHA=$(git tag -l "v*" | sort -V | while read t; do echo "$t:$(git rev-parse "$t")"; done | sha256sum | cut -c1-16)
+          VERSION_SHA=$(git tag -l "v*" | sort -V | while read -r t; do echo "$t:$(git rev-parse "$t")"; done | sha256sum | cut -c1-16)
           echo "version_sha=$VERSION_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Restore docs cache
@@ -251,9 +618,6 @@ jobs:
 
       - name: Build tag documentation (skip if cached for same SHA)
         run: |
-          # Stash local changes from wheel build so we can checkout historical tags; pop when done
-          STASHED=0
-          git stash push -m "release wheel build" -- crates/datui-pyo3/Cargo.lock python/LICENSE && STASHED=1 || true
           ORIGINAL_COMMIT=$(git rev-parse HEAD)
           ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
           [ -f scripts/docs/build_single_version_docs.py ] || (echo "Error: scripts/docs/build_single_version_docs.py not found" && exit 1)
@@ -279,7 +643,6 @@ jobs:
           done
           CURRENT_COMMIT=$(git rev-parse HEAD)
           [ "$CURRENT_COMMIT" != "$ORIGINAL_COMMIT" ] && git checkout "$ORIGINAL_COMMIT"
-          [ "$STASHED" = 1 ] && git stash pop || true
           rm -rf "$SCRIPT_DIR"
           python3 scripts/docs/rebuild_index.py
 
@@ -314,283 +677,13 @@ jobs:
         with:
           path: ./book-deploy
 
-      - name: Upload linux artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: datui-linux-artifacts
-          path: |
-            target/debian/*.deb
-            target/generate-rpm/*.rpm
-            target/cargo-aur/*.tar.gz
-            target/cargo-aur/PKGBUILD
-            python/dist/*.whl
-
-  linux-arm64:
-    # A native arm64 runner, so the build steps are the linux job's unchanged.
-    # This job is deliberately narrower than `linux`: no docs (published once,
-    # from the x86_64 job), no AUR package (cargo-aur writes a PKGBUILD with
-    # arch=("x86_64") and names its tarball -x86_64 whatever the host, so the
-    # tarball is packed by hand below in the same layout), and no Python wheel
-    # (adding a manylinux aarch64 wheel is a separate decision). Its outputs are
-    # the ones scripts/install/install.sh asks for on an aarch64 machine:
-    # datui_<ver>-1_arm64.deb, datui-<ver>-1.aarch64.rpm and
-    # datui-<ver>-aarch64.tar.gz.
-    runs-on: ubuntu-24.04-arm
-    # No runs in the sample; allow more than the measured x86_64 release budget.
-    timeout-minutes: 90
-    needs: [check-ci-passed]
-    env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
-      - name: Run sccache
-        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
-
-      - name: Install system dependencies
-        timeout-minutes: 5
-        run: |
-          # See the linux job for why `apt-get update` is allowed to fail here.
-          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
-          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config libfontconfig1-dev
-
-      # No rust-cache step: Nightly writes its entry from an x86_64 runner, and
-      # the key includes the host triple, so this job would never hit it.
-
-      - name: Build release binary
-        run: cargo build --release --locked --workspace -p datui
-
-      - name: Verify release artifacts
-        run: test -f target/release/datui || (echo "Release binary not found" && exit 1)
-
-      - name: Cache cargo packaging tools
-        id: cache-cargo-tools
-        # runner.arch is in the key: the linux job's entry holds x86_64 binaries,
-        # which would restore here and fail to execute.
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cargo/bin
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-packaging-tools-v1
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-cargo-packaging-tools-
-
-      - name: Install cargo packaging tools
-        run: |
-          command -v cargo-deb || cargo install cargo-deb
-          command -v cargo-generate-rpm || cargo install cargo-generate-rpm
-
-      - name: Build deb package
-        run: python3 scripts/packaging/build_package.py deb --no-build
-
-      - name: Build rpm package
-        run: python3 scripts/packaging/build_package.py rpm --no-build
-
-      - name: Stage and pack tarball
-        # Same members and paths as the AUR tarball the x86_64 job ships, which
-        # install.sh relies on: the binary, man/manN/ and completions/ at the root.
-        # build_package.py staged man/ and completions/ in target/dist. Version from
-        # Cargo.toml, as cargo-deb and cargo-generate-rpm name theirs.
-        run: |
-          set -euo pipefail
-          VERSION=$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name == "datui") | .version')
-          ARCH=$(uname -m)
-          test "$ARCH" = "aarch64" || (echo "Expected an aarch64 runner, got $ARCH" && exit 1)
-          STAGING="$RUNNER_TEMP/tarball"
-          mkdir -p "$STAGING/scripts/packaging"
-          cp target/release/datui "$STAGING/"
-          chmod +x "$STAGING/datui"
-          cp LICENSE "$STAGING/"
-          cp -r target/dist/man target/dist/completions "$STAGING/"
-          cp scripts/packaging/datui.desktop "$STAGING/scripts/packaging/"
-          mkdir -p dist-linux-aarch64
-          tar czvf "dist-linux-aarch64/datui-${VERSION}-${ARCH}.tar.gz" -C "$STAGING" \
-            datui LICENSE man completions scripts/packaging/datui.desktop
-          cp target/debian/*.deb target/generate-rpm/*.rpm dist-linux-aarch64/
-          ls -l dist-linux-aarch64
-
-      - name: Upload linux arm64 artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: datui-linux-aarch64-artifacts
-          path: dist-linux-aarch64/*
-
-  windows:
-    runs-on: windows-latest
-    timeout-minutes: 100
-    needs: [check-ci-passed]
-    env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.x'
-          cache: 'pip'
-          cache-dependency-path: |
-            scripts/requirements.txt
-            scripts/requirements-fixtures.txt
-            scripts/requirements-wheel.txt
-            scripts/requirements-wheel-windows.txt
-            python/pyproject.toml
-
-      - name: Install maturin
-        run: pip install maturin
-
-      - name: Cache cargo dependencies
-        # Nightly's entry from main, restore only. See the linux job.
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: nightly
-          save-if: false
-          cache-workspace-crates: true
-
-      - name: Build release binary
-        run: cargo build --release --locked -p datui
-
-      - name: Bundle CLI for wheel
-        run: |
-          New-Item -ItemType Directory -Force -Path python/datui_bin
-          Copy-Item target/release/datui.exe python/datui_bin/
-          Copy-Item LICENSE python/LICENSE
-
-      - name: Build Python wheel
-        run: |
-          cd python
-          maturin build --release --out dist
-
-      - name: Create Windows zip
-        env:
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          $version = $env:REF_NAME
-          $staging = "datui-${version}-windows-x86_64"
-          New-Item -ItemType Directory -Force -Path $staging
-          Copy-Item target/release/datui.exe $staging/
-          Copy-Item LICENSE $staging/
-          # completions/ (PowerShell's _datui.ps1 among them) and man/, as every archive has
-          cargo run --locked -q -p datui-cli --bin gen_docs -- dist $staging
-          Compress-Archive -Path "$staging/*" -DestinationPath "datui-${version}-windows-x86_64.zip"
-
-      - name: Upload Windows artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: datui-windows-artifacts
-          path: |
-            datui-${{ github.ref_name }}-windows-x86_64.zip
-            python/dist/*.whl
-
-  macos:
-    runs-on: macos-latest
-    timeout-minutes: 90
-    needs: [check-ci-passed]
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [aarch64-apple-darwin, x86_64-apple-darwin]
-    env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
-
-      - name: Add Rust target
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.x'
-          cache: 'pip'
-          cache-dependency-path: |
-            scripts/requirements.txt
-            scripts/requirements-fixtures.txt
-            scripts/requirements-wheel.txt
-            scripts/requirements-wheel-windows.txt
-            python/pyproject.toml
-
-      - name: Install maturin
-        run: pip install maturin
-
-      - name: Cache cargo dependencies
-        # Nightly's entry from main, restore only. See the linux job.
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: nightly-${{ matrix.target }}
-          save-if: false
-          cache-workspace-crates: true
-
-      - name: Build release binary
-        run: cargo build --release --locked -p datui --target ${{ matrix.target }}
-
-      - name: Verify release artifacts
-        run: test -f target/${{ matrix.target }}/release/datui || (echo "Release binary not found" && exit 1)
-
-      - name: Stage and pack tarball
-        env:
-          TARGET: ${{ matrix.target }}
-          VERSION: ${{ github.ref_name }}
-        run: |
-          STAGING="datui-${VERSION}-${TARGET}"
-          mkdir -p "$STAGING"
-          cp LICENSE "$STAGING/"
-          cp "target/${TARGET}/release/datui" "$STAGING/"
-          chmod +x "$STAGING/datui"
-          # man/manN/ and completions/, from gen_docs built for this host
-          cargo run --locked -q -p datui-cli --bin gen_docs -- dist "$STAGING"
-          tar czvf "datui-${VERSION}-${TARGET}.tar.gz" -C "$STAGING" .
-
-      - name: Bundle CLI for wheel
-        run: |
-          mkdir -p python/datui_bin
-          cp "target/${{ matrix.target }}/release/datui" python/datui_bin/
-          chmod +x python/datui_bin/datui
-          cp LICENSE python/LICENSE
-
-      - name: Build Python wheel
-        run: |
-          python3 scripts/packaging/wheel_manpages.py
-          cd python
-          maturin build --release --out dist --target ${{ matrix.target }}
-
-      - name: Upload macOS artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: datui-macos-${{ matrix.target }}-artifacts
-          path: |
-            datui-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
-            python/dist/*.whl
-
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [linux, linux-arm64, windows, macos, fuzz]
+    needs: [linux, linux-arm64, linux-gate, windows, macos, docs, fuzz]
+    # Never on a dry run (workflow_dispatch): docs and fuzz are skipped there, so
+    # this is too, and the condition says so where someone looks for it.
+    if: github.event_name == 'push'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -608,6 +701,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: datui-linux-artifacts
+          path: linux-x86_64
 
       - name: Download linux arm64 artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -619,7 +713,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: datui-windows-artifacts
-          path: windows-artifacts
+          path: windows-x86_64
 
       - name: Download macOS aarch64 artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -707,23 +801,9 @@ jobs:
         # The signature that does prove origin is applied to this file below, which is
         # why signing one file is enough to cover every artifact listed in it.
         run: |
-          shopt -s nullglob
+          set -euo pipefail
           mkdir -p release-assets
-          cp target/debian/*.deb \
-             target/generate-rpm/*.rpm \
-             target/cargo-aur/*.tar.gz \
-             target/cargo-aur/PKGBUILD \
-             python/dist/*.whl \
-             linux-aarch64/*.deb \
-             linux-aarch64/*.rpm \
-             linux-aarch64/*.tar.gz \
-             "windows-artifacts/datui-${REF_NAME}-windows-x86_64.zip" \
-             windows-artifacts/python/dist/*.whl \
-             macos-aarch64/datui-*.tar.gz \
-             macos-aarch64/python/dist/*.whl \
-             macos-x86_64/datui-*.tar.gz \
-             macos-x86_64/python/dist/*.whl \
-             release-assets/
+          cp linux-x86_64/* linux-aarch64/* windows-x86_64/* macos-aarch64/* macos-x86_64/* release-assets/
           cd release-assets
           # Basenames only, so `sha256sum -c` works from whatever directory the
           # user downloaded into.
@@ -731,8 +811,6 @@ jobs:
           cd ..
           echo "--- SHA256SUMS ---"
           cat SHA256SUMS
-        env:
-          REF_NAME: ${{ github.ref_name }}
 
       - name: Install cosign
         # SHA-pinned to defend against upstream takeover; bump deliberately.
@@ -764,20 +842,7 @@ jobs:
           files: |
             SHA256SUMS
             SHA256SUMS.sigstore.json
-            target/debian/*.deb
-            target/generate-rpm/*.rpm
-            target/cargo-aur/*.tar.gz
-            target/cargo-aur/PKGBUILD
-            python/dist/*.whl
-            linux-aarch64/*.deb
-            linux-aarch64/*.rpm
-            linux-aarch64/*.tar.gz
-            windows-artifacts/datui-${{ github.ref_name }}-windows-x86_64.zip
-            windows-artifacts/python/dist/*.whl
-            macos-aarch64/datui-*.tar.gz
-            macos-aarch64/python/dist/*.whl
-            macos-x86_64/datui-*.tar.gz
-            macos-x86_64/python/dist/*.whl
+            release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

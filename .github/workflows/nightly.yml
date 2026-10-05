@@ -20,6 +20,7 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      TARGET: x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,7 +52,7 @@ jobs:
           # indexes did not fetch, it fails there, for the right reason.
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config libfontconfig1-dev python3-dev
+          sudo apt-get install -y pkg-config python3-dev
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -63,7 +64,11 @@ jobs:
             scripts/requirements-fixtures.txt
             scripts/requirements-wheel.txt
             scripts/requirements-wheel-windows.txt
+            scripts/requirements-release.txt
             python/pyproject.toml
+
+      - name: Install zig, cargo-zigbuild and maturin
+        run: pip install -r scripts/requirements-release.txt
 
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -71,8 +76,13 @@ jobs:
           shared-key: nightly
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Build release binary
-        run: cargo build --release --locked --workspace -p datui
+      # As release.yml builds it: linked by zig against glibc 2.28, then placed
+      # where the packagers and the startup guard read it.
+      - name: Build release binary against glibc 2.28
+        run: cargo zigbuild --release --locked -p datui --target "$TARGET.2.28"
+
+      - name: Place the binary where the packagers read it
+        run: install -D "target/$TARGET/release/datui" target/release/datui
 
       - name: Verify release artifacts
         run: test -f target/release/datui || (echo "Release binary not found" && exit 1)
@@ -82,7 +92,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin
-          key: ${{ runner.os }}-cargo-packaging-tools-v1
+          key: ${{ runner.os }}-cargo-packaging-tools-v2
           restore-keys: |
             ${{ runner.os }}-cargo-packaging-tools-
 
@@ -90,7 +100,6 @@ jobs:
         run: |
           command -v cargo-deb || cargo install cargo-deb
           command -v cargo-generate-rpm || cargo install cargo-generate-rpm
-          command -v cargo-aur || cargo install cargo-aur
 
       - name: Build deb package
         run: python3 scripts/packaging/build_package.py deb --no-build
@@ -98,7 +107,7 @@ jobs:
       - name: Build rpm package
         run: python3 scripts/packaging/build_package.py rpm --no-build
 
-      - name: Build AUR package
+      - name: Build tarball and AUR PKGBUILD
         run: python3 scripts/packaging/build_package.py aur --no-build
 
       - name: Bundle CLI for wheel
@@ -108,11 +117,10 @@ jobs:
           chmod +x python/datui_bin/datui
           cp LICENSE python/LICENSE
 
-      - name: Build Python wheel
+      - name: Build Python wheel (manylinux_2_28)
         run: |
-          pip install maturin
           python3 scripts/packaging/wheel_manpages.py
-          cd python && maturin build --release --out dist
+          cd python && maturin build --release --out dist --target "$TARGET" --zig --manylinux 2_28
 
       - name: Upload packaging artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -121,8 +129,8 @@ jobs:
           path: |
             target/debian/*.deb
             target/generate-rpm/*.rpm
-            target/cargo-aur/*.tar.gz
-            target/cargo-aur/PKGBUILD
+            target/tarball/*.tar.gz
+            target/aur/PKGBUILD
             python/dist/*.whl
             target/release/datui
             target/dist/man
@@ -196,8 +204,8 @@ jobs:
             cp passed/target/release/datui baseline/datui
           else
             echo "Baseline: the latest release"
-            gh release download --repo "$GITHUB_REPOSITORY" --pattern 'datui-*-x86_64.tar.gz' --dir baseline
-            tar xzf baseline/datui-*-x86_64.tar.gz -C baseline
+            gh release download --repo "$GITHUB_REPOSITORY" --pattern 'datui-*-x86_64-unknown-linux-gnu.tar.gz' --dir baseline
+            tar xzf baseline/datui-*-x86_64-unknown-linux-gnu.tar.gz -C baseline
           fi
           chmod +x baseline/datui candidate/target/release/datui
 
@@ -624,7 +632,7 @@ jobs:
         run: |
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config libfontconfig1-dev
+          sudo apt-get install -y pkg-config
 
       # Only ~/.cargo (registry and cargo-fuzz itself) is cached, not fuzz/target: a
       # sanitizer build is far too large for the Actions cache, and restoring it would
@@ -750,7 +758,7 @@ jobs:
         run: |
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config libfontconfig1-dev
+          sudo apt-get install -y pkg-config
 
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -842,7 +850,7 @@ jobs:
         run: |
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config libfontconfig1-dev
+          sudo apt-get install -y pkg-config
 
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

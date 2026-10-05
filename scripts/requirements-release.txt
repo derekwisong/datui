@@ -1,0 +1,8 @@
+# For the Linux release builds. zig links the binaries and the wheels' extension
+# against glibc 2.28 (cargo zigbuild, maturin --zig), so a release runs on Debian 10,
+# Ubuntu 20.04 and RHEL 8 whatever the runner's glibc is. Exact versions: the
+# release gate checks the result, and a moving linker is one more thing it could
+# be blaming.
+cargo-zigbuild==0.23.4
+ziglang==0.16.0
+maturin==1.15.0

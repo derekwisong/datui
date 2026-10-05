@@ -109,7 +109,7 @@ jobs:
           # indexes did not fetch, it fails there, for the right reason.
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config libfontconfig1-dev
+          sudo apt-get install -y pkg-config
 
       - name: Publish to crates.io
         env:
@@ -356,7 +356,7 @@ jobs:
         uses: vedantmgoyal9/winget-releaser@a8fff44b123f115ce4c21543edf8b677376fc7e0 # main as of 2026-09-20
         with:
           identifier: derekwisong.datui
-          installers-regex: '-windows-x86_64\.zip$'
+          installers-regex: '-x86_64-pc-windows-msvc\.zip$'
           release-tag: ${{ needs.resolve-release.outputs.tag_name }}
           token: ${{ secrets.WINGET_TOKEN }}
           max-versions-to-keep: 20
@@ -373,7 +373,7 @@ jobs:
         uses: vedantmgoyal9/winget-releaser@a8fff44b123f115ce4c21543edf8b677376fc7e0 # main as of 2026-09-20
         with:
           identifier: derekwisong.datui
-          installers-regex: '-windows-x86_64\.zip$'
+          installers-regex: '-x86_64-pc-windows-msvc\.zip$'
           release-tag: ${{ needs.resolve-release.outputs.tag_name }}
           token: ${{ secrets.WINGET_TOKEN }}
           max-versions-to-keep: 20
@@ -388,7 +388,7 @@ jobs:
         uses: vedantmgoyal9/winget-releaser@a8fff44b123f115ce4c21543edf8b677376fc7e0 # main as of 2026-09-20
         with:
           identifier: derekwisong.datui
-          installers-regex: '-windows-x86_64\.zip$'
+          installers-regex: '-x86_64-pc-windows-msvc\.zip$'
           release-tag: ${{ needs.resolve-release.outputs.tag_name }}
           token: ${{ secrets.WINGET_TOKEN }}
           max-versions-to-keep: 20

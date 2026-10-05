@@ -14,7 +14,7 @@ if [[ -z "${VERSION:-}" ]] || [[ -z "${TAG:-}" ]] || [[ -z "${SHA256:-}" ]]; the
   echo "Usage: VERSION=0.2.34 TAG=v0.2.34 SHA256=<sha256> $0" >&2
   echo "  VERSION: version without 'v' (e.g. 0.2.34)" >&2
   echo "  TAG: tag with 'v' (e.g. v0.2.34)" >&2
-  echo "  SHA256: SHA256 hash of datui-<tag>-windows-x86_64.zip" >&2
+  echo "  SHA256: SHA256 hash of datui-<tag>-x86_64-pc-windows-msvc.zip" >&2
   exit 1
 fi
 

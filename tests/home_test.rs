@@ -7787,7 +7787,7 @@ fields = [{ name = "x", type = "u1" }]
 fn a_variant_spec_files_pane_shows_chips_and_variants_at_any_width() {
     common::isolate_cache();
     let formats = TempDir::new().unwrap();
-    let dir = formats.path().join(".config/datui/formats");
+    let dir = formats.path().join(".config").join("datui").join("formats");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("demo-mktdata.toml"), DEMO_MKTDATA).unwrap();
     let registry = datui::formats::Registry::load(std::slice::from_ref(&dir));
@@ -7856,9 +7856,16 @@ fn a_variant_spec_files_pane_shows_chips_and_variants_at_any_width() {
         // The spec's path: one line, the name kept, the middle cut where it must be.
         let spec: Vec<&String> = pane.iter().filter(|l| l.starts_with("spec ")).collect();
         assert_eq!(spec.len(), 1, "{shown}");
-        assert!(spec[0].ends_with("/demo-mktdata.toml"), "{shown}");
+        let sep = std::path::MAIN_SEPARATOR;
+        assert!(
+            spec[0].ends_with(&format!("{sep}demo-mktdata.toml")),
+            "{shown}"
+        );
         if pane_w == 40 {
-            assert!(spec[0].contains(&format!("/{ellipsis}/")), "{shown}");
+            assert!(
+                spec[0].contains(&format!("{sep}{ellipsis}{sep}")),
+                "{shown}"
+            );
         }
         let at = pane.iter().position(|l| l.starts_with("spec ")).unwrap();
         assert!(

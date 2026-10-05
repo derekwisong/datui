@@ -2414,28 +2414,39 @@ fn preview_head_keyed(
 
 /// `path` in `width` columns, cut between its components so the file name stays:
 /// `~/…/formats/demo-mktdata.toml`. The first component stays when there is room for it;
-/// a name too long on its own keeps its end.
+/// a name too long on its own keeps its end. Cut at the platform's separators (`\`
+/// as well as `/` on Windows), each kept as the path spells it.
 fn elide_path(path: &str, width: usize) -> String {
     if glyphs::display_width(path) <= width {
         return path.to_string();
     }
     let ellipsis = glyphs::get().ellipsis;
-    let parts: Vec<&str> = path.split('/').collect();
-    let Some(last) = parts.last() else {
+    // Each separator, and where the component after it starts.
+    let seps: Vec<(char, usize)> = path
+        .char_indices()
+        .filter(|(_, c)| std::path::is_separator(*c))
+        .map(|(i, c)| (c, i + c.len_utf8()))
+        .collect();
+    let Some(&(first_sep, after_first)) = seps.first() else {
         return truncate_start(path, width);
     };
+    let first = &path[..after_first - first_sep.len_utf8()];
     // The most trailing components that fit after `first/…/`, then after `…/`.
-    let first = parts.first().copied().unwrap_or_default();
-    for head in [format!("{first}/{ellipsis}/"), format!("{ellipsis}/")] {
-        for keep in (1..parts.len().saturating_sub(1)).rev() {
-            let tail = parts[parts.len() - keep..].join("/");
-            let cut = format!("{head}{tail}");
+    for with_first in [true, false] {
+        for &(sep, start) in &seps[1..] {
+            let tail = &path[start..];
+            let cut = if with_first {
+                format!("{first}{first_sep}{ellipsis}{sep}{tail}")
+            } else {
+                format!("{ellipsis}{sep}{tail}")
+            };
             if glyphs::display_width(&cut) <= width {
                 return cut;
             }
         }
     }
-    truncate_start(last, width)
+    let (_, last) = seps[seps.len() - 1];
+    truncate_start(&path[last..], width)
 }
 
 /// Whether chips are drawn on the chrome tier: a UTF-8 terminal whose header tint
@@ -5009,6 +5020,18 @@ mod tests {
         let cut = elide_path(path, 10);
         assert!(cut.ends_with("ta.toml"), "{cut}");
         assert!(glyphs::display_width(&cut) <= 10, "{cut}");
+    }
+
+    /// Windows' `\` separates components too, and is kept where the path has it.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_path_is_cut_at_its_backslashes() {
+        let e = glyphs::get().ellipsis;
+        let path = r"~\.config\datui\formats\demo-mktdata.toml";
+        assert_eq!(
+            elide_path(path, 30),
+            format!(r"~\{e}\formats\demo-mktdata.toml")
+        );
     }
 
     fn spec_chips() -> Vec<MatchChip> {

@@ -291,6 +291,9 @@ its version, nothing about you or the machine. `http.user_agent` replaces it:
 datui -c 'http.user_agent=<NAME/VERSION (CONTACT)>' <URL>
 ```
 
+A file that is not there (404) or a host that does not answer says so on its home
+row, in place of the size, before you open it.
+
 ## What gets read
 
 | Source | Read |

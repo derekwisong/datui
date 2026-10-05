@@ -68,8 +68,9 @@ fn truncate_start(text: &str, width: usize) -> String {
 /// broken. The same admission the label makes for a directory nothing has looked into.
 ///
 /// `hint` is what a catalog says the file weighs, shown as `~33 MB` until something
-/// has measured it.
-fn meta_columns(entry: &Entry, unmeasured: bool, hint: Option<u64>) -> String {
+/// has measured it. `gone` takes the size's place for a web file that cannot be had
+/// (`HTTP 404`, `no answer`): beside the name, where the choice to open it is made.
+fn meta_columns(entry: &Entry, unmeasured: bool, hint: Option<u64>, gone: Option<&str>) -> String {
     // A dataset too large to count still knows its width. Showing `? x 158` says more
     // than a blank, and the `?` is an admission rather than a guess.
     let times = glyphs::get().times;
@@ -88,10 +89,11 @@ fn meta_columns(entry: &Entry, unmeasured: bool, hint: Option<u64>) -> String {
         _ if unmeasured => glyphs::get().ellipsis.to_string(),
         _ => String::new(),
     };
-    let size = match (entry.size, hint) {
-        (Some(size), _) => discover::format_size(size),
-        (None, Some(hint)) => format!("~{}", discover::format_size(hint)),
-        (None, None) => String::new(),
+    let size = match (gone, entry.size, hint) {
+        (Some(gone), _, _) => gone.to_string(),
+        (None, Some(size), _) => discover::format_size(size),
+        (None, None, Some(hint)) => format!("~{}", discover::format_size(hint)),
+        (None, None, None) => String::new(),
     };
     let age = entry.modified.map(discover::format_age).unwrap_or_default();
     format!("{shape:>13}  {size:>9}  {age:>4}")
@@ -761,6 +763,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                         looking: looking_glyph(app, entry),
                         indent: if *nested { NEST_INDENT } else { 0 },
                         size_hint: app.home.size_hint(&entry.path),
+                        gone: app.home.web_gone.get(&entry.path).map(|g| g.cell.as_str()),
                     },
                     &list,
                 ));
@@ -1130,6 +1133,8 @@ struct EntryNotes<'a> {
     indent: usize,
     /// What a catalog says the row's file weighs, until it is measured.
     size_hint: Option<u64>,
+    /// Why a web file cannot be had, in place of its size.
+    gone: Option<&'a str>,
 }
 
 /// Section headers carry the collapse marker and the provenance note, so the list
@@ -1449,6 +1454,7 @@ fn entry_line<'a>(
         looking,
         indent,
         size_hint,
+        gone,
     } = notes;
     let ListDraw {
         ctx,
@@ -1597,7 +1603,7 @@ fn entry_line<'a>(
             locality,
             Some(crate::locality::Locality::Object | crate::locality::Locality::Network)
         );
-    let meta = show_meta.then(|| meta_columns(entry, unmeasured, size_hint));
+    let meta = show_meta.then(|| meta_columns(entry, unmeasured, size_hint, gone));
     // A row with nothing to say in the meta columns (a public dataset, a directory not
     // looked into) gives them to its name rather than cutting it beside blank cells
     // (#648).
@@ -2817,6 +2823,7 @@ fn render_preview(
             // door will be there — and a user with a filter typed is the one most likely
             // to be lost.
             let door_in_there = !crate::home::holds_nothing_to_open(&entry.holds);
+            let web_gone = app.home.web_gone.get(&entry.path);
             let footer_unreadable = entry.kind == EntryKind::File
                 && entry.rows.is_none()
                 && discover::is_parquet_path(&entry.path)
@@ -2863,6 +2870,17 @@ fn render_preview(
                 // is the row a new user is most likely to be stuck on — the label says
                 // what is in there, Enter steps into it, and nothing until now said that
                 // the way to read the whole of it is one row further in.
+                // A web file a HEAD settled cannot be had: why, before Enter is pressed
+                // on it. A callout, as an unreadable footer is.
+                _ if web_gone.is_some() => {
+                    if let Some(gone) = web_gone {
+                        lines.push(Line::from(Span::styled(
+                            format!("{} {}", g.warning, gone.message),
+                            Style::default().fg(ctx.warning),
+                        )));
+                    }
+                    Vec::new()
+                }
                 EntryKind::Directory if door_in_there => {
                     vec![("Enter", step_in(INSIDE_AND_THE_DOOR))]
                 }
@@ -3650,7 +3668,7 @@ mod tests {
     fn a_directory_of_separate_tables_shows_its_width_without_a_question_mark() {
         let mut directory = row("/data/consolidated", EntryKind::Directory);
         directory.cols = Some(72);
-        let shape = meta_columns(&directory, false, None);
+        let shape = meta_columns(&directory, false, None, None);
         assert!(shape.contains("72 cols"), "{shape}");
         assert!(!shape.contains('?'), "{shape}");
         assert!(
@@ -3661,7 +3679,7 @@ mod tests {
         let mut big = row("/data/events", EntryKind::Hive);
         big.cols = Some(72);
         assert!(
-            meta_columns(&big, false, None).contains('?'),
+            meta_columns(&big, false, None, None).contains('?'),
             "a hive dataset still says ?"
         );
     }
@@ -3741,7 +3759,7 @@ mod tests {
         // Where the meta columns begin: everything drawn before them. It must not
         // depend on how long a row's label is, or the columns stop lining up.
         let offset_of_meta = |line: Line<'_>, entry: &Entry| -> usize {
-            let meta = meta_columns(entry, false, None);
+            let meta = meta_columns(entry, false, None, None);
             let at = line
                 .spans
                 .iter()
@@ -4116,7 +4134,7 @@ mod tests {
             .collect()
         };
         // Under a place, with nothing measured: the shape cell is an admission.
-        let meta = meta_columns(&entry, true, None);
+        let meta = meta_columns(&entry, true, None, None);
         assert!(text(&entry, NEST_INDENT).contains(&meta));
         assert!(meta.contains(g.ellipsis), "{meta:?}");
         // The same row in a directory listing, where the probe measures it, and a
@@ -4178,7 +4196,7 @@ mod tests {
             truncated: true,
             ..Default::default()
         };
-        let meta = meta_columns(&entry, false, None);
+        let meta = meta_columns(&entry, false, None, None);
         let meta_at = |indent: usize, width: usize| -> usize {
             let line = entry_line(
                 &entry,

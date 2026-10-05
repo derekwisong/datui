@@ -1433,6 +1433,9 @@ pub struct HomeState {
     pub catalogs: Vec<ShownCatalog>,
     /// HTTP(S) catalog files whose size was asked for this session (a HEAD).
     pub sized: std::collections::HashSet<PathBuf>,
+    /// HTTP(S) catalog files that HEAD settled cannot be had: not there, or no server
+    /// answered. Asked again on Ctrl+R.
+    pub web_gone: std::collections::HashMap<PathBuf, crate::error_display::HttpGone>,
     /// Local datasets of a catalog that the last listing found missing.
     pub missing: std::collections::HashSet<PathBuf>,
     /// When the current wait for a remote listing began, for the elapsed time on screen.
@@ -1568,6 +1571,7 @@ impl Default for HomeState {
             cloud: Vec::new(),
             catalogs: Vec::new(),
             sized: std::collections::HashSet::new(),
+            web_gone: Default::default(),
             missing: Default::default(),
             filter: String::new(),
             search_limit: crate::config::SearchConfig::default().max_results,

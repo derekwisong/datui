@@ -10547,8 +10547,28 @@ fn test_entering_home_clears_load_state_but_not_task_generation() {
 fn app_awaiting_open_confirmation() -> (App, mpsc::Receiver<AppEvent>) {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
-    // Refused immediately, so the size probe does not sit on its timeout.
-    let url = PathBuf::from("http://127.0.0.1:1/data.csv");
+    // HEAD refused at once, so the size probe answers unknown without its timeout. A
+    // refused connection would be no server at all, which ends the open.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = PathBuf::from(format!(
+        "http://{}/data.csv",
+        listener.local_addr().unwrap()
+    ));
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                head.push(byte[0]);
+            }
+            let _ = write!(
+                stream,
+                "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+        }
+    });
     let mut next = app.event(&AppEvent::Open(vec![url], OpenOptions::default()));
     while let Some(ev) = next {
         if matches!(ev, AppEvent::Crash(_)) {

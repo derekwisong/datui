@@ -243,3 +243,115 @@ fn a_downloaded_dataset_comes_back_named_and_measured() {
     assert_eq!(entry.name, "Palmer penguins");
     assert_eq!((entry.rows, entry.cols), (Some(3), Some(3)));
 }
+
+/// Each request's method and User-Agent, as a server saw them.
+type Seen = Arc<std::sync::Mutex<Vec<(String, String)>>>;
+
+/// Serves 404 for everything, keeping each request's method and User-Agent.
+fn serve_404() -> (String, Seen) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let kept = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                head.push(byte[0]);
+            }
+            let head = String::from_utf8_lossy(&head).into_owned();
+            let method = head.split(' ').next().unwrap_or_default().to_string();
+            let agent = head
+                .lines()
+                .find_map(|l| {
+                    l.split_once(':')
+                        .filter(|(name, _)| name.eq_ignore_ascii_case("user-agent"))
+                        .map(|(_, v)| v.trim().to_string())
+                })
+                .unwrap_or_default();
+            kept.lock().unwrap().push((method, agent));
+            let _ = write!(
+                stream,
+                "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+        }
+    });
+    (base, seen)
+}
+
+/// An example dataset whose publisher moved it: its row says `HTTP 404` where the size
+/// was, its pane says why, and Enter says the same at once rather than offering to
+/// download it. Every request names datui.
+#[test]
+fn an_unreachable_web_file_says_so_on_its_row_and_its_open() {
+    common::isolate_cache();
+    let (base, seen) = serve_404();
+    let url = format!("{base}/moved.csv");
+    let config = config_with("examples", "Moved", &url);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: Default::default(),
+        },
+        config,
+    );
+    // Off under cargo test, which reaches no network unless a test asks.
+    app.head_web_rows = true;
+    app.enter_home();
+    let named = |app: &App| {
+        app.home.visible().iter().position(
+            |row| matches!(row, datui::home::Row::Entry { entry, .. } if entry.name == "Moved"),
+        )
+    };
+    pump(&mut app, &rx, |app| named(app).is_some());
+    app.home.selected = named(&app).unwrap();
+    let path = std::path::PathBuf::from(&url);
+    pump(&mut app, &rx, |app| app.home.web_gone.contains_key(&path));
+    let said = "returned 404: the file may have moved.";
+    let gone = &app.home.web_gone[&path];
+    assert_eq!(gone.cell, "HTTP 404");
+    assert!(gone.message.ends_with(said), "{}", gone.message);
+
+    let area = ratatui::layout::Rect::new(0, 0, 140, 30);
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    ratatui::widgets::Widget::render(&mut app, area, &mut buffer);
+    let screen: String = (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect::<String>()
+                + "\n"
+        })
+        .collect();
+    let row = screen.lines().find(|l| l.contains("Moved  csv")).unwrap();
+    assert!(row.contains("HTTP 404"), "{screen}");
+    assert!(screen.contains("returned 404: the"), "{screen}");
+
+    // Enter: the probe settles it, so the error comes without a download question.
+    let mut next = app.event(&key(KeyCode::Enter));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while app.error_message().is_none() && Instant::now() < deadline {
+        assert!(!app.awaiting_open_confirmation(), "asked to download a 404");
+        match next.take() {
+            Some(event) => next = app.event(&event),
+            None => {
+                if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {
+                    next = app.event(&event);
+                }
+            }
+        }
+    }
+    let message = app.error_message().expect("the open failed").to_string();
+    assert!(message.contains(said), "{message}");
+    assert!(!message.contains("http status"), "{message}");
+
+    let seen = seen.lock().unwrap();
+    assert!(!seen.is_empty());
+    for (method, agent) in seen.iter() {
+        assert_eq!(agent, datui::user_agent::DEFAULT, "{method}");
+    }
+}

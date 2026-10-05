@@ -2925,7 +2925,7 @@ fn the_size_probe_reads_a_compressing_server() {
     });
 
     assert_eq!(
-        crate::App::fetch_remote_size_http(&url).expect("the probe never fails"),
+        crate::App::fetch_remote_size_http(&url).expect("the file is there"),
         Some(33_206_996),
         "the file's own length, not the compressed one and not none"
     );
@@ -2956,9 +2956,26 @@ fn the_download_confirmation_is_not_busy() {
 
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
-    // Nothing listens on the discard port: the probe fails fast, and answers that
-    // the size is unknown.
-    let url = "http://127.0.0.1:9/flights.parquet";
+    // A server that refuses HEAD: the probe answers that the size is unknown, and the
+    // download may still work.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/flights.parquet", listener.local_addr().unwrap());
+    let url = url.as_str();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                head.push(byte[0]);
+            }
+            let _ = write!(
+                stream,
+                "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+        }
+    });
     let mut next = Some(AppEvent::Open(
         vec![std::path::PathBuf::from(url)],
         OpenOptions::default(),

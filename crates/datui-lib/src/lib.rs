@@ -367,6 +367,11 @@ pub enum AppEvent {
         path: PathBuf,
         measured: crate::home::Measured,
     },
+    /// What a HEAD settled about an HTTP(S) file on home: it cannot be had.
+    HomeWebGone {
+        path: PathBuf,
+        gone: crate::error_display::HttpGone,
+    },
     /// What the rows on screen turned out to be. The same payload as
     /// [`AppEvent::HomeMeasured`] and folded in the same way: a kind is one of the
     /// things a look into a row produces.
@@ -6924,8 +6929,12 @@ impl App {
             self.home.unreachable.remove(&dir);
             self.home.cut_short.remove(&dir);
         }
-        // A peek that failed is asked again: Ctrl+R is the request to try.
+        // A peek that failed is asked again: Ctrl+R is the request to try. So is a web
+        // file that was not there.
         self.home.peek_failed.clear();
+        for path in std::mem::take(&mut self.home.web_gone).into_keys() {
+            self.home.sized.remove(&path);
+        }
         self.home.status = None;
         self.home_refresh();
     }
@@ -7200,8 +7209,16 @@ impl App {
         let tx = self.events.clone();
         let cache = self.cache.clone();
         self.runtime.spawn_blocking(move || {
-            let Ok(Some(size)) = Self::fetch_remote_size_http(&entry.path.to_string_lossy()) else {
-                return;
+            let size = match Self::fetch_remote_size_http(&entry.path.to_string_lossy()) {
+                Ok(Some(size)) => size,
+                Ok(None) => return,
+                Err(gone) => {
+                    let _ = tx.send(AppEvent::HomeWebGone {
+                        path: entry.path,
+                        gone,
+                    });
+                    return;
+                }
             };
             let key = home::index_key(&entry.path);
             let mut facts = cache.dataset_facts(&key).unwrap_or_default();
@@ -9300,8 +9317,13 @@ impl App {
             .into()
     }
 
+    /// What a HEAD says an HTTP(S) file weighs: `None` when it does not say. An error
+    /// only when the answer settles that the file cannot be had (a 404, no server); a
+    /// server that refuses HEAD may still send the file.
     #[cfg(feature = "http")]
-    fn fetch_remote_size_http(url: &str) -> Result<Option<u64>> {
+    fn fetch_remote_size_http(
+        url: &str,
+    ) -> std::result::Result<Option<u64>, crate::error_display::HttpGone> {
         let agent = Self::http_agent(std::time::Duration::from_secs(15));
         // ureq asks for gzip by default and strips Content-Length from a compressed
         // answer, so a server that compresses (GitHub Pages does) reports no size.
@@ -9312,7 +9334,7 @@ impl App {
                 .get("Content-Length")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<u64>().ok())),
-            Err(_) => Ok(None),
+            Err(e) => crate::error_display::http_gone(url, &e).map_or(Ok(None), Err),
         }
     }
 
@@ -9353,18 +9375,11 @@ impl App {
         let url = url.to_string();
         let open = move || {
             let agent = Self::http_agent(std::time::Duration::from_secs(300));
+            // ureq answers a 4xx or 5xx with an error, so every failure is said here.
             let response = agent
                 .get(&url)
                 .call()
-                .map_err(|e| format!("Download failed. Check the URL and your connection: {e}"))?;
-            let status = response.status();
-            if status.is_client_error() || status.is_server_error() {
-                return Err(format!(
-                    "Server returned {} {}. Check the URL.",
-                    status.as_u16(),
-                    status.canonical_reason().unwrap_or("Unknown")
-                ));
-            }
+                .map_err(|e| crate::error_display::http_message(&url, &e))?;
             // No length: ureq hands back a compressed answer decompressed, and the
             // Content-Length it came with is the wire's, not the file's.
             Ok((response.into_body().into_reader(), None))
@@ -9753,7 +9768,10 @@ impl App {
                     let size = match &pending {
                         #[cfg(feature = "http")]
                         loading::PendingDownload::Http { url, .. } => {
-                            Self::fetch_remote_size_http(url).unwrap_or(None)
+                            // A file that is not there, or a host that does not
+                            // answer, ends the open here, not after a question
+                            // about downloading it.
+                            Self::fetch_remote_size_http(url).map_err(|gone| gone.message)?
                         }
                         #[cfg(feature = "cloud")]
                         loading::PendingDownload::S3 { url, .. }
@@ -13556,6 +13574,10 @@ impl App {
                     }
                 }
                 self.home.apply_measurements();
+                None
+            }
+            AppEvent::HomeWebGone { path, gone } => {
+                self.home.web_gone.insert(path.clone(), gone.clone());
                 None
             }
             AppEvent::HomeClassified { measured, done } => {

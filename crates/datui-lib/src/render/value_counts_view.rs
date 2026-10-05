@@ -386,11 +386,12 @@ pub fn summary_items(
     sample: bool,
     ctx: &RenderContext,
 ) -> Vec<(&'static str, String)> {
-    let counts = ctx.number_format.formatter_for("", &DataType::UInt64);
+    // How many rows, values and nulls are datui's counts, not the column's data:
+    // grouped as every count on screen is, whatever the table's number format.
     let mut items = vec![
-        ("Rows", count_text(summary.rows as u64, &counts)),
-        ("Distinct", count_text(summary.distinct as u64, &counts)),
-        ("Nulls", count_text(summary.nulls as u64, &counts)),
+        ("Rows", crate::numfmt::group_chrome(summary.rows)),
+        ("Distinct", crate::numfmt::group_chrome(summary.distinct)),
+        ("Nulls", crate::numfmt::group_chrome(summary.nulls)),
     ];
     let floats = ctx.number_format.formatter_for(column, &DataType::Float64);
     if let Some(sum) = summary.sum.filter(|_| !sample) {
@@ -547,6 +548,17 @@ mod tests {
         assert!(rows[head + 2].contains("20.0%") && rows[head + 2].contains("80.0%"));
         assert!(rows[head + 3].contains(g.null), "nulls on their own line");
         assert!(rows[head + 3].contains("100.0%"));
+    }
+
+    /// The strip's counts are datui's own, grouped as every count on screen is,
+    /// whatever the table's number format says about the column's values.
+    #[test]
+    fn the_strip_groups_its_counts() {
+        let mut modal = counted(df!("n" => (0..1_500i64).collect::<Vec<_>>()).unwrap(), "n");
+        modal.view = Some(crate::value_counts_modal::CountsView::Listing);
+        let rows = screen(&mut modal, 100, 12);
+        assert!(rows[1].contains("Rows 1,500"), "{rows:#?}");
+        assert!(rows[1].contains("Distinct 1,500"), "{rows:#?}");
     }
 
     #[test]

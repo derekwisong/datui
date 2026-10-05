@@ -518,6 +518,12 @@ pub enum AppEvent {
     BackgroundFootersJoined {
         generation: u64,
     },
+    /// Every line of a text file opened from its first rows is indexed, `rows` of
+    /// them, for the dataset of `generation`.
+    LinesIndexed {
+        generation: u64,
+        rows: usize,
+    },
     /// Background task completed: chart data for one selection is prepared. The data is
     /// in `App::pending_chart_result`; it belongs to `App::chart_inflight`, which says
     /// whether it is still wanted.
@@ -1185,6 +1191,25 @@ pub struct App {
     /// away from must not move the view of the one they opened next. `end_after_count`
     /// alongside keys itself the same way, to `len_generation`.
     end_when_the_footers_land: Option<u64>,
+    /// End was pressed while a text file's lines were still being indexed: jump when
+    /// the last of them is, for that dataset alone.
+    end_when_indexed: Option<u64>,
+    /// Stops the indexing thread of the dataset on screen's lines.
+    indexing_stop: Arc<std::sync::atomic::AtomicBool>,
+    /// The lines being indexed, until they all are.
+    indexing_lines: Option<Arc<crate::lines::Lines>>,
+    /// The indexing waits while home is up.
+    indexing_paused: bool,
+    /// `:N` past the lines indexed so far, for that dataset: gone to once they all are.
+    goto_when_indexed: Option<(u64, usize)>,
+    /// The last count started: what it has read of the footers, and its stop (Esc).
+    count_progress: Arc<crate::schema_union::FooterProgress>,
+    /// The dataset (`dataset_generation`) an exact count was asked for (`c` in the
+    /// Info panel), of more files than the count reads unasked.
+    exact_count_asked: Option<u64>,
+    /// `c` was pressed while a stopped count was still winding down: count again when
+    /// its answer, for this `len_generation`, comes in.
+    count_after_stop: Option<u64>,
     /// What a dataset's footers found while the user was looking at a query, a pivot or
     /// a drill-down rather than at the data. Held rather than applied, because widening
     /// the scan under a query takes the query's own columns away, and offered again the
@@ -3628,6 +3653,18 @@ impl App {
         };
         let waiting = follow.waiting();
         let (chip, note) = match follow.standing {
+            // Standard input read as it arrives: how much has, until it ends.
+            Standing::Following if follow.is_pipe() => {
+                let read = follow.spool().map_or(0, |spool| spool.bytes());
+                let chip = format!(
+                    "reading stdin {} {}",
+                    crate::glyphs::get().middot,
+                    crate::discover::format_size(read)
+                );
+                let note = (follow.new_below > 0 && !state.on_last_row())
+                    .then(|| rows(follow.new_below, "new below"));
+                (chip, note)
+            }
             Standing::Following => {
                 let chip = match follow.last_append {
                     Some(at) => format!(
@@ -4150,6 +4187,10 @@ impl App {
     /// shown because two parts of the screen show it, they are painted at different
     /// moments, and a background thread is moving it between them.
     fn begin_frame(&mut self) {
+        // Back from home to the table whose lines were being indexed.
+        if self.indexing_paused && self.input_mode != InputMode::Home {
+            self.index_lines();
+        }
         self.footers_this_frame = self.footer_progress().reading();
         self.listed_this_frame = self.footer_progress().listed();
         // Whatever this frame does not draw cannot be clicked.
@@ -4498,10 +4539,16 @@ impl App {
     /// Clearing the status outright would wipe whatever else is using the line — a
     /// load's phase, an export's progress — on behalf of a key pressed somewhere else.
     fn take_down_the_counting_status(&mut self) {
-        if self.status_message.as_deref() == Some(Self::COUNTING_FOR_END) {
+        if matches!(
+            self.status_message.as_deref(),
+            Some(Self::COUNTING_FOR_END | Self::INDEXING_FOR_ROW)
+        ) {
             self.status_message = None;
         }
     }
+
+    /// What the status line says while `:N` waits for the lines to be indexed.
+    const INDEXING_FOR_ROW: &'static str = "Reading lines to find the row...";
 
     /// What the status line says while an End is waiting on a row count. Named so the
     /// paths that retire such an End can take the message back down without reaching
@@ -4669,6 +4716,185 @@ impl App {
         });
     }
 
+    /// Index the rest of a text file's lines behind its first rows, and say when they
+    /// are all in ([`AppEvent::LinesIndexed`]). Not a job, which the user would wait on:
+    /// the table works meanwhile, and a read of every line waits for them on its own
+    /// worker. The last dataset's indexing, if it is still going, stops.
+    fn start_indexing(&mut self) {
+        self.end_when_indexed = None;
+        self.goto_when_indexed = None;
+        self.index_lines();
+    }
+
+    /// Run the indexing of the dataset on screen's lines, if they still have lines to
+    /// index: a new dataset's, or one paused while home was up. Lines of a dataset no
+    /// longer on screen stop for good, and the reads waiting on them give up.
+    fn index_lines(&mut self) {
+        use std::sync::atomic::Ordering;
+        self.indexing_stop.store(true, Ordering::Relaxed);
+        self.indexing_paused = false;
+        let lines = self
+            .data_table_state
+            .as_ref()
+            .and_then(|state| state.lines_to_index().cloned());
+        if let Some(old) = self.indexing_lines.take()
+            && lines.as_ref().is_none_or(|lines| !Arc::ptr_eq(lines, &old))
+        {
+            old.stop_indexing();
+        }
+        let Some(lines) = lines.filter(|lines| lines.resume_indexing()) else {
+            return;
+        };
+        self.indexing_lines = Some(lines.clone());
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.indexing_stop = stop.clone();
+        let generation = self.dataset_generation;
+        let tx = self.events.clone();
+        let waiting = lines.clone();
+        let spawned = std::thread::Builder::new()
+            .name("datui-index".to_string())
+            .spawn(move || {
+                loop {
+                    // Paused or replaced: whoever stopped it says what becomes of the
+                    // reads waiting on the lines.
+                    if stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    // A panic stops it where it is: the rows so far are what there is,
+                    // rather than a count that never comes.
+                    let done =
+                        logging::catch_panic(|| lines.index_more(INDEX_STEP)).unwrap_or(true);
+                    if done {
+                        lines.stop_indexing();
+                        let rows = lines.rows();
+                        let _ = tx.send(AppEvent::LinesIndexed { generation, rows });
+                        return;
+                    }
+                }
+            });
+        // No thread to index them: the lines so far are what there is, and nothing
+        // waits for more.
+        if spawned.is_err() {
+            waiting.stop_indexing();
+            self.indexing_lines = None;
+            if let Some(state) = self.data_table_state.as_mut() {
+                state.lines_indexed(waiting.rows());
+            }
+        }
+    }
+
+    /// Home is up: the indexing waits, the reads waiting on it with it, until the
+    /// table is back ([`Self::begin_frame`]).
+    fn pause_indexing(&mut self) {
+        if self.indexing_lines.is_some() {
+            self.indexing_stop
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.indexing_paused = true;
+        }
+    }
+
+    /// More of the dataset's lines are indexed: its frames take them, and once all are,
+    /// its count and an End that waited for it.
+    fn lines_indexed(&mut self, generation: u64, rows: usize) {
+        if generation != self.dataset_generation {
+            return;
+        }
+        let Some(state) = self.data_table_state.as_mut() else {
+            return;
+        };
+        self.indexing_lines = None;
+        if !state.lines_indexed(rows) {
+            // Set aside while the lines finished (the quality evidence view): they
+            // land on the dataset that comes back.
+            if let Some(held) = self.quality_evidence_return.as_mut() {
+                held.lines_indexed(rows);
+            }
+            return;
+        }
+        if let Some((goto, row)) = self.goto_when_indexed.take()
+            && goto == generation
+        {
+            self.take_down_the_counting_status();
+            let _ = self.events.send(AppEvent::GoToLine(row));
+        }
+        if self.end_when_indexed.take() == Some(generation) {
+            self.take_down_the_counting_status();
+            if let Some(next) = self.jump_key(AppEvent::DoScrollEnd) {
+                let _ = self.events.send(next);
+                return;
+            }
+        }
+        // The count the indexing held back starts now, and rows past the first ones
+        // read are read.
+        if self.in_normal_table_view() && !self.loading.awaiting_dataset() {
+            self.spawn_collect(None);
+        }
+    }
+
+    /// Whether the dataset's count waits to be asked for: it has more files than
+    /// `[read] exact_count_files` and an estimate to show meanwhile.
+    fn count_held_at_estimate(&self, state: &DataTableState) -> bool {
+        let limit = self.app_config.read.exact_count_files;
+        limit > 0
+            && state.files_to_count().is_some_and(|files| files > limit)
+            && self.exact_count_asked != Some(self.dataset_generation)
+            && state.row_estimate(None).is_some()
+    }
+
+    /// The dataset's row count from a sample of its footers, while it is not counted:
+    /// the dataset's own, or the one its footer pass has said so far.
+    pub(crate) fn row_estimate(&self) -> Option<crate::schema_union::RowEstimate> {
+        self.data_table_state
+            .as_ref()?
+            .row_estimate(self.footer_progress.estimate())
+    }
+
+    /// Whether the count running reads footers it can say it has read, and so can be
+    /// stopped: `(read, of)`.
+    pub(crate) fn footers_counted(&self) -> Option<(usize, usize)> {
+        self.len_count_inflight?;
+        self.count_progress
+            .reading()
+            .filter(|_| !self.count_progress.is_cancelled())
+    }
+
+    /// `c` in the Info panel: count every row exactly, though the dataset has more
+    /// files than the count reads unasked.
+    pub(crate) fn count_exactly(&mut self) {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        if state.is_num_rows_valid() {
+            return;
+        }
+        let generation = state.len_generation();
+        self.exact_count_asked = Some(self.dataset_generation);
+        // The footer pass is still bringing the count; the request holds for when it
+        // lands.
+        if state.counts_itself_later() {
+            return;
+        }
+        // A count stopped before is asked again.
+        if self.len_count_failed == Some(generation) {
+            self.len_count_failed = None;
+        }
+        // One stopped and not yet wound down: again once it has.
+        if self.len_count_inflight == Some(generation) && self.count_progress.is_cancelled() {
+            self.count_after_stop = Some(generation);
+            return;
+        }
+        if self.len_count_inflight != Some(generation) {
+            self.len_count_inflight = Some(generation);
+            let job = LenCount::for_state(state);
+            self.spawn_count(job);
+        }
+    }
+
+    /// Esc while a count reads footers: stop it. What it read is kept for the next.
+    fn stop_count(&mut self) {
+        self.count_progress.cancel();
+    }
+
     /// Put what a pass found in the slot, unless a later dataset's pass has answered
     /// first. Returns whether it went in, so a pass that lost does not also announce
     /// itself.
@@ -4793,12 +5019,17 @@ impl App {
         {
             match options.tail.as_deref() {
                 Some(tail) => {
-                    state.start_following(crate::follow::Follow::start(
+                    let follow = crate::follow::Follow::start(
                         tail.clone(),
                         self.app_config.read.follow_interval.duration(),
                         self.events.clone(),
                         options.spool.clone(),
-                    ));
+                    );
+                    state.start_following(if options.pipe {
+                        follow.as_pipe()
+                    } else {
+                        follow
+                    });
                     // Counted already, as the scan reads them: no count of its own.
                     state.follow_to(tail.rows(), false);
                 }
@@ -4833,6 +5064,14 @@ impl App {
         // The dataset is on screen now; whatever it still has to learn about itself is
         // read behind it.
         self.start_pending_footers();
+        self.start_indexing();
+        // `#` for text and logs, unless the flag or the config said.
+        if options.row_numbers_auto
+            && let Some(state) = self.data_table_state.as_mut()
+            && state.numbered_by_default()
+        {
+            state.set_row_numbers(true);
+        }
         self.sort_filter_modal = SortFilterModal::new();
         self.pivot_melt_modal = PivotMeltModal::new();
         self.status_message = Some(Self::LOADING_BUFFER.to_string());
@@ -4904,6 +5143,10 @@ impl App {
     /// As [`Self::spawn_async_collect`]; with no `status`, a load-ahead that nothing
     /// waits on: its job holds no keys. See [`InflightCollect`].
     fn spawn_collect(&mut self, status: Option<&str>) -> bool {
+        let held = self
+            .data_table_state
+            .as_ref()
+            .is_some_and(|state| self.count_held_at_estimate(state));
         let Some(state) = self.data_table_state.as_mut() else {
             return false;
         };
@@ -4929,6 +5172,8 @@ impl App {
             && !state.counts_itself_later()
             // A count that failed is not tried again on every scroll. End asks again.
             && self.len_count_failed != Some(generation)
+            // A dataset of too many files to count unasked shows its estimate.
+            && !held
         {
             self.len_count_inflight = Some(generation);
             count = Some(LenCount::for_state(state));
@@ -5055,9 +5300,10 @@ impl App {
 
     /// Count the rows off the UI thread; the answer comes back as `BackgroundLenReady`
     /// or `BackgroundLenFailed`.
-    fn spawn_count(&self, job: LenCount) {
+    fn spawn_count(&mut self, job: LenCount) {
         #[cfg(test)]
         self.counts_spawned.set(self.counts_spawned.get() + 1);
+        self.count_progress = job.progress.clone();
         let count = OwedCount::new(job, self.events.clone());
         self.runtime
             .spawn_blocking(move || count.answer(LenCount::run));
@@ -5332,6 +5578,15 @@ impl App {
         // with it, which is what would leave a count answering a question nothing could
         // match it to. A filter and a sort are rebuilt over the joined scan, so they are
         // on this side of it even though they are not pristine.
+        // Lines still being indexed: the end is where the indexing ends.
+        if matches!(jump, AppEvent::DoScrollEnd)
+            && let Some(state) = self.data_table_state.as_ref()
+            && state.indexing().is_some()
+        {
+            self.end_when_indexed = Some(self.dataset_generation);
+            self.status_message = Some(Self::COUNTING_FOR_END.to_string());
+            return None;
+        }
         if matches!(jump, AppEvent::DoScrollEnd)
             && let Some(state) = self.data_table_state.as_ref()
             && state.footers_pending().is_some()
@@ -5663,6 +5918,14 @@ impl App {
             #[cfg(test)]
             file_facts_reader: None,
             end_when_the_footers_land: None,
+            end_when_indexed: None,
+            indexing_stop: Arc::default(),
+            indexing_lines: None,
+            indexing_paused: false,
+            goto_when_indexed: None,
+            count_progress: Arc::default(),
+            exact_count_asked: None,
+            count_after_stop: None,
             len_count_inflight: None,
             count_after_paint: None,
             #[cfg(test)]
@@ -6855,6 +7118,7 @@ impl App {
     }
 
     pub fn enter_home(&mut self) {
+        self.pause_indexing();
         if self.return_from_quality_evidence(false) {
             self.analysis_modal.close();
         }
@@ -9270,7 +9534,11 @@ impl App {
                     };
                     // Followed, the copy goes on behind the first rows; recorded, it
                     // goes to the file the user named.
-                    let (download, options) = if options.follow || options.tee.is_some() {
+                    // And read as it arrives when what it holds can be.
+                    let (download, options) = if options.follow
+                        || options.tee.is_some()
+                        || crate::stdin::may_read_as_it_arrives(&options)
+                    {
                         match crate::follow::spool(open, options, &writer, &read, stdout)? {
                             (crate::follow::Spooled::Temp(download), options) => {
                                 (download, options)
@@ -9710,6 +9978,10 @@ fn next_search_epoch() -> u64 {
 /// What a pass behind a staged open reported, and which dataset it was reading for.
 /// `None` where the footers are: a pass that could not read them says so, so the
 /// dataset stops waiting.
+/// Bytes of a text file indexed per step behind its first rows, between which the
+/// indexing looks whether it is still wanted.
+const INDEX_STEP: usize = 16 << 20;
+
 type FootersReported = Option<(u64, Option<crate::widgets::datatable::FootersFound>)>;
 
 impl App {
@@ -9971,6 +10243,8 @@ impl App {
             facts.other_tables = opened.other_tables.clone();
             facts.open_notes.extend(opened.notes.iter().cloned());
             facts.units = opened.units.clone();
+            facts.indexing = opened.indexing.clone();
+            facts.numbering = opened.numbering.clone();
         }
         if let Some(sqlite) = &options.sqlite {
             facts.pushdown = Some(sqlite.pushdown.clone());
@@ -11526,6 +11800,15 @@ impl App {
             self.cancel_find();
             return None;
         }
+        // And for a count of footers, at the table its progress line is on.
+        if event.code == KeyCode::Esc
+            && self.input_mode == InputMode::Normal
+            && self.in_normal_table_view()
+            && self.footers_counted().is_some()
+        {
+            self.stop_count();
+            return None;
+        }
 
         if event.code == KeyCode::Esc
             && self.input_mode == InputMode::Normal
@@ -11912,8 +12195,12 @@ impl App {
                 self.quick_filter(event.code == KeyCode::Char('+'))
             }
             KeyCode::Char('#') => {
-                if let Some(ref mut state) = self.data_table_state {
-                    state.toggle_row_numbers();
+                let renumbered = self
+                    .data_table_state
+                    .as_mut()
+                    .is_some_and(|state| state.deferred(|s| s.toggle_row_numbers()));
+                if renumbered {
+                    self.spawn_async_collect(Self::LOADING_BUFFER);
                 }
                 None
             }
@@ -13121,6 +13408,19 @@ impl App {
             AppEvent::DoScrollHalfUp => self.handle_scroll(|s| s.half_page_up()),
             AppEvent::GoToLine(n) => {
                 let n = *n;
+                // Past the lines indexed so far: gone to once they all are.
+                if let Some(state) = self.data_table_state.as_ref()
+                    && state.indexing().is_some()
+                    && (n >= state.num_rows()
+                        || state.changes_rows()
+                        || !state.view_sort_columns().is_empty()
+                        || !state.view_sort_ascending())
+                {
+                    self.goto_when_indexed = Some((self.dataset_generation, n));
+                    self.status_message = Some(Self::INDEXING_FOR_ROW.to_string());
+                    self.busy = false;
+                    return None;
+                }
                 self.handle_scroll(|s| s.scroll_to_row_centered(n))
             }
             AppEvent::AnalysisChunk => {
@@ -13494,6 +13794,10 @@ impl App {
                 if self.len_count_inflight == Some(*len_generation) {
                     self.len_count_inflight = None;
                 }
+                if self.count_after_stop.take() == Some(*len_generation) {
+                    self.count_exactly();
+                    return None;
+                }
                 if let Some(run) = self.query_running.as_mut()
                     && run.len_count_inflight == Some(*len_generation)
                 {
@@ -13540,6 +13844,10 @@ impl App {
                         self.take_down_the_counting_status();
                     }
                 }
+                None
+            }
+            AppEvent::LinesIndexed { generation, rows } => {
+                self.lines_indexed(*generation, *rows);
                 None
             }
             AppEvent::BackgroundFootersJoined { .. } => {
@@ -16151,6 +16459,7 @@ impl App {
             column,
             exact,
             watch: watch.clone(),
+            file_starts: state.file_row_starts().map(Arc::new),
         });
         self.spawn_job(Job::ValueCounts, None, move |_| {
             plan.run(&watch)
@@ -17906,6 +18215,13 @@ impl Drop for App {
         // every exit: a normal quit, an error return, an unwind from a panic, and the
         // Python binding calling `run` again in the same process.
         self.footer_progress.cancel();
+        // The indexing stops, and the reads waiting on it give up, so nothing holds
+        // the file once the app is gone (the Python binding runs on in the process).
+        self.indexing_stop
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(lines) = self.indexing_lines.take() {
+            lines.stop_indexing();
+        }
     }
 }
 

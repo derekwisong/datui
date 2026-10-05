@@ -560,6 +560,8 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<Open> {
             .map(|n| crate::text_formats::note(n, "the log".to_string()))
             .collect(),
         units,
+        indexing: None,
+        numbering: None,
     };
     Ok(Open::Table {
         lf: Box::new(records.lazy()),

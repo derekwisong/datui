@@ -598,6 +598,7 @@ mod tests {
             column: "k".to_string(),
             exact: false,
             watch: ReadWatch::default(),
+            file_starts: None,
         });
         let rows = screen(&mut modal, 60, 6);
         assert!(rows[2].contains("Counting k..."), "{rows:#?}");

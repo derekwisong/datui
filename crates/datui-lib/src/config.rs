@@ -844,6 +844,9 @@ pub struct ReadConfig {
     /// heard of as it happens, the least time between two reads. A burst of appends
     /// within one interval is one refresh.
     pub follow_interval: Interval,
+    /// A dataset of more files than this shows an estimated row count until asked to
+    /// count exactly. 0 always counts.
+    pub exact_count_files: usize,
     /// Ask before reading more than this of a file whole into memory (JSON, Avro, ORC,
     /// Excel and the other formats read in memory). 0 never asks.
     pub memory_warning: ByteSize,
@@ -868,6 +871,7 @@ impl Default for ReadConfig {
             decompress_in_memory: false,
             temp_dir: None,
             follow_interval: Interval(crate::follow::DEFAULT_INTERVAL),
+            exact_count_files: 50_000,
             memory_warning: ByteSize::mib(1024),
             audio_float: false,
         }
@@ -935,7 +939,7 @@ impl Default for CsvConfig {
 pub struct DisplayConfig {
     /// Whether to draw box-drawing and arrow characters, or fall back to ASCII.
     pub unicode: crate::glyphs::UnicodeMode,
-    pub row_numbers: bool,
+    pub row_numbers: RowNumbers,
     /// The first row's number.
     pub row_numbers_start: usize,
     /// Spacing between table columns: `"comfortable"`, `"compact"` or a count of cells.
@@ -959,6 +963,64 @@ pub struct DisplayConfig {
     /// How numbers are displayed. Either a preset name (`number_format = "thousands"`)
     /// or a `[display.number_format]` table for finer control.
     pub number_format: NumberFormatConfig,
+}
+
+/// Whether `#` shows row numbers when a file opens: for text and logs (`"auto"`), or
+/// for every format or none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RowNumbers {
+    #[default]
+    Auto,
+    On,
+    Off,
+}
+
+impl RowNumbers {
+    /// Whether a file read as `format` opens with them.
+    pub fn for_format(self, format: Option<crate::FileFormat>) -> bool {
+        match self {
+            Self::On => true,
+            Self::Off => false,
+            Self::Auto => matches!(
+                format,
+                Some(crate::FileFormat::Text | crate::FileFormat::Journal)
+            ),
+        }
+    }
+}
+
+impl From<bool> for RowNumbers {
+    fn from(on: bool) -> Self {
+        if on { Self::On } else { Self::Off }
+    }
+}
+
+impl Serialize for RowNumbers {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Auto => serializer.serialize_str("auto"),
+            Self::On => serializer.serialize_bool(true),
+            Self::Off => serializer.serialize_bool(false),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RowNumbers {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Bool(bool),
+            Name(String),
+        }
+        const EXPECTED: &str = "row_numbers is \"auto\", true or false";
+        match Raw::deserialize(deserializer).map_err(|_| D::Error::custom(EXPECTED))? {
+            Raw::Bool(on) => Ok(on.into()),
+            Raw::Name(name) if name == "auto" => Ok(Self::Auto),
+            Raw::Name(other) => Err(D::Error::custom(format!("{EXPECTED}, not {other:?}"))),
+        }
+    }
 }
 
 /// Spacing between the main table's columns, frozen and scrolling alike: a density
@@ -1693,7 +1755,7 @@ impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
             unicode: crate::glyphs::UnicodeMode::default(),
-            row_numbers: false,
+            row_numbers: RowNumbers::Auto,
             row_numbers_start: 1,
             cell_padding: CellPadding::default(),
             column_colors: true,
@@ -3556,6 +3618,10 @@ mod tests {
                 toml::Value::Integer(n) => toml::Value::Integer(n + 1),
                 toml::Value::Array(items) if items.is_empty() => vec!["x"].into(),
                 toml::Value::Array(_) => toml::Value::Array(Vec::new()),
+                // An `auto` that also takes a bool.
+                toml::Value::String(text) if text == "auto" && path == "display.row_numbers" => {
+                    true.into()
+                }
                 toml::Value::String(text) => format!("{text}0").into(),
                 other => panic!("{path}: no rule to change {other}"),
             };

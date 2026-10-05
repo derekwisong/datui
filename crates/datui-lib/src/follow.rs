@@ -1196,6 +1196,9 @@ pub struct Follow {
     held: Option<Arc<File>>,
     /// Where its rows start, every so many.
     marks: Arc<Marks>,
+    /// Standard input read as it arrives without `--follow`: the view stays where it
+    /// is, and the rows so far are a part of what is coming.
+    pipe: bool,
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -1249,7 +1252,26 @@ impl Follow {
             stale_view: false,
             held: None,
             marks,
+            pipe: false,
         }
+    }
+
+    /// This follows standard input read as it arrives rather than `--follow`: the
+    /// view starts at the top and stays where it is put.
+    pub fn as_pipe(mut self) -> Follow {
+        self.pipe = true;
+        self.settle_at_end = false;
+        self
+    }
+
+    /// Whether this is standard input read as it arrives ([`Self::as_pipe`]).
+    pub fn is_pipe(&self) -> bool {
+        self.pipe
+    }
+
+    /// Whether more rows may still come: followed and not ended.
+    pub fn live(&self) -> bool {
+        self.standing != Standing::Ended
     }
 
     /// Where the file's rows start, every so many.
@@ -1876,10 +1898,15 @@ pub enum Spooled {
 }
 
 /// Copy standard input, from `open`, to the file `--tee` names or else a temporary
-/// file in `--temp-dir` claimed through `writer`: until enough has arrived to show when
-/// following, until it ends when not. A followed copy goes on behind the answer. Says
-/// what the file holds, as [`crate::stdin::spool`] does, with the copy carried in the
-/// options for the dataset to hold.
+/// file in the spool directory ([`crate::stdin::spool_dir`]) claimed through `writer`,
+/// until enough has arrived to show; the copy goes on behind the answer. Says what the
+/// file holds, as [`crate::stdin::spool`] does, with the copy carried in the options
+/// for the dataset to hold.
+///
+/// Not followed and not recorded, standard input is read as it arrives all the same,
+/// when what it holds can be (`OpenOptions::pipe`): the rows show as they come and stop
+/// coming at its end. What cannot be (Parquet, a compressed stream) is copied to its
+/// end first, as before.
 pub(crate) fn spool<R: Read + Send + 'static>(
     open: impl FnOnce() -> crate::download::Opened<R>,
     options: OpenOptions,
@@ -1903,6 +1930,7 @@ pub(crate) fn spool<R: Read + Send + 'static>(
         })?),
         _ => None,
     };
+    let progressive = !options.follow && tee.is_none();
     let (reader, _) = open().map_err(|e| format!("Could not read standard input: {e}"))?;
     let (spooled, file) = match &tee {
         Some(tee) if !tee.to_stdout() => {
@@ -1910,8 +1938,9 @@ pub(crate) fn spool<R: Read + Send + 'static>(
             (Spooled::Kept(tee.path.clone()), file)
         }
         _ => {
+            let dir = crate::stdin::spool_dir(&options);
             let Some((named, claim)) = writer
-                .create(|| TempDownload::create(options.temp_dir.as_deref(), None))
+                .create(|| TempDownload::create(dir.as_deref(), None))
                 .map_err(|e| crate::error_display::user_message_from_report(&e, None))?
             else {
                 return Err("Reading standard input was stopped.".to_string());
@@ -1947,7 +1976,7 @@ pub(crate) fn spool<R: Read + Send + 'static>(
             return Err("Reading standard input was stopped.".to_string());
         }
         // An Arrow stream has no lines to count: its schema message is enough.
-        let enough = options.follow
+        let enough = (options.follow || progressive)
             && (state.lines >= WANTED_LINES
                 || (state.drained
                     && (state.lines >= wanted || stream::begins_with_schema(&spooled_path))));
@@ -1974,12 +2003,57 @@ pub(crate) fn spool<R: Read + Send + 'static>(
         return Err("Nothing came in on standard input.".to_string());
     }
     let (format, compression, guessed) = crate::stdin::sniff_for(&head, &options);
+    let asked = options.clone();
     let options = OpenOptions {
         format_guessed: options.format.is_none() && guessed,
         format: options.format.or(Some(format)),
         compression: options.compression.or(compression),
         ..options
     };
+    if progressive {
+        // Not JSON lines (NDJSON, the journal): a read of the whole of a stream still
+        // sending ends mid-object, which does not parse, and the journal's summary
+        // reads the whole of it at once. Those are read to the end first.
+        let json = matches!(
+            options.format,
+            Some(FileFormat::Jsonl | FileFormat::Journal)
+        );
+        let read_on = !json
+            && (followed_stream(&path, options.format, &options)
+                || refusal(options.format, &options).is_none());
+        if read_on {
+            return Ok((
+                spooled,
+                OpenOptions {
+                    spool: Some(handle),
+                    follow: true,
+                    pipe: true,
+                    ..options
+                },
+            ));
+        }
+        // Read once it is finished: the rest is copied first, then looked at whole.
+        while spool.ended().is_none() {
+            if writer.stopped() {
+                spool.stop();
+                return Err("Reading standard input was stopped.".to_string());
+            }
+            read.store(spool.bytes(), Ordering::Relaxed);
+            let state = spool.lock();
+            if state.ended.is_none() {
+                let _ = spool
+                    .changed
+                    .wait_timeout(state, Duration::from_millis(100))
+                    .unwrap_or_else(|e| e.into_inner());
+            }
+        }
+        if let Some(Some(reason)) = spool.ended() {
+            return Err(reason);
+        }
+        read.store(spool.bytes(), Ordering::Relaxed);
+        let options = crate::stdin::described(&path, asked)?;
+        return Ok((spooled, options));
+    }
     // A recording goes on whatever it holds; only the view is not followed then.
     if options.follow
         && options.tee.is_none()

@@ -93,6 +93,10 @@ impl App {
             footer.query_key = Some(":");
             footer.view_key = Some("s");
         }
+        // `#` is the view's place where the rows cannot say theirs in the source.
+        if state.row_numbers_count_the_view() {
+            footer.notes.push(("# counts the view".to_string(), false));
+        }
         if let Some(mark) = self.find_mark() {
             footer.notes.push((mark, false));
         }
@@ -105,10 +109,19 @@ impl App {
         let unknown = !pending
             && !state.is_num_rows_valid()
             && self.len_count_failed == Some(state.len_generation());
-        let total = if pending {
+        let arriving = state
+            .follow()
+            .is_some_and(|follow| follow.is_pipe() && follow.live());
+        let estimate = self.row_estimate();
+        let total = if let Some(estimate) = estimate {
+            // Until it is counted, which the progress line says while it is.
+            Total::Estimated(estimate.rows as usize)
+        } else if pending {
             Total::Pending
         } else if unknown {
             Total::Unknown
+        } else if arriving {
+            Total::Partial(state.num_rows())
         } else {
             Total::Known(state.num_rows())
         };
@@ -309,6 +322,27 @@ impl App {
     /// it. A find reading the view counts its rows; a dataset still reading its
     /// footers counts files.
     pub(crate) fn footer_progress_line(&self, content: MainViewContent) -> Option<ProgressLine> {
+        // Value counts reading the view: the rows read, and of a dataset of files, how
+        // many of them the read has reached.
+        if content == MainViewContent::ValueCounts
+            && let Some(computing) = self.value_counts.computing.as_ref()
+            && let Some(rows) = computing.watch.rows_seen()
+        {
+            let noun = if computing.exact { "rows" } else { "sampling" };
+            let mut counts = vec![ProgressCount::of(noun, rows as u64, None)];
+            if let Some((reached, files)) = computing.files_reached() {
+                counts.push(ProgressCount::of(
+                    "files",
+                    reached as u64,
+                    Some(files as u64),
+                ));
+            }
+            return Some(ProgressLine {
+                counts,
+                // Esc leaves a sample being read, and stops a count of every row.
+                stoppable: computing.exact,
+            });
+        }
         if content != MainViewContent::Datatable {
             return None;
         }
@@ -317,11 +351,30 @@ impl App {
             && let Some(read) = self.find.read
         {
             return Some(ProgressLine {
-                counts: vec![ProgressCount {
-                    noun: "rows",
-                    done: read as u64,
-                    total: state.num_rows_if_valid().map(|n| n as u64),
-                }],
+                counts: vec![ProgressCount::of(
+                    "rows",
+                    read as u64,
+                    state.num_rows_if_valid().map(|n| n as u64),
+                )],
+                stoppable: true,
+            });
+        }
+        // Lines indexed behind the first rows: how many so far, and how far through
+        // the file.
+        if let Some(lines) = state.indexing() {
+            let (done, all) = lines.indexed_bytes();
+            return Some(ProgressLine {
+                counts: vec![
+                    ProgressCount::of("lines", lines.rows() as u64, None),
+                    ProgressCount::bytes("read", done, Some(all)),
+                ],
+                stoppable: false,
+            });
+        }
+        // The exact count of a dataset of many files: footers read of how many.
+        if let Some((read, total)) = self.footers_counted() {
+            return Some(ProgressLine {
+                counts: vec![ProgressCount::of("files", read as u64, Some(total as u64))],
                 stoppable: true,
             });
         }
@@ -330,11 +383,11 @@ impl App {
             .filter(|_| self.dataset_is_still_reading_its_footers())
         {
             return Some(ProgressLine {
-                counts: vec![ProgressCount {
-                    noun: "footers",
-                    done: read as u64,
-                    total: Some(total as u64),
-                }],
+                counts: vec![ProgressCount::of(
+                    "footers",
+                    read as u64,
+                    Some(total as u64),
+                )],
                 stoppable: false,
             });
         }

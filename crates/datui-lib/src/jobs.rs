@@ -485,6 +485,25 @@ struct Record {
     /// Superseded by the user's cancel, rather than by other work taking its place:
     /// a read still going that a new one should not start beside.
     cancelled: bool,
+    /// Set when it is superseded, for its worker to see ([`superseded`]).
+    stale: Arc<std::sync::atomic::AtomicBool>,
+}
+
+std::thread_local! {
+    /// The stale flag of the job running on this thread, if a job runs on it.
+    static RUNNING: std::cell::RefCell<Option<Arc<std::sync::atomic::AtomicBool>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Whether the job running on this thread has been superseded: its answer will be
+/// dropped, so a wait inside it may give up. False off a job's thread.
+pub(crate) fn superseded() -> bool {
+    RUNNING.with(|running| {
+        running
+            .borrow()
+            .as_ref()
+            .is_some_and(|stale| stale.load(std::sync::atomic::Ordering::Relaxed))
+    })
 }
 
 impl Record {
@@ -504,6 +523,7 @@ impl Record {
     fn supersede(&mut self, now: Instant) {
         self.superseded = Some(now);
         self.keys = None;
+        self.stale.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -516,6 +536,7 @@ pub(crate) struct Started {
     slot: Slot,
     events: Sender<AppEvent>,
     ended: bool,
+    stale: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(test)]
     dies: bool,
     #[cfg(test)]
@@ -549,6 +570,7 @@ impl Started {
             if let Some(gate) = started.waits.take() {
                 let _ = gate.recv();
             }
+            RUNNING.with(|running| *running.borrow_mut() = Some(started.stale.clone()));
             let ran = logging::catch_panic(|| {
                 #[cfg(test)]
                 if dies {
@@ -556,6 +578,7 @@ impl Started {
                 }
                 work(&worker)
             });
+            RUNNING.with(|running| *running.borrow_mut() = None);
             match ran {
                 Ok(Ok(answered)) => {
                     let Answered { answer, then } = answered.into();
@@ -711,6 +734,7 @@ impl Jobs {
         #[cfg(test)]
         let waits = self.worker_waits.as_mut().and_then(|waits| waits(&job));
         let slot = Slot::default();
+        let stale = Arc::<std::sync::atomic::AtomicBool>::default();
         self.records.push(Record {
             ticket,
             job,
@@ -718,12 +742,14 @@ impl Jobs {
             keys: keys.map(str::to_string),
             superseded: None,
             cancelled: false,
+            stale: stale.clone(),
         });
         Started {
             ticket,
             slot,
             events: self.events.clone(),
             ended: false,
+            stale,
             #[cfg(test)]
             dies,
             #[cfg(test)]
@@ -743,6 +769,7 @@ impl Jobs {
             keys: keys.map(str::to_string),
             superseded: None,
             cancelled: false,
+            stale: Arc::default(),
         });
     }
 

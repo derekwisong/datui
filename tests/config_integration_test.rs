@@ -11,7 +11,7 @@ fn args(flags: &[&str]) -> Args {
 #[test]
 fn test_config_used_for_row_numbers() {
     let mut config = AppConfig::default();
-    config.display.row_numbers = true;
+    config.display.row_numbers = true.into();
     config.display.row_numbers_start = 0;
 
     let opts = OpenOptions::from_args_and_config(&args(&["a.csv"]), &config);
@@ -24,10 +24,10 @@ fn test_config_used_for_row_numbers() {
 #[test]
 fn test_row_numbers_flag_over_config() {
     let mut config = AppConfig::default();
-    config.display.row_numbers = true;
+    config.display.row_numbers = true.into();
     let opts = OpenOptions::from_args_and_config(&args(&["--row-numbers=false"]), &config);
     assert!(!opts.row_numbers);
-    config.display.row_numbers = false;
+    config.display.row_numbers = false.into();
     let opts = OpenOptions::from_args_and_config(&args(&["--row-numbers"]), &config);
     assert!(opts.row_numbers);
 }
@@ -37,7 +37,7 @@ fn test_config_display_settings() {
     let mut config = AppConfig::default();
     config.performance.pages_ahead = 7;
     config.performance.pages_behind = 8;
-    config.display.row_numbers = true;
+    config.display.row_numbers = true.into();
 
     let opts = OpenOptions::from_args_and_config(&args(&[]), &config);
 

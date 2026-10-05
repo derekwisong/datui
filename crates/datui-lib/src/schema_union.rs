@@ -119,6 +119,72 @@ pub struct FooterProgress {
     /// prefix is the longest wait before any footer, and it has no total to count to.
     listed: std::sync::Arc<AtomicUsize>,
     listing: std::sync::atomic::AtomicBool,
+    /// Footers read at once by a pass against this counter; `0` is [`FOOTERS_AT_ONCE`].
+    at_once: AtomicUsize,
+    /// The row count a sample of the footers says, once one is in.
+    estimate: std::sync::Mutex<Option<RowEstimate>>,
+}
+
+/// A dataset's row count from a sample of its files' footers: the mean of the files
+/// read, times the files there are. Said as `~4.12B rows (est.)` until it is counted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowEstimate {
+    pub rows: u64,
+    /// Footers the mean is over.
+    pub sampled: usize,
+    /// Files in the dataset.
+    pub files: usize,
+}
+
+impl RowEstimate {
+    /// The estimate from the `footers` read of a dataset of `files` files; `None`
+    /// when none read.
+    pub fn of<'a>(
+        files: usize,
+        footers: impl IntoIterator<Item = &'a Option<FileFooter>>,
+    ) -> Option<Self> {
+        let (sampled, rows) = footers
+            .into_iter()
+            .flatten()
+            .fold((0usize, 0u128), |(n, rows), f| {
+                (n + 1, rows + f.rows() as u128)
+            });
+        (sampled > 0).then(|| RowEstimate {
+            rows: u64::try_from(rows * files as u128 / sampled as u128).unwrap_or(u64::MAX),
+            sampled,
+            files,
+        })
+    }
+}
+
+/// Footers sampled at random for a dataset's first row estimate: enough for a mean
+/// within a few percent on any dataset whose files are alike, and one wave or a few.
+pub const ESTIMATE_SAMPLE: usize = 2_000;
+
+/// Footers read at once by a count: the exact count of a dataset of many files reads
+/// every footer it does not have, and on a store each is a round trip of waiting.
+pub const COUNT_AT_ONCE: usize = 256;
+
+/// `n` of the indices below `files`, ascending, drawn at random from `seed`: every
+/// index when there are no more than `n`. The same seed draws the same sample.
+pub fn random_sample(files: usize, n: usize, seed: u64) -> Vec<usize> {
+    if files <= n {
+        return (0..files).collect();
+    }
+    // splitmix64: a draw that is the same on every platform, with no dependency.
+    let mut state = seed;
+    let mut next = move || {
+        state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    };
+    let mut chosen = std::collections::BTreeSet::new();
+    while chosen.len() < n {
+        chosen.insert((next() % files as u64) as usize);
+    }
+    chosen.into_iter().collect()
 }
 
 impl FooterProgress {
@@ -203,6 +269,30 @@ impl FooterProgress {
     /// The flag itself, for read tasks that outlive the borrow.
     pub fn cancel_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
         self.cancelled.clone()
+    }
+
+    /// A counter for an exact count: its passes read [`COUNT_AT_ONCE`] footers at once.
+    pub fn counting() -> Self {
+        let progress = Self::default();
+        progress.at_once.store(COUNT_AT_ONCE, Ordering::Relaxed);
+        progress
+    }
+
+    /// Footers a pass against this counter reads at once.
+    pub fn reads_at_once(&self) -> usize {
+        match self.at_once.load(Ordering::Relaxed) {
+            0 => FOOTERS_AT_ONCE,
+            n => n,
+        }
+    }
+
+    /// What a sample of the footers says the row count is.
+    pub fn set_estimate(&self, estimate: Option<RowEstimate>) {
+        *self.estimate.lock().unwrap_or_else(|e| e.into_inner()) = estimate;
+    }
+
+    pub fn estimate(&self) -> Option<RowEstimate> {
+        *self.estimate.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 

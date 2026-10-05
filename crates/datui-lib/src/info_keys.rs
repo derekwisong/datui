@@ -34,6 +34,10 @@ impl App {
                 self.input_mode = InputMode::Normal;
             }
             // The file's bytes, in the hex view; Esc there comes back to the table.
+            // The rows counted exactly, where they are an estimate.
+            KeyCode::Char('c') if event.is_press() && self.row_estimate().is_some() => {
+                self.count_exactly();
+            }
             KeyCode::Char('x') if event.is_press() => {
                 if let Some(path) = self.hex_target() {
                     self.info_modal.close();

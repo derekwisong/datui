@@ -253,6 +253,7 @@ pub const SETTINGS: &[Setting] = &[
     s("read.decompress_in_memory", Bool, Value("false"), "Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file.").kwarg("decompress_in_memory"),
     s("read.temp_dir", Path, Unset("\"/tmp\""), "Directory for decompression temp files. Unset: the system's.").flag("temp-dir").kwarg("temp_dir"),
     s("read.follow_interval", Duration, Value("\"250ms\""), "With --follow, how often the file is checked for new rows, or on Linux the least time between two reads, 10ms to 1m. Appends within one interval are one refresh."),
+    s("read.exact_count_files", Count, Value("50000"), "A dataset of more files than this shows a row count estimated from a sample of its footers until c in the Info panel counts it; 0 always counts."),
     s("read.memory_warning", Size, Value("\"1GiB\""), "Ask before reading more than this of a file whole into memory (JSON, Avro, ORC, Excel and the other formats read in memory); 0 never asks."),
     s("read.audio_float", Bool, Value("false"), "Show integer audio samples as float in [-1, 1].").kwarg("audio_float"),
     // [csv]
@@ -264,8 +265,8 @@ pub const SETTINGS: &[Setting] = &[
     s("csv.ignore_errors", Bool, Value("false"), "Skip rows that do not parse instead of failing.").flag("ignore-errors").kwarg("ignore_errors"),
     // [display]
     s("display.unicode", Choice(&["auto", "always", "never"]), Value("\"auto\""), "Box-drawing and arrow glyphs, or plain ASCII. auto uses them when the locale is UTF-8."),
-    s("display.row_numbers", Bool, Value("false"), "Show row numbers on the left (# toggles).").flag("row-numbers").kwarg("row_numbers"),
-    s("display.row_numbers_start", Count, Value("1"), "The first row's number.").kwarg("row_numbers_start"),
+    s("display.row_numbers", Toml("\"auto\" \\| bool"), Value("\"auto\""), "Number rows on the left by their place in the source, kept through a sort or filter (# toggles). auto: for text and logs; true or false: for all of them.").flag("row-numbers").kwarg("row_numbers"),
+    s("display.row_numbers_start", Count, Value("1"), "The number of the source's first row.").kwarg("row_numbers_start"),
     s("display.cell_padding", Toml("\"comfortable\" \\| \"compact\" \\| integer"), Value("\"comfortable\""), "Space between columns: comfortable (2 cells), compact (1) or a number of cells."),
     s("display.column_colors", Bool, Value("true"), "Color cells by column type.").kwarg("column_colors"),
     s("display.type_row", Bool, Value("true"), "A second header row naming each column's type (D toggles)."),
@@ -932,8 +933,12 @@ mod tests {
 
     #[test]
     fn an_override_reads_its_value_for_the_key() {
-        let o: Override = "display.row_numbers=yes".parse().unwrap();
+        let o: Override = "display.mouse=yes".parse().unwrap();
         assert_eq!(o.value, toml::Value::Boolean(true));
+        let o: Override = "display.row_numbers=auto".parse().unwrap();
+        assert_eq!(o.value, toml::Value::String("auto".into()));
+        let o: Override = "display.row_numbers=false".parse().unwrap();
+        assert_eq!(o.value, toml::Value::Boolean(false));
         let o: Override = "csv.comment=#".parse().unwrap();
         assert_eq!(o.value, toml::Value::String("#".into()));
         let o: Override = "cloud.env_files=a.env, b.env".parse().unwrap();

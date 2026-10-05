@@ -5,9 +5,9 @@ a stream while you view it.
 
 | Command | Does |
 |---|---|
-| `COMMAND \| datui` | Reads what is piped in; `datui -` does the same |
+| `COMMAND \| datui` | Shows what is piped in as it arrives; `datui -` does the same |
 | `datui -f FILE` | Follows a file as it grows, as `tail -f` does |
-| `COMMAND \| datui -f -` | Shows the rows of a pipe as they arrive |
+| `COMMAND \| datui -f -` | Shows the rows of a pipe as they arrive, staying on the last row |
 | `COMMAND \| datui --tee FILE -` | Records the stream to FILE while you view it |
 | `COMMAND \| datui --tee - - \| COMMAND` | Passes the stream on to standard output, viewing it on the way |
 
@@ -23,8 +23,21 @@ printf 'id,amount\n1,9.50\n' > sales.csv && datui - < sales.csv
 (echo 1,2; echo 3,4) | datui --no-header -
 ```
 
-- The data is written to a temporary file as it arrives (in `--temp-dir`,
-  when given), then read like any file. The loading screen counts the bytes;
+- The first rows show once a thousand lines have arrived, or fewer when the
+  producer is slower than that, and datui reads on to the end of the stream.
+  The view stays where you put it; the footer says `reading stdin` and the
+  bytes so far, and the row count reads `1,234+` until the stream ends.
+  [Value counts](value-counts.md), [analysis](analysis-features.md) and
+  [charts](charting.md) opened meanwhile keep the rows they opened on, and
+  <kbd>t</kbd> there reads the new ones, as for `--follow`.
+- What cannot be read before it is finished (Parquet, an Arrow IPC file,
+  Excel, a compressed stream), and NDJSON and journal JSON, whose last object
+  is cut off until it ends, are read to the end first; the loading screen
+  counts the bytes.
+- The data is written to a temporary file in `spool` under the cache
+  directory as it arrives, not the system temp directory (memory on many
+  Linux systems); `--temp-dir` puts it elsewhere. The file is removed when the
+  dataset goes; one left by a crash is removed after a week.
   <kbd>Ctrl</kbd>+<kbd>O</kbd> stops the read and removes the file.
 - The format comes from the first bytes, unless `--format` or `--compression`
   names it: see [Detected by content](../formats/index.md#detected-by-content).
@@ -63,7 +76,7 @@ and how many have arrived since, and offers <kbd>t</kbd> and <kbd>Esc</kbd>.
 | A refresh | Reads only the rows on screen, from a mark near them: a 10 GB file costs what a 10 MB one does. Under a filter, only the new rows are counted |
 | Truncation, rotation | The file is read again from its start, and the bar says so. A deleted file stops the follow; its rows stay |
 | How often | On Linux, as an append lands, at most every 250ms; elsewhere and on network file systems, the size is checked every 250ms. `read.follow_interval` changes it: `-c read.follow_interval=1s` |
-| Standard input | Written to its temporary file until it ends, or <kbd>Esc</kbd>, <kbd>Ctrl</kbd>+<kbd>O</kbd> or quitting stops it. The bar says when it ends |
+| Standard input | Written to its temporary file until it ends, or <kbd>Esc</kbd>, <kbd>Ctrl</kbd>+<kbd>O</kbd> or quitting stops it. The bar says when it ends. Without `-f` it is read the same way, but the cursor stays where it is |
 
 An Arrow IPC stream shows a record batch once the batch is whole; one with
 dictionary-encoded columns cannot be followed. `--follow` refuses Parquet,

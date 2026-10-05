@@ -830,6 +830,84 @@ impl Kind for Shapes {
     }
 }
 
+/// The footers a dataset's count has read, each under its file's identity
+/// ([`file_identity`]): a count of the dataset again reads only the files it has not,
+/// though files were added since, and a count that was stopped keeps what it read.
+///
+/// A cache in the same sense as [`DatasetShape`], which holds the same footers in the
+/// listing's order once all of them are read; this one is by file, so it is still
+/// right for a dataset that has changed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileFooters {
+    /// The distinct schemas, as in [`DatasetShape::schemas`].
+    pub schemas: Vec<Vec<(String, polars::prelude::DataType)>>,
+    /// Each file's identity, and its footer.
+    pub files: Vec<(u64, CachedFooter)>,
+}
+
+/// What a file is, for [`FileFooters`]: its key, size, modification time and the
+/// store's tag, any of which changes when the file is written again.
+pub fn file_identity(key: &str, size: u64, stamp: u64, etag: Option<&str>) -> u64 {
+    let mut hasher = StableHasher::default();
+    hasher.bytes(key.as_bytes()).u64(size).u64(stamp);
+    match etag {
+        Some(etag) => hasher.u64(1).bytes(etag.as_bytes()),
+        None => hasher.u64(0),
+    };
+    hasher.finish()
+}
+
+/// [`FileFooters`] by dataset path. The fingerprint is empty: each file's identity is
+/// its own check.
+pub(crate) struct FileFootersKind;
+
+impl Kind for FileFootersKind {
+    const DIR: &'static str = "file_footers";
+    const EXT: &'static str = "footers";
+    const VERSION: u16 = 1;
+    const BUDGET: u64 = 64 << 20;
+    type Value = FileFooters;
+
+    fn encode(footers: &FileFooters) -> Result<Vec<u8>> {
+        let shape = DatasetShape {
+            fingerprint: String::new(),
+            files: footers.files.iter().map(|(_, f)| f.clone()).collect(),
+            schemas: footers.schemas.clone(),
+            taken_at: 0,
+        };
+        let mut out = encode_shape(&shape)?;
+        for (identity, _) in &footers.files {
+            out.extend_from_slice(&identity.to_le_bytes());
+        }
+        Ok(out)
+    }
+
+    fn decode(payload: &[u8]) -> Option<FileFooters> {
+        // The identities follow the shape, eight bytes a file.
+        let count = payload.len().checked_sub(4)?;
+        let (len, rest) = payload.split_first_chunk::<4>()?;
+        let header = usize::try_from(u32::from_le_bytes(*len)).ok()?;
+        let mut body = rest.get(header..)?;
+        let files = usize::try_from(take_varint(&mut body)?).ok()?;
+        let ids = files.checked_mul(8)?;
+        if ids > count {
+            return None;
+        }
+        let (shape, identities) = payload.split_at(payload.len() - ids);
+        let shape = decode_shape(shape)?;
+        (shape.files.len() == files).then(|| FileFooters {
+            schemas: shape.schemas,
+            files: identities
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|id| u64::from_le_bytes(*id))
+                .zip(shape.files)
+                .collect(),
+        })
+    }
+}
+
 /// What home has measured of each dataset, by path. Each record carries the size and
 /// mtime it was taken at, so the store's fingerprint is empty.
 pub(crate) struct Facts;
@@ -1009,6 +1087,16 @@ impl CacheManager {
     /// Remember one dataset's shape, keeping the others while they fit the budget.
     pub fn save_dataset_shape(&self, path: &str, shape: DatasetShape) {
         Store::<Shapes>::new(self).put(path, &shape.fingerprint, &shape);
+    }
+
+    /// The footers counts of the dataset at `path` have read, by file.
+    pub fn file_footers(&self, path: &str) -> Option<FileFooters> {
+        Store::<FileFootersKind>::new(self).get(path, "")
+    }
+
+    /// Remember the footers a count of the dataset at `path` read, by file.
+    pub fn save_file_footers(&self, path: &str, footers: &FileFooters) {
+        Store::<FileFootersKind>::new(self).put(path, "", footers);
     }
 
     /// The last listing of cloud source `id`, if it was taken at `fingerprint`.

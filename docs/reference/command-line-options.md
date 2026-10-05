@@ -53,7 +53,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 
 | Option | Description |
 |---|---|
-| `--row-numbers[=<BOOL>]` | Show row numbers on the left (# toggles). [config: display.row_numbers] |
+| `--row-numbers[=<BOOL>]` | Number rows on the left by their place in the source, kept through a sort or filter (# toggles). auto: for text and logs; true or false: for all of them. [config: display.row_numbers] |
 | `--number-format <F>` | Digit grouping: none, thousands, european, si, swiss, indian, underscore or system, or a [display.number_format] table (, toggles). [config: display.number_format] |
 | `--mouse[=<BOOL>]` | Take the mouse: the wheel scrolls, a click selects. false leaves it to the terminal. [config: display.mouse] |
 | `--sample-rows <N>` | Rows an analysis samples from a larger table, spread across all of it; 0 reads every row. [config: analysis.sample_rows] |

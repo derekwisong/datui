@@ -44,10 +44,30 @@ pub fn lazy<S: RowSource>(source: &Arc<S>) -> LazyFrame {
 /// [`lazy`] with `height` rows, for a source that grows: the frame of no columns at
 /// its root is replaced with a taller one as rows arrive (`crate::lines::bound`).
 pub fn lazy_with_height<S: RowSource>(source: &Arc<S>, height: usize) -> LazyFrame {
-    let base = DataFrame::empty_with_height(height.min(MAX_ROWS))
-        .lazy()
-        .with_row_index(INDEX, None);
-    let exprs: Vec<Expr> = source
+    frame(source, height, false)
+}
+
+/// [`lazy_with_height`], each row carrying its place in the source in [`INDEX`]: the
+/// number `#` shows, kept through a sort or a filter. Hidden from the view as the
+/// dataset's row index always is.
+pub fn lazy_numbered<S: RowSource>(source: &Arc<S>, height: usize) -> LazyFrame {
+    frame(source, height, true)
+}
+
+fn frame<S: RowSource>(source: &Arc<S>, height: usize, numbered: bool) -> LazyFrame {
+    let height = DataFrame::empty_with_height(height.min(MAX_ROWS)).lazy();
+    frame_over(source, height, numbered)
+}
+
+/// [`lazy_numbered`] over `height`, a frame of no columns whose height is the rows:
+/// for a source whose height is known only when the frame runs.
+pub fn lazy_numbered_over<S: RowSource>(source: &Arc<S>, height: LazyFrame) -> LazyFrame {
+    frame_over(source, height, true)
+}
+
+fn frame_over<S: RowSource>(source: &Arc<S>, height: LazyFrame, numbered: bool) -> LazyFrame {
+    let base = height.with_row_index(INDEX, None);
+    let mut exprs: Vec<Expr> = source
         .schema()
         .iter()
         .enumerate()
@@ -62,6 +82,9 @@ pub fn lazy_with_height<S: RowSource>(source: &Arc<S>, height: usize) -> LazyFra
                 .alias(name.clone())
         })
         .collect();
+    if numbered {
+        exprs.push(col(INDEX));
+    }
     base.select(exprs)
 }
 

@@ -106,6 +106,10 @@ pub enum Total {
     Pending,
     /// The count could not be made.
     Unknown,
+    /// The rows so far of standard input still arriving: `12,400+`.
+    Partial(usize),
+    /// From a sample of a dataset's files, until they are counted: `~4.12B (est.)`.
+    Estimated(usize),
 }
 
 /// Where the cursor is: `41,208 / 1,204,331`, led by the column when the table is
@@ -135,6 +139,11 @@ impl Position {
         let total = |short: bool| match self.total {
             Total::Known(n) if short => crate::discover::format_rows(n),
             Total::Known(n) => crate::numfmt::group_chrome(n),
+            Total::Partial(n) if short => format!("{}+", crate::discover::format_rows(n)),
+            Total::Partial(n) => format!("{}+", crate::numfmt::group_chrome(n)),
+            // As precise as a sample is, whatever the room.
+            Total::Estimated(n) if short => format!("~{}", crate::discover::format_rows(n)),
+            Total::Estimated(n) => format!("~{} (est.)", crate::discover::format_rows(n)),
             Total::Pending => spinner.to_string(),
             Total::Unknown => "?".to_string(),
         };
@@ -199,6 +208,36 @@ pub struct ProgressCount {
     pub noun: &'static str,
     pub done: u64,
     pub total: Option<u64>,
+    /// The numbers are bytes, written with a unit (`41 MB / 133 MB`).
+    pub in_bytes: bool,
+}
+
+impl ProgressCount {
+    /// `done` of `total` things called `noun`.
+    pub fn of(noun: &'static str, done: u64, total: Option<u64>) -> Self {
+        Self {
+            noun,
+            done,
+            total,
+            in_bytes: false,
+        }
+    }
+
+    /// `done` of `total` bytes.
+    pub fn bytes(noun: &'static str, done: u64, total: Option<u64>) -> Self {
+        Self {
+            in_bytes: true,
+            ..Self::of(noun, done, total)
+        }
+    }
+
+    fn number(&self, n: u64) -> String {
+        if self.in_bytes {
+            crate::discover::format_size(n)
+        } else {
+            crate::numfmt::group_chrome(n as usize)
+        }
+    }
 }
 
 impl ProgressLine {
@@ -734,13 +773,10 @@ pub fn render_progress(line: &ProgressLine, area: Rect, buf: &mut Buffer, ctx: &
             spans.push(Span::raw("   "));
         }
         spans.push(Span::styled(format!("{} ", count.noun), dim));
-        spans.push(Span::styled(
-            crate::numfmt::group_chrome(count.done as usize),
-            label,
-        ));
+        spans.push(Span::styled(count.number(count.done), label));
         if let Some(total) = count.total {
             spans.push(Span::styled(
-                format!(" / {}", crate::numfmt::group_chrome(total as usize)),
+                format!(" / {}", count.number(total)),
                 secondary,
             ));
         }
@@ -1042,16 +1078,8 @@ mod tests {
     fn a_progress_line_counts_draws_a_bar_and_offers_stop() {
         let progress = ProgressLine {
             counts: vec![
-                ProgressCount {
-                    noun: "rows",
-                    done: 412_880_117,
-                    total: None,
-                },
-                ProgressCount {
-                    noun: "files",
-                    done: 18_402,
-                    total: Some(126_033),
-                },
+                ProgressCount::of("rows", 412_880_117, None),
+                ProgressCount::of("files", 18_402, Some(126_033)),
             ],
             stoppable: true,
         };

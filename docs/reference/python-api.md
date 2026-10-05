@@ -105,8 +105,8 @@ character's code (`ord(";")`).
 | `null_values` | list | `--null` | Values read as null: VAL in every column, COL=VAL in column COL only. --null is repeatable and replaces this list. |
 | `infer_rows` | integer | `--infer-rows` | Rows read to infer column types. |
 | `ignore_errors` | bool | `--ignore-errors` | Skip rows that do not parse instead of failing. |
-| `row_numbers` | bool | `--row-numbers` | Show row numbers on the left (# toggles). |
-| `row_numbers_start` | integer | `-c display.row_numbers_start=...` | The first row's number. |
+| `row_numbers` | "auto" \| bool | `--row-numbers` | Number rows on the left by their place in the source, kept through a sort or filter (# toggles). auto: for text and logs; true or false: for all of them. |
+| `row_numbers_start` | integer | `-c display.row_numbers_start=...` | The number of the source's first row. |
 | `column_colors` | bool | `-c display.column_colors=...` | Color cells by column type. |
 | `right_align_numbers` | bool | `-c display.right_align_numbers=...` | Right-align numeric columns and their headers. |
 | `number_format` | preset \| table | `--number-format` | Digit grouping: none, thousands, european, si, swiss, indian, underscore or system, or a [display.number_format] table (, toggles). |

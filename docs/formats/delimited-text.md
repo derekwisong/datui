@@ -122,10 +122,13 @@ seq 1 1000 | datui
 | Column | Holds |
 |---|---|
 | `file` | The file the line is from, when several are read as one table |
-| `line_no` | Its number, from 1, as `less -N` numbers it |
 | `line` | The line as written, without its line ending |
 
 - Every line is a row, blank lines included. `\r\n` is a line ending.
+- `#` is on for text: it numbers each row by its line in the file, as
+  `less -N` does, and the number stays with the row through a sort or a
+  filter. With several files it is the line in the row's own file, beside the
+  `file` column.
 - Bytes that are not UTF-8 show as `�`; the Info panel counts the lines that
   hold them. Control characters are escaped on screen and kept in the value.
 - A `.log` whose bytes say a format (a candump log, a FIX log) is read as that
@@ -133,7 +136,12 @@ seq 1 1000 | datui
 - In a directory, text files beside other data are left out of its table: a
   README beside Parquet files is passed over.
 - Find, the query and filters work on `line`: `select where line like "*error*"`.
-- Lines are indexed in one pass and read where they are shown. Past
+- Lines are indexed in one pass and read where they are shown. A file over
+  8 MiB shows its first rows at once and is indexed behind them: the footer
+  says `lines` and how much is read, the row count waits for the last line, and
+  End, <kbd>:</kbd> to a row past it, a sort or an analysis wait for it too.
+  Home pauses the indexing until you are back. A file that shrinks meanwhile
+  (a log rotated with copytruncate) stops it with a note: open it again. Past
   67,108,864 lines, the first that many show and the Info panel counts the rest.
 - `--follow` reads lines as they are appended; see
   [Pipes and growing files](../user-guide/pipes-and-follow.md).

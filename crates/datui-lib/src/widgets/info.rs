@@ -748,6 +748,8 @@ pub struct DataTableInfo<'a> {
     pub codebook: Option<&'a crate::codebook::Codebook>,
     /// The Documentation tab's page, when a catalog lists the dataset.
     pub documentation: Option<&'a mut crate::widgets::documentation::DocState>,
+    /// The row count from a sample of the dataset's footers, until it is counted.
+    pub estimate: Option<crate::schema_union::RowEstimate>,
 }
 
 /// The Resources tab's `Read:` value: how the open reads the data, and that a remote
@@ -779,6 +781,21 @@ fn rows_and_columns(rows: Option<usize>, columns: usize) -> String {
     }
 }
 
+/// [`rows_and_columns`] for a count estimated from a sample of footers, with how many
+/// were read and the key that counts them all.
+fn estimated_rows_and_columns(
+    estimate: crate::schema_union::RowEstimate,
+    columns: usize,
+) -> String {
+    let middot = crate::glyphs::get().middot;
+    format!(
+        "Rows (total): ~{} (est. from {} of {} files; c counts) {middot} Columns: {columns}",
+        crate::discover::format_rows(estimate.rows as usize),
+        format_int(estimate.sampled),
+        format_int(estimate.files),
+    )
+}
+
 impl<'a> DataTableInfo<'a> {
     pub fn new(
         state: &'a DataTableState,
@@ -795,6 +812,7 @@ impl<'a> DataTableInfo<'a> {
             header_toggle: false,
             codebook: None,
             documentation: None,
+            estimate: None,
         }
     }
 
@@ -896,7 +914,10 @@ impl<'a> DataTableInfo<'a> {
         let ncols = self.state.schema().len();
         let mut lines = vec![];
         // `num_rows_if_valid`, not `num_rows`: see `rows_and_columns`.
-        lines.push(rows_and_columns(self.state.num_rows_if_valid(), ncols));
+        lines.push(match self.estimate {
+            Some(estimate) => estimated_rows_and_columns(estimate, ncols),
+            None => rows_and_columns(self.state.num_rows_if_valid(), ncols),
+        });
         let by_type = columns_by_type(self.state.schema().as_ref());
         if !by_type.is_empty() {
             lines.push(by_type);

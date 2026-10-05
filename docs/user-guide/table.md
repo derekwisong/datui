@@ -53,6 +53,25 @@ find reading past the rows on hand (`rows 1,200,000 / 3,475,226` with a bar and
 <kbd>:</kbd> opens the [command line](querying-data.md); digits alone make it
 `row:`, and <kbd>Enter</kbd> goes there (`0` is the top).
 
+## Row numbers
+
+<kbd>#</kbd> shows or hides row numbers.
+
+| What | Number |
+|---|---|
+| Text and logs | The line in the file, as `less -N` numbers it. On when they open |
+| Other formats | The row's place in the file or dataset. Off when they open |
+| Under a sort or a filter | The row's own number, which moves with it |
+| A query, pivot or group's rows | Their place in the result, which stands for no row of the source |
+
+`display.row_numbers` turns them on or off whatever the format (`true`, `false`) or leaves
+them to the format (`"auto"`); `display.row_numbers_start` is the first
+row's number. A sorted or filtered view of a scanned file numbers its rows
+only while <kbd>#</kbd> is on, because the numbering keeps the filter from
+being pushed into the scan. A dataset in a store, or of many files, is not
+numbered that way at all: there <kbd>#</kbd> counts the view's rows under a
+sort or filter, and the footer says `# counts the view`.
+
 ## Sort by a column
 
 <kbd>[</kbd> sorts by the cursor's column ascending, <kbd>]</kbd> descending,

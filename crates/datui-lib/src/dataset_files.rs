@@ -21,7 +21,8 @@ use polars::prelude::{LazyFrame, PlSmallStr};
 
 use crate::measurements::{Meter, OpenReport};
 use crate::schema_union::{
-    FOOTERS_AT_ONCE, FileFooter, FooterProgress, Listing, SkippedFiles, ends_of, footers_to_read,
+    ESTIMATE_SAMPLE, FOOTERS_AT_ONCE, FileFooter, FooterProgress, Listing, RowEstimate,
+    SkippedFiles, ends_of, footers_to_read, random_sample,
 };
 use crate::widgets::datatable::{
     DataTableState, DatasetAtOpen, FileCounter, FileScan, FootersFound, OpenFacts, RemoteRead,
@@ -265,23 +266,57 @@ pub(crate) fn open(
     if staged {
         let ends = read;
         facts.footers_pending = Some(Arc::new(move |progress: &Arc<FooterProgress>| {
-            let read = footers_to_read(files.len());
-            // The ends were read by the open; a footer is read once.
-            let rest: Vec<usize> = read.iter().copied().filter(|i| !ends.contains(i)).collect();
-            let mut fresh = listed
-                .source
-                .read_footers(&files, &rest, progress, &listed.meter)?
-                .into_iter();
+            // A random sample first, for a row estimate the footer says at once; then
+            // the spread the schema is read from. The ends were read by the open, and
+            // a footer is read once.
+            let seed = crate::cache::stable_hash(listed.source.key().as_bytes());
+            let sample = random_sample(files.len(), ESTIMATE_SAMPLE, seed);
+            let first: Vec<usize> = sample
+                .iter()
+                .copied()
+                .filter(|i| !ends.contains(i))
+                .collect();
+            let mut known: std::collections::BTreeMap<usize, Option<FileFooter>> =
+                ends.iter().copied().zip(footers.iter().cloned()).collect();
+            let fresh = if first.is_empty() {
+                Vec::new()
+            } else {
+                listed
+                    .source
+                    .read_footers(&files, &first, progress, &listed.meter)?
+            };
             if progress.is_cancelled() {
                 return None;
             }
-            let footers: Vec<Option<FileFooter>> = read
+            known.extend(first.iter().copied().zip(fresh));
+            let sampled: Vec<Option<FileFooter>> = sample
                 .iter()
-                .map(|i| match ends.iter().position(|e| e == i) {
-                    Some(at) => footers[at].clone(),
-                    None => fresh.next().flatten(),
-                })
+                .filter_map(|i| known.get(i).cloned())
                 .collect();
+            progress.set_estimate(RowEstimate::of(files.len(), &sampled));
+            let mut read = footers_to_read(files.len());
+            read.extend(sample.iter().copied());
+            read.sort_unstable();
+            read.dedup();
+            let rest: Vec<usize> = read
+                .iter()
+                .copied()
+                .filter(|i| !known.contains_key(i))
+                .collect();
+            let fresh = if rest.is_empty() {
+                Vec::new()
+            } else {
+                listed
+                    .source
+                    .read_footers(&files, &rest, progress, &listed.meter)?
+            };
+            if progress.is_cancelled() {
+                return None;
+            }
+            known.extend(rest.iter().copied().zip(fresh));
+            let footers: Vec<Option<FileFooter>> =
+                read.iter().map(|i| known.remove(i).flatten()).collect();
+            let estimate = RowEstimate::of(files.len(), &footers);
             // Past `MAX_FOOTER_READS` this read a sample, and the dataset has no row
             // groups until its count reads the rest — only the rest.
             let whole = listed.dataset(&read, &footers)?;
@@ -296,6 +331,7 @@ pub(crate) fn open(
                 files: listed.names.clone(),
                 row_groups: whole.row_groups,
                 remote: Some(whole.by_file),
+                estimate,
             })
         }));
     }
@@ -375,6 +411,106 @@ impl Listed {
             writes: Default::default(),
             writing: Default::default(),
         })
+    }
+
+    /// Whether the cache may know `file` by its identity: the listing or a stat said
+    /// its size and when it was written, or its tag. A name alone could be any file.
+    fn identifiable(file: &DatasetFile) -> bool {
+        file.size > 0 && (file.stamp > 0 || file.etag.is_some())
+    }
+
+    /// The footers of the files at `read` that earlier counts read, while each file is
+    /// still the one they read; `None` for the rest.
+    fn cached_footers(&self, read: &[usize]) -> Vec<Option<FileFooter>> {
+        let none = || vec![None; read.len()];
+        let Some(kept) = self
+            .remembered
+            .as_ref()
+            .and_then(|cache| cache.file_footers(self.source.key()))
+        else {
+            return none();
+        };
+        let by_identity: HashMap<u64, &crate::cache::CachedFooter> = kept
+            .files
+            .iter()
+            .map(|(id, footer)| (*id, footer))
+            .collect();
+        let schemas: Vec<Option<Arc<polars::prelude::Schema>>> = (0..kept.schemas.len())
+            .map(|at| crate::cache::DatasetShape::schema_at(&kept.schemas, at).map(Arc::new))
+            .collect();
+        read.iter()
+            .map(|&i| {
+                let file = self.files.get(i).filter(|f| Self::identifiable(f))?;
+                let id = crate::cache::file_identity(
+                    &file.key,
+                    file.size,
+                    file.stamp,
+                    file.etag.as_deref(),
+                );
+                let footer = by_identity.get(&id)?;
+                let schema = schemas.get(footer.schema?)?.clone()?;
+                let column_bytes = schema
+                    .iter_names()
+                    .zip(&footer.column_bytes)
+                    .map(|(name, bytes)| (name.to_string(), *bytes))
+                    .collect();
+                Some(FileFooter {
+                    schema,
+                    row_group_rows: footer.row_group_rows.clone(),
+                    row_group_bytes: footer.row_group_bytes.clone(),
+                    file_bytes: file.size as usize,
+                    column_bytes,
+                })
+            })
+            .collect()
+    }
+
+    /// Keep the footers just read at `read` with the ones kept before, for the files
+    /// the dataset lists now: a file gone or written again since is forgotten.
+    fn remember_footers(&self, read: &[usize], footers: &[Option<FileFooter>]) {
+        let Some(cache) = self.remembered.as_ref() else {
+            return;
+        };
+        if !footers.iter().any(Option::is_some) {
+            return;
+        }
+        let kept = cache.file_footers(self.source.key()).unwrap_or_default();
+        let mut schemas = kept.schemas.clone();
+        let mut by_identity: HashMap<u64, crate::cache::CachedFooter> =
+            kept.files.into_iter().collect();
+        for (&i, footer) in read.iter().zip(footers) {
+            let (Some(file), Some(footer)) = (self.files.get(i), footer) else {
+                continue;
+            };
+            if !Self::identifiable(file) {
+                continue;
+            }
+            let id =
+                crate::cache::file_identity(&file.key, file.size, file.stamp, file.etag.as_deref());
+            let schema = crate::cache::DatasetShape::intern_schema(&mut schemas, &footer.schema);
+            by_identity.insert(
+                id,
+                crate::cache::CachedFooter {
+                    schema: Some(schema),
+                    row_group_rows: footer.row_group_rows.clone(),
+                    row_group_bytes: footer.row_group_bytes.clone(),
+                    column_bytes: footer.column_bytes.iter().map(|(_, b)| *b).collect(),
+                },
+            );
+        }
+        let files: Vec<(u64, crate::cache::CachedFooter)> = self
+            .files
+            .iter()
+            .filter(|f| Self::identifiable(f))
+            .filter_map(|f| {
+                let id = crate::cache::file_identity(&f.key, f.size, f.stamp, f.etag.as_deref());
+                by_identity.remove(&id).map(|footer| (id, footer))
+            })
+            .collect();
+        cache.save_file_footers(
+            self.source.key(),
+            &crate::cache::FileFooters { schemas, files },
+        );
     }
 
     /// Every footer as a previous pass left them, if the listing has not changed.
@@ -645,7 +781,7 @@ impl Listed {
         } else {
             // The rows are in the footers, so the counter answers without reading.
             let counted = row_groups.clone();
-            Arc::new(move || Ok(counted.clone()))
+            Arc::new(move |_: &Arc<FooterProgress>| Ok(counted.clone()))
         };
         let by_file = RemoteRead {
             urls: readable.into_owned(),
@@ -671,11 +807,36 @@ impl Listed {
         count: crate::schema_union::FooterCount<FileFooter>,
     ) -> FileCounter {
         let (listed, count) = (self.clone(), Arc::new(count));
-        Arc::new(move || {
+        Arc::new(move |progress: &Arc<FooterProgress>| {
             let counted = count
                 .count(
                     |missing| {
-                        footers_for_count(&*listed.source, &listed.files, missing, &listed.meter)
+                        // What an earlier count read of these files, still as they are,
+                        // is not read again; what this one reads is kept, though it is
+                        // stopped part way.
+                        let mut found = listed.cached_footers(missing);
+                        let to_read: Vec<usize> = missing
+                            .iter()
+                            .zip(&found)
+                            .filter(|(_, footer)| footer.is_none())
+                            .map(|(i, _)| *i)
+                            .collect();
+                        let fresh = footers_for_count(
+                            &*listed.source,
+                            &listed.files,
+                            &to_read,
+                            &listed.meter,
+                            progress,
+                        )?;
+                        listed.remember_footers(&to_read, &fresh);
+                        if progress.is_cancelled() {
+                            return None;
+                        }
+                        let mut fresh = fresh.into_iter();
+                        for footer in found.iter_mut().filter(|f| f.is_none()) {
+                            *footer = fresh.next().flatten();
+                        }
+                        Some(found)
                     },
                     |footer| footer.row_group_rows.clone(),
                 )
@@ -702,11 +863,14 @@ pub(crate) fn footers_for_count(
     files: &Arc<Vec<DatasetFile>>,
     read: &[usize],
     meter: &Meter,
+    progress: &Arc<FooterProgress>,
 ) -> Option<Vec<Option<FileFooter>>> {
+    if read.is_empty() {
+        return Some(Vec::new());
+    }
     let counting = Arc::new(Meter::default());
     let began = std::time::Instant::now();
-    let footers =
-        source.read_footers(files, read, &Arc::new(FooterProgress::default()), &counting)?;
+    let footers = source.read_footers(files, read, progress, &counting)?;
     if footers.iter().any(Option::is_some) {
         let wire = counting.footers().and_then(|c| c.over_the_wire);
         meter.counted_rows(began.elapsed(), Some(read.len()), wire);
@@ -873,7 +1037,11 @@ impl LocalFiles {
     /// Timed from before the walk: this pass has to find the files again before it
     /// can read them, and what it cost is both halves. Only the first such pass counts
     /// (see `Meter::counted_rows`); it runs again every time a filter is cleared.
-    pub fn count_rows(&self, meter: &Meter) -> color_eyre::Result<usize> {
+    pub fn count_rows(
+        &self,
+        meter: &Meter,
+        progress: &Arc<FooterProgress>,
+    ) -> color_eyre::Result<usize> {
         let began = std::time::Instant::now();
         let (files, _) = self.walk(None);
         if files.is_empty() {
@@ -885,13 +1053,11 @@ impl LocalFiles {
         let files = Arc::new(files.into_iter().map(local_file).collect::<Vec<_>>());
         let every: Vec<usize> = (0..files.len()).collect();
         let footers = self
-            .read_footers(
-                &files,
-                &every,
-                &Arc::new(FooterProgress::default()),
-                &Arc::new(Meter::default()),
-            )
+            .read_footers(&files, &every, progress, &Arc::new(Meter::default()))
             .unwrap_or_default();
+        if progress.is_cancelled() {
+            return Err(color_eyre::eyre::eyre!("The count was stopped"));
+        }
         if !footers.iter().any(Option::is_some) {
             // Not recorded, and so not counted against the one shot this measurement
             // gets: a pass where nothing parsed settled nothing.
@@ -941,7 +1107,7 @@ impl DatasetFiles for LocalFiles {
 
     /// Each file's size and modification time in nanoseconds, many at once.
     fn stat(&self, files: &mut [DatasetFile], progress: &FooterProgress) -> bool {
-        let stats = each_at_once(files.len(), |i| {
+        let stats = each_at_once(files.len(), FOOTERS_AT_ONCE, |i| {
             if progress.is_cancelled() {
                 return None;
             }
@@ -952,12 +1118,14 @@ impl DatasetFiles for LocalFiles {
                 .duration_since(std::time::UNIX_EPOCH)
                 .ok()?
                 .as_nanos() as u64;
-            Some((meta.len(), modified))
+            Some((meta.len(), modified, local_tag(&meta)))
         });
         let mut whole = true;
         for (file, stat) in files.iter_mut().zip(stats) {
             match stat {
-                Some((size, stamp)) => (file.size, file.stamp) = (size, stamp),
+                Some((size, stamp, tag)) => {
+                    (file.size, file.stamp, file.etag) = (size, stamp, tag);
+                }
                 None => whole = false,
             }
         }
@@ -973,7 +1141,7 @@ impl DatasetFiles for LocalFiles {
     ) -> Option<Vec<Option<FileFooter>>> {
         let began = std::time::Instant::now();
         let pass = progress.pass(read.len());
-        let footers = each_at_once(read.len(), |i| {
+        let footers = each_at_once(read.len(), progress.reads_at_once(), |i| {
             // An abandoned open stops issuing reads; what it has is thrown away.
             if progress.is_cancelled() {
                 pass.advance();
@@ -1026,6 +1194,26 @@ impl DatasetFiles for LocalFiles {
     }
 }
 
+/// A local file's own tag, as a store's ETag is: its inode and when its inode last
+/// changed, which a rewrite moves on a filesystem whose modification times are too
+/// coarse to see a rewrite within the same second. `None` where there is none.
+#[cfg(unix)]
+fn local_tag(meta: &std::fs::Metadata) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    Some(format!(
+        "{}:{}:{}.{}",
+        meta.dev(),
+        meta.ino(),
+        meta.ctime(),
+        meta.ctime_nsec()
+    ))
+}
+
+#[cfg(not(unix))]
+fn local_tag(_meta: &std::fs::Metadata) -> Option<String> {
+    None
+}
+
 /// One local Parquet file's footer, with each column's width.
 pub(crate) fn local_footer(path: &Path) -> Option<FileFooter> {
     use polars::prelude::{ParquetReader, Schema, SchemaExt, SerReader};
@@ -1075,7 +1263,7 @@ fn walk_dirs(
         {
             break;
         }
-        let read = each_at_once(level.len(), |i| {
+        let read = each_at_once(level.len(), FOOTERS_AT_ONCE, |i| {
             if listing.is_some_and(|l| l.is_cancelled()) {
                 return None;
             }
@@ -1138,10 +1326,14 @@ const MAX_NAMES_PER_DIR: usize = 20_000;
 /// as each finishes, and the answers in index order. Sized for waiting on a disk or a
 /// network mount rather than for the cores; a worker that panics answers `None` for
 /// the indices it took.
-fn each_at_once<T: Send>(n: usize, work: impl Fn(usize) -> Option<T> + Sync) -> Vec<Option<T>> {
+fn each_at_once<T: Send>(
+    n: usize,
+    at_once: usize,
+    work: impl Fn(usize) -> Option<T> + Sync,
+) -> Vec<Option<T>> {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let next = AtomicUsize::new(0);
-    let workers = n.min(FOOTERS_AT_ONCE);
+    let workers = n.min(at_once.max(1));
     let mut out: Vec<Option<T>> = std::iter::repeat_with(|| None).take(n).collect();
     std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
@@ -1461,7 +1653,9 @@ mod tests {
         // without a listing here the count would be declined for that reason instead.
         meter.listed(std::time::Duration::from_millis(1), Some(1), false);
         assert!(
-            LocalFiles::new(dir.path()).count_rows(&meter).is_err(),
+            LocalFiles::new(dir.path())
+                .count_rows(&meter, &Default::default())
+                .is_err(),
             "nothing under there parses"
         );
         assert_eq!(
@@ -1476,7 +1670,9 @@ mod tests {
         let f = std::fs::File::create(part.join("broken.parquet")).unwrap();
         ParquetWriter::new(f).finish(&mut frame).unwrap();
         assert_eq!(
-            LocalFiles::new(dir.path()).count_rows(&meter).unwrap(),
+            LocalFiles::new(dir.path())
+                .count_rows(&meter, &Default::default())
+                .unwrap(),
             2,
             "and now it counts"
         );
@@ -1505,7 +1701,9 @@ mod tests {
 
         let meter = Meter::default();
         meter.listed(std::time::Duration::from_millis(1), Some(3), false);
-        let first = LocalFiles::new(dir.path()).count_rows(&meter).unwrap();
+        let first = LocalFiles::new(dir.path())
+            .count_rows(&meter, &Default::default())
+            .unwrap();
         let after_one = meter.footers().expect("the first count was measured");
         assert_eq!(
             after_one.files,
@@ -1514,7 +1712,9 @@ mod tests {
         );
 
         for _ in 0..3 {
-            let again = LocalFiles::new(dir.path()).count_rows(&meter).unwrap();
+            let again = LocalFiles::new(dir.path())
+                .count_rows(&meter, &Default::default())
+                .unwrap();
             assert_eq!(again, first, "the same count every time");
         }
         assert_eq!(
@@ -1537,7 +1737,7 @@ mod tests {
         write_parquet(&p2.join("c.parquet"), 7);
 
         let n = LocalFiles::new(dir.path())
-            .count_rows(&Meter::default())
+            .count_rows(&Meter::default(), &Default::default())
             .unwrap();
         assert_eq!(n, 22, "should sum footer row counts across all files");
     }
@@ -1552,7 +1752,7 @@ mod tests {
         fs::write(dir.path().join("bad.parquet"), b"not a parquet footer").unwrap();
 
         let n = LocalFiles::new(dir.path())
-            .count_rows(&Meter::default())
+            .count_rows(&Meter::default(), &Default::default())
             .unwrap();
         assert_eq!(n, 8, "non-parquet and unreadable files should be skipped");
     }
@@ -1563,7 +1763,7 @@ mod tests {
         fs::write(dir.path().join("only.txt"), b"nothing here").unwrap();
         assert!(
             LocalFiles::new(dir.path())
-                .count_rows(&Meter::default())
+                .count_rows(&Meter::default(), &Default::default())
                 .is_err(),
             "a directory with no parquet files should error so the caller can fall back"
         );
@@ -1744,8 +1944,115 @@ mod tests {
         }
     }
 
+    /// A count keeps each file's footer by the file's identity: counted again it reads
+    /// none, with a file added it reads that one, and a count stopped part way keeps
+    /// what it read for the next.
+    #[test]
+    fn a_count_keeps_each_file_s_footer_for_the_next() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        tree(dir.path(), 100);
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache = crate::cache::CacheManager::with_dir(cache_dir.path().to_path_buf());
+        let reads = Arc::new(AtomicUsize::new(0));
+        let stop_after = Arc::new(AtomicUsize::new(usize::MAX));
+        let progress = Arc::new(std::sync::Mutex::new(Arc::new(FooterProgress::counting())));
+        let _hook = {
+            let (reads, stop_after, progress) =
+                (reads.clone(), stop_after.clone(), progress.clone());
+            crate::schema_union::on_local_footer_read(dir.path(), move |_| {
+                if reads.fetch_add(1, Ordering::SeqCst) + 1 >= stop_after.load(Ordering::SeqCst) {
+                    progress.lock().unwrap().cancel();
+                }
+            })
+        };
+        let count = || {
+            reads.store(0, Ordering::SeqCst);
+            let fresh = Arc::new(FooterProgress::counting());
+            *progress.lock().unwrap() = fresh.clone();
+            let local: Arc<dyn DatasetFiles> = Arc::new(LocalFiles::new(dir.path()));
+            let (files, skipped, fingerprint) =
+                list(&*local, &FooterProgress::default(), &Meter::default()).unwrap();
+            let listed = Arc::new(
+                Listed::new(
+                    local,
+                    files,
+                    skipped,
+                    fingerprint,
+                    Arc::new(Meter::default()),
+                    Some(cache.clone()),
+                )
+                .unwrap(),
+            );
+            let n = listed.files.len();
+            let counter = listed.counter(crate::schema_union::FooterCount::new(
+                n,
+                (0..n).collect(),
+                std::iter::empty(),
+            ));
+            let rows = counter(&fresh).map(|groups| groups.iter().flatten().sum::<usize>());
+            (rows, reads.load(Ordering::SeqCst))
+        };
+
+        // Stopped after ten reads: nothing counted, what was read kept.
+        stop_after.store(10, Ordering::SeqCst);
+        let (rows, read) = count();
+        assert!(rows.is_err(), "a stopped count is no count");
+        assert!(read >= 10, "{read}");
+        stop_after.store(usize::MAX, Ordering::SeqCst);
+        let (rows, again) = count();
+        assert_eq!(rows, Ok(300));
+        assert_eq!(
+            again,
+            100 - read,
+            "the footers the stopped count read are not read again"
+        );
+
+        let (rows, read) = count();
+        assert_eq!((rows, read), (Ok(300), 0), "counted again, nothing is read");
+
+        let mut bytes = Vec::new();
+        ParquetWriter::new(&mut bytes)
+            .finish(&mut df!("v" => [1i64, 2, 3, 4]).unwrap())
+            .unwrap();
+        fs::write(dir.path().join("part=0").join("f9999.parquet"), &bytes).unwrap();
+        let (rows, read) = count();
+        assert_eq!((rows, read), (Ok(304), 1), "a file added is the one read");
+    }
+
+    /// A random sample is the same for a seed, ascending, and every index when there
+    /// are no more than it asks; an estimate is the sample's mean times the files.
+    #[test]
+    fn a_seeded_sample_estimates_the_rows() {
+        let a = crate::schema_union::random_sample(842_225, 2_000, 7);
+        assert_eq!(a, crate::schema_union::random_sample(842_225, 2_000, 7));
+        assert_ne!(a, crate::schema_union::random_sample(842_225, 2_000, 8));
+        assert_eq!(a.len(), 2_000);
+        assert!(a.windows(2).all(|w| w[0] < w[1]) && *a.last().unwrap() < 842_225);
+        assert_eq!(
+            crate::schema_union::random_sample(5, 2_000, 7),
+            [0, 1, 2, 3, 4]
+        );
+        let footer = |rows: usize| {
+            Some(FileFooter {
+                schema: Arc::new(polars::prelude::Schema::default()),
+                row_group_rows: vec![rows],
+                row_group_bytes: Vec::new(),
+                file_bytes: 0,
+                column_bytes: Vec::new(),
+            })
+        };
+        let estimate =
+            crate::schema_union::RowEstimate::of(1_000, &[footer(10), None, footer(30)]).unwrap();
+        assert_eq!(
+            (estimate.rows, estimate.sampled, estimate.files),
+            (20_000, 2, 1_000)
+        );
+        assert!(crate::schema_union::RowEstimate::of(10, &[None]).is_none());
+    }
+
     /// Open `dir` as the app does, and wait for the pass behind the open.
-    fn open_whole(dir: &Path, cache: &crate::cache::CacheManager) {
+    fn open_whole(dir: &Path, cache: &crate::cache::CacheManager) -> Arc<FooterProgress> {
         let progress = Arc::new(FooterProgress::default());
         let report = OpenReport {
             progress: progress.clone(),
@@ -1762,6 +2069,7 @@ mod tests {
             join(&progress).expect("the pass reads the rest");
         }
         report.writes.settle();
+        progress
     }
 
     /// A local open records what the home screen shows, as a cloud one does, under the
@@ -1772,7 +2080,7 @@ mod tests {
         tree(dir.path(), 3);
         let cache_dir = tempfile::tempdir().unwrap();
         let cache = crate::cache::CacheManager::with_dir(cache_dir.path().to_path_buf());
-        open_whole(dir.path(), &cache);
+        let _ = open_whole(dir.path(), &cache);
 
         let key = crate::canonical::canonicalize(dir.path()).unwrap();
         let facts = cache.dataset_facts(&key).expect("recorded");
@@ -1816,7 +2124,15 @@ mod tests {
             "past the budget, unopened"
         );
 
-        open_whole(dir.path(), &cache);
+        let progress = open_whole(dir.path(), &cache);
+        let estimate = progress
+            .estimate()
+            .expect("the pass estimates from its sample");
+        assert_eq!(
+            (estimate.rows, estimate.files),
+            (450, 150),
+            "every file, under the sample size"
+        );
         let reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counted = reads.clone();
         let _hook = crate::schema_union::on_local_footer_read(dir.path(), move |_| {

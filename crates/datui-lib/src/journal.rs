@@ -136,6 +136,13 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
         notes,
         ..Default::default()
     }));
+    // Each entry's place in the journal, for `#`. Read whole, so the index costs no
+    // pushdown; a followed journal is scanned, and goes without.
+    let lf = if input.options.follow {
+        lf
+    } else {
+        lf.with_row_index(crate::row_index::INDEX, None)
+    };
     Ok(lf.into())
 }
 

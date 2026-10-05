@@ -82,6 +82,17 @@ impl Dirs {
         self.root.path().join("tmp")
     }
 
+    /// Where standard input is copied: the cache's `spool`, on disk, not the temp
+    /// directory.
+    fn spool(&self) -> PathBuf {
+        self.root.path().join("cache/datui/spool")
+    }
+
+    /// Temp files left, in the temp directory and the spool.
+    fn left(&self) -> usize {
+        files_in(&self.tmp()) + files_in(&self.spool())
+    }
+
     /// `stdin`, when given, in place of the pseudo-terminal, which stays the
     /// controlling terminal.
     fn spawn_with(&self, args: &[&Path], stdin: Option<Stdio>) -> Session {
@@ -472,7 +483,7 @@ mod exit_status {
 
 /// The files in `dir`.
 fn files_in(dir: &Path) -> usize {
-    std::fs::read_dir(dir).unwrap().count()
+    std::fs::read_dir(dir).map_or(0, |entries| entries.count())
 }
 
 /// `bytes` gzipped.
@@ -526,11 +537,7 @@ fn data_piped_in_opens_in_its_format() {
         );
         session.type_keys(CTRL_Q);
         assert!(session.wait_exit().success(), "{name}");
-        assert_eq!(
-            files_in(&dirs.tmp()),
-            0,
-            "{name}: the spooled file is removed"
-        );
+        assert_eq!(dirs.left(), 0, "{name}: the spooled file is removed");
     }
 }
 
@@ -547,7 +554,7 @@ fn an_arrow_stream_piped_in_opens() {
     session.wait_for_screen("Lastname1");
     session.type_keys(CTRL_Q);
     assert!(session.wait_exit().success());
-    assert_eq!(files_in(&dirs.tmp()), 0, "both temp files are removed");
+    assert_eq!(dirs.left(), 0, "both temp files are removed");
 }
 
 /// A padded logger export piped in, gzipped, reads with its dialect: the header from
@@ -590,10 +597,15 @@ fn a_slow_producer_shows_progress_and_ctrl_o_removes_the_partial_file() {
     pipe.write_all(b"id,label\n0,ROWMARK\n").unwrap();
     session.wait_for_screen("Reading stdin");
     session.wait_for_screen("19 B");
-    assert_eq!(files_in(&dirs.tmp()), 1, "the partial file is there");
+    assert_eq!(
+        files_in(&dirs.spool()),
+        1,
+        "the partial file is in the spool"
+    );
+    assert_eq!(files_in(&dirs.tmp()), 0, "and not in the temp directory");
     session.type_keys(CTRL_O);
     let deadline = Instant::now() + HANG_GUARD;
-    while files_in(&dirs.tmp()) > 0 {
+    while dirs.left() > 0 {
         assert!(
             Instant::now() < deadline,
             "the partial file was never removed"

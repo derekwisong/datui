@@ -369,6 +369,8 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<(LazyFrame, crate::memb
             other_tables: crate::members::others(&tables, &picked),
             notes,
             units: Vec::new(),
+            indexing: None,
+            numbering: None,
         },
     ))
 }

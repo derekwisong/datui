@@ -1,7 +1,7 @@
 //! Text read as lines: a `.log` file, an unnamed text file, a pipe, a compressed log,
-//! a directory of logs and a followed log each open as `line_no` and `line`, every line
-//! a row, blank ones included; CSV opens as CSV only on evidence, and bytes that are not
-//! text still open in the hex view.
+//! a directory of logs and a followed log each open as a `line` column, every line a
+//! row, blank ones included, numbered by `#` as `less -N` numbers them; CSV opens as CSV
+//! only on evidence, and bytes that are not text still open in the hex view.
 
 use super::*;
 use std::io::Write as _;
@@ -64,15 +64,21 @@ fn read_as_lines(app: &App) -> bool {
 const LOG: &[u8] = b"started\r\n\r\nwarn: disk, 91% full\n\n\nstopped\n";
 const LOG_LINES: [&str; 6] = ["started", "", "warn: disk, 91% full", "", "", "stopped"];
 
+/// What `#` shows for the first `rows` rows on screen.
+fn numbers(app: &App, rows: usize) -> Vec<usize> {
+    let state = app.data_table_state.as_ref().unwrap();
+    state.row_numbers_from(state.start_row(), rows)
+}
+
 #[test]
 fn a_log_opens_as_its_lines_numbered_as_less_numbers_them() {
     let dir = tempfile::tempdir().unwrap();
     let path = write(dir.path(), "app.log", LOG);
     let (app, _rx) = open(vec![path], OpenOptions::default());
-    let df = frame(&app);
-    assert_eq!(df.get_column_names(), ["line_no", "line"]);
-    let numbers: Vec<Option<u32>> = df.column("line_no").unwrap().u32().unwrap().to_vec();
-    assert_eq!(numbers, (1..=6).map(Some).collect::<Vec<_>>());
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.get_column_order(), ["line"]);
+    assert!(state.row_numbers(), "# is on for text");
+    assert_eq!(numbers(&app, 6), [1, 2, 3, 4, 5, 6]);
     assert_eq!(lines(&app), LOG_LINES);
     assert!(read_as_lines(&app), "{:?}", notes(&app));
     assert!(
@@ -165,7 +171,10 @@ fn a_directory_of_logs_names_each_line_s_file() {
     write(dir.path(), "b.log", b"three\n");
     let (app, _rx) = open(vec![dir.path().to_path_buf()], OpenOptions::default());
     let df = frame(&app);
-    assert_eq!(df.get_column_names(), ["file", "line_no", "line"]);
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().get_column_order(),
+        ["file", "line"]
+    );
     let files: Vec<Option<&str>> = df.column("file").unwrap().str().unwrap().iter().collect();
     assert_eq!(
         files,
@@ -190,14 +199,70 @@ fn a_query_filters_lines() {
     let dir = tempfile::tempdir().unwrap();
     let path = write(dir.path(), "app.log", LOG);
     let (mut app, rx) = open(vec![path], OpenOptions::default());
-    let mut next = Some(AppEvent::QQuery(
-        "select where line_no > 2, line <> \"\"".to_string(),
-    ));
+    let mut next = Some(AppEvent::QQuery("select where line <> \"\"".to_string()));
     while let Some(event) = next {
         next = app.event(&event);
     }
     drain_events(&mut app, &rx);
-    assert_eq!(lines(&app), ["warn: disk, 91% full", "stopped"]);
+    assert_eq!(lines(&app), ["started", "warn: disk, 91% full", "stopped"]);
+}
+
+/// `#` is each line's number in the file, and stays with it through a filter and a
+/// sort; turned on for a CSV, it numbers the rows of the file as they were read.
+#[test]
+fn row_numbers_are_the_source_row_through_sort_and_filter() {
+    use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    let dir = tempfile::tempdir().unwrap();
+    let path = write(dir.path(), "app.log", LOG);
+    let (mut app, rx) = open(vec![path], OpenOptions::default());
+    let run = |app: &mut App, event: AppEvent| {
+        let mut next = Some(event);
+        while let Some(event) = next {
+            next = app.event(&event);
+        }
+        drain_events(app, &rx);
+    };
+    run(
+        &mut app,
+        AppEvent::Filter(vec![FilterStatement {
+            columns: Vec::new(),
+            column: "line".into(),
+            operator: FilterOperator::NotEq,
+            value: "".into(),
+            logical_op: LogicalOperator::And,
+        }]),
+    );
+    assert_eq!(lines(&app), ["started", "warn: disk, 91% full", "stopped"]);
+    assert_eq!(numbers(&app, 3), [1, 3, 6]);
+    run(&mut app, AppEvent::Sort(vec!["line".into()], vec![true]));
+    assert_eq!(lines(&app), ["warn: disk, 91% full", "stopped", "started"]);
+    assert_eq!(numbers(&app, 3), [3, 6, 1]);
+
+    // A CSV opens without them; turned on over a sort, they are the file's rows.
+    let path = write(dir.path(), "hosts.csv", b"host,up\nc,1\na,0\nb,1\n");
+    let (mut app, rx) = open(vec![path], OpenOptions::default());
+    assert!(!app.data_table_state.as_ref().unwrap().row_numbers());
+    let run = |app: &mut App, event: AppEvent| {
+        let mut next = Some(event);
+        while let Some(event) = next {
+            next = app.event(&event);
+        }
+        drain_events(app, &rx);
+    };
+    run(&mut app, AppEvent::Sort(vec!["host".into()], vec![false]));
+    assert_eq!(
+        numbers(&app, 3),
+        [1, 2, 3],
+        "the view's places while # is off"
+    );
+    run(
+        &mut app,
+        AppEvent::Key(KeyEvent::new(KeyCode::Char('#'), KeyModifiers::NONE)),
+    );
+    assert!(app.data_table_state.as_ref().unwrap().row_numbers());
+    assert_eq!(numbers(&app, 3), [2, 3, 1]);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.get_column_order(), ["host", "up"]);
 }
 
 /// A followed log shows every line that arrives, blank ones too, and a line is read
@@ -277,4 +342,199 @@ fn copy_as_python_reads_the_lines_datui_shows() {
         return;
     };
     assert_eq!(rows, view_csv(&app), "{script}");
+}
+
+/// A log larger than what an open indexes shows its first rows, and its lines go on
+/// being indexed behind them: the count, End and `#` then reach the last line.
+#[test]
+fn a_large_log_is_indexed_behind_its_first_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let lines = 1_500_000usize;
+    let mut bytes = Vec::with_capacity(lines * 14);
+    for i in 1..=lines {
+        bytes.extend_from_slice(format!("line {i}\n").as_bytes());
+    }
+    assert!(bytes.len() > datui::lines::FIRST_BYTES);
+    let path = write(dir.path(), "big.log", &bytes);
+    let (mut app, rx) = app();
+    // Up to the first rows, and End pressed at once: while lines are still being
+    // indexed it waits for the last of them.
+    let mut next = Some(AppEvent::Open(vec![path], OpenOptions::default()));
+    while app.data_table_state.is_none() || app.is_busy() {
+        match next.take() {
+            Some(event) => next = app.event(&event),
+            None => next = common::next_event(&app, &rx),
+        }
+    }
+    let mut next = press(&mut app, KeyCode::End);
+    while let Some(event) = next {
+        next = app.event(&event);
+    }
+    drain_events(&mut app, &rx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.indexing().is_none());
+    assert_eq!(state.num_rows_if_valid(), Some(lines));
+    assert!(state.on_last_row(), "End reached the last line");
+    assert_eq!(state.selected_display_row(), Some(lines));
+    let numbers = state.row_numbers_from(state.start_row(), state.visible_rows.max(1));
+    assert!(numbers.contains(&lines), "{numbers:?}");
+}
+
+/// A pipe shows its first rows while it is still sending, without `--follow`, and
+/// reads on to its end: the rows so far are said to be a part, until it ends. The view
+/// stays at the top, and what came in is spooled in the cache directory.
+#[test]
+fn a_pipe_shows_rows_as_they_arrive() {
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    producer.write_all(b"boot\nready\n").unwrap();
+    let (mut app, rx) = app();
+    app.read_stdin_from(reader);
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("-")],
+        OpenOptions::default(),
+    );
+    drain_events(&mut app, &rx);
+    assert_eq!(lines(&app), ["boot", "ready"], "rows before the pipe ends");
+    let follow = app.follow().expect("read on as it arrives");
+    assert!(follow.is_pipe() && follow.live());
+    let spooled = follow.path().to_path_buf();
+    let cache = std::path::PathBuf::from(std::env::var_os("DATUI_CACHE_DIR").unwrap());
+    assert!(
+        spooled.starts_with(cache.join("spool")),
+        "spooled in the cache: {}",
+        spooled.display()
+    );
+    let text = screen(&mut app);
+    assert!(text.contains("reading stdin"), "{text}");
+    assert!(text.contains("/ 2+"), "the count is a part: {text}");
+
+    producer.write_all(b"serving\n").unwrap();
+    drop(producer);
+    let deadline = Instant::now() + common::HANG_GUARD;
+    while app.follow().is_some_and(|f| f.live() || f.shown() < 3) {
+        assert!(Instant::now() < deadline, "the pipe never ended");
+        app.check_follow_now();
+        app.request_what_the_frame_needs();
+        if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            let mut next = Some(event);
+            while let Some(event) = next {
+                next = app.event(&event);
+            }
+            drain_events(&mut app, &rx);
+        }
+    }
+    assert_eq!(lines(&app), ["boot", "ready", "serving"]);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.start_row(), 0, "the view stays at the top");
+    let text = screen(&mut app);
+    assert!(text.contains("/ 3") && !text.contains("/ 3+"), "{text}");
+    assert!(!text.contains("reading stdin"), "{text}");
+}
+
+/// The screen as text.
+fn screen(app: &mut App) -> String {
+    let area = Rect::new(0, 0, 100, 20);
+    let mut buffer = Buffer::empty(area);
+    app.render(area, &mut buffer);
+    (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A large log opened from its first rows.
+fn large_log(dir: &Path, lines: usize) -> PathBuf {
+    let mut bytes = Vec::with_capacity(lines * 14);
+    for i in 1..=lines {
+        bytes.extend_from_slice(format!("line {i}\n").as_bytes());
+    }
+    write(dir, "big.log", &bytes)
+}
+
+/// Up to the first rows of `path`, the rest of its lines maybe still being indexed.
+fn open_first_rows(path: PathBuf) -> (App, mpsc::Receiver<AppEvent>) {
+    let (mut app, rx) = app();
+    let mut next = Some(AppEvent::Open(vec![path], OpenOptions::default()));
+    while app.data_table_state.is_none() || app.is_busy() {
+        match next.take() {
+            Some(event) => next = app.event(&event),
+            None => next = common::next_event(&app, &rx),
+        }
+    }
+    (app, rx)
+}
+
+/// `:N` past the lines indexed so far waits for them and then goes there, rather than
+/// stopping at the last line on hand.
+#[test]
+fn go_to_a_row_waits_for_the_lines_to_be_indexed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, rx) = open_first_rows(large_log(dir.path(), 1_500_000));
+    let _ = screen(&mut app);
+    let mut next = app.event(&AppEvent::GoToLine(1_400_000));
+    while let Some(event) = next {
+        next = app.event(&event);
+    }
+    // While the lines are still coming, the footer's progress line says how far.
+    if app.data_table_state.as_ref().unwrap().indexing().is_some() {
+        let text = screen(&mut app);
+        assert!(text.contains("lines ") && text.contains("read "), "{text}");
+    }
+    drain_events(&mut app, &rx);
+    let _ = screen(&mut app);
+    drain_events(&mut app, &rx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.selected_display_row(), Some(1_400_001));
+    let numbers = state.row_numbers_from(state.start_row(), state.visible_rows.max(1));
+    assert!(numbers.contains(&1_400_001), "{numbers:?}");
+}
+
+/// Home pauses the indexing, the table takes it up again; and the app gone, it stops
+/// for good, so nothing holds the file.
+#[test]
+fn home_pauses_the_indexing_and_the_app_gone_stops_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let lines = 1_500_000;
+    let (mut app, rx) = open_first_rows(large_log(dir.path(), lines));
+    let held = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .lines_to_index()
+        .cloned()
+        .expect("opened from its first rows");
+    app.enter_home();
+    assert_eq!(app.input_mode, InputMode::Home);
+    // Back at the table: a frame drawn takes the indexing up again.
+    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    while let Some(event) = next {
+        next = app.event(&event);
+    }
+    assert_eq!(app.input_mode, InputMode::Normal);
+    let _ = screen(&mut app);
+    drain_events(&mut app, &rx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.num_rows_if_valid(), Some(lines));
+    assert!(held.whole() && !held.indexing());
+
+    let (mut app, _rx) = open_first_rows(large_log(dir.path(), lines));
+    let held = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .lines_to_index()
+        .cloned()
+        .unwrap();
+    app.enter_home();
+    drop(app);
+    assert!(!held.indexing(), "nothing waits on a file the app let go");
 }

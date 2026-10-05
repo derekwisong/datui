@@ -58,6 +58,9 @@ Directory for decompression temp files. Unset: the system's. Unset by default. F
 \fBread.follow_interval\fR (\fIduration\fR)
 With \-\-follow, how often the file is checked for new rows, or on Linux the least time between two reads, 10ms to 1m. Appends within one interval are one refresh. Default: \fB"250ms"\fR.
 .TP
+\fBread.exact_count_files\fR (\fIinteger\fR)
+A dataset of more files than this shows a row count estimated from a sample of its footers until c in the Info panel counts it; 0 always counts. Default: \fB50000\fR.
+.TP
 \fBread.memory_warning\fR (\fIsize\fR)
 Ask before reading more than this of a file whole into memory (JSON, Avro, ORC, Excel and the other formats read in memory); 0 never asks. Default: \fB"1GiB"\fR.
 .TP
@@ -88,11 +91,11 @@ Skip rows that do not parse instead of failing. Default: \fBfalse\fR. Flag: \fB\
 \fBdisplay.unicode\fR (\fIauto | always | never\fR)
 Box-drawing and arrow glyphs, or plain ASCII. auto uses them when the locale is UTF-8. Default: \fB"auto"\fR.
 .TP
-\fBdisplay.row_numbers\fR (\fIbool\fR)
-Show row numbers on the left (# toggles). Default: \fBfalse\fR. Flag: \fB\-\-row\-numbers\fR.
+\fBdisplay.row_numbers\fR (\fI"auto" | bool\fR)
+Number rows on the left by their place in the source, kept through a sort or filter (# toggles). auto: for text and logs; true or false: for all of them. Default: \fB"auto"\fR. Flag: \fB\-\-row\-numbers\fR.
 .TP
 \fBdisplay.row_numbers_start\fR (\fIinteger\fR)
-The first row's number. Default: \fB1\fR.
+The number of the source's first row. Default: \fB1\fR.
 .TP
 \fBdisplay.cell_padding\fR (\fI"comfortable" | "compact" | integer\fR)
 Space between columns: comfortable (2 cells), compact (1) or a number of cells. Default: \fB"comfortable"\fR.

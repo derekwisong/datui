@@ -208,7 +208,8 @@ impl AnonymousScan for LinesScan {
         true
     }
 
-    fn scan(&self, args: AnonymousScanArgs) -> PolarsResult<DataFrame> {
+    fn scan(&self, mut args: AnonymousScanArgs) -> PolarsResult<DataFrame> {
+        args.predicate = crate::pushdown::evaluable(args.predicate.take());
         // Asked before the file is mapped: an end heard after it could count a line the
         // map cut off.
         let ended = self.spool.as_ref().is_some_and(|s| s.ended().is_some());

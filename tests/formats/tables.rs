@@ -232,7 +232,7 @@ fn t_opens_another_table_of_a_database_and_leaves_the_query_behind() {
     let (mut app, rx, tx) = open(vec![db.join("customers")], OpenOptions::default());
     assert!(app.offers_other_tables());
 
-    // A query and a filter on the customers.
+    // A query, a filter and a sort on the customers.
     app.event(&AppEvent::QQuery("select where id < 4".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.error_message().is_none(), "q {:?}", app.error_message());
@@ -246,6 +246,9 @@ fn t_opens_another_table_of_a_database_and_leaves_the_query_behind() {
     let state = app.data_table_state.as_ref().unwrap();
     assert!(!state.get_active_query().is_empty());
     assert_eq!(state.get_filters().len(), 1);
+    app.event(&AppEvent::Sort(vec!["name".to_string()], vec![true]));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(app.error_message().is_none(), "s {:?}", app.error_message());
 
     press(&mut app, KeyCode::Char('T'));
     assert_eq!(
@@ -273,6 +276,7 @@ fn t_opens_another_table_of_a_database_and_leaves_the_query_behind() {
     );
     assert!(state.get_active_query().is_empty(), "the query went");
     assert!(state.get_filters().is_empty(), "the filters went");
+    assert!(state.get_sort_columns().is_empty(), "the sort went");
     assert_eq!(app.open_path(), Some(db.join("orders").as_path()));
 }
 
@@ -370,4 +374,25 @@ fn t_opens_another_split_of_a_hugging_face_cache() {
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.other_tables(), ["train", "validation"]);
     assert_eq!(app.open_path(), Some(cache.join("test").as_path()));
+}
+
+/// A q query on a SQLite table, then a sort: the sort ran into Polars' unreachable.
+#[cfg(feature = "sqlite")]
+#[test]
+fn a_sort_after_a_query_on_a_sqlite_table() {
+    let (_dir, db) = copy_of("sqlite/shop.db");
+    let (mut app, rx, tx) = open(vec![db.join("customers")], OpenOptions::default());
+    app.event(&AppEvent::QQuery("select where id < 4".to_string()));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(app.error_message().is_none(), "q {:?}", app.error_message());
+    press_and_send(&mut app, &tx, KeyCode::Char('['));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(
+        app.error_message().is_none(),
+        "sort {:?}",
+        app.error_message()
+    );
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.get_sort_columns(), ["id"]);
+    assert_eq!(current_rows(&app), 3, "the query's rows, sorted");
 }

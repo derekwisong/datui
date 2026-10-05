@@ -1719,7 +1719,8 @@ mod read {
             self.window.is_none()
         }
 
-        fn scan(&self, args: AnonymousScanArgs) -> PolarsResult<DataFrame> {
+        fn scan(&self, mut args: AnonymousScanArgs) -> PolarsResult<DataFrame> {
+            args.predicate = crate::pushdown::evaluable(args.predicate.take());
             let columns: Vec<usize> = match &args.with_columns {
                 Some(names) => names
                     .iter()

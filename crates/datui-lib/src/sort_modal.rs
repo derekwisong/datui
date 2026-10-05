@@ -36,6 +36,8 @@ pub struct SortModal {
     /// How many leading columns of `applied_order` were frozen, hidden ones included:
     /// the table's count leaves out a hidden column that ended the span.
     pub applied_locked: usize,
+    /// Rows the Columns list showed when last drawn: what PgUp and PgDn move.
+    pub page_rows: usize,
 }
 
 impl Default for SortModal {
@@ -50,6 +52,7 @@ impl Default for SortModal {
             status: None,
             applied_order: Vec::new(),
             applied_locked: 0,
+            page_rows: 10,
         }
     }
 }

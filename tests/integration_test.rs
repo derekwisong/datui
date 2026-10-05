@@ -17979,6 +17979,53 @@ fn copy_format(app: &mut App, format: datui::clipboard::CopyFormat) {
     assert_eq!(app.copy_modal.format, format);
 }
 
+/// The Columns list is a list: PgUp/PgDn page it, Home/End reach its ends, ↓
+/// stops at the last column, and the rows out of view are counted above and below.
+#[test]
+fn test_sort_filter_columns_list_pages_and_counts_both_ends() {
+    use datui::sort_filter_modal::SortFilterField;
+
+    let path = common::fixture_dir().join("columns_52.csv");
+    let header: Vec<String> = (0..52).map(|i| format!("col_{i}")).collect();
+    let row: Vec<String> = (0..52).map(|i| i.to_string()).collect();
+    std::fs::write(&path, format!("{}\n{}\n", header.join(","), row.join(","))).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+
+    open_columns_list(&mut app);
+    assert_eq!(app.sort_filter_modal.focus, SortFilterField::Column(0));
+    let g = datui::glyphs::get();
+    let screen = rows_at(&mut app, 80, 24).join("\n");
+    assert!(
+        screen.contains(&format!("{} ", g.ellipsis)),
+        "below counted: {screen}"
+    );
+
+    press(&mut app, KeyCode::End);
+    assert_eq!(app.sort_filter_modal.focus, SortFilterField::Column(51));
+    press(&mut app, KeyCode::Down);
+    assert_eq!(
+        app.sort_filter_modal.focus,
+        SortFilterField::Column(51),
+        "↓ stops at the last column"
+    );
+    let rows = rows_at(&mut app, 80, 24);
+    let cursor = rows.iter().position(|r| r.contains("col_51")).unwrap();
+    let above = rows.iter().position(|r| r.contains(" more")).unwrap();
+    assert!(above < cursor, "the count above: {}", rows.join("\n"));
+
+    press(&mut app, KeyCode::Home);
+    assert_eq!(app.sort_filter_modal.focus, SortFilterField::Column(0));
+    press(&mut app, KeyCode::PageDown);
+    let SortFilterField::Column(paged) = app.sort_filter_modal.focus else {
+        panic!("still in the list");
+    };
+    assert!(paged > 1, "a page: {paged}");
+    press(&mut app, KeyCode::PageUp);
+    assert_eq!(app.sort_filter_modal.focus, SortFilterField::Column(0));
+}
+
 /// An edit staged in the Sort & Filter modal and then canceled dies with the modal:
 /// reopening `s` rebuilds it from the table's applied state, so nothing arrives
 /// pre-staged and Apply commits nothing stale.

@@ -84,6 +84,7 @@ the list, on the table's column cursor (or the first match), then:
 
 | Key | Action |
 |---|---|
+| <kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd> | Move in the list; <kbd>↓</kbd> stops at the last column, and `… 12 more` counts those out of view above and below |
 | <kbd>Space</kbd> <kbd>→</kbd> | Cycle this column's sort: none, ascending, descending (<kbd>←</kbd> steps back) |
 | <kbd>Del</kbd> | Remove this column from the sort |
 | <kbd>1</kbd> to <kbd>9</kbd> | Put this column at that position in the sort order; <kbd>0</kbd> removes it. A digit past the end of the order says so on the status line |
@@ -227,7 +228,7 @@ then `add filter…`.
 the table's column cursor: type to narrow, <kbd>Enter</kbd> adds the column as
 the last key, ascending. <kbd>Space</kbd> on `add filter…` starts a new
 filter on the column cursor's column. <kbd>C</kbd> removes every sort and
-filter.
+filter. While something is staged, the footer's `Apply` is in the accent.
 
 Editing a filter walks three steps on the row: pick the column (type to narrow,
 <kbd>↑</kbd> <kbd>↓</kbd> move, <kbd>Enter</kbd> chooses), pick the operator
@@ -241,6 +242,9 @@ applies.
 | `<` `>` `<=` `>=` | less, greater, or equal |
 | `contains` `!contains` | text contains, or does not contain, the value |
 | `is null` `not null` | the value is null, or is not; these take no value |
+
+The operator list offers what the column's type takes: a number, date or time
+has no `contains`, and a flag only `=`, `!=` and the null tests.
 
 The value is read as the column's type, so `> 1000` on a number column is a
 numeric comparison and `>= 2024-01-01` on a date column compares dates:

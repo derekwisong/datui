@@ -842,6 +842,8 @@ pub const SCREENS: &[Screen] = &[
                     k("(type)", "Narrow", "Narrow the list, with the find field focused")
                         .more("Narrow the column list, when the find field is focused. ↓ from find goes to the list, on the table's column cursor")
                         .no_run(),
+                    k("PgUp / PgDn, Home / End", "Page", "A page of columns; the first or last")
+                        .more("A page of columns, or the first or last; ↓ stops at the last column"),
                     k("Space", "Sort", "Cycle the sort: none, ascending, descending")
                         .more("Cycle the column's sort: none → ascending → descending (← steps back). Each column carries its own direction"),
                     k("1-9", "Sort place", "Put the column at that place in the sort")
@@ -866,7 +868,9 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Filter editor",
                 keys: &[
-                    k("(type)", "Narrow", "Narrow the column or operator list").no_run(),
+                    k("(type)", "Narrow", "Narrow the column or operator list")
+                        .more("Narrow the column or operator list. The operators are those the column's type takes")
+                        .no_run(),
                     k("Enter", "Next", "Choose the step; from the value, save the row")
                         .more("Pick the column (type to narrow, Enter chooses), the operator the same way, then type the value and Enter saves the row. Tab, → and Space also choose at the column and operator steps; Shift+Tab steps back; ↑ / ↓ move in the lists"),
                     k("Esc", "Back", "End the edit, and only the edit"),

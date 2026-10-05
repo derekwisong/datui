@@ -608,6 +608,9 @@ Remove every sort and filter
 \fB(type)\fR
 Narrow the column list, when the find field is focused. \(da from find goes to the list, on the table's column cursor
 .TP
+\fBPgUp / PgDn, Home / End\fR
+A page of columns, or the first or last; \(da stops at the last column
+.TP
 \fBSpace\fR
 Cycle the column's sort: none \(-> ascending \(-> descending (\(<- steps back). Each column carries its own direction
 .TP
@@ -644,7 +647,7 @@ Clear the staged sort, order, locks, hidden columns and widths
 \fIFilter editor\fR
 .TP
 \fB(type)\fR
-Narrow the column or operator list
+Narrow the column or operator list. The operators are those the column's type takes
 .TP
 \fBEnter\fR
 Pick the column (type to narrow, Enter chooses), the operator the same way, then type the value and Enter saves the row. Tab, \(-> and Space also choose at the column and operator steps; Shift+Tab steps back; \(ua / \(da move in the lists

@@ -15290,11 +15290,22 @@ impl App {
         let sort_columns = state.view_sort_columns().to_vec();
         let sort_descending = state.view_sort_descending().to_vec();
         let headers: Vec<String> = state.schema().iter_names().map(|s| s.to_string()).collect();
+        let schema = state.schema().clone();
         let order = state.headers();
         let locked = state.locked_columns_count();
 
         let modal = &mut self.sort_filter_modal;
+        modal.filter.applied = filters.clone();
         modal.filter.statements = filters;
+        modal.filter.operands = order
+            .iter()
+            .map(|name| {
+                schema
+                    .get(name)
+                    .map(crate::filter_modal::Operand::of)
+                    .unwrap_or_default()
+            })
+            .collect();
         modal.filter.available_columns = order.clone();
         // The cursor starts on the add row; the editor never survives a resync.
         modal.filter.cursor = modal.filter.statements.len();

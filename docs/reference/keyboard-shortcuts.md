@@ -375,6 +375,7 @@ Where a dataset opens.
 | Key | Action |
 |---|---|
 | `(type)` | Narrow the column list, when the find field is focused. ↓ from find goes to the list, on the table's column cursor |
+| `PgUp / PgDn, Home / End` | A page of columns, or the first or last; ↓ stops at the last column |
 | `Space` | Cycle the column's sort: none → ascending → descending (← steps back). Each column carries its own direction |
 | `1-9` | Put the column at that place in the sort order; 0 removes it (a digit past the end of the order says so) |
 | `Del` | Remove the column from the sort |
@@ -391,7 +392,7 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `(type)` | Narrow the column or operator list |
+| `(type)` | Narrow the column or operator list. The operators are those the column's type takes |
 | `Enter` | Pick the column (type to narrow, Enter chooses), the operator the same way, then type the value and Enter saves the row. Tab, → and Space also choose at the column and operator steps; Shift+Tab steps back; ↑ / ↓ move in the lists |
 | `Esc` | End the edit, and only the edit |
 

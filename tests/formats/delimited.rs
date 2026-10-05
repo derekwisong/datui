@@ -806,3 +806,52 @@ fn a_glob_of_logs_reads_through_the_spec() {
     assert!(state.delimited_read().is_some(), "through the spec");
     assert_eq!(state.unit_of("cht1"), Some("deg F"));
 }
+
+/// A byte that is not UTF-8 past the sample reads as U+FFFD: the file counts and reads
+/// to its end. In the lines a spec's files are typed from, it is a note on the file.
+#[test]
+fn a_byte_that_is_not_utf8_reads_as_a_replacement() {
+    let dir = fresh_dir("csv_not_utf8");
+    let path = dir.join("bad.csv");
+    let mut bytes = b"id,name\n".to_vec();
+    for i in 0..2000 {
+        if i == 1500 {
+            bytes.extend_from_slice(b"1500,x\x80y\n");
+        } else {
+            bytes.extend_from_slice(format!("{i},n{i}\n").as_bytes());
+        }
+    }
+    std::fs::write(&path, &bytes).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.num_rows_if_valid(), Some(2000));
+    let df = collected(&app);
+    let name = df
+        .column("name")
+        .unwrap()
+        .str()
+        .unwrap()
+        .get(1500)
+        .unwrap()
+        .to_string();
+    assert_eq!(name, "x\u{FFFD}y");
+
+    let logs = fresh_dir("delimited_spec_not_utf8");
+    std::fs::write(logs.join("log_1.csv"), log_text("2024-03-01", 3)).unwrap();
+    let mut text = log_text("2024-03-02", 3).into_bytes();
+    let at = text.len() - 3;
+    text[at] = 0x80;
+    std::fs::write(logs.join("log_2.csv"), text).unwrap();
+    let (mut app, rx, _tx) = app_with_spec();
+    open_dir(&mut app, &rx, logs);
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    let notes = note_summaries(&app);
+    assert!(
+        notes.contains(&"log_2.csv: bytes that aren't UTF-8 read as \u{FFFD}".to_string()),
+        "{notes:?}"
+    );
+}

@@ -84,6 +84,8 @@ datui --header-rows 3 log.csv
 - A file with nothing after its header lines opens with its columns and no rows.
 - A run of NUL bytes at the end of a file ends it. Loggers that preallocate a
   file at a fixed size leave one. A NUL inside the text is kept.
+- A byte that is not UTF-8 reads as `�` where it stands, rather than failing
+  the read.
 - In a directory, a file with no header (empty, blank, or only NULs) is
   skipped, and the [Notes tab](../user-guide/dataset-info.md) names it.
 

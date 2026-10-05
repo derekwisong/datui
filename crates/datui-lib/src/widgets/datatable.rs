@@ -3665,6 +3665,9 @@ impl DataTableState {
             .with_truncate_ragged_lines(options.follow)
             .with_try_parse_dates(options.csv_try_parse_dates())
             .with_null_values(null_values.cloned())
+            // One byte that is not UTF-8 is a U+FFFD where it stands, not a file that
+            // cannot be read past it.
+            .with_encoding(CsvEncoding::LossyUtf8)
     }
 
     /// [`Self::configure_csv_reader`] for the in-memory readers, which take options
@@ -3704,6 +3707,7 @@ impl DataTableState {
                 )
                 .with_try_parse_dates(options.csv_try_parse_dates())
                 .with_null_values(null_values.cloned())
+                .with_encoding(CsvEncoding::LossyUtf8)
         })
     }
 

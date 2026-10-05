@@ -24,6 +24,8 @@ pub(crate) struct FileHead {
     pub units: Vec<(String, String)>,
     /// The data lines the scan infers types from, split and trimmed.
     pub window: Vec<Vec<String>>,
+    /// Whether the lines read hold bytes that are not UTF-8, which read as U+FFFD.
+    pub lossy: bool,
 }
 
 /// The rows Polars infers a CSV's types from when nothing says how many.
@@ -31,7 +33,7 @@ const POLARS_INFER_ROWS: usize = 100;
 
 /// The header lines, units and window of the file at `file`, in one pass over its top.
 pub(crate) fn read_head(file: &Path, options: &OpenOptions, spec: &Delimited) -> Result<FileHead> {
-    use crate::csv_dialect::{named_lines, names_of, skip_lines, window};
+    use crate::csv_dialect::{named_lines, names_of, skip_lines, window, window_of};
     let separator = options.separator_or(b',');
     let comment = options.comment_char.as_deref();
     let rows = options.header_rows();
@@ -70,12 +72,14 @@ pub(crate) fn read_head(file: &Path, options: &OpenOptions, spec: &Delimited) ->
         window(&mut source, n, separator, comment)?;
     }
     let infer = options.infer_schema_length.unwrap_or(POLARS_INFER_ROWS);
-    let window = window(&mut source, infer, separator, comment)?;
+    let (window, lossy) = window_of(&mut source, infer, separator, comment)?;
+    let lossy = lossy || lines.iter().any(|line| std::str::from_utf8(line).is_err());
     Ok(FileHead {
         file: file.to_path_buf(),
         names,
         units,
         window,
+        lossy,
     })
 }
 
@@ -241,6 +245,9 @@ pub(crate) fn line_up(
             passed_over: None,
         });
     }
+    for head in heads.iter().filter(|h| h.lossy) {
+        notes.push(lossy_note(&head.file));
+    }
     let (units, differ) = units_of(heads);
     if !differ.is_empty() {
         let said: Vec<String> = differ
@@ -262,6 +269,19 @@ pub(crate) fn line_up(
         notes,
         units,
     })
+}
+
+/// The note for a file whose lines read so far hold bytes that are not UTF-8.
+pub(crate) fn lossy_note(file: &Path) -> Note {
+    Note {
+        summary: format!(
+            "{}: bytes that aren't UTF-8 read as \u{FFFD}",
+            file_name(file)
+        ),
+        scope: "in the lines its types are inferred from".to_string(),
+        read_as_text: None,
+        passed_over: None,
+    }
 }
 
 /// Each column's unit from the first file that gives it one, and the columns whose
@@ -358,6 +378,7 @@ mod tests {
                 .map(|(n, u)| (n.to_string(), u.to_string()))
                 .collect(),
             window: Vec::new(),
+            lossy: false,
         };
         let heads = [
             head(&[("OAT", "deg C"), ("IAS", "kt")]),

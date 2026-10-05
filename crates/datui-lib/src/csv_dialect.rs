@@ -167,6 +167,17 @@ pub fn window(
     separator: u8,
     comment: Option<&str>,
 ) -> std::io::Result<Vec<Vec<String>>> {
+    Ok(window_of(source, rows, separator, comment)?.0)
+}
+
+/// [`window`], and whether a line it read holds bytes that are not UTF-8.
+pub fn window_of(
+    source: impl BufRead,
+    rows: usize,
+    separator: u8,
+    comment: Option<&str>,
+) -> std::io::Result<(Vec<Vec<String>>, bool)> {
+    let mut lossy = false;
     let mut source = source.take(MAX_WINDOW_BYTES);
     let comment = comment.filter(|c| !c.is_empty()).map(str::as_bytes);
     let mut out = Vec::new();
@@ -186,6 +197,7 @@ pub fn window(
         {
             continue;
         }
+        lossy |= std::str::from_utf8(text).is_err();
         out.push(
             split_fields(text, separator)
                 .into_iter()
@@ -193,7 +205,7 @@ pub fn window(
                 .collect(),
         );
     }
-    Ok(out)
+    Ok((out, lossy))
 }
 
 /// Pass over `n` lines of `source`.

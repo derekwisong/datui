@@ -31,6 +31,32 @@ read `reading...`; a file that cannot be read shows why in their place. Remote
 sources, directories, globs, datasets of several files, and compressed or streamed
 copies have no file size and no such tab.
 
+## Column types
+
+<kbd>Enter</kbd> on the Schema tab, or **Change type...** in the cell menu (a
+right click on a cell), changes the column's type for the view: the same names,
+formats and rules a [format spec's `type`](../formats/format-specs.md#column-types)
+takes. **Combine into datetime...** in the cell menu, on a text, date or time
+column, makes a column as a spec's [derived column](../formats/format-specs.md#derived-columns)
+does.
+
+| Choice | Does |
+|---|---|
+| A type name (`i64`, `f64`, `str`, `bool`, …) | The column reads as it at once. A value that does not fit is null |
+| `date`, `time`, `datetime` | A format next: each line shows what it makes of the column's first value (`03/04/2024 → 2024-04-03`), and a format typed (`%d.%m.%Y`) is the format |
+| `as read` | The type the read gave the column |
+
+- The type row shows a changed type in the accent, and the footer says
+  `typed zip` (or `typed 3`) before the filters and sort.
+- The first time the change is made, one pass counts the values it made null,
+  and the Notes tab says how many: `code: 1 value not i64, read as null`.
+- Filters, charts, analysis, find, value counts and exports see the new type; a
+  Parquet export writes it.
+- A [saved view](views.md) keeps each change as a spec's `[columns]` entry
+  says it, `{ "name": "zip", "type": "str" }`. On data without the column, the
+  step is left out with a note.
+- A query, a pivot or a melt starts from the data as read, without the changes.
+
 ## Tabs by format
 
 Each format has its own tab beside Schema, or none, and a file that holds several

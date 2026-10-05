@@ -35,6 +35,8 @@ pub enum Context {
     Copy,
     Views,
     FormatPicker,
+    Retype,
+    Combine,
     Hex,
 }
 
@@ -739,8 +741,8 @@ pub const SCREENS: &[Screen] = &[
                     .more("Model, Audio, MIDI, Metadata and format tabs: scroll the list a page"),
                 k("Home / End", "Top, end", "The top or the end of the list")
                     .more("Model, Audio, MIDI, Metadata and format tabs: the top or the end of the list"),
-                k("Enter", "Take", "Notes: take the offer; Documentation: a legend")
-                    .more("Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor"),
+                k("Enter", "Take", "Schema: the column's type; Notes: take the offer")
+                    .more("Schema tab: change the column's type, with the names and formats a format spec's type takes. Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor"),
                 k("o", "Open", "Documentation tab: open the line's link")
                     .more("Documentation tab: open the link on the cursor's line in the system browser. Only http and https links open, and only after a question showing the whole URL. Off over SSH or without a display"),
                 k("y", "Copy", "Documentation tab: copy the line's link or value")
@@ -1268,6 +1270,39 @@ pub const SCREENS: &[Screen] = &[
                     .more("Read the file again with the spec chosen. The query, filters and sort are cleared"),
                 k("Backspace", "Delete", "Delete a character (Ctrl+W a word, Ctrl+U all)"),
                 k("Esc", "Close", "Close and keep the format"),
+            ],
+        }],
+    },
+    Screen {
+        context: Context::Retype,
+        title: "Column type",
+        reached: "<kbd>Enter</kbd> on the Info panel's Schema tab, or Change type in the cell menu.",
+        groups: &[Group {
+            name: "Pick",
+            keys: &[
+                k("(type)", "Narrow", "Narrow the list; a format typed is the format").no_run()
+                    .more("Narrow the list to the names that contain it. In the format list, a strftime format typed that no line holds is the format"),
+                k("↑ / ↓", "Move", "Move"),
+                k("Enter", "Choose", "The type, or its format")
+                    .more("The type: the column reads as it at once, a value that does not fit null. A date, time or datetime asks its format next, each line showing what it makes of the column's first value. as read takes the type away"),
+                k("Backspace", "Delete", "Delete a character (Ctrl+W a word, Ctrl+U all)"),
+                k("Esc", "Back", "Back to the types, or close"),
+            ],
+        }],
+    },
+    Screen {
+        context: Context::Combine,
+        title: "Combine into datetime",
+        reached: "Combine into datetime in the cell menu, on a text, date or time column.",
+        groups: &[Group {
+            name: "Fields",
+            keys: &[
+                k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous field"),
+                k("Space", "Pick", "Pick a column, or step the kind"),
+                k("← / →", "Change", "Step the kind: datetime, date or time"),
+                k("Enter", "Make", "Make the column")
+                    .more("Make the column, before the first column it is made from, as a format spec's derived column is: a date and a time, and a UTC offset, make a datetime in UTC"),
+                k("Esc", "Cancel", "Cancel"),
             ],
         }],
     },

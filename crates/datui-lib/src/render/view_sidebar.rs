@@ -500,6 +500,7 @@ mod tests {
                 pivot: None,
                 melt: None,
                 reshape_source: None,
+                columns: Vec::new(),
             },
         }
     }

@@ -34,35 +34,7 @@ impl HeaderRows {
     }
 }
 
-/// What a derived column is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DerivedKind {
-    /// From a date and a time, or one text column, with an optional UTC offset.
-    Datetime,
-    Date,
-    Time,
-}
-
-impl DerivedKind {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Datetime => "datetime",
-            Self::Date => "date",
-            Self::Time => "time",
-        }
-    }
-}
-
-/// A column built from others: `time = { from = ["Date", "Time", "Offset"], as = "datetime" }`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Derived {
-    pub name: String,
-    pub from: Vec<String>,
-    pub kind: DerivedKind,
-    /// A strftime format for the text the `from` columns make, joined with a space.
-    /// Inferred from the values when not given.
-    pub format: Option<String>,
-}
+pub use crate::column_types::{Derived, DerivedKind};
 
 /// A delimited spec's reading options. Each one left out keeps what the command line
 /// or the config says.
@@ -559,57 +531,6 @@ impl Delimited {
             "CSV with a header line".to_string()
         } else {
             said.join(", ")
-        }
-    }
-}
-
-/// An offset such as `-05:00`, `+0530`, `-5` or `05:00:00`: its sign, hours and minutes.
-const OFFSET: &str = r"^\s*([+-])?(\d{1,2})(?::?(\d{2}))?(?::\d{2})?\s*$";
-
-impl Derived {
-    fn expr(&self) -> Expr {
-        let text = |name: &str| col(name).cast(DataType::String);
-        let options = StrptimeOptions {
-            format: self.format.as_deref().map(PlSmallStr::from),
-            strict: false,
-            exact: true,
-            cache: true,
-        };
-        match self.kind {
-            DerivedKind::Date => text(&self.from[0]).str().to_date(options),
-            DerivedKind::Time => text(&self.from[0]).str().to_time(options),
-            DerivedKind::Datetime => {
-                let stamp = match self.from.as_slice() {
-                    [one] => text(one),
-                    // A null in either is a null stamp.
-                    [date, time, ..] => text(date) + lit(" ") + text(time),
-                    [] => unreachable!("a derived column has a source"),
-                };
-                let local = stamp.str().to_datetime(
-                    Some(TimeUnit::Microseconds),
-                    None,
-                    options,
-                    lit("raise"),
-                );
-                let Some(offset) = self.from.get(2) else {
-                    return local;
-                };
-                // Local time less its offset from UTC is UTC.
-                let part = |group| text(offset).str().extract(lit(OFFSET), group);
-                let sign = when(part(1).eq(lit("-")))
-                    .then(lit(-1i64))
-                    .otherwise(lit(1i64));
-                let minutes = sign
-                    * (part(2).cast(DataType::Int64) * lit(60i64)
-                        + part(3).cast(DataType::Int64).fill_null(lit(0i64)));
-                let shift =
-                    (minutes * lit(60_000_000i64)).cast(DataType::Duration(TimeUnit::Microseconds));
-                (local - shift).dt().replace_time_zone(
-                    Some(polars::prelude::TimeZone::UTC),
-                    lit("raise"),
-                    NonExistent::Raise,
-                )
-            }
         }
     }
 }

@@ -25238,3 +25238,306 @@ fn test_terminal_background_switches_between_named_themes() {
         "{said}"
     );
 }
+
+/// The view's frame, collected.
+fn view_frame(app: &App) -> DataFrame {
+    app.data_table_state
+        .as_ref()
+        .unwrap()
+        .lf()
+        .clone()
+        .collect()
+        .unwrap()
+}
+
+/// Type `text` into whatever has the keys, as typed.
+fn type_into(app: &mut App, text: &str) {
+    for c in text.chars() {
+        app.event(&key(KeyCode::Char(c)));
+    }
+}
+
+/// The Info panel's Schema tab, its cursor on `column`, and Enter: the type picker.
+fn retype_from_schema(app: &mut App, column: &str) {
+    // Back from a type, the picker leaves the panel open.
+    if app.input_mode != datui::InputMode::Info {
+        app.event(&key(KeyCode::Char('i')));
+    }
+    assert_eq!(
+        app.input_mode,
+        datui::InputMode::Info,
+        "{column}: the panel opens"
+    );
+    let at = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .schema()
+        .index_of(column)
+        .unwrap();
+    // The panel opens on Notes when there are notes; Schema is the first tab.
+    for _ in 0..8 {
+        if app.info_modal.active_tab == datui::widgets::info::InfoTab::Schema {
+            break;
+        }
+        app.event(&key(KeyCode::Left));
+    }
+    for _ in 0..8 {
+        app.event(&key(KeyCode::Up));
+    }
+    for _ in 0..at {
+        app.event(&key(KeyCode::Down));
+    }
+    app.event(&key(KeyCode::Enter));
+    assert_eq!(app.input_mode, datui::InputMode::Retype);
+}
+
+fn summaries(app: &App) -> Vec<String> {
+    app.data_table_state
+        .as_ref()
+        .unwrap()
+        .notes()
+        .into_iter()
+        .map(|n| n.summary)
+        .collect()
+}
+
+/// A column retyped from the Info panel: the view reads it as the type at once, a
+/// value that does not fit is null and counted in the Notes, the footer says so, and
+/// `as read` takes the type away again.
+#[test]
+fn a_column_retyped_in_the_table() {
+    let (mut app, rx, tx) = open_csv_with(
+        "retype_codes.csv",
+        "id,code,when\n1,10,03/04/2024\n2,x,04/04/2024\n3,30,05/04/2024\n",
+        OpenOptions {
+            parse_dates: false,
+            ..OpenOptions::default()
+        },
+    );
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(
+        view_frame(&app).column("code").unwrap().dtype(),
+        &DataType::String
+    );
+
+    retype_from_schema(&mut app, "code");
+    type_into(&mut app, "i64");
+    app.event(&key(KeyCode::Enter));
+    assert_eq!(app.input_mode, datui::InputMode::Info, "back to the panel");
+    pump_until(&mut app, &rx, &tx, |app| {
+        !app.is_busy() && !app.unfit_count_pending()
+    });
+    let df = view_frame(&app);
+    let code: Vec<Option<i64>> = df.column("code").unwrap().i64().unwrap().iter().collect();
+    assert_eq!(code, [Some(10), None, Some(30)]);
+    let notes = summaries(&app);
+    assert!(
+        notes.contains(&"code: 1 value not i64, read as null".to_string()),
+        "{notes:?}"
+    );
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.retyped_columns(), ["code"]);
+    let area = Rect::new(0, 0, 120, 30);
+    let mut buf = Buffer::empty(area);
+    app.event(&key(KeyCode::Esc));
+    app.render(area, &mut buf);
+    let shown = rendered_text(&buf);
+    assert!(shown.contains("typed code"), "the footer says so: {shown}");
+
+    // A date with the format that reads the column's first value.
+    retype_from_schema(&mut app, "when");
+    type_into(&mut app, "date");
+    app.event(&key(KeyCode::Enter));
+    app.event(&key(KeyCode::Enter));
+    pump_until_idle(&mut app, &rx, &tx);
+    let df = view_frame(&app);
+    assert_eq!(df.column("when").unwrap().dtype(), &DataType::Date);
+    assert_eq!(
+        df.column("when").unwrap().get(0).unwrap().to_string(),
+        "2024-04-03"
+    );
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(
+        state.column_type_of("when").unwrap().format.as_deref(),
+        Some("%d/%m/%Y")
+    );
+
+    // As read again.
+    retype_from_schema(&mut app, "code");
+    type_into(&mut app, "as read");
+    app.event(&key(KeyCode::Enter));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(
+        view_frame(&app).column("code").unwrap().dtype(),
+        &DataType::String
+    );
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().retyped_columns(),
+        ["when"]
+    );
+}
+
+/// A saved view keeps each retype as the inline table a spec's `[columns]` entry is,
+/// and puts it back on the next file; one whose column is gone is left out with a
+/// note. An export writes the type.
+#[test]
+fn a_retype_is_saved_in_a_view_and_exported() {
+    let name = "view_retype";
+    let next = common::fixture_dir().join(format!("{name}_next.csv"));
+    std::fs::write(&next, "id,code,gone\n4,40,c\n5,50,d\n").unwrap();
+    let (mut app, rx, tx) = open_csv_with(
+        &format!("{name}_first.csv"),
+        "id,code,gone\n1,10,a\n2,20,b\n",
+        OpenOptions::default(),
+    );
+    pump_until_idle(&mut app, &rx, &tx);
+    let ty = |name: &str, format: Option<&str>| {
+        datui::column_types::ColumnType::named(name, format.map(String::from)).unwrap()
+    };
+    {
+        let state = app.data_table_state.as_mut().unwrap();
+        state.set_column_type("code", Some(ty("u16", None)));
+        state.set_column_type("gone", Some(ty("str", None)));
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+
+    let parquet = common::fixture_dir().join(format!("{name}.parquet"));
+    export_as(
+        &mut app,
+        &rx,
+        &tx,
+        &parquet,
+        datui::export_modal::ExportFormat::Parquet,
+        false,
+    );
+    let written = LazyFrame::scan_parquet(
+        PlRefPath::try_from_path(&parquet).unwrap(),
+        Default::default(),
+    )
+    .unwrap()
+    .collect()
+    .unwrap();
+    assert_eq!(written.column("code").unwrap().dtype(), &DataType::UInt16);
+
+    let view = app
+        .create_view_from_current_state(
+            name.to_string(),
+            None,
+            datui::view::MatchCriteria {
+                exact_path: Some(next.clone()),
+                relative_path: None,
+                path_pattern: None,
+                filename_pattern: None,
+                schema_columns: None,
+                schema_types: None,
+                table: None,
+            },
+        )
+        .unwrap();
+    let json = serde_json::to_string(&view.settings.columns).unwrap();
+    assert_eq!(
+        json,
+        r#"[{"name":"code","type":"u16"},{"name":"gone","type":"str"}]"#
+    );
+    assert_eq!(
+        view.settings.columns[0].to_toml(),
+        r#"code = { type = "u16" }"#
+    );
+
+    pump_open_until_loaded(&mut app, &rx, vec![next], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    app.event(&key(KeyCode::Char('V')));
+    pump_until_idle(&mut app, &rx, &tx);
+    let df = view_frame(&app);
+    assert_eq!(df.column("code").unwrap().dtype(), &DataType::UInt16);
+    assert_eq!(df.column("gone").unwrap().dtype(), &DataType::String);
+
+    // A step on a column this data does not have is left out, with a note.
+    let third = common::fixture_dir().join(format!("{name}_third.csv"));
+    std::fs::write(&third, "id,code\n6,60\n").unwrap();
+    pump_open_until_loaded(&mut app, &rx, vec![third], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_mut().unwrap();
+    let dropped = state.set_column_changes(&view.settings.columns);
+    assert_eq!(dropped, ["gone"]);
+    assert_eq!(state.retyped_columns(), ["code"]);
+    let notes = summaries(&app);
+    assert!(
+        notes.contains(&"view steps left out, no such column: gone".to_string()),
+        "{notes:?}"
+    );
+}
+
+/// "Combine into datetime" from the cell menu makes what a spec's derived column
+/// makes from the same columns, before the first of them.
+#[test]
+fn combine_into_datetime_matches_the_specs_column() {
+    let path = common::fixture_dir().join("combine_like_spec.csv");
+    std::fs::write(
+        &path,
+        "Lcl Date,Lcl Time,UTCOfst,v\n2024-03-01,10:00:00,-05:00,1\n2024-03-01,10:00:01,+0530,2\n,,,3\n",
+    )
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+
+    // The cursor is on Lcl Date; the menu's last line combines.
+    app.open_context_menu(ratatui::layout::Position { x: 2, y: 2 });
+    app.event(&key(KeyCode::Up));
+    app.event(&key(KeyCode::Enter));
+    assert_eq!(app.input_mode, datui::InputMode::Combine);
+    // Date, Time, then the UTC offset: Space picks it.
+    app.event(&key(KeyCode::Tab));
+    app.event(&key(KeyCode::Tab));
+    app.event(&key(KeyCode::Char(' ')));
+    type_into(&mut app, "UTC");
+    app.event(&key(KeyCode::Enter));
+    app.event(&key(KeyCode::Enter));
+    assert_eq!(app.input_mode, datui::InputMode::Normal);
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(
+        &state.get_column_order()[..2],
+        ["datetime", "Lcl Date"],
+        "before its first source"
+    );
+    let made = view_frame(&app).column("datetime").unwrap().clone();
+
+    let spec = datui::formats::Spec::parse(
+        r#"
+name = "acme.combine"
+kind = "delimited"
+[columns]
+time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
+"#,
+        None,
+    )
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut by_spec = App::new(tx.clone(), common::test_runtime());
+    by_spec.set_formats(datui::formats::Registry::of(vec![spec]));
+    pump_open_until_loaded(
+        &mut by_spec,
+        &rx,
+        vec![path],
+        OpenOptions {
+            spec_name: Some("acme.combine".into()),
+            ..OpenOptions::default()
+        },
+    );
+    assert!(
+        by_spec.error_message().is_none(),
+        "{:?}",
+        by_spec.error_message()
+    );
+    let derived = view_frame(&by_spec).column("time").unwrap().clone();
+    assert_eq!(made.dtype(), derived.dtype());
+    assert!(
+        made.as_materialized_series()
+            .equals_missing(derived.as_materialized_series()),
+        "{made:?} {derived:?}"
+    );
+}

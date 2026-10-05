@@ -80,6 +80,98 @@ pub struct ColumnType {
     pub format: Option<String>,
 }
 
+/// Written as the inline table a spec entry is, in a saved view's JSON too: `{ "type":
+/// "date", "format": "%d/%m/%Y" }`.
+impl serde::Serialize for ColumnType {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("type", &self.name())?;
+        if let Some(format) = &self.format {
+            map.serialize_entry("format", format)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ColumnType {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Entry {
+            #[serde(rename = "type")]
+            name: String,
+            #[serde(default)]
+            format: Option<String>,
+        }
+        let entry = Entry::deserialize(deserializer)?;
+        Self::named(&entry.name, entry.format).map_err(serde::de::Error::custom)
+    }
+}
+
+/// A change to a view's columns, by name: a type, or a column made from others, as a
+/// spec's `[columns]` entry says it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ColumnChange {
+    pub name: String,
+    #[serde(flatten)]
+    pub change: Change,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum Change {
+    /// `{ from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }`.
+    Made {
+        from: Vec<String>,
+        #[serde(rename = "as")]
+        kind: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        format: Option<String>,
+    },
+    /// `{ type = "i64" }`.
+    Typed(ColumnType),
+}
+
+impl ColumnChange {
+    /// The spec entry it is: `zip = { type = "str" }`.
+    pub fn to_toml(&self) -> String {
+        let value = match &self.change {
+            Change::Typed(ty) => ty.to_toml(),
+            Change::Made { from, kind, format } => {
+                let mut table = toml_edit::InlineTable::new();
+                let mut list = toml_edit::Array::new();
+                for f in from {
+                    list.push(f.as_str());
+                }
+                table.insert("from", toml_edit::Value::Array(list));
+                table.insert("as", kind.as_str().into());
+                if let Some(format) = format {
+                    table.insert("format", format.as_str().into());
+                }
+                table.fmt();
+                table.to_string()
+            }
+        };
+        let mut key = toml_edit::Key::new(self.name.as_str());
+        key.fmt();
+        format!("{} = {value}", key.display_repr())
+    }
+
+    /// The derived column it makes, for a change that makes one.
+    pub fn derived(&self) -> Option<Derived> {
+        let Change::Made { from, kind, format } = &self.change else {
+            return None;
+        };
+        Some(Derived {
+            name: self.name.clone(),
+            from: from.clone(),
+            kind: DerivedKind::named(kind)?,
+            format: format.clone(),
+        })
+    }
+}
+
 /// The characters trimmed from a value before it is read as a type.
 const PADDING: &str = " \t\r\n";
 
@@ -178,6 +270,10 @@ impl ColumnType {
     /// blank value is null. `bool` takes `true`/`false` and `1`/`0`, in any case. A value
     /// that does not fit, or is out of range, is null: the read never fails on one.
     pub fn expr(&self, name: &str, from: &DataType) -> Expr {
+        self.typed(name, from).alias(PlSmallStr::from(name))
+    }
+
+    fn typed(&self, name: &str, from: &DataType) -> Expr {
         let column = col(PlSmallStr::from(name));
         if *from != DataType::String {
             return column.cast(self.dtype.clone());
@@ -254,6 +350,86 @@ impl ColumnType {
                 .alias(format!("{name}\u{0}range")),
         ]
     }
+}
+
+/// The date formats `read.infer_types` tries and a retype offers, most common first.
+pub const DATE_FORMATS: &[&str] = &[
+    "%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y%m%d", "%d-%m-%Y", "%d/%m/%Y", "%d.%m.%Y", "%m-%d-%Y",
+    "%m/%d/%Y",
+];
+
+/// The datetime formats, as [`DATE_FORMATS`].
+pub const DATETIME_FORMATS: &[&str] = &[
+    // ISO 8601 with an offset. `%#z` takes `Z`, `+05:00`, `-0500` and `+05`; a format
+    // with an offset makes Polars read the column into UTC.
+    "%Y-%m-%dT%H:%M:%S%.f%#z",
+    "%Y-%m-%d %H:%M:%S%.f%#z",
+    "%Y-%m-%dT%H:%M%#z",
+    "%Y-%m-%dT%H:%M:%S%.f",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M",
+    "%Y-%m-%d %H:%M:%S%.f",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M",
+    "%Y-%m-%d",
+    "%d-%m-%YT%H:%M:%S%.f",
+    "%d-%m-%YT%H:%M:%S",
+    "%d-%m-%Y %H:%M:%S%.f",
+    "%d-%m-%Y %H:%M:%S",
+    "%d/%m/%YT%H:%M:%S%.f",
+    "%d/%m/%YT%H:%M:%S",
+    "%d/%m/%Y %H:%M:%S",
+    "%Y%m%dT%H%M%S%.f",
+    "%Y%m%d %H%M%S",
+];
+
+/// The time formats, as [`DATE_FORMATS`].
+pub const TIME_FORMATS: &[&str] = &[
+    "%H:%M:%S%.9f",
+    "%H:%M:%S%.6f",
+    "%H:%M:%S%.3f",
+    "%H:%M:%S",
+    "%H:%M",
+];
+
+/// The formats of a temporal `dtype` that read `sample`, in the order they are tried.
+pub fn formats_reading(dtype: &DataType, sample: &str) -> Vec<&'static str> {
+    use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
+    let sample = sample.trim();
+    match dtype {
+        DataType::Date => DATE_FORMATS
+            .iter()
+            .filter(|f| NaiveDate::parse_from_str(sample, f).is_ok())
+            .copied()
+            .collect(),
+        DataType::Datetime(_, _) => DATETIME_FORMATS
+            .iter()
+            .filter(|f| NaiveDateTime::parse_from_str(sample, f).is_ok())
+            .copied()
+            .collect(),
+        DataType::Time => TIME_FORMATS
+            .iter()
+            .filter(|f| NaiveTime::parse_from_str(sample, f).is_ok())
+            .copied()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// `value` read as `ty`, as the table would show it: `2024-03-04` for `03/04/2024` as a
+/// date with `%d/%m/%Y`. `None` when it does not read.
+pub fn preview(ty: &ColumnType, value: &str) -> Option<String> {
+    let df = df!("v" => [value]).ok()?;
+    let out = df
+        .lazy()
+        .select([ty.expr("v", &DataType::String)])
+        .collect()
+        .ok()?;
+    let v = out.column("v").ok()?.get(0).ok()?;
+    (!v.is_null()).then(|| match v {
+        AnyValue::String(s) => s.to_string(),
+        v => v.to_string(),
+    })
 }
 
 /// Text in Polars' duration format (`1d`, `2h30m`, `-1w2d`) as nanoseconds. A value that
@@ -366,6 +542,95 @@ pub fn unfit_notes(unfit: &[Unfit], scope: &str) -> Vec<crate::notes::Note> {
         .collect()
 }
 
+/// What a derived column is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DerivedKind {
+    /// From a date and a time, or one text column, with an optional UTC offset.
+    Datetime,
+    Date,
+    Time,
+}
+
+impl DerivedKind {
+    pub const ALL: [Self; 3] = [Self::Datetime, Self::Date, Self::Time];
+
+    /// The kind `as` names.
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|k| k.name() == name)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Datetime => "datetime",
+            Self::Date => "date",
+            Self::Time => "time",
+        }
+    }
+}
+
+/// A column built from others: `time = { from = ["Date", "Time", "Offset"], as = "datetime" }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Derived {
+    pub name: String,
+    pub from: Vec<String>,
+    pub kind: DerivedKind,
+    /// A strftime format for the text the `from` columns make, joined with a space.
+    /// Inferred from the values when not given.
+    pub format: Option<String>,
+}
+
+/// An offset such as `-05:00`, `+0530`, `-5` or `05:00:00`: its sign, hours and minutes.
+const OFFSET: &str = r"^\s*([+-])?(\d{1,2})(?::?(\d{2}))?(?::\d{2})?\s*$";
+
+impl Derived {
+    /// The column, lazily, from its sources' text.
+    pub fn expr(&self) -> Expr {
+        let text = |name: &str| col(name).cast(DataType::String);
+        let options = StrptimeOptions {
+            format: self.format.as_deref().map(PlSmallStr::from),
+            strict: false,
+            exact: true,
+            cache: true,
+        };
+        match self.kind {
+            DerivedKind::Date => text(&self.from[0]).str().to_date(options),
+            DerivedKind::Time => text(&self.from[0]).str().to_time(options),
+            DerivedKind::Datetime => {
+                let stamp = match self.from.as_slice() {
+                    [one] => text(one),
+                    // A null in either is a null stamp.
+                    [date, time, ..] => text(date) + lit(" ") + text(time),
+                    [] => unreachable!("a derived column has a source"),
+                };
+                let local = stamp.str().to_datetime(
+                    Some(TimeUnit::Microseconds),
+                    None,
+                    options,
+                    lit("raise"),
+                );
+                let Some(offset) = self.from.get(2) else {
+                    return local;
+                };
+                // Local time less its offset from UTC is UTC.
+                let part = |group| text(offset).str().extract(lit(OFFSET), group);
+                let sign = when(part(1).eq(lit("-")))
+                    .then(lit(-1i64))
+                    .otherwise(lit(1i64));
+                let minutes = sign
+                    * (part(2).cast(DataType::Int64) * lit(60i64)
+                        + part(3).cast(DataType::Int64).fill_null(lit(0i64)));
+                let shift =
+                    (minutes * lit(60_000_000i64)).cast(DataType::Duration(TimeUnit::Microseconds));
+                (local - shift).dt().replace_time_zone(
+                    Some(polars::prelude::TimeZone::UTC),
+                    lit("raise"),
+                    NonExistent::Raise,
+                )
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,6 +657,13 @@ mod tests {
     }
 
     #[test]
+    fn a_preview_shows_what_a_type_makes_of_a_value() {
+        let date = ColumnType::named("date", Some("%d/%m/%Y".into())).unwrap();
+        assert_eq!(preview(&date, "03/04/2024").as_deref(), Some("2024-04-03"));
+        assert_eq!(preview(&date, "2024-04-03"), None);
+    }
+
+    #[test]
     fn a_leading_zero_is_a_code() {
         for code in ["02134", "007", "-01", " 0012 "] {
             assert!(has_leading_zero(code), "{code}");
@@ -399,6 +671,36 @@ mod tests {
         for number in ["0", "0.5", "-0.5", "0e3", "10", "", "-"] {
             assert!(!has_leading_zero(number), "{number}");
         }
+    }
+
+    #[test]
+    fn a_change_is_the_spec_entry_in_json_and_toml() {
+        let typed = ColumnChange {
+            name: "zip".into(),
+            change: Change::Typed(ColumnType::named("date", Some("%d/%m/%Y".into())).unwrap()),
+        };
+        let json = serde_json::to_string(&typed).unwrap();
+        assert_eq!(json, r#"{"name":"zip","type":"date","format":"%d/%m/%Y"}"#);
+        assert_eq!(serde_json::from_str::<ColumnChange>(&json).unwrap(), typed);
+        assert_eq!(
+            typed.to_toml(),
+            r#"zip = { type = "date", format = "%d/%m/%Y" }"#
+        );
+        let made = ColumnChange {
+            name: "when".into(),
+            change: Change::Made {
+                from: vec!["Lcl Date".into(), "Lcl Time".into()],
+                kind: "datetime".into(),
+                format: None,
+            },
+        };
+        let json = serde_json::to_string(&made).unwrap();
+        assert_eq!(serde_json::from_str::<ColumnChange>(&json).unwrap(), made);
+        assert_eq!(
+            made.to_toml(),
+            r#"when = { from = ["Lcl Date", "Lcl Time"], as = "datetime" }"#
+        );
+        assert!(serde_json::from_str::<ColumnChange>(r#"{"name":"x","type":"int"}"#).is_err());
     }
 
     #[test]

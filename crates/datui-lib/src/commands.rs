@@ -247,6 +247,7 @@ mod tests {
                 pivot: None,
                 melt: None,
                 reshape_source: None,
+                columns: Vec::new(),
             };
             manager
                 .create_view(name.to_string(), None, criteria, settings)

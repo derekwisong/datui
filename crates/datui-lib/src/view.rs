@@ -160,6 +160,10 @@ pub struct ViewSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub reshape_source: Option<ReshapeSource>,
+    /// Column types and columns made from others, as a spec's `[columns]` entries:
+    /// `{ "name": "zip", "type": "str" }`. Applied after the query, before the filters.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns: Vec<crate::column_types::ColumnChange>,
 }
 
 impl ViewSettings {
@@ -1105,6 +1109,7 @@ mod tests {
                 pivot: None,
                 melt: None,
                 reshape_source: None,
+                columns: Vec::new(),
             },
         }
     }

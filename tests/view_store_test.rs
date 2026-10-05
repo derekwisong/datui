@@ -57,6 +57,7 @@ fn test_view_creation() -> Result<()> {
         pivot: None,
         melt: None,
         reshape_source: None,
+        columns: Vec::new(),
     };
 
     let view = manager.create_view(
@@ -110,6 +111,7 @@ fn test_view_serialization() -> Result<()> {
         pivot: None,
         melt: None,
         reshape_source: None,
+        columns: Vec::new(),
     };
 
     let view = manager.create_view(
@@ -168,6 +170,7 @@ fn test_suggest_name_derives_from_state() -> Result<()> {
         pivot: None,
         melt: None,
         reshape_source: None,
+        columns: Vec::new(),
     };
     let criteria = MatchCriteria {
         exact_path: None,
@@ -219,6 +222,7 @@ fn test_view_relevance_exact_path() -> Result<()> {
         pivot: None,
         melt: None,
         reshape_source: None,
+        columns: Vec::new(),
     };
 
     let mut manager = manager;
@@ -272,6 +276,7 @@ fn test_view_serialization_with_sql_and_fuzzy() -> Result<()> {
         pivot: None,
         melt: None,
         reshape_source: None,
+        columns: Vec::new(),
     };
 
     let view = manager.create_view("sql_fuzzy_test".to_string(), None, match_criteria, settings)?;
@@ -320,6 +325,7 @@ fn plain_settings() -> ViewSettings {
         pivot: None,
         melt: None,
         reshape_source: None,
+        columns: Vec::new(),
     }
 }
 

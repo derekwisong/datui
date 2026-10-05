@@ -160,6 +160,8 @@ pub mod quality_report;
 pub mod quality_trends;
 #[cfg(any(feature = "http", feature = "cloud"))]
 mod remote_model;
+mod retype_keys;
+pub mod retype_modal;
 pub mod row_index;
 #[cfg(feature = "cloud")]
 pub mod s3_tools;
@@ -757,6 +759,11 @@ pub enum InputMode {
     GoToColumn,
     /// The format picker over a table read through a spec: read it with another.
     PickFormat,
+    /// A column's type, picked over the table: from the Info panel's Schema tab or
+    /// the cell menu.
+    Retype,
+    /// A datetime made from columns, as a spec's derived column.
+    Combine,
     Info,
     Chart,
     /// Value Counts: how often each value of one column occurs in the view.
@@ -1114,6 +1121,12 @@ pub struct App {
     export_counts: Option<polars::prelude::DataFrame>,
     /// The specs `b` offers for the dataset on screen.
     pub format_picker: crate::widgets::ui::PickerState,
+    /// The type picker, while it is open.
+    pub retype: Option<retype_modal::RetypeModal>,
+    /// The combine form, while it is open.
+    pub combine: Option<retype_modal::CombineModal>,
+    /// The type picker or the combine form go back to the Info panel, not the table.
+    pub(crate) retype_from_info: bool,
     /// The hex view (`InputMode::Hex`), kept while it is up.
     pub hex: Option<hex_view::HexView>,
     /// Bumped per hex view opened, so a find's answer for another is dropped.
@@ -4111,7 +4124,21 @@ impl App {
 
     /// Open the context menu at `at`, over the cell the cursor was just put on.
     pub fn open_context_menu(&mut self, at: ratatui::layout::Position) {
-        self.context_menu = Some(context_menu::ContextMenu::new(at));
+        // A datetime is made from text, a date or a time.
+        let combine = self
+            .data_table_state
+            .as_ref()
+            .and_then(|state| {
+                let column = state.current_column()?;
+                state.schema().get(column).cloned()
+            })
+            .is_some_and(|dtype| {
+                matches!(dtype, DataType::String | DataType::Date | DataType::Time)
+            });
+        self.context_menu = Some(context_menu::ContextMenu::with(
+            at,
+            context_menu::column_items(combine),
+        ));
     }
 
     /// Close the context menu, if it is open.
@@ -4122,10 +4149,15 @@ impl App {
     /// The line `i` of the open menu, chosen: the menu closes and its key is
     /// pressed, offered as typed.
     pub fn choose_from_menu(&mut self, i: usize) -> Option<AppEvent> {
-        self.context_menu.take()?;
-        context_menu::ITEMS
-            .get(i)
-            .map(|item| AppEvent::Press(item.key_event()))
+        let menu = self.context_menu.take()?;
+        match menu.chosen(i)? {
+            context_menu::MenuKey::Run(key) => Some(AppEvent::Press(key)),
+            context_menu::MenuKey::Do(action) => {
+                self.menu_action(action);
+                None
+            }
+            _ => None,
+        }
     }
 
     /// A header dropped on another column: the order with `column` moved to where
@@ -4173,7 +4205,11 @@ impl App {
             InputMode::Inspect => self.inspector_modal.finding,
             // The Picker narrows by typing, so it types.
             InputMode::GoToColumn => true,
-            InputMode::PickFormat => true,
+            InputMode::PickFormat | InputMode::Retype => true,
+            InputMode::Combine => self
+                .combine
+                .as_ref()
+                .is_some_and(|c| c.picker.is_some() || c.focus == retype_modal::CombineField::Name),
             // The whole inline editor types (pickers narrow, the value edits), as
             // do the add-sort Picker and the Columns tab's find.
             InputMode::SortFilter => self.sort_filter_modal.typing(),
@@ -5968,6 +6004,9 @@ impl App {
             hex_serial: 0,
             export_counts: None,
             format_picker: crate::widgets::ui::PickerState::default(),
+            retype: None,
+            combine: None,
+            retype_from_info: false,
             clipboard: None,
             pending_copy: None,
             chart_cache: ChartCache::default(),
@@ -11797,6 +11836,7 @@ impl App {
                     pivot: state.last_pivot_spec().cloned(),
                     melt: state.last_melt_spec().cloned(),
                     reshape_source: state.reshape_source().cloned(),
+                    columns: state.column_changes().to_vec(),
                 };
             }
             match self.view_manager.update_view(&view) {
@@ -11960,6 +12000,8 @@ impl App {
             InputMode::Inspect => Context::Inspector,
             InputMode::GoToColumn => Context::GoToColumn,
             InputMode::PickFormat => Context::FormatPicker,
+            InputMode::Retype => Context::Retype,
+            InputMode::Combine => Context::Combine,
             InputMode::Info => Context::Info,
             InputMode::Chart => Context::Chart,
             InputMode::Home if self.documentation.is_open() => Context::Documentation,
@@ -12018,6 +12060,11 @@ impl App {
                 context_menu::MenuKey::Run(key) => {
                     self.context_menu = None;
                     return Some(AppEvent::Press(key));
+                }
+                context_menu::MenuKey::Do(action) => {
+                    self.context_menu = None;
+                    self.menu_action(action);
+                    return None;
                 }
                 context_menu::MenuKey::Other => self.context_menu = None,
             }
@@ -12363,6 +12410,14 @@ impl App {
 
         if self.input_mode == InputMode::PickFormat {
             return self.format_picker_key(event);
+        }
+
+        if self.input_mode == InputMode::Retype {
+            return self.retype_key(event);
+        }
+
+        if self.input_mode == InputMode::Combine {
+            return self.combine_key(event);
         }
 
         if self.input_mode == InputMode::Copy {
@@ -15790,11 +15845,14 @@ impl App {
                 None
             }
             Answer::UnfitCounted(unfit) => {
-                if let Job::UnfitCount { dataset } = job
+                if let Job::UnfitCount { dataset, version } = job
                     && dataset == self.dataset_generation
                     && let Some(state) = self.data_table_state.as_mut()
                 {
-                    state.unfit_counted(&unfit);
+                    match version {
+                        None => state.unfit_counted(&unfit),
+                        Some(version) => state.changes_unfit_counted(version, &unfit),
+                    }
                 }
                 None
             }
@@ -16064,31 +16122,38 @@ impl App {
     /// opens on a dataset with typed columns.
     fn count_unfit(&mut self) {
         let dataset = self.dataset_generation;
-        let Some((source, typed)) = self
-            .data_table_state
-            .as_ref()
-            .and_then(DataTableState::unfit_to_count)
-        else {
+        let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
-        if self
-            .jobs
-            .current(|job| matches!(job, Job::UnfitCount { dataset: asked } if *asked == dataset))
-            .is_some()
-        {
-            return;
-        }
+        let read = state
+            .unfit_to_count()
+            .map(|(source, typed)| (source, typed, None));
+        let view = state
+            .changes_unfit_to_count()
+            .map(|(source, typed, version)| (source, typed, Some(version)));
         let streaming = self.app_config.performance.streaming;
-        self.spawn_job(Job::UnfitCount { dataset }, None, move |_| {
-            let counted = crate::statistics::collect_lazy(
-                crate::column_types::unfit_frame(source, &typed),
-                streaming,
-            )
-            .map_err(|e| crate::error_display::user_message_from_polars(&e))?;
-            Ok(Answer::UnfitCounted(crate::column_types::unfit_counts(
-                &counted, &typed,
-            )))
-        });
+        for (source, typed, version) in [read, view].into_iter().flatten() {
+            let running = self
+                .jobs
+                .current(|job| {
+                    matches!(job, Job::UnfitCount { dataset: d, version: v }
+                        if *d == dataset && *v == version)
+                })
+                .is_some();
+            if running {
+                continue;
+            }
+            self.spawn_job(Job::UnfitCount { dataset, version }, None, move |_| {
+                let counted = crate::statistics::collect_lazy(
+                    crate::column_types::unfit_frame(source, &typed),
+                    streaming,
+                )
+                .map_err(|e| crate::error_display::user_message_from_polars(&e))?;
+                Ok(Answer::UnfitCounted(crate::column_types::unfit_counts(
+                    &counted, &typed,
+                )))
+            });
+        }
     }
 
     /// Whether the values the read's column types made null are being counted.
@@ -16345,6 +16410,10 @@ impl App {
             settings.query.as_deref(),
             settings.fuzzy_query.as_deref(),
         )?;
+        // Before the filters, which may compare in the types it gives.
+        if !settings.columns.is_empty() {
+            state.set_column_changes(&settings.columns);
+        }
         Self::replay_filters_and_sort(
             state,
             &settings.filters,
@@ -18176,6 +18245,7 @@ impl App {
                 pivot: state.last_pivot_spec().cloned(),
                 melt: state.last_melt_spec().cloned(),
                 reshape_source: state.reshape_source().cloned(),
+                columns: state.column_changes().to_vec(),
             }
         } else {
             view::ViewSettings {
@@ -18191,6 +18261,7 @@ impl App {
                 pivot: None,
                 melt: None,
                 reshape_source: None,
+                columns: Vec::new(),
             }
         };
 
@@ -18479,7 +18550,7 @@ impl Widget for &mut App {
             self.render_drop_mark(buf, &ctx);
         }
         if self.menu_showing()
-            && let Some(menu) = self.context_menu
+            && let Some(menu) = self.context_menu.clone()
         {
             menu.render(main_area, buf, &ctx);
         }

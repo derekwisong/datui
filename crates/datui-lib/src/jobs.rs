@@ -185,7 +185,8 @@ pub(crate) enum Job {
     HexFind(crate::hex_view::HexFindRun),
     /// Counting the values the read's column types made null, for the Notes: judged
     /// by the `dataset_generation` it was asked for, as the file facts are.
-    UnfitCount { dataset: u64 },
+    /// `version` is the view's column changes counted; `None` for the read's types.
+    UnfitCount { dataset: u64, version: Option<u64> },
 }
 
 /// A look at a path chosen on the home screen. Every key acts on the home screen even

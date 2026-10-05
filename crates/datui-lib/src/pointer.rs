@@ -599,7 +599,8 @@ impl App {
             .or_else(|| id.focus_in(&mut self.chart_export_modal))
             .or_else(|| id.focus_in(&mut self.pivot_melt_modal))
             .or_else(|| id.focus_in(&mut self.sort_filter_modal))
-            .or_else(|| id.focus_in(&mut self.view_modal));
+            .or_else(|| id.focus_in(&mut self.view_modal))
+            .or_else(|| self.combine.as_mut().and_then(|c| id.focus_in(c)));
         if shown.is_some() {
             return shown;
         }

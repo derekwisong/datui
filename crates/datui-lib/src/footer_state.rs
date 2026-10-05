@@ -178,7 +178,11 @@ impl App {
         } else {
             None
         };
-        ViewState { filters, sort }
+        ViewState {
+            typed: state.retyped_columns(),
+            filters,
+            sort,
+        }
     }
 
     /// The home screen: where the list is, how many rows the filter matched, and the

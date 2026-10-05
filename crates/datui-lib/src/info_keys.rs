@@ -107,6 +107,17 @@ impl App {
             KeyCode::Enter if event.is_press() && notes_tab => {
                 self.read_the_selected_note_s_column_as_text();
             }
+            // The column's type, as a spec's `type` would say it.
+            KeyCode::Enter if event.is_press() && schema_tab => {
+                let column = self.data_table_state.as_ref().and_then(|s| {
+                    s.schema()
+                        .get_at_index(self.info_modal.schema_selected_index)
+                        .map(|(name, _)| name.to_string())
+                });
+                if let Some(column) = column {
+                    self.open_retype(&column);
+                }
+            }
             KeyCode::Down | KeyCode::Char('j') if event.is_press() && detail_tab => {
                 self.info_modal.detail_scroll_by(1);
             }

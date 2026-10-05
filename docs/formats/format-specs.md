@@ -322,7 +322,8 @@ opens, one pass counts them, and the Notes tab says how many per column:
 not have is a note, not an error, since the files of a family differ. A typed
 column is the same type in every file read together, and `read.infer_types`
 leaves it alone. `type` beside `from` or `as` is refused: a derived column
-takes its type from `as`.
+takes its type from `as`. The same types, and the derived columns, are on hand
+in the table: [Column types](../user-guide/dataset-info.md#column-types).
 
 ### Derived columns
 

@@ -220,6 +220,18 @@ pub fn render(
         );
     }
 
+    if app.input_mode == crate::InputMode::Retype
+        && let Some(modal) = &app.retype
+    {
+        crate::widgets::retype::render_retype(area, buf, modal, ctx);
+    }
+
+    if app.input_mode == crate::InputMode::Combine
+        && let Some(modal) = &app.combine
+    {
+        crate::widgets::retype::render_combine(area, buf, modal, ctx);
+    }
+
     if app.copy_modal.active {
         // A commitment like export: compact and centered. The dialog holds
         // its rows, the spec and the footer; an open Picker earns the room

@@ -887,7 +887,7 @@ With \fBformat\fR, a strftime format; without, the format is inferred
 \fBduration\fR
 \fB1d\fR, \fB2h30m\fR, \fB\-1w2d\fR
 .PP
-Use \fBi64\fR and \fBf64\fR unless a narrower type is wanted for an export or to hold values to a range. A value is trimmed first, and one that does not fit the type, or is out of an integer type's range, is null. The first time the Info panel opens, one pass counts them, and the Notes tab says how many per column: \fBRPM: 2 values out of range for u8, read as null\fR. A typed column the file does not have is a note, not an error, since the files of a family differ. A typed column is the same type in every file read together, and \fBread.infer_types\fR leaves it alone. \fBtype\fR beside \fBfrom\fR or \fBas\fR is refused: a derived column takes its type from \fBas\fR.
+Use \fBi64\fR and \fBf64\fR unless a narrower type is wanted for an export or to hold values to a range. A value is trimmed first, and one that does not fit the type, or is out of an integer type's range, is null. The first time the Info panel opens, one pass counts them, and the Notes tab says how many per column: \fBRPM: 2 values out of range for u8, read as null\fR. A typed column the file does not have is a note, not an error, since the files of a family differ. A typed column is the same type in every file read together, and \fBread.infer_types\fR leaves it alone. \fBtype\fR beside \fBfrom\fR or \fBas\fR is refused: a derived column takes its type from \fBas\fR. The same types, and the derived columns, are on hand in the table: Column types.
 .PP
 \fBDerived columns\fR
 .TP

@@ -168,19 +168,34 @@ impl Position {
 /// sorted`) when the line is short.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ViewState {
+    /// The columns the view gave a type, first: it types them before it filters.
+    pub typed: Vec<String>,
     pub filters: Vec<String>,
     pub sort: Option<String>,
 }
 
 impl ViewState {
+    /// `typed zip`, or `typed 3`.
+    fn typed(&self) -> Option<String> {
+        match self.typed.as_slice() {
+            [] => None,
+            [one] => Some(format!("typed {one}")),
+            many => Some(format!("typed {}", many.len())),
+        }
+    }
+
     fn full(&self) -> Vec<String> {
-        let mut parts = self.filters.clone();
+        let mut parts: Vec<String> = self.typed().into_iter().collect();
+        parts.extend(self.filters.clone());
         parts.extend(self.sort.clone());
         parts
     }
 
     fn counted(&self) -> Vec<String> {
-        let mut parts = Vec::new();
+        let mut parts: Vec<String> = match self.typed.len() {
+            0 => Vec::new(),
+            n => vec![format!("typed {n}")],
+        };
         match self.filters.len() {
             0 => {}
             1 => parts.push("1 filter".to_string()),
@@ -854,6 +869,7 @@ mod tests {
             dataset: Some("weather/daily.parquet".to_string()),
             stages: vec![QUERY_STAGE.to_string()],
             view: ViewState {
+                typed: Vec::new(),
                 filters: vec!["prcp > 0".to_string()],
                 sort: Some("date ▼".to_string()),
             },

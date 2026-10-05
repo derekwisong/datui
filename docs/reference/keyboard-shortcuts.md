@@ -309,7 +309,7 @@ Where a dataset opens.
 | `↑ / ↓ (j/k)` | Schema, Notes or Documentation tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list |
 | `PgUp / PgDn` | Model, Audio, MIDI, Metadata and format tabs: scroll the list a page |
 | `Home / End` | Model, Audio, MIDI, Metadata and format tabs: the top or the end of the list |
-| `Enter` | Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor |
+| `Enter` | Schema tab: change the column's type, with the names and formats a format spec's type takes. Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor |
 | `o` | Documentation tab: open the link on the cursor's line in the system browser. Only http and https links open, and only after a question showing the whole URL. Off over SSH or without a display |
 | `y` | Documentation tab: copy the link or value on the cursor's line, whole, however it is cut on screen |
 | `H` | Schema tab, CSV, TSV, PSV: read the first row as data, under column_1, column_2, …; again to read it as column names. Reads the file again, so the query, filters and sort are cleared, and the panel closes |
@@ -727,6 +727,34 @@ Data Quality in the Analysis sidebar.
 | `Enter` | Read the file again with the spec chosen. The query, filters and sort are cleared |
 | `Backspace` | Delete a character (Ctrl+W a word, Ctrl+U all) |
 | `Esc` | Close and keep the format |
+
+## Column type
+
+<kbd>Enter</kbd> on the Info panel's Schema tab, or Change type in the cell menu.
+
+### Column type · Pick
+
+| Key | Action |
+|---|---|
+| `(type)` | Narrow the list to the names that contain it. In the format list, a strftime format typed that no line holds is the format |
+| `↑ / ↓` | Move |
+| `Enter` | The type: the column reads as it at once, a value that does not fit null. A date, time or datetime asks its format next, each line showing what it makes of the column's first value. as read takes the type away |
+| `Backspace` | Delete a character (Ctrl+W a word, Ctrl+U all) |
+| `Esc` | Back to the types, or close |
+
+## Combine into datetime
+
+Combine into datetime in the cell menu, on a text, date or time column.
+
+### Combine into datetime · Fields
+
+| Key | Action |
+|---|---|
+| `Tab / Shift+Tab (↑ / ↓)` | Next or previous field |
+| `Space` | Pick a column, or step the kind |
+| `← / →` | Step the kind: datetime, date or time |
+| `Enter` | Make the column, before the first column it is made from, as a format spec's derived column is: a date and a time, and a UTC offset, make a datetime in UTC |
+| `Esc` | Cancel |
 
 ## Hex view
 

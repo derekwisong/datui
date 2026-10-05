@@ -1184,6 +1184,7 @@ fn blank_view(app: &mut App, name: &str) -> SavedView {
         pivot: None,
         melt: None,
         reshape_source: None,
+        columns: Vec::new(),
     };
     view
 }

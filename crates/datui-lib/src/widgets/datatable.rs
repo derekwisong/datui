@@ -442,6 +442,16 @@ pub struct DataTableState {
     typing: Typing,
     /// The notes on the values the types made null, once counted.
     unfit_notes: Option<Vec<crate::notes::Note>>,
+    /// The view's own column types and columns made from others, in the order asked:
+    /// a step of `lf`, before the filters, as a spec's `[columns]` would say them.
+    column_changes: Vec<crate::column_types::ColumnChange>,
+    /// Bumped with every change to `column_changes`, so a count of what they made null
+    /// answers for the changes it was asked about.
+    changes_version: u64,
+    /// The notes on the values the view's types made null: for the version counted.
+    changes_unfit: Option<(u64, Vec<crate::notes::Note>)>,
+    /// Steps of a saved view whose columns this data does not have.
+    changes_dropped: Vec<crate::notes::Note>,
     /// How `reshaped_lf` was built, while there is one: what SQL runs over.
     reshape_steps: Option<Vec<Step>>,
     /// Which loaded column each column of the base is (see [`Lineage`]).
@@ -712,6 +722,9 @@ pub struct ViewRollback {
     notes: Vec<crate::notes::Note>,
     notes_seen: bool,
     view_notes: Vec<crate::notes::Note>,
+    column_changes: Vec<crate::column_types::ColumnChange>,
+    changes_version: u64,
+    changes_dropped: Vec<crate::notes::Note>,
     observed_bytes_per_row: Option<usize>,
     buffered_start_row: usize,
     buffered_end_row: usize,
@@ -2062,6 +2075,10 @@ impl DataTableState {
             read_units: None,
             typing: Typing::default(),
             unfit_notes: None,
+            column_changes: Vec::new(),
+            changes_version: 0,
+            changes_unfit: None,
+            changes_dropped: Vec::new(),
             reshape_steps: None,
             lineage: None,
             reshape_lineage: None,
@@ -2236,6 +2253,10 @@ impl DataTableState {
             read_units: None,
             typing: Typing::default(),
             unfit_notes: None,
+            column_changes: Vec::new(),
+            changes_version: 0,
+            changes_unfit: None,
+            changes_dropped: Vec::new(),
             reshape_steps: None,
             lineage: None,
             reshape_lineage: None,
@@ -2436,6 +2457,7 @@ impl DataTableState {
     /// sort, not drilled, the first `locked_columns_count` columns frozen, the buffer
     /// dropped and the cursor at the top left.
     fn reset_view_state(&mut self, locked_columns_count: usize) {
+        self.forget_column_changes();
         self.active_query.clear();
         self.active_sql_query.clear();
         self.active_fuzzy_query.clear();
@@ -4094,48 +4116,21 @@ impl DataTableState {
         Ok(lf.slice(0, keep))
     }
 
-    /// Try to detect a date format from a sample string (first format that parses).
-    /// Returns None if no format matches, so we can avoid passing format: None to Polars (which can error).
+    /// The first date format `sample` reads in. `None` when none does, so Polars is
+    /// never handed `format: None`, which can fail.
     fn infer_date_format_from_sample(sample: &str) -> Option<&'static str> {
-        const DATE_FMTS: &[&str] = &[
-            "%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y%m%d", "%d-%m-%Y", "%d/%m/%Y", "%d.%m.%Y",
-            "%m-%d-%Y", "%m/%d/%Y",
-        ];
-        DATE_FMTS
-            .iter()
-            .find(|fmt| NaiveDate::parse_from_str(sample, fmt).is_ok())
+        crate::column_types::formats_reading(&DataType::Date, sample)
+            .first()
             .copied()
     }
 
-    /// Try to detect a datetime format from a sample string.
     fn infer_datetime_format_from_sample(sample: &str) -> Option<&'static str> {
-        const DATETIME_FMTS: &[&str] = &[
-            // ISO 8601 with an offset. `%#z` takes `Z`, `+05:00`, `-0500` and `+05`;
-            // a format with an offset makes Polars read the column into UTC.
-            "%Y-%m-%dT%H:%M:%S%.f%#z",
-            "%Y-%m-%d %H:%M:%S%.f%#z",
-            "%Y-%m-%dT%H:%M%#z",
-            "%Y-%m-%dT%H:%M:%S%.f",
-            "%Y-%m-%dT%H:%M:%S",
-            "%Y-%m-%dT%H:%M",
-            "%Y-%m-%d %H:%M:%S%.f",
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%d %H:%M",
-            "%Y-%m-%d",
-            "%d-%m-%YT%H:%M:%S%.f",
-            "%d-%m-%YT%H:%M:%S",
-            "%d-%m-%Y %H:%M:%S%.f",
-            "%d-%m-%Y %H:%M:%S",
-            "%d/%m/%YT%H:%M:%S%.f",
-            "%d/%m/%YT%H:%M:%S",
-            "%d/%m/%Y %H:%M:%S",
-            "%Y%m%dT%H%M%S%.f",
-            "%Y%m%d %H%M%S",
-        ];
-        DATETIME_FMTS
-            .iter()
-            .find(|fmt| NaiveDateTime::parse_from_str(sample, fmt).is_ok())
-            .copied()
+        crate::column_types::formats_reading(
+            &DataType::Datetime(TimeUnit::Microseconds, None),
+            sample,
+        )
+        .first()
+        .copied()
     }
 
     /// Parse a string ChunkedArray into a Duration ChunkedArray (nanoseconds). Uses Polars duration
@@ -4156,18 +4151,9 @@ impl DataTableState {
         int_ca.into_duration(TimeUnit::Nanoseconds)
     }
 
-    /// Try to detect a time format from a sample string (HH:MM:SS, HH:MM, with optional fractional seconds).
     fn infer_time_format_from_sample(sample: &str) -> Option<&'static str> {
-        const TIME_FMTS: &[&str] = &[
-            "%H:%M:%S%.9f",
-            "%H:%M:%S%.6f",
-            "%H:%M:%S%.3f",
-            "%H:%M:%S",
-            "%H:%M",
-        ];
-        TIME_FMTS
-            .iter()
-            .find(|fmt| NaiveTime::parse_from_str(sample, fmt).is_ok())
+        crate::column_types::formats_reading(&DataType::Time, sample)
+            .first()
             .copied()
     }
 
@@ -5883,7 +5869,8 @@ impl DataTableState {
     }
 
     fn is_pristine(&self) -> bool {
-        self.filters.is_empty()
+        self.column_changes.is_empty()
+            && self.filters.is_empty()
             && self.sort_columns.is_empty()
             && self.sort_ascending
             && self.active_query.is_empty()
@@ -6610,6 +6597,12 @@ impl DataTableState {
             notes.extend(pushdown.notes());
         }
         notes.extend(self.unfit_notes.iter().flatten().cloned());
+        notes.extend(self.changes_dropped.iter().cloned());
+        if let Some((version, unfit)) = &self.changes_unfit
+            && *version == self.changes_version
+        {
+            notes.extend(unfit.iter().cloned());
+        }
         notes
     }
 
@@ -6811,6 +6804,12 @@ impl DataTableState {
         // reader the user most wants to know about.
         !self.notes.is_empty()
             || !self.open_notes.is_empty()
+            || self.unfit_notes.as_ref().is_some_and(|n| !n.is_empty())
+            || !self.changes_dropped.is_empty()
+            || self
+                .changes_unfit
+                .as_ref()
+                .is_some_and(|(v, n)| *v == self.changes_version && !n.is_empty())
             || self
                 .pushdown
                 .as_ref()
@@ -8358,7 +8357,8 @@ impl DataTableState {
     /// from this state would carry nothing — and, matching by schema, it
     /// would shadow real views in the apply gate as a well-used no-op.
     pub fn is_at_defaults(&self) -> bool {
-        self.active_query.is_empty()
+        self.column_changes.is_empty()
+            && self.active_query.is_empty()
             && self.active_sql_query.is_empty()
             && self.active_fuzzy_query.is_empty()
             && self.filters.is_empty()
@@ -8441,6 +8441,9 @@ impl DataTableState {
             notes: self.notes.clone(),
             notes_seen: self.notes_seen,
             view_notes: self.view_notes.clone(),
+            column_changes: self.column_changes.clone(),
+            changes_version: self.changes_version,
+            changes_dropped: self.changes_dropped.clone(),
             observed_bytes_per_row: self.observed_bytes_per_row,
             buffered_start_row: self.buffered_start_row,
             buffered_end_row: self.buffered_end_row,
@@ -8506,6 +8509,9 @@ impl DataTableState {
         self.drift_column_present = saved.drift_column_present;
         self.view_numbered = saved.view_numbered;
         self.drift_groups = saved.drift_groups;
+        self.column_changes = saved.column_changes;
+        self.changes_version = saved.changes_version;
+        self.changes_dropped = saved.changes_dropped;
         self.notes = saved.notes;
         self.notes_seen = saved.notes_seen;
         self.view_notes = saved.view_notes;
@@ -9789,8 +9795,302 @@ impl DataTableState {
         Some((self.typing.source.clone()?, self.typing.typed.clone()))
     }
 
+    /// The view's column types and made columns, in the order asked.
+    pub fn column_changes(&self) -> &[crate::column_types::ColumnChange] {
+        &self.column_changes
+    }
+
+    /// The columns the view gave a type: the type row draws them in the accent.
+    pub fn retyped_columns(&self) -> Vec<String> {
+        self.column_changes
+            .iter()
+            .filter(|c| matches!(c.change, crate::column_types::Change::Typed(_)))
+            .map(|c| c.name.clone())
+            .collect()
+    }
+
+    /// `column`'s type before the view's: as the read gave it, or as the view made it.
+    pub fn type_as_read(&self, column: &str) -> Option<DataType> {
+        let base = self.base_lf.clone().collect_schema().ok()?;
+        base.get(column)
+            .or_else(|| self.schema.get(column))
+            .cloned()
+    }
+
+    /// Up to `n` of `column`'s values as read that are not blank, as text: from the
+    /// rows on hand, or from the first rows when the view has typed the column.
+    pub fn values_on_screen(&self, column: &str, n: usize) -> Vec<String> {
+        let from_buffer = self.column_type_of(column).is_none();
+        let df = if from_buffer {
+            self.buffered_df.clone()
+        } else {
+            self.base_lf
+                .clone()
+                .select([col(column)])
+                .limit(n as IdxSize * 10)
+                .collect()
+                .ok()
+        };
+        let Some(values) = df.and_then(|df| df.column(column).ok().cloned()) else {
+            return Vec::new();
+        };
+        let Ok(text) = values.cast(&DataType::String) else {
+            return Vec::new();
+        };
+        let Ok(text) = text.str().cloned() else {
+            return Vec::new();
+        };
+        text.iter()
+            .flatten()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .take(n)
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The type the view gives `column`, if it gives one.
+    pub fn column_type_of(&self, column: &str) -> Option<&crate::column_types::ColumnType> {
+        self.column_changes.iter().find_map(|c| match &c.change {
+            crate::column_types::Change::Typed(ty) if c.name == column => Some(ty),
+            _ => None,
+        })
+    }
+
+    /// `column` as `ty`, or as read again with `None`. The view's own type wins over
+    /// what the read gave the column. Lazy: the next rows read are typed.
+    pub fn set_column_type(&mut self, column: &str, ty: Option<crate::column_types::ColumnType>) {
+        use crate::column_types::{Change, ColumnChange};
+        self.column_changes
+            .retain(|c| !(c.name == column && matches!(c.change, Change::Typed(_))));
+        if let Some(ty) = ty {
+            self.column_changes.push(ColumnChange {
+                name: column.to_string(),
+                change: Change::Typed(ty),
+            });
+        }
+        self.column_changes_changed();
+    }
+
+    /// A column made from others, as a spec's derived column is, before the first
+    /// column it is made from, which stays. Its name may not be taken.
+    pub fn add_made_column(
+        &mut self,
+        derived: crate::column_types::Derived,
+    ) -> std::result::Result<(), String> {
+        use crate::column_types::{Change, ColumnChange};
+        if self.schema.contains(&derived.name) {
+            return Err(format!("a column is named {} already", derived.name));
+        }
+        for from in &derived.from {
+            if !self.schema.contains(from) {
+                return Err(format!("no column {from}"));
+            }
+        }
+        let first = derived.from[0].clone();
+        let at = self
+            .column_order
+            .iter()
+            .position(|c| *c == first)
+            .unwrap_or(self.column_order.len());
+        self.column_order.insert(at, derived.name.clone());
+        self.column_changes.push(ColumnChange {
+            name: derived.name,
+            change: Change::Made {
+                from: derived.from,
+                kind: derived.kind.name().to_string(),
+                format: derived.format,
+            },
+        });
+        self.column_changes_changed();
+        Ok(())
+    }
+
+    /// A saved view's column changes, in place of the view's own. A change whose column
+    /// this data does not have is left out, with a note; the names left out are
+    /// returned.
+    pub fn set_column_changes(
+        &mut self,
+        changes: &[crate::column_types::ColumnChange],
+    ) -> Vec<String> {
+        self.column_changes = Vec::new();
+        let base = self
+            .base_lf
+            .clone()
+            .collect_schema()
+            .unwrap_or_else(|_| self.schema.clone());
+        let mut known: Vec<String> = base.iter_names().map(|n| n.to_string()).collect();
+        let mut dropped = Vec::new();
+        for change in changes {
+            let fits = match &change.change {
+                crate::column_types::Change::Typed(_) => known.contains(&change.name),
+                crate::column_types::Change::Made { from, .. } => {
+                    from.iter().all(|f| known.contains(f)) && change.derived().is_some()
+                }
+            };
+            if fits {
+                if !known.contains(&change.name) {
+                    known.push(change.name.clone());
+                }
+                self.column_changes.push(change.clone());
+            } else {
+                dropped.push(change.name.clone());
+            }
+        }
+        self.changes_dropped = if dropped.is_empty() {
+            Vec::new()
+        } else {
+            vec![crate::notes::Note {
+                summary: format!(
+                    "view steps left out, no such column: {}",
+                    crate::notes::some_names(&dropped)
+                ),
+                scope: "the view's column types".to_string(),
+                read_as_text: None,
+                passed_over: None,
+            }]
+        };
+        // The made columns go before their first source, as they did when made.
+        for change in &self.column_changes {
+            if let crate::column_types::Change::Made { from, .. } = &change.change
+                && !self.column_order.contains(&change.name)
+            {
+                let at = self
+                    .column_order
+                    .iter()
+                    .position(|c| *c == from[0])
+                    .unwrap_or(self.column_order.len());
+                self.column_order.insert(at, change.name.clone());
+            }
+        }
+        self.column_changes_changed();
+        dropped
+    }
+
+    /// Drop the view's column changes and their notes, as a new pipeline root does.
+    fn forget_column_changes(&mut self) {
+        if self.column_changes.is_empty() && self.changes_dropped.is_empty() {
+            return;
+        }
+        self.column_changes.clear();
+        self.changes_dropped.clear();
+        self.changes_version += 1;
+        self.changes_unfit = None;
+    }
+
+    /// After the column changes change: the schema shows them, a made column gone
+    /// leaves the column order, and the rows are read again.
+    fn column_changes_changed(&mut self) {
+        self.changes_version += 1;
+        let (changed, _) = self.with_column_changes(self.base_lf.clone());
+        if let Ok(schema) = changed.clone().collect_schema() {
+            self.schema = schema;
+        }
+        let schema = self.schema.clone();
+        self.column_order.retain(|c| schema.contains(c));
+        for name in schema.iter_names() {
+            if !self.column_order.iter().any(|c| c == name.as_str()) {
+                self.column_order.push(name.to_string());
+            }
+        }
+        self.widths.relearn();
+        self.drop_buffer();
+        self.apply_transformations();
+    }
+
+    /// `lf` with the view's column changes, in order, and what the count of the values
+    /// they made null needs: the frame with only the made columns, and the typed
+    /// columns with the types they had there. A change whose column is not in `lf` is
+    /// passed over.
+    fn with_column_changes(
+        &self,
+        mut lf: LazyFrame,
+    ) -> (
+        LazyFrame,
+        Option<(LazyFrame, Vec<crate::column_types::Typed>)>,
+    ) {
+        use crate::column_types::Change;
+        if self.column_changes.is_empty() {
+            return (lf, None);
+        }
+        let Ok(schema) = lf.collect_schema() else {
+            return (lf, None);
+        };
+        let mut schema = (*schema).clone();
+        let mut made = lf.clone();
+        let mut typed = Vec::new();
+        for change in &self.column_changes {
+            let name = PlSmallStr::from(change.name.as_str());
+            match &change.change {
+                Change::Typed(ty) => {
+                    let Some(from) = schema.get(&name).cloned() else {
+                        continue;
+                    };
+                    lf = lf.with_column(ty.expr(&change.name, &from).alias(name.clone()));
+                    typed.push(crate::column_types::Typed {
+                        column: change.name.clone(),
+                        ty: ty.clone(),
+                        from,
+                    });
+                    schema.with_column(name, ty.dtype.clone());
+                }
+                Change::Made { from, .. } => {
+                    let Some(derived) = change.derived() else {
+                        continue;
+                    };
+                    if !from.iter().all(|f| schema.contains(f.as_str())) {
+                        continue;
+                    }
+                    lf = lf.with_column(derived.expr().alias(name.clone()));
+                    made = made.with_column(derived.expr().alias(name.clone()));
+                    schema.with_column(name, DataType::Null);
+                }
+            }
+        }
+        let count = (!typed.is_empty()).then_some((made, typed));
+        (lf, count)
+    }
+
+    /// What is left to count of the values the view's column types made null: the
+    /// frame, the columns and the version of the changes it is for.
+    pub(crate) fn changes_unfit_to_count(
+        &self,
+    ) -> Option<(LazyFrame, Vec<crate::column_types::Typed>, u64)> {
+        if self
+            .changes_unfit
+            .as_ref()
+            .is_some_and(|(version, _)| *version == self.changes_version)
+        {
+            return None;
+        }
+        let (_, count) = self.with_column_changes(self.base_lf.clone());
+        let (source, typed) = count?;
+        Some((source, typed, self.changes_version))
+    }
+
+    /// The counts for the view's column types at `version`, as notes.
+    pub(crate) fn changes_unfit_counted(
+        &mut self,
+        version: u64,
+        unfit: &[crate::column_types::Unfit],
+    ) {
+        if version == self.changes_version {
+            // Something new to say: the `i` chip lights again.
+            if !unfit.is_empty() {
+                self.notes_seen = false;
+            }
+            self.changes_unfit = Some((
+                version,
+                crate::column_types::unfit_notes(unfit, "the view's column types"),
+            ));
+        }
+    }
+
     /// The counts of the values the types made null, as notes.
     pub(crate) fn unfit_counted(&mut self, unfit: &[crate::column_types::Unfit]) {
+        if !unfit.is_empty() {
+            self.notes_seen = false;
+        }
         self.unfit_notes = Some(crate::column_types::unfit_notes(
             unfit,
             "counted over every row",
@@ -9800,6 +10100,17 @@ impl DataTableState {
     /// How `lf` was built: the base's steps, then the filters and the sort.
     fn view_steps(&self) -> Vec<Step> {
         let mut steps = self.base_steps.clone();
+        if !self.column_changes.is_empty() {
+            let said: Vec<String> = self
+                .column_changes
+                .iter()
+                .map(crate::column_types::ColumnChange::to_toml)
+                .collect();
+            steps.push(Step::Unreproducible(format!(
+                "datui typed columns as a format spec would: {}",
+                said.join("; ")
+            )));
+        }
         if !self.filters.is_empty() {
             let typed = self.typed_filters();
             let durations: Vec<String> = typed
@@ -9872,12 +10183,12 @@ impl DataTableState {
             self.view_notes = Vec::new();
             self.view_numbered = false;
             self.invalidate_num_rows();
-            self.lf = view.lf;
+            self.lf = self.with_column_changes(view.lf).0;
             self.restore_footer_count();
             self.collect();
             return;
         }
-        let mut lf = self.base_lf.clone();
+        let mut lf = self.with_column_changes(self.base_lf.clone()).0;
         self.view_numbered = self.row_numbers && self.wants_view_numbers();
         if self.view_numbered {
             lf = lf.with_row_index(crate::schema_union::DRIFT_COLUMN, None);
@@ -10551,6 +10862,8 @@ pub struct DataTable {
     /// Each column's unit from a delimited spec's unit row, for the type row: set at
     /// render.
     units: Vec<(String, String)>,
+    /// The columns the view gave a type: their type row is in the accent.
+    retyped: Vec<String>,
 }
 
 impl Default for DataTable {
@@ -10591,6 +10904,7 @@ impl Default for DataTable {
             match_cells: None,
             drawn_from: 0,
             units: Vec::new(),
+            retyped: Vec::new(),
         }
     }
 }
@@ -11507,6 +11821,8 @@ impl DataTable {
                 let mut lines = vec![cell_line(heading, name_w, col.right_align)];
                 if let Some(label) = &col.type_label {
                     let type_style = match col.colour {
+                        // A type the view gave, not the read: it shows.
+                        _ if self.retyped.contains(&col.name) => Style::default().fg(self.accent),
                         Some(c) => Style::default().fg(c),
                         None => Style::default().fg(self.dimmed),
                     };
@@ -11843,6 +12159,7 @@ impl StatefulWidget for DataTable {
         self.sort_descending = state.view_sort_descending().to_vec();
         self.current_column = state.current_column().map(str::to_string);
         self.units = state.units();
+        self.retyped = state.retyped_columns();
         // One column on the left is the rail: blank on every row but the one the
         // cursor is on, where it carries the accent. It also holds the "columns off to
         // the left" hint in the header, so no header name ever gets a character

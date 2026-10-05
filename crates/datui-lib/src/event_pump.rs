@@ -4007,7 +4007,7 @@ mod tests {
         p.terminal_mouse(right_click(alan)).unwrap();
         p.app.busy = true;
         assert!(p.terminal_key(plain(KeyCode::Down)).unwrap());
-        assert_eq!(p.app.context_menu.map(|m| m.selected), Some(1));
+        assert_eq!(p.app.context_menu.as_ref().map(|m| m.selected), Some(1));
         assert!(p.terminal_key(plain(KeyCode::Esc)).unwrap());
         assert!(p.app.context_menu.is_none());
         assert!(held(&p).is_empty());

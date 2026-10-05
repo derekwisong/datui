@@ -54,6 +54,7 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
         Some(config) => config,
         None => load_config(&input)?,
     };
+    crate::user_agent::configure(&config.http.user_agent);
     let (input, config) = match input {
         RunInput::Cli(args) => {
             let mut config = config;

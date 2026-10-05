@@ -261,6 +261,7 @@ pub struct AppConfig {
     pub analysis: AnalysisConfig,
     pub home: HomeConfig,
     pub cloud: CloudConfig,
+    pub http: HttpConfig,
     pub query: QueryConfig,
     pub views: ViewsConfig,
     pub clipboard: ClipboardConfig,
@@ -1710,6 +1711,14 @@ pub struct ColorConfig {
     pub hex_ff: String,
 }
 
+/// `[http]`: what every request datui makes says about it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HttpConfig {
+    /// The User-Agent header; empty sends [`crate::user_agent::DEFAULT`].
+    pub user_agent: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QueryConfig {
@@ -1852,6 +1861,7 @@ impl Default for AppConfig {
             analysis: AnalysisConfig::default(),
             home: HomeConfig::default(),
             cloud: CloudConfig::default(),
+            http: HttpConfig::default(),
             query: QueryConfig::default(),
             views: ViewsConfig::default(),
             clipboard: ClipboardConfig::default(),
@@ -3033,6 +3043,12 @@ impl AppConfig {
         }
         if self.clipboard.osc52_limit.bytes() == 0 {
             return Err(eyre!("[clipboard] osc52_limit must be greater than 0"));
+        }
+        if !crate::user_agent::is_valid(&self.http.user_agent) {
+            return Err(eyre!(
+                "[http] user_agent must be printable ASCII, got {:?}",
+                self.http.user_agent
+            ));
         }
 
         Ok(())

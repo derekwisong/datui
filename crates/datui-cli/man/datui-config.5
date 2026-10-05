@@ -217,6 +217,11 @@ Logins found on this machine that become home-screen sources: all (unset), none,
 .TP
 \fBcloud.list_on_start\fR (\fIbool\fR)
 List every source's buckets when the home screen opens, not when one is entered. Default: \fBfalse\fR.
+.SS "[http]"
+Every request datui makes: HTTP(S) files, cloud stores and their sign-ins.
+.TP
+\fBhttp.user_agent\fR (\fIstring\fR)
+The User-Agent header on every request. Empty sends datui/VERSION (+https:/\:/\:github.\:com/\:derekwisong/\:datui), which names datui and its version and nothing about you. Default: \fB""\fR.
 .SS "[query]"
 .TP
 \fBquery.history_limit\fR (\fIinteger\fR)

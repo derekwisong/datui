@@ -138,6 +138,14 @@ lives, imports, the theme and troubleshooting.
 | `cloud.discover` | bool \| "all" \| "none" \| list | unset |  | Logins found on this machine that become home-screen sources: all (unset), none, or kinds from s3, gcs, azure. |
 | `cloud.list_on_start` | bool | `false` |  | List every source's buckets when the home screen opens, not when one is entered. |
 
+## HTTP
+
+`[http]` Every request datui makes: HTTP(S) files, cloud stores and their sign-ins.
+
+| Key | Type | Default | Flag | Description |
+|---|---|---|---|---|
+| `http.user_agent` | string | `""` |  | The User-Agent header on every request. Empty sends datui/VERSION (+https://github.com/derekwisong/datui), which names datui and its version and nothing about you. |
+
 ## Query
 
 `[query]`

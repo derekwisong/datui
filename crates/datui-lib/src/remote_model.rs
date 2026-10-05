@@ -54,7 +54,7 @@ fn read_from(
     match source::input_source(url) {
         #[cfg(feature = "http")]
         InputSource::Http(url) => {
-            let agent: ureq::Agent = ureq::Agent::config_builder()
+            let agent: ureq::Agent = crate::user_agent::ureq_config()
                 .timeout_global(Some(std::time::Duration::from_secs(120)))
                 .build()
                 .into();
@@ -103,7 +103,7 @@ pub(crate) fn fetch_small(
         #[cfg(feature = "http")]
         InputSource::Http(url) => {
             use std::io::Read;
-            let agent: ureq::Agent = ureq::Agent::config_builder()
+            let agent: ureq::Agent = crate::user_agent::ureq_config()
                 .timeout_global(Some(std::time::Duration::from_secs(60)))
                 .build()
                 .into();
@@ -569,7 +569,7 @@ mod tests {
     }
 
     fn agent() -> ureq::Agent {
-        ureq::Agent::config_builder()
+        crate::user_agent::ureq_config()
             .timeout_global(Some(std::time::Duration::from_secs(10)))
             .build()
             .into()

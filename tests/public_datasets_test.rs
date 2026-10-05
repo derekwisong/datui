@@ -76,6 +76,9 @@ fn a_web_file_in_a_catalog_is_fetched_only_when_opened() {
     let url = format!("http://{}/foods.csv", listener.local_addr().unwrap());
     let requests = Arc::new(AtomicUsize::new(0));
     let counted = requests.clone();
+    // Requests that did not name datui in their User-Agent.
+    let anonymous = Arc::new(AtomicUsize::new(0));
+    let unnamed = anonymous.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
@@ -85,6 +88,13 @@ fn a_web_file_in_a_catalog_is_fetched_only_when_opened() {
                 head.push(byte[0]);
             }
             counted.fetch_add(1, Ordering::SeqCst);
+            let agent = format!("user-agent: {}", datui::user_agent::DEFAULT);
+            if !String::from_utf8_lossy(&head)
+                .to_ascii_lowercase()
+                .contains(&agent.to_ascii_lowercase())
+            {
+                unnamed.fetch_add(1, Ordering::SeqCst);
+            }
             let body = "food,protein_g\nyogurt,10\noatmeal,3\n";
             let _ = write!(
                 stream,
@@ -140,6 +150,11 @@ fn a_web_file_in_a_catalog_is_fetched_only_when_opened() {
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.headers(), ["food", "protein_g"]);
     assert!(requests.load(Ordering::SeqCst) > 0);
+    assert_eq!(
+        anonymous.load(Ordering::SeqCst),
+        0,
+        "every request names datui"
+    );
     drive(&mut app, key(KeyCode::Char('q')));
     assert_eq!(app.input_mode, datui::InputMode::Home);
     assert_eq!(

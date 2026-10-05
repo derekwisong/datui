@@ -201,6 +201,11 @@ pub const SECTIONS: &[Section] = &[
         intro: "See [Cloud sources](cloud-sources.md) for `[[cloud.connections]]`.",
     },
     Section {
+        name: "http",
+        title: "HTTP",
+        intro: "Every request datui makes: HTTP(S) files, cloud stores and their sign-ins.",
+    },
+    Section {
         name: "query",
         title: "Query",
         intro: "",
@@ -308,6 +313,8 @@ pub const SETTINGS: &[Setting] = &[
     s("cloud.instance_identity", Bool, Value("false"), "Use the identity of the cloud VM datui runs on (EC2, GCE, Azure)."),
     s("cloud.discover", Toml("bool \\| \"all\" \\| \"none\" \\| list"), Unset("true"), "Logins found on this machine that become home-screen sources: all (unset), none, or kinds from s3, gcs, azure."),
     s("cloud.list_on_start", Bool, Value("false"), "List every source's buckets when the home screen opens, not when one is entered."),
+    // [http]
+    s("http.user_agent", Text, Value("\"\""), "The User-Agent header on every request. Empty sends datui/VERSION (+https://github.com/derekwisong/datui), which names datui and its version and nothing about you."),
     // [query]
     s("query.history_limit", Count, Value("1000"), "Queries remembered."),
     s("query.history", Bool, Value("true"), "Remember queries."),

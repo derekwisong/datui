@@ -202,6 +202,7 @@ pub mod themes;
 pub mod typed_value;
 pub mod ulog;
 mod unfinished;
+pub mod user_agent;
 pub mod value_counts;
 pub mod value_counts_modal;
 pub mod vcd;
@@ -9213,13 +9214,12 @@ impl App {
         ]
         .into_iter()
         .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .chain([(
+            AmazonS3ConfigKey::Client(crate::user_agent::CLIENT_KEY),
+            crate::user_agent::get(),
+        )])
         .collect();
-        let opts = CloudOptions::default();
-        if configs.is_empty() {
-            opts
-        } else {
-            opts.with_aws(configs)
-        }
+        CloudOptions::default().with_aws(configs)
     }
 
     /// The bucket and key of an `s3://bucket/key` or `gs://bucket/key` URL. The key
@@ -9294,7 +9294,7 @@ impl App {
     /// this one.
     #[cfg(feature = "http")]
     fn http_agent(total: std::time::Duration) -> ureq::Agent {
-        ureq::Agent::config_builder()
+        crate::user_agent::ureq_config()
             .timeout_global(Some(total))
             .build()
             .into()
@@ -10698,32 +10698,46 @@ impl App {
         let text = path.to_string_lossy();
         let resolved = crate::cloud_sources::resolve_for_open(&text, cloud)
             .map_err(|e| color_eyre::eyre::eyre!(e))?;
+        use object_store::azure::AzureConfigKey;
+        use polars::io::cloud::GoogleConfigKey;
+        let gcs_agent = (
+            GoogleConfigKey::Client(crate::user_agent::CLIENT_KEY),
+            crate::user_agent::get(),
+        );
         let options = match resolved.kind {
             crate::cloud_browse::ProviderKind::S3 => Self::build_s3_cloud_options(&resolved.s3),
             crate::cloud_browse::ProviderKind::Gcs
                 if resolved.signing == crate::cloud_sources::Signing::Unsigned =>
             {
                 CloudOptions::default()
-                    .with_gcp([(polars::io::cloud::GoogleConfigKey::SkipSignature, "true")])
+                    .with_gcp([(GoogleConfigKey::SkipSignature, "true".into()), gcs_agent])
             }
             crate::cloud_browse::ProviderKind::Gcs => match &resolved.gcloud {
                 // The token comes from `gcloud` whenever Polars asks, so a long scan
                 // outlives the one fetched here.
                 Some((configuration, _)) => CloudOptions::default()
+                    .with_gcp([gcs_agent])
                     .with_credential_provider(Some(crate::gcloud::polars_provider(configuration))),
                 None => match &resolved.google_credentials {
-                    Some(file) => CloudOptions::default().with_gcp([(
-                        polars::io::cloud::GoogleConfigKey::ApplicationCredentials,
-                        file.to_string_lossy().into_owned(),
-                    )]),
-                    None => CloudOptions::default(),
+                    Some(file) => CloudOptions::default().with_gcp([
+                        (
+                            GoogleConfigKey::ApplicationCredentials,
+                            file.to_string_lossy().into_owned(),
+                        ),
+                        gcs_agent,
+                    ]),
+                    None => CloudOptions::default().with_gcp([gcs_agent]),
                 },
             },
             crate::cloud_browse::ProviderKind::Azure => {
                 let (account, _, _) = source::azure_parts(&resolved.url)
                     .ok_or_else(|| color_eyre::eyre::eyre!("not an Azure URL"))?;
-                CloudOptions::default()
-                    .with_azure(crate::azure::polars_options(&account, &resolved.azure))
+                let mut azure = crate::azure::polars_options(&account, &resolved.azure);
+                azure.push((
+                    AzureConfigKey::Client(crate::user_agent::CLIENT_KEY),
+                    crate::user_agent::get(),
+                ));
+                CloudOptions::default().with_azure(azure)
             }
         };
         Ok((resolved.url, options))

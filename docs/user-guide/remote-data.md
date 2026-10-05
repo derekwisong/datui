@@ -283,6 +283,14 @@ The file is downloaded to the temp directory (`--temp-dir`), then opened;
 exits, a quit mid-download included ([temporary files](open-files.md#temporary-files)).
 A model file's header is read by range instead ([Model files](../formats/model-files.md)).
 
+Every request datui makes, to a web server or a cloud store, sends
+`User-Agent: datui/VERSION (+https://github.com/derekwisong/datui)`: datui and
+its version, nothing about you or the machine. `http.user_agent` replaces it:
+
+```bash,template
+datui -c 'http.user_agent=<NAME/VERSION (CONTACT)>' <URL>
+```
+
 ## What gets read
 
 | Source | Read |

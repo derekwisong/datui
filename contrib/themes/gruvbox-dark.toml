@@ -1,0 +1,74 @@
+# Gruvbox dark, as a datui theme.
+#
+# Palette: gruvbox by Pavel Pertsev (morhetz), https://github.com/morhetz/gruvbox,
+# MIT license, Copyright (c) 2012 Pavel Pertsev. The mapping onto datui's slots
+# is datui's, under its MIT license.
+#
+# Copy into themes/ in the config directory (`datui config path` shows where)
+# and pick it with `theme.dark = "gruvbox-dark"`. Best on a terminal whose
+# background is Gruvbox's #282828.
+
+extends = "night-market"
+description = "Gruvbox dark, with a yellow accent"
+
+accent = "#fabd2f"
+accent_bright = "#fe8019"
+gradient_start = "#fabd2f"
+gradient_end = "#fe8019"
+chip_key = "#fabd2f"
+chip_label = "#a89984"
+throbber = "#fabd2f"
+
+success = "#b8bb26"
+warning = "#fe8019"
+error = "#fb4934"
+dimmed = "#7c6f64"
+
+controls_bg = "#3c3836"
+text_secondary = "#a89984"
+text_inverse = "#282828"
+
+table_header = "#ebdbb2"
+table_header_bg = "#504945"
+table_row_numbers = "#7c6f64"
+table_column_separator = "#665c54"
+table_selected = "#504945"
+table_column_cursor = "#3c3836"
+table_cell_cursor = "#665c54"
+table_alternate_row = "#32302f"
+
+sidebar_border = "#7c6f64"
+modal_border_active = "#fabd2f"
+modal_border_error = "#fb4934"
+
+type_str = "#b8bb26"
+type_int = "#83a598"
+type_float = "#8ec07c"
+type_bool = "#fabd2f"
+type_temporal = "#d3869b"
+type_binary = "#7c6f64"
+
+distribution_normal = "#b8bb26"
+distribution_skewed = "#fe8019"
+distribution_other = "#ebdbb2"
+outlier_marker = "#fb4934"
+
+chart_1 = "#83a598"
+chart_2 = "#d3869b"
+chart_3 = "#b8bb26"
+chart_4 = "#fabd2f"
+chart_5 = "#8ec07c"
+chart_6 = "#fb4934"
+chart_7 = "#fe8019"
+chart_8 = "#458588"
+chart_9 = "#b16286"
+chart_10 = "#d79921"
+chart_grid = "#504945"
+
+find_match = "#d79921"
+hex_null = "#7c6f64"
+hex_printable = "#83a598"
+hex_whitespace = "#b8bb26"
+hex_control = "#d3869b"
+hex_high = "#fabd2f"
+hex_ff = "#fb4934"

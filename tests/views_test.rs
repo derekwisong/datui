@@ -155,18 +155,27 @@ fn the_views_surface_saves_applies_and_deletes() {
     assert!(!app.view_modal.active);
     press(&mut app, KeyCode::Char('v'));
 
-    // Esc cancels the delete confirmation and only it; Enter confirms.
+    // Delete asks with the one confirmation, on No: Enter there and Esc each
+    // decline and close only it; Delete, then Enter, deletes.
     press(&mut app, KeyCode::Char('v'));
     press(&mut app, KeyCode::Char('d'));
-    assert!(app.view_modal.delete_confirm);
+    assert!(app.confirmation_modal.active);
+    assert!(!app.confirmation_modal.focus_yes, "a delete starts on No");
+    assert_eq!(app.confirmation_modal.yes_label, "Delete");
     press(&mut app, KeyCode::Esc);
-    assert!(!app.view_modal.delete_confirm);
+    assert!(!app.confirmation_modal.active);
     assert_eq!(app.view_modal.rows.len(), 1, "cancel deletes nothing");
     assert!(app.view_modal.active, "Esc closed only the confirmation");
-
     press(&mut app, KeyCode::Char('d'));
     press(&mut app, KeyCode::Enter);
-    assert!(app.view_modal.rows.is_empty(), "Enter confirms the delete");
+    assert!(!app.confirmation_modal.active);
+    assert_eq!(app.view_modal.rows.len(), 1, "Enter on No deletes nothing");
+
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.view_modal.rows.is_empty(), "Enter on Delete deletes");
+    assert!(app.view_modal.active, "the list stays open");
     press(&mut app, KeyCode::Esc);
     assert!(!app.view_modal.active);
 
@@ -206,6 +215,7 @@ fn the_views_surface_saves_applies_and_deletes() {
         "the description is saved whole"
     );
     press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Left); // from No to Delete
     press(&mut app, KeyCode::Enter);
     assert!(app.view_modal.rows.is_empty());
     press(&mut app, KeyCode::Esc);
@@ -252,6 +262,7 @@ fn the_views_surface_saves_applies_and_deletes() {
 
     // Leave no view behind.
     press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Left); // from No to Delete
     press(&mut app, KeyCode::Enter);
     assert!(app.view_modal.rows.is_empty());
     press(&mut app, KeyCode::Esc);
@@ -337,6 +348,7 @@ fn the_views_surface_saves_applies_and_deletes() {
 
     press(&mut app, KeyCode::Char('v'));
     press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Left); // from No to Delete
     press(&mut app, KeyCode::Enter);
     assert!(app.view_modal.rows.is_empty());
     press(&mut app, KeyCode::Esc);

@@ -714,8 +714,9 @@ Data Quality in the Analysis sidebar.
 
 | Key | Action |
 |---|---|
-| `Enter (d / D)` | Delete |
-| `Esc` | Cancel |
+| `← / → (h/l)` | Pick Delete or No (Tab too); it starts on No |
+| `Enter` | Confirm the one picked |
+| `Esc` | Keep the view |
 
 ## Format picker
 

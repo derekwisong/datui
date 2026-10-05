@@ -35,9 +35,6 @@ pub fn render(
         ViewModalMode::Create | ViewModalMode::Edit => render_form(area, buf, modal, ctx),
     }
 
-    if modal.delete_confirm {
-        render_delete_confirm(area, buf, modal, ctx);
-    }
     if modal.score_details.is_some() {
         render_score_details(area, buf, modal, ctx);
     }
@@ -425,25 +422,6 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &Render
     }
 }
 
-fn render_delete_confirm(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &RenderContext) {
-    let Some(view) = modal.selected_view() else {
-        return;
-    };
-    let message = format!("Delete \"{}\"? This cannot be undone.", view.name);
-    const WIDTH: u16 = 52;
-    const HEIGHT: u16 = 6;
-    let confirm_area = centered_rect_fixed(area, WIDTH, HEIGHT);
-    let footer = HintBar::from_ctx(ctx)
-        .hint_weighted("Enter", "Delete", 1)
-        .hint_weighted("Esc", "Cancel", 2);
-    let content = Surface::new("Delete View")
-        .footer(&footer)
-        .render(confirm_area, buf, ctx);
-    Paragraph::new(message)
-        .wrap(ratatui::widgets::Wrap { trim: false })
-        .render(content, buf);
-}
-
 fn render_score_details(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &RenderContext) {
     let Some((title, body)) = &modal.score_details else {
         return;
@@ -628,18 +606,6 @@ mod tests {
             .find(|line| line.contains("Table:"))
             .expect("the table row");
         assert!(table_row.contains("orders"), "{table_row:?}");
-    }
-
-    /// The delete confirmation is a small Surface with its keys in the
-    /// footer — no bordered buttons.
-    #[test]
-    fn delete_confirm_is_chips_not_buttons() {
-        let mut modal = list_modal();
-        modal.delete_confirm = true;
-        let text = render_to_rows(&mut modal, 80, 20).join("\n");
-        assert!(text.contains("Delete View"));
-        assert!(text.contains("salary review"));
-        assert!(text.contains("Cancel") && text.contains("Delete"));
     }
 
     #[test]

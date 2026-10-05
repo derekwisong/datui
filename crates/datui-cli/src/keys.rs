@@ -1260,8 +1260,9 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Delete",
                 keys: &[
-                    k("Enter (d / D)", "Delete", "Delete"),
-                    k("Esc", "Cancel", "Cancel"),
+                    k("← / → (h/l)", "Pick", "Pick Delete or No (Tab too); it starts on No"),
+                    k("Enter", "Confirm", "Confirm the one picked"),
+                    k("Esc", "No", "Keep the view"),
                 ],
             },
         ],

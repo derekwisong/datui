@@ -68,7 +68,7 @@ each says how well. A check mark marks the one currently applied, and the Match 
 | <kbd>Enter</kbd> | Apply the selected view |
 | <kbd>s</kbd> | Save the current state as a new view |
 | <kbd>e</kbd> | Edit the selected view |
-| <kbd>d</kbd> | Delete it, after confirming (<kbd>Enter</kbd>, <kbd>d</kbd> or <kbd>D</kbd> confirms) |
+| <kbd>d</kbd> | Delete it, after confirming: the question starts on **No**; <kbd>←</kbd> picks **Delete**, <kbd>Enter</kbd> confirms |
 | <kbd>i</kbd> | Show how the selected view's score was computed |
 | <kbd>Esc</kbd> | Close |
 

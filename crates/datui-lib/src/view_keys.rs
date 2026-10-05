@@ -11,15 +11,13 @@ impl App {
         let form = self.view_modal.mode != ViewModalMode::List;
         // The list's status line is about the last key; this one replaces it.
         self.view_modal.status = None;
-        if form && !self.view_modal.delete_confirm && self.view_modal.score_details.is_none() {
+        if form && self.view_modal.score_details.is_none() {
             return self.view_form_key(event);
         }
         match event.code {
             KeyCode::Esc => {
                 if self.view_modal.score_details.is_some() {
                     self.view_modal.score_details = None;
-                } else if self.view_modal.delete_confirm {
-                    self.view_modal.delete_confirm = false;
                 } else if form {
                     // Back to the list; the form's staged edits die with it.
                     self.view_modal.exit_form();
@@ -27,18 +25,6 @@ impl App {
                     self.view_modal.close();
                 }
             }
-            // The delete confirmation owns the keys while it is up.
-            KeyCode::Enter | KeyCode::Char('d') | KeyCode::Char('D')
-                if self.view_modal.delete_confirm =>
-            {
-                self.view_modal.delete_confirm = false;
-                if let Some(view) = self.view_modal.selected_view().cloned()
-                    && self.view_manager.delete_view(&view.id).is_ok()
-                {
-                    self.refresh_view_list();
-                }
-            }
-            _ if self.view_modal.delete_confirm => {}
             _ if self.view_modal.score_details.is_some() => {}
             // The list.
             KeyCode::Up | KeyCode::Char('k') if !form => self.view_modal.select_prev(),
@@ -79,9 +65,13 @@ impl App {
                         .enter_edit_mode(&view, self.history_limit, &self.theme);
                 }
             }
+            // Asked with the one confirmation, on No: a reflexive second key
+            // declines.
             KeyCode::Char('d') if !form => {
-                if self.view_modal.selected_view().is_some() {
-                    self.view_modal.delete_confirm = true;
+                if let Some(view) = self.view_modal.selected_view() {
+                    let message = format!("Delete \"{}\"? This cannot be undone.", view.name);
+                    self.pending_delete_view = Some(view.id.clone());
+                    self.confirmation_modal.show_destructive(message, "Delete");
                 }
             }
             KeyCode::Char('i') if !form => {

@@ -1165,6 +1165,8 @@ pub struct App {
     pub confirmation_modal: ConfirmationModal,
     /// An export waiting on the overwrite confirmation.
     pending_export: Option<ExportRequest>,
+    /// The saved view `d` asked to delete, by id, while the confirmation is up.
+    pending_delete_view: Option<String>,
     pending_chart_export: Option<ChartExportRequest>,
     /// A Data Quality report export waiting on the overwrite confirmation.
     pending_quality_export: Option<(PathBuf, crate::quality_export::ReportFormat)>,
@@ -3104,6 +3106,24 @@ impl App {
         }
     }
 
+    /// The confirmation a full scan asks: what it reads, what it fetches from a
+    /// remote source, and that it writes nothing there.
+    fn quality_full_scan_question(&self, plan: &data_quality::DataQualityPlan) -> String {
+        let mut lines = vec![
+            "Run a full scan?".to_string(),
+            String::new(),
+            "Reads: every eligible row, up to the whole source".to_string(),
+        ];
+        if let data_quality::CopyPlan::Fetch { bytes, .. } = self.quality_copy_plan(plan) {
+            lines.push(format!(
+                "Fetch: {} once, to a local copy",
+                crate::widgets::info::format_bytes(bytes)
+            ));
+        }
+        lines.push("Source writes: none".to_string());
+        lines.join("\n")
+    }
+
     /// What stops Setup from running as it stands, said on its own line: a time
     /// window on text that has no format to read it with.
     fn quality_setup_problem(&self) -> Option<String> {
@@ -3151,9 +3171,11 @@ impl App {
                 .is_some_and(|last| last.same_measurement(plan)))
             || self.quality_cached(plan);
         if plan.requires_confirmation() && !here && !self.analysis_modal.data_quality_confirm_run {
-            // The prompt is answered with Enter, which only the main pane hears.
+            // Asked with the one confirmation; its Yes comes back here.
+            let message = self.quality_full_scan_question(plan);
             self.analysis_modal.data_quality_confirm_run = true;
-            self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
+            self.confirmation_modal.show(message);
+            self.confirmation_modal.yes_label = "Run";
             return None;
         }
         self.analysis_modal.data_quality_confirm_run = false;
@@ -6031,6 +6053,7 @@ impl App {
             flash: None,
             confirmation_modal: ConfirmationModal::new(),
             pending_export: None,
+            pending_delete_view: None,
             pending_chart_export: None,
             pending_quality_export: None,
             help: help::Help::default(),
@@ -12165,13 +12188,13 @@ impl App {
                     // Toggle between Yes and No
                     self.confirmation_modal.focus_yes = !self.confirmation_modal.focus_yes;
                 }
-                // ←→ carry the choice, so ↑↓ scroll a long question; the
+                // ←→ carry the choice, so ↑↓ (k/j) scroll a long question; the
                 // render clamps the offset.
-                KeyCode::Up => {
+                KeyCode::Up | KeyCode::Char('k') => {
                     self.confirmation_modal.scroll =
                         self.confirmation_modal.scroll.saturating_sub(1);
                 }
-                KeyCode::Down => {
+                KeyCode::Down | KeyCode::Char('j') => {
                     self.confirmation_modal.scroll =
                         self.confirmation_modal.scroll.saturating_add(1);
                 }
@@ -12204,6 +12227,21 @@ impl App {
                             self.cache.clear_recents();
                             self.home_refresh();
                             self.home.status = None;
+                            return None;
+                        }
+                        // A full scan agreed to: Setup runs, past the question.
+                        if self.analysis_modal.data_quality_confirm_run {
+                            self.confirmation_modal.hide();
+                            let event = self.run_quality_setup();
+                            // Asked once: a run that waits or is refused asks again.
+                            self.analysis_modal.data_quality_confirm_run = false;
+                            return event;
+                        }
+                        if let Some(id) = self.pending_delete_view.take() {
+                            self.confirmation_modal.hide();
+                            if self.view_manager.delete_view(&id).is_ok() {
+                                self.refresh_view_list();
+                            }
                             return None;
                         }
                         if let Some(place) = self.pending_forget_place.take() {
@@ -12255,6 +12293,10 @@ impl App {
                         self.pending_link = None;
                         self.pending_read_all = false;
                         self.pending_forget_place = None;
+                        self.pending_delete_view = None;
+                        // Declining the full read leaves the draft staged, and the
+                        // sample and report as they were.
+                        self.analysis_modal.data_quality_confirm_run = false;
                         // Declining an overwrite returns to the filled form:
                         // the typed path, format and options survive the No.
                         if self.pending_chart_export.take().is_some() {
@@ -12281,6 +12323,8 @@ impl App {
                     self.pending_link = None;
                     self.pending_read_all = false;
                     self.pending_forget_place = None;
+                    self.pending_delete_view = None;
+                    self.analysis_modal.data_quality_confirm_run = false;
                     // Staying: the recording goes on, and so does the view.
                     self.pending_leave = None;
                     // Declining an overwrite returns to the filled form: the

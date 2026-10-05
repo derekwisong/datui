@@ -497,6 +497,7 @@ pub struct AnalysisModal {
     pub data_quality_segments_by_change: bool,
     /// The clean entry's popup lists every check rather than the most important.
     pub data_quality_checks_expanded: bool,
+    /// A full scan is being asked about in the confirmation; Yes runs Setup.
     pub data_quality_confirm_run: bool,
     pub data_quality_plan_before_edit: Option<DataQualityPlan>,
     pub data_quality_last_plan: Option<DataQualityPlan>,
@@ -928,7 +929,6 @@ impl AnalysisModal {
                     | QualityPage::ExpectedWindows
                     | QualityPage::Intent
             )
-            && !self.data_quality_confirm_run
             && !self.data_quality_show_access
             && !self.data_quality_observation_detail
             && self.data_quality_evidence_read.is_none()

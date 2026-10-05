@@ -1858,10 +1858,8 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         // The extra reads a full scan makes for the values a type conflict hides are
         // promised before anything runs, like every other read on this page.
         ("access", "Conflict values"),
-        ("confirm", "Source writes"),
     ] {
         app.analysis_modal.data_quality_show_access = popup == "access";
-        app.analysis_modal.data_quality_confirm_run = popup == "confirm";
         let area = Rect::new(0, 0, 120, 32);
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
@@ -1869,7 +1867,6 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         assert!(screen.contains(expected), "{popup} popup should not clip");
     }
     app.analysis_modal.data_quality_show_access = false;
-    app.analysis_modal.data_quality_confirm_run = false;
 
     app.analysis_modal.set_quality_page(QualityPage::Segments);
     app.event(&AppEvent::Key(KeyEvent::new(
@@ -3191,7 +3188,36 @@ fn full_scan_evidence_is_read_only_on_confirm() {
     app.analysis_modal.data_quality_plan.compute = datui::data_quality::QualityCompute::Full;
     assert!(press(&mut app, KeyCode::Enter).is_none());
     assert!(app.analysis_modal.data_quality_confirm_run);
+    // The one confirmation, with what the scan reads and writes and its own keys.
+    assert!(app.confirmation_modal.active);
+    assert_eq!(app.confirmation_modal.yes_label, "Run");
+    assert!(
+        app.confirmation_modal
+            .message
+            .contains("Source writes: none"),
+        "{}",
+        app.confirmation_modal.message
+    );
+    let asked = {
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        rendered_text(&buffer)
+    };
+    assert!(asked.contains("Run a full scan?"), "{asked}");
+    assert!(
+        asked.contains("Confirm") && asked.contains("Cancel"),
+        "its own footer: {asked}"
+    );
+    // Esc declines: nothing runs, and Enter on Setup asks again.
+    assert!(press(&mut app, KeyCode::Esc).is_none());
+    assert!(!app.confirmation_modal.active);
+    assert!(!app.analysis_modal.data_quality_confirm_run);
+    assert_nothing_started(&mut app, &rx);
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    assert!(app.confirmation_modal.active);
     let next = press(&mut app, KeyCode::Enter);
+    assert!(!app.confirmation_modal.active);
     let (finished, _) = drain_quality(&mut app, &rx, next);
     assert_eq!(finished, 1);
     let results = app.analysis_modal.data_quality_results.clone().unwrap();

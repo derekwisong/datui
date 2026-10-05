@@ -105,9 +105,8 @@ pub fn render_error_modal(
     modal: &mut crate::ErrorModal,
     ctx: &RenderContext,
 ) {
-    let footer = HintBar::from_ctx(ctx)
-        .hint("Enter", "OK")
-        .hint("Esc", "Close");
+    // One way out, named once: Esc closes it too, as every dialog.
+    let footer = HintBar::from_ctx(ctx).hint("Enter", "Close");
     let popup = message_popup(area, &modal.message, 0, 64);
     let content = Surface::new("Error")
         .footer(&footer)
@@ -366,7 +365,15 @@ mod tests {
         assert_eq!(frames, 1, "one frame, no inner boxes: {rows:#?}");
         let text = rows.join("\n");
         assert!(text.contains("Select at least one index column."));
-        assert!(text.contains("Enter") && text.contains("OK") && text.contains("Esc"));
+        let footer = rows
+            .iter()
+            .find(|row| row.contains("Enter"))
+            .expect("the footer");
+        assert!(footer.contains("Close"), "{footer:?}");
+        assert!(
+            !footer.contains("OK") && !footer.contains("Esc"),
+            "{footer:?}"
+        );
     }
 
     /// The focused choice carries the rail; there is nothing to Tab onto.

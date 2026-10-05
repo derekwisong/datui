@@ -412,9 +412,6 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
     if modal.data_quality_show_access {
         return vec![("Enter", "Close"), ("Esc", "Close")];
     }
-    if modal.data_quality_confirm_run {
-        return vec![("Enter", "Run"), ("Esc", "Cancel")];
-    }
     if modal.data_quality_evidence_read.is_some() {
         return vec![("Enter", "Read"), ("Esc", "Cancel")];
     }

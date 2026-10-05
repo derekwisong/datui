@@ -149,7 +149,6 @@ pub struct DataQualityWidgetConfig<'a> {
     pub plan_field: usize,
     pub show_access: bool,
     pub observation_detail: bool,
-    pub confirm_run: bool,
     /// How Overview narrows and orders the findings.
     pub findings: &'a FindingsView,
     /// The rows the report measured are still in memory: a finding's open from them.
@@ -248,7 +247,6 @@ pub fn render(
         || config.export_form.is_some()
         || config.show_access
         || config.observation_detail
-        || config.confirm_run
     {
         crate::pointer::record(area, crate::pointer::Hit::Modal);
     }
@@ -260,8 +258,6 @@ pub fn render(
         render_access_plan(&config, area, buf);
     } else if config.observation_detail {
         render_finding_detail(&config, table_state, detail_scroll, area, buf);
-    } else if config.confirm_run {
-        render_run_confirmation(&config, area, buf);
     } else if sidebar_width == 0 && config.focus == AnalysisFocus::Sidebar {
         crate::pointer::record(area, crate::pointer::Hit::Modal);
         render_narrow_tool_picker(&config, sidebar_state, area, buf);
@@ -4317,42 +4313,6 @@ fn passes_label(config: &DataQualityWidgetConfig<'_>) -> String {
     }
 }
 
-/// A full scan asks first: it may read the whole source.
-fn render_run_confirmation(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
-    let width = 60.min(area.width.saturating_sub(2));
-    let row = |label: &str, value: String| FieldRow {
-        mark: None,
-        label: label.to_string(),
-        value,
-    };
-    let mut rows = vec![row(
-        "Reads",
-        "every eligible row, up to the whole source".to_string(),
-    )];
-    if let CopyPlan::Fetch { bytes, .. } = config.setup.copy {
-        rows.push(row(
-            "Fetch",
-            format!(
-                "{} once, to a local copy",
-                crate::widgets::info::format_bytes(bytes)
-            ),
-        ));
-    }
-    rows.push(row("Source writes", "none".to_string()));
-    let label_width = rows
-        .iter()
-        .map(|row| glyphs::display_width(&row.label))
-        .max()
-        .unwrap_or(0)
-        + 2;
-    let lines = field_lines(&rows, label_width, width.saturating_sub(4) as usize, false);
-    let popup = centered_rect(width, lines.len() as u16 + 2, area);
-    let content = Surface::new("Full Scan")
-        .border_style(Style::default().fg(config.ctx.modal_border_active))
-        .render(popup, buf, config.ctx);
-    render_counted(lines, content, config.theme, buf);
-}
-
 fn render_run_prompt(area: Rect, theme: &Theme, buf: &mut Buffer) {
     Paragraph::new(dotted("No report · e Setup, then Enter"))
         .alignment(Alignment::Center)
@@ -4607,7 +4567,6 @@ mod tests {
                 plan_field: 0,
                 show_access: false,
                 observation_detail: false,
-                confirm_run: false,
                 findings: &self.findings,
                 rows_kept: false,
                 evidence_read: None,
@@ -4759,17 +4718,11 @@ mod tests {
     #[test]
     fn dialogs_are_one_surface() {
         let screen = Screen::new();
-        for title in [
-            "Access Plan",
-            "Full Scan",
-            "Mixed spellings",
-            "Analysis Tools",
-        ] {
+        for title in ["Access Plan", "Mixed spellings", "Analysis Tools"] {
             for (width, height) in [(80, 24), (60, 20)] {
                 let mut config = screen.config(QualityPage::Setup);
                 match title {
                     "Access Plan" => config.show_access = true,
-                    "Full Scan" => config.confirm_run = true,
                     // The first finding on the Overview.
                     "Mixed spellings" => {
                         config.page = QualityPage::Overview;
@@ -5225,7 +5178,6 @@ mod interval_tests {
                 plan_field: selected,
                 show_access: false,
                 observation_detail: false,
-                confirm_run: false,
                 findings: &FindingsView {
                     column: None,
                     check: None,
@@ -5734,7 +5686,6 @@ mod trend_tests {
                 plan_field: SetupRow::Expected.index(),
                 show_access: false,
                 observation_detail: false,
-                confirm_run: false,
                 focus: AnalysisFocus::Main,
                 theme,
                 ctx: &self.ctx,

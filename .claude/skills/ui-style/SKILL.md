@@ -112,6 +112,14 @@ how the wrong aggregation gets exported. The selection carries the rail and
 the tint while the list is focused, and only the accent when it is not:
 inside one Surface the rail means focus, and Tab visibly moves it.
 
+**Confirm** — one question, one component: `confirmation_modal`
+(`render/overlays.rs`), with a `pending_*` field naming what Yes does. The
+choices are named (`Overwrite`, `Delete`, `Run`), the rail marks the one
+Enter takes, and a destructive one opens on No (`show_destructive`). Its own
+footer (`Enter Confirm  ←→ Switch  Esc Cancel`); ↑↓ and j/k scroll a long
+question. Never a feature's own popup with its own keys. The error modal is
+its sibling: the message and `Enter Close`, nothing else.
+
 **HintBar** — the chip row of every Surface footer. Primary action first,
 Esc last; only keys that work right now.
 
@@ -431,5 +439,6 @@ strings: run `cargo run -p datui-cli --bin gen_docs -- write`.
 - A filter box that silently filters other lists than the one it sits on.
 - `Modifier::REVERSED` as a tab highlight in one screen and BOLD in another.
 - A dataset mutated with nothing on screen saying so.
+- A feature's own confirmation popup, or one that acts on Enter at once.
 - Two rails on screen: a row's and its open picker's.
 - A heavy or brighter section rule to say where focus is.

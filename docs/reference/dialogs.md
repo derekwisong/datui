@@ -31,6 +31,18 @@ forms (Sample, Expected, a column's intent).
   line: a blank path, or an export that could not write. The dialog stays as
   you left it, to fix and press <kbd>Enter</kbd> again.
 
+Every question (overwrite a file, delete a view, run a full scan, read every
+row) is one dialog with two named choices:
+
+| Key | Does |
+|---|---|
+| <kbd>←</kbd> <kbd>→</kbd> (<kbd>h</kbd> <kbd>l</kbd>) or <kbd>Tab</kbd> | Pick a choice. One that destroys something starts on **No** |
+| <kbd>Enter</kbd> | Confirm the one picked |
+| <kbd>Esc</kbd> | Decline |
+| <kbd>↑</kbd> <kbd>↓</kbd> (<kbd>k</kbd> <kbd>j</kbd>) | Scroll a long question |
+
+An error says what went wrong; <kbd>Enter</kbd> or <kbd>Esc</kbd> closes it.
+
 The [Info panel](../user-guide/dataset-info.md) is a viewer, not a dialog:
 <kbd>←</kbd> <kbd>→</kbd> and <kbd>Tab</kbd> <kbd>Shift</kbd>+<kbd>Tab</kbd>
 switch its tabs.

@@ -66,8 +66,7 @@ impl App {
                     return None;
                 }
             }
-            if (self.analysis_modal.data_quality_confirm_run
-                || self.analysis_modal.data_quality_show_access
+            if (self.analysis_modal.data_quality_show_access
                 || self.analysis_modal.data_quality_observation_detail
                 || self.analysis_modal.data_quality_evidence_read.is_some())
                 && !matches!(event.code, KeyCode::Esc | KeyCode::Enter)
@@ -256,7 +255,6 @@ impl App {
             // Esc discards every staged edit.
             if self.analysis_modal.data_quality_page == QualityPage::Setup
                 && self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main
-                && !self.analysis_modal.data_quality_confirm_run
                 && !self.analysis_modal.data_quality_show_access
             {
                 use analysis_modal::SetupRow;
@@ -365,15 +363,6 @@ impl App {
                         self.analysis_modal.data_quality_observation_detail = false;
                     }
                     return event;
-                }
-                // Declining the full read leaves the draft staged, and the sample and
-                // report as they were.
-                KeyCode::Esc if self.analysis_modal.data_quality_confirm_run => {
-                    self.analysis_modal.data_quality_confirm_run = false;
-                    return None;
-                }
-                KeyCode::Enter if self.analysis_modal.data_quality_confirm_run => {
-                    return self.run_quality_setup();
                 }
                 // A drill-in backs out to the list it came from.
                 KeyCode::Esc

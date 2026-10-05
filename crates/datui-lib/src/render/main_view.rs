@@ -304,14 +304,14 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
     match modal.view {
         AnalysisView::DistributionDetail => {
             return vec![
-                ("Esc", "Back"),
                 (g.updown, "Distribution"),
                 ("s", "Scale"),
                 ("?", "Help"),
+                ("Esc", "Back"),
             ];
         }
         AnalysisView::CorrelationDetail => {
-            return vec![("Esc", "Back"), ("m", "Method"), ("?", "Help")];
+            return vec![("m", "Method"), ("?", "Help"), ("Esc", "Back")];
         }
         AnalysisView::Main => {}
     }
@@ -357,18 +357,20 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
     if modal.computing.is_some() {
         return vec![("Esc", "Cancel")];
     }
-    // Only keys that act right now. The footer shows the first three, so the way
-    // out leads, then what the focused pane is for, then Tab, which is how the
-    // other pane is reached; the shared sample after.
+    // Only keys that act right now, in the one chip order: primary first, the way
+    // out last. The footer shows the first three with Esc kept, so what the
+    // focused pane is for leads, then Tab, which is how the other pane is
+    // reached; the shared sample after.
     let in_pane = modal.focus == crate::analysis_modal::AnalysisFocus::Main;
-    let mut pairs = vec![(
+    let esc = (
         "Esc",
         if in_pane && modal.selected_tool.is_some() {
             "Tools"
         } else {
             "Close"
         },
-    )];
+    );
+    let mut pairs = Vec::new();
     let mut rest = Vec::new();
     if !in_pane {
         pairs.push(("Enter", "Open"));
@@ -416,6 +418,7 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
         pairs.push(("a", "All Rows"));
     }
     pairs.push(("?", "Help"));
+    pairs.push(esc);
     pairs
 }
 
@@ -540,21 +543,21 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
     // are the list's, not the page's. Sample stays second, as on every tool's bar.
     if modal.focus == crate::analysis_modal::AnalysisFocus::Sidebar {
         return vec![
-            ("Esc", "Back"),
+            ("Enter", "Open"),
+            ("Tab", "Result"),
             ("s", "Sample"),
-            ("Enter", "Select"),
             (g.updown, "Tools"),
-            ("Tab", "Focus"),
             ("?", "Help"),
+            ("Esc", "Close"),
         ];
     }
     if modal.data_quality_page == QualityPage::Setup {
         return setup_control_keys(app);
     }
-    // One shape on every page: the way out, then what this page is for, then the
-    // keys every page shares in one order, then the rest of this page's. The bar is
-    // cut by position, so the page's own action and the sample, which every tool's
-    // bar names, are what survive 80 columns; the tabs on screen name the pages.
+    // One shape on every page: what this page is for, then the keys every page
+    // shares in one order (Setup first: the plan is what a report is read
+    // against), then the rest of this page's, Tab, and the way out last. The
+    // footer keeps the first three with Esc; the tabs on screen name the pages.
     let page = modal.data_quality_page;
     let results = modal.data_quality_results.as_ref();
     // Column and metric pick what the segments show; with nothing split they would
@@ -618,10 +621,23 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         _ => {}
     }
     let mut own = own.into_iter();
-    // A narrowed list is the first thing Esc undoes.
+    // A narrowed list is the first thing Esc undoes; a drill-in goes back to its
+    // page, and a page to the tools.
     let narrowed = page == QualityPage::Overview && modal.data_quality_findings.narrowed();
-    let mut keys = vec![("Esc", if narrowed { "All Findings" } else { "Back" })];
-    keys.extend(own.next());
+    let top = matches!(
+        page,
+        QualityPage::Overview
+            | QualityPage::Columns
+            | QualityPage::Segments
+            | QualityPage::Trends
+            | QualityPage::Intervals
+    );
+    let esc = match (narrowed, top) {
+        (true, _) => "All Findings",
+        (false, true) => "Tools",
+        (false, false) => "Back",
+    };
+    let mut keys: Vec<(&'static str, &'static str)> = own.next().into_iter().collect();
     keys.extend([
         ("e", "Setup"),
         ("s", "Sample"),
@@ -632,7 +648,7 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         keys.push(("x", "Export"));
     }
     keys.extend(own);
-    keys.extend([("Tab", "Focus"), ("?", "Help")]);
+    keys.extend([("Tab", "Focus"), ("?", "Help"), ("Esc", esc)]);
     keys
 }
 
@@ -657,29 +673,30 @@ fn trend_keys(modal: &crate::analysis_modal::AnalysisModal) -> Vec<(&'static str
     keys
 }
 
-/// Setup's keys: the way out and Run first, then what the row under the cursor
-/// takes. Enter is Run here and nowhere else; the lists and forms Setup opens say
+/// Setup's keys: Run first, then what the row under the cursor takes, and the
+/// way out last. Enter is Run here and nowhere else; the lists and forms Setup opens say
 /// Choose, Done or Apply. While a cancelled read finishes, Run is not offered, and
 /// Setup's own line says why.
 fn setup_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
     use crate::analysis_modal::SetupRow;
     let g = crate::glyphs::get();
     let modal = &app.analysis_modal;
-    let mut keys = vec![(
+    let esc = (
         "Esc",
         if modal.setup_edited() {
             "Discard"
         } else {
             "Back"
         },
-    )];
+    );
+    let mut keys = Vec::new();
     if app.cancelled_analysis_running().is_none() {
         keys.push(("Enter", "Run"));
     }
     let row = modal.setup_row();
     let choices = !modal.data_quality_plan.interval_pairs().is_empty();
     match row {
-        SetupRow::Sample => keys.push(("Space", "Sample Form")),
+        SetupRow::Sample => keys.push(("Space", "Sample")),
         SetupRow::TextAsTime => keys.push(("Space", "Choose")),
         SetupRow::TimeRoles if !app.quality_time_candidates().is_empty() => {
             keys.push(("Space", "Time Roles"));
@@ -721,6 +738,7 @@ fn setup_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
         ));
     }
     keys.push(("?", "Help"));
+    keys.push(esc);
     keys
 }
 
@@ -1050,9 +1068,12 @@ mod tests {
                 .map(|hint| hint.key.to_string())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(shown(&app), ["Esc", "Enter", "Tab"]);
+        // One chip order: primary first, Esc last.
+        assert_eq!(shown(&app), ["Enter", "Tab", "Esc"]);
         app.analysis_modal.focus = AnalysisFocus::Sidebar;
-        assert_eq!(shown(&app), ["Esc", "Enter", "Tab"]);
+        assert_eq!(shown(&app), ["Enter", "Tab", "Esc"]);
+        let keys = super::analysis_control_keys(&app);
+        assert_eq!(keys.last().map(|(k, _)| *k), Some("Esc"));
         assert_eq!(label(&app, "Tab"), Some("Result"));
         app.analysis_modal.focus = AnalysisFocus::Main;
 

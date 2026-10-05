@@ -312,6 +312,23 @@ impl Sample {
         }
     }
 
+    /// The summary, against the `rows` the scope is known to hold: a sample of at
+    /// least that many reads every one of them, and says so, `all 1,000 rows`,
+    /// rather than promising 100,000 from a table of 1,000.
+    pub fn summary_within(&self, rows: Option<usize>) -> String {
+        match (rows, &self.method) {
+            (Some(n), SampleMethod::Spread | SampleMethod::FirstRows) if n <= self.rows => {
+                let middot = crate::glyphs::get().middot;
+                format!(
+                    "all {} rows {middot} {}",
+                    numfmt::group_chrome(n),
+                    self.scope.label()
+                )
+            }
+            _ => self.summary(),
+        }
+    }
+
     /// What was read, once it was: `sample of 100,000 of 36,839,175 rows`, then the
     /// scope when it is not simply the table as shown. `per_value` is how many rows
     /// an equal-per-value sample kept of each, when that was fewer than asked.
@@ -1045,6 +1062,19 @@ mod tests {
         assert_eq!(
             sample(SampleMethod::FirstRows, 1_000).summary(),
             format!("first 1,000 rows {middot} current view")
+        );
+        // A table smaller than the sample is read whole, and the line says so.
+        assert_eq!(
+            Sample::default().summary_within(Some(1_000)),
+            format!("all 1,000 rows {middot} current view")
+        );
+        assert_eq!(
+            Sample::default().summary_within(Some(1_000_000)),
+            Sample::default().summary()
+        );
+        assert_eq!(
+            Sample::default().summary_within(None),
+            Sample::default().summary()
         );
     }
 }

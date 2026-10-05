@@ -2773,7 +2773,7 @@ fn data_quality_reads_as_a_report() {
         }
         assert_eq!(app.analysis_modal.data_quality_page, page);
         assert!(
-            bar(&mut app).contains(&format!("Esc Back  {own}  {shared}")),
+            bar(&mut app).contains(&format!("{own}  {shared}  Esc Tools")),
             "{page:?}: {:?}",
             bar(&mut app)
         );
@@ -2842,7 +2842,7 @@ fn data_quality_reads_as_a_report() {
         KeyCode::Char('e'),
         KeyModifiers::NONE,
     )));
-    assert!(bar_now(&mut app).contains("Sample Form"));
+    assert!(bar_now(&mut app).contains("Space Sample"));
     for _ in 0..2 {
         app.event(&AppEvent::Key(KeyEvent::new(
             KeyCode::Down,
@@ -2877,7 +2877,10 @@ fn data_quality_reads_as_a_report() {
     let tab = AppEvent::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     app.event(&tab);
     let bar = bar_now(&mut app);
-    assert!(bar.contains("Select") && !bar.contains("Details"), "{bar}");
+    assert!(
+        bar.contains("Enter Open") && !bar.contains("Details"),
+        "{bar}"
+    );
     app.event(&tab);
     assert!(bar_now(&mut app).contains("Details"));
 

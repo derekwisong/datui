@@ -601,7 +601,12 @@ impl QualityGrain {
                     "1mo" => "month",
                     other => other,
                 };
-                format!("by {unit} of {column}")
+                // A column named for its unit would read "by day of day".
+                if column.eq_ignore_ascii_case(unit) {
+                    format!("by {unit} of the {column} column")
+                } else {
+                    format!("by {unit} of {column}")
+                }
             }
         }
     }
@@ -5871,6 +5876,17 @@ mod tests {
     /// partition it is its own segment, named by its stored number, and in time
     /// windows it falls in none, as a null does. Each segment's rows are the ones
     /// it counted.
+    /// A grain names its column; one named for its unit says it is the column.
+    #[test]
+    fn a_grain_label_never_reads_day_of_day() {
+        let grain = |column: &str| QualityGrain::TimeWindows {
+            column: column.to_string(),
+            every: "1d".to_string(),
+        };
+        assert_eq!(grain("date").label(), "by day of date");
+        assert_eq!(grain("day").label(), "by day of the day column");
+    }
+
     #[test]
     fn dates_past_the_calendar_fall_in_segments_without_a_panic() {
         let edges = [i64::MIN + 1, 0, i64::MAX];

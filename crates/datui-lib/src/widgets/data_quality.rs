@@ -556,7 +556,14 @@ const SETUP_LABEL_WIDTH: u16 = 15;
 fn setup_value(config: &DataQualityWidgetConfig<'_>, row: SetupRow) -> (String, bool) {
     let plan = config.plan;
     match row {
-        SetupRow::Sample => (plan.sample().summary(), false),
+        SetupRow::Sample => {
+            // The view's rows, when counted: a sample never promises more.
+            let sample = plan.sample();
+            let known = (sample.scope == crate::data_quality::QualityScope::CurrentView)
+                .then(|| config.state.num_rows_if_valid())
+                .flatten();
+            (sample.summary_within(known), false)
+        }
         SetupRow::TextAsTime if plan.time_formats.is_empty() => {
             ("none: every text column is text".to_string(), true)
         }

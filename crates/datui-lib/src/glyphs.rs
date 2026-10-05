@@ -112,6 +112,10 @@ pub struct Glyphs {
     pub arrow_right: &'static str,
     /// Between the steps of a location trail: `cloud › Azure › datui-test`.
     pub trail: &'static str,
+    /// Either side of a choice shown alone because its values do not fit on its
+    /// row: `‹ TSV ›`, which ←/→ step. One column wide in both sets.
+    pub choice_prev: &'static str,
+    pub choice_next: &'static str,
     /// After a column's name in a column list: hidden from the table. One column
     /// wide in both sets, like the header marks.
     pub hidden_mark: &'static str,
@@ -358,6 +362,8 @@ const UNICODE: Glyphs = Glyphs {
     arrow_left: "←",
     arrow_right: "→",
     trail: "›",
+    choice_prev: "‹",
+    choice_next: "›",
     hidden_mark: "⊘",
     diff_mark: "Δ",
     checkbox_on: "■",
@@ -441,6 +447,8 @@ const ASCII: Glyphs = Glyphs {
     arrow_left: "<",
     arrow_right: ">",
     trail: ">",
+    choice_prev: "<",
+    choice_next: ">",
     hidden_mark: "x",
     diff_mark: "*",
     checkbox_on: "[x]",
@@ -563,6 +571,8 @@ macro_rules! with_string_slots {
             arrow_left,
             arrow_right,
             trail,
+            choice_prev,
+            choice_next,
             hidden_mark,
             diff_mark,
             checkbox_on,

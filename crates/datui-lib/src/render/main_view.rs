@@ -357,14 +357,21 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
     if modal.computing.is_some() {
         return vec![("Esc", "Cancel")];
     }
-    // Only keys that act right now. The bar is cut from the right, so the way out
-    // leads, then what the focused pane is for, then the shared sample: the bar
-    // keeps its leading chips, and a sample it never names is a feature nobody
-    // finds.
-    let mut pairs = vec![("Esc", "Back")];
+    // Only keys that act right now. The footer shows the first three, so the way
+    // out leads, then what the focused pane is for, then Tab, which is how the
+    // other pane is reached; the shared sample after.
+    let in_pane = modal.focus == crate::analysis_modal::AnalysisFocus::Main;
+    let mut pairs = vec![(
+        "Esc",
+        if in_pane && modal.selected_tool.is_some() {
+            "Tools"
+        } else {
+            "Close"
+        },
+    )];
     let mut rest = Vec::new();
-    if modal.focus == crate::analysis_modal::AnalysisFocus::Sidebar {
-        pairs.push(("Enter", "Select"));
+    if !in_pane {
+        pairs.push(("Enter", "Open"));
         rest.push((g.updown, "Tools"));
     } else if let Some(tool) = modal.selected_tool {
         // Enter opens a detail only where the tool has one: a column's
@@ -380,7 +387,7 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
             pairs.push(("Enter", "Detail"));
         }
         if matches!(tool, AnalysisTool::CorrelationMatrix) {
-            pairs.push(("m", "Method"));
+            rest.push(("m", "Method"));
         }
         rest.push((g.updown, "Rows"));
         // Describe and Distribution scroll only when the statistics do not all fit.
@@ -393,7 +400,7 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
         }
     }
     if modal.selected_tool.is_some() {
-        rest.push(("Tab", "Focus"));
+        pairs.push(("Tab", if in_pane { "Tools" } else { "Result" }));
         pairs.push(("s", "Sample"));
         pairs.push(("v", "View Rows"));
     }
@@ -1013,7 +1020,8 @@ mod tests {
         };
 
         app.analysis_modal.focus = AnalysisFocus::Sidebar;
-        assert_eq!(label(&app, "Enter"), Some("Select"));
+        assert_eq!(label(&app, "Enter"), Some("Open"));
+        assert_eq!(label(&app, "Esc"), Some("Close"));
         assert!(!has(&app, "Tab"), "no tool, nothing beside the list");
 
         app.analysis_modal.selected_tool = Some(AnalysisTool::Describe);
@@ -1026,6 +1034,24 @@ mod tests {
 
         app.analysis_modal.selected_tool = Some(AnalysisTool::DistributionAnalysis);
         assert_eq!(label(&app, "Enter"), Some("Detail"));
+        assert_eq!(
+            label(&app, "Esc"),
+            Some("Tools"),
+            "Esc goes back to the tools"
+        );
+        // The footer shows a screen's first three keys: Tab is one of them, from
+        // either pane.
+        let shown = |app: &crate::App| {
+            super::screen_hints(super::analysis_control_keys(app))
+                .iter()
+                .map(|hint| hint.key.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shown(&app), ["Esc", "Enter", "Tab"]);
+        app.analysis_modal.focus = AnalysisFocus::Sidebar;
+        assert_eq!(shown(&app), ["Esc", "Enter", "Tab"]);
+        assert_eq!(label(&app, "Tab"), Some("Result"));
+        app.analysis_modal.focus = AnalysisFocus::Main;
 
         app.analysis_modal.selected_tool = Some(AnalysisTool::CorrelationMatrix);
         app.analysis_modal.selected_correlation = Some((1, 1));

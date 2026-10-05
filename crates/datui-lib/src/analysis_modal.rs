@@ -355,6 +355,21 @@ pub enum AnalysisTool {
     DataQuality,          // Multi-scale quality profile
 }
 
+impl AnalysisTool {
+    /// The tools in the order the sidebar lists them.
+    pub const ALL: [Self; 4] = [
+        Self::Describe,
+        Self::DistributionAnalysis,
+        Self::CorrelationMatrix,
+        Self::DataQuality,
+    ];
+
+    /// The tool's row in the sidebar.
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|tool| *tool == self).unwrap_or(0)
+    }
+}
+
 /// Progress state for the analysis progress overlay (display only).
 #[derive(Debug, Clone)]
 pub struct AnalysisProgress {
@@ -518,6 +533,24 @@ pub struct AnalysisModal {
     pub data_quality_intent_form: Option<crate::intent_modal::IntentForm>,
     /// The dialog that writes the report on screen to a file.
     pub data_quality_export: Option<crate::quality_export::ExportForm>,
+    /// The view (`DataTableState::len_generation`) the screen was opened on, which
+    /// its results are of.
+    pub results_view: Option<u64>,
+    /// What a close put down: the tools' results and where they were, taken back
+    /// by the next open on the same view.
+    kept: Option<Kept>,
+}
+
+/// The tools' results as a close left them, and the cursor in each.
+struct Kept {
+    view: Option<u64>,
+    tool: Option<AnalysisTool>,
+    describe: Option<AnalysisResults>,
+    distribution: Option<AnalysisResults>,
+    correlation: Option<AnalysisResults>,
+    row: Option<usize>,
+    distribution_row: Option<usize>,
+    cell: Option<(usize, usize)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -545,7 +578,15 @@ impl AnalysisModal {
         modal
     }
 
-    pub fn open(&mut self) {
+    /// Open the screen on `view`. On the view a close left results of, they come
+    /// back as they were, with the tool on screen; on any other, every tool starts
+    /// empty.
+    pub fn open(&mut self, view: Option<u64>) {
+        let kept = self
+            .kept
+            .take()
+            .filter(|kept| view.is_some() && kept.view == view);
+        self.results_view = view;
         self.active = true;
         self.scroll_position = 0;
         self.selected_column = None;
@@ -560,7 +601,7 @@ impl AnalysisModal {
         self.focus = AnalysisFocus::Sidebar; // Sidebar focused by default when no tool selected
         self.selected_tool = None; // No tool until user selects from sidebar
         self.selected_distribution = Some(0);
-        self.selected_correlation = Some((0, 0));
+        self.selected_correlation = None;
         self.computing = None;
         self.describe_results = None;
         self.distribution_results = None;
@@ -588,9 +629,46 @@ impl AnalysisModal {
         self.data_quality_intent_form = None;
         self.data_quality_export = None;
         self.sample_form = None;
+        if let Some(kept) = kept {
+            self.describe_results = kept.describe;
+            self.distribution_results = kept.distribution;
+            self.correlation_results = kept.correlation;
+            self.selected_tool = kept.tool;
+            if self.current_results().is_none() {
+                self.selected_tool = None;
+            }
+            if let Some(tool) = self.selected_tool {
+                self.sidebar_state.select(Some(tool.index()));
+            }
+            self.table_state.select(kept.row.or(Some(0)));
+            self.distribution_table_state
+                .select(kept.distribution_row.or(Some(0)));
+            self.selected_distribution = kept.distribution_row.or(Some(0));
+            if let Some(cell) = kept.cell {
+                self.selected_correlation = Some(cell);
+                self.correlation_table_state.select(Some(cell.0));
+            }
+        }
+        if self.correlation_results.is_none() {
+            self.selected_correlation = None;
+        }
     }
 
+    /// Close the screen. The tools' results are put down rather than dropped: the
+    /// next open on the same view shows them again.
     pub fn close(&mut self) {
+        self.kept = Some(Kept {
+            view: self.results_view.take(),
+            tool: self
+                .selected_tool
+                .filter(|tool| *tool != AnalysisTool::DataQuality),
+            describe: self.describe_results.take(),
+            distribution: self.distribution_results.take(),
+            correlation: self.correlation_results.take(),
+            row: self.table_state.selected(),
+            distribution_row: self.distribution_table_state.selected(),
+            cell: self.selected_correlation,
+        });
         self.active = false;
         self.scroll_position = 0;
         self.selected_column = None;
@@ -649,32 +727,22 @@ impl AnalysisModal {
 
     /// The tool under the sidebar cursor.
     pub fn highlighted_tool(&self) -> Option<AnalysisTool> {
-        Some(match self.sidebar_state.selected()? {
-            0 => AnalysisTool::Describe,
-            1 => AnalysisTool::DistributionAnalysis,
-            2 => AnalysisTool::CorrelationMatrix,
-            3 => AnalysisTool::DataQuality,
-            _ => return None,
-        })
+        AnalysisTool::ALL
+            .get(self.sidebar_state.selected()?)
+            .copied()
     }
 
-    /// Select the tool under the sidebar cursor. Focus stays on the sidebar:
-    /// it moves only when the user presses Tab, never as a side effect.
+    /// Select the tool under the sidebar cursor. Where the cursor goes is the
+    /// caller's: Enter on a tool takes it into the tool's pane.
     pub fn select_tool(&mut self) {
-        if let Some(idx) = self.sidebar_state.selected() {
-            self.selected_tool = Some(match idx {
-                0 => AnalysisTool::Describe,
-                1 => AnalysisTool::DistributionAnalysis,
-                2 => AnalysisTool::CorrelationMatrix,
-                3 => AnalysisTool::DataQuality,
-                _ => AnalysisTool::Describe,
-            });
+        if self.sidebar_state.selected().is_some() {
+            self.selected_tool = Some(self.highlighted_tool().unwrap_or_default());
         }
     }
 
     pub fn next_tool(&mut self) {
         if let Some(current) = self.sidebar_state.selected() {
-            let next = (current + 1).min(3);
+            let next = (current + 1).min(AnalysisTool::ALL.len() - 1);
             self.sidebar_state.select(Some(next));
         }
     }
@@ -1692,14 +1760,48 @@ impl AnalysisModal {
         }
     }
 
+    /// The matrix a run read. The cursor stays where it was when it is still a cell
+    /// of it; otherwise it starts on the first pair, off the diagonal, where Enter
+    /// has a detail to open.
+    pub fn install_correlations(&mut self, results: AnalysisResults) {
+        let n = results
+            .correlation_matrix
+            .as_ref()
+            .map_or(0, |matrix| matrix.columns.len());
+        self.correlation_results = Some(results);
+        let cell = match self.selected_correlation {
+            Some((row, col)) if row < n && col < n => (row, col),
+            _ if n >= 2 => (0, 1),
+            _ => (0, 0),
+        };
+        self.selected_correlation = Some(cell);
+        self.correlation_table_state.select(Some(cell.0));
+    }
+
+    /// The number of columns in the correlation matrix on screen.
+    pub fn correlation_size(&self) -> usize {
+        self.correlation_results
+            .as_ref()
+            .and_then(|results| results.correlation_matrix.as_ref())
+            .map_or(0, |matrix| matrix.columns.len())
+    }
+
+    /// The families the distribution detail's selector lists for the column under
+    /// the cursor.
+    pub fn distribution_choices(&self) -> usize {
+        let row = self.distribution_table_state.selected().unwrap_or(0);
+        self.distribution_results
+            .as_ref()
+            .and_then(|results| results.distribution_analyses.get(row))
+            .map_or(0, |analysis| {
+                crate::distribution_fit::listing_order(&analysis.fits).len()
+            })
+    }
+
     /// Move the correlation cursor by `(rows, columns)`, stopping at the edges. The
     /// matrix scrolls to keep the cell in view as it draws, from the width it has.
     pub fn move_correlation_cell(&mut self, (rows, cols): (isize, isize)) {
-        let n = self
-            .correlation_results
-            .as_ref()
-            .and_then(|results| results.correlation_matrix.as_ref())
-            .map_or(0, |matrix| matrix.columns.len());
+        let n = self.correlation_size();
         if n == 0 {
             return;
         }
@@ -1712,7 +1814,7 @@ impl AnalysisModal {
     }
 
     pub fn next_distribution(&mut self) {
-        let max_idx = 13;
+        let max_idx = self.distribution_choices().saturating_sub(1);
 
         if let Some(current) = self.distribution_selector_state.selected() {
             let next = (current + 1).min(max_idx);

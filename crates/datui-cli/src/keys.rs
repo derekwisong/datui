@@ -975,16 +975,16 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Explore",
                 keys: &[
-                    k("Tab", "Focus", "Between the results and the sidebar"),
+                    k("Tab / Shift+Tab", "Focus", "Between the results and the tools"),
                     k("↑ / ↓ (j/k)", "Move", "Rows, or the sidebar's tools"),
                     k("← / → (h/l)", "Scroll", "Scroll the statistics")
                         .more("Scroll the statistics; the header counts those out of view"),
                     k("Home / End", "First, last", "First or last row"),
                     k("PgUp / PgDn", "Page", "A page"),
-                    k("Enter", "Tool", "Run the sidebar's tool")
-                        .more("Select tool from sidebar (when sidebar focused). The first run on a dataset starts in the Sample form, where Enter runs it; later tools reuse that sample"),
-                    k("Esc", "Close", "Cancel a run; otherwise close")
-                        .more("Cancel a run in progress; otherwise close the analysis view"),
+                    k("Enter", "Open", "Open the sidebar's tool")
+                        .more("Open the sidebar's tool and move into its pane. The first run on a dataset starts in the Sample form, where Enter runs it; later tools reuse that sample. Results last until the view changes: closing and reopening shows them again"),
+                    k("Esc", "Back", "Cancel a run; the tools; then close")
+                        .more("Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view"),
                 ],
             },
             Group {
@@ -1006,11 +1006,11 @@ pub const SCREENS: &[Screen] = &[
                         .more("Scroll the statistics; the header counts those out of view"),
                     k("Home / End", "First, last", "First or last row"),
                     k("PgUp / PgDn", "Page", "A page"),
-                    k("Tab", "Focus", "Between the results and the sidebar"),
+                    k("Tab / Shift+Tab", "Focus", "Between the results and the tools"),
                     k("Enter", "Detail", "Q-Q plot and histogram for the column")
-                        .more("Open detail view for selected column (shows Q-Q plot and histogram); with the sidebar focused, select a tool"),
-                    k("Esc", "Close", "Cancel a run; otherwise close")
-                        .more("Cancel a run in progress; otherwise close the analysis view"),
+                        .more("Open detail view for selected column (shows Q-Q plot and histogram); with the sidebar focused, open a tool"),
+                    k("Esc", "Back", "Cancel a run; the tools; then close")
+                        .more("Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view"),
                 ],
             },
             Group {
@@ -1027,6 +1027,7 @@ pub const SCREENS: &[Screen] = &[
             name: "Detail",
             keys: &[
                 k("↑ / ↓ (j/k)", "Family", "Compare the values with another family"),
+                k("Home / End", "First, last", "The first or last family"),
                 k("s", "Scale", "Histogram scale: linear or log"),
                 k("Esc", "Back", "Back to the distribution table"),
             ],
@@ -1040,18 +1041,18 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Explore",
                 keys: &[
-                    k("Tab", "Focus", "Between the matrix and the sidebar"),
+                    k("Tab / Shift+Tab", "Focus", "Between the matrix and the tools"),
                     k("↑ / ↓ (j/k)", "Move", "Matrix rows, or the sidebar's tools"),
                     k("← / → (h/l)", "Column", "Matrix columns"),
-                    k("Home / End", "Corners", "The first or last corner cell")
-                        .more("Jump to the first/last corner cell (the column resets too)"),
+                    k("Home / End", "Ends", "The first or last pair")
+                        .more("Jump to the first pair (the first row's second column) or the last (the last row's next-to-last column); the matrix opens on the first"),
                     k("PgUp / PgDn", "Page", "A page"),
                     k("Enter", "Detail", "The pair's detail (not on the diagonal)")
-                        .more("Open pair detail view (on a cell) or select tool (sidebar); does nothing on a diagonal cell"),
+                        .more("Open pair detail view (on a cell) or open a tool (sidebar); does nothing on a diagonal cell"),
                     k("m", "Method", "Pearson or Spearman, named in the title")
                         .more("Method: Pearson r or Spearman ρ, named in the title (both come from the one run, so it reads nothing)"),
-                    k("Esc", "Close", "Cancel a run; otherwise close")
-                        .more("Cancel a run in progress; otherwise close the analysis view"),
+                    k("Esc", "Back", "Cancel a run; the tools; then close")
+                        .more("Cancel a run in progress; otherwise from the matrix back to the tools, and from the tools close the analysis view"),
                 ],
             },
             Group {
@@ -1129,9 +1130,9 @@ pub const SCREENS: &[Screen] = &[
                     k("r", "Resample", "On a sample, run again with a new seed"),
                     k("x", "Export", "Export the report to JSON or Markdown")
                         .more("Export the report to JSON or Markdown; nothing is read"),
-                    k("Tab", "Focus", "Between the result and the tools"),
-                    k("Esc", "Back", "Back one level: all findings, then close")
-                        .more("Back one level: all findings again, then close"),
+                    k("Tab / Shift+Tab", "Focus", "Between the result and the tools"),
+                    k("Esc", "Back", "Back one level: all findings, the tools, close")
+                        .more("Back one level: all findings again, then the tools, then close"),
                 ],
             },
             Group {

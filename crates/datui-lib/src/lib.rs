@@ -13046,7 +13046,9 @@ impl App {
                     && self.input_mode == InputMode::Normal
                     && self.quality_evidence_return.is_none()
                 {
-                    self.analysis_modal.open();
+                    // The results a close put down come back on the view they are of.
+                    let view = self.data_table_state.as_ref().map(|s| s.len_generation());
+                    self.analysis_modal.open(view);
                     // The sample outlives a close, but its scope names this
                     // dataset's rows: another dataset starts from its current view.
                     if self.analysis_modal.sample_dataset != Some(self.dataset_generation) {
@@ -15849,7 +15851,7 @@ impl App {
             }
             Answer::Correlations(results) => {
                 if current {
-                    self.analysis_modal.correlation_results = Some(results);
+                    self.analysis_modal.install_correlations(results);
                     self.analysis_modal.computing = None;
                 }
                 None

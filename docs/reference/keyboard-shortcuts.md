@@ -471,13 +471,13 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `Tab` | Between the results and the sidebar |
+| `Tab / Shift+Tab` | Between the results and the tools |
 | `↑ / ↓ (j/k)` | Rows, or the sidebar's tools |
 | `← / → (h/l)` | Scroll the statistics; the header counts those out of view |
 | `Home / End` | First or last row |
 | `PgUp / PgDn` | A page |
-| `Enter` | Select tool from sidebar (when sidebar focused). The first run on a dataset starts in the Sample form, where Enter runs it; later tools reuse that sample |
-| `Esc` | Cancel a run in progress; otherwise close the analysis view |
+| `Enter` | Open the sidebar's tool and move into its pane. The first run on a dataset starts in the Sample form, where Enter runs it; later tools reuse that sample. Results last until the view changes: closing and reopening shows them again |
+| `Esc` | Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view |
 
 ### Analysis: Describe · Sample
 
@@ -501,9 +501,9 @@ Distribution in the Analysis sidebar.
 | `← / → (h/l)` | Scroll the statistics; the header counts those out of view |
 | `Home / End` | First or last row |
 | `PgUp / PgDn` | A page |
-| `Tab` | Between the results and the sidebar |
-| `Enter` | Open detail view for selected column (shows Q-Q plot and histogram); with the sidebar focused, select a tool |
-| `Esc` | Cancel a run in progress; otherwise close the analysis view |
+| `Tab / Shift+Tab` | Between the results and the tools |
+| `Enter` | Open detail view for selected column (shows Q-Q plot and histogram); with the sidebar focused, open a tool |
+| `Esc` | Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view |
 
 ### Analysis: Distribution · Sample
 
@@ -524,6 +524,7 @@ Distribution in the Analysis sidebar.
 | Key | Action |
 |---|---|
 | `↑ / ↓ (j/k)` | Compare the values with another family |
+| `Home / End` | The first or last family |
 | `s` | Histogram scale: linear or log |
 | `Esc` | Back to the distribution table |
 
@@ -535,14 +536,14 @@ Correlation Matrix in the Analysis sidebar.
 
 | Key | Action |
 |---|---|
-| `Tab` | Between the matrix and the sidebar |
+| `Tab / Shift+Tab` | Between the matrix and the tools |
 | `↑ / ↓ (j/k)` | Matrix rows, or the sidebar's tools |
 | `← / → (h/l)` | Matrix columns |
-| `Home / End` | Jump to the first/last corner cell (the column resets too) |
+| `Home / End` | Jump to the first pair (the first row's second column) or the last (the last row's next-to-last column); the matrix opens on the first |
 | `PgUp / PgDn` | A page |
-| `Enter` | Open pair detail view (on a cell) or select tool (sidebar); does nothing on a diagonal cell |
+| `Enter` | Open pair detail view (on a cell) or open a tool (sidebar); does nothing on a diagonal cell |
 | `m` | Method: Pearson r or Spearman ρ, named in the title (both come from the one run, so it reads nothing) |
-| `Esc` | Cancel a run in progress; otherwise close the analysis view |
+| `Esc` | Cancel a run in progress; otherwise from the matrix back to the tools, and from the tools close the analysis view |
 
 ### Analysis: Correlation · Sample
 
@@ -609,8 +610,8 @@ Data Quality in the Analysis sidebar.
 | `p` | The access plan: what a run reads |
 | `r` | On a sample, run again with a new seed |
 | `x` | Export the report to JSON or Markdown; nothing is read |
-| `Tab` | Between the result and the tools |
-| `Esc` | Back one level: all findings again, then close |
+| `Tab / Shift+Tab` | Between the result and the tools |
+| `Esc` | Back one level: all findings again, then the tools, then close |
 
 ### Analysis: Data Quality · Segments
 

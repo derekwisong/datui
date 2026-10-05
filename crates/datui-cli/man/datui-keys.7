@@ -762,8 +762,8 @@ Back to the chart
 .PP
 \fIExplore\fR
 .TP
-\fBTab\fR
-Between the results and the sidebar
+\fBTab / Shift+Tab\fR
+Between the results and the tools
 .TP
 \fB\(ua / \(da (j/k)\fR
 Rows, or the sidebar's tools
@@ -778,10 +778,10 @@ First or last row
 A page
 .TP
 \fBEnter\fR
-Select tool from sidebar (when sidebar focused). The first run on a dataset starts in the Sample form, where Enter runs it; later tools reuse that sample
+Open the sidebar's tool and move into its pane. The first run on a dataset starts in the Sample form, where Enter runs it; later tools reuse that sample. Results last until the view changes: closing and reopening shows them again
 .TP
 \fBEsc\fR
-Cancel a run in progress; otherwise close the analysis view
+Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view
 .PP
 \fISample\fR
 .TP
@@ -816,14 +816,14 @@ First or last row
 \fBPgUp / PgDn\fR
 A page
 .TP
-\fBTab\fR
-Between the results and the sidebar
+\fBTab / Shift+Tab\fR
+Between the results and the tools
 .TP
 \fBEnter\fR
-Open detail view for selected column (shows Q-Q plot and histogram); with the sidebar focused, select a tool
+Open detail view for selected column (shows Q-Q plot and histogram); with the sidebar focused, open a tool
 .TP
 \fBEsc\fR
-Cancel a run in progress; otherwise close the analysis view
+Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view
 .PP
 \fISample\fR
 .TP
@@ -849,6 +849,9 @@ While following a file, read again with the rows that arrived since the results 
 \fB\(ua / \(da (j/k)\fR
 Compare the values with another family
 .TP
+\fBHome / End\fR
+The first or last family
+.TP
 \fBs\fR
 Histogram scale: linear or log
 .TP
@@ -859,8 +862,8 @@ Correlation Matrix in the Analysis sidebar.
 .PP
 \fIExplore\fR
 .TP
-\fBTab\fR
-Between the matrix and the sidebar
+\fBTab / Shift+Tab\fR
+Between the matrix and the tools
 .TP
 \fB\(ua / \(da (j/k)\fR
 Matrix rows, or the sidebar's tools
@@ -869,19 +872,19 @@ Matrix rows, or the sidebar's tools
 Matrix columns
 .TP
 \fBHome / End\fR
-Jump to the first/last corner cell (the column resets too)
+Jump to the first pair (the first row's second column) or the last (the last row's next-to-last column); the matrix opens on the first
 .TP
 \fBPgUp / PgDn\fR
 A page
 .TP
 \fBEnter\fR
-Open pair detail view (on a cell) or select tool (sidebar); does nothing on a diagonal cell
+Open pair detail view (on a cell) or open a tool (sidebar); does nothing on a diagonal cell
 .TP
 \fBm\fR
 Method: Pearson r or Spearman \(*r, named in the title (both come from the one run, so it reads nothing)
 .TP
 \fBEsc\fR
-Cancel a run in progress; otherwise close the analysis view
+Cancel a run in progress; otherwise from the matrix back to the tools, and from the tools close the analysis view
 .PP
 \fISample\fR
 .TP
@@ -996,11 +999,11 @@ On a sample, run again with a new seed
 \fBx\fR
 Export the report to JSON or Markdown; nothing is read
 .TP
-\fBTab\fR
+\fBTab / Shift+Tab\fR
 Between the result and the tools
 .TP
 \fBEsc\fR
-Back one level: all findings again, then close
+Back one level: all findings again, then the tools, then close
 .PP
 \fISegments\fR
 .TP

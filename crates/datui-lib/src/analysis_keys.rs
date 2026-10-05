@@ -652,6 +652,13 @@ impl App {
                     if self.analysis_modal.view != analysis_modal::AnalysisView::Main {
                         // Close detail view
                         self.analysis_modal.close_detail();
+                    } else if self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main
+                        && self.analysis_modal.selected_tool.is_some()
+                    {
+                        // One level at a time: the pane hands the cursor back to the
+                        // tools, and Esc there closes.
+                        self.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
+                        self.sync_sample_form_focus();
                     } else {
                         self.analysis_modal.close();
                     }
@@ -709,7 +716,7 @@ impl App {
                     ));
                     self.confirmation_modal.yes_label = "Read all";
                 }
-                KeyCode::Tab => {
+                KeyCode::Tab | KeyCode::BackTab => {
                     // One rule for the whole screen: Tab moves sidebar <-> result.
                     // The detail views have a single focusable thing, so it stays.
                     if self.analysis_modal.view == analysis_modal::AnalysisView::Main {
@@ -728,10 +735,13 @@ impl App {
                             && self.analysis_modal.highlighted_tool()
                                 == self.analysis_modal.selected_tool
                         {
+                            self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
                             return self.run_sample_form();
                         }
-                        // Select tool from sidebar
+                        // Enter on a tool always enters its pane: its result, its
+                        // Sample form, or the run it starts.
                         self.analysis_modal.select_tool();
+                        self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
                         self.analysis_modal.sample_form = None;
                         // A tool with a result shows it. One without shows the Sample
                         // form in its pane, so the first run reads the rows asked for;
@@ -777,12 +787,10 @@ impl App {
                         if !has_result && sample_run {
                             return self.start_analysis_run();
                         }
-                        // Before the first, the form is what the pane is for, so the
-                        // cursor goes with it: Enter runs, the arrows change a setting,
-                        // Esc hands the cursor back to the list. A tool with a result
-                        // leaves the cursor on the list.
+                        // Before the first, the form is what the pane is for: Enter
+                        // runs, the arrows change a setting, Esc hands the cursor back
+                        // to the list.
                         if !has_result {
-                            self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
                             self.open_first_run_form();
                         }
                     } else {
@@ -963,7 +971,9 @@ impl App {
                     self.analysis_modal.page_up(page_size);
                 }
                 KeyCode::Home
-                    if self.analysis_modal.view == analysis_modal::AnalysisView::Main =>
+                    if self.analysis_modal.view == analysis_modal::AnalysisView::Main
+                        || self.analysis_modal.focus
+                            == analysis_modal::AnalysisFocus::DistributionSelector =>
                 {
                     match self.analysis_modal.focus {
                         analysis_modal::AnalysisFocus::Sidebar => {
@@ -973,6 +983,7 @@ impl App {
                             self.analysis_modal
                                 .distribution_selector_state
                                 .select(Some(0));
+                            self.analysis_modal.select_distribution();
                         }
                         analysis_modal::AnalysisFocus::Main => {
                             match self.analysis_modal.selected_tool {
@@ -985,8 +996,13 @@ impl App {
                                         .select(Some(0));
                                 }
                                 Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                                    self.analysis_modal.correlation_table_state.select(Some(0));
-                                    self.analysis_modal.selected_correlation = Some((0, 0));
+                                    // The first pair, off the diagonal.
+                                    let n = self.analysis_modal.correlation_size();
+                                    if n > 0 {
+                                        self.analysis_modal.correlation_table_state.select(Some(0));
+                                        self.analysis_modal.selected_correlation =
+                                            Some((0, 1.min(n - 1)));
+                                    }
                                 }
                                 Some(analysis_modal::AnalysisTool::DataQuality) => {
                                     self.analysis_modal.data_quality_table_state.select(Some(0));
@@ -997,17 +1013,22 @@ impl App {
                     }
                 }
                 KeyCode::End
-                    if self.analysis_modal.view == analysis_modal::AnalysisView::Main =>
+                    if self.analysis_modal.view == analysis_modal::AnalysisView::Main
+                        || self.analysis_modal.focus
+                            == analysis_modal::AnalysisFocus::DistributionSelector =>
                 {
                     match self.analysis_modal.focus {
                         analysis_modal::AnalysisFocus::Sidebar => {
-                            self.analysis_modal.sidebar_state.select(Some(3));
-                            // Last tool
+                            self.analysis_modal
+                                .sidebar_state
+                                .select(Some(analysis_modal::AnalysisTool::ALL.len() - 1));
                         }
                         analysis_modal::AnalysisFocus::DistributionSelector => {
+                            let last = self.analysis_modal.distribution_choices().saturating_sub(1);
                             self.analysis_modal
                                 .distribution_selector_state
-                                .select(Some(13)); // Last distribution (Weibull, index 13 of 14 total)
+                                .select(Some(last));
+                            self.analysis_modal.select_distribution();
                         }
                         analysis_modal::AnalysisFocus::Main => {
                             match self.analysis_modal.selected_tool {
@@ -1032,17 +1053,15 @@ impl App {
                                     }
                                 }
                                 Some(analysis_modal::AnalysisTool::CorrelationMatrix) => {
-                                    if let Some(results) = self.analysis_modal.current_results()
-                                        && let Some(corr) = &results.correlation_matrix {
-                                            let max_rows = corr.columns.len();
-                                            if max_rows > 0 {
-                                                self.analysis_modal
-                                                    .correlation_table_state
-                                                    .select(Some(max_rows - 1));
-                                                self.analysis_modal.selected_correlation =
-                                                    Some((max_rows - 1, max_rows - 1));
-                                            }
-                                        }
+                                    // The last pair, off the diagonal.
+                                    let n = self.analysis_modal.correlation_size();
+                                    if n > 0 {
+                                        self.analysis_modal
+                                            .correlation_table_state
+                                            .select(Some(n - 1));
+                                        self.analysis_modal.selected_correlation =
+                                            Some((n - 1, (n - 1).saturating_sub(1)));
+                                    }
                                 }
                                 Some(analysis_modal::AnalysisTool::DataQuality) => {
                                     let rows = self.analysis_modal.quality_row_count();

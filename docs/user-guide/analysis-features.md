@@ -3,9 +3,12 @@
 <kbd>a</kbd> opens Analysis: Describe, Distribution, Correlation Matrix and
 Data Quality, over a sample of the table.
 
-A list of tools sits on the right; <kbd>Tab</kbd> moves focus between the list and the
-result, <kbd>↑</kbd> <kbd>↓</kbd> pick a tool, <kbd>Enter</kbd> runs it.
-<kbd>Esc</kbd> returns to the table.
+A list of tools sits on the right: <kbd>↑</kbd> <kbd>↓</kbd> pick a tool and
+<kbd>Enter</kbd> opens it, moving into its pane. <kbd>Tab</kbd> or
+<kbd>Shift+Tab</kbd> moves between the list and the result. <kbd>Esc</kbd> in the
+result goes back to the list, and <kbd>Esc</kbd> there returns to the table.
+Results last while the table shows the same rows: <kbd>a</kbd> again shows them as
+you left them.
 
 Analysis runs on the data as you see it, after any query and filters, unless
 the [sample](#sampling) is set to read the source.

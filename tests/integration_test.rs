@@ -2430,19 +2430,23 @@ fn declining_an_overwrite_keeps_the_export_form() {
     assert_eq!(app.input_mode, InputMode::Normal);
 }
 
-/// Selecting a tool runs it but leaves focus on the sidebar: focus moves only
-/// when the user presses Tab, never as a side effect of Enter or of results
-/// arriving. Reviewers kept landing in the wrong tool because it jumped.
+/// Enter on a tool always takes the cursor into its pane, whether it shows the
+/// Sample form, starts a run or shows a result; Tab and Shift+Tab cross between
+/// the pane and the tools, Esc steps back one level, and the results outlive a
+/// close on the same view.
 #[test]
-fn selecting_a_tool_keeps_the_sidebar_focus() {
-    use datui::analysis_modal::AnalysisFocus;
+fn enter_on_a_tool_enters_its_pane_and_esc_steps_back() {
+    use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
 
     let (mut app, rx, _tx) = open_query_filter_fixture("analysis_focus.csv");
+    let press = |app: &mut App, code: KeyCode| {
+        let mut next = app.event(&key(code));
+        while let Some(ev) = next {
+            next = app.event(&ev);
+        }
+    };
 
-    app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Char('a'),
-        KeyModifiers::NONE,
-    )));
+    press(&mut app, KeyCode::Char('a'));
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
 
     // Enter on Describe shows its Sample form in the pane, and the cursor goes
@@ -2457,39 +2461,100 @@ fn selecting_a_tool_keeps_the_sidebar_focus() {
         "the cursor lands on the first setting"
     );
     // Esc hands the cursor back to the list and leaves the form waiting; Enter
-    // there runs it as it stands.
-    app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Esc,
-        KeyModifiers::NONE,
-    )));
+    // there runs it as it stands, and the cursor goes with it into the pane.
+    press(&mut app, KeyCode::Esc);
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
     assert!(app.analysis_modal.sample_form.is_some());
-    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Enter,
-        KeyModifiers::NONE,
-    )));
-    while let Some(ev) = next {
-        next = app.event(&ev);
-    }
+    press(&mut app, KeyCode::Enter);
     drain_events(&mut app, &rx);
     assert!(app.analysis_modal.describe_results.is_some());
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
+
+    // Tab and Shift+Tab both cross to the other pane.
+    for code in [KeyCode::Tab, KeyCode::BackTab] {
+        press(&mut app, code);
+        assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar, "{code:?}");
+        press(&mut app, code);
+        assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main, "{code:?}");
+    }
+
+    // A tool picked once the sample has run starts at once, the cursor in its
+    // pane; a tool with a result shows it, the cursor in its pane too.
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    drain_events(&mut app, &rx);
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::DistributionAnalysis)
+    );
+    assert!(app.analysis_modal.distribution_results.is_some());
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
+    press(&mut app, KeyCode::Esc);
     assert_eq!(
         app.analysis_modal.focus,
         AnalysisFocus::Sidebar,
-        "running a tool must not move focus"
+        "Esc: the tools"
     );
-
-    // Tab is the one move: into the result, and back.
-    app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Tab,
-        KeyModifiers::NONE,
-    )));
+    assert!(app.analysis_modal.active, "Esc steps back one level");
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::Describe)
+    );
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
-    app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Tab,
-        KeyModifiers::NONE,
-    )));
+
+    // Esc from the tools closes; the results come back with the tool on screen.
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.analysis_modal.active);
+    press(&mut app, KeyCode::Char('a'));
+    assert!(app.analysis_modal.active);
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::Describe)
+    );
+    assert!(app.analysis_modal.describe_results.is_some());
+    assert!(app.analysis_modal.distribution_results.is_some());
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
+    assert_eq!(app.analysis_modal.sidebar_state.selected(), Some(0));
+
+    // Another view, other rows: the results are of the old one, and go.
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('r'));
+    drain_events(&mut app, &rx);
+    press(&mut app, KeyCode::Char('a'));
+    assert_eq!(app.analysis_modal.selected_tool, None);
+    assert!(app.analysis_modal.describe_results.is_none());
+    assert!(app.analysis_modal.distribution_results.is_none());
+}
+
+/// The correlation matrix opens on the first pair rather than a column against
+/// itself, and Home and End go to the first and last pairs of its own size.
+#[test]
+fn the_correlation_matrix_starts_on_a_pair() {
+    let (mut app, rx, _tx) = open_query_filter_fixture("analysis_pairs.csv");
+    let press = |app: &mut App, code: KeyCode| {
+        let mut next = app.event(&key(code));
+        while let Some(ev) = next {
+            next = app.event(&ev);
+        }
+    };
+    press(&mut app, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(2));
+    show_sample_form(&mut app);
+    press(&mut app, KeyCode::Enter);
+    drain_events(&mut app, &rx);
+    assert_eq!(app.analysis_modal.correlation_size(), 2, "a and c");
+    assert_eq!(app.analysis_modal.selected_correlation, Some((0, 1)));
+    press(&mut app, KeyCode::End);
+    assert_eq!(app.analysis_modal.selected_correlation, Some((1, 0)));
+    press(&mut app, KeyCode::Home);
+    assert_eq!(app.analysis_modal.selected_correlation, Some((0, 1)));
+    let screen = rows_at(&mut app, 120, 24).join("\n");
+    assert!(screen.contains("Enter Detail"), "{screen}");
 }
 
 /// On a local file, choosing Data Quality opens its Setup, and Enter there runs the
@@ -3568,10 +3633,9 @@ fn one_sample_serves_every_analysis_tool() {
     show_sample_form(&mut app);
     let next = key(&mut app, KeyCode::Enter);
     run(&mut app, next);
-    key(&mut app, KeyCode::Tab);
 
     // The bar names the key at the baseline width, or the sample is a feature
-    // nobody finds.
+    // nobody finds: in the result, after the way out and Tab.
     let narrow = Rect::new(0, 0, 80, 24);
     let mut buffer = Buffer::empty(narrow);
     app.render(narrow, &mut buffer);
@@ -4061,7 +4125,10 @@ fn data_quality_reads_nothing_until_setup_runs() {
     assert!(!app.is_busy());
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
 
-    // Reopened, the unchanged report comes back from the session cache.
+    // Reopened, the unchanged report comes back from the session cache. Esc
+    // steps back to the tools, then closes.
+    press(&mut app, KeyCode::Esc);
+    assert!(app.analysis_modal.active);
     press(&mut app, KeyCode::Esc);
     assert!(!app.analysis_modal.active);
     press(&mut app, KeyCode::Char('a'));

@@ -3670,7 +3670,7 @@ mod tests {
 
     /// In the export dialog a click on a row focuses it and acts as Space: a
     /// checkbox flips, a choice steps, a text field only takes the cursor. A click on
-    /// a format in the list chooses it.
+    /// a format on its row chooses it.
     #[test]
     fn a_click_focuses_a_form_row_and_acts_on_it() {
         use crate::export_modal::{ExportFocus, ExportFormat};
@@ -3680,7 +3680,7 @@ mod tests {
         assert_eq!(p.app.export_modal.selected_format, ExportFormat::Csv);
         let header = p.app.export_modal.csv_include_header;
 
-        let at = on_screen(&mut p.app, "Include header:");
+        let at = on_screen(&mut p.app, "Header:");
         assert!(p.terminal_mouse(click(at)).unwrap());
         assert_eq!(p.app.export_modal.focus, ExportFocus::CsvIncludeHeader);
         assert_eq!(p.app.export_modal.csv_include_header, !header, "toggled");
@@ -3952,7 +3952,7 @@ mod tests {
         let (mut p, _dir) = loaded_pump();
         p.terminal_key(plain(KeyCode::Char('e'))).unwrap();
         let header = p.app.export_modal.csv_include_header;
-        let at = on_screen(&mut p.app, "Include header:");
+        let at = on_screen(&mut p.app, "Header:");
         p.terminal_mouse(right_click(at)).unwrap();
         assert_eq!(p.app.export_modal.focus, ExportFocus::CsvIncludeHeader);
         assert_eq!(p.app.export_modal.csv_include_header, header, "not toggled");

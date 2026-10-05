@@ -184,18 +184,9 @@ pub fn render(
     }
 
     if app.export_modal.active {
-        // A commitment, so a compact centered dialog: the format list plus a
-        // row per option, never scaling with the terminal.
-        let modal_width = (area.width * 3 / 4).min(66);
-        let modal_height = 13.min(area.height);
-        let modal_x = (area.width.saturating_sub(modal_width)) / 2;
-        let modal_y = (area.height.saturating_sub(modal_height)) / 2;
-        let modal_area = Rect {
-            x: modal_x,
-            y: modal_y,
-            width: modal_width,
-            height: modal_height,
-        };
+        // A commitment, so a compact centered dialog that never scales with
+        // the terminal.
+        let modal_area = export::dialog_area(area);
         export::render_export_modal(modal_area, buf, &mut app.export_modal, ctx);
     }
 

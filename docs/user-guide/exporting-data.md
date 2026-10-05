@@ -28,12 +28,12 @@ on screen. Numbers use their raw values, without display formatting.
 
 | Format | Extension | Options |
 |---|---|---|
-| CSV | `.csv` | Delimiter, include header |
-| TSV | `.tsv` | Include header; the delimiter is a tab |
-| PSV | `.psv` | Include header; the delimiter is a pipe |
+| CSV | `.csv` | Delimiter, header, compression |
+| TSV | `.tsv` | Header, compression; the delimiter is a tab |
+| PSV | `.psv` | Header, compression; the delimiter is a pipe |
 | Parquet | `.parquet` | |
-| JSON | `.json` | One array |
-| NDJSON | `.jsonl`, `.ndjson` | One object per line |
+| JSON | `.json` | Compression; one array |
+| NDJSON | `.jsonl`, `.ndjson` | Compression; one object per line |
 | Arrow IPC | `.arrow`, `.ipc`, `.feather` | |
 | Avro | `.avro` | |
 
@@ -155,8 +155,13 @@ path intact. The chart's export dialog asks the same way.
 
 The CSV **Delimiter** starts as `--delimiter` when given, else a comma. Only
 its first ASCII character counts, and <kbd>Tab</kbd> moves focus, so a tab
-cannot be typed there: pick TSV. On a narrow terminal the dialog stacks into
-one column, format first; <kbd>←</kbd> <kbd>→</kbd> still change it.
+cannot be typed there: pick TSV.
+
+**Format** lists the formats on its row, the chosen one highlighted, and
+the rows under it are the chosen format's options: they come and go as
+<kbd>←</kbd> <kbd>→</kbd> step the format. Where the row is too narrow for
+them all, it shows the chosen one alone, `‹ TSV ›`. A click on a format
+chooses it.
 
 ## Overwriting
 

@@ -641,8 +641,8 @@ Data Quality in the Analysis sidebar.
 | Key | Action |
 |---|---|
 | `Tab / Shift+Tab (↑ / ↓)` | Next or previous field, wrapping; the fields follow the format. The dialog opens on Path, and the arrows move from there |
-| `← / →` | On Format or Compression: the previous or next value (h/l too). On Include header or Source file: toggle. In Path and Delimiter: move the cursor |
-| `Space` | Toggle a checkbox (Include header, Source file); on Format or Compression, the next value, wrapping |
+| `← / →` | On Format or Compression: the previous or next value, along the Format row (h/l too). On Header or Source file: toggle. In Path and Delimiter: move the cursor |
+| `Space` | Toggle a checkbox (Header, Source file); on Format or Compression, the next value, wrapping |
 | `Ctrl+P / Ctrl+N` | In the path field: the paths exported to before, earlier or later (↑ and ↓ move between fields) |
 | `Enter` | Export, from anywhere in the form. On a blank path the form says "Enter a file path." instead of exporting |
 | `Esc` | Close without exporting |

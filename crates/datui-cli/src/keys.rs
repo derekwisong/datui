@@ -1157,9 +1157,9 @@ pub const SCREENS: &[Screen] = &[
                     k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous field")
                         .more("Next or previous field, wrapping; the fields follow the format. The dialog opens on Path, and the arrows move from there"),
                     k("← / →", "Change", "Step the format or compression; move the cursor")
-                        .more("On Format or Compression: the previous or next value (h/l too). On Include header or Source file: toggle. In Path and Delimiter: move the cursor"),
+                        .more("On Format or Compression: the previous or next value, along the Format row (h/l too). On Header or Source file: toggle. In Path and Delimiter: move the cursor"),
                     k("Space", "Act", "Toggle a checkbox; next format or compression")
-                        .more("Toggle a checkbox (Include header, Source file); on Format or Compression, the next value, wrapping"),
+                        .more("Toggle a checkbox (Header, Source file); on Format or Compression, the next value, wrapping"),
                     k("Ctrl+P / Ctrl+N", "History", "Earlier or later paths in the path field")
                         .more("In the path field: the paths exported to before, earlier or later (↑ and ↓ move between fields)"),
                     k("Enter", "Export", "Export, from anywhere in the form")

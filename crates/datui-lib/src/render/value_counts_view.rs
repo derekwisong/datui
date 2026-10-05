@@ -25,14 +25,7 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderCo
     }
     if app.export_modal.active {
         // The same compact dialog the table's export opens.
-        let width = (area.width * 3 / 4).min(66);
-        let height = 13.min(area.height);
-        let dialog = Rect {
-            x: area.x + area.width.saturating_sub(width) / 2,
-            y: area.y + area.height.saturating_sub(height) / 2,
-            width,
-            height,
-        };
+        let dialog = crate::widgets::export::dialog_area(area);
         crate::widgets::export::render_export_modal(dialog, buf, &mut app.export_modal, ctx);
     }
 }

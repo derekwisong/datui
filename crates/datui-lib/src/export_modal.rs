@@ -32,7 +32,7 @@ impl ExportFormat {
         Self::Avro,
     ];
 
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Csv => "CSV",
             Self::Tsv => "TSV",
@@ -486,6 +486,29 @@ mod tests {
         modal.path_input.set_value("out.csv");
         modal.sync_format_to_path();
         assert_eq!(modal.csv_compression, Some(CompressionFormat::Gzip));
+    }
+
+    /// A field the new format does not show never keeps focus: stepping the
+    /// format settles it on one that is shown.
+    #[test]
+    fn focus_stays_on_a_shown_field_as_the_format_steps() {
+        let mut modal = ExportModal::new();
+        for format in ExportFormat::ALL {
+            modal.selected_format = format;
+            for field in modal.focus_order() {
+                modal.selected_format = format;
+                crate::form::Form::set_focused(&mut modal, field);
+                for delta in [1, -1, 1, 1] {
+                    modal.step_format(delta);
+                    assert!(
+                        modal.focus_order().contains(&modal.focus),
+                        "{field:?} from {format:?} lands on {:?} at {:?}",
+                        modal.focus,
+                        modal.selected_format
+                    );
+                }
+            }
+        }
     }
 
     #[test]

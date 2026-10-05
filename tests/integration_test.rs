@@ -18537,7 +18537,7 @@ fn test_export_enter_applies_from_any_row() {
     for ch in out.to_str().unwrap().chars() {
         press(&mut app, KeyCode::Char(ch));
     }
-    // Walk to the Include header checkbox: Path → Delimiter → Include header.
+    // Walk to the Header checkbox: Path → Delimiter → Header.
     press(&mut app, KeyCode::Tab);
     press(&mut app, KeyCode::Tab);
     assert_eq!(app.export_modal.focus, ExportFocus::CsvIncludeHeader);
@@ -18637,6 +18637,92 @@ fn every_dialog_moves_between_fields_with_the_arrows_on_open() {
         PivotMeltFocus::MeltPattern,
         "the strategy's own row joins the walk"
     );
+}
+
+/// Export's Format is one row of its values: ← / → step along it and focus stays on
+/// it, ↓ goes to the next field the format shows, the fields follow the format, and
+/// a typed path's format extension follows too, where it names one.
+#[test]
+fn export_format_steps_along_its_row() {
+    use datui::export_modal::{ExportFocus, ExportFormat};
+    let (mut app, _rx, _tx) = open_query_filter_fixture("export_format_row.csv");
+    let format_row = |app: &mut App| {
+        let area = Rect::new(0, 0, 100, 24);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        let at = rows
+            .iter()
+            .position(|r| r.contains("Format:"))
+            .expect("a Format row");
+        (at, rows)
+    };
+
+    press(&mut app, KeyCode::Char('e'));
+    for ch in "flights.csv".chars() {
+        press(&mut app, KeyCode::Char(ch));
+    }
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.export_modal.focus, ExportFocus::FormatSelector);
+    let (at, rows) = format_row(&mut app);
+    for format in ExportFormat::ALL {
+        assert!(
+            rows[at].contains(format.as_str()),
+            "{format:?}: {}",
+            rows[at]
+        );
+    }
+
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.export_modal.selected_format, ExportFormat::Tsv);
+    assert_eq!(
+        app.export_modal.focus,
+        ExportFocus::FormatSelector,
+        "→ stays"
+    );
+    assert_eq!(app.export_modal.path_input.value(), "flights.tsv");
+    let (tsv_at, rows) = format_row(&mut app);
+    assert_eq!(tsv_at, at, "the Format row holds its place");
+    assert!(
+        !rows.iter().any(|r| r.contains("Delimiter:")),
+        "TSV says its own"
+    );
+
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.export_modal.selected_format, ExportFormat::Parquet);
+    assert_eq!(app.export_modal.path_input.value(), "flights.parquet");
+    let (parquet_at, rows) = format_row(&mut app);
+    assert_eq!(parquet_at, at);
+    for label in ["Header:", "Compression:"] {
+        assert!(!rows.iter().any(|r| r.contains(label)), "Parquet: {label}");
+    }
+    // ↓ is the path, and the next ↓ wraps past the fields Parquet does not take.
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.export_modal.focus, ExportFocus::PathInput);
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.export_modal.focus, ExportFocus::FormatSelector);
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Left);
+    assert_eq!(app.export_modal.selected_format, ExportFormat::Tsv);
+    press(&mut app, KeyCode::Up);
+    assert_eq!(
+        app.export_modal.focus,
+        ExportFocus::Compression,
+        "↑ wraps to the last field TSV shows"
+    );
+
+    // An extension of the user's own stays as typed.
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('e'));
+    for ch in "flights.dat".chars() {
+        press(&mut app, KeyCode::Char(ch));
+    }
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.export_modal.path_input.value(), "flights.dat");
 }
 
 /// Esc backs out one layer: an open picker first, then the dialog.

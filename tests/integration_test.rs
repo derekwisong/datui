@@ -25022,8 +25022,10 @@ fn test_copy_as_python_reads_one_hugging_face_split() {
             eprintln!("skipped: no .venv to run the scripts with");
             return;
         };
-        assert!(script.contains(read), "{script}");
-        assert!(!script.contains(not), "{script}");
+        // The path as written in Python, Windows' `\\` read as `/`.
+        let paths = script.replace("\\\\", "/");
+        assert!(paths.contains(read), "{script}");
+        assert!(!paths.contains(not), "{script}");
         assert_eq!(rows, view_csv(&app), "{script}");
     }
 }

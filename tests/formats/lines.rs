@@ -447,3 +447,94 @@ fn screen(app: &mut App) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+/// A large log opened from its first rows.
+fn large_log(dir: &Path, lines: usize) -> PathBuf {
+    let mut bytes = Vec::with_capacity(lines * 14);
+    for i in 1..=lines {
+        bytes.extend_from_slice(format!("line {i}\n").as_bytes());
+    }
+    write(dir, "big.log", &bytes)
+}
+
+/// Up to the first rows of `path`, the rest of its lines maybe still being indexed.
+fn open_first_rows(path: PathBuf) -> (App, mpsc::Receiver<AppEvent>) {
+    let (mut app, rx) = app();
+    let mut next = Some(AppEvent::Open(vec![path], OpenOptions::default()));
+    while app.data_table_state.is_none() || app.is_busy() {
+        match next.take() {
+            Some(event) => next = app.event(&event),
+            None => next = common::next_event(&app, &rx),
+        }
+    }
+    (app, rx)
+}
+
+/// `:N` past the lines indexed so far waits for them and then goes there, rather than
+/// stopping at the last line on hand.
+#[test]
+fn go_to_a_row_waits_for_the_lines_to_be_indexed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, rx) = open_first_rows(large_log(dir.path(), 1_500_000));
+    let _ = screen(&mut app);
+    let mut next = app.event(&AppEvent::GoToLine(1_400_000));
+    while let Some(event) = next {
+        next = app.event(&event);
+    }
+    // While the lines are still coming, the footer's progress line says how far.
+    if app.data_table_state.as_ref().unwrap().indexing().is_some() {
+        let text = screen(&mut app);
+        assert!(text.contains("lines ") && text.contains("read "), "{text}");
+    }
+    drain_events(&mut app, &rx);
+    let _ = screen(&mut app);
+    drain_events(&mut app, &rx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.selected_display_row(), Some(1_400_001));
+    let numbers = state.row_numbers_from(state.start_row(), state.visible_rows.max(1));
+    assert!(numbers.contains(&1_400_001), "{numbers:?}");
+}
+
+/// Home pauses the indexing, the table takes it up again; and the app gone, it stops
+/// for good, so nothing holds the file.
+#[test]
+fn home_pauses_the_indexing_and_the_app_gone_stops_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let lines = 1_500_000;
+    let (mut app, rx) = open_first_rows(large_log(dir.path(), lines));
+    let held = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .lines_to_index()
+        .cloned()
+        .expect("opened from its first rows");
+    app.enter_home();
+    assert_eq!(app.input_mode, InputMode::Home);
+    // Back at the table: a frame drawn takes the indexing up again.
+    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    while let Some(event) = next {
+        next = app.event(&event);
+    }
+    assert_eq!(app.input_mode, InputMode::Normal);
+    let _ = screen(&mut app);
+    drain_events(&mut app, &rx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.num_rows_if_valid(), Some(lines));
+    assert!(held.whole() && !held.indexing());
+
+    let (mut app, _rx) = open_first_rows(large_log(dir.path(), lines));
+    let held = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .lines_to_index()
+        .cloned()
+        .unwrap();
+    app.enter_home();
+    drop(app);
+    assert!(!held.indexing(), "nothing waits on a file the app let go");
+}

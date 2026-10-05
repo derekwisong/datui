@@ -329,6 +329,8 @@ pub struct DataTableState {
     view_numbered: bool,
     /// Lines still being indexed behind the first rows: the frames grow as they are.
     indexing: Option<Arc<crate::lines::Lines>>,
+    /// The lines of several files, which `#` numbers by their line in their own file.
+    numbering: Option<Arc<crate::lines::Lines>>,
     /// The dataset's row count from a sample of its footers, until it is counted.
     row_estimate: Option<crate::schema_union::RowEstimate>,
     /// The notes the lines gave when they opened, replaced once they are all indexed.
@@ -772,6 +774,9 @@ pub struct FillPlan {
     buffer_end: usize,
     num_rows: usize,
     count_known: bool,
+    /// Lines were still being indexed when the read was planned: a short read ends
+    /// where the indexing had got to, not the file.
+    indexing: bool,
     /// The rows on hand and their first row, when the fill is planned to be stitched
     /// on to them. Shared, not copied.
     held: Option<(DataFrame, usize)>,
@@ -817,6 +822,7 @@ impl FillPlan {
             buffer_end: self.buffer_end,
             num_rows: self.num_rows,
             count_known: self.count_known,
+            indexing: self.indexing,
         }
     }
 
@@ -1012,6 +1018,8 @@ pub struct OpenFacts {
     pub units: Vec<(String, String)>,
     /// Lines still being indexed behind the first rows: the frames grow as they are.
     pub indexing: Option<Arc<crate::lines::Lines>>,
+    /// The lines of several files, which `#` numbers by their line in their own file.
+    pub numbering: Option<Arc<crate::lines::Lines>>,
 }
 
 /// The footers' account of a dataset of many files.
@@ -1118,6 +1126,8 @@ pub struct CollectResult {
     num_rows: usize,
     /// See `CollectRequest::count_known`.
     count_known: bool,
+    /// See `FillPlan::indexing`.
+    indexing: bool,
 }
 
 impl CollectResult {
@@ -1995,6 +2005,7 @@ impl DataTableState {
             source_rows_at_open,
             view_numbered: false,
             indexing: None,
+            numbering: None,
             row_estimate: None,
             indexing_notes: Vec::new(),
             indexing_guessed: false,
@@ -2164,6 +2175,7 @@ impl DataTableState {
             source_rows_at_open,
             view_numbered: false,
             indexing: None,
+            numbering: None,
             row_estimate: None,
             indexing_notes: Vec::new(),
             indexing_guessed: false,
@@ -2253,7 +2265,9 @@ impl DataTableState {
             records,
             units,
             indexing,
+            numbering,
         } = facts;
+        self.numbering = numbering;
         debug_assert!(
             self.is_pristine(),
             "an open's facts are for the data as loaded"
@@ -3460,8 +3474,18 @@ impl DataTableState {
     fn wants_view_numbers(&self) -> bool {
         // A followed file's view is read from a mark, where a row index would count
         // from the mark rather than the file's start.
+        // Nor one in a store or of many files, where a row index between the scan and
+        // the filter would read every file; nor past what a row index counts to.
+        let too_many = self
+            .pristine_rows
+            .or(self.num_rows_if_valid())
+            .is_some_and(|rows| rows > crate::row_index::MAX_ROWS);
         self.scan_is_the_root()
             && self.follow.is_none()
+            && !self.remote_source
+            && self.remote_files.is_none()
+            && self.parquet_count_dir.is_none()
+            && !too_many
             && !self.drift_column_present
             && !self.source_rows_at_open
             && self.pushed_view().is_none()
@@ -5450,6 +5474,7 @@ impl DataTableState {
             buffer_end,
             num_rows,
             count_known,
+            indexing: self.indexing().is_some(),
             held,
             view_start: self.start_row,
             view_len: self.visible_rows,
@@ -5470,6 +5495,7 @@ impl DataTableState {
             buffer_end,
             num_rows,
             count_known,
+            indexing,
         } = result;
         let requested_rows = buffer_end.saturating_sub(buffer_start);
 
@@ -5479,6 +5505,7 @@ impl DataTableState {
         } else if returned_rows < requested_rows
             && (buffer_start == 0 || returned_rows > 0)
             // Lines still being indexed end where the indexing has got to, not the file.
+            && !indexing
             && self.indexing().is_none()
         {
             // Short read: the slice ran off the end, so we now know the exact total
@@ -5956,6 +5983,12 @@ impl DataTableState {
         self.indexing.as_ref().filter(|lines| lines.indexing())
     }
 
+    /// The lines this dataset opened from in part, until it has been told they are all
+    /// in, though their indexing is paused: what an indexing thread works on.
+    pub fn lines_to_index(&self) -> Option<&Arc<crate::lines::Lines>> {
+        self.indexing.as_ref()
+    }
+
     /// The dataset's row count from a sample of its footers, while the frame is the
     /// dataset as loaded and its count is not known. `pass` is the estimate of the
     /// footer pass still reading, which the dataset has not been given yet.
@@ -5990,11 +6023,20 @@ impl DataTableState {
     /// Whether `#` is on for this dataset when the config leaves it to the format:
     /// text and logs, whose rows carry their place in the file.
     pub fn numbered_by_default(&self) -> bool {
-        self.source_rows_at_open
-            || matches!(
-                self.read_as,
-                Some(crate::FileFormat::Text | crate::FileFormat::Journal)
-            )
+        matches!(
+            self.read_as,
+            Some(crate::FileFormat::Text | crate::FileFormat::Journal)
+        )
+    }
+
+    /// Whether `#` is on and numbers the rows by their place in the view, because
+    /// the view's rows do not carry their place in the source: a sorted or filtered
+    /// view of data in a store, of many files, or too large to number.
+    pub fn row_numbers_count_the_view(&self) -> bool {
+        self.row_numbers
+            && !self.carries_source_rows()
+            && self.scan_is_the_root()
+            && (!self.filters.is_empty() || !self.sort_columns.is_empty() || !self.sort_ascending)
     }
 
     /// Every line is indexed, `rows` of them: the count of the lines in order, and the
@@ -6009,6 +6051,14 @@ impl DataTableState {
         let opened = std::mem::take(&mut self.indexing_notes);
         self.open_notes.retain(|n| !opened.contains(n));
         self.open_notes.extend(notes);
+        // A file that shrank has no count to give: the lines so far are not all of it.
+        if lines.shrank() {
+            self.open_notes.push(crate::text_formats::note(
+                crate::lines::SHRANK.to_string(),
+                "the file".to_string(),
+            ));
+            return true;
+        }
         // The "of" in `417 of 1,000` under a filter.
         self.pristine_rows = Some(rows);
         if self.is_pristine() {
@@ -6822,10 +6872,17 @@ impl DataTableState {
                 let len = rows.min(column.len().saturating_sub(offset));
                 let slice = column.slice(offset as i64, len);
                 let places = slice.u32().ok()?;
+                // Several files' lines are numbered in their own file.
+                let place = |p: usize| {
+                    self.numbering
+                        .as_ref()
+                        .and_then(|lines| lines.line_in_file(p))
+                        .unwrap_or(p)
+                };
                 Some(
                     places
                         .iter()
-                        .map(|p| p.map(|p| p as usize + self.row_start_index))
+                        .map(|p| p.map(|p| place(p as usize) + self.row_start_index))
                         .collect::<Vec<_>>(),
                 )
             });

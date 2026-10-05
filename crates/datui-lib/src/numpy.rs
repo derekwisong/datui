@@ -1338,6 +1338,7 @@ fn opened(
             .collect(),
         units: Vec::new(),
         indexing: None,
+        numbering: None,
     }
 }
 

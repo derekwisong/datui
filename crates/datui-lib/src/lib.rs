@@ -1194,8 +1194,14 @@ pub struct App {
     /// End was pressed while a text file's lines were still being indexed: jump when
     /// the last of them is, for that dataset alone.
     end_when_indexed: Option<u64>,
-    /// Stops the indexing of the dataset on screen's lines when it goes.
+    /// Stops the indexing thread of the dataset on screen's lines.
     indexing_stop: Arc<std::sync::atomic::AtomicBool>,
+    /// The lines being indexed, until they all are.
+    indexing_lines: Option<Arc<crate::lines::Lines>>,
+    /// The indexing waits while home is up.
+    indexing_paused: bool,
+    /// `:N` past the lines indexed so far, for that dataset: gone to once they all are.
+    goto_when_indexed: Option<(u64, usize)>,
     /// The last count started: what it has read of the footers, and its stop (Esc).
     count_progress: Arc<crate::schema_union::FooterProgress>,
     /// The dataset (`dataset_generation`) an exact count was asked for (`c` in the
@@ -4181,6 +4187,10 @@ impl App {
     /// shown because two parts of the screen show it, they are painted at different
     /// moments, and a background thread is moving it between them.
     fn begin_frame(&mut self) {
+        // Back from home to the table whose lines were being indexed.
+        if self.indexing_paused && self.input_mode != InputMode::Home {
+            self.index_lines();
+        }
         self.footers_this_frame = self.footer_progress().reading();
         self.listed_this_frame = self.footer_progress().listed();
         // Whatever this frame does not draw cannot be clicked.
@@ -4529,10 +4539,16 @@ impl App {
     /// Clearing the status outright would wipe whatever else is using the line — a
     /// load's phase, an export's progress — on behalf of a key pressed somewhere else.
     fn take_down_the_counting_status(&mut self) {
-        if self.status_message.as_deref() == Some(Self::COUNTING_FOR_END) {
+        if matches!(
+            self.status_message.as_deref(),
+            Some(Self::COUNTING_FOR_END | Self::INDEXING_FOR_ROW)
+        ) {
             self.status_message = None;
         }
     }
+
+    /// What the status line says while `:N` waits for the lines to be indexed.
+    const INDEXING_FOR_ROW: &'static str = "Reading lines to find the row...";
 
     /// What the status line says while an End is waiting on a row count. Named so the
     /// paths that retire such an End can take the message back down without reaching
@@ -4705,16 +4721,31 @@ impl App {
     /// the table works meanwhile, and a read of every line waits for them on its own
     /// worker. The last dataset's indexing, if it is still going, stops.
     fn start_indexing(&mut self) {
+        self.end_when_indexed = None;
+        self.goto_when_indexed = None;
+        self.index_lines();
+    }
+
+    /// Run the indexing of the dataset on screen's lines, if they still have lines to
+    /// index: a new dataset's, or one paused while home was up. Lines of a dataset no
+    /// longer on screen stop for good, and the reads waiting on them give up.
+    fn index_lines(&mut self) {
         use std::sync::atomic::Ordering;
         self.indexing_stop.store(true, Ordering::Relaxed);
-        self.end_when_indexed = None;
-        let Some(lines) = self
+        self.indexing_paused = false;
+        let lines = self
             .data_table_state
             .as_ref()
-            .and_then(|state| state.indexing().cloned())
-        else {
+            .and_then(|state| state.lines_to_index().cloned());
+        if let Some(old) = self.indexing_lines.take()
+            && lines.as_ref().is_none_or(|lines| !Arc::ptr_eq(lines, &old))
+        {
+            old.stop_indexing();
+        }
+        let Some(lines) = lines.filter(|lines| lines.resume_indexing()) else {
             return;
         };
+        self.indexing_lines = Some(lines.clone());
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.indexing_stop = stop.clone();
         let generation = self.dataset_generation;
@@ -4724,9 +4755,9 @@ impl App {
             .name("datui-index".to_string())
             .spawn(move || {
                 loop {
-                    // Stopped, the reads waiting on the lines go on with what there is.
+                    // Paused or replaced: whoever stopped it says what becomes of the
+                    // reads waiting on the lines.
                     if stop.load(Ordering::Relaxed) {
-                        lines.stop_indexing();
                         return;
                     }
                     // A panic stops it where it is: the rows so far are what there is,
@@ -4745,9 +4776,20 @@ impl App {
         // waits for more.
         if spawned.is_err() {
             waiting.stop_indexing();
+            self.indexing_lines = None;
             if let Some(state) = self.data_table_state.as_mut() {
                 state.lines_indexed(waiting.rows());
             }
+        }
+    }
+
+    /// Home is up: the indexing waits, the reads waiting on it with it, until the
+    /// table is back ([`Self::begin_frame`]).
+    fn pause_indexing(&mut self) {
+        if self.indexing_lines.is_some() {
+            self.indexing_stop
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.indexing_paused = true;
         }
     }
 
@@ -4760,8 +4802,20 @@ impl App {
         let Some(state) = self.data_table_state.as_mut() else {
             return;
         };
+        self.indexing_lines = None;
         if !state.lines_indexed(rows) {
+            // Set aside while the lines finished (the quality evidence view): they
+            // land on the dataset that comes back.
+            if let Some(held) = self.quality_evidence_return.as_mut() {
+                held.lines_indexed(rows);
+            }
             return;
+        }
+        if let Some((goto, row)) = self.goto_when_indexed.take()
+            && goto == generation
+        {
+            self.take_down_the_counting_status();
+            let _ = self.events.send(AppEvent::GoToLine(row));
         }
         if self.end_when_indexed.take() == Some(generation) {
             self.take_down_the_counting_status();
@@ -5866,6 +5920,9 @@ impl App {
             end_when_the_footers_land: None,
             end_when_indexed: None,
             indexing_stop: Arc::default(),
+            indexing_lines: None,
+            indexing_paused: false,
+            goto_when_indexed: None,
             count_progress: Arc::default(),
             exact_count_asked: None,
             count_after_stop: None,
@@ -7061,6 +7118,7 @@ impl App {
     }
 
     pub fn enter_home(&mut self) {
+        self.pause_indexing();
         if self.return_from_quality_evidence(false) {
             self.analysis_modal.close();
         }
@@ -10186,6 +10244,7 @@ impl App {
             facts.open_notes.extend(opened.notes.iter().cloned());
             facts.units = opened.units.clone();
             facts.indexing = opened.indexing.clone();
+            facts.numbering = opened.numbering.clone();
         }
         if let Some(sqlite) = &options.sqlite {
             facts.pushdown = Some(sqlite.pushdown.clone());
@@ -13349,6 +13408,19 @@ impl App {
             AppEvent::DoScrollHalfUp => self.handle_scroll(|s| s.half_page_up()),
             AppEvent::GoToLine(n) => {
                 let n = *n;
+                // Past the lines indexed so far: gone to once they all are.
+                if let Some(state) = self.data_table_state.as_ref()
+                    && state.indexing().is_some()
+                    && (n >= state.num_rows()
+                        || state.changes_rows()
+                        || !state.view_sort_columns().is_empty()
+                        || !state.view_sort_ascending())
+                {
+                    self.goto_when_indexed = Some((self.dataset_generation, n));
+                    self.status_message = Some(Self::INDEXING_FOR_ROW.to_string());
+                    self.busy = false;
+                    return None;
+                }
                 self.handle_scroll(|s| s.scroll_to_row_centered(n))
             }
             AppEvent::AnalysisChunk => {
@@ -18143,6 +18215,13 @@ impl Drop for App {
         // every exit: a normal quit, an error return, an unwind from a panic, and the
         // Python binding calling `run` again in the same process.
         self.footer_progress.cancel();
+        // The indexing stops, and the reads waiting on it give up, so nothing holds
+        // the file once the app is gone (the Python binding runs on in the process).
+        self.indexing_stop
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(lines) = self.indexing_lines.take() {
+            lines.stop_indexing();
+        }
     }
 }
 

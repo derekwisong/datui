@@ -190,6 +190,9 @@ pub struct Opened {
     pub units: Vec<(String, String)>,
     /// Lines still being indexed behind the first rows: the dataset indexes the rest.
     pub indexing: Option<std::sync::Arc<crate::lines::Lines>>,
+    /// The lines of several files, whose rows `#` numbers by their line in their own
+    /// file.
+    pub numbering: Option<std::sync::Arc<crate::lines::Lines>>,
 }
 
 impl std::fmt::Debug for Opened {

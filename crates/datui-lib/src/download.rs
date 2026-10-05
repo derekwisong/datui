@@ -25,6 +25,22 @@ pub struct TempDownload(Arc<Held>);
 struct Held {
     path: tempfile::TempPath,
     _claim: Option<Claim>,
+    /// A shared lock on the file while it is held, so another datui sweeping old
+    /// spools ([`crate::stdin`]) can tell a live one. Unix only: a lock there is
+    /// advisory, and reads and writes go on beside it.
+    #[cfg(unix)]
+    _lock: Option<std::fs::File>,
+}
+
+/// Whether another process holds the file at `path` ([`Held`]'s lock). A file that
+/// will not open is taken for held.
+#[cfg(unix)]
+pub(crate) fn held_elsewhere(path: &Path) -> bool {
+    use fs2::FileExt;
+    match std::fs::File::open(path) {
+        Ok(file) => file.try_lock_exclusive().is_err(),
+        Err(_) => true,
+    }
 }
 
 impl TempDownload {
@@ -49,9 +65,16 @@ impl TempDownload {
     }
 
     pub(crate) fn held(file: tempfile::NamedTempFile, claim: Option<Claim>) -> TempDownload {
+        #[cfg(unix)]
+        let lock = file.as_file().try_clone().ok().filter(|lock| {
+            use fs2::FileExt;
+            FileExt::try_lock_shared(lock).is_ok()
+        });
         TempDownload(Arc::new(Held {
             path: file.into_temp_path(),
             _claim: claim,
+            #[cfg(unix)]
+            _lock: lock,
         }))
     }
 

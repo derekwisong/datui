@@ -212,7 +212,13 @@ fn forget_old_spools(dir: &Path) {
             .ok()
             .and_then(|at| at.elapsed().ok())
             .is_some_and(|age| age > OLD_SPOOL);
-        if old && entry.path().extension().is_some_and(|e| e == "tmp") {
+        // Not one a live datui still holds, however long it has been reading.
+        #[cfg(unix)]
+        let free = !crate::download::held_elsewhere(&entry.path());
+        // Elsewhere a file held open cannot be removed, and the removal fails.
+        #[cfg(not(unix))]
+        let free = true;
+        if old && free && entry.path().extension().is_some_and(|e| e == "tmp") {
             let _ = std::fs::remove_file(entry.path());
         }
     }

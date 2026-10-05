@@ -1118,12 +1118,14 @@ impl DatasetFiles for LocalFiles {
                 .duration_since(std::time::UNIX_EPOCH)
                 .ok()?
                 .as_nanos() as u64;
-            Some((meta.len(), modified))
+            Some((meta.len(), modified, local_tag(&meta)))
         });
         let mut whole = true;
         for (file, stat) in files.iter_mut().zip(stats) {
             match stat {
-                Some((size, stamp)) => (file.size, file.stamp) = (size, stamp),
+                Some((size, stamp, tag)) => {
+                    (file.size, file.stamp, file.etag) = (size, stamp, tag);
+                }
                 None => whole = false,
             }
         }
@@ -1190,6 +1192,26 @@ impl DatasetFiles for LocalFiles {
             .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
             .map_or(0, |d| d.as_secs())
     }
+}
+
+/// A local file's own tag, as a store's ETag is: its inode and when its inode last
+/// changed, which a rewrite moves on a filesystem whose modification times are too
+/// coarse to see a rewrite within the same second. `None` where there is none.
+#[cfg(unix)]
+fn local_tag(meta: &std::fs::Metadata) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    Some(format!(
+        "{}:{}:{}.{}",
+        meta.dev(),
+        meta.ino(),
+        meta.ctime(),
+        meta.ctime_nsec()
+    ))
+}
+
+#[cfg(not(unix))]
+fn local_tag(_meta: &std::fs::Metadata) -> Option<String> {
+    None
 }
 
 /// One local Parquet file's footer, with each column's width.

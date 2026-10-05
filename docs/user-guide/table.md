@@ -68,7 +68,9 @@ find reading past the rows on hand (`rows 1,200,000 / 3,475,226` with a bar and
 them to the format (`"auto"`); `display.row_numbers_start` is the first
 row's number. A sorted or filtered view of a scanned file numbers its rows
 only while <kbd>#</kbd> is on, because the numbering keeps the filter from
-being pushed into the scan.
+being pushed into the scan. A dataset in a store, or of many files, is not
+numbered that way at all: there <kbd>#</kbd> counts the view's rows under a
+sort or filter, and the footer says `# counts the view`.
 
 ## Sort by a column
 

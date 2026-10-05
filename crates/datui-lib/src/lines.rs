@@ -278,7 +278,15 @@ pub struct Lines {
     /// The one file's lines are still being indexed, behind the first rows, and what
     /// a read of every line waits on until they are.
     indexing: (std::sync::Mutex<bool>, std::sync::Condvar),
+    /// One indexing step at a time: a paused indexing taken up again may start its
+    /// thread while the last one finishes its step.
+    stepping: std::sync::Mutex<()>,
+    /// The file came back shorter than it was mapped while it was indexed.
+    shrank: std::sync::atomic::AtomicBool,
 }
+
+/// What a read of every line says when the file shrank as it was indexed.
+pub const SHRANK: &str = "the file shrank while it was indexed; open it again to read it";
 
 impl Lines {
     /// `bytes` read as lines; `name` is what the `file` column says when there are
@@ -313,7 +321,49 @@ impl Lines {
             files,
             schema: Arc::new(schema(several)),
             indexing: (indexing.into(), Default::default()),
+            stepping: Default::default(),
+            shrank: Default::default(),
         }
+    }
+
+    /// Whether every line of every file is indexed.
+    pub fn whole(&self) -> bool {
+        self.files.iter().all(|f| {
+            let m = f.mapped.read().unwrap_or_else(|e| e.into_inner());
+            m.index.whole(m.bytes.as_slice())
+        })
+    }
+
+    /// Whether the file came back shorter than it was mapped while it was indexed.
+    pub fn shrank(&self) -> bool {
+        self.shrank.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Indexing set aside ([`Self::stop_indexing`] was not called: a pause leaves
+    /// the reads waiting) is taken up again: whether there is more to index.
+    pub fn resume_indexing(&self) -> bool {
+        let more = !self.whole() && !self.shrank();
+        *self.indexing.0.lock().unwrap_or_else(|e| e.into_inner()) = more;
+        more
+    }
+
+    /// Which line of its own file the row at `place` is, from 0: the row's place in
+    /// the table, for one file.
+    pub fn line_in_file(&self, place: usize) -> Option<usize> {
+        let mut start = 0;
+        for f in &self.files {
+            let rows = f.rows();
+            if place < start + rows {
+                return Some(place - start);
+            }
+            start += rows;
+        }
+        None
+    }
+
+    /// Whether the rows are of several files, each numbered on its own.
+    pub fn several(&self) -> bool {
+        self.files.len() > 1
     }
 
     /// Whether lines are still being indexed behind the first rows.
@@ -328,16 +378,30 @@ impl Lines {
         self.indexing.1.notify_all();
     }
 
-    /// Wait until no more lines will be indexed. On a worker, never the UI thread.
-    fn wait_indexed(&self) {
+    /// Wait until every line is indexed, on a worker, never the UI thread: `Err` when
+    /// they will not all be (the indexing stopped, or the file shrank), or the job
+    /// waiting was superseded and its answer is not wanted.
+    fn wait_indexed(&self) -> PolarsResult<()> {
         let mut indexing = self.indexing.0.lock().unwrap_or_else(|e| e.into_inner());
         while *indexing {
+            polars_ensure!(
+                !crate::jobs::superseded(),
+                ComputeError: "the read is no longer wanted"
+            );
             indexing = self
                 .indexing
                 .1
-                .wait(indexing)
-                .unwrap_or_else(|e| e.into_inner());
+                .wait_timeout(indexing, std::time::Duration::from_millis(100))
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
         }
+        drop(indexing);
+        polars_ensure!(!self.shrank(), ComputeError: "{SHRANK}");
+        polars_ensure!(
+            self.whole(),
+            ComputeError: "the file's lines were not all indexed; open it again"
+        );
+        Ok(())
     }
 
     /// Index at least `budget` more bytes of a file indexed in part. Returns whether
@@ -347,16 +411,22 @@ impl Lines {
         if !self.indexing() {
             return true;
         }
+        let _step = self.stepping.lock().unwrap_or_else(|e| e.into_inner());
         let whole = self.files.iter().all(|f| {
             // Read with no lock held, so rows go on being read meanwhile, then taken
             // in under the write lock: this is the only writer of a file not followed.
             let (bytes, mut step) = {
                 let mapped = f.mapped.read().unwrap_or_else(|e| e.into_inner());
-                // A file cut short meanwhile is not read past its end: the lines so far
-                // are what there is.
-                if mapped.index.whole(mapped.bytes.as_slice())
-                    || mapped.bytes.still_whole().is_err()
-                {
+                if mapped.index.whole(mapped.bytes.as_slice()) {
+                    return true;
+                }
+                // A file cut short meanwhile is not read past its end, and the lines
+                // so far are not taken for all of them. Checked before every step: a
+                // truncation inside one step can still fault the map (SIGBUS), which
+                // only a copy of the file would rule out.
+                if mapped.bytes.still_whole().is_err() {
+                    self.shrank
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
                     return true;
                 }
                 let bytes = mapped.bytes.clone();
@@ -461,7 +531,7 @@ impl Lines {
             let lines = self.clone();
             let height = DataFrame::empty_with_height(0).lazy().map(
                 move |_| {
-                    lines.wait_indexed();
+                    lines.wait_indexed()?;
                     Ok(DataFrame::empty_with_height(lines.rows()))
                 },
                 AllowedOptimizations::empty(),
@@ -634,6 +704,7 @@ pub(crate) fn opened(lines: &Arc<Lines>, options: &crate::OpenOptions) -> crate:
         }),
         notes: notes(lines, options.format_guessed),
         indexing: lines.indexing().then(|| lines.clone()),
+        numbering: lines.several().then(|| lines.clone()),
         ..Default::default()
     }
 }
@@ -1009,6 +1080,91 @@ mod tests {
                 assert_eq!(index.line(&bytes, i), whole.line(&bytes, i), "{step} {i}");
             }
         }
+    }
+
+    /// Indexing stopped before every line is in (the dataset went) gives a read
+    /// waiting on it an error, not the lines so far as all of them; paused and taken up
+    /// again, it reads on.
+    #[test]
+    fn a_stopped_index_is_no_count_and_a_paused_one_reads_on() {
+        let bytes: Vec<u8> = (0..50_000u32)
+            .flat_map(|i| format!("{i}\n").into_bytes())
+            .collect();
+        let lines = Arc::new(Lines::from_bytes_first(
+            vec![("a.log".into(), Arc::new(Bytes::Owned(bytes)))],
+            1000,
+        ));
+        let lf = lines.lazy();
+        let waiting = {
+            let lf = lf.clone();
+            std::thread::spawn(move || lf.collect())
+        };
+        // Paused: the flag stays, the read waits; taken up again, it reads on.
+        assert!(!lines.index_more(1000));
+        assert!(lines.resume_indexing());
+        while !lines.index_more(100_000) {}
+        assert_eq!(waiting.join().unwrap().unwrap().height(), 50_000);
+
+        let bytes: Vec<u8> = (0..50_000u32)
+            .flat_map(|i| format!("{i}\n").into_bytes())
+            .collect();
+        let lines = Arc::new(Lines::from_bytes_first(
+            vec![("a.log".into(), Arc::new(Bytes::Owned(bytes)))],
+            1000,
+        ));
+        let lf = lines.lazy();
+        let waiting = std::thread::spawn(move || lf.collect());
+        lines.stop_indexing();
+        let error = waiting.join().unwrap().unwrap_err().to_string();
+        assert!(error.contains("not all indexed"), "{error}");
+        assert!(!lines.resume_indexing() || !lines.whole());
+    }
+
+    /// A file that shrinks while it is indexed stops the indexing where it is, and a
+    /// read of every line says so rather than taking the lines so far for all.
+    #[test]
+    fn a_file_that_shrinks_while_indexed_has_no_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rotated.log");
+        let bytes: Vec<u8> = (0..50_000u32)
+            .flat_map(|i| format!("{i}\n").into_bytes())
+            .collect();
+        std::fs::write(&path, &bytes).unwrap();
+        let lines = Arc::new(Lines::open_first(std::slice::from_ref(&path), false, 1000).unwrap());
+        assert!(lines.indexing());
+        // copytruncate, between two steps.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(10)
+            .unwrap();
+        assert!(lines.index_more(100_000), "the indexing stops");
+        assert!(lines.shrank());
+        let error = lines.lazy().collect().unwrap_err().to_string();
+        // Whichever reads first says the file is shorter than it was.
+        assert!(
+            error.contains(SHRANK) || error.contains("shorter"),
+            "{error}"
+        );
+    }
+
+    /// Several files' rows are numbered by their line in their own file.
+    #[test]
+    fn several_files_number_their_own_lines() {
+        let lines = Lines::from_bytes(vec![
+            ("a.log".into(), Arc::new(Bytes::Owned(b"1\n2\n".to_vec()))),
+            (
+                "b.log".into(),
+                Arc::new(Bytes::Owned(b"3\n4\n5\n".to_vec())),
+            ),
+        ]);
+        assert!(lines.several());
+        let numbered: Vec<Option<usize>> = (0..6).map(|p| lines.line_in_file(p)).collect();
+        assert_eq!(
+            numbered,
+            [Some(0), Some(1), Some(0), Some(1), Some(2), None]
+        );
     }
 
     /// A large file shows its first lines indexed, and indexes the rest in steps; its

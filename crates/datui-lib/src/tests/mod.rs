@@ -651,6 +651,46 @@ fn a_sampled_dataset_shows_an_estimate_until_it_is_counted() {
     assert!(app.row_estimate().is_none());
 }
 
+/// `#` over a sort numbers the rows by their place in the source where a row index
+/// costs nothing; on a dataset in a store it would keep the filters out of the scan,
+/// so `#` counts the view there and the footer says so.
+#[test]
+fn row_numbers_over_a_sort_fall_back_to_the_view_in_a_store() {
+    use crate::widgets::datatable::{DataTableState, OpenFacts};
+    use polars::prelude::*;
+
+    let frame = || df!("v" => [3i64, 1, 2]).unwrap().lazy();
+    let open = |remote: bool| {
+        let mut state = DataTableState::from_lazyframe(frame(), &crate::OpenOptions::default())
+            .unwrap()
+            .with_open(OpenFacts {
+                remote_source: remote,
+                ..Default::default()
+            });
+        state.sort_by(vec!["v".to_string()], vec![false]);
+        state
+    };
+
+    let mut local = open(false);
+    assert!(local.toggle_row_numbers(), "numbered over the sort");
+    assert!(local.carries_source_rows());
+    assert!(!local.row_numbers_count_the_view());
+
+    let mut remote = open(true);
+    assert!(
+        !remote.toggle_row_numbers(),
+        "no row index under a store's filters"
+    );
+    assert!(remote.row_numbers());
+    assert!(!remote.carries_source_rows());
+    assert!(remote.row_numbers_count_the_view());
+    assert_eq!(
+        remote.row_numbers_from(0, 3),
+        [1, 2, 3],
+        "the view's places"
+    );
+}
+
 /// Every key the busy classifier lets through must read nothing.
 ///
 /// `key_acts_while_busy` admits column scroll and help while other work is in

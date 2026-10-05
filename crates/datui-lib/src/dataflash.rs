@@ -561,6 +561,7 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<Open> {
             .collect(),
         units,
         indexing: None,
+        numbering: None,
     };
     Ok(Open::Table {
         lf: Box::new(records.lazy()),

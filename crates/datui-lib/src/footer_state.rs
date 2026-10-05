@@ -93,6 +93,10 @@ impl App {
             footer.query_key = Some(":");
             footer.view_key = Some("s");
         }
+        // `#` is the view's place where the rows cannot say theirs in the source.
+        if state.row_numbers_count_the_view() {
+            footer.notes.push(("# counts the view".to_string(), false));
+        }
         if let Some(mark) = self.find_mark() {
             footer.notes.push((mark, false));
         }

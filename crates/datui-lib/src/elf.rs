@@ -370,6 +370,7 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<(LazyFrame, crate::memb
             notes,
             units: Vec::new(),
             indexing: None,
+            numbering: None,
         },
     ))
 }

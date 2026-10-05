@@ -303,6 +303,10 @@ write, keeps the dialog open with the reason under the fields.
 | **Style** | **Light**: white, with colors that stay apart for color-blind readers and in print. **Dark**: the terminal theme's colors. **Transparent**: Light with no background |
 | **Size** | A preset, below; typing **Width** or **Height** makes it **Custom** |
 | **Legend** | **Line ends**: each line named at its right end, the default for line and KDE charts (other charts take a legend at the top right). A corner, or **Off**. A chart whose legend is off exports with it off |
+| **Opacity** | Scatter: **Auto** (the default) draws points opaque up to 1,000 and fainter as there are more, down to 15% from 100,000, so a dense cloud shows where it is densest; or **100%**, **50%**, **20%** |
+| **Point size** | Scatter: **Small**, **Medium** (the default) or **Large**, 1.6, 2.4 or 3.6 pt |
+| **Line width** | Line, colored or not: **Thin**, **Normal** (the default) or **Bold**, 1, 1.5 or 2.5 pt; the legend's swatches follow |
+| **Y from zero** | Line: **On** takes zero into the Y axis. It starts as the chart's **Y from zero** option. Bars always start at zero |
 | **Title**, **Description** | Over the chart. The description starts as the title row's words, how the chart is made: `Mean by month, colored by carrier`; empty when it has none. The Y column is named over the plot's left edge, as on screen |
 | **Notes** | Under the chart, after what the chart says about its rows (a sample, values a range left out) |
 | **Source**, **Byline** | The last line: `Source: …` and the byline. Source starts from the catalog entry when the dataset came from one: its name, publisher and license |

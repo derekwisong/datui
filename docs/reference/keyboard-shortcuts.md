@@ -457,8 +457,8 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `Tab / Shift+Tab (↑ / ↓)` | Next or previous field: Path, Format, Style, Size, Width, Height, Legend, Title, Description, Notes, Source, Byline |
-| `← / →` | Step the format (PNG, SVG, PDF), the style (Light, Dark, Transparent), the size (Slide 16:9, Document, Square, Single column, Double column, Custom) or the legend (line ends, a corner, off). Typing a width or height makes the size Custom |
+| `Tab / Shift+Tab (↑ / ↓)` | Next or previous field: Path, Format, Style, Size, Width, Height, Legend, the marks (Opacity and Point size for a scatter, Line width for a line, Y from zero for a line), Title, Description, Notes, Source, Byline |
+| `← / →` | Step the format (PNG, SVG, PDF), the style (Light, Dark, Transparent), the size (Slide 16:9, Document, Square, Single column, Double column, Custom), the legend (line ends, a corner, off), a scatter's point opacity (Auto, 100%, 50%, 20%) and size (Small, Medium, Large), a line's width (Thin, Normal, Bold), or Y from zero. Typing a width or height makes the size Custom |
 | `Ctrl+P / Ctrl+N` | Earlier or later paths in the path field |
 | `Enter` | Export, from anywhere in the dialog. A path ending .png, .svg or .pdf takes that format; any other gets the format's extension after it. An existing file asks Overwrite / No, starting on No; ←/→ (h/l) or Tab pick, Enter confirms, and declining returns to the filled dialog |
 | `Esc` | Back to the chart |

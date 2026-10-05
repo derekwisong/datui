@@ -956,9 +956,9 @@ pub const SCREENS: &[Screen] = &[
                 name: "Export dialog",
                 keys: &[
                     k("Tab / Shift+Tab (↑ / ↓)", "Next", "Path, format, style, size, legend, words")
-                        .more("Next or previous field: Path, Format, Style, Size, Width, Height, Legend, Title, Description, Notes, Source, Byline"),
-                    k("← / →", "Change", "Step the format, style, size or legend")
-                        .more("Step the format (PNG, SVG, PDF), the style (Light, Dark, Transparent), the size (Slide 16:9, Document, Square, Single column, Double column, Custom) or the legend (line ends, a corner, off). Typing a width or height makes the size Custom"),
+                        .more("Next or previous field: Path, Format, Style, Size, Width, Height, Legend, the marks (Opacity and Point size for a scatter, Line width for a line, Y from zero for a line), Title, Description, Notes, Source, Byline"),
+                    k("← / →", "Change", "Step the format, style, size, legend or marks")
+                        .more("Step the format (PNG, SVG, PDF), the style (Light, Dark, Transparent), the size (Slide 16:9, Document, Square, Single column, Double column, Custom), the legend (line ends, a corner, off), a scatter's point opacity (Auto, 100%, 50%, 20%) and size (Small, Medium, Large), a line's width (Thin, Normal, Bold), or Y from zero. Typing a width or height makes the size Custom"),
                     k("Ctrl+P / Ctrl+N", "History", "Earlier or later paths in the path field"),
                     k("Enter", "Export", "Export, from anywhere in the dialog")
                         .more("Export, from anywhere in the dialog. A path ending .png, .svg or .pdf takes that format; any other gets the format's extension after it. An existing file asks Overwrite / No, starting on No; ←/→ (h/l) or Tab pick, Enter confirms, and declining returns to the filled dialog"),

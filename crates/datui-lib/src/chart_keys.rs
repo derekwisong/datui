@@ -193,6 +193,8 @@ impl App {
                     .map(|(_, entry)| entry.credit())
                     .unwrap_or_default(),
                 legend: self.chart_modal.show_legend,
+                mark: self.chart_modal.mark(),
+                y_from_zero: self.chart_modal.y_starts_at_zero,
             },
         );
     }
@@ -278,6 +280,10 @@ impl App {
             notes: modal.notes_input.value().trim().to_string(),
             source: modal.source_input.value().trim().to_string(),
             byline: modal.byline_input.value().trim().to_string(),
+            point_opacity: modal.point_opacity,
+            point_size: modal.point_size,
+            line_width: modal.line_width,
+            y_from_zero: modal.y_from_zero_option(),
         };
         self.chart_export_modal
             .path_input

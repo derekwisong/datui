@@ -9,9 +9,11 @@ use ratatui::layout::Rect;
 /// The value column's offset: past the longest label, "Description:", plus air.
 const LABEL_WIDTH: u16 = 14;
 
-/// Rows the dialog wants: the fields, a blank and the status line, the blank row
-/// and the footer, the border.
-pub const HEIGHT: u16 = FIELDS.len() as u16 + STATUS_ROWS + 4;
+/// Rows the dialog wants: the fields the chart's type shows, a blank and the
+/// status line, the blank row and the footer, the border.
+pub fn height(modal: &ChartExportModal) -> u16 {
+    modal.shown().len() as u16 + STATUS_ROWS + 4
+}
 
 /// The blank under the fields and the status line, which says why Enter did not
 /// write. Kept whether or not there is a reason, so nothing moves when one comes.
@@ -77,15 +79,13 @@ pub fn render_chart_export_modal(
     }
     // Overlays scroll inside a capped frame: keep the focused field on screen.
     let rows = (content.height - status_rows) as usize;
-    let at = FIELDS.iter().position(|f| *f == focus).unwrap_or(0);
+    let shown = modal.shown();
+    let at = shown.iter().position(|f| *f == focus).unwrap_or(0);
     let first = at.saturating_sub(rows.saturating_sub(1));
-    for (i, field) in FIELDS.iter().enumerate().skip(first).take(rows) {
-        let value = match field {
-            ChartExportFocus::Format => FormValue::Choice(modal.format.as_str()),
-            ChartExportFocus::Style => FormValue::Choice(modal.style.label()),
-            ChartExportFocus::Size => FormValue::Choice(modal.size.label()),
-            ChartExportFocus::Legend => FormValue::Choice(modal.legend.label()),
-            field => match modal.input(*field) {
+    for (i, field) in shown.iter().enumerate().skip(first).take(rows) {
+        let value = match modal.choice(*field) {
+            Some(choice) => FormValue::Choice(choice),
+            None => match modal.input(*field) {
                 Some(input) => FormValue::Input(input),
                 None => continue,
             },
@@ -135,7 +135,7 @@ mod tests {
     /// fields, no buttons.
     #[test]
     fn one_surface_with_a_row_per_field() {
-        let rows = render_rows(64, HEIGHT);
+        let rows = render_rows(64, height(&ChartExportModal::new()));
         assert!(rows[0].contains("Export Chart"), "title: {:?}", rows[0]);
         for row in &rows[1..rows.len() - 1] {
             assert!(
@@ -180,18 +180,22 @@ mod tests {
         let mut modal = ChartExportModal::new();
         modal.active = true;
         modal.error = Some("Enter a file path.".to_string());
-        let area = Rect::new(0, 0, 64, HEIGHT);
+        let area = Rect::new(0, 0, 64, height(&ChartExportModal::new()));
         let mut buf = Buffer::empty(area);
         render_chart_export_modal(area, &mut buf, &mut modal, &ctx);
-        let rows: Vec<String> = (0..HEIGHT)
+        let rows: Vec<String> = (0..height(&ChartExportModal::new()))
             .map(|y| (0..64).map(|x| buf[(x, y)].symbol().to_string()).collect())
             .collect();
         let at = rows
             .iter()
             .position(|row| row.contains("Enter a file path."));
-        assert_eq!(at, Some(usize::from(HEIGHT) - 4), "{rows:#?}");
+        assert_eq!(
+            at,
+            Some(usize::from(height(&ChartExportModal::new())) - 4),
+            "{rows:#?}"
+        );
         assert!(
-            rows[usize::from(HEIGHT) - 5]
+            rows[usize::from(height(&ChartExportModal::new())) - 5]
                 .trim_matches(['│', ' '])
                 .is_empty()
         );

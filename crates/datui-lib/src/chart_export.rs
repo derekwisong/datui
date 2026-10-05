@@ -171,6 +171,108 @@ impl LegendPlace {
     }
 }
 
+/// How opaque a scatter's points are.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PointOpacity {
+    /// Fainter as there are more points, so a dense cloud shows where it is densest.
+    #[default]
+    Auto,
+    Full,
+    Half,
+    Fifth,
+}
+
+impl PointOpacity {
+    pub const ALL: [Self; 4] = [Self::Auto, Self::Full, Self::Half, Self::Fifth];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::Full => "100%",
+            Self::Half => "50%",
+            Self::Fifth => "20%",
+        }
+    }
+
+    /// The fill opacity for a scatter of `points` points.
+    pub fn of(self, points: usize) -> f64 {
+        match self {
+            Self::Auto => auto_opacity(points),
+            Self::Full => 1.0,
+            Self::Half => 0.5,
+            Self::Fifth => 0.2,
+        }
+    }
+}
+
+/// Opaque up to 1,000 points, 0.15 from 100,000, and between them along the log of
+/// the count: each tenfold more points is drawn as much fainter.
+pub fn auto_opacity(points: usize) -> f64 {
+    const FAINTEST: f64 = 0.15;
+    let t = (((points.max(1) as f64).log10() - 3.0) / 2.0).clamp(0.0, 1.0);
+    1.0 + t * (FAINTEST - 1.0)
+}
+
+/// A scatter point's radius.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PointSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl PointSize {
+    pub const ALL: [Self; 3] = [Self::Small, Self::Medium, Self::Large];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Small => "Small",
+            Self::Medium => "Medium",
+            Self::Large => "Large",
+        }
+    }
+
+    /// The radius in points.
+    pub fn pt(self) -> f64 {
+        match self {
+            Self::Small => 1.6,
+            Self::Medium => 2.4,
+            Self::Large => 3.6,
+        }
+    }
+}
+
+/// A line chart's stroke.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LineWidth {
+    Thin,
+    #[default]
+    Normal,
+    Bold,
+}
+
+impl LineWidth {
+    pub const ALL: [Self; 3] = [Self::Thin, Self::Normal, Self::Bold];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Thin => "Thin",
+            Self::Normal => "Normal",
+            Self::Bold => "Bold",
+        }
+    }
+
+    /// The width in points.
+    pub fn pt(self) -> f64 {
+        match self {
+            Self::Thin => 1.0,
+            Self::Normal => 1.5,
+            Self::Bold => 2.5,
+        }
+    }
+}
+
 /// An sRGB color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
@@ -397,6 +499,12 @@ pub struct ExportOptions {
     pub notes: String,
     pub source: String,
     pub byline: String,
+    pub point_opacity: PointOpacity,
+    pub point_size: PointSize,
+    pub line_width: LineWidth,
+    /// Whether a line chart's Y axis takes in zero; `None` leaves it as the chart
+    /// draws it. Bars always start at zero.
+    pub y_from_zero: Option<bool>,
 }
 
 impl Default for ExportOptions {
@@ -414,6 +522,10 @@ impl Default for ExportOptions {
             notes: String::new(),
             source: String::new(),
             byline: String::new(),
+            point_opacity: PointOpacity::default(),
+            point_size: PointSize::default(),
+            line_width: LineWidth::default(),
+            y_from_zero: None,
         }
     }
 }
@@ -650,6 +762,8 @@ struct Canvas<'a> {
     body: f64,
     /// Where Other is among the series, drawn in the palette's `other`.
     other: Option<usize>,
+    /// The width a line legend's swatch is drawn at, in px.
+    swatch_stroke: f64,
 }
 
 impl Canvas<'_> {
@@ -692,7 +806,7 @@ impl Canvas<'_> {
     fn polyline(&mut self, points: &[(f64, f64)], color: Rgb, width: f64) {
         if points.len() < 2 {
             if let Some(&(x, y)) = points.first() {
-                self.dot(x, y, width, color);
+                self.dot(x, y, width, color, 1.0);
             }
             return;
         }
@@ -708,9 +822,14 @@ impl Canvas<'_> {
         ));
     }
 
-    fn dot(&mut self, x: f64, y: f64, r: f64, color: Rgb) {
+    fn dot(&mut self, x: f64, y: f64, r: f64, color: Rgb, opacity: f64) {
+        let opacity = if opacity < 1.0 {
+            format!(" fill-opacity=\"{opacity:.2}\"")
+        } else {
+            String::new()
+        };
         self.out.push_str(&format!(
-            "<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"{r:.2}\" fill=\"{}\"/>\n",
+            "<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"{r:.2}\" fill=\"{}\"{opacity}/>\n",
             color.hex()
         ));
     }
@@ -843,6 +962,7 @@ pub fn svg(figure: &Figure, options: &ExportOptions) -> Result<String> {
         pt,
         body,
         other: None,
+        swatch_stroke: 1.75 * pt,
     };
     let margin = (body * 2.0).min(w / 10.0);
     if let Some(bg) = palette.background {
@@ -957,6 +1077,10 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
         figure.plot,
         Plot::Lines { scatter: false, .. } | Plot::Kde { .. }
     );
+    // A line's swatch is drawn a little heavier than its line, as the line is.
+    if matches!(figure.plot, Plot::Lines { scatter: false, .. }) {
+        c.swatch_stroke = 1.75 / 1.5 * options.line_width.pt() * c.pt;
+    }
     // A single series is named by the axis title; two or more get a legend.
     let legend = if names.len() < 2 {
         LegendPlace::Off
@@ -988,11 +1112,13 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                 .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
                     (a.min(p.0), b.max(p.0))
                 });
-            let (mut y_lo, y_hi) = all.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
+            let (y_lo, y_hi) = all.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
                 (a.min(p.1), b.max(p.1))
             });
-            if *y_from_zero {
+            let (mut y_lo, mut y_hi) = (y_lo, y_hi);
+            if options.y_from_zero.unwrap_or(*y_from_zero) {
                 y_lo = y_lo.min(0.0);
+                y_hi = y_hi.max(0.0);
             }
             let (sx, sy, plot) = axes(
                 c,
@@ -1003,7 +1129,11 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                 y,
                 figure.grid,
             );
-            let width = 1.5 * c.pt;
+            let width = options.line_width.pt() * c.pt;
+            let radius = options.point_size.pt() * c.pt;
+            let opacity = options
+                .point_opacity
+                .of(series.iter().map(|s| s.points.len()).sum());
             let mut ends = Vec::new();
             // Other first, under the series drawn over it.
             let mut order: Vec<(usize, &Series)> = series.iter().enumerate().collect();
@@ -1012,7 +1142,7 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                 let color = c.color(i);
                 if *scatter {
                     for &(px, py) in &s.points {
-                        c.dot(sx.at(px), sy.at(py), 2.4 * c.pt, color);
+                        c.dot(sx.at(px), sy.at(py), radius, color, opacity);
                     }
                 } else {
                     for run in segments(&s.points, &s.breaks) {
@@ -1249,7 +1379,7 @@ fn legend_row(
     for (i, name) in names.iter().enumerate() {
         let color = c.color(i);
         if lines {
-            c.line((x, middle), (x + swatch, middle), color, 1.75 * c.pt);
+            c.line((x, middle), (x + swatch, middle), color, c.swatch_stroke);
         } else {
             c.rect(x, middle - tick * 0.35, swatch, tick * 0.7, color, 1.0);
         }
@@ -1496,7 +1626,12 @@ fn legend_box(c: &mut Canvas<'_>, names: &[String], place: LegendPlace, frame: A
         let cy = y + tick * 0.3 + row * (i as f64 + 0.5);
         let color = c.color(i);
         if lines {
-            c.line((x + pad, cy), (x + pad + swatch, cy), color, 1.75 * c.pt);
+            c.line(
+                (x + pad, cy),
+                (x + pad + swatch, cy),
+                color,
+                c.swatch_stroke,
+            );
         } else {
             c.rect(x + pad, cy - tick * 0.35, swatch, tick * 0.7, color, 1.0);
         }
@@ -2006,6 +2141,114 @@ mod tests {
             let svg = svg(&figure, &options).unwrap();
             roxmltree_ok(&svg);
         }
+    }
+
+    #[test]
+    fn auto_opacity_fades_with_the_points() {
+        assert_eq!(auto_opacity(0), 1.0);
+        assert_eq!(auto_opacity(1_000), 1.0);
+        assert!((auto_opacity(10_000) - 0.575).abs() < 1e-9);
+        assert!((auto_opacity(100_000) - 0.15).abs() < 1e-9);
+        assert!((auto_opacity(5_000_000) - 0.15).abs() < 1e-9);
+        assert!(auto_opacity(3_000) < 1.0 && auto_opacity(3_000) > auto_opacity(30_000));
+        assert_eq!(PointOpacity::Half.of(1), 0.5);
+    }
+
+    /// Each mark option changes what is drawn: the line's stroke and its legend
+    /// swatch, a point's radius and opacity, and where a line's Y axis starts.
+    #[test]
+    fn mark_options_change_the_marks() {
+        let pt = f64::from(options().dpi) / 72.0;
+        let stroke = |w: f64| format!("stroke-width=\"{:.2}\"", w * pt);
+        let figure = lines(&["AAPL", "MSFT"]);
+        let draw = |options: ExportOptions| svg(&figure, &options).unwrap();
+        let normal = draw(ExportOptions {
+            legend: LegendPlace::TopRight,
+            ..options()
+        });
+        let bold = draw(ExportOptions {
+            legend: LegendPlace::TopRight,
+            line_width: LineWidth::Bold,
+            ..options()
+        });
+        assert!(normal.contains(&stroke(1.5)) && !normal.contains(&stroke(2.5)));
+        assert!(bold.contains(&stroke(2.5)), "{bold}");
+        assert!(
+            normal.contains(&stroke(1.75)),
+            "the swatch, a little heavier"
+        );
+        assert!(
+            bold.contains(&stroke(1.75 / 1.5 * 2.5)),
+            "the swatch follows"
+        );
+
+        let mut scatter = lines(&["AAPL"]);
+        if let Plot::Lines {
+            scatter: is_scatter,
+            ..
+        } = &mut scatter.plot
+        {
+            *is_scatter = true;
+        }
+        let radius = |r: f64| format!("r=\"{:.2}\"", r * pt);
+        let dots = |options: ExportOptions| svg(&scatter, &options).unwrap();
+        let medium = dots(options());
+        assert!(medium.contains(&radius(2.4)), "{medium}");
+        assert!(
+            !medium.contains("fill-opacity=\"0.50\""),
+            "ten points: opaque"
+        );
+        let large_half = dots(ExportOptions {
+            point_size: PointSize::Large,
+            point_opacity: PointOpacity::Half,
+            ..options()
+        });
+        assert!(large_half.contains(&radius(3.6)), "{large_half}");
+        assert!(
+            large_half.contains("fill-opacity=\"0.50\"/>"),
+            "{large_half}"
+        );
+        assert!(
+            dots(ExportOptions {
+                point_size: PointSize::Small,
+                ..options()
+            })
+            .contains(&radius(1.6))
+        );
+        // The PDF, written from the same SVG, keeps the points' opacity.
+        let pdf = render(
+            &scatter,
+            &ExportOptions {
+                point_opacity: PointOpacity::Half,
+                ..options()
+            },
+            ChartExportFormat::Pdf,
+        )
+        .unwrap();
+        assert!(
+            String::from_utf8_lossy(&pdf).contains("/ca 0.5 "),
+            "the PDF's fill opacity"
+        );
+
+        // Y from zero: a line of 100 to 109 takes in 0 only when asked.
+        let mut high = lines(&["AAPL"]);
+        if let Plot::Lines { series, .. } = &mut high.plot {
+            series[0].points = (0..10).map(|x| (x as f64, 100.0 + x as f64)).collect();
+        }
+        let y_zero = "text-anchor=\"end\" fill=\"#5b6170\">0</text>";
+        let off = svg(&high, &options()).unwrap();
+        assert!(!off.contains(y_zero), "{off}");
+        let on = svg(
+            &high,
+            &ExportOptions {
+                y_from_zero: Some(true),
+                ..options()
+            },
+        )
+        .unwrap();
+        assert!(on.contains(y_zero), "{on}");
+
+        roxmltree_ok(&on);
     }
 
     #[test]

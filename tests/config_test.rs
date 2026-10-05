@@ -1718,6 +1718,153 @@ fn test_auto_mode_keeps_its_overrides_for_either_palette() {
     assert!(config.theme.follow);
 }
 
+/// A config directory holding `config` and each `(name, text)` as `themes/NAME.toml`,
+/// loaded.
+fn with_themes(config: &str, themes: &[(&str, &str)]) -> (TempDir, AppConfig) {
+    let dir = TempDir::new().expect("temp dir");
+    fs::create_dir(dir.path().join("themes")).expect("themes dir");
+    for (name, text) in themes {
+        fs::write(dir.path().join("themes").join(format!("{name}.toml")), text)
+            .expect("theme written");
+    }
+    let root = write_config(&dir, "config.toml", config);
+    let loaded = AppConfig::load_from_file(&root).expect("config loads");
+    (dir, loaded)
+}
+
+/// Without `theme.dark` or `theme.light`, the named built-ins are today's palettes,
+/// slot for slot.
+#[test]
+fn test_default_themes_are_the_built_in_palettes() {
+    let (_dir, config) = with_themes("", &[]);
+    assert_eq!(config.theme.dark, "night-market");
+    assert_eq!(config.theme.light, "day-market");
+    assert_eq!(
+        config.theme.palette_for(ThemeMode::Dark).unwrap(),
+        ColorConfig::dark()
+    );
+    assert_eq!(
+        config.theme.palette_for(ThemeMode::Light).unwrap(),
+        ColorConfig::light()
+    );
+    for mode in ["dark", "light"] {
+        let (_dir, config) = with_themes(&format!("[theme]\nmode = \"{mode}\"\n"), &[]);
+        let stock = if mode == "dark" {
+            ColorConfig::dark()
+        } else {
+            ColorConfig::light()
+        };
+        assert_eq!(config.theme.colors, stock, "{mode}");
+        assert!(config.theme.problems.is_empty());
+    }
+}
+
+/// A theme file is used by name; its unset slots come from what it extends, or
+/// without `extends` from the built-in for the mode it is used in, and
+/// `theme.colors` lies over it.
+#[test]
+fn test_theme_files_resolve_per_mode_under_theme_colors() {
+    let themes = [
+        ("dusk", "extends = \"night-market\"\naccent = \"#e0af68\"\n"),
+        ("deeper", "extends = \"dusk\"\nchip_key = \"#010203\"\n"),
+        ("bare", "error = \"#ff0000\"\n"),
+    ];
+    let (_dir, config) = with_themes(
+        "[theme]\nmode = \"dark\"\ndark = \"deeper\"\nlight = \"bare\"\n\
+         [theme.colors]\nfind_match = \"#ff9e64\"\n",
+        &themes,
+    );
+    let dark = &config.theme.colors;
+    assert_eq!(dark.chip_key, "#010203");
+    assert_eq!(dark.accent, "#e0af68");
+    assert_eq!(dark.find_match, "#ff9e64");
+    assert_eq!(dark.controls_bg, ColorConfig::dark().controls_bg);
+
+    let light = config.theme.palette_for(ThemeMode::Light).unwrap();
+    assert_eq!(light.error, "#ff0000");
+    assert_eq!(light.find_match, "#ff9e64");
+    assert_eq!(light.controls_bg, ColorConfig::light().controls_bg);
+    // The same file used as the dark theme fills from night-market.
+    let (_dir, config) = with_themes("[theme]\nmode = \"dark\"\ndark = \"bare\"\n", &themes);
+    assert_eq!(config.theme.colors.error, "#ff0000");
+    assert_eq!(
+        config.theme.colors.controls_bg,
+        ColorConfig::dark().controls_bg
+    );
+    // Pinned dark: theme.light is never used, so a bad one is not complained about.
+    let (_dir, config) = with_themes(
+        "[theme]\nmode = \"dark\"\ndark = \"dusk\"\nlight = \"nope\"\n",
+        &themes,
+    );
+    assert_eq!(config.theme.colors.accent, "#e0af68");
+    assert!(
+        config.theme.problems.is_empty(),
+        "{:?}",
+        config.theme.problems
+    );
+}
+
+/// A theme name that cannot be used, a circle of `extends` or a file with a mistake
+/// falls back to the mode's built-in with a warning; the other files still load.
+#[test]
+fn test_unusable_themes_fall_back_with_a_warning() {
+    let themes = [
+        ("a", "extends = \"b\"\n"),
+        ("b", "extends = \"a\"\n"),
+        ("broken", "accent = \n"),
+        ("fine", "accent = \"#e0af68\"\n"),
+    ];
+    let (_dir, config) = with_themes("[theme]\nmode = \"dark\"\ndark = \"nope\"\n", &themes);
+    assert_eq!(config.theme.colors, ColorConfig::dark());
+    assert_eq!(config.theme.dark_theme, "night-market");
+    let said = config.theme.problems.join("\n");
+    assert!(
+        said.contains("theme.dark: using night-market, not nope"),
+        "{said}"
+    );
+
+    let (_dir, config) = with_themes("[theme]\nmode = \"light\"\nlight = \"a\"\n", &themes);
+    assert_eq!(config.theme.colors, ColorConfig::light());
+    assert!(
+        config.theme.problems[0].contains("circle"),
+        "{:?}",
+        config.theme.problems
+    );
+
+    let (_dir, config) = with_themes("[theme]\nmode = \"dark\"\ndark = \"broken\"\n", &themes);
+    assert_eq!(config.theme.colors, ColorConfig::dark());
+    assert!(
+        config.theme.problems[0].contains("left out"),
+        "{:?}",
+        config.theme.problems
+    );
+    assert_eq!(config.theme.library.broken.len(), 1);
+    let names: Vec<&str> = config
+        .theme
+        .library
+        .files
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    assert_eq!(names, ["a", "b", "fine"]);
+
+    let (_dir, config) = with_themes("[theme]\nmode = \"dark\"\ndark = \"fine\"\n", &themes);
+    assert_eq!(config.theme.colors.accent, "#e0af68");
+    assert!(config.theme.problems.is_empty());
+}
+
+/// `datui config init` makes the themes/ directory and offers theme.dark and
+/// theme.light.
+#[test]
+fn test_config_init_makes_themes_dir() {
+    let (dir, manager) = setup_test_config_dir();
+    let written = manager.write_default_config(false).expect("written");
+    assert!(dir.path().join("themes").is_dir());
+    let text = fs::read_to_string(written).expect("read");
+    assert!(text.contains("# dark = \"night-market\""), "{text}");
+    assert!(text.contains("# light = \"day-market\""), "{text}");
+}
+
 #[test]
 fn test_cloud_s3_settings_come_from_the_environment() {
     use datui::config::CloudConfig;

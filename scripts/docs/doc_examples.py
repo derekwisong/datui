@@ -25,6 +25,8 @@ Attributes after the language, comma-separated:
   expect=WHAT     what a datui command in it must do: rows, screen or exit
   spec            (toml) a format spec, checked with `datui formats check`
   catalog         (toml) a catalog file, checked with `datui catalog check`
+  theme=NAME      (toml) a theme file, written as themes/NAME.toml and shown
+                  with `datui theme show NAME`; a warning fails it
   dataset=NAME    (sql, q) the dataset it runs against, from doc_datasets.toml;
                   crates/datui-lib's doc_queries tests run it
   rows=N          (sql, q) the rows it returns
@@ -67,7 +69,7 @@ OUTPUT = {"text", "console"}
 # Code that is shown, never run: contributor docs' excerpts.
 EXCERPT = {"rust", "yaml", "json", "html", "xml", "csv", "diff", "markdown"}
 ATTRS = {"template", "output", "network", "interactive", "continue", "spec", "catalog", "repo", "install"}
-VALUED = {"expect", "dataset", "rows", "file"}
+VALUED = {"expect", "dataset", "rows", "file", "theme"}
 PLACEHOLDER = re.compile(r"<[A-Z][A-Z0-9_]*>")
 FENCE = re.compile(r"^(\s*)(```+|~~~+)(.*)$")
 # A file written from a shell block, or data made by a one-liner: a file block instead.
@@ -373,6 +375,11 @@ def run_block(b: Block, work: Path, real: str | None, timeout: float) -> str | N
     elif b.lang == "toml" and "catalog" in b.attrs:
         (work / "catalog.toml").write_text(b.body, encoding="utf-8")
         cmd = [real, "catalog", "check", "./catalog.toml"]
+    elif b.lang == "toml" and "theme" in b.values:
+        themes = work / ".config" / "themes"
+        themes.mkdir(parents=True, exist_ok=True)
+        (themes / f"{b.values['theme']}.toml").write_text(b.body, encoding="utf-8")
+        cmd = [real, "theme", "show", b.values["theme"]]
     elif b.lang == "toml":
         config = work / ".config"
         config.mkdir(exist_ok=True)

@@ -1067,7 +1067,7 @@ pub fn move_places(file: &Path, places: &[PathBuf]) -> color_eyre::Result<usize>
 }
 
 /// Columns padded to their widest cell, two spaces apart.
-fn table(rows: &[Vec<String>]) -> String {
+pub(crate) fn table(rows: &[Vec<String>]) -> String {
     let columns = rows.first().map(Vec::len).unwrap_or(0);
     let widths: Vec<usize> = (0..columns)
         .map(|c| rows.iter().map(|r| r[c].chars().count()).max().unwrap_or(0))

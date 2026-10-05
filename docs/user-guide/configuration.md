@@ -161,17 +161,66 @@ grouped, for numbers that are labels. Every value of a grouped column is
 grouped. Formatting is display only: exports, queries, filters and views use
 the raw values.
 
-## Light and dark
+## Themes
+
+```toml
+[theme]
+dark = "night-market"
+light = "day-market"
+```
+
+A theme is a named set of colors, one per [slot](../reference/settings.md#colors).
+`theme.dark` is used when the terminal is dark and `theme.light` when it is
+light. Two are built in, and those are the defaults:
+
+| Theme | For |
+|---|---|
+| `night-market` | Dark terminals: Tokyo Night with one cyan accent |
+| `day-market` | Light terminals: Tokyo Night's day variant |
+
+Every `*.toml` in `themes/` in the config directory (`datui config path`
+shows where that is) is a theme too, named by its file. This one is
+`themes/my-dusk.toml`:
+
+```toml,theme=my-dusk
+extends = "night-market"
+description = "Night Market with a warm accent"
+accent = "#e0af68"
+chip_key = "#e0af68"
+```
+
+| Key | Means |
+|---|---|
+| `extends` | The theme the unset slots come from. Without it, they come from `night-market` when the theme is used as `theme.dark` and from `day-market` when it is used as `theme.light` |
+| `description` | Shown by `datui theme list` |
+| Any slot | The same slots and color forms as [`[theme.colors]`](#colors) |
+
+`datui theme list` lists the themes; `datui theme show NAME` prints one with
+every slot, to save into `themes/` and edit. A theme file with a mistake, or
+a theme name that does not exist, gets a warning, and that mode uses its
+built-in.
+
+The colors are worked out in this order, each step over the one before:
+
+| Step | Gives |
+|---|---|
+| `theme.mode`, or the terminal under `auto` | Dark or light |
+| `theme.dark` or `theme.light` | The theme for that mode |
+| `extends`, theme by theme | Slots the theme leaves unset |
+| `[theme.colors]` | Your own slots, over the theme in either mode |
+
+### Light and dark
 
 ```toml
 [theme]
 mode = "light"
 ```
 
-`theme.mode` picks the built-in palette: `auto` (the default), `dark` or
-`light`. The header fill, row stripes, borders and dim text sit a few shades
-off the terminal's background, so the dark palette's shades are unreadable on
-a light background. Your `[theme.colors]` sit over whichever palette is in use.
+`theme.mode` picks the theme: `auto` (the default) follows the terminal,
+`dark` always uses `theme.dark`, `light` always uses `theme.light`. The
+header fill, row stripes, borders and dim text sit a few shades off the
+terminal's background, so a dark theme's shades are unreadable on a light
+background.
 
 `auto` decides in this order:
 
@@ -181,8 +230,9 @@ a light background. Your `[theme.colors]` sit over whichever palette is in use.
 | `COLORFGBG` | The terminal does not answer, and sets it |
 | `dark` | Neither |
 
-Under `auto` the palette follows the terminal: when its window comes back into
-focus, datui asks again and switches if the scheme changed. That takes a
+Under `auto` the theme follows the terminal: when its window comes back into
+focus, datui asks again and switches between `theme.dark` and `theme.light` if
+the scheme changed. That takes a
 terminal that reports focus; in tmux, turn on `set -g focus-events on`.
 
 The question is not asked on Windows, on the Linux console (`TERM=linux`), or
@@ -191,8 +241,9 @@ left at `COLORFGBG` or `dark`: set `mode` there.
 
 ## Colors
 
-Every color is a slot of `[theme.colors]` ([the slots](../reference/settings.md#colors)),
-written one of three ways:
+`[theme.colors]` changes a few slots over the theme in use, in both modes;
+for more than a few, write a [theme file](#themes). Every color is a slot
+([the slots](../reference/settings.md#colors)), written one of three ways:
 
 | Form | Example | Shown |
 |---|---|---|

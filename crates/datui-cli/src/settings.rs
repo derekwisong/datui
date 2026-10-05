@@ -233,7 +233,7 @@ pub const SECTIONS: &[Section] = &[
     Section {
         name: "theme.colors",
         title: "Colors",
-        intro: "Each slot takes a name (`red`, `bright_blue`, `default`), `#rrggbb` or `indexed(0-255)`. Unset slots take the palette for `theme.mode`.",
+        intro: "Each slot takes a name (`red`, `bright_blue`, `default`), `#rrggbb` or `indexed(0-255)`. They lie over the theme in use, `theme.dark` or `theme.light`, in either mode; a whole theme of your own goes in a file in `themes/`.",
     },
     Section {
         name: "glyphs",
@@ -323,7 +323,9 @@ pub const SETTINGS: &[Setting] = &[
     s("log.file", Path, Unset("\"~/datui.log\""), "Where the log goes. Unset: datui.log in the cache directory.").flag("log-file"),
     s("log.level", Choice(&["error", "warn", "info", "debug", "trace", "off"]), Unset("\"warn\""), "How much the log says (default warn). DATUI_LOG beats a config file's; -c and --log-level beat DATUI_LOG.").flag("log-level"),
     // [theme]
-    s("theme.mode", Choice(&["auto", "dark", "light"]), Unset("\"auto\""), "Which built-in palette to use. auto asks the terminal for its background, then reads COLORFGBG, then falls back to dark; it asks again when the terminal regains focus."),
+    s("theme.mode", Choice(&["auto", "dark", "light"]), Unset("\"auto\""), "Which mode's theme to use: theme.dark or theme.light. auto asks the terminal for its background, then reads COLORFGBG, then falls back to dark; it asks again when the terminal regains focus."),
+    s("theme.dark", Text, Value("\"night-market\""), "The theme used when the terminal is dark: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to night-market, with a warning."),
+    s("theme.light", Text, Value("\"day-market\""), "The theme used when the terminal is light: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to day-market, with a warning."),
     color("theme.colors.chip_key", "#7dcfff", "#2e7de9", "Keys named in the footer, dialogs, the breadcrumb and the correlation matrix."),
     color("theme.colors.chip_label", "#a9b1d6", "#3760bf", "Labels beside keys in the footer, and the footer's status."),
     color("theme.colors.throbber", "#7dcfff", "#2e7de9", "The busy spinner."),

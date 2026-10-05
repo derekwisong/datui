@@ -190,6 +190,7 @@ mod terminal;
 mod terminal_color;
 pub mod terminal_input;
 pub mod text_formats;
+pub mod themes;
 pub mod typed_value;
 pub mod ulog;
 mod unfinished;
@@ -5778,7 +5779,8 @@ impl App {
             log::warn!("format spec skipped: {error}");
         }
 
-        App {
+        let theme_problem = app_config.theme.problems.first().cloned();
+        let mut app = App {
             path: None,
             data_table_state: None,
             footer_progress: Arc::new(crate::schema_union::FooterProgress::default()),
@@ -5953,7 +5955,12 @@ impl App {
             app_config,
             background_query: false,
             formats,
+        };
+        // A theme that could not be used was said on stderr, which the screen hides.
+        if let Some(problem) = theme_problem {
+            app.flash_note(problem);
         }
+        app
     }
 
     /// Use `registry` as the format specs on the search path, for hosts and tests that

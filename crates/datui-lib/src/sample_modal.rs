@@ -99,6 +99,15 @@ pub struct SampleForm {
     /// Before a tool's first run the form sits in its empty pane, and Enter is what
     /// runs it; otherwise it floats over a result, and Enter applies a change.
     pub inline: bool,
+    /// The form edits the view's sample, the step under its query: Every row is
+    /// "No sample" there, which takes the sample away.
+    pub view: bool,
+    /// Bytes a row of the table takes, as the table measured them: what the Size
+    /// row's estimate is worked out from.
+    pub bytes_per_row: Option<usize>,
+    /// The memory warning has been shown for the form as it stands: Enter again
+    /// draws anyway. Any edit takes it back.
+    pub anyway: bool,
     pub draft: Sample,
     pub kind: RowsKind,
     pub field: SampleField,
@@ -126,6 +135,9 @@ impl SampleForm {
         let input = || TextInput::new().with_theme(theme);
         let mut form = Self {
             inline: false,
+            view: false,
+            bytes_per_row: None,
+            anyway: false,
             draft: sample.clone(),
             kind: RowsKind::All,
             field: SampleField::Rows,
@@ -232,6 +244,10 @@ impl SampleForm {
 
     /// The rows on screen, top to bottom.
     pub fn fields(&self) -> Vec<SampleField> {
+        // No sample has no rows to choose.
+        if self.no_sample() {
+            return vec![SampleField::Method];
+        }
         let mut fields = vec![SampleField::Rows];
         fields.extend(match self.kind {
             RowsKind::All | RowsKind::Source => vec![],
@@ -424,6 +440,7 @@ impl SampleForm {
                 SampleMethod::Spread => "Random".to_string(),
                 SampleMethod::PerPartition { .. } => "Equal per value".to_string(),
                 SampleMethod::FirstRows => "First rows".to_string(),
+                SampleMethod::EveryRow if self.view => "No sample".to_string(),
                 SampleMethod::EveryRow => "Every row".to_string(),
             },
             SampleField::By => match &self.draft.method {
@@ -505,6 +522,39 @@ impl SampleForm {
             }
         }
         Ok(())
+    }
+
+    /// The form takes the view's sample away: No sample is chosen.
+    pub fn no_sample(&self) -> bool {
+        self.view && self.draft.method == SampleMethod::EveryRow
+    }
+
+    /// Rows the sample will hold, when that can be told before it is drawn: the
+    /// size, or the rows there are when fewer. Not for an equal-per-value sample,
+    /// whose size is per value.
+    pub fn rows_expected(&self) -> Option<usize> {
+        let asked = match self.draft.method {
+            SampleMethod::Spread | SampleMethod::FirstRows => self.typed_size()?,
+            SampleMethod::EveryRow => self.context.view_rows?,
+            SampleMethod::PerPartition { .. } => return None,
+        };
+        let there = match self.kind {
+            RowsKind::All => self.context.view_rows,
+            _ => None,
+        };
+        Some(there.map_or(asked, |rows| asked.min(rows)))
+    }
+
+    /// The bytes the sample will take, from the table's bytes per row.
+    pub fn estimate(&self) -> Option<u64> {
+        let rows = self.rows_expected()? as u64;
+        Some(rows.saturating_mul(self.bytes_per_row? as u64))
+    }
+
+    /// An edit: what was said about the form as it stood no longer stands.
+    pub fn edited(&mut self) {
+        self.error = None;
+        self.anyway = false;
     }
 
     /// The sample size typed, when it reads as one.

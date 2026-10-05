@@ -112,6 +112,9 @@ polars-error = "0.55"
 # The bytes a scan reads in place (`ScanSources::Buffers`): a NUL-padded file up to
 # its text. Already in the tree through Polars.
 polars-buffer = "0.55"
+# The memory available now, which a sample's size is checked against. Already in the
+# tree through Polars, with the same features.
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 toml_edit = { version = "0.25.15", default-features = false, features = ["parse", "display"] }
 
 # Pointing fd 2 at the log while the TUI owns the terminal. Already in the tree.

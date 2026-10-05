@@ -66,6 +66,22 @@ impl App {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
+        // The sample, in its place in the pipeline: over the source, or over the
+        // query or filters it was drawn through.
+        if let Some(sampled) = state.sampled() {
+            let source = sampled.source();
+            if sampled.through() {
+                if !source.get_active_query().trim().is_empty()
+                    || !source.get_active_sql_query().trim().is_empty()
+                    || !source.get_active_fuzzy_query().trim().is_empty()
+                {
+                    footer.stages.push(QUERY_STAGE.to_string());
+                } else {
+                    footer.stages.push("filtered".to_string());
+                }
+            }
+            footer.stages.push(sampled.label());
+        }
         if !state.get_active_query().trim().is_empty()
             || !state.get_active_sql_query().trim().is_empty()
             || !state.get_active_fuzzy_query().trim().is_empty()
@@ -110,9 +126,12 @@ impl App {
         let unknown = !pending
             && !state.is_num_rows_valid()
             && self.len_count_failed == Some(state.len_generation());
+        // A pipe still being read, or a sample still being drawn: what is here is
+        // a part of what is coming.
         let arriving = state
             .follow()
-            .is_some_and(|follow| follow.is_pipe() && follow.live());
+            .is_some_and(|follow| follow.is_pipe() && follow.live())
+            || state.sampled().is_some_and(|sampled| sampled.drawing());
         let estimate = self.row_estimate();
         let total = if let Some(estimate) = estimate {
             // Until it is counted, which the progress line says while it is.
@@ -395,6 +414,26 @@ impl App {
                     read as u64,
                     state.num_rows_if_valid().map(|n| n as u64),
                 )],
+                stoppable: true,
+            });
+        }
+        // A sample being drawn: the rows kept of those asked for, and the rows read.
+        if let Some(draw) = self.sample_draw() {
+            let mut counts = vec![ProgressCount::of(
+                "kept",
+                draw.rows.rows() as u64,
+                matches!(
+                    draw.sample.method,
+                    crate::sampling::SampleMethod::Spread
+                        | crate::sampling::SampleMethod::FirstRows
+                )
+                .then_some(draw.sample.rows as u64),
+            )];
+            if let Some(read) = draw.watch.rows_seen() {
+                counts.push(ProgressCount::of("read", read as u64, None));
+            }
+            return Some(ProgressLine {
+                counts,
                 stoppable: true,
             });
         }

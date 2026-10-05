@@ -65,6 +65,7 @@ pub enum JobKind {
     Rows,
     Analysis,
     SampleRows,
+    SampleDraw,
     Pivot,
     ViewPivot,
     ReshapePreview,
@@ -132,6 +133,8 @@ pub(crate) enum Job {
     Analysis(AnalysisRun),
     /// The sample, or the rows behind a finding, read to show as a table.
     SampleRows,
+    /// The view's sample, drawn into memory as the table shows it.
+    SampleDraw(Box<SampleDraw>),
     /// A pivot from the Pivot & Melt builder.
     Pivot,
     /// A view's pivot, read before the view's rows: the view it is for, and why it
@@ -207,6 +210,34 @@ pub(crate) struct Classify {
     pub(crate) jump: bool,
 }
 
+/// A view's sample being drawn. Judged by its rows rather than the generation: the
+/// table pages, finds and inspects while it is drawn, and each of those may move the
+/// generation on. The view it lands in is the one whose sample holds `rows`.
+#[derive(Clone)]
+pub(crate) struct SampleDraw {
+    pub(crate) sample: crate::sampling::Sample,
+    pub(crate) rows: Arc<crate::table_sample::SampleRows>,
+    /// Stops the draw; the rows so far stay.
+    pub(crate) watch: crate::sampling::ReadWatch,
+    /// Drawn from the view's query or filters rather than the source under them.
+    pub(crate) through: bool,
+    /// The steps laid on the sample once its view is built: the query, filters,
+    /// sort and columns of the view it was drawn from, or of the view being applied.
+    pub(crate) replay: Option<crate::view::ViewSettings>,
+    /// Analysis asked for it, and runs its tool once it is drawn.
+    pub(crate) then_analyze: bool,
+}
+
+impl std::fmt::Debug for SampleDraw {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SampleDraw")
+            .field("sample", &self.sample)
+            .field("through", &self.through)
+            .field("then_analyze", &self.then_analyze)
+            .finish_non_exhaustive()
+    }
+}
+
 /// An Analysis tool's run.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AnalysisRun {
@@ -226,6 +257,7 @@ impl Job {
             Job::Rows(_) | Job::OwedRows { .. } => JobKind::Rows,
             Job::Analysis(_) => JobKind::Analysis,
             Job::SampleRows => JobKind::SampleRows,
+            Job::SampleDraw(_) => JobKind::SampleDraw,
             Job::Pivot => JobKind::Pivot,
             Job::ViewPivot(_) => JobKind::ViewPivot,
             Job::ReshapePreview { .. } => JobKind::ReshapePreview,
@@ -277,6 +309,7 @@ impl Job {
         !matches!(
             self,
             Job::Rows(_)
+                | Job::SampleDraw(_)
                 | Job::OwedRows { .. }
                 | Job::OpenNamed(_)
                 | Job::LookAtDirectory { .. }
@@ -294,6 +327,7 @@ impl Job {
         !matches!(
             self,
             Job::FileFacts { .. }
+                | Job::SampleDraw(_)
                 | Job::UnfitCount { .. }
                 | Job::ChartExport { .. }
                 | Job::OwedRows { .. }
@@ -348,6 +382,8 @@ pub(crate) enum Answer {
     },
     /// [`Job::SampleRows`]: rows to show as a table.
     Sample { df: DataFrame, label: String },
+    /// [`Job::SampleDraw`]: the draw ended; its rows are in the job's chunks.
+    SampleDrawn(crate::table_sample::Drawn),
     /// [`Job::Pivot`]: the pivot.
     Pivoted {
         spec: crate::pivot_melt_modal::PivotSpec,
@@ -456,6 +492,10 @@ pub enum Progress {
     Finding { rows: usize },
     /// A find in the hex view has read `read` of the file's `total` bytes.
     HexFinding { read: u64, total: u64 },
+    /// A sample's rows are cut to its scope, with these columns: its view can be built.
+    SampleBegun(polars::prelude::SchemaRef),
+    /// A sample kept another chunk.
+    SampleGrew,
 }
 
 /// A job whose outcome has been taken: what it was, whether its answer is still

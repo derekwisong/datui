@@ -232,6 +232,14 @@ pub fn render(
         crate::widgets::retype::render_combine(area, buf, modal, ctx);
     }
 
+    if app.input_mode == crate::InputMode::Sample
+        && let Some(form) = &app.sample_form
+    {
+        // A dialog over the table: what it covers takes no clicks.
+        crate::pointer::record(data_area, crate::pointer::Hit::Modal);
+        crate::widgets::sample_form::render(form, true, data_area, buf, ctx);
+    }
+
     if app.input_mode == crate::InputMode::PickTable
         && let Some(tables) = app.table_choices.as_ref()
     {

@@ -291,6 +291,7 @@ pub const SETTINGS: &[Setting] = &[
     s("analysis.chart_rows", Count, Value("10000"), "Rows a chart reads; a larger table is sampled across all of it."),
     s("analysis.chart_grid", Bool, Value("false"), "Start charts with a grid at the major ticks (g toggles)."),
     s("analysis.quality_local_copy", Size, Value("\"2GiB\""), "Most a Data Quality full scan of a remote dataset copies into the cache to read once; 0 never copies."),
+    s("analysis.sample_memory_limit", Size, Unset("\"8GiB\""), "Most memory a view's sample may take. Unset: the memory available now decides; 0 never warns or stops."),
     // [home]
     s("home.desktop_recents", Bool, Value("true"), "Also list directories from the desktop's recently-used files; never the file names."),
     s("home.show_unreadable", Bool, Value("false"), "List files datui cannot read, dimmed (Ctrl+A toggles)."),

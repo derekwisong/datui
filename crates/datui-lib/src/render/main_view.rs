@@ -95,8 +95,17 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
                     }
                 };
             }
+            if app.input_mode == crate::InputMode::Sample
+                && let Some(form) = &app.sample_form
+            {
+                return sample_form_hints(form);
+            }
             // A wait the user can stop: Esc stops it, over the form that started it.
-            if app.pivot_computing() || app.finding() || app.view_applying() {
+            if app.pivot_computing()
+                || app.finding()
+                || app.view_applying()
+                || (app.sample_drawing() && app.in_normal_table_view())
+            {
                 return vec![Hint::new("Esc", "Stop")];
             }
             // The builder is a takeover with no footer of its own.
@@ -195,6 +204,27 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
             ]
         }
     }
+}
+
+/// The table's Sample form: what Enter does as the form stands, then the keys the
+/// focused row takes.
+fn sample_form_hints(form: &crate::sample_modal::SampleForm) -> Vec<Hint> {
+    let g = crate::glyphs::get();
+    let enter = if form.no_sample() {
+        "Clear"
+    } else if form.anyway {
+        "Draw anyway"
+    } else {
+        "Draw"
+    };
+    let mut keys = vec![Hint::new("Enter", enter), Hint::new(g.updown, "Row")];
+    if form.field.is_text() {
+        keys.push(Hint::new("type", "Edit"));
+    } else {
+        keys.push(Hint::new(g.updown_lr, "Change"));
+    }
+    keys.push(Hint::new("Esc", "Cancel"));
+    keys
 }
 
 /// A screen's keys with what `t` does there, first, while a followed file has rows

@@ -53,6 +53,8 @@ mod remote_quality;
 #[cfg(feature = "sqlite")]
 #[path = "formats/sqlite.rs"]
 mod sqlite;
+#[path = "app/table_sample.rs"]
+mod table_sample;
 #[path = "formats/tables.rs"]
 mod tables;
 #[path = "formats/text_formats.rs"]

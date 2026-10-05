@@ -358,6 +358,11 @@ impl EventPump {
         {
             return Act::HoldAs(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         }
+        // A sample being drawn holds only what needs every row: moving, finding and
+        // inspecting the rows on hand act at once, the find line and inspector too.
+        if self.app.is_busy() && !queued && self.app.key_acts_while_sampling(key) {
+            return Act::Now;
+        }
         // Busy, nothing queued yet, at the plain table view: the harmless view keys act
         // (quit, the column cursor, help); a bare Enter that would drill, or Esc, confirms
         // nothing and is dropped; everything else is type-ahead and waits. Once anything

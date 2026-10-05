@@ -1000,7 +1000,12 @@ pub(crate) fn sample_rows_counting(
         let df = collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?;
         return Ok(whole(df, total_rows));
     }
-    let read = block_sample(lf, total_rows, n, seed, polars_streaming, watch, count)?;
+    let along = Along {
+        watch,
+        count,
+        on_run: None,
+    };
+    let read = block_sample(lf, total_rows, n, seed, polars_streaming, along)?;
     Ok(crate::sampling::SampledRows {
         rows: AnalysisRows {
             sample_size: Some(read.df.height()),
@@ -1042,6 +1047,39 @@ pub fn slices_reach_into_the_scan(lf: &LazyFrame) -> bool {
     one_source && total_scans == 1 && plan.contains("SLICE: Positive") && !plan.contains("SLICE[")
 }
 
+/// [`block_sample`] for a sample shown as it is drawn: each run goes to `on_run`, with
+/// where it starts, as it lands. A table under twice the sample is read whole and cut,
+/// and comes back as one frame instead. A stop ends the read with the runs so far
+/// delivered.
+pub(crate) fn block_sample_live(
+    lf: &LazyFrame,
+    total_rows: usize,
+    n: usize,
+    seed: u64,
+    polars_streaming: bool,
+    watch: &crate::sampling::ReadWatch,
+    on_run: &OnRun<'_>,
+) -> Result<Option<DataFrame>> {
+    let along = Along {
+        watch: Some(watch),
+        count: None,
+        on_run: Some(on_run),
+    };
+    let read = block_sample(lf, total_rows, n, seed, polars_streaming, along)?;
+    Ok((total_rows < 2 * n).then_some(read.df))
+}
+
+/// What a block sample does beside reading its runs: stops when `watch` says to,
+/// counts `count`'s key, and hands each run to `on_run` as it lands.
+struct Along<'a> {
+    watch: Option<&'a crate::sampling::ReadWatch>,
+    count: Option<&'a Expr>,
+    on_run: Option<&'a OnRun<'a>>,
+}
+
+/// Told of each run of a block sample as it lands, with where it starts.
+pub(crate) type OnRun<'a> = dyn Fn(usize, &DataFrame) + Sync + 'a;
+
 /// `n` rows as [`SAMPLE_BLOCKS`] runs at seeded places across `total_rows`, in table
 /// order. Each run is collected on its own: as one union the runs share a subplan, and
 /// Polars caches a shared subplan whole. They are collected [`SAMPLE_READERS`] at a
@@ -1053,9 +1091,13 @@ fn block_sample(
     n: usize,
     seed: u64,
     polars_streaming: bool,
-    watch: Option<&crate::sampling::ReadWatch>,
-    count: Option<&Expr>,
+    along: Along<'_>,
 ) -> Result<StreamRead> {
+    let Along {
+        watch,
+        count,
+        on_run,
+    } = along;
     // Under twice the sample, reading the table is about as cheap as reading runs of
     // it, and runs that must fit side by side would crowd or overlap. Read it and keep
     // a seeded uniform `n` of it instead, counting `count`'s key from the rows read.
@@ -1121,6 +1163,9 @@ fn block_sample(
                         .map(|df| {
                             if let Some(watch) = watch {
                                 watch.saw(df.height());
+                            }
+                            if let Some(on_run) = on_run {
+                                on_run(*offset, &df);
                             }
                             (block, df)
                         })

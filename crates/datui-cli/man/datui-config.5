@@ -151,6 +151,9 @@ Start charts with a grid at the major ticks (g toggles). Default: \fBfalse\fR.
 .TP
 \fBanalysis.quality_local_copy\fR (\fIsize\fR)
 Most a Data Quality full scan of a remote dataset copies into the cache to read once; 0 never copies. Default: \fB"2GiB"\fR.
+.TP
+\fBanalysis.sample_memory_limit\fR (\fIsize\fR)
+Most memory a view's sample may take. Unset: the memory available now decides; 0 never warns or stops. Unset by default.
 .SS "[home]"
 The home screen.
 .TP

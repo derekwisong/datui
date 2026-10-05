@@ -63,7 +63,8 @@ Where a dataset opens.
 | `r` | Reverse sort order (sorted columns carry a direction mark in the header); with no sort, reverse the row order |
 | `H / L` | Move the cursor's column one place left or right, the cursor with it; a frozen column moves among the frozen ones. R puts the order back |
 | `p` | Pivot or melt |
-| `R` | Reset table: clear the query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view |
+| `S` | Draw a sample of the source into memory: the step under the query, filters and sort, which then run over it. The rows show as they arrive (Esc stops, keeping them); the footer says sample 100,000 of 36.8M. Analysis, charts and export read the sample. S again edits it; Method No sample, or R, takes it away |
+| `R` | Reset table: clear the sample, query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view |
 
 ### Table · Analyze
 
@@ -102,7 +103,7 @@ Where a dataset opens.
 |---|---|
 | `q` | Back to the home screen when the dataset was opened from it; otherwise quit |
 | `Q` | Quit |
-| `Esc` | Leave a drill-down, stop a find or a follow |
+| `Esc` | Leave a drill-down; stop a find, a sample being drawn (its rows so far stay) or a follow |
 
 ### Table · Mouse
 
@@ -776,6 +777,20 @@ Combine into datetime in the cell menu, on a text, date or time column.
 | `Enter` | Open the table chosen in place of this one. The query, filters and sort are cleared |
 | `Backspace` | Delete a character (Ctrl+W a word, Ctrl+U all) |
 | `Esc` | Close and keep the table |
+
+## Sample
+
+<kbd>S</kbd> at the table.
+
+### Sample · Form
+
+| Key | Action |
+|---|---|
+| `Tab / Shift+Tab (↑ / ↓)` | Next or previous row |
+| `← / →` | Step Rows from, Method and Per value of; Method's No sample takes the view's sample away |
+| `(type)` | Type into the focused row: the size (50000, 50k, 2m), the seed, a row range, partition values or file numbers |
+| `Enter` | Draw the sample: the table shows its rows as they arrive, and the query, filters and sort run over them. When the estimate is more than the memory available now (or analysis.sample_memory_limit), the form says so; Enter again draws anyway |
+| `Esc` | Close; the view's sample stays as it was |
 
 ## Hex view
 

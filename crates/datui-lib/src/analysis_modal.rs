@@ -464,6 +464,9 @@ pub struct AnalysisModal {
     pub sample_run_for: Option<u64>,
     /// The Sample form, while it is open.
     pub sample_form: Option<crate::sample_modal::SampleForm>,
+    /// The tools' own sample, put aside while the view has a sample of its own:
+    /// every tool then reads the view's rows whole.
+    pub own_sample: Option<crate::sampling::Sample>,
     pub table_state: TableState,              // For describe table
     pub distribution_table_state: TableState, // For distribution table
     pub correlation_table_state: TableState,  // For correlation matrix
@@ -815,6 +818,27 @@ impl AnalysisModal {
             Some(AnalysisTool::Describe) => Some(&mut self.describe_columns),
             Some(AnalysisTool::DistributionAnalysis) => Some(&mut self.distribution_columns),
             _ => None,
+        }
+    }
+
+    /// Read the view's sample whole while it has one (`sampled`), and the tools' own
+    /// sample again once it has none.
+    pub fn follow_view_sample(&mut self, sampled: bool) {
+        match (sampled, self.own_sample.is_some()) {
+            (true, false) => {
+                let every = crate::sampling::Sample {
+                    scope: crate::data_quality::QualityScope::CurrentView,
+                    method: crate::sampling::SampleMethod::EveryRow,
+                    ..self.sample.clone()
+                };
+                self.own_sample = Some(std::mem::replace(&mut self.sample, every));
+            }
+            (false, true) => {
+                if let Some(own) = self.own_sample.take() {
+                    self.sample = own;
+                }
+            }
+            _ => {}
         }
     }
 

@@ -38,6 +38,7 @@ pub enum Context {
     Retype,
     Combine,
     TablePicker,
+    Sample,
     Hex,
 }
 
@@ -410,8 +411,10 @@ pub const SCREENS: &[Screen] = &[
                     k("H / L", "Move column", "Move the cursor's column left or right")
                         .more("Move the cursor's column one place left or right, the cursor with it; a frozen column moves among the frozen ones. R puts the order back"),
                     k("p", "Pivot & Melt", "Pivot or melt"),
+                    k("S", "Sample", "Draw a sample into memory; the view works on it")
+                        .more("Draw a sample of the source into memory: the step under the query, filters and sort, which then run over it. The rows show as they arrive (Esc stops, keeping them); the footer says sample 100,000 of 36.8M. Analysis, charts and export read the sample. S again edits it; Method No sample, or R, takes it away"),
                     k("R", "Reset", "Clear query, filters, sort, layout, view")
-                        .more("Reset table: clear the query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view"),
+                        .more("Reset table: clear the sample, query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view"),
                 ],
             },
             Group {
@@ -461,7 +464,8 @@ pub const SCREENS: &[Screen] = &[
                     k("q", "Back", "Home when opened from there, else quit")
                         .more("Back to the home screen when the dataset was opened from it; otherwise quit"),
                     k("Q", "Quit", "Quit"),
-                    k("Esc", "Back", "Leave a drill-down, stop a find or a follow"),
+                    k("Esc", "Back", "Leave a drill-down; stop a find, sample, follow")
+                        .more("Leave a drill-down; stop a find, a sample being drawn (its rows so far stay) or a follow"),
                 ],
             },
             Group {
@@ -1343,6 +1347,25 @@ pub const SCREENS: &[Screen] = &[
                     .more("Open the table chosen in place of this one. The query, filters and sort are cleared"),
                 k("Backspace", "Delete", "Delete a character (Ctrl+W a word, Ctrl+U all)"),
                 k("Esc", "Close", "Close and keep the table"),
+            ],
+        }],
+    },
+    Screen {
+        context: Context::Sample,
+        title: "Sample",
+        reached: "<kbd>S</kbd> at the table.",
+        groups: &[Group {
+            name: "Form",
+            keys: &[
+                k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous row"),
+                k("← / →", "Change", "Step Rows from, Method, Per value of")
+                    .more("Step Rows from, Method and Per value of; Method's No sample takes the view's sample away"),
+                k("(type)", "Edit", "Type a size (50k, 2m), a seed, rows, values")
+                    .more("Type into the focused row: the size (50000, 50k, 2m), the seed, a row range, partition values or file numbers")
+                    .no_run(),
+                k("Enter", "Draw", "Draw the sample; again past a memory warning")
+                    .more("Draw the sample: the table shows its rows as they arrive, and the query, filters and sort run over them. When the estimate is more than the memory available now (or analysis.sample_memory_limit), the form says so; Enter again draws anyway"),
+                k("Esc", "Cancel", "Close; the view's sample stays as it was"),
             ],
         }],
     },

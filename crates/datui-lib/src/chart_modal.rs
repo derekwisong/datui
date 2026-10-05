@@ -519,6 +519,9 @@ pub struct ChartModal {
     pub rows_draft: Option<RowsDraft>,
     /// The view's row count when the table knows it, for Every row's cost.
     pub view_rows: Option<usize>,
+    /// The view is a sample, held in memory: the chart reads all of it, and has no
+    /// Rows row of its own.
+    pub view_sampled: bool,
     pub focus: ChartFocus,
     /// The one Picker, open for the focused row; None while the form has the keys.
     pub picker: Option<PickerState>,
@@ -892,7 +895,7 @@ impl ChartModal {
             Mark::Box => rows.extend([Range, Grid]),
             Mark::Heatmap => rows.push(Bins),
         }
-        if !self.aggregates() {
+        if !self.aggregates() && !self.view_sampled {
             rows.push(LimitRows);
         }
         rows

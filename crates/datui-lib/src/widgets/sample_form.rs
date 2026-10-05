@@ -116,10 +116,18 @@ pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ct
                 } else {
                     "Rows"
                 };
-                items.push(Item::Context(Line::styled(
-                    format!("{per}, like 50000, 50k or 2m"),
-                    dimmed,
-                )));
+                // The cost, when the table has measured its rows; the forms a size
+                // takes otherwise.
+                let said = match (form.rows_expected(), form.estimate()) {
+                    (Some(rows), Some(bytes)) => format!(
+                        "{} rows {} ~{}",
+                        crate::numfmt::group_chrome(rows),
+                        g.middot,
+                        crate::widgets::info::format_bytes(bytes)
+                    ),
+                    _ => format!("{per}, like 50000, 50k or 2m"),
+                };
+                items.push(Item::Context(Line::styled(said, dimmed)));
             }
             _ => {}
         }

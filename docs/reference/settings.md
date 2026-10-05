@@ -96,6 +96,7 @@ lives, imports, the theme and troubleshooting.
 | `analysis.chart_rows` | integer | `10000` |  | Rows a chart reads; a larger table is sampled across all of it. |
 | `analysis.chart_grid` | bool | `false` |  | Start charts with a grid at the major ticks (g toggles). |
 | `analysis.quality_local_copy` | size | `"2GiB"` |  | Most a Data Quality full scan of a remote dataset copies into the cache to read once; 0 never copies. |
+| `analysis.sample_memory_limit` | size | unset |  | Most memory a view's sample may take. Unset: the memory available now decides; 0 never warns or stops. |
 
 ## Home
 

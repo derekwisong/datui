@@ -100,8 +100,11 @@ Move the cursor's column one place left or right, the cursor with it; a frozen c
 \fBp\fR
 Pivot or melt
 .TP
+\fBS\fR
+Draw a sample of the source into memory: the step under the query, filters and sort, which then run over it. The rows show as they arrive (Esc stops, keeping them); the footer says sample 100,000 of 36.8M. Analysis, charts and export read the sample. S again edits it; Method No sample, or R, takes it away
+.TP
 \fBR\fR
-Reset table: clear the query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view
+Reset table: clear the sample, query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view
 .PP
 \fIAnalyze\fR
 .TP
@@ -166,7 +169,7 @@ Back to the home screen when the dataset was opened from it; otherwise quit
 Quit
 .TP
 \fBEsc\fR
-Leave a drill-down, stop a find or a follow
+Leave a drill-down; stop a find, a sample being drawn (its rows so far stay) or a follow
 .PP
 \fIMouse\fR
 .TP
@@ -1244,6 +1247,25 @@ Delete a character (Ctrl+W a word, Ctrl+U all)
 .TP
 \fBEsc\fR
 Close and keep the table
+.SS "Sample"
+\fBS\fR at the table.
+.PP
+\fIForm\fR
+.TP
+\fBTab / Shift+Tab (\(ua / \(da)\fR
+Next or previous row
+.TP
+\fB\(<- / \(->\fR
+Step Rows from, Method and Per value of; Method's No sample takes the view's sample away
+.TP
+\fB(type)\fR
+Type into the focused row: the size (50000, 50k, 2m), the seed, a row range, partition values or file numbers
+.TP
+\fBEnter\fR
+Draw the sample: the table shows its rows as they arrive, and the query, filters and sort run over them. When the estimate is more than the memory available now (or analysis.\:sample_memory_limit), the form says so; Enter again draws anyway
+.TP
+\fBEsc\fR
+Close; the view's sample stays as it was
 .SS "Hex view"
 \fBdatui \-\-hex FILE\fR, \fBCtrl\fR+\fBX\fR on the home screen, or \fBx\fR in the Info panel.
 .PP

@@ -489,6 +489,91 @@ pub struct DataTableState {
     /// the count generation they hold for. The next count reads on from the last; a
     /// filtered window from the one before it.
     follow_known: Option<(u64, Vec<(usize, usize)>)>,
+    /// The sample this view's rows are, and the view it was drawn from, while the
+    /// view has one: the step between the source and the query.
+    sampled: Option<Box<Sampled>>,
+}
+
+/// A view's sample: the step between the source and the query. The view's frames
+/// scan [`Self::frame`], the chunks kept so far, which grows as the draw goes on.
+pub struct Sampled {
+    /// The view the sample was drawn from, as it stood: what clearing the sample
+    /// returns to.
+    source: Box<DataTableState>,
+    sample: crate::sampling::Sample,
+    rows: Arc<crate::table_sample::SampleRows>,
+    /// The frame the view's plans scan: the chunks taken so far, on their buffers.
+    frame: Arc<DataFrame>,
+    /// Drawn from the view's query or filters, which the sample then stands for,
+    /// rather than from the source under them.
+    through: bool,
+    /// What the draw read, once it ended; `None` while it runs.
+    drawn: Option<crate::table_sample::Drawn>,
+}
+
+impl Sampled {
+    pub fn sample(&self) -> &crate::sampling::Sample {
+        &self.sample
+    }
+
+    /// The view the sample was drawn from.
+    pub fn source(&self) -> &DataTableState {
+        &self.source
+    }
+
+    /// Whether the sample was drawn from the view's query or filters.
+    pub fn through(&self) -> bool {
+        self.through
+    }
+
+    /// Whether these are the rows `rows` holds: the sample a draw fills.
+    pub(crate) fn holds(&self, rows: &Arc<crate::table_sample::SampleRows>) -> bool {
+        Arc::ptr_eq(&self.rows, rows)
+    }
+
+    /// Whether rows are still arriving.
+    pub fn drawing(&self) -> bool {
+        self.drawn.is_none()
+    }
+
+    pub fn drawn(&self) -> Option<&crate::table_sample::Drawn> {
+        self.drawn.as_ref()
+    }
+
+    /// Rows the view has taken of the sample.
+    pub fn rows(&self) -> usize {
+        self.frame.height()
+    }
+
+    /// Bytes the sample's rows take.
+    pub fn bytes(&self) -> usize {
+        self.rows.bytes()
+    }
+
+    /// Why memory stopped the draw, if it did.
+    pub fn stopped(&self) -> Option<String> {
+        self.rows.stopped()
+    }
+
+    /// The footer's segment: `sample 100,000 of 36.8M`, `sample 1,234+` while it is
+    /// drawn, `sample about 100,000 of 36.8M` when kept row by row by chance.
+    pub fn label(&self) -> String {
+        let rows = crate::numfmt::group_chrome(self.rows());
+        let Some(drawn) = &self.drawn else {
+            return format!("sample {rows}+");
+        };
+        let about = if drawn.about { "about " } else { "" };
+        let cut = if drawn.cut { ", stopped" } else { "" };
+        match drawn.total {
+            Some(total) if total > self.rows() => {
+                format!(
+                    "sample {about}{rows} of {}{cut}",
+                    crate::discover::format_rows(total)
+                )
+            }
+            _ => format!("sample {rows}{cut}"),
+        }
+    }
 }
 
 /// What string-column inference may turn a column into, besides Time.
@@ -1568,6 +1653,14 @@ fn asks_of_subquery_values(e: &Expr, names: &[PlSmallStr]) -> bool {
     }
 }
 
+/// The in-memory frame `lf` scans, when it is a scan of one.
+fn scanned_frame(lf: &LazyFrame) -> Option<Arc<DataFrame>> {
+    match &lf.logical_plan {
+        polars::lazy::dsl::DslPlan::DataFrameScan { df, .. } => Some(df.clone()),
+        _ => None,
+    }
+}
+
 /// Calls `f` on each plan `plan` reads from.
 pub(crate) fn for_each_input(
     plan: &mut polars::lazy::dsl::DslPlan,
@@ -2146,6 +2239,7 @@ impl DataTableState {
             needs_recollect: false,
             follow: None,
             follow_known: None,
+            sampled: None,
         })
     }
 
@@ -2325,6 +2419,7 @@ impl DataTableState {
             needs_recollect: false,
             follow: None,
             follow_known: None,
+            sampled: None,
         })
     }
 
@@ -2599,6 +2694,12 @@ impl DataTableState {
         self.suppress_error_display = false;
         self.last_pivot_spec = None;
         self.last_melt_spec = None;
+    }
+
+    /// Back to the data as loaded with nothing applied, for a view's steps to be laid
+    /// on again. Reads nothing.
+    pub(crate) fn reset_view_for_replay(&mut self) {
+        self.return_to_root();
     }
 
     /// Back to the table as opened: the data as loaded, nothing applied, and every
@@ -5892,6 +5993,117 @@ impl DataTableState {
     /// the cheap Parquet-footer count source: once `lf` carries a filter/query/group, the
     /// row count no longer equals the sum of file footers.
     ///
+    /// A view of `sample`, drawn from `source` into `rows`, whose rows have the
+    /// columns of `schema`. It starts empty and takes rows with
+    /// [`Self::sample_grew`]. `through` when the sample was drawn from the view's
+    /// query or filters, rather than the source under them.
+    pub(crate) fn sampled_from(
+        source: DataTableState,
+        sample: crate::sampling::Sample,
+        schema: &Schema,
+        rows: Arc<crate::table_sample::SampleRows>,
+        through: bool,
+    ) -> Result<Self> {
+        let mut view = source.sample_view(DataFrame::empty_with_schema(schema))?;
+        let frame = scanned_frame(&view.original_lf)
+            .ok_or_else(|| color_eyre::eyre::eyre!("a sample's frame has no rows to scan"))?;
+        view.sampled = Some(Box::new(Sampled {
+            source: Box::new(source),
+            sample,
+            rows,
+            frame,
+            through,
+            drawn: None,
+        }));
+        Ok(view)
+    }
+
+    /// The view's sample, while it has one.
+    pub fn sampled(&self) -> Option<&Sampled> {
+        self.sampled.as_deref()
+    }
+
+    /// The view the sample was drawn from, or this one when it has none: where a new
+    /// sample is drawn from.
+    pub fn unsampled(&self) -> &DataTableState {
+        self.sampled
+            .as_ref()
+            .map_or(self, |sampled| sampled.source.as_ref())
+    }
+
+    /// The view the sample was drawn from, putting the sample down; `self` when it
+    /// has none.
+    pub(crate) fn into_unsampled(mut self) -> DataTableState {
+        match self.sampled.take() {
+            Some(sampled) => *sampled.source,
+            None => self,
+        }
+    }
+
+    /// Take the chunks the draw kept since the last call: every frame reads them, so
+    /// the query, filters and sort run over them too. Returns whether there were any.
+    /// The view stays where it is, and the rows on hand stand while nothing reorders
+    /// them, since the new rows come after them.
+    pub(crate) fn sample_grew(&mut self) -> bool {
+        let Some(sampled) = self.sampled.as_ref() else {
+            return false;
+        };
+        let chunks = sampled.rows.take_new();
+        if chunks.is_empty() {
+            return false;
+        }
+        let mut frame = (*sampled.frame).clone();
+        for chunk in &chunks {
+            if frame.vstack_mut(chunk).is_err() {
+                return false;
+            }
+        }
+        self.rebind_sample(Arc::new(frame), false);
+        true
+    }
+
+    /// The draw ended, having read what `drawn` says: the rows go into the order the
+    /// source holds them, once.
+    pub(crate) fn sample_drawn(&mut self, drawn: crate::table_sample::Drawn) {
+        let Some(sampled) = self.sampled.as_mut() else {
+            return;
+        };
+        // Taken so the chunks are not stacked a second time later.
+        let _ = sampled.rows.take_new();
+        let ordered = sampled.rows.in_source_order().ok().flatten();
+        sampled.drawn = Some(drawn);
+        if let Some(frame) = ordered {
+            self.rebind_sample(Arc::new(frame), true);
+        }
+    }
+
+    /// Every frame scans `frame` in place of the sample's last one. `reordered` when
+    /// the rows already shown changed places.
+    fn rebind_sample(&mut self, frame: Arc<DataFrame>, reordered: bool) {
+        let Some(old) = self.sampled.as_ref().map(|sampled| sampled.frame.clone()) else {
+            return;
+        };
+        let rows_stand = !reordered
+            && self.sort_columns.is_empty()
+            && self.sort_ascending
+            && self.scan_is_the_root();
+        let rows = frame.height();
+        self.each_frame(|lf| crate::table_sample::rebind(&mut lf.logical_plan, &old, &frame));
+        if let Some(sampled) = self.sampled.as_mut() {
+            sampled.frame = frame;
+        }
+        self.invalidate_num_rows();
+        if self.is_pristine() {
+            self.set_num_rows(rows);
+        } else if self.scan_is_the_root() {
+            self.pristine_rows = Some(rows);
+        }
+        if !rows_stand {
+            self.drop_buffer();
+        }
+        self.needs_recollect = true;
+    }
+
     /// Draws from the shared counter rather than incrementing, so a mutation here can
     /// never land on the value a later dataset is about to be seeded with.
     pub(crate) fn invalidate_num_rows(&mut self) {

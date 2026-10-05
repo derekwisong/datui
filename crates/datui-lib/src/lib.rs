@@ -165,8 +165,10 @@ pub mod retype_modal;
 pub mod row_index;
 #[cfg(feature = "cloud")]
 pub mod s3_tools;
+mod sample_keys;
 pub mod sample_modal;
 pub mod sampling;
+pub mod table_sample;
 // Public so the fuzz targets in `fuzz/` can reach `parse_query`. The parser is
 // hand-written and runs on whatever the user types, so it is fuzzed directly.
 pub mod query;
@@ -780,6 +782,8 @@ pub enum InputMode {
     ValueCounts,
     /// The hex view: a file's bytes.
     Hex,
+    /// The Sample form over the table (`S`).
+    Sample,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -903,6 +907,31 @@ fn active_query_settings(
         (Some(dsl_trimmed.to_string()), None, None)
     } else {
         (None, None, None)
+    }
+}
+
+/// The steps `state` shows, as a saved view keeps them: the query, filters, sort,
+/// columns and reshape.
+pub(crate) fn view_settings_of(state: &DataTableState) -> view::ViewSettings {
+    let (query, sql_query, fuzzy_query) = active_query_settings(
+        state.get_active_query(),
+        state.get_active_sql_query(),
+        state.get_active_fuzzy_query(),
+    );
+    view::ViewSettings {
+        query,
+        sql_query,
+        fuzzy_query,
+        filters: state.get_filters().to_vec(),
+        sort_columns: state.get_sort_columns().to_vec(),
+        sort_descending: state.get_sort_descending().to_vec(),
+        sort_ascending: state.get_sort_ascending(),
+        column_order: state.get_column_order().to_vec(),
+        locked_columns_count: state.locked_columns_count(),
+        pivot: state.last_pivot_spec().cloned(),
+        melt: state.last_melt_spec().cloned(),
+        reshape_source: state.reshape_source().cloned(),
+        columns: state.column_changes().to_vec(),
     }
 }
 
@@ -1089,6 +1118,12 @@ pub struct App {
     /// Taken on the first install, so datasets opened later are not re-dressed.
     startup_view: Option<String>,
     pub analysis_modal: AnalysisModal,
+    /// The Sample form over the table (`S`): the view's sample, the step under its
+    /// query.
+    pub sample_form: Option<sample_modal::SampleForm>,
+    /// Where the memory available now is read from, which a sample is checked
+    /// against. The system's, unless a test says otherwise.
+    memory_probe: table_sample::MemoryProbe,
     /// Reports, newest first, within [`QUALITY_MEMORY_BUDGET`].
     quality_cache: Vec<QualityCacheEntry>,
     /// See [`KeptQualitySample`]. Newest first, within [`QUALITY_MEMORY_BUDGET`].
@@ -2801,6 +2836,32 @@ impl App {
     fn run_sample_form(&mut self) -> Option<AppEvent> {
         let quality =
             self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality);
+        // The view's sample: it is drawn again, and the tool runs on it once it is.
+        if self.analysis_modal.sample_form.as_ref()?.view {
+            let memory = self.memory_check();
+            let form = self.analysis_modal.sample_form.as_mut()?;
+            return match Self::submit_view_sample(form, memory) {
+                sample_keys::Submitted::Stays => None,
+                sample_keys::Submitted::Clear => {
+                    self.analysis_modal.sample_form = None;
+                    self.clear_table_sample();
+                    if quality {
+                        None
+                    } else {
+                        self.start_analysis_run()
+                    }
+                }
+                sample_keys::Submitted::Draw { sample, anyway } => {
+                    self.analysis_modal.sample_form = None;
+                    self.apply_table_sample(sample, None, anyway, !quality);
+                    if !quality {
+                        self.analysis_modal.computing =
+                            Some(AnalysisProgress::new("Drawing the sample"));
+                    }
+                    None
+                }
+            };
+        }
         let finished = self.analysis_modal.sample_form.as_mut()?.finish();
         match finished {
             Ok(sample) if quality => {
@@ -2841,6 +2902,24 @@ impl App {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
+        // A view with a sample: the form edits it, and the rows come from the view it
+        // was drawn from.
+        let (sample, view) = match state.sampled() {
+            Some(sampled) => (sampled.sample().clone(), true),
+            None => (sample.clone(), false),
+        };
+        let context = self.sample_context(state.unsampled());
+        let mut form = sample_modal::SampleForm::new(&sample, context, &self.theme);
+        form.inline = inline;
+        form.view = view;
+        form.bytes_per_row = Some(state.unsampled().estimated_row_bytes());
+        self.analysis_modal.sample_form = Some(form);
+        self.sync_sample_form_focus();
+    }
+
+    /// What the Sample form offers for `state`'s rows: its partitions, files, time
+    /// columns and the columns an equal-per-value sample can split by.
+    pub(crate) fn sample_context(&self, state: &DataTableState) -> sample_modal::SampleContext {
         let mut partition_columns = state.partition_columns().unwrap_or_default().to_vec();
         let mut partition_values = Vec::new();
         // A directory whose files agree opens as one scan and names no partition
@@ -2888,7 +2967,7 @@ impl App {
                 }
             }
         }
-        let context = sample_modal::SampleContext {
+        sample_modal::SampleContext {
             view_rows: state.num_rows_if_valid(),
             filtered: state.changes_rows(),
             files: state.quality_source_file_names().to_vec(),
@@ -2896,11 +2975,7 @@ impl App {
             partition_values,
             time_columns: state.quality_temporal_columns(&data_quality::QualityScope::WholeSource),
             value_columns,
-        };
-        let mut form = sample_modal::SampleForm::new(sample, context, &self.theme);
-        form.inline = inline;
-        self.analysis_modal.sample_form = Some(form);
-        self.sync_sample_form_focus();
+        }
     }
 
     fn sample_form_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
@@ -2916,7 +2991,10 @@ impl App {
             }
             FormKey::Cancel => self.analysis_modal.sample_form = None,
             FormKey::Submit => return self.run_sample_form(),
-            FormKey::Step(_, delta) => form.adjust(delta > 0),
+            FormKey::Step(_, delta) => {
+                form.adjust(delta > 0);
+                form.edited();
+            }
             FormKey::Text(sample_modal::SampleField::Files)
                 if matches!(event.code, KeyCode::PageDown | KeyCode::PageUp) =>
             {
@@ -2932,7 +3010,7 @@ impl App {
                 if let Some(input) = form.input_mut(form.field) {
                     let _ = input.handle_key(event, None);
                 }
-                form.error = None;
+                form.edited();
             }
             FormKey::Act(_) | FormKey::Moved | FormKey::Other => {}
         }
@@ -3985,6 +4063,8 @@ impl App {
             && key.code == KeyCode::Esc;
         let cancel_view = key.code == KeyCode::Esc && self.view_applying();
         let cancel_find = key.code == KeyCode::Esc && self.finding();
+        let stop_sample =
+            key.code == KeyCode::Esc && self.sample_drawing() && self.in_normal_table_view();
         // The help reads nothing, so it can always be closed, a load's screen included.
         let close_help = self.help.is_open()
             && matches!(key.code, KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('?'));
@@ -3994,6 +4074,7 @@ impl App {
             || cancel_pivot
             || cancel_view
             || cancel_find
+            || stop_sample
             || leave_quality_evidence
             || self.confirmation_modal.active
             || self.input_mode == InputMode::Home
@@ -4038,6 +4119,9 @@ impl App {
     /// the `h` in a typed `/hello` never scrolls.
     pub fn key_acts_while_busy(&self, key: &KeyEvent) -> bool {
         if self.hard_escape_while_busy(key) || self.menu_takes(key) {
+            return true;
+        }
+        if self.key_acts_while_sampling(key) {
             return true;
         }
         if !self.in_normal_table_view() {
@@ -4257,6 +4341,10 @@ impl App {
                 .as_ref()
                 .is_some_and(|c| c.picker.is_some() || c.focus == retype_modal::CombineField::Name),
             InputMode::PickTable => true,
+            InputMode::Sample => self
+                .sample_form
+                .as_ref()
+                .is_some_and(|form| form.field.is_text()),
             // The whole inline editor types (pickers narrow, the value edits), as
             // do the add-sort Picker and the Columns tab's find.
             InputMode::SortFilter => self.sort_filter_modal.typing(),
@@ -5144,6 +5232,8 @@ impl App {
         // is that dataset's view. So was a view waiting on its pivot.
         self.query_running = None;
         self.jobs.supersede(|job| matches!(job, Job::ViewPivot(_)));
+        // A sample being drawn was the last dataset's.
+        self.put_down_sample_draw();
         // Whatever chart state survived belongs to the dataset being replaced.
         self.reset_chart_state();
         self.debug.schema_load = debug_label;
@@ -6028,6 +6118,8 @@ impl App {
             opened_from_home: false,
             startup_view: None,
             analysis_modal: AnalysisModal::with_sample_rows(app_config.analysis.sample_rows),
+            sample_form: None,
+            memory_probe: std::sync::Arc::new(table_sample::available_memory),
             quality_cache: Vec::new(),
             quality_samples: Vec::new(),
             quality_released: Vec::new(),
@@ -11952,26 +12044,7 @@ impl App {
             // description and matching alone — it must not overwrite what
             // the view carries with whatever the table happens to show.
             if editing_the_active_view && let Some(state) = &self.data_table_state {
-                let (query, sql_query, fuzzy_query) = active_query_settings(
-                    state.get_active_query(),
-                    state.get_active_sql_query(),
-                    state.get_active_fuzzy_query(),
-                );
-                view.settings = view::ViewSettings {
-                    query,
-                    sql_query,
-                    fuzzy_query,
-                    filters: state.get_filters().to_vec(),
-                    sort_columns: state.get_sort_columns().to_vec(),
-                    sort_descending: state.get_sort_descending().to_vec(),
-                    sort_ascending: state.get_sort_ascending(),
-                    column_order: state.get_column_order().to_vec(),
-                    locked_columns_count: state.locked_columns_count(),
-                    pivot: state.last_pivot_spec().cloned(),
-                    melt: state.last_melt_spec().cloned(),
-                    reshape_source: state.reshape_source().cloned(),
-                    columns: state.column_changes().to_vec(),
-                };
+                view.settings = view_settings_of(state);
             }
             match self.view_manager.update_view(&view) {
                 Ok(()) => true,
@@ -12137,6 +12210,7 @@ impl App {
             InputMode::Retype => Context::Retype,
             InputMode::Combine => Context::Combine,
             InputMode::PickTable => Context::TablePicker,
+            InputMode::Sample => Context::Sample,
             InputMode::Info => Context::Info,
             InputMode::Chart => Context::Chart,
             InputMode::Home if self.documentation.is_open() => Context::Documentation,
@@ -12555,6 +12629,10 @@ impl App {
             return self.export_key(event);
         }
 
+        if self.input_mode == InputMode::Sample {
+            return self.table_sample_form_key(event);
+        }
+
         if self.input_mode == InputMode::Inspect {
             return self.inspector_key(event);
         }
@@ -12742,6 +12820,11 @@ impl App {
                 // The find is the nearest layer: its mark goes first, then a drill.
                 if self.find_shown() {
                     self.find.active = None;
+                    return None;
+                }
+                // A sample being drawn stops, keeping the rows so far.
+                if self.sample_drawing() {
+                    self.stop_sample_draw();
                     return None;
                 }
                 let mut from_counts = false;
@@ -13018,6 +13101,12 @@ impl App {
                 self.open_view_list();
                 None
             }
+            KeyCode::Char('S') => {
+                if self.input_mode == InputMode::Normal {
+                    self.open_table_sample_form();
+                }
+                None
+            }
             KeyCode::Char('s') => {
                 if self.data_table_state.is_some() {
                     // Rebuilt from the table's applied state, never from what the modal
@@ -13060,6 +13149,13 @@ impl App {
                         self.analysis_modal.sample.scope = data_quality::QualityScope::CurrentView;
                         self.analysis_modal.sample_dataset = Some(self.dataset_generation);
                     }
+                    // A view with a sample: every tool reads it, whole.
+                    let sampled = self
+                        .data_table_state
+                        .as_ref()
+                        .is_some_and(|state| state.sampled().is_some());
+                    self.analysis_modal.follow_view_sample(sampled);
+                    self.sync_quality_plan();
                 }
                 None
             }
@@ -13106,6 +13202,7 @@ impl App {
                         .collect();
                     self.chart_modal.series_cap = Some(self.theme.series_colors().len());
                     self.chart_modal.row_order = self.view_state().sort;
+                    let sampled = state.sampled().is_some();
                     self.chart_modal.open(
                         ChartColumns {
                             numeric: &numeric_columns,
@@ -13118,6 +13215,13 @@ impl App {
                         self.app_config.analysis.chart_grid,
                         self.dataset_generation,
                     );
+                    // A view's sample is read whole: the chart has no sample of its own.
+                    if sampled {
+                        self.chart_modal.row_limit = None;
+                    } else if self.chart_modal.view_sampled {
+                        self.chart_modal.row_limit = Some(self.chart_modal.sample_rows);
+                    }
+                    self.chart_modal.view_sampled = sampled;
                     self.chart_cache.clear();
                     self.input_mode = InputMode::Chart;
                 }
@@ -14603,6 +14707,18 @@ impl App {
                 None
             }
             AppEvent::Reset => {
+                // The sample is a step of the view: a reset takes it away too.
+                if self
+                    .data_table_state
+                    .as_ref()
+                    .is_some_and(|state| state.sampled().is_some())
+                {
+                    self.put_down_sample_draw();
+                    if let Some(state) = self.data_table_state.take() {
+                        self.data_table_state = Some(state.into_unsampled());
+                    }
+                    self.sample_changed();
+                }
                 if let Some(state) = &mut self.data_table_state {
                     state.deferred(|s| s.reset());
                 }
@@ -15081,7 +15197,7 @@ impl App {
         Ok(Some(Figure {
             plot,
             // The file always has the middle dot; the terminal may be ASCII.
-            chart_notes: prepared.notes("·"),
+            chart_notes: self.chart_notes_of(prepared, "·"),
             grid: modal.grid,
         }))
     }
@@ -15686,6 +15802,8 @@ impl App {
             }
             Progress::Finding { rows } => self.find_progress(*rows),
             Progress::HexFinding { read, total } => self.hex_find_progress(*read, *total),
+            Progress::SampleBegun(schema) => self.sample_begun(schema),
+            Progress::SampleGrew => self.sample_grew(),
         }
     }
 
@@ -15902,6 +16020,7 @@ impl App {
                 }
                 None
             }
+            Answer::SampleDrawn(drawn) => self.sample_drawn(job, current, drawn),
             Answer::Sample { df, label } => {
                 if current {
                     self.analysis_modal.computing = None;
@@ -16177,6 +16296,7 @@ impl App {
                     self.error_modal.show(message.to_string());
                 }
             }
+            Job::SampleDraw(_) => self.sample_draw_failed(job, current, message),
             // The form stays up with its spec, to be fixed.
             Job::Pivot | Job::Copy => {
                 if current {
@@ -18619,29 +18739,9 @@ impl App {
         description: Option<String>,
         match_criteria: view::MatchCriteria,
     ) -> Result<view::SavedView> {
-        let settings = if let Some(state) = &self.data_table_state {
-            let (query, sql_query, fuzzy_query) = active_query_settings(
-                state.get_active_query(),
-                state.get_active_sql_query(),
-                state.get_active_fuzzy_query(),
-            );
-            view::ViewSettings {
-                query,
-                sql_query,
-                fuzzy_query,
-                filters: state.get_filters().to_vec(),
-                sort_columns: state.get_sort_columns().to_vec(),
-                sort_descending: state.get_sort_descending().to_vec(),
-                sort_ascending: state.get_sort_ascending(),
-                column_order: state.get_column_order().to_vec(),
-                locked_columns_count: state.locked_columns_count(),
-                pivot: state.last_pivot_spec().cloned(),
-                melt: state.last_melt_spec().cloned(),
-                reshape_source: state.reshape_source().cloned(),
-                columns: state.column_changes().to_vec(),
-            }
-        } else {
-            view::ViewSettings {
+        let settings = match &self.data_table_state {
+            Some(state) => view_settings_of(state),
+            None => view::ViewSettings {
                 query: None,
                 sql_query: None,
                 fuzzy_query: None,
@@ -18655,7 +18755,7 @@ impl App {
                 melt: None,
                 reshape_source: None,
                 columns: Vec::new(),
-            }
+            },
         };
 
         self.view_manager

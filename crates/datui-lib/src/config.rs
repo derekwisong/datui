@@ -1322,6 +1322,9 @@ pub struct AnalysisConfig {
     /// The most a Data Quality full scan of a remote dataset may copy into the cache
     /// directory, to read the objects once instead of once per pass. 0 never copies.
     pub quality_local_copy: ByteSize,
+    /// The most memory a view's sample may take. Unset: the memory available now
+    /// decides, before the draw and as it runs. 0: no warning and no stop.
+    pub sample_memory_limit: Option<ByteSize>,
 }
 
 impl Default for AnalysisConfig {
@@ -1331,6 +1334,7 @@ impl Default for AnalysisConfig {
             chart_rows: DEFAULT_CHART_ROW_LIMIT,
             chart_grid: false,
             quality_local_copy: DEFAULT_QUALITY_LOCAL_COPY,
+            sample_memory_limit: None,
         }
     }
 }

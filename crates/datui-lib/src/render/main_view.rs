@@ -148,6 +148,10 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
                 keys.push(registry_hint(Context::Table, "Enter"));
             }
             let state = app.data_table_state.as_ref();
+            // A view's chart waits: `c` draws it.
+            if app.chart_modal.restored {
+                keys.push(registry_hint(Context::Table, "c"));
+            }
             // Read through a format spec: `b` reads it with another.
             if state.and_then(|s| s.format_read()).is_some() {
                 keys.push(registry_hint(Context::Table, "b"));

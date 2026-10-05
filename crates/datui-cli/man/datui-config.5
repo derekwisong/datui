@@ -154,6 +154,11 @@ Most a Data Quality full scan of a remote dataset copies into the cache to read 
 .TP
 \fBanalysis.sample_memory_limit\fR (\fIsize\fR)
 Most memory a view's sample may take. Unset: the memory available now decides; 0 never warns or stops. Unset by default.
+.SS "[chart]"
+Charts exported to a file (\fBe\fR in the chart view).
+.TP
+\fBchart.export_recipe\fR (\fIbool\fR)
+Embed how an exported chart was made (source path, query, chart, sample) in its PNG, SVG or PDF. The export dialog's Recipe row starts from it. Default: \fBtrue\fR.
 .SS "[home]"
 The home screen.
 .TP

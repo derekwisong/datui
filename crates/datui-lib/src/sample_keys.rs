@@ -576,6 +576,7 @@ impl App {
                 .or_log("record a view's use");
         }
         self.active_view_id = Some(view.id.clone());
+        self.restore_view_chart(view.settings.chart.as_ref());
         let mut settings = view.settings.clone();
         settings.sample = None;
         self.draw_table_sample(sample, saved.of, Some(settings), false, false);

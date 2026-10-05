@@ -20,7 +20,8 @@ const FONT_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/IBMPlexSans-SemiBol
 const FONT_FAMILY: &str = "IBM Plex Sans";
 
 /// Export format for a chart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ChartExportFormat {
     Png,
     Svg,
@@ -54,7 +55,8 @@ impl ChartExportFormat {
 }
 
 /// The colors an export is drawn in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ExportStyle {
     /// White, with a print-safe palette that stays apart for color-blind readers.
     Light,
@@ -78,7 +80,8 @@ impl ExportStyle {
 
 /// A size an export is made at: pixels, and the resolution that makes them a
 /// physical size (a PDF's page, an SVG's inches, the text's points).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SizePreset {
     Slide,
     Document,
@@ -137,7 +140,8 @@ impl SizePreset {
 }
 
 /// Where the series are named.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LegendPlace {
     /// Each line named at its right end; a chart without lines takes a box at the
     /// top right.
@@ -172,7 +176,8 @@ impl LegendPlace {
 }
 
 /// How opaque a scatter's points are.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PointOpacity {
     /// Fainter as there are more points, so a dense cloud shows where it is densest.
     #[default]
@@ -214,7 +219,8 @@ pub fn auto_opacity(points: usize) -> f64 {
 }
 
 /// A scatter point's radius.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PointSize {
     Small,
     #[default]
@@ -244,7 +250,8 @@ impl PointSize {
 }
 
 /// A line chart's stroke.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LineWidth {
     Thin,
     #[default]
@@ -505,6 +512,10 @@ pub struct ExportOptions {
     /// Whether a line chart's Y axis takes in zero; `None` leaves it as the chart
     /// draws it. Bars always start at zero.
     pub y_from_zero: Option<bool>,
+    /// How the chart was made, as a view's JSON, kept in the file's metadata: a PNG
+    /// `iTXt` chunk, an SVG `<metadata>` element, the PDF's document info. `None`
+    /// writes no datui metadata at all.
+    pub recipe: Option<String>,
 }
 
 impl Default for ExportOptions {
@@ -526,6 +537,7 @@ impl Default for ExportOptions {
             point_size: PointSize::default(),
             line_width: LineWidth::default(),
             y_from_zero: None,
+            recipe: None,
         }
     }
 }
@@ -538,6 +550,9 @@ pub struct ChartExportRequest {
     pub options: ExportOptions,
     /// Whether an existing file may be replaced (asked before the export started).
     pub overwrite: crate::output_file::Overwrite,
+    /// Whether the file carries the chart's recipe, which the app writes in when the
+    /// export starts.
+    pub recipe: bool,
 }
 
 /// One axis: its title, what its numbers are, and whether they are dates.
@@ -613,11 +628,11 @@ pub fn render(
     format: ChartExportFormat,
 ) -> Result<Vec<u8>> {
     let tree = tree(&svg(figure, options)?)?;
+    let recipe = options.recipe.as_deref();
     Ok(match format {
         // usvg writes the size in pixels; the page's inches say how large it prints.
-        ChartExportFormat::Svg => tree
-            .to_string(&usvg::WriteOptions::default())
-            .replacen(
+        ChartExportFormat::Svg => with_svg_recipe(
+            tree.to_string(&usvg::WriteOptions::default()).replacen(
                 &format!("width=\"{}\" height=\"{}\"", options.width, options.height),
                 &format!(
                     "width=\"{:.3}in\" height=\"{:.3}in\" viewBox=\"0 0 {} {}\"",
@@ -627,8 +642,10 @@ pub fn render(
                     options.height,
                 ),
                 1,
-            )
-            .into_bytes(),
+            ),
+            recipe,
+        )
+        .into_bytes(),
         ChartExportFormat::Png => {
             let mut pixmap = tiny_skia::Pixmap::new(options.width, options.height)
                 .ok_or_else(|| color_eyre::eyre::eyre!("cannot draw a chart of that size"))?;
@@ -640,12 +657,102 @@ pub fn render(
             let png = pixmap
                 .encode_png()
                 .map_err(|e| color_eyre::eyre::eyre!("PNG: {e}"))?;
-            with_resolution(png, options.dpi)
+            let png = with_resolution(png, options.dpi);
+            match recipe {
+                Some(recipe) => with_png_recipe(png, recipe),
+                None => png,
+            }
         }
         ChartExportFormat::Pdf => {
-            crate::chart_pdf::write(&tree, options.width, options.height, options.dpi)?
+            crate::chart_pdf::write(&tree, (options.width, options.height), options.dpi, recipe)?
         }
     })
+}
+
+/// The key a recipe is kept under: a PNG chunk's keyword, the SVG element's name,
+/// the PDF's info entry.
+pub const RECIPE_KEY: &str = "datui-recipe";
+
+/// The namespace of the SVG recipe element.
+const RECIPE_NAMESPACE: &str = "https://derekwisong.github.io/datui/recipe";
+
+/// `png` with `recipe` in an `iTXt` chunk (UTF-8, uncompressed) before its end.
+fn with_png_recipe(mut png: Vec<u8>, recipe: &str) -> Vec<u8> {
+    // IEND is the last chunk: its length, type and checksum, no data.
+    const IEND: usize = 12;
+    if png.len() < IEND || &png[png.len() - 8..png.len() - 4] != b"IEND" {
+        return png;
+    }
+    let mut chunk = b"iTXt".to_vec();
+    chunk.extend_from_slice(RECIPE_KEY.as_bytes());
+    // The keyword's end, uncompressed, no language tag, no translated keyword.
+    chunk.extend_from_slice(&[0, 0, 0, 0, 0]);
+    chunk.extend_from_slice(recipe.as_bytes());
+    let crc = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC).checksum(&chunk);
+    let mut bytes = u32::try_from(chunk.len() - 4)
+        .unwrap_or(u32::MAX)
+        .to_be_bytes()
+        .to_vec();
+    bytes.extend_from_slice(&chunk);
+    bytes.extend_from_slice(&crc.to_be_bytes());
+    let end = png.len() - IEND;
+    png.splice(end..end, bytes);
+    png
+}
+
+/// `svg` with `recipe` in a `<metadata>` element, the root's first child.
+fn with_svg_recipe(svg: String, recipe: Option<&str>) -> String {
+    let Some(recipe) = recipe else {
+        return svg;
+    };
+    let Some(open) = svg
+        .find("<svg")
+        .and_then(|at| svg[at..].find('>').map(|end| at + end + 1))
+    else {
+        return svg;
+    };
+    let element = format!(
+        "<metadata><{RECIPE_KEY} xmlns=\"{RECIPE_NAMESPACE}\">{}</{RECIPE_KEY}></metadata>",
+        esc(recipe)
+    );
+    let mut out = svg;
+    out.insert_str(open, &element);
+    out
+}
+
+/// The recipe an exported chart carries, if it carries one.
+pub fn recipe_in(bytes: &[u8]) -> Option<String> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let mut at = 8;
+        while at + 12 <= bytes.len() {
+            let len = u32::from_be_bytes(bytes[at..at + 4].try_into().ok()?) as usize;
+            let kind = &bytes[at + 4..at + 8];
+            let data = bytes.get(at + 8..at + 8 + len)?;
+            if kind == b"iTXt" && data.starts_with(RECIPE_KEY.as_bytes()) {
+                let text = data.get(RECIPE_KEY.len() + 5..)?;
+                return String::from_utf8(text.to_vec()).ok();
+            }
+            at += 12 + len;
+        }
+        return None;
+    }
+    if bytes.starts_with(b"%PDF") {
+        return crate::chart_pdf::recipe_in(bytes);
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    let open = format!("<{RECIPE_KEY} xmlns=\"{RECIPE_NAMESPACE}\">");
+    let start = text.find(&open)? + open.len();
+    let end = start + text[start..].find(&format!("</{RECIPE_KEY}>"))?;
+    Some(unescape(&text[start..end]))
+}
+
+/// Text from SVG, as [`esc`] wrote it.
+fn unescape(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 /// `png` with its resolution recorded (a `pHYs` chunk after `IHDR`), so a column
@@ -2001,6 +2108,42 @@ mod tests {
         assert!(pdf.starts_with(b"%PDF-"));
         // 600 x 400 px at 96 dpi: 450 x 300 pt.
         assert!(String::from_utf8_lossy(&pdf).contains("/MediaBox [0 0 450 300]"));
+    }
+
+    /// Include writes the recipe into each format's own metadata, where a reader
+    /// finds it whole, and the file stays valid; Omit writes no datui metadata at all.
+    #[test]
+    fn the_recipe_rides_in_each_format_and_omit_writes_none() {
+        let figure = lines(&["AAPL", "MSFT"]);
+        let recipe = "{\"datui\": \"0.4.0\", \"settings\": {\"query\": \"select where a < 3 & b > \\\"x\\\"\"}, \"note\": \"Zürich\"}";
+        let with = ExportOptions {
+            width: 300,
+            height: 200,
+            dpi: 96.0,
+            recipe: Some(recipe.to_string()),
+            ..ExportOptions::default()
+        };
+        let without = ExportOptions {
+            recipe: None,
+            ..with.clone()
+        };
+        for format in ChartExportFormat::ALL {
+            let bytes = render(&figure, &with, format).unwrap();
+            assert_eq!(recipe_in(&bytes).as_deref(), Some(recipe), "{format:?}");
+            let bare = render(&figure, &without, format).unwrap();
+            assert_eq!(recipe_in(&bare), None, "{format:?}");
+            assert!(
+                !bare.windows(5).any(|w| w.eq_ignore_ascii_case(b"datui")),
+                "{format:?}: no datui metadata with Omit"
+            );
+        }
+        let png = render(&figure, &with, ChartExportFormat::Png).unwrap();
+        let decoded = resvg::tiny_skia::Pixmap::decode_png(&png).expect("a valid PNG");
+        assert_eq!((decoded.width(), decoded.height()), (300, 200));
+        let svg =
+            String::from_utf8(render(&figure, &with, ChartExportFormat::Svg).unwrap()).unwrap();
+        assert!(svg.contains("<metadata>"), "{svg}");
+        usvg::Tree::from_str(&svg, &usvg::Options::default()).expect("valid SVG");
     }
 
     #[test]

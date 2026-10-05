@@ -818,6 +818,7 @@ fn chart_export_request(
             ..Default::default()
         },
         overwrite: datui::output_file::Overwrite::Forbid,
+        recipe: false,
     }
 }
 

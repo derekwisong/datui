@@ -98,6 +98,14 @@ lives, imports, the theme and troubleshooting.
 | `analysis.quality_local_copy` | size | `"2GiB"` |  | Most a Data Quality full scan of a remote dataset copies into the cache to read once; 0 never copies. |
 | `analysis.sample_memory_limit` | size | unset |  | Most memory a view's sample may take. Unset: the memory available now decides; 0 never warns or stops. |
 
+## Chart
+
+`[chart]` Charts exported to a file (`e` in the chart view).
+
+| Key | Type | Default | Flag | Description |
+|---|---|---|---|---|
+| `chart.export_recipe` | bool | `true` |  | Embed how an exported chart was made (source path, query, chart, sample) in its PNG, SVG or PDF. The export dialog's Recipe row starts from it. |
+
 ## Home
 
 `[home]` The home screen.

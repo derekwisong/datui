@@ -269,3 +269,59 @@ fn reset_takes_the_sample_away() {
     assert!(state.sampled().is_none());
     assert_eq!(state.num_rows(), 2_000);
 }
+
+/// An exported chart carries its recipe, a view's JSON, when the dialog says
+/// Include: the source, the query, the sample with its seed, and the chart. With
+/// Omit the file carries no datui metadata at all.
+#[test]
+fn an_exported_chart_carries_its_recipe_unless_omitted() {
+    use datui::chart_export::{ChartExportFormat, recipe_in};
+    let path = parquet("table_sample_recipe.parquet", 10_000);
+    let (mut app, rx, tx) = open(path.clone());
+    draw(&mut app, "300");
+    pump_until_idle(&mut app, &rx, &tx);
+    run_query(&mut app, &rx, &tx, "select where group = \"b\"");
+    key(&mut app, KeyCode::Char('c'));
+    pump_until(&mut app, &rx, &tx, App::chart_data_ready);
+    assert!(
+        app.chart_export_modal.recipe,
+        "chart.export_recipe starts the row at Include"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    for format in [ChartExportFormat::Png, ChartExportFormat::Svg] {
+        let file = dir.path().join(format!("with.{}", format.extension()));
+        let mut request = chart_export_request(&file, format);
+        request.recipe = true;
+        run_to_idle(&mut app, &rx, &tx, AppEvent::ChartExport(request));
+        let recipe = recipe_in(&std::fs::read(&file).unwrap()).expect("a recipe");
+        let json: serde_json::Value = serde_json::from_str(&recipe).unwrap();
+        assert!(json["datui"].is_string(), "{json}");
+        assert_eq!(
+            json["match_criteria"]["exact_path"].as_str(),
+            Some(path.to_str().unwrap()),
+            "{json}"
+        );
+        let settings = &json["settings"];
+        assert_eq!(settings["query"], "select where group = \"b\"", "{json}");
+        assert_eq!(settings["sample"]["seed"], 7, "{json}");
+        assert_eq!(settings["sample"]["rows"], 300, "{json}");
+        assert!(settings["chart"]["mark"].is_string(), "{json}");
+        // It reads back as a view.
+        serde_json::from_str::<datui::view::SavedView>(&recipe).expect("a view");
+
+        let bare = dir.path().join(format!("without.{}", format.extension()));
+        run_to_idle(
+            &mut app,
+            &rx,
+            &tx,
+            AppEvent::ChartExport(chart_export_request(&bare, format)),
+        );
+        let bytes = std::fs::read(&bare).unwrap();
+        assert_eq!(recipe_in(&bytes), None);
+        assert!(
+            !bytes.windows(5).any(|w| w.eq_ignore_ascii_case(b"datui")),
+            "{format:?}: no datui metadata with Omit"
+        );
+    }
+}

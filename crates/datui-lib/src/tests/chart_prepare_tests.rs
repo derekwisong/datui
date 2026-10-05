@@ -65,6 +65,7 @@ fn chart_request(path: &str) -> ChartExportRequest {
         format: ChartExportFormat::Png,
         options: chart_export::ExportOptions::default(),
         overwrite: Overwrite::Forbid,
+        recipe: false,
     }
 }
 

@@ -474,6 +474,7 @@ mod tests {
                 table: None,
             },
             settings: ViewSettings {
+                chart: None,
                 sample: None,
                 query: None,
                 sql_query: None,

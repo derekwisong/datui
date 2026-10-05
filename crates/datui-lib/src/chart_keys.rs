@@ -266,6 +266,7 @@ impl App {
             }
         };
         let (width, height) = modal.export_dimensions();
+        let recipe = modal.recipe;
         let options = crate::chart_export::ExportOptions {
             width,
             height,
@@ -284,6 +285,8 @@ impl App {
             point_size: modal.point_size,
             line_width: modal.line_width,
             y_from_zero: modal.y_from_zero_option(),
+            // Written in when the export starts, from the chart as it is then.
+            recipe: None,
         };
         self.chart_export_modal
             .path_input
@@ -295,6 +298,7 @@ impl App {
             format,
             options,
             overwrite: Overwrite::Forbid,
+            recipe,
         };
         if request.path.exists() {
             self.pending_chart_export = Some(request);

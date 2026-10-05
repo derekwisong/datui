@@ -28,6 +28,7 @@ pub enum ChartExportFocus {
     NotesInput,
     SourceInput,
     BylineInput,
+    Recipe,
 }
 
 impl ChartExportFocus {
@@ -50,13 +51,14 @@ impl ChartExportFocus {
             Self::NotesInput => "Notes:",
             Self::SourceInput => "Source:",
             Self::BylineInput => "Byline:",
+            Self::Recipe => "Recipe:",
         }
     }
 }
 
 /// The fields in order, top to bottom; the marks' rows show only for the chart
 /// types they change ([`ChartExportModal::shows`]).
-pub const FIELDS: [ChartExportFocus; 16] = [
+pub const FIELDS: [ChartExportFocus; 17] = [
     ChartExportFocus::PathInput,
     ChartExportFocus::Format,
     ChartExportFocus::Style,
@@ -73,6 +75,7 @@ pub const FIELDS: [ChartExportFocus; 16] = [
     ChartExportFocus::NotesInput,
     ChartExportFocus::SourceInput,
     ChartExportFocus::BylineInput,
+    ChartExportFocus::Recipe,
 ];
 
 /// What the chart being exported brings to the dialog.
@@ -114,6 +117,11 @@ pub struct ChartExportModal {
     pub notes_input: TextInput,
     pub source_input: TextInput,
     pub byline_input: TextInput,
+    /// Whether the file carries how the chart was made: the source path, query,
+    /// chart and sample. Starts from `chart.export_recipe`, then stays as last set.
+    pub recipe: bool,
+    /// A view's export settings, put in place the next time the dialog opens.
+    pub restore: Option<crate::view::SavedChartExport>,
     /// Why Enter did not write: a blank path, or the failed write's reason. Said
     /// on the dialog's status line; cleared by typing in the path.
     pub error: Option<String>,
@@ -167,6 +175,60 @@ impl ChartExportModal {
         self.mark = defaults.mark;
         self.y_from_zero = defaults.y_from_zero;
         self.apply_size();
+        if let Some(saved) = self.restore.take() {
+            self.put_back(saved);
+        }
+    }
+
+    /// The dialog as a view keeps it: everything but the path.
+    pub fn saved(&self) -> crate::view::SavedChartExport {
+        let (width, height) = self.export_dimensions();
+        crate::view::SavedChartExport {
+            format: self.format,
+            style: self.style,
+            size: self.size,
+            width,
+            height,
+            dpi: self.dpi,
+            legend: self.legend,
+            point_opacity: self.point_opacity,
+            point_size: self.point_size,
+            line_width: self.line_width,
+            y_from_zero: self.y_from_zero,
+            title: self.title_input.value().to_string(),
+            description: self.description_input.value().to_string(),
+            notes: self.notes_input.value().to_string(),
+            source: self.source_input.value().to_string(),
+            byline: self.byline_input.value().to_string(),
+            recipe: self.recipe,
+        }
+    }
+
+    /// Put back a view's settings. Words it left blank keep the chart's own.
+    fn put_back(&mut self, saved: crate::view::SavedChartExport) {
+        self.format = saved.format;
+        self.style = saved.style;
+        self.size = saved.size;
+        self.dpi = saved.dpi;
+        self.width_input.set_value(saved.width.to_string());
+        self.height_input.set_value(saved.height.to_string());
+        self.legend = saved.legend;
+        self.point_opacity = saved.point_opacity;
+        self.point_size = saved.point_size;
+        self.line_width = saved.line_width;
+        self.y_from_zero = saved.y_from_zero;
+        self.recipe = saved.recipe;
+        for (input, text) in [
+            (&mut self.title_input, saved.title),
+            (&mut self.description_input, saved.description),
+            (&mut self.notes_input, saved.notes),
+            (&mut self.source_input, saved.source),
+            (&mut self.byline_input, saved.byline),
+        ] {
+            if !text.is_empty() {
+                input.set_value(text);
+            }
+        }
     }
 
     /// Whether `field` applies to the chart being exported: the points' rows to a
@@ -202,6 +264,14 @@ impl ChartExportModal {
                     "On"
                 } else {
                     "Off"
+                }
+            }
+            // What is embedded is said with the choice, so nobody is surprised by it.
+            ChartExportFocus::Recipe => {
+                if self.recipe {
+                    "Include: source path, query, chart, sample"
+                } else {
+                    "Omit: no datui metadata"
                 }
             }
             _ => return None,
@@ -267,6 +337,7 @@ impl ChartExportModal {
                 self.line_width = step_value(&LineWidth::ALL, self.line_width, delta)
             }
             ChartExportFocus::YFromZero => self.y_from_zero = !self.y_from_zero,
+            ChartExportFocus::Recipe => self.recipe = !self.recipe,
             _ => {}
         }
     }
@@ -390,6 +461,8 @@ impl Default for ChartExportModal {
             notes_input: TextInput::new(),
             source_input: TextInput::new(),
             byline_input: TextInput::new(),
+            recipe: true,
+            restore: None,
             error: None,
         }
     }

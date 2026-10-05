@@ -411,6 +411,13 @@ fn a_view_draws_its_sample_again_from_the_seed() {
     let drawn = ids(&app);
     assert!(!drawn.is_empty() && drawn.len() < 700, "{}", drawn.len());
 
+    // A chart of the view, with an option set: the view keeps it.
+    press(&mut app, KeyCode::Char('c'));
+    assert_eq!(app.input_mode, datui::InputMode::Chart);
+    app.chart_modal.hist_bins = 17;
+    press(&mut app, KeyCode::Esc);
+    drain_events(&mut app, &rx);
+
     let criteria = datui::view::MatchCriteria {
         exact_path: Some(path.clone()),
         relative_path: None,
@@ -429,6 +436,8 @@ fn a_view_draws_its_sample_again_from_the_seed() {
         saved.settings.query.as_deref(),
         Some("select where sv_group = 2")
     );
+    let chart = saved.settings.chart.as_ref().expect("the chart is saved");
+    assert_eq!(chart.histogram_bins, 17);
 
     // Back to the table as opened, then the view again.
     if let Some(reset) = app.event(&AppEvent::Key(KeyEvent::new(
@@ -439,10 +448,19 @@ fn a_view_draws_its_sample_again_from_the_seed() {
     }
     drain_events(&mut app, &rx);
     assert!(app.data_table_state.as_ref().unwrap().sampled().is_none());
+    app.chart_modal.hist_bins = 40;
     press(&mut app, KeyCode::Char('V'));
     drain_events(&mut app, &rx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.sampled().is_some(), "the view draws its sample");
     assert_eq!(state.get_active_query(), "select where sv_group = 2");
     assert_eq!(ids(&app), drawn, "the same rows, from the seed");
+
+    // The table, with the chart one key away: `c` draws the view's chart.
+    assert_eq!(app.input_mode, datui::InputMode::Normal);
+    assert!(app.chart_modal.restored);
+    press(&mut app, KeyCode::Char('c'));
+    assert_eq!(app.input_mode, datui::InputMode::Chart);
+    assert_eq!(app.chart_modal.spec, chart.spec);
+    assert_eq!(app.chart_modal.hist_bins, 17);
 }

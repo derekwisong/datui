@@ -521,7 +521,8 @@ pub struct RowsRead {
 
 /// Which values a histogram, box plot or KDE draws. Outliers far from the body squash
 /// it into a bin or two; a percentile range leaves them out and says how many.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ValueRange {
     #[default]
     All,
@@ -1576,7 +1577,8 @@ pub fn prepare_heatmap_data(
 }
 
 /// The order of a bar chart's bars, top to bottom.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BarOrder {
     /// Largest value first.
     #[default]

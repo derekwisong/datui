@@ -259,6 +259,7 @@ pub struct AppConfig {
     pub display: DisplayConfig,
     pub performance: PerformanceConfig,
     pub analysis: AnalysisConfig,
+    pub chart: ChartConfig,
     pub home: HomeConfig,
     pub cloud: CloudConfig,
     pub http: HttpConfig,
@@ -1789,6 +1790,23 @@ impl QueryMode {
     }
 }
 
+/// `[chart]`: charts exported to a file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChartConfig {
+    /// Whether an exported chart carries its recipe: the source, query, chart and
+    /// sample it was made from. The export dialog's Recipe row starts from it.
+    pub export_recipe: bool,
+}
+
+impl Default for ChartConfig {
+    fn default() -> Self {
+        Self {
+            export_recipe: true,
+        }
+    }
+}
+
 /// `[views]`: saved views.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -1863,6 +1881,7 @@ impl Default for AppConfig {
             display: DisplayConfig::default(),
             performance: PerformanceConfig::default(),
             analysis: AnalysisConfig::default(),
+            chart: ChartConfig::default(),
             home: HomeConfig::default(),
             cloud: CloudConfig::default(),
             http: HttpConfig::default(),

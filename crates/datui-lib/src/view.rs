@@ -168,6 +168,67 @@ pub struct ViewSettings {
     /// the query, filters and sort above. Its settings only, never its rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sample: Option<SavedSample>,
+    /// The chart drawn of the view, and how it was last exported: `c` brings it back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chart: Option<SavedChart>,
+}
+
+/// A view's chart: what is charted, and the options it is drawn with.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedChart {
+    /// The type, X, Y with its aggregate, and Color, as Vega-Lite names them.
+    #[serde(flatten)]
+    pub spec: crate::chart_modal::ChartSpec,
+    pub histogram_bins: usize,
+    pub heatmap_bins: usize,
+    /// The KDE's bandwidth, as a factor of its rule of thumb.
+    pub bandwidth: f64,
+    pub range: crate::chart_data::ValueRange,
+    pub bar_order: crate::chart_data::BarOrder,
+    /// A histogram's bars as each group's share of its rows.
+    pub share: bool,
+    pub y_starts_at_zero: bool,
+    pub log_scale: bool,
+    pub legend: bool,
+    pub grid: bool,
+    /// Rows the chart reads when the view has no sample of its own: up to this many,
+    /// spread across the table. `None` reads every row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows: Option<usize>,
+    /// The seed the chart's own sample is drawn with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    /// How the chart was last exported: everything but where.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub export: Option<SavedChartExport>,
+}
+
+/// A chart export's settings, as a view keeps them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedChartExport {
+    pub format: crate::chart_export::ChartExportFormat,
+    pub style: crate::chart_export::ExportStyle,
+    pub size: crate::chart_export::SizePreset,
+    pub width: u32,
+    pub height: u32,
+    pub dpi: f32,
+    pub legend: crate::chart_export::LegendPlace,
+    pub point_opacity: crate::chart_export::PointOpacity,
+    pub point_size: crate::chart_export::PointSize,
+    pub line_width: crate::chart_export::LineWidth,
+    pub y_from_zero: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notes: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub byline: String,
+    /// Whether the file carries its recipe.
+    pub recipe: bool,
 }
 
 /// A view's sample as a view keeps it: which rows, how they are picked, how many,
@@ -1178,6 +1239,7 @@ mod tests {
             last_matched_file: None,
             match_criteria: criteria,
             settings: ViewSettings {
+                chart: None,
                 sample: None,
                 query: None,
                 sql_query: None,

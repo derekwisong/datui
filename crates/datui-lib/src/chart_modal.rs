@@ -522,6 +522,9 @@ pub struct ChartModal {
     /// The view is a sample, held in memory: the chart reads all of it, and has no
     /// Rows row of its own.
     pub view_sampled: bool,
+    /// A saved view put its chart here: `c` brings it back, whichever column the
+    /// cursor is on.
+    pub restored: bool,
     pub focus: ChartFocus,
     /// The one Picker, open for the focused row; None while the form has the keys.
     pub picker: Option<PickerState>,
@@ -613,7 +616,8 @@ impl ChartModal {
         self.plot_focus = false;
         self.rows_draft = None;
         let opened_on = cursor.map(|(name, _)| name.to_string());
-        if self.dataset == Some(dataset) && self.opened_on == opened_on {
+        let restored = std::mem::take(&mut self.restored);
+        if self.dataset == Some(dataset) && (self.opened_on == opened_on || restored) {
             self.keep_existing_choices();
             self.settle();
             self.focus = ChartFocus::Type;
@@ -649,6 +653,59 @@ impl ChartModal {
             self.suggest(name, dtype);
         }
         self.focus = ChartFocus::Type;
+    }
+
+    /// Put a saved view's chart in place for `dataset`: the next `c` draws it.
+    pub fn restore(&mut self, saved: &crate::view::SavedChart, dataset: u64) {
+        self.spec = saved.spec.clone();
+        self.hist_bins = saved.histogram_bins.max(1);
+        self.heatmap_bins = saved.heatmap_bins.max(1);
+        self.kde_bandwidth_factor = saved.bandwidth;
+        self.value_range = saved.range;
+        self.bar_order = saved.bar_order;
+        self.share = saved.share;
+        self.y_starts_at_zero = saved.y_starts_at_zero;
+        self.log_scale = saved.log_scale;
+        self.show_legend = saved.legend;
+        self.grid = saved.grid;
+        self.row_limit = saved.rows;
+        if let Some(rows) = saved.rows {
+            self.sample_rows = rows;
+        }
+        self.suggested = None;
+        self.color_counts = None;
+        self.cursor_x = None;
+        self.dataset = Some(dataset);
+        self.restored = true;
+    }
+
+    /// The chart as a view keeps it, with `seed`, the one its own sample is drawn
+    /// with, and `export`, how it was last exported.
+    pub fn saved(
+        &self,
+        seed: u64,
+        export: Option<crate::view::SavedChartExport>,
+    ) -> crate::view::SavedChart {
+        crate::view::SavedChart {
+            spec: self.spec.clone(),
+            histogram_bins: self.hist_bins,
+            heatmap_bins: self.heatmap_bins,
+            bandwidth: self.kde_bandwidth_factor,
+            range: self.value_range,
+            bar_order: self.bar_order,
+            share: self.share,
+            y_starts_at_zero: self.y_starts_at_zero,
+            log_scale: self.log_scale,
+            legend: self.show_legend,
+            grid: self.grid,
+            rows: if self.view_sampled {
+                None
+            } else {
+                self.row_limit
+            },
+            seed: (!self.view_sampled && self.row_limit.is_some()).then_some(seed),
+            export,
+        }
     }
 
     /// Show Me: the chart a column's type suggests. A number: its histogram. A

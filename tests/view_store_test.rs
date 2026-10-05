@@ -39,6 +39,7 @@ fn test_view_creation() -> Result<()> {
     };
 
     let settings = ViewSettings {
+        chart: None,
         sample: None,
         query: Some("select a, b".to_string()),
         sql_query: None,
@@ -100,6 +101,7 @@ fn test_view_serialization() -> Result<()> {
     };
 
     let settings = ViewSettings {
+        chart: None,
         sample: None,
         query: Some("select a".to_string()),
         sql_query: None,
@@ -160,6 +162,7 @@ fn test_suggest_name_derives_from_state() -> Result<()> {
 
     // A taken name gets a number.
     let settings = ViewSettings {
+        chart: None,
         sample: None,
         query: None,
         sql_query: None,
@@ -213,6 +216,7 @@ fn test_view_relevance_exact_path() -> Result<()> {
     };
 
     let settings = ViewSettings {
+        chart: None,
         sample: None,
         query: None,
         sql_query: None,
@@ -268,6 +272,7 @@ fn test_view_serialization_with_sql_and_fuzzy() -> Result<()> {
     };
 
     let settings = ViewSettings {
+        chart: None,
         sample: None,
         query: None,
         sql_query: Some("SELECT * FROM df WHERE x > 0".to_string()),
@@ -318,6 +323,7 @@ fn no_criteria() -> MatchCriteria {
 
 fn plain_settings() -> ViewSettings {
     ViewSettings {
+        chart: None,
         sample: None,
         query: None,
         sql_query: None,

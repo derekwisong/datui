@@ -48,11 +48,12 @@ impl App {
                     .data_table_state
                     .as_ref()
                     .is_some_and(|state| state.is_at_defaults())
+                    && self.saved_chart().is_none()
                 {
                     // A refusal is validation, not a failure: it is said on
                     // the surface's own status line, not in a modal.
                     self.view_modal.status = Some(
-                            "Nothing to save yet: set a sample, query, filter, sort, column layout, or pivot/melt first."
+                            "Nothing to save yet: set a sample, query, filter, sort, column layout, chart, or pivot/melt first."
                                 .to_string(),
                         );
                 } else {

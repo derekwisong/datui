@@ -56,6 +56,7 @@ mod chart_jobs;
 mod chart_keys;
 pub mod chart_modal;
 mod chart_pdf;
+mod chart_recipe;
 pub mod cli;
 pub mod clipboard;
 #[cfg(feature = "cloud")]
@@ -919,6 +920,7 @@ pub(crate) fn view_settings_of(state: &DataTableState) -> view::ViewSettings {
         state.get_active_fuzzy_query(),
     );
     view::ViewSettings {
+        chart: None,
         sample: saved_sample_of(state),
         query,
         sql_query,
@@ -6066,6 +6068,10 @@ impl App {
         }
 
         let theme_problem = app_config.theme.fallbacks.first().cloned();
+        let chart_export_modal = ChartExportModal {
+            recipe: app_config.chart.export_recipe,
+            ..ChartExportModal::new()
+        };
         let mut app = App {
             path: None,
             data_table_state: None,
@@ -6159,7 +6165,7 @@ impl App {
             quality_evidence_return: None,
             quality_evidence_label: None,
             chart_modal: ChartModal::new(),
-            chart_export_modal: ChartExportModal::new(),
+            chart_export_modal,
             export_modal: ExportModal::new(),
             copy_modal: copy_modal::CopyModal::new(),
             inspector_modal: inspector_modal::InspectorModal::new(),
@@ -12073,6 +12079,7 @@ impl App {
             // the view carries with whatever the table happens to show.
             if editing_the_active_view && let Some(state) = &self.data_table_state {
                 view.settings = view_settings_of(state);
+                view.settings.chart = self.saved_chart();
             }
             match self.view_manager.update_view(&view) {
                 Ok(()) => true,
@@ -15232,7 +15239,14 @@ impl App {
 
     /// Write the chart from the prepared data off-thread, or park the export until that
     /// data is ready. `busy` was set by `ChartExport` and stays set until the export ends.
-    fn start_chart_export(&mut self, request: ChartExportRequest) {
+    fn start_chart_export(&mut self, mut request: ChartExportRequest) {
+        // How the chart was made, from the view and chart as they are now; none
+        // when the dialog says Omit.
+        request.options.recipe = if request.recipe {
+            self.chart_recipe(&request.path)
+        } else {
+            None
+        };
         match self.build_chart_figure() {
             Ok(Some(figure)) => {
                 self.chart_export_waiting = None;
@@ -15246,6 +15260,7 @@ impl App {
                         format,
                         options,
                         overwrite,
+                        ..
                     } = request;
                     ChartExportJob { figure, options }
                         .write(&path, format, overwrite)
@@ -15687,6 +15702,7 @@ impl App {
                 .or_log("record a view's use");
         }
         let previous = self.active_view_id.replace(view.id.clone());
+        self.restore_view_chart(view.settings.chart.as_ref());
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
@@ -18771,8 +18787,12 @@ impl App {
         match_criteria: view::MatchCriteria,
     ) -> Result<view::SavedView> {
         let settings = match &self.data_table_state {
-            Some(state) => view_settings_of(state),
+            Some(state) => view::ViewSettings {
+                chart: self.saved_chart(),
+                ..view_settings_of(state)
+            },
             None => view::ViewSettings {
+                chart: None,
                 sample: None,
                 query: None,
                 sql_query: None,

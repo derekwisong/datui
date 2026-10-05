@@ -131,6 +131,7 @@ pub mod lines;
 pub mod link_open;
 mod loading;
 pub mod local_copy;
+pub(crate) mod local_glob;
 pub mod locality;
 pub mod logging;
 pub mod measurements;
@@ -178,6 +179,7 @@ mod sort_filter_keys;
 pub mod sort_filter_modal;
 pub mod sort_modal;
 pub mod source;
+pub(crate) mod spec_union;
 mod sql_assist;
 pub mod sqlite;
 // Public so the fuzz target `sql_group_plan` can reach `plan`, which reads every SQL
@@ -11190,6 +11192,8 @@ impl App {
             };
             return Self::read_with_delimited_spec(files, &nested, report, formats, choice);
         }
+        // A spec's read says how its files differ itself, from their own header lines.
+        report.files_disagree = Self::files_disagree(files, options, found);
         let nested = OpenOptions {
             hive: false,
             format: Some(options.format.unwrap_or(found)),
@@ -11262,6 +11266,28 @@ impl App {
                 file: one.clone(),
                 asked: true,
             });
+        }
+
+        // A glob of local files the first of which a delimited spec reads: read through
+        // the spec, file by file, as a directory of them is. Polars' own scan of the
+        // glob would read the spec's header lines as data.
+        if let [pattern] = paths
+            && !options.hive
+            && options.delimited.is_none()
+            && options.format.is_none()
+            && source::expands_as_glob(pattern)
+        {
+            let files = crate::local_glob::expand(pattern);
+            if let Some(first) = files.iter().find(|f| !crate::nul_tail::holds_nothing(f))
+                && let Some(choice) = Self::delimited_spec_of(first, options, formats)?
+            {
+                let format = FileFormat::from_path(first).filter(|f| f.separator().is_some());
+                let nested = OpenOptions {
+                    format: format.or(Some(FileFormat::Csv)),
+                    ..options.clone()
+                };
+                return Self::read_with_delimited_spec(&files, &nested, report, formats, choice);
+            }
         }
 
         // A format spec: one asked for, or one whose glob or magic the path matches. A
@@ -11371,7 +11397,6 @@ impl App {
                             let format = options.format.unwrap_or(found);
                             let files =
                                 Self::hugging_face_split(path, format, files, options, report)?;
-                            report.files_disagree = Self::files_disagree(&files, options, found);
                             return Self::read_directory_files(
                                 &files, options, found, report, formats,
                             );
@@ -11389,7 +11414,6 @@ impl App {
                             let format = options.format.unwrap_or(found);
                             let files =
                                 Self::hugging_face_split(path, format, files, options, report)?;
-                            report.files_disagree = Self::files_disagree(&files, options, found);
                             let lf = Self::read_directory_files(
                                 &files, options, found, report, formats,
                             )?;

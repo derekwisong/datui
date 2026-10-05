@@ -293,9 +293,26 @@ column, and its unit. There is no expression language: anything more is a
 ### Matching
 
 A delimited spec matches a file whose name says no format datui reads, or says
-`.csv`, `.tsv` or `.psv`, compressed or not. A directory is read through the
-spec its first file matches. <kbd>H</kbd> on the Info panel's Schema tab reads
-the file without a header, and without its derived columns.
+`.csv`, `.tsv` or `.psv`, compressed or not. A directory, or a glob such as
+`'logs/log_*.csv'`, is read through the spec its first file with text matches.
+<kbd>H</kbd> on the Info panel's Schema tab reads the file without a header,
+and without its derived columns.
+
+### Several files
+
+Files read together through a spec are matched by column name, so logs from
+different writer versions stack:
+
+| When | Then |
+|---|---|
+| A file lacks a column | The column is null in its rows |
+| A column is blank in the first rows a file's types are inferred from | It takes the type the other files give it. A value further on that is not of that type stops the read, naming the file and the column |
+| One file's column holds integers and another's decimals | The column is `f64` |
+| A file's column holds text where another's holds numbers | The column is text |
+| Files give a column different units | The first file's unit; a note lists the units seen |
+
+The Notes tab lists the columns not every file has. Columns keep the order
+the files first have them in.
 
 ## Checks
 

@@ -435,6 +435,9 @@ pub struct DataTableState {
     /// What the read of several files has to say of them: files passed over, columns
     /// not every file has. Carried to the dataset's notes.
     read_notes: Vec<crate::notes::Note>,
+    /// Each column's unit, from the first of several files read through a spec that
+    /// has the column; `None` when the first file's header said them all.
+    read_units: Option<Vec<(String, String)>>,
     /// How `reshaped_lf` was built, while there is one: what SQL runs over.
     reshape_steps: Option<Vec<Step>>,
     /// Which loaded column each column of the base is (see [`Lineage`]).
@@ -2050,6 +2053,7 @@ impl DataTableState {
             base_steps: Vec::new(),
             read_python: Vec::new(),
             read_notes: Vec::new(),
+            read_units: None,
             reshape_steps: None,
             lineage: None,
             reshape_lineage: None,
@@ -2221,6 +2225,7 @@ impl DataTableState {
             base_steps: Vec::new(),
             read_python: Vec::new(),
             read_notes: Vec::new(),
+            read_units: None,
             reshape_steps: None,
             lineage: None,
             reshape_lineage: None,
@@ -4613,15 +4618,33 @@ impl DataTableState {
         let mut read = Vec::new();
         // Files with nothing in them: no header, so no columns to stack.
         let mut no_header: Vec<&Path> = Vec::new();
+        // Read through a spec, each file's header pass reads its units and the lines its
+        // types are inferred from too, for lining the files up by name.
+        let spec = options.delimited.as_ref().map(|read| read.delimited());
+        let mut heads = Vec::new();
         for p in paths {
             let p = p.as_ref();
             let in_file = |e: color_eyre::Report| crate::error_display::in_file(p, e);
-            let header = match Self::csv_header_names_of(options, p, None) {
+            let head_read = match spec {
+                Some(spec) => crate::spec_union::read_head(p, options, spec).map(Some),
+                None => Ok(None),
+            };
+            let head = match head_read {
                 Err(e) if crate::csv_dialect::is_blank_file(&e) => {
                     no_header.push(p);
                     continue;
                 }
-                header => header.map_err(in_file)?,
+                head => head.map_err(in_file)?,
+            };
+            let header = match &head {
+                Some(head) => head.names.clone(),
+                None => match Self::csv_header_names_of(options, p, None) {
+                    Err(e) if crate::csv_dialect::is_blank_file(&e) => {
+                        no_header.push(p);
+                        continue;
+                    }
+                    header => header.map_err(in_file)?,
+                },
             };
             let nv =
                 Self::build_null_values_for_csv(options, p, header.as_deref()).map_err(in_file)?;
@@ -4650,12 +4673,22 @@ impl DataTableState {
             }
             let named = Self::name_csv_columns(lf, header.as_deref(), record).map_err(in_file)?;
             lazy_frames.push(named);
+            heads.extend(head);
         }
         if lazy_frames.is_empty() {
             return Err(color_eyre::eyre::eyre!(
                 "none of these {} files has a header: each is empty, or blank",
                 paths.len()
             ));
+        }
+        let mut notes: Vec<crate::notes::Note> =
+            crate::notes::no_header(&no_header).into_iter().collect();
+        let mut units = None;
+        if spec.is_some() && lazy_frames.len() > 1 {
+            let lined = crate::spec_union::line_up(lazy_frames, &heads, options)?;
+            lazy_frames = lined.frames;
+            notes.extend(lined.notes);
+            units = Some(lined.units);
         }
         let lf = Self::finish_csv_values(
             polars::prelude::concat(lazy_frames.as_slice(), Self::union_of_files())?,
@@ -4673,7 +4706,8 @@ impl DataTableState {
         state.row_numbers = options.row_numbers;
         state.row_start_index = options.row_start_index;
         state.read_python = read;
-        state.read_notes.extend(crate::notes::no_header(&no_header));
+        state.read_notes = notes;
+        state.read_units = units;
         Ok(state)
     }
 
@@ -9554,6 +9588,11 @@ impl DataTableState {
     /// See the field: the notes the read made, for the open to carry to the dataset.
     pub fn read_notes(&self) -> &[crate::notes::Note] {
         &self.read_notes
+    }
+
+    /// See the field.
+    pub fn read_units(&self) -> Option<&[(String, String)]> {
+        self.read_units.as_deref()
     }
 
     /// How `lf` was built: the base's steps, then the filters and the sort.

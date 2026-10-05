@@ -232,7 +232,7 @@ impl Delimited {
     }
 
     /// The lines [`Self::facts`] reads, 1-based.
-    fn head_lines(&self) -> Vec<usize> {
+    pub fn head_lines(&self) -> Vec<usize> {
         let mut lines: Vec<usize> = self
             .header_rows
             .iter()
@@ -257,6 +257,18 @@ impl Delimited {
             return Ok(HeadFacts::default());
         }
         let lines = crate::csv_dialect::named_lines(source, &wanted)?;
+        Ok(self.facts_of(&wanted, &lines, separator, join))
+    }
+
+    /// [`Self::facts`] from `lines`, the lines `wanted` names as
+    /// [`crate::csv_dialect::named_lines`] read them; a line not among them is blank.
+    pub fn facts_of(
+        &self,
+        wanted: &[usize],
+        lines: &[Vec<u8>],
+        separator: u8,
+        join: &str,
+    ) -> HeadFacts {
         let line = |n: usize| -> &[u8] {
             wanted
                 .iter()
@@ -308,7 +320,7 @@ impl Delimited {
             let text = comment.and_then(|c| text.strip_prefix(c)).unwrap_or(text);
             parse_metadata(text)
         });
-        Ok(HeadFacts { units, metadata })
+        HeadFacts { units, metadata }
     }
 
     /// `lf` with the derived columns, each before the first column it is made from.

@@ -617,3 +617,192 @@ fn files_with_no_header_alone_are_an_error() {
         "names the file: {message}"
     );
 }
+
+/// A log of the spec's shape with the columns `columns` (name, unit, a cell per row),
+/// after the date, time and offset, padded as the logger pads them.
+fn family_log(day: &str, columns: &[(&str, &str, &[&str])]) -> String {
+    let rows = columns.first().map_or(0, |(_, _, cells)| cells.len());
+    let mut units = String::from("#yyyy-mm-dd, hh:mm:ss, hh:mm");
+    let mut names = String::from("  Lcl Date,   Lcl Time, UTCOfst");
+    for (name, unit, _) in columns {
+        units.push_str(&format!(",  {unit:>8}"));
+        names.push_str(&format!(",  {name:>8}"));
+    }
+    let mut text = format!("#device_info, log_version=\"1.03\"\n{units}\n{names}\n");
+    for i in 0..rows {
+        text.push_str(&format!("{day}, 10:00:{i:02},  -05:00"));
+        for (_, _, cells) in columns {
+            text.push_str(&format!(",  {:>8}", cells[i]));
+        }
+        text.push('\n');
+    }
+    text
+}
+
+/// Files of one family whose columns differ stack by name: a column a file lacks is
+/// null there, a column blank in one file's window takes the others' type, an integer
+/// and a float column is a float, and text beside a number is text. The notes say which
+/// columns not every file has and where the units disagree.
+#[test]
+fn a_family_of_logs_stacks_by_name() {
+    let dir = fresh_dir("delimited_spec_family");
+    let blank: &[&str] = &["", "", ""];
+    std::fs::write(
+        dir.join("log_a.csv"),
+        padded(
+            &family_log(
+                "2021-06-01",
+                &[
+                    ("Latitude", "degrees", blank),
+                    ("volts", "volts", &["25.1", "25.2", "25.3"]),
+                    ("cht1", "deg F", &["180", "181", "182"]),
+                    ("code", "enum", &["5", "6", "7"]),
+                ],
+            ),
+            4096,
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("log_b.csv"),
+        family_log(
+            "2023-06-01",
+            &[
+                ("Latitude", "degrees", &["40.1", "40.2", "40.3"]),
+                ("volts", "V", &["24.9", "25.0", "25.1"]),
+                ("egt1", "deg F", &["1300", "1310", "1320"]),
+                ("code", "enum", &["X1", "X2", "X3"]),
+            ],
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("log_c.csv"),
+        family_log(
+            "2025-06-01",
+            &[
+                ("Latitude", "degrees", &["41.1", "", "41.3"]),
+                ("cht1", "deg F", &["180.5", "181.5", "182.5"]),
+                ("extra", "", &["1", "2", "3"]),
+            ],
+        ),
+    )
+    .unwrap();
+    let (mut app, rx, tx) = app_with_spec();
+    open_dir(&mut app, &rx, dir);
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    pump_until_idle(&mut app, &rx, &tx);
+    let df = collected(&app);
+    assert_eq!(df.height(), 9);
+    let dtype = |name: &str| df.column(name).unwrap().dtype().clone();
+    assert_eq!(dtype("Latitude"), DataType::Float64, "blank in one file");
+    assert_eq!(dtype("cht1"), DataType::Float64, "i64 beside f64");
+    assert_eq!(dtype("volts"), DataType::Float64);
+    assert_eq!(dtype("egt1"), DataType::Int64);
+    assert_eq!(dtype("code"), DataType::String, "text beside a number");
+    assert_eq!(
+        df.column("egt1").unwrap().null_count(),
+        6,
+        "two files lack it"
+    );
+    assert_eq!(df.column("Latitude").unwrap().null_count(), 4);
+    let time = df.column("time").unwrap();
+    assert!(
+        time.get(0)
+            .unwrap()
+            .to_string()
+            .starts_with("2021-06-01 15:00:00")
+    );
+    assert!(
+        time.get(8)
+            .unwrap()
+            .to_string()
+            .starts_with("2025-06-01 15:00:02")
+    );
+
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.unit_of("volts"), Some("volts"), "the first file's");
+    assert_eq!(
+        state.unit_of("egt1"),
+        Some("deg F"),
+        "from the file that has it"
+    );
+    let notes = note_summaries(&app);
+    let ellipsis = datui::glyphs::get().ellipsis;
+    assert!(
+        notes.contains(&format!(
+            "columns not in every file: volts, cht1, code, {ellipsis}"
+        )),
+        "{notes:?}"
+    );
+    assert!(
+        notes.contains(&"units differ across files: volts (volts, V)".to_string()),
+        "{notes:?}"
+    );
+    assert!(
+        !notes
+            .iter()
+            .any(|n| n.starts_with("columns differ across files")),
+        "the plain read's note is not the spec's: {notes:?}"
+    );
+}
+
+/// A file whose window was blank but which holds text further on stops the read, by
+/// its name and the column's.
+#[test]
+fn text_past_a_blank_window_names_the_file() {
+    let dir = fresh_dir("delimited_spec_family_text");
+    let mut cells = vec![""; 120];
+    cells.push("N/A");
+    std::fs::write(
+        dir.join("log_a.csv"),
+        family_log("2021-06-01", &[("Latitude", "degrees", &cells)]),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("log_b.csv"),
+        family_log("2023-06-01", &[("Latitude", "degrees", &["40.1"; 121])]),
+    )
+    .unwrap();
+    let (mut app, rx, _tx) = app_with_spec();
+    let options = OpenOptions {
+        hive: true,
+        parse_strings: Some(datui::ParseStringsTarget::All),
+        infer_schema_length: Some(100),
+        ..OpenOptions::default()
+    };
+    pump_open_until_loaded(&mut app, &rx, vec![dir], options);
+    let shown = app
+        .data_table_state
+        .as_ref()
+        .map(|s| s.lf().clone().collect().map(|_| ()));
+    let said = match (app.error_message(), shown) {
+        (Some(message), _) => message.to_string(),
+        (None, Some(Err(e))) => e.to_string(),
+        other => panic!("the read fails: {other:?}"),
+    };
+    assert!(
+        said.contains(
+            "log_a.csv: Latitude holds 'N/A', not a number; the other files read it as f64"
+        ),
+        "{said}"
+    );
+}
+
+/// A glob of logs reads through the spec as a directory of them does.
+#[test]
+fn a_glob_of_logs_reads_through_the_spec() {
+    let dir = fresh_dir("delimited_spec_glob");
+    std::fs::write(dir.join("log_001.csv"), log_text("2024-03-01", 3)).unwrap();
+    std::fs::write(dir.join("log_002.csv"), log_text("2024-03-02", 3)).unwrap();
+    std::fs::write(dir.join("other.csv"), "a,b\n1,2\n").unwrap();
+    let (mut app, rx, tx) = app_with_spec();
+    open(&mut app, &rx, dir.join("log_*.csv"), OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    let df = collected(&app);
+    assert_eq!(df.height(), 8);
+    assert_eq!(df.column("cht1").unwrap().dtype(), &DataType::Float64);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.delimited_read().is_some(), "through the spec");
+    assert_eq!(state.unit_of("cht1"), Some("deg F"));
+}

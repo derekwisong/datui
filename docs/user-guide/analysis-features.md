@@ -159,7 +159,7 @@ read: `Describe · sample of 100,000 of 36,839,175 rows · source year=2020..202
 | Rows from | **All rows** (the table as shown, with its count), **The source, unfiltered** (only when a filter or query changes the rows), **Partitions**, **Files**, **Row range**, **Time range**; a choice appears only when the table has it |
 | Method | **Random** (default), **Equal per value**, **First rows**, **Every row** |
 | Per value of | For Equal per value: the column to split by; partition columns come first |
-| Sample size | 1,000 to 1,000,000 rows, or rows per value for Equal per value; the default is `[analysis] sample_rows` |
+| Sample size | Rows, or rows per value for Equal per value, typed over the one shown: `50000`, `50,000`, `50k`, `250k`, `2m`. Read on <kbd>Enter</kbd>; a size that is not one says why. The default is `[analysis] sample_rows` |
 | Random seed | For Random and Equal per value: any whole number, typed over the one shown; the same seed reads the same rows, so `0` or `1` is a sample anyone can repeat. <kbd>r</kbd> draws a new one |
 
 Each kind of rows brings its own settings, with what it needs to know:

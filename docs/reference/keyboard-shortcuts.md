@@ -483,7 +483,7 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `s` | Choose the sample every tool reads: which rows, how they are picked, how many, the seed |
+| `s` | Choose the sample every tool reads: which rows, how they are picked, how many (typed, like 50000, 50k or 2m), the seed. Enter applies the form |
 | `v` | View the sample's rows as a table; Esc comes back |
 | `r` | Draw another sample (when the result is a sample) |
 | `a` | Read every row instead, after confirming |
@@ -509,7 +509,7 @@ Distribution in the Analysis sidebar.
 
 | Key | Action |
 |---|---|
-| `s` | Choose the sample every tool reads: which rows, how they are picked, how many, the seed |
+| `s` | Choose the sample every tool reads: which rows, how they are picked, how many (typed, like 50000, 50k or 2m), the seed. Enter applies the form |
 | `v` | View the sample's rows as a table; Esc comes back |
 | `r` | Draw another sample (when the result is a sample) |
 | `a` | Read every row instead, after confirming |
@@ -548,7 +548,7 @@ Correlation Matrix in the Analysis sidebar.
 
 | Key | Action |
 |---|---|
-| `s` | Choose the sample every tool reads: which rows, how they are picked, how many, the seed |
+| `s` | Choose the sample every tool reads: which rows, how they are picked, how many (typed, like 50000, 50k or 2m), the seed. Enter applies the form |
 | `v` | View the sample's rows as a table; Esc comes back |
 | `r` | Draw another sample (when the result is a sample) |
 | `a` | Read every row instead, after confirming |

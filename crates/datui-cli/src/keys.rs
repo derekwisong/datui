@@ -346,7 +346,7 @@ pub const Q_SUMMARY: &[(&str, &str)] = &[
 /// The analysis tools' sample keys, the same on each.
 const SAMPLE_KEYS: &[Key] = &[
     k("s", "Sample", "Choose the sample every tool reads").more(
-        "Choose the sample every tool reads: which rows, how they are picked, how many, the seed",
+        "Choose the sample every tool reads: which rows, how they are picked, how many (typed, like 50000, 50k or 2m), the seed. Enter applies the form",
     ),
     k(
         "v",

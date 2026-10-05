@@ -7,7 +7,7 @@
 //! partition values that exist, the numbered files) and nothing else.
 
 use crate::data_quality::QualityScope;
-use crate::sampling::{SAMPLE_SIZES, Sample, SampleMethod};
+use crate::sampling::{Sample, SampleMethod};
 use crate::widgets::text_input::TextInput;
 
 /// Which rows the sample is drawn from.
@@ -71,6 +71,7 @@ impl SampleField {
                 | Self::RangeTo
                 | Self::TimeFrom
                 | Self::TimeBefore
+                | Self::Size
                 | Self::Seed
         )
     }
@@ -110,6 +111,8 @@ pub struct SampleForm {
     pub time_column: usize,
     pub time_from: TextInput,
     pub time_before: TextInput,
+    /// The sample size as typed: `100,000`, `50k`, `2m`. Read on Enter.
+    pub size: TextInput,
     /// Any number: the same seed draws the same rows, so 0 or 1 is a sample anyone
     /// can repeat.
     pub seed: TextInput,
@@ -135,6 +138,7 @@ impl SampleForm {
             time_column: 0,
             time_from: input(),
             time_before: input(),
+            size: input(),
             seed: input(),
             error: None,
             file_offset: 0,
@@ -143,6 +147,8 @@ impl SampleForm {
         // Most seeds come from the clock, and a seed is a token, not text to
         // extend: typing one means a new one.
         form.seed.suggest(sample.seed.to_string());
+        // A size is replaced more often than edited, as the seed is.
+        form.size.suggest(crate::numfmt::group_chrome(sample.rows));
         form.sync_focus(true);
         form
     }
@@ -264,6 +270,7 @@ impl SampleForm {
             SampleField::RangeTo => &self.range_to,
             SampleField::TimeFrom => &self.time_from,
             SampleField::TimeBefore => &self.time_before,
+            SampleField::Size => &self.size,
             SampleField::Seed => &self.seed,
             _ => return None,
         })
@@ -277,6 +284,7 @@ impl SampleForm {
             SampleField::RangeTo => &mut self.range_to,
             SampleField::TimeFrom => &mut self.time_from,
             SampleField::TimeBefore => &mut self.time_before,
+            SampleField::Size => &mut self.size,
             SampleField::Seed => &mut self.seed,
             _ => return None,
         })
@@ -293,6 +301,7 @@ impl SampleForm {
             SampleField::RangeTo,
             SampleField::TimeFrom,
             SampleField::TimeBefore,
+            SampleField::Size,
             SampleField::Seed,
         ] {
             if let Some(input) = self.input_mut(candidate) {
@@ -355,9 +364,11 @@ impl SampleForm {
                 // Rows per value, not in all: a size meant for the whole table would
                 // keep nearly every row of every value.
                 if matches!(self.draft.method, SampleMethod::PerPartition { .. })
-                    && self.draft.rows > PER_VALUE_ROWS
+                    && self.typed_size().unwrap_or(self.draft.rows) > PER_VALUE_ROWS
                 {
                     self.draft.rows = PER_VALUE_ROWS;
+                    self.size
+                        .suggest(crate::numfmt::group_chrome(PER_VALUE_ROWS));
                 }
             }
             SampleField::By => {
@@ -370,19 +381,6 @@ impl SampleForm {
                         column: columns[step(columns.len(), at)].clone(),
                     };
                 }
-            }
-            SampleField::Size => {
-                // A configured size that is none of these stays in the ring.
-                let mut sizes = SAMPLE_SIZES.to_vec();
-                if !sizes.contains(&self.draft.rows) {
-                    sizes.push(self.draft.rows);
-                    sizes.sort_unstable();
-                }
-                let at = sizes
-                    .iter()
-                    .position(|rows| *rows == self.draft.rows)
-                    .unwrap_or(0);
-                self.draft.rows = sizes[step(sizes.len(), at)];
             }
             _ => {}
         }
@@ -432,14 +430,6 @@ impl SampleForm {
                 SampleMethod::PerPartition { column } => column.clone(),
                 _ => String::new(),
             },
-            SampleField::Size => {
-                let rows = crate::numfmt::group_chrome(self.draft.rows);
-                if matches!(self.draft.method, SampleMethod::PerPartition { .. }) {
-                    format!("{rows} rows per value")
-                } else {
-                    format!("{rows} rows")
-                }
-            }
             SampleField::Seed => self.draft.seed.to_string(),
             _ => String::new(),
         }
@@ -515,6 +505,11 @@ impl SampleForm {
             }
         }
         Ok(())
+    }
+
+    /// The sample size typed, when it reads as one.
+    fn typed_size(&self) -> Option<usize> {
+        crate::sampling::parse_size(self.size.value()).ok()
     }
 
     /// The file numbers typed so far, for marking the list under the Files row.
@@ -601,6 +596,11 @@ impl SampleForm {
             scope,
             ..self.draft.clone()
         };
+        if self.fields().contains(&SampleField::Size) {
+            sample.rows = crate::sampling::parse_size(self.size.value())
+                .map_err(|e| e.to_string())?
+                .min(u32::MAX as usize);
+        }
         if self.fields().contains(&SampleField::Seed) {
             sample.seed = self
                 .seed
@@ -654,6 +654,9 @@ impl crate::form::Form for SampleForm {
         // appending to the number already there.
         if field == SampleField::Seed {
             self.seed.select_all();
+        }
+        if field == SampleField::Size {
+            self.size.select_all();
         }
         self.sync_focus(true);
     }
@@ -723,7 +726,7 @@ mod tests {
                 column: "station".to_string()
             }
         );
-        assert_eq!(form.choice(SampleField::Size), "1,000 rows per value");
+        assert_eq!(form.size.value(), "1,000");
         assert!(form.fields().contains(&SampleField::By));
         form.adjust(true);
         assert_eq!(form.draft.method, SampleMethod::FirstRows);
@@ -755,6 +758,40 @@ mod tests {
                 FormKey::Text(SampleField::Files)
             );
         }
+    }
+
+    /// The size is typed, in shorthand or in full, and read on Enter; a size it
+    /// cannot read says why and is not applied.
+    #[test]
+    fn the_size_is_typed() {
+        let mut form = form();
+        assert_eq!(form.size.value(), "100,000");
+        while form.field != SampleField::Size {
+            crate::form::Form::focus_next(&mut form);
+        }
+        let key = |c| {
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            )
+        };
+        for c in "250k".chars() {
+            form.size.handle_key(&key(c), None);
+        }
+        assert_eq!(form.size.value(), "250k", "typing replaces the size");
+        assert_eq!(form.finish().unwrap().rows, 250_000);
+        form.size.set_value("2M");
+        assert_eq!(form.finish().unwrap().rows, 2_000_000);
+        form.size.set_value("lots");
+        assert!(form.finish().unwrap_err().contains("50k"));
+        form.size.set_value("0");
+        assert!(form.finish().is_err());
+        // Every row has no size to read.
+        form.field = SampleField::Method;
+        while form.draft.method != SampleMethod::EveryRow {
+            form.adjust(true);
+        }
+        assert!(form.finish().is_ok());
     }
 
     /// Any number is a seed, typed over the one there; the same seed is the same

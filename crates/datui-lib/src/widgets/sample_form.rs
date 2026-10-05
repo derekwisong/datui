@@ -107,6 +107,20 @@ pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ct
                     dimmed,
                 )));
             }
+            SampleField::Size => {
+                let per = if matches!(
+                    form.draft.method,
+                    crate::sampling::SampleMethod::PerPartition { .. }
+                ) {
+                    "Rows per value"
+                } else {
+                    "Rows"
+                };
+                items.push(Item::Context(Line::styled(
+                    format!("{per}, like 50000, 50k or 2m"),
+                    dimmed,
+                )));
+            }
             _ => {}
         }
     }

@@ -16,9 +16,6 @@ use std::collections::HashMap;
 /// The default sample size, before `[analysis] sample_rows` says otherwise.
 pub const DEFAULT_SAMPLE_ROWS: usize = 100_000;
 
-/// The sizes the Sample form steps through with ←/→.
-pub const SAMPLE_SIZES: [usize; 6] = [1_000, 10_000, 50_000, 100_000, 500_000, 1_000_000];
-
 /// Why a typed sample size cannot be read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SizeError {

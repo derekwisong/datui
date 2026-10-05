@@ -1686,6 +1686,45 @@ fn test_esc_cancels_a_distribution_analysis_in_flight() {
     assert_eq!(app.analysis_modal.selected_tool, None);
 }
 
+/// The Sample form's size is typed, in shorthand, and applied on Enter; a size it
+/// cannot read keeps the form open with why.
+#[test]
+fn the_sample_size_is_typed_in_shorthand() {
+    use datui::sample_modal::SampleField;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sizes.csv");
+    let mut csv = "x\n".to_string();
+    for x in 1..=20i64 {
+        csv.push_str(&format!("{x}\n"));
+    }
+    std::fs::write(&path, csv).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+
+    app.event(&key(KeyCode::Char('a')));
+    app.analysis_modal.sidebar_state.select(Some(0));
+    show_sample_form(&mut app);
+    let form = app.analysis_modal.sample_form.as_mut().unwrap();
+    assert!(datui::form::Form::focus(form, SampleField::Size));
+    for c in "zz".chars() {
+        app.event(&key(KeyCode::Char(c)));
+    }
+    app.event(&key(KeyCode::Enter));
+    let form = app.analysis_modal.sample_form.as_ref().expect("stays open");
+    assert!(form.error.as_deref().unwrap_or("").contains("50k"));
+    for _ in 0..2 {
+        app.event(&key(KeyCode::Backspace));
+    }
+    for c in "5k".chars() {
+        app.event(&key(KeyCode::Char(c)));
+    }
+    app.event(&key(KeyCode::Enter));
+    assert!(app.analysis_modal.sample_form.is_none());
+    assert_eq!(app.analysis_modal.sample.rows, 5_000);
+}
+
 /// `m` on the correlation matrix switches between Pearson and Spearman, named in the
 /// title, with nothing read again: y = x³ is a perfect rank relation but not a line.
 #[test]

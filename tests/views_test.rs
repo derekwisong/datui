@@ -353,3 +353,96 @@ fn the_views_surface_saves_applies_and_deletes() {
     assert!(app.view_modal.rows.is_empty());
     press(&mut app, KeyCode::Esc);
 }
+
+/// A view keeps its sample's settings, never its rows: applied again, it draws the
+/// same rows from the seed, and lays its query over them.
+#[test]
+fn a_view_draws_its_sample_again_from_the_seed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sampled_view.parquet");
+    let mut df = df!(
+        "sv_id" => (0..20_000i64).collect::<Vec<_>>(),
+        "sv_group" => (0..20_000i64).map(|i| i % 5).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let path = path.canonicalize().unwrap();
+    let views = datui::view::ViewManager::new(&datui::config::ConfigManager::with_dir(
+        dir.path().join("config"),
+    ))
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let config = datui::AppConfig::default();
+    let theme = datui::Theme::from_config(&config.theme).unwrap();
+    let mut app = App::new_with_views(
+        tx.clone(),
+        common::test_runtime(),
+        theme,
+        config,
+        views.into(),
+    );
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+    drain_events(&mut app, &rx);
+
+    press(&mut app, KeyCode::Char('S'));
+    let form = app.sample_form.as_mut().unwrap();
+    form.size.set_value("700");
+    form.seed.set_value("31");
+    press(&mut app, KeyCode::Enter);
+    drain_events(&mut app, &rx);
+    app.event(&AppEvent::QQuery("select where sv_group = 2".to_string()));
+    drain_events(&mut app, &rx);
+    let ids = |app: &App| -> Vec<i64> {
+        let state = app.data_table_state.as_ref().unwrap();
+        state
+            .lf()
+            .clone()
+            .collect()
+            .unwrap()
+            .column("sv_id")
+            .unwrap()
+            .i64()
+            .unwrap()
+            .into_no_null_iter()
+            .collect()
+    };
+    let drawn = ids(&app);
+    assert!(!drawn.is_empty() && drawn.len() < 700, "{}", drawn.len());
+
+    let criteria = datui::view::MatchCriteria {
+        exact_path: Some(path.clone()),
+        relative_path: None,
+        path_pattern: None,
+        filename_pattern: None,
+        schema_columns: None,
+        schema_types: None,
+        table: None,
+    };
+    let saved = app
+        .create_view_from_current_state("sampled".to_string(), None, criteria)
+        .unwrap();
+    let sample = saved.settings.sample.as_ref().expect("the sample is saved");
+    assert_eq!((sample.rows, sample.seed), (700, 31));
+    assert_eq!(
+        saved.settings.query.as_deref(),
+        Some("select where sv_group = 2")
+    );
+
+    // Back to the table as opened, then the view again.
+    if let Some(reset) = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('R'),
+        KeyModifiers::NONE,
+    ))) {
+        app.event(&reset);
+    }
+    drain_events(&mut app, &rx);
+    assert!(app.data_table_state.as_ref().unwrap().sampled().is_none());
+    press(&mut app, KeyCode::Char('V'));
+    drain_events(&mut app, &rx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.sampled().is_some(), "the view draws its sample");
+    assert_eq!(state.get_active_query(), "select where sv_group = 2");
+    assert_eq!(ids(&app), drawn, "the same rows, from the seed");
+}

@@ -919,6 +919,7 @@ pub(crate) fn view_settings_of(state: &DataTableState) -> view::ViewSettings {
         state.get_active_fuzzy_query(),
     );
     view::ViewSettings {
+        sample: saved_sample_of(state),
         query,
         sql_query,
         fuzzy_query,
@@ -933,6 +934,33 @@ pub(crate) fn view_settings_of(state: &DataTableState) -> view::ViewSettings {
         reshape_source: state.reshape_source().cloned(),
         columns: state.column_changes().to_vec(),
     }
+}
+
+/// The sample `state` is, as a view keeps it: with the query and filters it was
+/// drawn through, when it was drawn from the view's rows.
+fn saved_sample_of(state: &DataTableState) -> Option<view::SavedSample> {
+    let sampled = state.sampled()?;
+    let through = sampled.through().then(|| {
+        let source = sampled.source();
+        let (query, sql_query, fuzzy_query) = active_query_settings(
+            source.get_active_query(),
+            source.get_active_sql_query(),
+            source.get_active_fuzzy_query(),
+        );
+        crate::pivot_melt_modal::ReshapeSource {
+            query,
+            sql_query,
+            fuzzy_query,
+            filters: source.get_filters().to_vec(),
+            sort_columns: source.get_sort_columns().to_vec(),
+            sort_descending: source.get_sort_descending().to_vec(),
+        }
+    });
+    let of = sampled
+        .drawn()
+        .filter(|drawn| drawn.about)
+        .and_then(|drawn| drawn.total);
+    Some(view::SavedSample::of(sampled.sample(), of, through))
 }
 
 /// How far planning a view's steps got.
@@ -15614,6 +15642,9 @@ impl App {
 
     fn apply_view_with(&mut self, view: &SavedView, why: Option<view::MatchReason>) -> Result<()> {
         self.jobs.supersede(|job| matches!(job, Job::ViewPivot(_)));
+        if let Some(saved) = &view.settings.sample {
+            return self.apply_sampled_view(view, saved, why);
+        }
         let Some(state) = self.data_table_state.as_mut() else {
             return Ok(());
         };
@@ -18742,6 +18773,7 @@ impl App {
         let settings = match &self.data_table_state {
             Some(state) => view_settings_of(state),
             None => view::ViewSettings {
+                sample: None,
                 query: None,
                 sql_query: None,
                 fuzzy_query: None,

@@ -164,6 +164,87 @@ pub struct ViewSettings {
     /// `{ "name": "zip", "type": "str" }`. Applied after the query, before the filters.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub columns: Vec<crate::column_types::ColumnChange>,
+    /// The view's sample: drawn again from its seed when the view is applied, under
+    /// the query, filters and sort above. Its settings only, never its rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample: Option<SavedSample>,
+}
+
+/// A view's sample as a view keeps it: which rows, how they are picked, how many,
+/// and the seed that draws the same ones again.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedSample {
+    /// Which rows, as the Sample form's scope command says them: `view`, `source`,
+    /// `rows 1..5000`, `files 1,3`, `partition year=2024`, `time date=2024-01..2024-02`.
+    pub scope: String,
+    /// `random`, `per value`, `first rows` or `every row`.
+    pub method: String,
+    /// The column an equal-per-value sample splits by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per: Option<String>,
+    /// Rows to keep: in all, or per value.
+    pub rows: usize,
+    pub seed: u64,
+    /// The rows a sample kept row by row by chance was drawn from: each row is kept
+    /// with chance `rows / of`, so the same total and seed keep the same rows again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub of: Option<usize>,
+    /// The query and filters the sample was drawn through, when it was drawn from a
+    /// view's rows rather than the source: replayed before it is drawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub through: Option<ReshapeSource>,
+}
+
+impl SavedSample {
+    /// `sample` as a view keeps it, drawn `through` the query and filters given, and
+    /// row by row from `of` rows when it was.
+    pub fn of(
+        sample: &crate::sampling::Sample,
+        of: Option<usize>,
+        through: Option<ReshapeSource>,
+    ) -> Self {
+        use crate::sampling::SampleMethod;
+        let (method, per) = match &sample.method {
+            SampleMethod::Spread => ("random", None),
+            SampleMethod::PerPartition { column } => ("per value", Some(column.clone())),
+            SampleMethod::FirstRows => ("first rows", None),
+            SampleMethod::EveryRow => ("every row", None),
+        };
+        Self {
+            scope: sample.scope.command(),
+            method: method.to_string(),
+            per,
+            rows: sample.rows,
+            seed: sample.seed,
+            of,
+            through,
+        }
+    }
+
+    /// The sample this draws, or why it cannot be read.
+    pub fn sample(&self) -> Result<crate::sampling::Sample> {
+        use crate::sampling::SampleMethod;
+        let method = match (self.method.as_str(), &self.per) {
+            ("random", _) => SampleMethod::Spread,
+            ("per value", Some(column)) => SampleMethod::PerPartition {
+                column: column.clone(),
+            },
+            ("first rows", _) => SampleMethod::FirstRows,
+            ("every row", _) => SampleMethod::EveryRow,
+            (other, _) => {
+                return Err(color_eyre::eyre::eyre!(
+                    "the view's sample has no method {other:?}; it is random, per value \
+                     (with per), first rows or every row"
+                ));
+            }
+        };
+        Ok(crate::sampling::Sample {
+            scope: crate::data_quality::QualityScope::parse_command(&self.scope)?,
+            method,
+            rows: self.rows.max(1),
+            seed: self.seed,
+        })
+    }
 }
 
 impl ViewSettings {
@@ -1097,6 +1178,7 @@ mod tests {
             last_matched_file: None,
             match_criteria: criteria,
             settings: ViewSettings {
+                sample: None,
                 query: None,
                 sql_query: None,
                 fuzzy_query: None,

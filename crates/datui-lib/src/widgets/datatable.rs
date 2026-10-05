@@ -8564,7 +8564,8 @@ impl DataTableState {
     /// from this state would carry nothing — and, matching by schema, it
     /// would shadow real views in the apply gate as a well-used no-op.
     pub fn is_at_defaults(&self) -> bool {
-        self.column_changes.is_empty()
+        self.sampled.is_none()
+            && self.column_changes.is_empty()
             && self.active_query.is_empty()
             && self.active_sql_query.is_empty()
             && self.active_fuzzy_query.is_empty()

@@ -235,6 +235,7 @@ mod tests {
                 table: None,
             };
             let settings = crate::view::ViewSettings {
+                sample: None,
                 query: None,
                 sql_query: None,
                 fuzzy_query: None,

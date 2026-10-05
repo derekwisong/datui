@@ -474,6 +474,7 @@ mod tests {
                 table: None,
             },
             settings: ViewSettings {
+                sample: None,
                 query: None,
                 sql_query: None,
                 fuzzy_query: None,

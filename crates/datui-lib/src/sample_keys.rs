@@ -184,6 +184,19 @@ impl App {
         anyway: bool,
         then_analyze: bool,
     ) {
+        self.draw_table_sample(sample, None, replay, anyway, then_analyze);
+    }
+
+    /// [`Self::apply_table_sample`], drawing row by row from `of` rows when a view
+    /// says its sample was drawn that way: the same rows again.
+    pub(crate) fn draw_table_sample(
+        &mut self,
+        sample: sampling::Sample,
+        of: Option<usize>,
+        replay: Option<crate::view::ViewSettings>,
+        anyway: bool,
+        then_analyze: bool,
+    ) {
         self.put_down_sample_draw();
         let Some(state) = self.data_table_state.as_ref() else {
             return;
@@ -195,6 +208,7 @@ impl App {
             || !source.column_changes().is_empty() && !sample.scope.uses_source();
         let replay = replay.or_else(|| (!through).then(|| crate::view_settings_of(source)));
         let (cut, known_total) = Self::table_sample_source(source, &sample.scope);
+        let known_total = of.or(known_total);
         let bytes_per_row = Some(source.estimated_row_bytes());
         let streaming = self.app_config.performance.streaming;
         let rows = Arc::new(crate::table_sample::SampleRows::default());
@@ -514,5 +528,56 @@ impl App {
             notes.insert(0, note);
         }
         notes
+    }
+
+    /// Apply `view`, whose rows are a sample: the view goes back to its source, the
+    /// query and filters the sample was drawn through go on, and the sample is drawn
+    /// again from its seed. The view's own steps go on the sample as it arrives.
+    pub(crate) fn apply_sampled_view(
+        &mut self,
+        view: &crate::view::SavedView,
+        saved: &crate::view::SavedSample,
+        why: Option<crate::view::MatchReason>,
+    ) -> color_eyre::Result<()> {
+        let sample = saved.sample()?;
+        self.put_down_sample_draw();
+        let Some(state) = self.data_table_state.take() else {
+            return Ok(());
+        };
+        let mut source = state.into_unsampled();
+        let through = saved.through.clone().unwrap_or_default();
+        let replayed = source.try_transition(|s| {
+            s.reset_view_for_replay();
+            Self::replay_query(
+                s,
+                through.sql_query.as_deref(),
+                through.query.as_deref(),
+                through.fuzzy_query.as_deref(),
+            )?;
+            Self::replay_filters_and_sort(
+                s,
+                &through.filters,
+                &through.sort_columns,
+                through.sort_directions(),
+            )
+        });
+        self.data_table_state = Some(source);
+        replayed?;
+        self.sample_changed();
+        if let Some(path) = &self.path {
+            use crate::logging::LogFailure;
+            self.view_manager
+                .record_use(&view.id, path)
+                .or_log("record a view's use");
+        }
+        self.active_view_id = Some(view.id.clone());
+        let mut settings = view.settings.clone();
+        settings.sample = None;
+        self.draw_table_sample(sample, saved.of, Some(settings), false, false);
+        if let Some(why) = why {
+            self.flash_view_applied(&view.name, why);
+        }
+        self.first_rows_settled();
+        Ok(())
     }
 }

@@ -8,7 +8,7 @@
 # wheel is built for. The wheel itself accepts polars>=1.38 (see python/pyproject.toml).
 # Move this with the Rust polars bump.
 polars==1.43.2
-polars-runtime-32==1.43.2
+polars-runtime-32==1.44.2
 
 # numpy 2.5 needs Python 3.12; the older lines keep local setup working on 3.10 and
 # 3.11. CI resolves the newest Python, and its key holds the Python version.

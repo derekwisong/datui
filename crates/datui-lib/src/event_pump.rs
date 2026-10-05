@@ -1992,7 +1992,8 @@ mod tests {
     }
 
     /// Ctrl+T typed at a spinner waits its turn like the letters around it: the
-    /// prompt opens, switches mode, and the text lands in the mode switched to.
+    /// prompt opens, switches mode, and the text lands in the mode switched to. A
+    /// build without SQL has one language, so the chord leaves the line on q.
     #[test]
     fn a_mode_chord_typed_while_busy_switches_before_the_text() {
         let (mut p, _dir) = loaded_pump();
@@ -2011,7 +2012,9 @@ mod tests {
             crate::QueryMode::Q => &p.app.query_input,
         };
         assert_eq!(typed.value(), "ada");
-        assert_eq!(p.app.query_input.value(), "");
+        if mode != crate::QueryMode::Q {
+            assert_eq!(p.app.query_input.value(), "");
+        }
     }
 
     /// A key that arrives behind the event that ended the busy state is handled after
@@ -3424,7 +3427,7 @@ mod tests {
             // home_test covers its keys.
         ];
         // What needs a state the fixture does not have, or would leave the test.
-        let exempt: &[(Context, &str)] = &[
+        let mut exempt: Vec<(Context, &str)> = vec![
             // Only where the row count is an estimate.
             (Context::Info, "c"),
             // Only on a file read through a format spec.
@@ -3481,6 +3484,10 @@ mod tests {
             (Context::Views, "d"),
             (Context::Views, "i"),
         ];
+        // One language to switch between without SQL.
+        if crate::QueryMode::available().len() < 2 {
+            exempt.push((Context::Query, "Ctrl+T"));
+        }
         let mut ignored = Vec::new();
         for (context, open, groups) in &screens {
             let screen = keys::screen(*context);

@@ -369,6 +369,32 @@ different writer versions stack:
 The Notes tab lists the columns not every file has. Columns keep the order
 the files first have them in.
 
+## Garmin TXi logs
+
+Garmin and TXi are trademarks of Garmin Ltd. or its subsidiaries; datui is not
+affiliated with or endorsed by Garmin.
+
+The repository's `contrib/formats/garmin-txi.toml` reads the data logs a Garmin
+TXi writes: the airframe line as metadata, the units line, `time` in UTC, and
+each column typed. Copy it into `~/.config/datui/formats/` to open the logs, or
+a directory of them, with no flags. A twin fills the `E2` columns and a single
+leaves them blank. A log written before a GPS fix has blank date and GPS cells.
+
+**`garmin-log.csv`**
+
+```csv,file=garmin-log.csv
+#airframe_info, log_version="1.03", airframe_name="Example 182", tail_number="N12345", system_id="0000EXAMPLE", unit="GDU1",
+#yyy-mm-dd, hh:mm:ss,   hh:mm,  ident,      degrees,      degrees,  ft msl,     kt,    rpm,   deg F,   deg F,  bool,      #
+  Lcl Date, Lcl Time, UTCOfst, AtvWpt,     Latitude,    Longitude,  AltMSL,    IAS, E1 RPM, E1 CHT1, E1 EGT1, OnGrnd, LogIdx
+          ,         ,        ,       ,             ,             ,        ,    0.0,  980.0,   210.0,  1105.0,      1,      1
+2024-05-04, 09:12:01,  -04:00,   KXYZ,   41.0000000,  -74.0000000,   350.0,    0.0, 1000.0,   215.0,  1120.0,      1,      2
+2024-05-04, 09:12:02,  -04:00,   KXYZ,   41.0000100,  -74.0000100,   350.0,   12.5, 1800.0,   230.0,  1250.0,      0,      3
+```
+
+```bash
+datui formats check contrib/formats/garmin-txi.toml garmin-log.csv
+```
+
 ## Checks
 
 | Problem | What happens |

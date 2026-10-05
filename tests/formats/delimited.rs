@@ -1012,3 +1012,53 @@ fn a_typed_column_is_one_type_across_files() {
     assert_eq!(df.column("LogIdx").unwrap().dtype(), &DataType::Int64);
     assert_eq!(df.column("Latitude").unwrap().null_count(), 3);
 }
+
+/// The specs the repository ships under `contrib/formats` parse, and the Garmin one
+/// reads a log of its shape.
+#[test]
+fn the_contributed_specs_parse() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("contrib/formats");
+    let mut read = 0;
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "toml") {
+            Spec::load(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            read += 1;
+        }
+    }
+    assert!(read > 0, "no specs under {}", dir.display());
+
+    let spec = Spec::load(&dir.join("garmin-txi.toml")).unwrap();
+    let path = common::fixture_dir().join("garmin_txi_log.csv");
+    std::fs::write(
+        &path,
+        padded(
+            "#airframe_info, log_version=\"1.03\", tail_number=\"N12345\",\n\
+             #yyy-mm-dd, hh:mm:ss,   hh:mm,  ident,      degrees,    rpm,  bool,  #\n  \
+             Lcl Date, Lcl Time, UTCOfst, AtvWpt,     Latitude, E1 RPM, OnGrnd, LogIdx\n          \
+             ,         ,        ,       ,             ,  980.0,      1,      1\n\
+             2024-05-04, 09:12:01,  -04:00,   KXYZ,   41.0000000, 1000.0,      0,      2\n",
+            4096,
+        ),
+    )
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    app.set_formats(Registry::of(vec![spec]));
+    open(&mut app, &rx, path, OpenOptions::default());
+    let df = collected(&app);
+    assert_eq!(df.height(), 2);
+    assert_eq!(df.column("Latitude").unwrap().dtype(), &DataType::Float64);
+    assert_eq!(df.column("E1 RPM").unwrap().dtype(), &DataType::Float64);
+    assert_eq!(df.column("OnGrnd").unwrap().dtype(), &DataType::Boolean);
+    assert_eq!(df.column("LogIdx").unwrap().dtype(), &DataType::Int64);
+    assert_eq!(df.column("AtvWpt").unwrap().dtype(), &DataType::String);
+    assert!(
+        df.column("time")
+            .unwrap()
+            .get(1)
+            .unwrap()
+            .to_string()
+            .starts_with("2024-05-04 13:12:01")
+    );
+}

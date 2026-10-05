@@ -360,6 +360,9 @@ def environment(work: Path, real: str | None) -> dict[str, str]:
 def run_block(b: Block, work: Path, real: str | None, timeout: float) -> str | None:
     """Run one block in `work`; the failure, or None."""
     env = environment(work, real)
+    # The contributed specs a page shows, where a checkout of the repository has them.
+    if (ROOT / "contrib").is_dir():
+        shutil.copytree(ROOT / "contrib", work / "contrib", dirs_exist_ok=True)
     for f in b.files:
         (work / f.values["file"]).write_text(f.body, encoding="utf-8")
     if "expect" in b.values:

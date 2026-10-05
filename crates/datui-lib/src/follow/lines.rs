@@ -56,6 +56,19 @@ fn after_rows(bytes: &[u8], rows: usize) -> usize {
     start.min(bytes.len())
 }
 
+/// Bytes parsed at once by a read of every row.
+const RUN: usize = 64 << 20;
+
+/// Where the run of whole lines from `start` ends: about `run` bytes on, at a line's
+/// end, or at the end of `bytes`.
+fn run_end(bytes: &[u8], start: usize, run: usize) -> usize {
+    let at = start.saturating_add(run);
+    if at >= bytes.len() {
+        return bytes.len();
+    }
+    memchr::memchr(b'\n', &bytes[at..]).map_or(bytes.len(), |n| at + n + 1)
+}
+
 /// The file's bytes as they stand, mapped rather than read: a followed file can be
 /// many times the memory. `None` when it is empty, which cannot be mapped.
 fn map(file: &File) -> std::io::Result<Option<memmap2::Mmap>> {
@@ -194,21 +207,34 @@ impl AnonymousScan for LinesScan {
         if let Some(rows) = args.n_rows {
             bytes = &bytes[..after_rows(bytes, rows)];
         }
-        let mut df = if columns.is_empty() {
+        if columns.is_empty() {
             // A count: the rows, with no columns to parse.
-            DataFrame::empty_with_height(polars::io::ndjson::count_rows(bytes))
-        } else if bytes.is_empty() {
-            DataFrame::empty_with_schema(&columns)
-        } else {
-            JsonReader::new(Cursor::new(bytes))
-                .with_json_format(JsonFormat::JsonLines)
-                .with_schema(Arc::new(columns))
-                .with_ignore_errors(self.ignore_errors)
-                .finish()?
-        };
-        if let Some(predicate) = args.predicate {
-            df = df.lazy().filter(predicate).collect()?;
+            let df = DataFrame::empty_with_height(polars::io::ndjson::count_rows(bytes));
+            return match args.predicate {
+                Some(predicate) => df.lazy().filter(predicate).collect(),
+                None => Ok(df),
+            };
         }
+        let columns = Arc::new(columns);
+        // A run of lines at a time, each filtered before the next is parsed: a filter
+        // over a large file holds the rows it keeps, not every row's columns.
+        let mut out = DataFrame::empty_with_schema(&columns);
+        let mut start = 0;
+        while start < bytes.len() {
+            let end = run_end(bytes, start, RUN);
+            let mut df = JsonReader::new(Cursor::new(&bytes[start..end]))
+                .with_json_format(JsonFormat::JsonLines)
+                .with_schema(columns.clone())
+                .with_ignore_errors(self.ignore_errors)
+                .finish()?;
+            if let Some(predicate) = &args.predicate {
+                df = df.lazy().filter(predicate.clone()).collect()?;
+            }
+            out.vstack_mut(&df)?;
+            start = end;
+        }
+        out.rechunk_mut();
+        let df = out;
         Ok(df)
     }
 }
@@ -224,6 +250,15 @@ mod tests {
         assert_eq!(complete(b"{\"a\":1}\n{\"a\"", false), 8);
         assert_eq!(complete(b"{\"a\":1}\n", false), 8);
         assert_eq!(complete(b"{\"a\":1}\n{\"a\":2}", true), 15);
+    }
+
+    #[test]
+    fn a_run_ends_at_a_line_s_end() {
+        let bytes = b"{\"a\":1}\n{\"a\":22}\n{\"a\":3}";
+        assert_eq!(run_end(bytes, 0, 3), 8);
+        assert_eq!(run_end(bytes, 8, 3), 17);
+        assert_eq!(run_end(bytes, 17, 3), bytes.len());
+        assert_eq!(run_end(bytes, 0, 100), bytes.len());
     }
 
     #[test]

@@ -245,8 +245,8 @@ The mouse is a shortcut to keys, never a second interface (`pointer.rs`).
   records its rect while drawing (`pointer::record`, `record_field::<Form>`,
   `record_spans` for tab lines); nothing recomputes layout for hit-testing.
   A new form row calls `record_field` beside its `FormRow::render`; a list
-  from `PickerState` records itself, and an inline value list uses
-  `Picker::on_click(Clicks::Step(field))`.
+  from `PickerState` records itself, and a short choice's values side by
+  side (`FormValue::Options` with `clicks`) record a click per value.
 - **Forms:** click = focus + Space (checkbox flips, choice steps, picker
   opens, button runs, text takes the cursor); right click on a choice = ←,
   on anything else focus only. A **list row** (a sort, a filter, a column in

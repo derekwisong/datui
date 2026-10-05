@@ -159,8 +159,6 @@ pub enum Clicks {
     /// An open picker: the cursor goes to the line, which is chosen (toggled in a
     /// list of marks).
     Choose,
-    /// The values of a form's field, listed: the field steps to the line's value.
-    Step(crate::pointer::FieldId),
     /// The analysis tools list.
     Tool,
 }
@@ -286,11 +284,6 @@ impl Picker<'_> {
                 visible: i,
                 selected,
                 multi: self.marks.is_some(),
-            },
-            Clicks::Step(field) => Hit::Option {
-                field: Some(field.clone()),
-                index: i,
-                current: selected,
             },
             Clicks::Tool => Hit::Tool(i),
         })

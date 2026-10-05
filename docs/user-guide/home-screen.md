@@ -442,7 +442,8 @@ does not answer reads `unavailable`; <kbd>Ctrl</kbd>+<kbd>R</kbd> tries again.
 
 The cache holds recent paths, how often and how lately each was opened, what
 was measured (counts, column names, size, modification time), query history,
-section folds, bucket listings and hidden cloud sources, never the data. Your
+section folds, bucket listings, hidden cloud sources and each terminal's last
+answer about its background, never the data. Your
 catalog is in the config directory, not the cache. Local facts are measured again when a file's size or time changes.
 
 | Command | Removes |

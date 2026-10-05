@@ -14821,7 +14821,7 @@ impl App {
                 None
             }
             AppEvent::TerminalBackground(mode) => {
-                self.follow_terminal_background(*mode);
+                self.terminal_answered(*mode);
                 None
             }
             AppEvent::TerminalFocused => {
@@ -18005,6 +18005,29 @@ impl App {
         }
     }
 
+    /// The terminal said what its background is: follow it under `auto`, and remember
+    /// it for the next start's first frame.
+    fn terminal_answered(&mut self, mode: ThemeMode) {
+        if self.app_config.theme.follow {
+            self.cache
+                .remember_terminal_mode(&terminal_color::terminal_key(), mode);
+        }
+        self.follow_terminal_background(mode);
+    }
+
+    /// Settle the palette of the first frame under `auto`, without waiting for the
+    /// terminal: its answer when `answered` has it, else what this terminal answered
+    /// last time. An answer that comes later switches palettes if it differs.
+    pub fn settle_first_palette(&mut self, answered: Option<ThemeMode>) {
+        if let Some(mode) = answered {
+            self.terminal_answered(mode);
+        } else if self.app_config.theme.follow
+            && let Some(mode) = self.cache.terminal_mode(&terminal_color::terminal_key())
+        {
+            self.follow_terminal_background(mode);
+        }
+    }
+
     /// Whether the run loop should ask the terminal for its background, once. Asked by
     /// [`AppEvent::TerminalFocused`] under `auto`.
     pub fn take_background_query(&mut self) -> bool {
@@ -19378,10 +19401,9 @@ fn run_impl(
     // Asked before the settings are read, so the answer is usually in by the time they
     // are; under an explicit `theme.mode` it is read and dropped. The reader takes it
     // off the input stream, so nothing waits here.
-    let asked_at = (terminal_color::supported()
+    let asked = terminal_color::supported()
         && config.as_ref().is_none_or(|c| c.theme.follow)
-        && terminal_color::ask(&mut std::io::stdout()))
-    .then(std::time::Instant::now);
+        && terminal_color::ask(&mut std::io::stdout());
     let mut background = None;
     let (tx, rx) = mpsc::channel::<AppEvent>();
     {
@@ -19480,21 +19502,11 @@ fn run_impl(
         }
     };
 
-    // Under `auto`, the first frame waits a moment for the terminal's answer, so it is
-    // drawn in the palette it ends up in. What arrives meanwhile is handled after.
-    if let Some(asked_at) = asked_at.filter(|_| config.theme.follow && background.is_none()) {
-        let until = asked_at + terminal_color::STARTUP_WAIT;
-        while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
-            match rx.recv_timeout(left) {
-                Ok(AppEvent::TerminalBackground(mode)) => {
-                    background = Some(mode);
-                    break;
-                }
-                Ok(event) => backlog.push(event),
-                Err(_) => break,
-            }
-        }
-    }
+    // The first frame is not held for the terminal's answer: one that is already in
+    // is used, else this terminal's last one (see `App::settle_first_palette`).
+    let background = (asked && config.theme.follow)
+        .then(|| startup::take_answer(&rx, background, &mut backlog))
+        .flatten();
     if config.theme.follow && terminal_color::supported() {
         follow_focus(&mut std::io::stdout());
     }
@@ -19508,9 +19520,7 @@ fn run_impl(
     pointer::capture(config.display.mouse, &mut std::io::stdout());
 
     let mut app = App::new_with_views(tx.clone(), rt_handle, theme, config, views);
-    if let Some(mode) = background {
-        app.follow_terminal_background(mode);
-    }
+    app.settle_first_palette(background);
     if let Some(out) = passed {
         app.pass_stdout_to(out);
     }

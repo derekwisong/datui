@@ -211,6 +211,9 @@ impl CacheManager {
 /// What a line-file list's name ends in: `recents_history.txt`.
 const HISTORY_SUFFIX: &str = "_history.txt";
 
+/// The line-file of each terminal's last answer about its background.
+const TERMINAL_MODES: &str = "terminal_modes";
+
 /// Write `bytes` to `path` through a sibling temp file, synced, then renamed over it,
 /// so a reader, another instance or a crash mid-write sees the old file or the new
 /// one, never part of either. Every write into the cache, and every view, goes
@@ -369,6 +372,34 @@ impl CacheManager {
         lines.sort();
         self.save_history_file("home_folds", &lines)
             .or_log("save home folds");
+    }
+
+    /// The mode `terminal` last said its background was, for the first frame of the
+    /// next start under `theme.mode = "auto"`. One line per terminal: `key<TAB>dark`.
+    pub fn terminal_mode(&self, terminal: &str) -> Option<crate::config::ThemeMode> {
+        self.load_history_or_log(TERMINAL_MODES)
+            .iter()
+            .find_map(|line| match line.split_once('\t')? {
+                (key, "dark") if key == terminal => Some(crate::config::ThemeMode::Dark),
+                (key, "light") if key == terminal => Some(crate::config::ThemeMode::Light),
+                _ => None,
+            })
+    }
+
+    /// Remember what `terminal` answered, when it differs from what is remembered.
+    pub fn remember_terminal_mode(&self, terminal: &str, mode: crate::config::ThemeMode) {
+        if self.terminal_mode(terminal) == Some(mode) {
+            return;
+        }
+        let word = match mode {
+            crate::config::ThemeMode::Light => "light",
+            _ => "dark",
+        };
+        self.update_history_file(TERMINAL_MODES, |lines| {
+            lines.retain(|line| line.split_once('\t').is_none_or(|(key, _)| key != terminal));
+            lines.push(format!("{terminal}\t{word}"));
+        })
+        .or_log("remember the terminal's background");
     }
 
     /// Forget a single recently opened path.
@@ -1297,6 +1328,22 @@ mod recents_pruning_tests {
     fn cache() -> (CacheManager, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("temp dir");
         (CacheManager::with_dir(dir.path().to_path_buf()), dir)
+    }
+
+    /// Each terminal keeps its own last answer; a new answer replaces the old.
+    #[test]
+    fn a_terminals_last_answer_is_kept_per_terminal() {
+        use crate::config::ThemeMode;
+        let (cache, _keep) = cache();
+        assert_eq!(cache.terminal_mode("WezTerm"), None);
+        cache.remember_terminal_mode("WezTerm", ThemeMode::Light);
+        cache.remember_terminal_mode("tmux", ThemeMode::Dark);
+        assert_eq!(cache.terminal_mode("WezTerm"), Some(ThemeMode::Light));
+        assert_eq!(cache.terminal_mode("tmux"), Some(ThemeMode::Dark));
+        cache.remember_terminal_mode("WezTerm", ThemeMode::Dark);
+        assert_eq!(cache.terminal_mode("WezTerm"), Some(ThemeMode::Dark));
+        assert_eq!(cache.terminal_mode("tmux"), Some(ThemeMode::Dark));
+        assert_eq!(cache.terminal_mode(""), None);
     }
 
     #[test]

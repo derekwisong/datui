@@ -323,7 +323,7 @@ pub const SETTINGS: &[Setting] = &[
     s("log.file", Path, Unset("\"~/datui.log\""), "Where the log goes. Unset: datui.log in the cache directory.").flag("log-file"),
     s("log.level", Choice(&["error", "warn", "info", "debug", "trace", "off"]), Unset("\"warn\""), "How much the log says (default warn). DATUI_LOG beats a config file's; -c and --log-level beat DATUI_LOG.").flag("log-level"),
     // [theme]
-    s("theme.mode", Choice(&["auto", "dark", "light"]), Unset("\"auto\""), "Which mode's theme to use: theme.dark or theme.light. auto asks the terminal for its background, then reads COLORFGBG, then falls back to dark; it asks again when the terminal regains focus."),
+    s("theme.mode", Choice(&["auto", "dark", "light"]), Unset("\"auto\""), "Which mode's theme to use: theme.dark or theme.light. auto follows the terminal's answer about its background, else its last answer, then COLORFGBG, then dark; it asks again when the terminal regains focus."),
     s("theme.dark", Text, Value("\"night-market\""), "The theme used when the terminal is dark: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to night-market, with a warning when dark is in use."),
     s("theme.light", Text, Value("\"day-market\""), "The theme used when the terminal is light: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to day-market, with a warning when light is in use."),
     color("theme.colors.chip_key", "#7dcfff", "#2e7de9", "Keys named in the footer, dialogs, the breadcrumb and the correlation matrix."),
@@ -533,6 +533,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         &["COLORFGBG"],
         EnvGroup::Terminal,
         "With `theme.mode = \"auto\"`, says whether the background is light or dark, for a terminal that does not answer when asked",
+    ),
+    env(
+        &["TERM_PROGRAM"],
+        EnvGroup::Terminal,
+        "With `theme.mode = \"auto\"`, names the terminal whose last answer about its background picks the first frame's theme; `TERM` when unset",
     ),
     env(
         &["LC_ALL", "LC_CTYPE", "LANG"],

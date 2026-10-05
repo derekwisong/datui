@@ -25419,6 +25419,49 @@ fn test_terminal_background_switches_the_palette_under_auto() {
     assert!(!app.take_background_query());
 }
 
+/// The first frame is not held for the terminal. With nothing remembered it is drawn
+/// dark; an answer that differs, arriving after it, switches the palette and is
+/// remembered, so the next start draws its first frame in that palette. An
+/// explicit mode is drawn as set, whatever is remembered.
+#[test]
+fn test_first_frame_uses_the_terminals_last_answer() {
+    use datui::cache::CacheManager;
+    use datui::config::{AppConfig, ColorConfig, ConfigLayer, Theme, ThemeMode};
+    let hex = |s: &str| datui::ColorParser::new().parse(s).expect("color parses");
+    let dir = tempfile::tempdir().unwrap();
+    let start = |text: &str, answered: Option<ThemeMode>| {
+        let config = AppConfig::from_layers([ConfigLayer::parse(text).expect("layer parses")])
+            .expect("resolves");
+        let theme = Theme::from_config(&config.theme).expect("theme builds");
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new_with_config(tx, common::test_runtime(), theme, config);
+        app.use_cache(CacheManager::with_dir(dir.path().to_path_buf()));
+        app.settle_first_palette(answered);
+        app
+    };
+    let header = |app: &App| app.theme().get("table_header_bg");
+    let dark = hex(&ColorConfig::dark().table_header_bg);
+    let light = hex(&ColorConfig::light().table_header_bg);
+
+    // Answered dark at once, so `COLORFGBG` where the tests run does not matter.
+    let auto = "[theme]\nmode = \"auto\"\n";
+    let mut app = start(auto, Some(ThemeMode::Dark));
+    assert_eq!(header(&app), dark, "nothing remembered: dark");
+    app.event(&AppEvent::TerminalBackground(ThemeMode::Light));
+    assert_eq!(header(&app), light, "a late answer switches");
+
+    let app = start(auto, None);
+    assert_eq!(header(&app), light, "the last answer, before any new one");
+    let mut app = start(auto, Some(ThemeMode::Dark));
+    assert_eq!(header(&app), dark, "an answer already in wins");
+    app.event(&AppEvent::TerminalBackground(ThemeMode::Dark));
+    assert_eq!(header(&start(auto, None)), dark, "remembered again");
+
+    app.event(&AppEvent::TerminalBackground(ThemeMode::Light));
+    let pinned = start("[theme]\nmode = \"dark\"\n", None);
+    assert_eq!(header(&pinned), dark, "an explicit mode ignores it");
+}
+
 /// The terminal's answer switches between the two named themes, a theme file
 /// included, keeping `theme.colors` over each.
 #[test]

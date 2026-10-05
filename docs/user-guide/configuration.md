@@ -223,13 +223,19 @@ header fill, row stripes, borders and dim text sit a few shades off the
 terminal's background, so a dark theme's shades are unreadable on a light
 background.
 
-`auto` decides in this order:
+`auto` asks the terminal for its background color (OSC 11) at startup and
+does not wait for the answer. The first frame uses, in this order:
 
 | Source | When |
 |---|---|
-| The terminal's answer to a background color query (OSC 11) | The terminal answers within 100 ms of startup; light when black text reads better on it than white |
-| `COLORFGBG` | The terminal does not answer, and sets it |
-| `dark` | Neither |
+| The terminal's answer | It is in before the first frame; light when black text reads better on it than white |
+| The last answer from this terminal | One was given before; remembered in the cache by `TERM_PROGRAM`, else `TERM` |
+| `COLORFGBG` | The terminal sets it |
+| `dark` | None of these |
+
+An answer that arrives after the first frame switches the theme if it differs.
+On a light terminal seen for the first time, that is one dark frame before the
+light theme.
 
 Under `auto` the theme follows the terminal: when its window comes back into
 focus, datui asks again and switches between `theme.dark` and `theme.light` if
@@ -237,8 +243,9 @@ the scheme changed. That takes a
 terminal that reports focus; in tmux, turn on `set -g focus-events on`.
 
 The question is not asked on Windows, on the Linux console (`TERM=linux`), or
-when standard output is not a terminal. A terminal that does not answer is
-left at `COLORFGBG` or `dark`: set `mode` there.
+when standard output is not a terminal. A terminal that does not answer
+costs nothing at startup and is left at `COLORFGBG` or `dark`: set `mode`
+there.
 
 ## Colors
 

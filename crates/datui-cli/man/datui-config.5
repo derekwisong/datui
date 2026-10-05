@@ -254,7 +254,7 @@ How much the log says (default warn). DATUI_LOG beats a config file's; \-c and \
 .SS "[theme]"
 .TP
 \fBtheme.mode\fR (\fIauto | dark | light\fR)
-Which mode's theme to use: theme.dark or theme.light. auto asks the terminal for its background, then reads COLORFGBG, then falls back to dark; it asks again when the terminal regains focus. Unset by default.
+Which mode's theme to use: theme.dark or theme.light. auto follows the terminal's answer about its background, else its last answer, then COLORFGBG, then dark; it asks again when the terminal regains focus. Unset by default.
 .TP
 \fBtheme.dark\fR (\fIstring\fR)
 The theme used when the terminal is dark: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to night-market, with a warning when dark is in use. Default: \fB"night\-market"\fR.

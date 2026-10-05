@@ -120,10 +120,17 @@ pub fn format_x(x: f64, kind: XAxisTemporalKind, numbers: &AxisNumbers) -> Strin
     when.unwrap_or_else(|| format_number(x, numbers))
 }
 
-/// `v` as the table writes its column.
+/// `v` as the table writes its column: a whole number plainly, a fraction to the
+/// format's precision or, without one, as Polars writes it (`19.434783`), never every
+/// digit an aggregate's division left.
 pub fn format_number(v: f64, numbers: &AxisNumbers) -> String {
     let mut out = String::new();
-    numbers.format.write_f64(v, &mut String::new(), &mut out);
+    let format = &numbers.format;
+    if v.fract() == 0.0 || format.float_precision.is_some() || !v.is_finite() {
+        format.write_f64(v, &mut String::new(), &mut out);
+    } else {
+        format.regroup_decimal(&polars::prelude::AnyValue::Float64(v).str_value(), &mut out);
+    }
     out
 }
 
@@ -211,6 +218,25 @@ pub fn draw(buf: &mut Buffer, place: &PlotPlace, x: f64, style: Style, g: &Glyph
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A mean reads as the table writes a float, not to the last digit, with the
+    /// table's grouping; a whole number reads plainly.
+    #[test]
+    fn readout_numbers_read_as_the_table_writes_them() {
+        let plain = AxisNumbers::default();
+        assert_eq!(format_number(19.434782608695652, &plain), "19.434783");
+        assert_eq!(format_number(-0.5, &plain), "-0.5");
+        let grouped = AxisNumbers {
+            format: crate::numfmt::NumberFormat::preset("thousands").unwrap(),
+            whole: false,
+        };
+        assert_eq!(format_number(12345.678901234, &grouped), "12,345.678901");
+        let whole = AxisNumbers {
+            whole: true,
+            ..grouped
+        };
+        assert_eq!(format_number(1234.0, &whole), "1,234");
+    }
 
     fn place(width: u16) -> PlotPlace {
         PlotPlace {

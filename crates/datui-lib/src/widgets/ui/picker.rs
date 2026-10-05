@@ -33,15 +33,19 @@ impl PickerState {
         &self.items
     }
 
-    /// The items the filter admits, with their original indices.
+    /// The items the filter admits, with their original indices: the one it names
+    /// first, then those it starts, then the rest, each in list order.
     pub fn filtered(&self) -> Vec<(usize, &str)> {
-        let needle = self.filter.to_lowercase();
-        self.items
+        let mut ranked: Vec<(u8, usize, &str)> = self
+            .items
             .iter()
             .enumerate()
-            .filter(|(_, item)| item.to_lowercase().contains(&needle))
-            .map(|(i, item)| (i, item.as_str()))
-            .collect()
+            .filter_map(|(i, item)| {
+                crate::fuzzy::substring_rank(&self.filter, item).map(|r| (r, i, item.as_str()))
+            })
+            .collect();
+        ranked.sort_by_key(|(rank, i, _)| (*rank, *i));
+        ranked.into_iter().map(|(_, i, item)| (i, item)).collect()
     }
 
     /// Where the cursor sits among the visible items; 0 when the item it was
@@ -129,10 +133,16 @@ impl PickerState {
         self.selected = filtered[next].0;
     }
 
-    /// After the filter changes, land the cursor on something visible.
+    /// After the filter changes, land the cursor on something visible: the item
+    /// the filter names in full, else the one it was on, else the first.
     fn settle(&mut self) {
         let filtered = self.filtered();
-        if filtered.iter().all(|(i, _)| *i != self.selected)
+        let named = filtered
+            .first()
+            .filter(|(_, item)| crate::fuzzy::substring_rank(&self.filter, item) == Some(0));
+        if let Some((exact, _)) = named {
+            self.selected = *exact;
+        } else if filtered.iter().all(|(i, _)| *i != self.selected)
             && let Some((first, _)) = filtered.first()
         {
             self.selected = *first;
@@ -308,12 +318,12 @@ mod tests {
         let mut s = state();
         s.type_char('a');
         let names: Vec<&str> = s.filtered().iter().map(|(_, n)| *n).collect();
-        assert_eq!(names, ["Parquet", "Arrow", "Avro"]);
+        assert_eq!(names, ["Arrow", "Avro", "Parquet"], "starts first");
         s.type_char('r');
         let names: Vec<&str> = s.filtered().iter().map(|(_, n)| *n).collect();
         assert_eq!(
             names,
-            ["Parquet", "Arrow"],
+            ["Arrow", "Parquet"],
             "matches anywhere, ignoring case"
         );
         s.backspace();
@@ -342,15 +352,40 @@ mod tests {
     #[test]
     fn movement_walks_the_visible_items_and_wraps() {
         let mut s = state();
-        s.type_char('a'); // Parquet, Arrow, Avro
-        s.move_down();
-        assert_eq!(s.selected_original(), Some(4));
+        s.type_char('a'); // Arrow, Avro, Parquet
         s.move_down();
         assert_eq!(s.selected_original(), Some(5));
         s.move_down();
-        assert_eq!(s.selected_original(), Some(1), "wraps to the top");
+        assert_eq!(s.selected_original(), Some(1));
+        s.move_down();
+        assert_eq!(s.selected_original(), Some(4), "wraps to the top");
         s.move_up();
-        assert_eq!(s.selected_original(), Some(5), "and back around");
+        assert_eq!(s.selected_original(), Some(1), "and back around");
+    }
+
+    /// Typing a whole name lists it first and takes the cursor there, off an item
+    /// that only contains it: `hour` picks `hour`, not the `time_hour` it was on.
+    #[test]
+    fn a_name_typed_whole_ranks_first_and_takes_the_cursor() {
+        let mut s = PickerState::new(
+            ["time_hour", "dep_delay", "Hour", "hours"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        );
+        s.select_original(0);
+        for c in "hour".chars() {
+            s.type_char(c);
+        }
+        let names: Vec<&str> = s.filtered().iter().map(|(_, n)| *n).collect();
+        assert_eq!(names, ["Hour", "hours", "time_hour"]);
+        assert_eq!(s.selected_original(), Some(2));
+        s.backspace();
+        assert_eq!(
+            s.selected_original(),
+            Some(2),
+            "kept while it still matches"
+        );
     }
 
     #[test]

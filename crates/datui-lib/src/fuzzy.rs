@@ -64,6 +64,28 @@ const BONUS_BOUNDARY_DELIMITER: i32 = BONUS_BOUNDARY + 1;
 /// are named by their path below the search root, so it matters more than usual.
 const BONUS_FILENAME: i32 = BONUS_BOUNDARY - 2;
 
+/// Added when the needle is the whole haystack, ignoring case. Not fzf's: it ranks an
+/// exact name above the other matches, as no alignment of a name-length needle gains
+/// this much over another.
+const EXACT_BONUS: i32 = 1_000;
+
+/// Where a needle sits in a name, for a list narrowed by substring: the whole name
+/// (0), its start (1), or inside it (2). `None` when the name does not contain it.
+/// Case-insensitive; an empty needle is inside every name.
+pub fn substring_rank(needle: &str, haystack: &str) -> Option<u8> {
+    let needle = needle.to_lowercase();
+    let hay = haystack.to_lowercase();
+    if needle.is_empty() {
+        Some(2)
+    } else if hay == needle {
+        Some(0)
+    } else if hay.starts_with(&needle) {
+        Some(1)
+    } else {
+        hay.contains(&needle).then_some(2)
+    }
+}
+
 fn class_of(c: char) -> Class {
     if c.is_whitespace() {
         Class::White
@@ -228,6 +250,14 @@ pub fn best_match(needle: &str, haystack: &str) -> Option<Match> {
         return None;
     }
 
+    // The whole name typed is the answer: `hour` must find `hour` before `time_hour`,
+    // which the boundary after `_` scores the same.
+    if lower == needle {
+        let mut m = score_from(&hay, &lower, &needle, 0)?;
+        m.score += EXACT_BONUS;
+        return Some(m);
+    }
+
     let mut best: Option<Match> = None;
     for start in 0..hay.len() {
         // Only positions where the first needle character actually sits can start an
@@ -303,4 +333,27 @@ pub fn is_match(needle: &str, haystack: &str) -> bool {
         return false;
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_exact_name_outranks_the_same_word_after_a_boundary() {
+        let exact = best_match("hour", "hour").unwrap().score;
+        let inside = best_match("hour", "time_hour").unwrap().score;
+        assert!(exact > inside, "{exact} vs {inside}");
+        assert!(best_match("HOUR", "hour").unwrap().score > inside);
+        assert_eq!(best_match("hour", "hour").unwrap().positions, [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn substring_rank_puts_the_name_then_its_start_then_the_rest() {
+        assert_eq!(substring_rank("Hour", "hour"), Some(0));
+        assert_eq!(substring_rank("hour", "hours"), Some(1));
+        assert_eq!(substring_rank("hour", "time_hour"), Some(2));
+        assert_eq!(substring_rank("hour", "minute"), None);
+        assert_eq!(substring_rank("", "minute"), Some(2));
+    }
 }

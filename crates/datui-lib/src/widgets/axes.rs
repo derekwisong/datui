@@ -13,11 +13,11 @@
 
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Rect},
+    layout::Rect,
     style::Style,
     symbols::Marker,
     text::Span,
-    widgets::{Axis, Chart, LegendPosition, Widget},
+    widgets::{Axis, Chart, Widget},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -630,11 +630,21 @@ pub struct Placed {
     pub bounds: [f64; 2],
 }
 
-/// A chart's legend: how many series it names and the widest name.
-#[derive(Clone, Copy, Debug)]
+/// A chart's legend: a name per series, each in the style its series draws in.
+#[derive(Clone, Debug, Default)]
 pub struct Legend {
-    pub width: u16,
-    pub rows: u16,
+    pub entries: Vec<(String, Style)>,
+}
+
+/// The widest a legend name is drawn before it is cut.
+const LEGEND_NAME_MAX: usize = 24;
+
+impl Legend {
+    /// The cells it covers for names `name_width` wide: a cell of air each side, the
+    /// swatch and a space, then the name; a row per series.
+    fn size(&self, name_width: usize) -> (u16, u16) {
+        (name_width as u16 + 4, self.entries.len() as u16)
+    }
 }
 
 /// A chart's two axes and how they are drawn.
@@ -649,7 +659,7 @@ pub struct PlotAxes<'a> {
     pub grid: Option<Style>,
     /// The marker the series draw with: ticks sit on the cells their values land on.
     pub marker: Marker,
-    /// The legend, placed in the corner the series leave emptiest; `None` draws none.
+    /// The legend, placed where it covers the fewest marks; `None` draws none.
     pub legend: Option<Legend>,
 }
 
@@ -761,14 +771,16 @@ impl<'a> PlotAxes<'a> {
                     .style(self.line)
                     .labels(y_labels),
             )
-            .hidden_legend_constraints((Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)));
+            .legend_position(None);
+        // Placed on the marks alone, before the grid is drawn under them.
         let legend = self
             .legend
-            .and_then(|legend| legend_corner(&chart, frame.chart, frame.graph, legend));
+            .as_ref()
+            .and_then(|legend| place_legend(&chart, &frame, legend, g));
         if let Some(style) = self.grid {
             draw_grid(buf, frame.graph, &x.majors, &frame.y.majors, style, g);
         }
-        chart.legend_position(legend).render(frame.chart, buf);
+        chart.render(frame.chart, buf);
         g.plot.redraw_axes(frame.chart, buf);
         draw_tick_marks(buf, &frame, &x, self.line, g);
         let label_x = frame.chart.left();
@@ -790,41 +802,107 @@ impl<'a> PlotAxes<'a> {
             let x = row.right() - title.width() as u16;
             buf.set_string(x, row.y, title, self.titles);
         }
+        if let (Some(legend), Some(place)) = (&self.legend, legend) {
+            draw_legend(buf, legend, place, self.labels, g);
+        }
         frame
     }
 }
 
-/// The corner of `graph` whose legend-sized patch holds the fewest marks of
-/// `chart`'s series; the top right on a tie.
-fn legend_corner(
-    chart: &Chart<'_>,
+/// Where a legend goes: its area, and how wide its names are drawn.
+#[derive(Clone, Copy, Debug)]
+struct LegendPlace {
     area: Rect,
-    graph: Rect,
-    legend: Legend,
-) -> Option<LegendPosition> {
-    let (w, h) = (legend.width + 2, legend.rows + 2);
-    if legend.rows == 0 || w > graph.width || h > graph.height {
+    name_width: usize,
+}
+
+/// Where in `frame`'s plot the legend covers the fewest of `chart`'s marks: a
+/// corner, or the middle of an edge. A braille cell counts its dots, so a sparse
+/// patch wins over a dense one. Corners first on a tie, the top right first. `None`
+/// when the plot is too small to give it a quarter.
+fn place_legend(
+    chart: &Chart<'_>,
+    frame: &PlotFrame,
+    legend: &Legend,
+    g: &Glyphs,
+) -> Option<LegendPlace> {
+    let graph = frame.graph;
+    let widest = legend
+        .entries
+        .iter()
+        .map(|(name, _)| name.width())
+        .max()
+        .unwrap_or(0);
+    let name_width = widest
+        .min(LEGEND_NAME_MAX)
+        .min((graph.width / 2).saturating_sub(4) as usize);
+    let (w, h) = legend.size(name_width);
+    if legend.entries.is_empty()
+        || name_width == 0
+        || name_width < widest.min(4)
+        || w > graph.width / 2
+        || h > graph.height / 2
+    {
         return None;
     }
-    let mut probe = Buffer::empty(area);
-    chart.clone().legend_position(None).render(area, &mut probe);
-    let (left, right) = (graph.left(), graph.right() - w);
-    let (top, bottom) = (graph.top(), graph.bottom() - h);
-    let marks = |x0: u16, y0: u16| {
+    let mut probe = Buffer::empty(frame.chart);
+    chart.clone().render(frame.chart, &mut probe);
+    let weight = |symbol: &str| -> usize {
+        let mut chars = symbol.chars();
+        match (chars.next(), chars.next()) {
+            (None | Some(' '), _) => 0,
+            (Some(c), None) if ('\u{2800}'..='\u{28ff}').contains(&c) => {
+                (c as u32 - 0x2800).count_ones() as usize
+            }
+            _ => 1,
+        }
+    };
+    // The axes ratatui drew are not marks.
+    let axis = [g.plot.axis.vertical, g.plot.axis.horizontal];
+    let marks = |x0: u16, y0: u16| -> usize {
         (y0..y0 + h)
             .flat_map(|y| (x0..x0 + w).map(move |x| (x, y)))
-            .filter(|&(x, y)| !matches!(probe[(x, y)].symbol(), " " | "\u{2800}"))
-            .count()
+            .map(|(x, y)| probe[(x, y)].symbol())
+            .filter(|symbol| !axis.contains(symbol))
+            .map(weight)
+            .sum()
     };
+    let (left, right) = (graph.left(), graph.right() - w);
+    let (top, bottom) = (graph.top(), graph.bottom() - h);
+    let (center, middle) = (left + (right - left) / 2, top + (bottom - top) / 2);
     [
-        (LegendPosition::TopRight, right, top),
-        (LegendPosition::TopLeft, left, top),
-        (LegendPosition::BottomRight, right, bottom),
-        (LegendPosition::BottomLeft, left, bottom),
+        (right, top),
+        (left, top),
+        (right, bottom),
+        (left, bottom),
+        (center, top),
+        (center, bottom),
+        (left, middle),
+        (right, middle),
     ]
     .into_iter()
-    .min_by_key(|&(_, x, y)| marks(x, y))
-    .map(|(corner, ..)| corner)
+    .min_by_key(|&(x, y)| marks(x, y))
+    .map(|(x, y)| LegendPlace {
+        area: Rect::new(x, y, w, h),
+        name_width,
+    })
+}
+
+/// The legend in `place`: on the plot's background, cleared of the marks under it,
+/// a swatch in each series' color and its name beside it. No frame: the cleared
+/// patch sets it off.
+fn draw_legend(buf: &mut Buffer, legend: &Legend, place: LegendPlace, text: Style, g: &Glyphs) {
+    let area = place.area;
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            buf[(x, y)].reset();
+        }
+    }
+    for ((name, style), y) in legend.entries.iter().zip(area.top()..) {
+        buf.set_string(area.x + 1, y, g.bar_eighths[7], *style);
+        let name = cut(name, place.name_width, g);
+        buf.set_string(area.x + 3, y, name, text);
+    }
 }
 
 /// The grid: a dotted line across at each y tick and down at each x tick, but not
@@ -1422,24 +1500,28 @@ mod tests {
         }
     }
 
-    /// The legend takes the corner the series leave emptiest: a line rising to the
-    /// right leaves the top left.
+    fn two_names() -> Legend {
+        Legend {
+            entries: vec![
+                ("first".to_string(), Style::default()),
+                ("second".to_string(), Style::default()),
+            ],
+        }
+    }
+
+    /// The legend has no frame: a swatch and a name per series on the plot's
+    /// background, cleared of the marks under it. A line rising to the right leaves
+    /// the top left.
     #[test]
-    fn the_legend_takes_the_emptiest_corner() {
+    fn the_legend_takes_the_emptiest_corner_without_a_frame() {
         let g = crate::glyphs::unicode();
         let mut axes = axes(false);
-        axes.legend = Some(Legend { width: 6, rows: 2 });
+        axes.legend = Some(two_names());
         let rising: Vec<(f64, f64)> = (0..=100)
             .map(|i| (f64::from(i) / 10.0, f64::from(i) * 10.0))
             .collect();
         let chart = Chart::new(vec![
             Dataset::default()
-                .name("first ")
-                .marker(Marker::Braille)
-                .graph_type(GraphType::Line)
-                .data(&rising),
-            Dataset::default()
-                .name("second")
                 .marker(Marker::Braille)
                 .graph_type(GraphType::Line)
                 .data(&rising),
@@ -1447,8 +1529,57 @@ mod tests {
         let area = Rect::new(0, 0, 60, 24);
         let mut buf = Buffer::empty(area);
         let frame = axes.render(chart, area, &mut buf, g);
-        let corner = (frame.graph.left(), frame.graph.top());
-        assert_eq!(buf[corner].symbol(), "┌", "{:#?}", text(&buf));
+        let (x, y) = (frame.graph.left(), frame.graph.top());
+        let row = |y: u16| -> String {
+            (x..x + 10)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        };
+        assert_eq!(
+            row(y),
+            format!(" {} first  ", g.bar_eighths[7]),
+            "{:#?}",
+            text(&buf)
+        );
+        assert_eq!(row(y + 1), format!(" {} second ", g.bar_eighths[7]));
+        let all = text(&buf).join("\n");
+        for frame_mark in ["┌", "┐", "┘"] {
+            assert!(!all.contains(frame_mark), "{all}");
+        }
+    }
+
+    /// Points in every corner: the legend goes where they are fewest, counted by the
+    /// dots they set, not by the cells they touch.
+    #[test]
+    fn the_legend_avoids_a_dense_corner() {
+        let g = crate::glyphs::unicode();
+        let mut axes = axes(false);
+        axes.legend = Some(two_names());
+        // A dense cloud over the plot but the bottom left, which has a few points:
+        // every place the legend could go touches some.
+        let mut points = Vec::new();
+        for i in 0..=100 {
+            for j in 0..=100 {
+                let (x, y) = (f64::from(i) / 10.0, f64::from(j) * 10.0);
+                if x > 3.0 || y > 300.0 {
+                    points.push((x, y));
+                }
+            }
+        }
+        for i in 0..10 {
+            points.push((f64::from(i) * 0.3, f64::from(i) * 30.0));
+        }
+        let chart = Chart::new(vec![
+            Dataset::default()
+                .marker(Marker::Braille)
+                .graph_type(GraphType::Scatter)
+                .data(&points),
+        ]);
+        let area = Rect::new(0, 0, 60, 24);
+        let mut buf = Buffer::empty(area);
+        let frame = axes.render(chart, area, &mut buf, g);
+        let swatch = (frame.graph.left() + 1, frame.graph.bottom() - 2);
+        assert_eq!(buf[swatch].symbol(), g.bar_eighths[7], "{:#?}", text(&buf));
     }
 
     /// On a narrow plot of 0 to 7 the x row reads `0 2 4 6`: more labels when they

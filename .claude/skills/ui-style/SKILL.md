@@ -160,7 +160,8 @@ Tick marks and the grid are `PlotMarks` slots with ASCII twins. The grid is
 off until asked for, sits under the series in `chart_grid` (a shade under
 `dimmed`, and a color rather than a grey so 16 colors keep it off the
 background), and never takes a cell a series drew in; a legend names two or
-more series from the emptiest corner. The line and scatter crosshair (`x`, or
+more series, unframed (a swatch and a name on the cleared background), where it
+covers the fewest marks. The line and scatter crosshair (`x`, or
 a click) takes the keys from the panel: its line is in the accent, under the
 series, and its readout sits under the plot. Over the plot one title row,
 always kept: how the chart is made (`mean by month, colored by carrier`) in

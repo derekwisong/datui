@@ -145,7 +145,7 @@ labels where there is room.
 | Feature | What it does |
 |---|---|
 | **Grid** | Dotted lines at the labeled ticks, under the series, in `chart_grid`. <kbd>g</kbd> or the **Grid** row toggles it; `chart_grid` in the [`[analysis]` section](../reference/settings.md#analysis) sets where a new chart starts (off) |
-| **Legend** | Names the series when there are two or more, in the corner the series leave emptiest. The **Legend** row hides it |
+| **Legend** | Names the series when there are two or more: a swatch and a name per series, with no frame, cleared from the plot where it covers the fewest points (a corner, or the middle of an edge). The **Legend** row hides it |
 | **Crosshair** | Line and Scatter: <kbd>x</kbd> gives the plot the keys. <kbd>←</kbd> <kbd>→</kbd> step a line down the plot from point to point (a column at a time where they crowd), <kbd>Home</kbd> <kbd>End</kbd> go to the ends, and under the plot a readout gives x and each series' value there: `date: 2020-04-30   high_temp: 67.2`. A series with no value there reads `∅`. <kbd>x</kbd>, <kbd>Tab</kbd> or <kbd>Esc</kbd> hand the keys back to the panel. A click on the plot puts the crosshair there |
 | Marks | Lines in braille. A scatter marks each point with a dot, or in braille past one point per four cells. Histogram bars fill their bins |
 

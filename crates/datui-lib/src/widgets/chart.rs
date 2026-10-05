@@ -1214,8 +1214,7 @@ fn render_xy_chart(
             };
 
             // A series is drawn as its runs between gaps, so a line never bridges a
-            // missing value; only the first run is named, which keeps one legend entry.
-            let name_width = legend_width(names_and_points.iter().map(|s| s.name));
+            // missing value.
             let datasets: Vec<Dataset> = names_and_points
                 .iter()
                 .flat_map(|series| {
@@ -1223,18 +1222,12 @@ fn render_xy_chart(
                     let style = Style::default().fg(theme.get(color));
                     segments(series.points, series.breaks)
                         .into_iter()
-                        .enumerate()
-                        .map(move |(j, run)| {
-                            let dataset = Dataset::default()
+                        .map(move |run| {
+                            Dataset::default()
                                 .marker(marker)
                                 .graph_type(graph_type)
                                 .style(style)
-                                .data(run);
-                            if j == 0 {
-                                dataset.name(legend_name(series.name, name_width))
-                            } else {
-                                dataset
-                            }
+                                .data(run)
                         })
                 })
                 .collect();
@@ -1299,7 +1292,12 @@ fn render_xy_chart(
                 marker,
                 modal.grid,
             );
-            axes.legend = legend(show_legend, names_and_points.len(), name_width);
+            axes.legend = legend(
+                show_legend,
+                names_and_points
+                    .iter()
+                    .map(|s| (s.name, series_style(theme, s.index))),
+            );
             let x_bounds = [x_min_bounds, x_max_bounds];
             let sub = resolution(marker).0;
             // The crosshair's readout takes the rows under the plot while the plot
@@ -1415,24 +1413,14 @@ fn x_axis<'a>(
 
 /// The legend, when it is on and there is more than one series to tell apart: the
 /// y title names a lone one.
-fn legend(show: bool, series: usize, name_width: usize) -> Option<Legend> {
-    (show && series > 1).then_some(Legend {
-        width: name_width as u16,
-        rows: series as u16,
-    })
+fn legend<'a>(show: bool, entries: impl Iterator<Item = (&'a str, Style)>) -> Option<Legend> {
+    let entries: Vec<(String, Style)> = entries.map(|(n, s)| (n.to_string(), s)).collect();
+    (show && entries.len() > 1).then_some(Legend { entries })
 }
 
-/// The widest of the legend's names, in cells.
-fn legend_width<'a>(names: impl Iterator<Item = &'a str>) -> usize {
-    names.map(UnicodeWidthStr::width).max().unwrap_or(0)
-}
-
-/// A legend name padded to the legend's width. ratatui writes each name over the
-/// plot without clearing the rest of its row, so marks showed through beside a
-/// short name.
-fn legend_name(name: &str, width: usize) -> String {
-    let pad = width.saturating_sub(UnicodeWidthStr::width(name));
-    format!("{name}{:pad$}", "")
+/// The style series `i` draws in.
+fn series_style(theme: &Theme, i: usize) -> Style {
+    Style::default().fg(theme.get(SERIES_COLORS[i % SERIES_COLORS.len()]))
 }
 
 /// A histogram: filled bars, or split by a color, each group's bins as a step
@@ -1513,22 +1501,24 @@ fn render_histogram_chart(
     );
     if !data.groups.is_empty() {
         let steps = step_outlines(data);
-        let name_width = legend_width(data.groups.iter().map(|s| s.name.as_str()));
-        let datasets: Vec<Dataset> = data
-            .groups
+        let datasets: Vec<Dataset> = steps
             .iter()
-            .zip(&steps)
             .enumerate()
-            .map(|(i, (group, points))| {
+            .map(|(i, points)| {
                 Dataset::default()
-                    .name(legend_name(&group.name, name_width))
                     .graph_type(GraphType::Line)
                     .marker(marker)
-                    .style(Style::default().fg(theme.get(SERIES_COLORS[i % SERIES_COLORS.len()])))
+                    .style(series_style(theme, i))
                     .data(points)
             })
             .collect();
-        axes.legend = legend(look.legend, data.groups.len(), name_width);
+        axes.legend = legend(
+            look.legend,
+            data.groups
+                .iter()
+                .enumerate()
+                .map(|(i, group)| (group.name.as_str(), series_style(theme, i))),
+        );
         axes.render(Chart::new(datasets), area, buf, g);
         return;
     }
@@ -1607,18 +1597,15 @@ fn render_kde_chart(
         return;
     }
 
-    let name_width = legend_width(data.series.iter().map(|s| s.name.as_str()));
     let datasets: Vec<Dataset> = data
         .series
         .iter()
         .enumerate()
         .map(|(i, s)| {
-            let style = Style::default().fg(theme.get(SERIES_COLORS[i % SERIES_COLORS.len()]));
             Dataset::default()
-                .name(legend_name(&s.name, name_width))
                 .graph_type(GraphType::Line)
                 .marker(g.plot.line)
-                .style(style)
+                .style(series_style(theme, i))
                 .data(&s.points)
         })
         .collect();
@@ -1631,7 +1618,13 @@ fn render_kde_chart(
         g.plot.line,
         modal.grid,
     );
-    axes.legend = legend(modal.show_legend, data.series.len(), name_width);
+    axes.legend = legend(
+        modal.show_legend,
+        data.series
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.name.as_str(), series_style(theme, i))),
+    );
     axes.render(Chart::new(datasets), area, buf, g);
 }
 
@@ -2790,7 +2783,7 @@ mod tests {
     }
 
     /// Under the ASCII set every plot draws ASCII only, and still draws: its marks,
-    /// its bars, its axes and its legend frame. The Unicode set keeps its own.
+    /// its bars, its axes and its legend. The Unicode set keeps its own.
     #[test]
     fn every_plot_is_ascii_under_the_ascii_set() {
         use crate::chart_data::{BoxPlotStats, HistogramBin, KdeSeries};
@@ -2826,10 +2819,10 @@ mod tests {
             modal.spec.mark = chart_type;
             let text = plot_text(&modal, xy(Some(&series)), ascii);
             check(chart_type.label(), &text, &[mark]);
-            // The legend's frame, top right under the y title's row.
-            assert!(text.lines().nth(1).unwrap().ends_with('+'), "{text}");
+            // The legend's swatches, ASCII too.
+            assert!(text.contains("# price"), "{text}");
             let text = plot_text(&modal, xy(Some(&series)), unicode);
-            assert!(text.contains('└') && text.contains('┐'), "{text}");
+            assert!(text.contains("█ price"), "{text}");
         }
         // Axes before the data is in.
         check("placeholder", &plot_text(&modal, xy(None), ascii), &[]);
@@ -2908,8 +2901,8 @@ mod tests {
         assert!(text.is_ascii() && text.contains('#'), "bars:\n{text}");
     }
 
-    /// The legend reads clean over a full plot: a short name's row is blank past
-    /// the name, not the marks behind it.
+    /// The legend reads clean over a full plot, with no frame: a short name's row is
+    /// blank past the name, not the marks behind it.
     #[test]
     fn the_legend_hides_the_plot_behind_it() {
         let mut modal = open_modal();
@@ -2937,22 +2930,17 @@ mod tests {
                 },
                 g,
             );
-            let rows: Vec<Vec<char>> = text.lines().map(|l| l.chars().collect()).collect();
-            let corner = g.plot.axis.top_left.chars().next().unwrap();
-            // The frame's first row is under the y title's: its corner is the one a
-            // rule runs right from, not the axis's tick mark.
-            let rule = g.plot.axis.horizontal.chars().next().unwrap();
-            let left = rows[1]
-                .windows(2)
-                .position(|w| w[0] == corner && w[1] == rule)
-                .expect(&text);
-            let interior = |y: usize| {
-                rows[y][left + 1..rows[y].len() - 1]
-                    .iter()
-                    .collect::<String>()
-            };
-            assert_eq!(interior(2), "price ", "{text}");
-            assert_eq!(interior(3), "volume", "{text}");
+            let swatch = g.bar_eighths[7];
+            let price = format!(" {swatch} price  ");
+            let volume = format!(" {swatch} volume ");
+            let lines: Vec<&str> = text.lines().collect();
+            let at = lines
+                .iter()
+                .position(|l| l.contains(&price))
+                .unwrap_or_else(|| panic!("{text}"));
+            assert!(lines[at + 1].contains(&volume), "{text}");
+            let corner = g.plot.axis.top_left;
+            assert!(!lines[at - 1].contains(corner), "no frame: {text}");
         }
     }
 

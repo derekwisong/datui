@@ -210,5 +210,16 @@ def main() -> int:
     return 0
 
 
+def record(status: int) -> None:
+    """Note datui's status for the runner, which a pipeline's own status can hide: a
+    producer killed by the pipe datui closed on quitting ends it with 141."""
+    path = os.environ.get("DATUI_DOC_STATUS")
+    if path:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"{status}\n")
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    status = main()
+    record(status)
+    sys.exit(status)

@@ -354,12 +354,27 @@ def environment(work: Path, real: str | None) -> dict[str, str]:
         env.pop(xdg, None)
     env.pop("DATUI_FORMATS_PATH", None)
     env.pop("DATUI_DOC_EXPECT", None)
+    env["DATUI_DOC_STATUS"] = str(work / ".datui-status")
     return env
+
+
+def datui_succeeded(work: Path) -> bool:
+    """Whether datui ran in the block, through the shim, and every run exited 0."""
+    try:
+        said = (work / ".datui-status").read_text(encoding="utf-8").split()
+    except OSError:
+        return False
+    return bool(said) and all(s == "0" for s in said)
+
+
+# 128 + SIGPIPE: a producer still writing when the pipe it writes to closed.
+SIGPIPE_EXIT = 141
 
 
 def run_block(b: Block, work: Path, real: str | None, timeout: float) -> str | None:
     """Run one block in `work`; the failure, or None."""
     env = environment(work, real)
+    (work / ".datui-status").unlink(missing_ok=True)
     # The contributed specs a page shows, where a checkout of the repository has them.
     if (ROOT / "contrib").is_dir():
         shutil.copytree(ROOT / "contrib", work / "contrib", dirs_exist_ok=True)
@@ -402,6 +417,11 @@ def run_block(b: Block, work: Path, real: str | None, timeout: float) -> str | N
     except subprocess.TimeoutExpired:
         return f"timed out after {timeout:.0f}s"
     said = (proc.stdout + proc.stderr).strip()
+    # Rows show as they arrive, so datui can be done while the producer still writes
+    # (`journalctl | datui`); quit, it closes the pipe, as `less` does, and pipefail
+    # reports the producer's SIGPIPE. That is the block's success when datui's is.
+    if proc.returncode == SIGPIPE_EXIT and b.lang in ("bash", "sh") and datui_succeeded(work):
+        return None
     if proc.returncode != 0:
         return f"exit {proc.returncode}: {said[-2000:]}"
     if b.lang == "toml" and "warning" in proc.stderr:

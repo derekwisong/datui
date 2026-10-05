@@ -192,6 +192,7 @@ pub mod sql_group;
 pub mod startup;
 pub mod statistics;
 pub mod stdin;
+pub mod table_switch;
 pub mod tee;
 mod terminal;
 mod terminal_color;
@@ -764,6 +765,8 @@ pub enum InputMode {
     Retype,
     /// A datetime made from columns, as a spec's derived column.
     Combine,
+    /// The table picker over a table of a file of several: open another.
+    PickTable,
     Info,
     Chart,
     /// Value Counts: how often each value of one column occurs in the view.
@@ -1127,6 +1130,9 @@ pub struct App {
     pub combine: Option<retype_modal::CombineModal>,
     /// The type picker or the combine form go back to the Info panel, not the table.
     pub(crate) retype_from_info: bool,
+    /// The tables `T` offers: the picker's lines, and what each opens.
+    pub table_picker: crate::widgets::ui::PickerState,
+    pub table_choices: Option<table_switch::Tables>,
     /// The hex view (`InputMode::Hex`), kept while it is up.
     pub hex: Option<hex_view::HexView>,
     /// Bumped per hex view opened, so a find's answer for another is dropped.
@@ -4210,6 +4216,7 @@ impl App {
                 .combine
                 .as_ref()
                 .is_some_and(|c| c.picker.is_some() || c.focus == retype_modal::CombineField::Name),
+            InputMode::PickTable => true,
             // The whole inline editor types (pickers narrow, the value edits), as
             // do the add-sort Picker and the Columns tab's find.
             InputMode::SortFilter => self.sort_filter_modal.typing(),
@@ -6007,6 +6014,8 @@ impl App {
             retype: None,
             combine: None,
             retype_from_info: false,
+            table_picker: crate::widgets::ui::PickerState::default(),
+            table_choices: None,
             clipboard: None,
             pending_copy: None,
             chart_cache: ChartCache::default(),
@@ -12002,6 +12011,7 @@ impl App {
             InputMode::PickFormat => Context::FormatPicker,
             InputMode::Retype => Context::Retype,
             InputMode::Combine => Context::Combine,
+            InputMode::PickTable => Context::TablePicker,
             InputMode::Info => Context::Info,
             InputMode::Chart => Context::Chart,
             InputMode::Home if self.documentation.is_open() => Context::Documentation,
@@ -12420,6 +12430,10 @@ impl App {
             return self.combine_key(event);
         }
 
+        if self.input_mode == InputMode::PickTable {
+            return self.table_picker_key(event);
+        }
+
         if self.input_mode == InputMode::Copy {
             return self.copy_key(event);
         }
@@ -12807,6 +12821,14 @@ impl App {
                     } else {
                         self.info_modal.open();
                     }
+                    // A list of the file's tables starts its cursor on the one open.
+                    if let Some(detail) = state.format_detail()
+                        && let Some(at) = detail.list.iter().position(|(key, _)| {
+                            detail.table.as_ref() == Some(key) && detail.tables.contains(key)
+                        })
+                    {
+                        self.info_modal.detail_selected = at;
+                    }
                     self.input_mode = InputMode::Info;
                     self.read_file_facts();
                     self.count_unfit();
@@ -12993,6 +13015,12 @@ impl App {
             KeyCode::Char('b') if event.is_press() => {
                 if self.input_mode == InputMode::Normal {
                     self.open_format_picker();
+                }
+                None
+            }
+            KeyCode::Char('T') if event.is_press() => {
+                if self.input_mode == InputMode::Normal {
+                    self.open_table_picker();
                 }
                 None
             }
@@ -17164,6 +17192,87 @@ impl App {
             _ => {}
         }
         None
+    }
+
+    /// The tables of the source on screen, from what its open holds; `None` for a
+    /// source of one.
+    pub fn sibling_tables(&self) -> Option<table_switch::Tables> {
+        let state = self.data_table_state.as_ref()?;
+        let (paths, options) = self.opened.as_ref()?;
+        table_switch::of(state, paths, options)
+    }
+
+    /// Whether the source on screen has another table for `T` to open.
+    pub fn offers_other_tables(&self) -> bool {
+        match (self.data_table_state.as_ref(), self.opened.as_ref()) {
+            (Some(state), Some((paths, options))) => table_switch::several(state, paths, options),
+            _ => false,
+        }
+    }
+
+    /// `T` at the table: the source's tables, the one on screen marked, to open
+    /// another. A source of one says so.
+    fn open_table_picker(&mut self) {
+        let Some(tables) = self.sibling_tables().filter(table_switch::Tables::several) else {
+            self.flash_note("Only one table here".to_string());
+            return;
+        };
+        let labels = tables.tables.iter().map(|t| t.label.clone()).collect();
+        self.table_picker = crate::widgets::ui::PickerState::new(labels);
+        if let Some(at) = tables.current {
+            self.table_picker.select_original(at);
+        }
+        self.table_choices = Some(tables);
+        self.input_mode = InputMode::PickTable;
+    }
+
+    /// The table picker owns the keys: type to narrow, ↑↓ move, Enter opens the table
+    /// chosen, Esc closes.
+    fn table_picker_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+        match event.code {
+            KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
+                self.table_choices = None;
+            }
+            KeyCode::Enter => {
+                let index = self.table_picker.selected_original()?;
+                let tables = self.table_choices.take()?;
+                self.input_mode = InputMode::Normal;
+                if tables.current == Some(index) {
+                    return None;
+                }
+                let table = tables.tables.get(index)?.table.clone();
+                return self.switch_table(table);
+            }
+            KeyCode::Up => self.table_picker.move_up(),
+            KeyCode::Down => self.table_picker.move_down(),
+            KeyCode::Backspace => self.table_picker.backspace(),
+            KeyCode::Char(c) => self.table_picker.filter_key(c, event.modifiers),
+            _ => {}
+        }
+        None
+    }
+
+    /// Open `table` of the file on screen in its place (`None`: the whole file), as
+    /// `--table` or home's row for it would: the query, filters and sort go with the
+    /// table they were on, recents record it, and a view for it applies.
+    pub(crate) fn switch_table(&mut self, table: Option<String>) -> Option<AppEvent> {
+        let (paths, options) = self.opened.clone()?;
+        let shown = match &table {
+            Some(name) => crate::members::place(&paths[0], name),
+            None => paths[0].clone(),
+        };
+        let options = OpenOptions {
+            table,
+            // `--view` was for the first open; a view for this table applies as on
+            // any open.
+            view: None,
+            prepared: None,
+            ..options
+        };
+        self.set_loading_phase("Scanning input", 10);
+        self.name_what_is_loading(shown);
+        Some(AppEvent::Open(paths, options))
     }
 
     fn close_inspector(&mut self) {

@@ -143,6 +143,10 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
             if state.and_then(|s| s.format_read()).is_some() {
                 keys.push(registry_hint(Context::Table, "b"));
             }
+            // A file of several tables: `T` opens another.
+            if app.offers_other_tables() {
+                keys.push(registry_hint(Context::Table, "T"));
+            }
             if app.app_config.display.notes_accent && state.is_some_and(|s| s.notes_unseen()) {
                 let mut notes = Hint::new("i", "Notes");
                 notes.accented = true;

@@ -93,6 +93,7 @@ Where a dataset opens.
 | `< / >` | The cursor's column 4 cells narrower or wider |
 | `= / w` | Fit the cursor's column to the rows on screen; w puts it back to automatic width |
 | `b` | A binary file read through a format spec: read it again with another spec. Clears the query, filters and sort |
+| `T` | A file of several tables (a workbook's worksheets, a database's tables, a format spec's record types, a Hugging Face cache's splits): pick another to open in place of this one, as --table names it. Clears the query, filters and sort; a saved view for the table applies. On a file of one table, says so |
 | `t` | Follow the file as it grows (CSV, TSV, PSV, NDJSON). Reads it again, so the query, filters and sort are cleared; while following, t pauses and resumes, and Esc stops |
 
 ### Table · Go
@@ -309,7 +310,7 @@ Where a dataset opens.
 | `↑ / ↓ (j/k)` | Schema, Notes or Documentation tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list |
 | `PgUp / PgDn` | Model, Audio, MIDI, Metadata and format tabs: scroll the list a page |
 | `Home / End` | Model, Audio, MIDI, Metadata and format tabs: the top or the end of the list |
-| `Enter` | Schema tab: change the column's type, with the names and formats a format spec's type takes. Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor |
+| `Enter` | Schema tab: change the column's type, with the names and formats a format spec's type takes. Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor. Excel or SQLite tab: open the worksheet or table under the cursor in place of this one, as T does |
 | `o` | Documentation tab: open the link on the cursor's line in the system browser. Only http and https links open, and only after a question showing the whole URL. Off over SSH or without a display |
 | `y` | Documentation tab: copy the link or value on the cursor's line, whole, however it is cut on screen |
 | `H` | Schema tab, CSV, TSV, PSV: read the first row as data, under column_1, column_2, …; again to read it as column names. Reads the file again, so the query, filters and sort are cleared, and the panel closes |
@@ -755,6 +756,20 @@ Combine into datetime in the cell menu, on a text, date or time column.
 | `← / →` | Step the kind: datetime, date or time |
 | `Enter` | Make the column, before the first column it is made from, as a format spec's derived column is: a date and a time, and a UTC offset, make a datetime in UTC |
 | `Esc` | Cancel |
+
+## Table picker
+
+<kbd>T</kbd> at a table of a file of several.
+
+### Table picker · Pick
+
+| Key | Action |
+|---|---|
+| `(type)` | Narrow to the names that contain it |
+| `↑ / ↓` | Move |
+| `Enter` | Open the table chosen in place of this one. The query, filters and sort are cleared |
+| `Backspace` | Delete a character (Ctrl+W a word, Ctrl+U all) |
+| `Esc` | Close and keep the table |
 
 ## Hex view
 

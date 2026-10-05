@@ -53,6 +53,24 @@ find reading past the rows on hand (`rows 1,200,000 / 3,475,226` with a bar and
 <kbd>:</kbd> opens the [command line](querying-data.md); digits alone make it
 `row:`, and <kbd>Enter</kbd> goes there (`0` is the top).
 
+## Another table of the file
+
+<kbd>T</kbd> lists the other tables of the file on screen; <kbd>Enter</kbd>
+opens the one picked in place of this one, as `--table` would.
+
+| The file | Lists | Each row says |
+|---|---|---|
+| An Excel workbook | Its worksheets, hidden ones included | The range and size: `A1:C13, 13 × 3` |
+| A SQLite database | Its tables and views | Its kind, its columns, and the rows `ANALYZE` stored |
+| A file a format spec reads as several record types | The whole file, then each type | Its columns |
+| A Hugging Face cache | Its splits | `split` |
+
+The one open is marked `opened`. Type to narrow, <kbd>↑</kbd> <kbd>↓</kbd> to
+move, <kbd>Esc</kbd> to keep the table. The query, filters and sort stay with
+the table they were on; recents record the new table, and a saved view for it
+applies. The footer offers <kbd>T</kbd> only on a file of several tables; on
+any other, <kbd>T</kbd> says `Only one table here`.
+
 ## Row numbers
 
 <kbd>#</kbd> shows or hides row numbers.

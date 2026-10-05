@@ -492,6 +492,7 @@ mod read {
             tab: crate::text_formats::tab(crate::FileFormat::Sqlite),
             lines,
             list_title: "Tables",
+            tables: own.iter().map(|t| t.name.clone()).collect(),
             list,
             ..Default::default()
         })
@@ -1995,7 +1996,12 @@ fn scan(input: crate::readers::ScanIn<'_>) -> color_eyre::Result<crate::scan::Sc
     match pick(tables.clone(), input.options.table.as_deref(), file)? {
         Pick::One(table) => {
             let opened = open_table(file, file, &table, &tables)?;
-            let detail = detail(file, &tables).map(std::sync::Arc::new);
+            let detail = detail(file, &tables).map(|detail| {
+                std::sync::Arc::new(crate::text_formats::Detail {
+                    table: Some(table.name.clone()),
+                    ..detail
+                })
+            });
             // The only table, when none was named: what reading it again names.
             input.report.table = Some(table.name.clone());
             input.report.opened = Some(std::sync::Arc::new(crate::members::Opened {

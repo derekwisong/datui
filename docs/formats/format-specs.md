@@ -165,6 +165,10 @@ spec matches opens as it does without specs; a local file no reader takes
 either opens in the [hex view](../user-guide/hex-view.md), where <kbd>B</kbd> reads it with a
 spec and <kbd>r</kbd> lines the bytes up in records while you write one.
 
+<kbd>T</kbd> on a file of several record types lists the whole file, then each
+type with its column count, and opens the one picked (`day.itch/add`), clearing
+the query, filters and sort.
+
 <kbd>b</kbd> on the table picks another spec and reads the file again with it,
 clearing the query, filters and sort. The list starts with the spec the file
 was read with, then the others that matched it the same way, then every other

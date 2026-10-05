@@ -456,6 +456,10 @@ pub struct InfoModal {
     pub detail_scroll: usize,
     /// The list lines a detail tab last had room for; set during render.
     pub detail_visible: usize,
+    /// The entry the cursor is on, in a detail tab whose list is the file's tables
+    /// (Excel's worksheets, SQLite's tables), where Enter opens one. The render clamps
+    /// it and keeps it in view.
+    pub detail_selected: usize,
 }
 
 impl InfoModal {
@@ -478,6 +482,7 @@ impl InfoModal {
         self.notes_selected_index = 0;
         self.notes_scroll_offset = 0;
         self.detail_scroll = 0;
+        self.detail_selected = 0;
     }
 
     pub fn close(&mut self) {
@@ -1474,7 +1479,8 @@ impl<'a> DataTableInfo<'a> {
             .map(|line| (line.clone(), Style::default()))
             .chain(detail.warnings.iter().map(|line| (line.clone(), warn)))
             .collect();
-        self.render_detail(area, buf, &lines, detail.list_title, &detail.list);
+        let pick = !detail.tables.is_empty();
+        self.render_detail_list(area, buf, &lines, detail.list_title, &detail.list, pick);
     }
 
     /// A detail tab's head lines, then a blank line, a rule titled `title` and the list
@@ -1487,6 +1493,20 @@ impl<'a> DataTableInfo<'a> {
         lines: &[(String, Style)],
         title: &str,
         list: &[(String, crate::model_files::MetaValue)],
+    ) {
+        self.render_detail_list(area, buf, lines, title, list, false);
+    }
+
+    /// [`Self::render_detail`]; with `pick`, the list has a cursor on one entry
+    /// (`detail_selected`), drawn with the rail, which the scroll follows.
+    fn render_detail_list(
+        &mut self,
+        area: Rect,
+        buf: &mut Buffer,
+        lines: &[(String, Style)],
+        title: &str,
+        list: &[(String, crate::model_files::MetaValue)],
+        pick: bool,
     ) {
         if area.height == 0 || area.width < 8 {
             return;
@@ -1534,26 +1554,65 @@ impl<'a> DataTableInfo<'a> {
         );
         y += 1;
 
-        let rows = metadata_lines(list, width);
+        // A list with a cursor keeps a column for its rail, so the cursor arriving
+        // moves nothing.
+        let gutter = u16::from(pick);
+        let rows = metadata_lines(list, width.saturating_sub(gutter as usize));
         let room = (bottom - y) as usize;
         let fits = rows.len() <= room;
         // The last row says what is out of view when not everything fits.
         let shown = if fits { room } else { room.saturating_sub(1) };
         self.modal.detail_visible = shown;
         let max_scroll = rows.len().saturating_sub(shown);
+        // The lines of the entry under the cursor: an entry's first line names it,
+        // the lines a long value wraps onto leave its key blank.
+        let picked = pick.then(|| {
+            let starts: Vec<usize> = (0..rows.len())
+                .filter(|&i| !rows[i].0.trim().is_empty())
+                .collect();
+            let at = self
+                .modal
+                .detail_selected
+                .min(starts.len().saturating_sub(1));
+            self.modal.detail_selected = at;
+            let start = starts.get(at).copied().unwrap_or(0);
+            let end = starts.get(at + 1).copied().unwrap_or(rows.len());
+            if start < self.modal.detail_scroll {
+                self.modal.detail_scroll = start;
+            } else if end > self.modal.detail_scroll + shown {
+                self.modal.detail_scroll = end.saturating_sub(shown).min(start);
+            }
+            start..end
+        });
         self.modal.detail_scroll = self.modal.detail_scroll.min(max_scroll);
         let first = self.modal.detail_scroll;
         let key_style = Style::default().fg(self.theme.text_secondary);
-        for (key, value) in rows.iter().skip(first).take(shown) {
+        let rail = crate::glyphs::get().rail;
+        for (i, (key, value)) in rows.iter().enumerate().skip(first).take(shown) {
+            let row = Rect {
+                y,
+                height: 1,
+                ..area
+            };
+            let on = picked.as_ref().is_some_and(|p| p.contains(&i));
+            let (key_style, value_style) = if on {
+                let hl = self.theme.highlight_style();
+                (key_style.patch(hl), Style::default().patch(hl))
+            } else {
+                (key_style, Style::default())
+            };
+            if on && picked.as_ref().is_some_and(|p| p.start == i) {
+                buf.set_string(row.x, row.y, rail, Style::default().fg(self.theme.accent));
+            }
             Paragraph::new(Line::from(vec![
                 Span::styled(key.clone(), key_style),
-                Span::raw(value.clone()),
+                Span::styled(value.clone(), value_style),
             ]))
             .render(
                 Rect {
-                    y,
-                    height: 1,
-                    ..area
+                    x: row.x + gutter,
+                    width: row.width.saturating_sub(gutter),
+                    ..row
                 },
                 buf,
             );
@@ -1899,8 +1958,19 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             InfoTab::Documentation => offered.documentation,
             _ => false,
         };
+        // A tab whose list is the file's tables has a cursor, and Enter opens one.
+        let tables = tab == InfoTab::Format
+            && offered.format
+            && self
+                .state
+                .format_detail()
+                .is_some_and(|d| !d.tables.is_empty());
         let mut footer = HintBar::from_ctx(ctx).hint_weighted(g.updown_lr, "Tabs", 3);
-        if scrolls {
+        if tables {
+            footer = footer
+                .hint_weighted("Enter", "Open", 2)
+                .hint_weighted(g.updown, "Move", 2);
+        } else if scrolls {
             footer = footer.hint_weighted(g.updown, "Scroll", 2);
         }
         if tab == InfoTab::Documentation && offered.documentation {

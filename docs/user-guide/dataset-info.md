@@ -92,7 +92,9 @@ CSV, TSV, PSV, JSON, NDJSON and plain text have no tab of their own: text holds 
 An `.xlsx` or `.xlsm` workbook lists its worksheets
 from its directory, without reading them; an `.xls` or `.xlsb` file keeps its worksheet
 names where only reading the workbook finds them, so it opens its first worksheet and
-`--table` names another.
+`--table` or <kbd>T</kbd> names another. On the Excel and SQLite tabs,
+<kbd>↑</kbd> <kbd>↓</kbd> move a cursor over the worksheets or tables and
+<kbd>Enter</kbd> opens the one under it in place of this one.
 
 A [Hugging Face](../formats/columnar-and-json.md#arrow-ipc) cache directory lists its
 splits inside it the same way (`cache/test`), above the files they are made of.

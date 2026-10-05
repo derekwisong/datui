@@ -16,6 +16,13 @@ impl App {
             self.info_modal.active_tab,
             InfoTab::Metadata | InfoTab::Format
         );
+        // Excel's and SQLite's tabs list the file's tables, with a cursor: Enter opens
+        // the one under it.
+        let tables: Option<Vec<String>> = detail_tab
+            .then(|| self.data_table_state.as_ref()?.format_detail())
+            .flatten()
+            .filter(|d| self.info_modal.active_tab == InfoTab::Format && !d.tables.is_empty())
+            .map(|d| d.list.iter().map(|(key, _)| key.clone()).collect());
         let notes = self
             .data_table_state
             .as_ref()
@@ -118,6 +125,34 @@ impl App {
                     self.open_retype(&column);
                 }
             }
+            KeyCode::Down | KeyCode::Char('j') if event.is_press() && tables.is_some() => {
+                let last = tables.as_ref().map_or(0, |t| t.len().saturating_sub(1));
+                self.info_modal.detail_selected = (self.info_modal.detail_selected + 1).min(last);
+            }
+            KeyCode::Up | KeyCode::Char('k') if event.is_press() && tables.is_some() => {
+                self.info_modal.detail_selected = self.info_modal.detail_selected.saturating_sub(1);
+            }
+            KeyCode::PageDown if event.is_press() && tables.is_some() => {
+                let last = tables.as_ref().map_or(0, |t| t.len().saturating_sub(1));
+                let page = self.info_modal.detail_visible.max(1);
+                self.info_modal.detail_selected =
+                    (self.info_modal.detail_selected + page).min(last);
+            }
+            KeyCode::PageUp if event.is_press() && tables.is_some() => {
+                let page = self.info_modal.detail_visible.max(1);
+                self.info_modal.detail_selected =
+                    self.info_modal.detail_selected.saturating_sub(page);
+            }
+            KeyCode::Home if event.is_press() && tables.is_some() => {
+                self.info_modal.detail_selected = 0;
+            }
+            KeyCode::End if event.is_press() && tables.is_some() => {
+                let last = tables.as_ref().map_or(0, |t| t.len().saturating_sub(1));
+                self.info_modal.detail_selected = last;
+            }
+            KeyCode::Enter if event.is_press() && tables.is_some() => {
+                return self.open_table_from_info(tables.as_deref().unwrap_or_default());
+            }
             KeyCode::Down | KeyCode::Char('j') if event.is_press() && detail_tab => {
                 self.info_modal.detail_scroll_by(1);
             }
@@ -140,5 +175,23 @@ impl App {
             _ => {}
         }
         None
+    }
+
+    /// Enter on the Excel or SQLite tab: the worksheet or table under the cursor
+    /// (`keys` are the list's, in order) opened in place of this one, as `T` opens it.
+    fn open_table_from_info(&mut self, keys: &[String]) -> Option<AppEvent> {
+        let name = keys.get(self.info_modal.detail_selected)?.clone();
+        let detail = self.data_table_state.as_ref()?.format_detail()?;
+        if !detail.tables.contains(&name) {
+            self.flash_note("Not a table".to_string());
+            return None;
+        }
+        if detail.table.as_ref() == Some(&name) {
+            self.flash_note("Already open".to_string());
+            return None;
+        }
+        self.info_modal.close();
+        self.input_mode = InputMode::Normal;
+        self.switch_table(Some(name))
     }
 }

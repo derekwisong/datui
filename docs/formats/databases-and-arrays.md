@@ -52,6 +52,10 @@ tables, a full-text index's shadow tables) are hidden until
 <kbd>Ctrl</kbd>+<kbd>A</kbd>; `--table` opens them by name. The home screen
 labels a database with its tables (`3 tables`).
 
+<kbd>T</kbd> at the table lists the database's tables and views, each with its
+kind, columns and the rows `ANALYZE` stored, and opens another; so does
+<kbd>Enter</kbd> on a table of the SQLite tab. Nothing is counted to list them.
+
 A table is read in place; nothing is copied.
 
 | | How |

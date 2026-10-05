@@ -37,6 +37,7 @@ pub enum Context {
     FormatPicker,
     Retype,
     Combine,
+    TablePicker,
     Hex,
 }
 
@@ -447,6 +448,8 @@ pub const SCREENS: &[Screen] = &[
                         .more("Fit the cursor's column to the rows on screen; w puts it back to automatic width"),
                     k("b", "Format spec", "Read a binary file with another format spec")
                         .more("A binary file read through a format spec: read it again with another spec. Clears the query, filters and sort"),
+                    k("T", "Table", "Open another table of the file")
+                        .more("A file of several tables (a workbook's worksheets, a database's tables, a format spec's record types, a Hugging Face cache's splits): pick another to open in place of this one, as --table names it. Clears the query, filters and sort; a saved view for the table applies. On a file of one table, says so"),
                     k("t", "Follow", "Follow the file as it grows")
                         .more("Follow the file as it grows (CSV, TSV, PSV, NDJSON). Reads it again, so the query, filters and sort are cleared; while following, t pauses and resumes, and Esc stops"),
                 ],
@@ -741,8 +744,8 @@ pub const SCREENS: &[Screen] = &[
                     .more("Model, Audio, MIDI, Metadata and format tabs: scroll the list a page"),
                 k("Home / End", "Top, end", "The top or the end of the list")
                     .more("Model, Audio, MIDI, Metadata and format tabs: the top or the end of the list"),
-                k("Enter", "Take", "Schema: the column's type; Notes: take the offer")
-                    .more("Schema tab: change the column's type, with the names and formats a format spec's type takes. Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor"),
+                k("Enter", "Take", "Schema: the type; Notes: the offer; a table: open it")
+                    .more("Schema tab: change the column's type, with the names and formats a format spec's type takes. Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor. Excel or SQLite tab: open the worksheet or table under the cursor in place of this one, as T does"),
                 k("o", "Open", "Documentation tab: open the line's link")
                     .more("Documentation tab: open the link on the cursor's line in the system browser. Only http and https links open, and only after a question showing the whole URL. Off over SSH or without a display"),
                 k("y", "Copy", "Documentation tab: copy the line's link or value")
@@ -1303,6 +1306,22 @@ pub const SCREENS: &[Screen] = &[
                 k("Enter", "Make", "Make the column")
                     .more("Make the column, before the first column it is made from, as a format spec's derived column is: a date and a time, and a UTC offset, make a datetime in UTC"),
                 k("Esc", "Cancel", "Cancel"),
+            ],
+        }],
+    },
+    Screen {
+        context: Context::TablePicker,
+        title: "Table picker",
+        reached: "<kbd>T</kbd> at a table of a file of several.",
+        groups: &[Group {
+            name: "Pick",
+            keys: &[
+                k("(type)", "Narrow", "Narrow to the names that contain it").no_run(),
+                k("↑ / ↓", "Move", "Move"),
+                k("Enter", "Open", "Open the table in place of this one")
+                    .more("Open the table chosen in place of this one. The query, filters and sort are cleared"),
+                k("Backspace", "Delete", "Delete a character (Ctrl+W a word, Ctrl+U all)"),
+                k("Esc", "Close", "Close and keep the table"),
             ],
         }],
     },

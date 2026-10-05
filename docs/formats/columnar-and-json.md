@@ -125,3 +125,8 @@ its worksheets as tables (`book.xlsx/Sales`), read from the workbook's
 directory without its cells; a hidden worksheet shows with
 <kbd>Ctrl</kbd>+<kbd>A</kbd>. An `.xls` or `.xlsb` workbook opens its first
 worksheet. The Excel tab gives each worksheet's range and size.
+
+<kbd>T</kbd> at the table lists the worksheets with their ranges and sizes and
+opens another, and <kbd>Enter</kbd> on a worksheet of the Excel tab does the
+same. An `.xls` or `.xlsb` workbook is no different: the open has read its
+worksheet names already, so listing them reads nothing more.

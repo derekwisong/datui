@@ -61,11 +61,12 @@ printf '{"id": 1, "ok": true}\n{"id": 2, "ok": false}\n' | datui
 ## Arrow IPC
 
 ```bash,network
-datui https://raw.githubusercontent.com/apache/arrow-testing/master/data/arrow-ipc-stream/integration/1.0.0-littleendian/generated_primitive.arrow_file
-datui https://raw.githubusercontent.com/apache/arrow-testing/master/data/arrow-ipc-stream/integration/1.0.0-littleendian/generated_primitive.stream
+datui -F arrow https://raw.githubusercontent.com/apache/arrow-testing/master/data/arrow-ipc-stream/integration/1.0.0-littleendian/generated_primitive.arrow_file
+datui -F arrow https://raw.githubusercontent.com/apache/arrow-testing/master/data/arrow-ipc-stream/integration/1.0.0-littleendian/generated_primitive.stream
 ```
 
-An IPC file (Feather v2) is scanned in place, from its footer. An IPC stream,
+These files' names say no format, so `-F arrow` names it. An IPC file (Feather v2)
+is scanned in place, from its footer. An IPC stream,
 the format of a Hugging Face `datasets` cache, has no footer: it is told from a
 file by its first bytes and converted to an IPC file in the temp
 directory, then scanned. The loading screen shows how far the conversion has
@@ -99,7 +100,7 @@ batches, dictionaries, byte order and the schema's and footer's metadata.
 
 ```bash,network
 datui https://raw.githubusercontent.com/apache/avro/main/share/test/data/weather.avro
-datui https://raw.githubusercontent.com/apache/orc/main/examples/TestOrcFile.test1.orc
+datui https://raw.githubusercontent.com/apache/orc/main/examples/demo-12-zlib.orc
 ```
 
 Both declare their columns' types, which the Schema tab calls known. The Avro

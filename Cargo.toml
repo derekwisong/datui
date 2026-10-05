@@ -68,8 +68,10 @@ libc = "0.2"
 # scripts/packaging/PKGBUILD.in, filled in by build_package.py.
 [package.metadata.deb]
 maintainer = "Derek Wisong"
-# From dpkg-shlibdeps on the binary: libc6 (>= 2.28) and libgcc-s1, nothing else.
-depends = "$auto"
+# Not "$auto": dpkg-shlibdeps on the build host maps the pthread and dl symbols,
+# moved into libc in 2.34, to libc6 (>= 2.34). The binary is linked against 2.28
+# and needs nothing else (the release gate checks both).
+depends = "libc6 (>= 2.28)"
 # generated: deb-description
 extended-description = "datui reads 27 formats: Parquet, CSV, TSV, PSV, JSON, NDJSON, Arrow IPC, Avro, ORC, Excel, SafeTensors, GGUF, NMEA, GPX, WAV/AIFF audio, MIDI, SQLite, VCD, FIX, SDF, NumPy, ELF, ULog, DataFlash, candump, plain text, systemd journal, and binary formats you describe in a format spec. Query with SQL or q, sort and filter, chart, analyze and export."
 # end generated: deb-description

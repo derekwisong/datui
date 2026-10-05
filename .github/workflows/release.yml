@@ -116,9 +116,9 @@ jobs:
   # The Linux binaries are linked by zig against glibc 2.28 (cargo zigbuild's
   # `TRIPLE.2.28`), whatever glibc the runner has, so a release runs on Debian 10,
   # Ubuntu 20.04, RHEL 8 and everything newer. Built natively on each
-  # architecture's runner: zig only lowers the glibc, and the packagers (cargo-deb's
-  # dpkg-shlibdeps, cargo-generate-rpm's ldd) then read the binary on the
-  # architecture it is for. The wheel's extension is built the same way, as a
+  # architecture's runner: zig only lowers the glibc, and cargo-generate-rpm's ldd
+  # then reads the binary on the architecture it is for (the .deb's libc6 floor is
+  # stated in Cargo.toml). The wheel's extension is built the same way, as a
   # manylinux_2_28 wheel. `linux-gate` proves both before anything is published.
   linux:
     runs-on: ubuntu-latest

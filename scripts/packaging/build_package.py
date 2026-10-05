@@ -15,7 +15,7 @@ Options:
     --repo-root   Repository root (default: git rev-parse --show-toplevel).
 
 Outputs:
-    deb       target/debian/datui_X.Y.Z-1_ARCH.deb (cargo-deb; depends from dpkg-shlibdeps)
+    deb       target/debian/datui_X.Y.Z-1_ARCH.deb (cargo-deb; Depends: libc6 >= 2.28)
     rpm       target/generate-rpm/datui-X.Y.Z-1.ARCH.rpm (cargo-generate-rpm; requires from ldd)
     tarball   target/tarball/datui-vX.Y.Z-TRIPLE.tar.gz: datui, LICENSE, man/manN/,
               completions/ and scripts/packaging/datui.desktop at the root, named

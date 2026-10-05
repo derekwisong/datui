@@ -56,9 +56,11 @@ and 12, Rocky 8 and 9 and Amazon Linux 2023, in docker, on x86_64 and arm64
 runners; `datui --version`, then `datui formats check` over a CSV, which reads
 the file and exits.
 
-The `.deb` takes its `Depends` from dpkg-shlibdeps (`$auto`) and the `.rpm` its
-`Requires` from ldd, so each names `libc.so.6(GLIBC_2.28)` and the package
-managers refuse an older system instead of installing a binary that cannot load.
+The `.deb` states `Depends: libc6 (>= 2.28)` in `Cargo.toml` and the `.rpm` takes
+its `Requires` from ldd (`libc.so.6(GLIBC_2.28)`), so the package managers refuse
+an older system instead of installing a binary that cannot load. The `.deb` does
+not use `$auto`: dpkg-shlibdeps maps the pthread and dl symbols, which moved into
+libc in 2.34, to `libc6 (>= 2.34)`, and Ubuntu 20.04 and Debian 11 refuse it.
 
 The archives are named by target triple, `datui-vX.Y.Z-TRIPLE.tar.gz` and
 `.zip`, with `datui` at the root; `[package.metadata.binstall]` in `Cargo.toml`

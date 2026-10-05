@@ -130,6 +130,8 @@ def container_script(tarball: str, package: str | None, manager: str | None) -> 
     steps = f"""\
         set -eu
         cd /tmp
+        # amazonlinux ships without tar; its users install it to use the tarball too.
+        command -v tar > /dev/null || dnf install -y -q tar gzip
         mkdir -p tarball && tar xzf /release/{shlex.quote(tarball)} -C tarball
         echo "--- tarball"
         tarball/datui --version

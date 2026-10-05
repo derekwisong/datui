@@ -223,8 +223,13 @@ fn screen_hints(keys: Vec<(&'static str, &'static str)>) -> Vec<Hint> {
 /// The key that opens help, as the footer offers it: `?`, or F1 where `?` types (a
 /// prompt, a filter typed on the home screen).
 pub fn help_key(app: &crate::App, content: MainViewContent) -> Option<&'static str> {
-    // Help waits, with every other key, while a pivot is computed at its form.
-    if app.help_visible() || app.pivot_computing() {
+    // Help waits, with every other key, while a pivot is computed at its form; a
+    // question or an error answers first, and offers its own keys.
+    if app.help_visible()
+        || app.pivot_computing()
+        || app.confirmation_modal.active
+        || app.error_modal.active
+    {
         return None;
     }
     let types = match content {
@@ -901,7 +906,10 @@ fn chart_hints(app: &crate::App) -> Vec<Hint> {
     if modal.has_crosshair() {
         keys.push(registry_hint(Context::Chart, "x"));
     }
-    keys.push(registry_hint(Context::Chart, "e"));
+    // Offered where `e` acts: a chart whose rows say what to draw.
+    if app.data_table_state.is_some() && modal.can_export() {
+        keys.push(registry_hint(Context::Chart, "e"));
+    }
     if keys.len() < 3 {
         keys.push(registry_hint(Context::Chart, "Esc"));
     }
@@ -910,6 +918,25 @@ fn chart_hints(app: &crate::App) -> Vec<Hint> {
 
 #[cfg(test)]
 mod tests {
+
+    /// `?` does nothing under a question or an error, so the footer does not
+    /// offer it there.
+    #[test]
+    fn no_help_key_under_a_question_or_an_error() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = crate::App::new(tx, crate::tests::test_runtime());
+        app.input_mode = crate::InputMode::Normal;
+        let content = super::MainViewContent::Datatable;
+        assert_eq!(super::help_key(&app, content), Some("?"));
+        app.confirmation_modal
+            .show("Overwrite out.csv?".to_string());
+        assert_eq!(super::help_key(&app, content), None);
+        app.confirmation_modal.hide();
+        app.error_modal.show("Cannot read it.".to_string());
+        assert_eq!(super::help_key(&app, content), None);
+        app.error_modal.hide();
+        assert_eq!(super::help_key(&app, content), Some("?"));
+    }
 
     /// Every Data Quality page's bar offers Esc: the overview was the one
     /// screen without a way out.

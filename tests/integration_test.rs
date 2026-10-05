@@ -878,6 +878,55 @@ fn test_chart_export_with_a_blank_path_says_why() {
     assert_eq!(app.chart_export_modal.error, None);
 }
 
+/// The footer offers `e Export` only where `e` exports: a chart whose rows say what
+/// to draw.
+#[test]
+fn test_chart_footer_offers_export_only_when_there_is_a_chart() {
+    let (mut app, rx, tx) = open_chart_view("chart_export_hint_test.csv");
+    select_line(&mut app);
+    app.event(&AppEvent::Resize(120, 40));
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let footer = |app: &mut App| {
+        draw_sized(app, (120, 40))
+            .lines()
+            .last()
+            .unwrap_or_default()
+            .to_string()
+    };
+    let drawn = footer(&mut app);
+    assert!(drawn.contains("Export"), "{drawn}");
+    app.chart_modal.spec.encoding.y.field = Vec::new();
+    assert!(!app.chart_modal.can_export());
+    let empty = footer(&mut app);
+    assert!(!empty.contains("Export"), "{empty}");
+    assert!(press(&mut app, KeyCode::Char('e')).is_none());
+    assert!(!app.chart_export_modal.active, "and e does nothing there");
+}
+
+/// The help over the `:` command line at 80x24 sits above the footer's prompt: its
+/// frame is whole, the prompt drawn under it.
+#[test]
+fn test_help_clears_the_command_line_at_80_by_24() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("help_over_strip.csv");
+    press(&mut app, KeyCode::Char(':'));
+    press(&mut app, KeyCode::F(1));
+    assert!(app.help_visible());
+    let screen = draw_sized(&mut app, (80, 24));
+    let rows: Vec<&str> = screen.lines().collect();
+    let bottom = rows
+        .iter()
+        .rposition(|row| row.contains('╰'))
+        .unwrap_or_else(|| panic!("the help's bottom border is drawn:\n{screen}"));
+    let prompt = rows
+        .iter()
+        .position(|row| row.trim_start().starts_with("sql:") || row.trim_start().starts_with("q:"))
+        .unwrap_or_else(|| panic!("the prompt is drawn:\n{screen}"));
+    assert!(
+        bottom < prompt,
+        "the frame ends above the prompt:\n{screen}"
+    );
+}
+
 /// A chart export uses the prepared data and writes the file off-thread; if the data is
 /// not ready yet the export waits for it rather than collecting on the UI thread.
 #[test]
@@ -2961,6 +3010,7 @@ fn assert_glyph_slots(screen: &str) {
         g.updown_lr,
         g.null,
         g.scroll_thumb,
+        g.scroll_track,
         g.binary_stub,
     ]
     .concat();

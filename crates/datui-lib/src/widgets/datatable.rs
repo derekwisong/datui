@@ -269,6 +269,10 @@ pub struct DataTableState {
     active_query: String,
     /// Last executed SQL (Sql tab).
     active_sql_query: String,
+    /// The leading columns the SQL in effect orders by, as named in its result, and
+    /// whether each runs descending: the header's sort marks while the sidebar sorts
+    /// nothing. Empty for an ORDER BY of an expression.
+    query_order: Vec<(String, bool)>,
     /// Last executed fuzzy search (Fuzzy tab).
     active_fuzzy_query: String,
     column_order: Vec<String>,   // Order of columns for display
@@ -699,6 +703,7 @@ pub struct ViewRollback {
     sort_ascending: bool,
     active_query: String,
     active_sql_query: String,
+    query_order: Vec<(String, bool)>,
     active_fuzzy_query: String,
     column_order: Vec<String>,
     locked_columns_count: usize,
@@ -1222,6 +1227,53 @@ fn sort_options(descending: Vec<bool>) -> SortMultipleOptions {
         .with_order_descending_multi(descending)
         .with_nulls_last_multi(vec![true; n])
         .with_maintain_order(true)
+}
+
+/// The columns a SQL statement's plan orders its result by, leading ones first, and
+/// whether each runs descending: down from the top through what keeps the order (a
+/// LIMIT, a projection of plain columns) to the sort. Stops at the first key that
+/// is an expression rather than a column; empty when no sort is on top.
+#[cfg(feature = "sql")]
+fn ordered_by(plan: &polars::lazy::dsl::DslPlan) -> Vec<(String, bool)> {
+    use polars::lazy::dsl::DslPlan;
+    let mut node = plan;
+    loop {
+        node = match node {
+            DslPlan::Slice { input, .. }
+            | DslPlan::Filter { input, .. }
+            | DslPlan::Cache { input, .. } => input,
+            DslPlan::IR { dsl, .. } => dsl,
+            DslPlan::Select { expr, input, .. }
+                if expr.iter().all(|e| matches!(e, Expr::Column(_))) =>
+            {
+                input
+            }
+            DslPlan::Sort {
+                by_column,
+                sort_options,
+                ..
+            } => {
+                let descending = &sort_options.descending;
+                return by_column
+                    .iter()
+                    .map_while(|e| match e {
+                        Expr::Column(name) => Some(name.to_string()),
+                        _ => None,
+                    })
+                    .enumerate()
+                    .map(|(i, name)| {
+                        let down = descending
+                            .get(i)
+                            .or(descending.first())
+                            .copied()
+                            .unwrap_or(false);
+                        (name, down)
+                    })
+                    .collect();
+            }
+            _ => return Vec::new(),
+        };
+    }
 }
 
 /// `plan` giving its rows in one order on every read. Each page is its own read of
@@ -2004,6 +2056,7 @@ impl DataTableState {
             reveal_cursor: false,
             active_query: String::new(),
             active_sql_query: String::new(),
+            query_order: Vec::new(),
             active_fuzzy_query: String::new(),
             column_order,
             locked_columns_count: 0,
@@ -2180,6 +2233,7 @@ impl DataTableState {
             reveal_cursor: false,
             active_query: String::new(),
             active_sql_query: String::new(),
+            query_order: Vec::new(),
             active_fuzzy_query: String::new(),
             column_order,
             locked_columns_count: 0,
@@ -2426,6 +2480,8 @@ impl DataTableState {
         // Rows of the new shape are measured afresh; the old width would plan the
         // window of a wide frame from a narrow one, or the reverse.
         self.observed_bytes_per_row = None;
+        // A new frame is in no order a query named; `sql_query` names it after.
+        self.query_order = Vec::new();
         // A column may keep its name and type and hold other values now.
         self.widths.relearn();
         self.base_lf = lf.clone();
@@ -8272,6 +8328,16 @@ impl DataTableState {
         &self.sort_descending
     }
 
+    /// The header's sort marks: the sidebar's sort, or else the ORDER BY of the SQL
+    /// in effect, while its own rows are on screen (not a group drilled into).
+    pub fn header_sort(&self) -> (Vec<String>, Vec<bool>) {
+        if self.sort_columns.is_empty() && self.grouped.is_none() {
+            self.query_order.iter().cloned().unzip()
+        } else {
+            (self.sort_columns.clone(), self.sort_descending.clone())
+        }
+    }
+
     /// The pivot/melt result in effect, for a snapshot that may need to put it back.
     pub fn reshaped_lf_clone(&self) -> Option<LazyFrame> {
         self.reshaped_lf.clone()
@@ -8347,6 +8413,7 @@ impl DataTableState {
             sort_ascending: self.sort_ascending,
             active_query: self.active_query.clone(),
             active_sql_query: self.active_sql_query.clone(),
+            query_order: self.query_order.clone(),
             active_fuzzy_query: self.active_fuzzy_query.clone(),
             column_order: self.column_order.clone(),
             locked_columns_count: self.locked_columns_count,
@@ -8414,6 +8481,7 @@ impl DataTableState {
         self.sort_ascending = saved.sort_ascending;
         self.active_query = saved.active_query;
         self.active_sql_query = saved.active_sql_query;
+        self.query_order = saved.query_order;
         self.active_fuzzy_query = saved.active_fuzzy_query;
         self.column_order = saved.column_order;
         self.locked_columns_count = saved.locked_columns_count;
@@ -10483,6 +10551,9 @@ impl DataTableState {
                     // over a union's inputs: the nodes stable_order orders and the
                     // filter count_subquery_values_once rewrites keep their shape.
                     crate::past_calendar::guard_plan(&mut result_lf.logical_plan);
+                    // Read before datui orders the plan stably or by group keys: the
+                    // marks say what the statement asked for.
+                    let order = ordered_by(&result_lf.logical_plan);
                     let mut schema = match result_lf.clone().collect_schema() {
                         Ok(s) => s,
                         Err(e) => {
@@ -10541,7 +10612,12 @@ impl DataTableState {
                         sql: trimmed.to_string(),
                         ordered_by,
                     });
+                    let query_order = order
+                        .into_iter()
+                        .take_while(|(name, _)| schema.contains(name))
+                        .collect();
                     self.install_query_result(result_lf, schema, ActiveQuery::Sql(sql), 0, steps);
+                    self.query_order = query_order;
                     self.lineage = lineage;
                     self.install_sql_group_source(group_source.map(|(source, _)| source));
                 }
@@ -12090,8 +12166,7 @@ impl StatefulWidget for DataTable {
     fn render(mut self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         // The view's own sort, not the grouped original's: it is what ordered the
         // rows being drawn, so the header marks can never disagree with them.
-        self.sort_columns = state.view_sort_columns().to_vec();
-        self.sort_descending = state.view_sort_descending().to_vec();
+        (self.sort_columns, self.sort_descending) = state.header_sort();
         self.current_column = state.current_column().map(str::to_string);
         self.units = state.units();
         self.retyped = state.retyped_columns();
@@ -12227,6 +12302,11 @@ impl StatefulWidget for DataTable {
             let mut leading_gap = false;
             if let Some(locked) = locked_slice {
                 let asked = state.locked_columns_count();
+                // The rule runs down the header and the rows on screen, and stops
+                // under the last: below it is no table to divide.
+                let rule_bottom = (area.y + header_h)
+                    .saturating_add(locked.height().min(rows_room) as u16)
+                    .min(area.bottom());
                 let mut fitted = self.fit_frozen_columns(
                     &locked,
                     locked.height().min(rows_room),
@@ -12269,7 +12349,7 @@ impl StatefulWidget for DataTable {
                     } else {
                         self.glyphs.rule
                     };
-                    for y in area.y..area.y + area.height {
+                    for y in area.y..rule_bottom {
                         let cell = &mut buf[(separator_x, y)];
                         cell.set_symbol(rule);
                         cell.set_style(Style::default().fg(self.separator_fg));
@@ -14542,6 +14622,61 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The ORDER BY of the SQL in effect is state, so it leaves its mark: the sort
+    /// mark on each column it orders by, as named in the result, until the sidebar
+    /// sorts or another query runs (#688, item 13).
+    #[cfg(feature = "sql")]
+    #[test]
+    fn a_sql_order_by_marks_the_header_until_the_sidebar_sorts() {
+        let df = df!("k" => [1i64, 2, 3], "v" => [3i64, 2, 1]).unwrap();
+        let marks = |sql: &str| {
+            let mut state =
+                DataTableState::from_lazyframe(df.clone().lazy(), &OpenOptions::default()).unwrap();
+            state.sql_query(sql.to_string());
+            assert!(state.error.is_none(), "{sql}: {:?}", state.error);
+            state.header_sort()
+        };
+        let owned = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            marks("SELECT v, k FROM df ORDER BY k DESC"),
+            (owned(&["k"]), vec![true])
+        );
+        assert_eq!(
+            marks("SELECT * FROM df ORDER BY k DESC, v LIMIT 2"),
+            (owned(&["k", "v"]), vec![true, false])
+        );
+        assert_eq!(
+            marks("SELECT v AS w, k FROM df ORDER BY w"),
+            (owned(&["w"]), vec![false]),
+            "named as in the result"
+        );
+        assert_eq!(
+            marks("SELECT k, SUM(v) AS s FROM df GROUP BY k ORDER BY s DESC"),
+            (owned(&["s"]), vec![true])
+        );
+        // An expression, or a column the result leaves out, leaves no mark.
+        assert_eq!(marks("SELECT * FROM df ORDER BY k + 1"), (vec![], vec![]));
+        assert_eq!(marks("SELECT v FROM df ORDER BY k"), (vec![], vec![]));
+        assert_eq!(marks("SELECT * FROM df"), (vec![], vec![]));
+
+        // On the header, and the sidebar's sort replaces it.
+        let mut state =
+            DataTableState::from_lazyframe(df.clone().lazy(), &OpenOptions::default()).unwrap();
+        state.sql_query("SELECT * FROM df ORDER BY k DESC".to_string());
+        state.collect();
+        let area = Rect::new(0, 0, 30, 6);
+        let mut buf = Buffer::empty(area);
+        DataTable::default().render(area, &mut buf, &mut state);
+        let header = row_string(&buf, area, 0);
+        let g = crate::glyphs::get();
+        assert!(header.contains(&format!("k{}", g.sort_desc)), "{header:?}");
+        state.sort_by(vec!["v".to_string()], vec![false]);
+        assert_eq!(state.header_sort(), (owned(&["v"]), vec![false]));
+        // A new query names its own order, or none.
+        state.sql_query("SELECT * FROM df".to_string());
+        assert_eq!(state.header_sort(), (vec![], vec![]));
     }
 
     /// A SQL ORDER BY keeps tied rows in order, as the sidebar's sort does: the page
@@ -18399,6 +18534,40 @@ mod tests {
         assert_eq!(buf[(sep + 1, 0)].bg, Color::Indexed(238));
         assert_eq!(buf[(sep + 1, 1)].bg, Color::Indexed(24));
         assert_eq!(buf[(sep + 1, 2)].bg, Color::Indexed(236));
+    }
+
+    /// The frozen separator runs down the header and the rows, and stops under the
+    /// last: a grouped view of seven rows had it running down the empty screen.
+    #[test]
+    fn the_frozen_separator_stops_at_the_last_row() {
+        let lf = df!(
+            "carrier" => &["AA", "UA", "9E"],
+            "delay" => &[-9.9f64, 3.5, 12.25],
+        )
+        .unwrap()
+        .lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.visible_rows = 3;
+        state.set_locked_columns(1);
+        state.table_state.select(Some(0));
+        let area = Rect::new(0, 0, 30, 10);
+        let mut buf = Buffer::empty(area);
+        DataTable::default().render(area, &mut buf, &mut state);
+        let rule = crate::glyphs::get().rule;
+        let sep = (0..area.width)
+            .find(|&x| buf[(x, 0)].symbol() == rule)
+            .expect("a separator");
+        let ruled: Vec<u16> = (0..area.height)
+            .filter(|&y| buf[(sep, y)].symbol() == rule)
+            .collect();
+        let last = ruled.last().copied().unwrap();
+        assert_eq!(
+            ruled,
+            (0..=last).collect::<Vec<_>>(),
+            "unbroken to the last row"
+        );
+        let header = DataTable::default().header_height();
+        assert_eq!(last, header + 2, "under the third row, no further");
     }
 
     /// A frozen column whose type is wider than its name and values still gets its

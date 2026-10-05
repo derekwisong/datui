@@ -26,7 +26,9 @@ To keep the rows that hold some text, [find](finding.md) it with <kbd>/</kbd>
 and press <kbd>Ctrl</kbd>+<kbd>G</kbd>.
 
 Running a query, or clearing one, starts a fresh view: sidebar filters, sort,
-frozen columns and pivot/melt are dropped. Apply them after the query. The
+frozen columns and pivot/melt are dropped. Apply them after the query. A SQL
+`ORDER BY` on columns marks their headers `▲` or `▼`, as a sort does, until a
+sort from the sidebar replaces it. The
 command line stays open until the query's first rows are in. A query that fails on
 the data is not applied: the reason shows under it, the table keeps what it
 showed, and the query stays to fix.

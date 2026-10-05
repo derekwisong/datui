@@ -18815,7 +18815,9 @@ impl Widget for &mut App {
         }
         self.close_help_left_behind();
         if self.help.is_open() {
-            crate::render::help::render_help(area, buf, &mut self.help, &ctx);
+            // Over the view, never the footer: its rule, and the lines it grows by
+            // for a prompt or progress, are drawn after and would cut the frame.
+            crate::render::help::render_help(app_layout.main_view, buf, &mut self.help, &ctx);
         }
 
         let footer = self.footer(main_view_content, progress_rows > 0);

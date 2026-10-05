@@ -140,6 +140,8 @@ pub struct Glyphs {
     pub warning: &'static str,
     /// Scrollbar thumb, drawn down the right edge of an overlay.
     pub scroll_thumb: &'static str,
+    /// The scrollbar's track, above and below the thumb: a lighter shade of it.
+    pub scroll_track: &'static str,
     /// Stands in for a value that is bytes, not text.
     pub binary_stub: &'static str,
     /// In a one-line preview of text, where the value has a line break, a tab, or
@@ -380,6 +382,7 @@ const UNICODE: Glyphs = Glyphs {
     // shape, from a codepoint all three floor fonts carry.
     warning: "▲",
     scroll_thumb: "█",
+    scroll_track: "░",
     binary_stub: "‹binary›",
     // Latin-1, which every floor font carries; the arrows and control pictures
     // (↵ ⇥ ␊) are missing from Liberation Mono and Noto Sans Mono.
@@ -462,6 +465,7 @@ const ASCII: Glyphs = Glyphs {
     check: "+",
     warning: "!",
     scroll_thumb: "#",
+    scroll_track: "|",
     binary_stub: "<binary>",
     // vim's `list` marks: `$` ends a line, `>` is a tab.
     newline_mark: "$",
@@ -585,6 +589,7 @@ macro_rules! with_string_slots {
             check,
             warning,
             scroll_thumb,
+            scroll_track,
             binary_stub,
             newline_mark,
             tab_mark,

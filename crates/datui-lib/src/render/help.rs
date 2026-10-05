@@ -362,12 +362,14 @@ pub fn render_help(area: Rect, buf: &mut Buffer, help: &mut Help, ctx: &RenderCo
         let thumb = ((height as f64 / total as f64) * bar as f64).max(1.0) as u16;
         let pos = ((help.scroll as f64 / max_scroll as f64) * (bar - thumb.min(bar)) as f64) as u16;
         for y in 0..bar {
-            let style = if y >= pos && y < pos + thumb {
-                Style::default().bg(ctx.text_primary)
+            // The thumb and the track in glyphs of their own, so the bar reads in
+            // the ASCII set and on a terminal without color.
+            let (glyph, color) = if y >= pos && y < pos + thumb {
+                (g.scroll_thumb, ctx.text_primary)
             } else {
-                Style::default().bg(ctx.surface)
+                (g.scroll_track, ctx.dimmed)
             };
-            buf.set_string(scrollbar_x, body.y + y, g.scroll_thumb, style);
+            buf.set_string(scrollbar_x, body.y + y, glyph, Style::default().fg(color));
         }
     }
 }
@@ -503,6 +505,20 @@ mod tests {
         let last = help.shown_keys().last().unwrap().line;
         assert!(text.contains(&last[..20.min(last.len())]), "{text}");
         assert!(rows.iter().all(|r| display_width(r) <= 80));
+    }
+
+    /// A help that scrolls draws its bar in two glyphs: the thumb, and the track
+    /// above and below it, each with an ASCII twin.
+    #[test]
+    fn the_scrollbar_track_has_its_own_glyph() {
+        let g = crate::glyphs::get();
+        let mut help = Help::default();
+        help.open(Context::Table, false);
+        let rows = screen(&mut help, 80, 24);
+        let bar = rows.join("\n");
+        assert!(bar.contains(g.scroll_thumb), "{bar:?}");
+        assert!(bar.contains(g.scroll_track), "{bar:?}");
+        assert_ne!(g.scroll_thumb, g.scroll_track);
     }
 
     /// The filter shows on its own line, and a filter matching nothing says so.

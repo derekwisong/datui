@@ -81,8 +81,12 @@ Long values, control characters and column widths:
 | Double-click | <kbd>Enter</kbd> on the row |
 | Wheel | <kbd>↑</kbd> <kbd>↓</kbd>, three rows a notch; the same in help, the inspector and the sidebars |
 | <kbd>Shift</kbd>+wheel, or a sideways wheel | <kbd>←</kbd> <kbd>→</kbd>: the column cursor |
-| Click a key in the footer | Presses it |
+| Drag a header onto another column | Moves the column there, as <kbd>H</kbd> <kbd>L</kbd> do |
+| Drag the gap right of a header | Sets the column's width, as <kbd>&lt;</kbd> <kbd>&gt;</kbd> do |
+| Right-click a cell | A menu of the cell's keys: filter, counts, sort, copy, inspect |
+| Click a key in the footer | Presses it; the filters press <kbd>s</kbd>, `query` <kbd>:</kbd> |
 
+Dialogs, tabs and the cell's menu: [The mouse](mouse.md).
 <kbd>Shift</kbd>+drag selects text in most terminals. `mouse = false` under
 `[display]`, or `--mouse=false`, leaves the mouse to the terminal:
 [Mouse and text selection](configuration.md#mouse-and-text-selection).
@@ -106,6 +110,6 @@ keys typed meanwhile are held and replayed in order once the work is done.
 
 At most 32 keys are held, and held keys are dropped with the screen they were
 typed at. At the loading screen nothing is held: the keys above act, the rest
-are dropped. The mouse is never held: the wheel across and the footer's
-keys act as their keys do, and the wheel down and a click on the table are
-dropped.
+are dropped. The mouse is never held: the wheel across, the footer's keys
+and a width drag act as their keys do, and the wheel down, a click on the
+table, a dropped header and the cell's menu are dropped.

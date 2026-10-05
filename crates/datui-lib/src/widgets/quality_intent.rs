@@ -191,6 +191,7 @@ pub fn render_form(
             label_width: LABEL_WIDTH,
         }
         .render(line(row), buf, ctx);
+        crate::pointer::record_field::<crate::intent_modal::IntentForm>(line(row), *field);
     }
     // What the focused row takes, or why Enter refused: the form's own line.
     let (status, warn) = match &form.error {

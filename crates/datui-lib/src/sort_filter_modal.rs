@@ -258,6 +258,13 @@ impl Form for SortFilterModal {
         self.focus
     }
 
+    fn list_row(&self, field: SortFilterField) -> bool {
+        matches!(
+            field,
+            SortFilterField::Sort(_) | SortFilterField::Filter(_) | SortFilterField::Column(_)
+        )
+    }
+
     fn set_focused(&mut self, field: SortFilterField) {
         self.focus = field;
         if let SortFilterField::Column(i) = field {

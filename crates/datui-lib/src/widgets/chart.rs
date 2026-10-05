@@ -18,6 +18,7 @@ use crate::chart_modal::{
 };
 use crate::config::Theme;
 use crate::glyphs::Glyphs;
+use crate::pointer::Hit;
 use crate::render::context::RenderContext;
 use crate::widgets::axes::{
     AxisSpec, Legend, PlotAxes, Track, cut, fit_x_labels, fit_y_labels, resolution,
@@ -435,6 +436,9 @@ fn render_sidebar(
                 dimmed,
             } => {
                 let focused = field.is_some() && *field == focus;
+                if let Some(field) = field {
+                    crate::pointer::record_field::<ChartModal>(row, *field);
+                }
                 if focused {
                     focused_at = Some(row);
                     buf.set_string(area.x, y, g.rail, Style::default().fg(ctx.accent));
@@ -493,6 +497,8 @@ fn render_picker(
     let Some(state) = &modal.picker else {
         return;
     };
+    // It owns the keys, drawn or not: the panel's rows take no clicks.
+    crate::pointer::record(area, Hit::Picker);
     let title = match modal.picker_for {
         Some(PickerFor::X) => "X",
         Some(PickerFor::Y) => "Y",
@@ -2005,6 +2011,18 @@ mod tests {
         );
         assert!(body.contains(&format!("{} B6", g.checkbox_off)), "{body}");
         assert!(body.contains("1 picked"), "{body}");
+    }
+
+    /// An open Picker owns the clicks, drawn or not: the panel's rows take none.
+    #[test]
+    fn an_open_picker_with_no_room_still_takes_the_clicks() {
+        let mut modal = open_modal();
+        modal.focus = ChartFocus::Y;
+        modal.open_picker();
+        let hits = crate::pointer::recording(|| {
+            render_rows(&mut modal, 100, 7);
+        });
+        assert!(hits.iter().any(|(_, h)| *h == Hit::Picker), "{hits:?}");
     }
 
     fn render_view(modal: &mut ChartModal, view: ChartView<'_>, w: u16, h: u16) -> Vec<String> {

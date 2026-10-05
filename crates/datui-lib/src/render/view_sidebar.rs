@@ -305,6 +305,7 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &Render
         label_width: LABEL_WIDTH,
     }
     .render(row(0, 1), buf, ctx);
+    crate::pointer::record_field::<ViewModal>(row(0, 1), FormFocus::Name);
     if let Some(error) = &modal.name_error {
         let width = error.chars().count() as u16;
         if width < content.width {
@@ -330,6 +331,7 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &Render
         label_width: LABEL_WIDTH,
     }
     .render(row(1, 3), buf, ctx);
+    crate::pointer::record_field::<ViewModal>(row(1, 3), FormFocus::Description);
 
     // The Matching section: a rule behind the rail gutter, criteria under it
     // only while expanded. The chip counts the criteria that are set.
@@ -346,6 +348,7 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &Render
         .style(Style::default().fg(ctx.accent))
         .render(rail_area, buf);
     let rule_area = row(section_y, 1);
+    crate::pointer::record_field::<ViewModal>(rule_area, FormFocus::Matching);
     SectionRule {
         title: "Matching",
         chip: Some(&chip),
@@ -404,6 +407,7 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &Render
             label_width: LABEL_WIDTH,
         }
         .render(area, buf, ctx);
+        crate::pointer::record_field::<ViewModal>(area, focus);
     }
 
     // The table is the dataset's, not typed: echoed, never focused. The path

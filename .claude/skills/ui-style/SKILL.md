@@ -222,7 +222,49 @@ next/prev or per-modal arrow handling.
   ←/→ and Tab from anywhere instead.
 - Short enumerations are Choices; long lists (columns) are Pickers.
 - A form that applies live (the chart options) treats Enter as Space.
-- Mouse: a click focuses through `Form::focus(field)`, then acts as Space.
+- Mouse: a click focuses through `Form::focus(field)`, then acts as Space
+  (see Mouse below).
+
+## Mouse
+
+The mouse is a shortcut to keys, never a second interface (`pointer.rs`).
+
+- **Every action is a key.** A click or drag resolves to the keys it stands
+  for and goes through the pump's `classify`: it acts where those keys would
+  act at once and is dropped where they would wait. Mouse input is never held.
+  A new mouse action names its key equivalent and gates on it.
+- **Record where you draw.** A widget that lays out something clickable
+  records its rect while drawing (`pointer::record`, `record_field::<Form>`,
+  `record_spans` for tab lines); nothing recomputes layout for hit-testing.
+  A new form row calls `record_field` beside its `FormRow::render`; a list
+  from `PickerState` records itself, and an inline value list uses
+  `Picker::on_click(Clicks::Step(field))`.
+- **Forms:** click = focus + Space (checkbox flips, choice steps, picker
+  opens, button runs, text takes the cursor); right click on a choice = ←,
+  on anything else focus only. A **list row** (a sort, a filter, a column in
+  Sort & Filter; a form opts in with `Form::list_row`) is picked, not set: the
+  first click only focuses it, a click on it focused acts. Settings act on the
+  first click, as a checkbox is expected to. A
+  tab is a `Hit::Option` on the tab bar field (←→ to it) or a `Hit::Key`
+  when tabs have number keys. While a picker or an inline editor is open only
+  its lines take clicks.
+- **Click outside a dialog does nothing.** Over help, an error or a
+  question, only footer keys take clicks.
+- **Table:** click a cell or header = cursor; drag a header = `H`/`L` (drop
+  mark: the `rule` glyph in the accent on the header; off the columns, or any
+  key, puts it back); drag the gap after a header, or the last header cell of
+  a column cut at the right side, = `<`/`>` width, `MIN_WIDTH`..`MAX_WIDTH`.
+  Drags are coalesced.
+- **Context menu** (right click on a cell): a Surface at the pointer, clamped
+  on screen, one line per key with the key shown; Enter or a click presses
+  the line's key as typed (`AppEvent::Press`). It opens only where the
+  cursor landed, and its own keys act while busy. It is not a dialog: a click
+  elsewhere closes it, and any other key closes it and acts.
+- **Footer:** every hint, `? keys`, the filters/sort (`s`) and `query`
+  (`:`) are click targets (`Drawn`), only where those keys mean that.
+- `display.mouse = false` / `--mouse=false` leaves the mouse to the
+  terminal; Shift+drag selects text in most terminals. Docs:
+  `docs/user-guide/mouse.md`.
 
 ## Feedback
 

@@ -1,6 +1,7 @@
 //! The pick-one list: type to narrow, `↑↓` move, Enter chooses. A radio group
 //! is a short Picker, not a grid.
 
+use crate::pointer::Hit;
 use crate::render::context::RenderContext;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -149,6 +150,19 @@ pub struct Picker<'a> {
     marks: Option<Vec<bool>>,
     /// Beside each item, right-aligned and dimmed: a count.
     details: Option<Vec<String>>,
+    clicks: Option<Clicks>,
+}
+
+/// What a click on a line does, recorded as the list is drawn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Clicks {
+    /// An open picker: the cursor goes to the line, which is chosen (toggled in a
+    /// list of marks).
+    Choose,
+    /// The values of a form's field, listed: the field steps to the line's value.
+    Step(crate::pointer::FieldId),
+    /// The analysis tools list.
+    Tool,
 }
 
 impl<'a> Picker<'a> {
@@ -159,7 +173,15 @@ impl<'a> Picker<'a> {
             focused,
             marks: None,
             details: None,
+            clicks: None,
         }
+    }
+
+    /// What a click on a line does. A list from a [`PickerState`] is an open picker
+    /// and chooses already.
+    pub fn on_click(mut self, clicks: Clicks) -> Self {
+        self.clicks = Some(clicks);
+        self
     }
 
     pub fn from_state(state: &'a PickerState, focused: bool) -> Self {
@@ -170,6 +192,7 @@ impl<'a> Picker<'a> {
             focused,
             marks: None,
             details: None,
+            clicks: Some(Clicks::Choose),
         }
     }
 
@@ -196,6 +219,9 @@ impl<'a> Picker<'a> {
         let selected = self.selected.unwrap_or(0);
         let offset = selected.saturating_sub(height.saturating_sub(1));
         let below = self.items.len().saturating_sub(offset + height);
+        if self.clicks == Some(Clicks::Choose) {
+            crate::pointer::record(area, Hit::Picker);
+        }
         for row in 0..height.min(self.items.len().saturating_sub(offset)) {
             let i = offset + row;
             let is_selected = self.selected == Some(i);
@@ -244,7 +270,30 @@ impl<'a> Picker<'a> {
                     buf.set_string(x, row_area.y, detail, style.fg(ctx.dimmed));
                 }
             }
+            if let Some(hit) = self.click_on(i) {
+                crate::pointer::record(row_area, hit);
+            }
         }
+    }
+}
+
+impl Picker<'_> {
+    /// What a click on line `i` lands on.
+    fn click_on(&self, i: usize) -> Option<Hit> {
+        let selected = self.selected.unwrap_or(0);
+        Some(match self.clicks.as_ref()? {
+            Clicks::Choose => Hit::PickerItem {
+                visible: i,
+                selected,
+                multi: self.marks.is_some(),
+            },
+            Clicks::Step(field) => Hit::Option {
+                field: Some(field.clone()),
+                index: i,
+                current: selected,
+            },
+            Clicks::Tool => Hit::Tool(i),
+        })
     }
 }
 

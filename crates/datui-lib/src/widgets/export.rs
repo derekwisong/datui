@@ -4,8 +4,9 @@
 
 use crate::CompressionFormat;
 use crate::export_modal::{ExportFocus, ExportFormat, ExportModal};
+use crate::pointer::FieldId;
 use crate::render::context::RenderContext;
-use crate::widgets::ui::{FormRow, FormValue, HintBar, Picker, SectionRule, Surface};
+use crate::widgets::ui::{Clicks, FormRow, FormValue, HintBar, Picker, SectionRule, Surface};
 use ratatui::layout::Rect;
 
 /// The value column's offset inside the options half: past the longest label,
@@ -57,6 +58,7 @@ pub fn render_export_modal(
     let footer = footer
         .hint_weighted("Tab", "Next", 1)
         .hint_weighted("Esc", "Cancel", 4);
+    crate::pointer::record(area, crate::pointer::Hit::Modal);
     let content = Surface::new("Export Data")
         .footer(&footer)
         .render(area, buf, ctx);
@@ -95,7 +97,11 @@ pub fn render_export_modal(
         let selected = ExportFormat::ALL
             .iter()
             .position(|f| *f == modal.selected_format);
-        Picker::new(names, selected, format_focused).render(list_area, buf, ctx);
+        Picker::new(names, selected, format_focused)
+            .on_click(Clicks::Step(FieldId::of::<ExportModal>(
+                ExportFocus::FormatSelector,
+            )))
+            .render(list_area, buf, ctx);
     }
 
     modal
@@ -185,22 +191,20 @@ pub fn render_export_modal(
         if y >= content.y + content.height {
             break;
         }
+        let row = Rect {
+            x: options_x,
+            y,
+            width: options_width,
+            height: 1,
+        };
         FormRow {
             label,
             value,
             focused: modal.focus == focus,
             label_width: LABEL_WIDTH,
         }
-        .render(
-            Rect {
-                x: options_x,
-                y,
-                width: options_width,
-                height: 1,
-            },
-            buf,
-            ctx,
-        );
+        .render(row, buf, ctx);
+        crate::pointer::record_field::<ExportModal>(row, focus);
     }
 
     // The reason the form cannot export yet, inline under the rows: a warning

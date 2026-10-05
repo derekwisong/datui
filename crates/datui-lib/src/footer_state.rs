@@ -87,6 +87,12 @@ impl App {
                 .push(format!("{} formats match", read.also.len() + 1));
         }
         footer.view = self.view_state();
+        // At the plain table a click on the query opens it at `:`, and on the filters
+        // and sort the sidebar that lists them; over a dialog those keys type.
+        if self.in_normal_table_view() {
+            footer.query_key = Some(":");
+            footer.view_key = Some("s");
+        }
         if let Some(mark) = self.find_mark() {
             footer.notes.push((mark, false));
         }

@@ -41,6 +41,9 @@ import time
 
 SUBCOMMANDS = {"formats", "config", "cache", "views", "completions", "man", "help"}
 CTRL_Q = b"\x11"
+# The questions an open asks before reading, without spaces, which a frame may draw
+# as cursor moves.
+QUESTION = re.compile(rb"Continuewithdownload\?|intomemory")
 
 
 def passthrough(argv: list[str]) -> bool:
@@ -141,6 +144,9 @@ def main() -> int:
     os.close(slave)
 
     drawn = bytearray()
+    # Drawn since the last answer: a question answered stays in `drawn`, and Enter
+    # pressed again for it opens whatever home has under the cursor.
+    unanswered = bytearray()
     start = last_output = time.monotonic()
     answered = 0.0
     quit_sent = 0.0
@@ -158,6 +164,8 @@ def main() -> int:
                     break
                 drawn += chunk
                 del drawn[:-200_000]
+                unanswered += chunk
+                del unanswered[:-20_000]
                 last_output = now
             if not shown and os.path.exists(trace.name):
                 shown = True
@@ -169,17 +177,19 @@ def main() -> int:
                 os.write(master, CTRL_Q)
                 quit_sent = now
                 continue
-            # A question waits on an answer: a download, a large read.
+            # A question waits on an answer: a download, a large read. Its own words,
+            # not "Downloading": Enter on the loading screen or home opens something else.
             if (
                 expect == "rows"
                 and not shown
                 and quiet
                 and len(drawn) > 500
                 and now - answered > 3.0
-                and re.search(rb"Download|download|into memory|Continue", bytes(drawn[-20000:]))
+                and QUESTION.search(re.sub(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\s", b"", bytes(unanswered)))
             ):
                 os.write(master, b"\r")
                 answered = now
+                unanswered.clear()
             if now - start > timeout:
                 print(
                     f"datui_shim: no {'rows' if expect == 'rows' else 'end'} within {timeout:.0f}s: "

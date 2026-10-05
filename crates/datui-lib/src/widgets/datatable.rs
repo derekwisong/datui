@@ -1,4 +1,5 @@
 use color_eyre::Result;
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::{fs, fs::File, path::Path, path::PathBuf};
@@ -7472,19 +7473,7 @@ impl DataTableState {
                     return;
                 }
             };
-            self.locked_df = if self.has_list_columns() {
-                match self.format_grouped_dataframe(locked_df) {
-                    Ok(formatted_df) => Some(formatted_df),
-                    Err(e) => {
-                        self.error = Some(PolarsError::ComputeError(
-                            crate::error_display::user_message_from_report(&e, None).into(),
-                        ));
-                        return;
-                    }
-                }
-            } else {
-                Some(locked_df)
-            };
+            self.locked_df = Some(locked_df);
         } else {
             self.locked_df = None;
         }
@@ -7505,19 +7494,7 @@ impl DataTableState {
                     return;
                 }
             };
-            self.df = if self.has_list_columns() {
-                match self.format_grouped_dataframe(scroll_df) {
-                    Ok(formatted_df) => Some(formatted_df),
-                    Err(e) => {
-                        self.error = Some(PolarsError::ComputeError(
-                            crate::error_display::user_message_from_report(&e, None).into(),
-                        ));
-                        return;
-                    }
-                }
-            } else {
-                Some(scroll_df)
-            };
+            self.df = Some(scroll_df);
         }
         if self.error.is_some() {
             self.error = None;
@@ -7553,11 +7530,7 @@ impl DataTableState {
                 .map(|s| s.as_str())
                 .collect();
             if let Ok(locked_df) = full_df.select(locked_names) {
-                self.locked_df = if self.has_list_columns() {
-                    self.format_grouped_dataframe(locked_df).ok()
-                } else {
-                    Some(locked_df)
-                };
+                self.locked_df = Some(locked_df);
             }
         } else {
             self.locked_df = None;
@@ -7573,11 +7546,7 @@ impl DataTableState {
             self.df = None;
         } else {
             if let Ok(scroll_df) = full_df.select(scroll_names) {
-                self.df = if self.has_list_columns() {
-                    self.format_grouped_dataframe(scroll_df).ok()
-                } else {
-                    Some(scroll_df)
-                };
+                self.df = Some(scroll_df);
             }
         }
     }
@@ -7652,41 +7621,6 @@ impl DataTableState {
         // The displayed portion [start_row, start_row + visible_rows) is a subset
         // We'll slice the displayed portion when rendering based on offset
         // No action needed here - the buffer is stored, slicing happens at render time
-    }
-
-    fn format_grouped_dataframe(&self, df: DataFrame) -> Result<DataFrame> {
-        let schema = df.schema();
-        let mut new_series = Vec::new();
-
-        for (col_name, dtype) in schema.iter() {
-            let col = df.column(col_name)?;
-            if matches!(dtype, DataType::List(_)) {
-                let string_series: Series = col
-                    .list()?
-                    .amortized_iter()
-                    .map(|opt_list| {
-                        opt_list.map(|list_series| {
-                            let list_series = list_series.as_ref();
-                            let values: Vec<String> = list_series
-                                .iter()
-                                .take(10)
-                                .map(|v| crate::exact::str_value(&v).to_string())
-                                .collect();
-                            if list_series.len() > 10 {
-                                format!("[{}...] ({} items)", values.join(", "), list_series.len())
-                            } else {
-                                format!("[{}]", values.join(", "))
-                            }
-                        })
-                    })
-                    .collect();
-                new_series.push(string_series.with_name(col_name.as_str().into()).into());
-            } else {
-                new_series.push(col.clone());
-            }
-        }
-
-        Ok(DataFrame::new_infer_height(new_series)?)
     }
 
     /// Returns true if a buffer collect is needed after the scroll.
@@ -8286,12 +8220,7 @@ impl DataTableState {
     /// them. For fitting a column that may be scrolled out of view.
     fn page_column(&self, name: &str, offset: usize, len: usize) -> Option<DataFrame> {
         let column = self.buffered_df.as_ref()?.select([name]).ok()?;
-        let page = visible_slice(&column, offset, len)?;
-        if self.has_list_columns() {
-            self.format_grouped_dataframe(page).ok()
-        } else {
-            Some(page)
-        }
+        visible_slice(&column, offset, len)
     }
 
     // Getter methods for view creation
@@ -8870,7 +8799,7 @@ impl DataTableState {
         self.group_source.is_some()
     }
 
-    /// Whether any column holds lists, which the table draws as text.
+    /// Whether any column holds lists.
     fn has_list_columns(&self) -> bool {
         self.schema
             .iter()
@@ -8944,6 +8873,7 @@ impl DataTableState {
             let text = match value {
                 AnyValue::Null => continue,
                 AnyValue::String(text) => text.to_string(),
+                AnyValue::List(items) => crate::exact::list_preview(&items),
                 // Drawn on the UI thread: Polars' display panics on a date past
                 // the calendar.
                 value => {
@@ -11632,7 +11562,12 @@ impl DataTable {
                 cells.push(SliceCell::Null(glyph));
                 continue;
             }
-            let text = numfmt::format_any_value(&col_fmt, &value, scratch);
+            // A list is previewed here, for the cells on screen only: the buffer keeps
+            // it a list, as formatting a whole row group's lists stalled every scroll.
+            let text = match &value {
+                AnyValue::List(items) => Cow::Owned(crate::exact::list_preview(items)),
+                value => numfmt::format_any_value(&col_fmt, value, scratch),
+            };
             // A break or a tab would vanish from a cell and run the text together.
             // Only a cell's start can be drawn: measuring a huge value whole would
             // cost every frame what the value costs.
@@ -18497,6 +18432,72 @@ mod tests {
         assert!(rows[0].contains(&format!(" id k   {rule}")), "{rows:#?}");
         assert!(rows[1].contains(&format!("i64 str {rule}")), "{rows:#?}");
         assert!(rows[2].contains(&format!("  1 x   {rule}")), "{rows:#?}");
+    }
+
+    fn list_state() -> DataTableState {
+        let many: Vec<String> = (0..12).map(|i| format!("t{i}")).collect();
+        let tags = Series::new(
+            "tags".into(),
+            &[
+                Series::new("".into(), &["a", "b"]),
+                Series::new("".into(), many),
+            ],
+        );
+        let id = Series::new("id".into(), &[1i64, 2]);
+        let more = Series::new(
+            "more".into(),
+            &[
+                Series::new("".into(), &["x"]),
+                Series::new("".into(), &["y"]),
+            ],
+        );
+        let lf = DataFrame::new_infer_height(vec![id.into(), tags.into(), more.into()])
+            .unwrap()
+            .lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.visible_rows = 2;
+        state.collect();
+        state
+    }
+
+    /// A list cell reads as it did when the buffer held lists as text, and the type
+    /// row names the list once the rows have landed, not `str`.
+    #[test]
+    fn a_list_column_draws_its_items_under_its_list_type() {
+        let mut state = list_state();
+        let area = Rect::new(0, 0, 80, 4);
+        let mut buf = Buffer::empty(area);
+        DataTable {
+            dtype_row: true,
+            ..DataTable::default()
+        }
+        .render(area, &mut buf, &mut state);
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| row_string(&buf, area, y))
+            .collect();
+        assert!(rows[1].contains("list[str]"), "{rows:#?}");
+        assert!(!rows[1].contains(" str "), "{rows:#?}");
+        assert!(rows[2].contains("[a, b]"), "{rows:#?}");
+        // The column's width cap cuts the rest; `exact` tests the whole preview.
+        assert!(
+            rows[3].contains("[t0, t1, t2, t3, t4, t5, t6, t7"),
+            "{rows:#?}"
+        );
+    }
+
+    /// The display frames keep lists as lists, frozen or scrolling, through a
+    /// sideways scroll: a step re-cuts the buffer and formats nothing; only the
+    /// cells drawn are formatted.
+    #[test]
+    fn a_sideways_scroll_keeps_lists_in_the_display_frames() {
+        let mut state = list_state();
+        state.set_locked_columns(2);
+        state.scroll_right();
+        let is_list = |df: &DataFrame, name: &str| {
+            matches!(df.column(name).unwrap().dtype(), DataType::List(_))
+        };
+        assert!(is_list(state.locked_df.as_ref().unwrap(), "tags"));
+        assert!(is_list(state.df.as_ref().unwrap(), "more"));
     }
 
     /// A page over columns not drawn yet waits for the draw, which measures them from

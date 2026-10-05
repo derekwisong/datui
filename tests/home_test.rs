@@ -8293,10 +8293,12 @@ mod catalog {
     use super::coming_back::{press, settle};
     use crossterm::event::KeyCode;
     use datui::home::Row;
-    use datui::{App, AppEvent, UnaskedDownload};
+    use datui::{App, AppEvent};
     use std::sync::mpsc::Receiver;
     use tempfile::TempDir;
 
+    // For the examples, which this build opens only with HTTP or cloud reading.
+    #[cfg(any(feature = "http", feature = "cloud"))]
     fn app_with_catalog(config: datui::config::AppConfig) -> (App, Receiver<AppEvent>, TempDir) {
         let mut config = config;
         config.home.desktop_recents = false;
@@ -8362,6 +8364,8 @@ mod catalog {
     /// The Example datasets heading says what they are, where they come from, and
     /// both ways to hide them; Delete there asks first, on No, hides them until the
     /// cache is cleared, across a restart, and says `Del Hide` in the footer.
+    // The examples this build opens: none without HTTP or cloud reading.
+    #[cfg(any(feature = "http", feature = "cloud"))]
     #[test]
     fn delete_on_the_example_heading_hides_them_until_cache_clear() {
         let cache = TempDir::new().unwrap();
@@ -8469,6 +8473,7 @@ mod catalog {
         assert!(!titles(&hidden).iter().any(|t| t == "Our examples"));
     }
 
+    #[cfg(any(feature = "http", feature = "cloud"))]
     fn select_named(app: &mut App, name: &str) {
         let index = app
             .home
@@ -8491,6 +8496,8 @@ mod catalog {
 
     /// A built-in web file's row says its format and what it weighs before anything is
     /// fetched, at 80 and at 200 columns.
+    // An HTTP example.
+    #[cfg(feature = "http")]
     #[test]
     fn catalog_rows_say_their_format_and_size() {
         let (mut app, _rx, _cache) = app_with_catalog(datui::config::AppConfig::default());
@@ -8509,6 +8516,8 @@ mod catalog {
 
     /// Enter on a small built-in web file asks for its download without a question;
     /// the same URL typed at `~` keeps the question.
+    // An HTTP example.
+    #[cfg(feature = "http")]
     #[test]
     fn a_small_builtin_file_opens_without_a_question_and_a_typed_url_asks() {
         let (mut app, _rx, _cache) = app_with_catalog(datui::config::AppConfig::default());
@@ -8517,7 +8526,7 @@ mod catalog {
             panic!("Enter opens it");
         };
         let unasked = options.download_unasked.expect("downloaded unasked");
-        assert_eq!(unasked.limit, UnaskedDownload::LIMIT);
+        assert_eq!(unasked.limit, datui::UnaskedDownload::LIMIT);
         assert!(unasked.covers(None), "its listed size is under the limit");
         let url = paths[0].to_string_lossy().into_owned();
 
@@ -8534,6 +8543,8 @@ mod catalog {
 
     /// On screen, a local directory of directories, a hive table and a public dataset
     /// directory read in one grammar: `name/  label` (#547 M7).
+    // An S3 example.
+    #[cfg(feature = "cloud")]
     #[test]
     fn rows_read_name_slash_two_spaces_label_on_screen() {
         let tmp = TempDir::new().unwrap();
@@ -8950,6 +8961,8 @@ mod path_prompt {
 
     /// A bucket completes from what datui already knows of it, the example datasets
     /// included, with nothing asked of the store: `s3://noaa` + Tab is the bucket.
+    // An S3 example.
+    #[cfg(feature = "cloud")]
     #[test]
     fn a_bucket_completes_from_what_is_known() {
         let mut config = datui::config::AppConfig::default();

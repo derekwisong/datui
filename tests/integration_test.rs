@@ -24709,7 +24709,7 @@ fn run_python_script(app: &App) -> Option<(String, String)> {
 #[test]
 fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
     use datui::filter_modal::{FilterOperator, LogicalOperator};
-    use datui::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
+    use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
 
     type Build = Box<dyn Fn(&mut datui::widgets::datatable::DataTableState)>;
     let views: Vec<(&str, Build)> = vec![
@@ -24755,6 +24755,7 @@ fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
             "a weighted average by a computed key, distinct",
             Box::new(|s| s.query("select distinct qty wavg amount by r: region.upper".into())),
         ),
+        #[cfg(feature = "sql")]
         (
             "SQL grouped without an order",
             Box::new(|s| {
@@ -24806,10 +24807,11 @@ fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
                 .unwrap();
             }),
         ),
+        #[cfg(feature = "sql")]
         (
             "a melt, then SQL over it",
             Box::new(|s| {
-                s.melt(&MeltSpec {
+                s.melt(&datui::pivot_melt_modal::MeltSpec {
                     index: vec!["order_id".into()],
                     value_columns: vec!["amount".into(), "qty".into()],
                     variable_name: "measure".into(),
@@ -24835,6 +24837,7 @@ fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
                 s.sort_by(vec!["order_id".into()], vec![true]);
             }),
         ),
+        #[cfg(feature = "sql")]
         (
             "a drill into a group of a SQL grouping",
             Box::new(|s| {
@@ -25302,6 +25305,7 @@ pl.DataFrame({
                     .unwrap();
             }),
         ),
+        #[cfg(feature = "sql")]
         (
             "SQL over lines, ending in a quoted name",
             Box::new(|s| {
@@ -25551,6 +25555,7 @@ fn copy_as_python_reads_a_directory_named_like_a_glob() {
 
 /// While a query's first rows are read, the table area says what the control bar
 /// does, in place of the rows it replaces; once they are in, they show.
+#[cfg(feature = "sql")]
 #[test]
 fn a_running_query_says_so_in_the_table() {
     let (mut app, rx, tx) = open_query_filter_fixture("running_query_in_place.csv");

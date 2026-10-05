@@ -572,7 +572,7 @@ bookmarks."Daily highs, 2024" = "by_year/YEAR=2024/ELEMENT=TMAX/"
     assert!(app.documentation.is_open());
     let line = footer(&mut app);
     assert!(
-        line.contains("documentation") && line.ends_with("F1 keys"),
+        line.contains("documentation") && line.ends_with("? keys"),
         "{line}"
     );
     assert!(!line.contains("^E"), "the page names its own keys: {line}");
@@ -851,6 +851,20 @@ fn ctrl_e_documents_a_file_a_format_spec_reads() {
     let page = screen(&mut app);
     assert!(page.contains("day.ord"), "{page}");
     assert!(page.contains("RECORD TYPES"), "{page}");
+
+    let line = footer(&mut app);
+    assert!(line.ends_with("? keys"), "{line}");
+
+    // ? and F1 show the view's own keys, and closing the help leaves the view up.
+    use datui_cli::keys::Context;
+    for help in [key(KeyCode::Char('?')), key(KeyCode::F(1))] {
+        drive(&mut app, help);
+        assert_eq!(app.help_context(), Some(Context::Documentation));
+        drive(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.help_context(), None);
+        assert!(app.documentation.is_open());
+    }
+
     drive(&mut app, key(KeyCode::Esc));
     assert!(!app.documentation.is_open());
 

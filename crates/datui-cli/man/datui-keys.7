@@ -253,7 +253,7 @@ Show the local file under the cursor as bytes, in the hex view, whatever datui w
 Add the dataset or directory under the cursor to catalog.toml, listed under My datasets; on a row from catalog.toml, forget it. A heading stands for the directory it lists. Only catalog.toml is written; another catalog is hidden with home.hide
 .TP
 \fBCtrl+E\fR
-Open the Documentation view of a catalog row, of a place inside one, or of a file whose format spec documents it: description, publisher, license, links, record types, columns with units and value legends, bookmarks. A catalog's description, link and column notes stand over the spec's. \(ua / \(da move, Enter opens a column's legend, y copies the line's link or value, Esc goes back. Ctrl+E here is not readline's end of line: the filter is edited at its end
+Open the Documentation view of a catalog row, of a place inside one, or of a file whose format spec documents it: description, publisher, license, links, record types, columns with units and value legends, bookmarks. A catalog's description, link and column notes stand over the spec's. Ctrl+E here is not readline's end of line: the filter is edited at its end
 .TP
 \fBDelete\fR
 Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source
@@ -268,6 +268,28 @@ Select the row; double-click is Enter
 .TP
 \fBWheel\fR
 Move the selection three rows, stopping at the ends
+.SS "Documentation"
+\fBCtrl\fR+\fBE\fR on the home screen, on a catalog row or a file a format spec documents.
+.PP
+\fIRead\fR
+.TP
+\fB\(ua / \(da (j/k)\fR
+Move the cursor a line
+.TP
+\fBPgUp / PgDn\fR
+A page
+.TP
+\fBg / G\fR
+The first or last line (Home / End too)
+.TP
+\fBEnter / Space / \(->\fR
+Open or close the value legend of the column under the cursor: a catalog's values, or a spec's enum
+.TP
+\fBy\fR
+Copy the link or value on the cursor's line, whole, however it is cut on screen
+.TP
+\fBEsc / q / \(<-\fR
+Back to the home screen
 .SS "Command line"
 \fB:\fR at the table.
 .PP

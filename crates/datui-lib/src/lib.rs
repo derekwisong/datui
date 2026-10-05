@@ -7690,6 +7690,8 @@ impl App {
                 self.documentation.toggle_legend();
             }
             KeyCode::Char('y') => self.copy_documentation_line(),
+            // The view takes no text, so ? is help here, as at the table.
+            KeyCode::Char('?') => self.open_help_overlay(),
             _ => {}
         }
     }
@@ -11824,6 +11826,7 @@ impl App {
         // The home filter types too once something is typed into it.
         let typing = self.text_field_focused()
             || (self.input_mode == InputMode::Home
+                && !self.documentation.is_open()
                 && (!self.home.filter.is_empty() || self.home.path_input_active));
         self.help.open(context, typing);
     }
@@ -11876,6 +11879,7 @@ impl App {
             InputMode::PickFormat => Context::FormatPicker,
             InputMode::Info => Context::Info,
             InputMode::Chart => Context::Chart,
+            InputMode::Home if self.documentation.is_open() => Context::Documentation,
             InputMode::Home => Context::Home,
             InputMode::Hex => Context::Hex,
             InputMode::ValueCounts => Context::ValueCounts,

@@ -279,7 +279,8 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
                 quiet(" of rows", ctx),
             ],
         };
-        lines.push(sub(value, Some(ChartFocus::Aggregate), false));
+        // A row of its own: unlabeled under Y, `none` read as a second Y column.
+        lines.push(row("Aggregate", value, Some(ChartFocus::Aggregate), false));
     }
     lines.push(PanelLine::Blank);
 
@@ -596,7 +597,10 @@ fn render_title(
     ctx: &RenderContext,
 ) {
     let (main, sub) = modal.title();
-    if main.is_empty() {
+    // With nothing said of how, the title is the Y column(s) alone, which the y
+    // axis's title already names just under it. The row stays, so the plot does
+    // not move when a step gives the title something to say. An export keeps it.
+    if main.is_empty() || sub.is_empty() {
         return;
     }
     let g = crate::glyphs::get();
@@ -1935,7 +1939,89 @@ mod tests {
         assert!(text.contains("Options"));
         assert!(line("Y from zero").contains("off"));
         assert!(line("Rows").contains("sample 10,000"));
-        assert!(rows[0].contains("price"), "the plot's title: {:?}", rows[0]);
+        assert!(line("Aggregate").contains("none"));
+    }
+
+    /// The aggregate is a row of its own under Y, labeled, so `none` does not read
+    /// as a second Y column; focused, it carries the rail and the accent like any
+    /// row.
+    #[test]
+    fn the_aggregate_row_is_labeled() {
+        let ctx = RenderContext::for_test();
+        let theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        let mut modal = open_modal();
+        modal.set_mark(Mark::Scatter);
+        modal.spec.encoding.x.field = Some("volume".to_string());
+        modal.spec.encoding.y.field = vec!["price".to_string()];
+        modal.focus = ChartFocus::Aggregate;
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buf = Buffer::empty(area);
+        render_chart_view(
+            area,
+            &mut buf,
+            &mut modal,
+            &theme,
+            &ctx,
+            ChartView {
+                data: ChartRenderData::XY {
+                    series: None,
+                    breaks: None,
+                    values: None,
+                    names: names(),
+                    x_axis_kind: XAxisTemporalKind::Numeric,
+                    x_bounds: None,
+                    numbers: PlotNumbers::default(),
+                },
+                notes: Vec::new(),
+                error: None,
+                working: None,
+                schema: None,
+            },
+        );
+        // Each panel row past the rail gutter: its label column and its value.
+        let cells = |y: u16, xs: std::ops::Range<u16>| -> String {
+            xs.map(|x| buf[(x, y)].symbol()).collect::<String>()
+        };
+        let label_end = 2 + LABEL_WIDTH;
+        let at = |label: &str| {
+            (0..area.height)
+                .find(|&y| cells(y, 2..label_end).trim_end() == label)
+                .unwrap_or_else(|| panic!("{label} in the panel"))
+        };
+        let (y, row) = (at("Y"), at("Aggregate"));
+        assert_eq!(row, y + 1, "right under Y");
+        assert_eq!(cells(row, label_end..SIDEBAR_WIDTH).trim_end(), "none");
+        assert!(cells(y, label_end..SIDEBAR_WIDTH).contains("price"));
+        assert_eq!(buf[(0, row)].symbol(), crate::glyphs::get().rail);
+        assert_eq!(buf[(2, row)].fg, ctx.accent, "the focused label");
+    }
+
+    /// The title says how the rows were made; when it would only repeat the Y
+    /// column, which the y axis's title names under it, it is not drawn.
+    #[test]
+    fn the_title_does_not_repeat_the_y_axis() {
+        let mut modal = open_modal();
+        modal.set_mark(Mark::Scatter);
+        modal.spec.encoding.x.field = Some("volume".to_string());
+        modal.spec.encoding.y.field = vec!["price".to_string()];
+        let rows = render_rows(&mut modal, 100, 30);
+        let plot = |r: &String| -> String { r.chars().skip(SIDEBAR_WIDTH as usize + 1).collect() };
+        let named: Vec<String> = rows
+            .iter()
+            .map(plot)
+            .filter(|r| r.contains("price"))
+            .collect();
+        assert_eq!(named.len(), 1, "price once, the y axis's title: {named:#?}");
+        assert!(plot(&rows[0]).trim().is_empty(), "{:?}", rows[0]);
+
+        modal.spec.encoding.y.aggregate = Aggregate::Mean;
+        let rows = render_rows(&mut modal, 100, 30);
+        let g = crate::glyphs::get();
+        assert_eq!(
+            plot(&rows[0]).trim(),
+            format!("price {} mean by volume", g.middot)
+        );
     }
 
     /// A shelf the type does not use stays, dimmed, with why.

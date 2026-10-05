@@ -687,7 +687,7 @@ Directories separated by \fB:\fR (\fB;\fR on Windows), such as a checked-out rep
 \fB[formats] path\fR in config
 More directories. Lists add up across imported config files
 .PP
-\fBdatui formats\fR lists each spec, what it matches, the file it came from, any copy of the same name it overrides, and the files that could not be read, with the line and column of each problem. The same places hold FIX log dictionaries: QuickFIX XML files and TOML files of \fBkind = "fix"\fR, listed after the specs.
+\fBdatui formats\fR lists each spec, what it matches (\fBmagic L2FD \(pc version 3 \(pc glob *.l2\fR, or \fB\-\-format only\fR), the file it came from, any copy of the same name it overrides, and the files that could not be read, with the line and column of each problem. The same places hold FIX log dictionaries: QuickFIX XML files and TOML files of \fBkind = "fix"\fR, listed after the specs.
 .PP
 \fBdatui formats check SPEC [FILE]\fR checks one spec, by name or file. With a file, it prints the warnings and the first ten rows. Given a QuickFIX dictionary, it checks that, and with a FIX log says how many messages it matches and which of its tags they hold. It exits non-zero on an error, so a repository of specs can run it in CI.
 .SS "Which spec reads a file"
@@ -717,7 +717,7 @@ match = { glob = "*.l2", magic = "L2FD", where = { "header.version" = 3 } }
 .PP
 When two specs match the same way, the first on the search path reads the file. The bar shows \fB2 formats match\fR, and the Notes tab names the others. A file no spec matches opens as it does without specs; a local file no reader takes either opens in the hex view, where \fBB\fR reads it with a spec and \fBr\fR lines the bytes up in records while you write one.
 .PP
-\fBb\fR on the table picks another spec and reads the file again with it, clearing the query, filters and sort. The list starts with the spec the file was read with, then the others that matched it the same way, then every other spec on the search path for a file (or for a directory of column files). The Notes tab of \fBi\fR says which spec read the file and why, the header's values, and any bytes left out.
+\fBb\fR on the table picks another spec and reads the file again with it, clearing the query, filters and sort. The list starts with the spec the file was read with, then the others that matched it the same way, then every other spec on the search path for a file (or for a directory of column files). The Notes tab of \fBi\fR says which spec read the file and why (\fBmatched by magic L2FD \(pc version 3\fR), the header's values, and any bytes left out.
 .PP
 The home screen and its search name a file the same way. A file whose name says nothing (no extension, or \fB.bin\fR) is matched by magic and \fBwhere\fR against the first 4 KiB the listing reads from it anyway, up to 256 files a directory; nothing more is read. Its row reads the spec's name, and its details:
 .TP
@@ -725,13 +725,15 @@ The home screen and its search name a file the same way. A file whose name says 
 \fBacme.l2feed file\fR
 .TP
 \fBspec\fR
-The spec's file
+The spec's file, cut in the middle to fit: \fB~/\[u2026]/formats/l2feed.toml\fR
 .TP
 \fBmatch\fR
-The spec's \fBmatch\fR: \fB*.l2, magic "L2FD", header.version = 3\fR
+What chose the file, a chip per condition: \fB[magic L2FD] [version 3]\fR, or \fB[glob *.l2] [version 3]\fR when the glob named it
 .TP
 \fBschema\fR
-\fB3 columns (spec)\fR and each column's type, when the spec alone says them (fixed records, no size from the header); \fB2 variants (spec)\fR and each variant's column count; otherwise \fBon open\fR
+\fB3 columns (spec)\fR and each column's type, when the spec alone says them (fixed records, no size from the header); \fB2 variants (spec)\fR and each variant's column count (\fBadd 5 \(pc cancel 3\fR); otherwise \fBon open\fR
+.PP
+Every chip must hold; a chip with several values (\fB[glob *.l2 *.lvl2]\fR) takes any of them. A glob that names the file stands without the magic, so the pane shows the one that chose it. Text values are quoted where the terminal shows no chip color (\fB[kind "A"]\fR), and a magic that is not text is hex (\fB7f 45 4c 46\fR).
 .SS "Delimited text"
 Loggers and instruments write a metadata line and a units line above a padded header. A spec of \fBkind = "delimited"\fR holds the CSV options for such a family of files, so they open with no flags: from the command line, from the home screen, compressed, or as a directory.
 .PP

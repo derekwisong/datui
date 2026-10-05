@@ -2375,6 +2375,20 @@ fn annotate(
     }
 }
 
+/// Take what a measurement or a remembered record says a row costs, keeping what came
+/// from elsewhere: where it lives, from the mount table, and a spec file's variant
+/// count, from the spec. A record written before the spec named the file has no count,
+/// and taking it would leave the row with no tables to list (→) and no variants to show.
+fn take_cost(row: &mut Entry, cost: &discover::Cost) {
+    let source = row.cost.source.take();
+    let variants = row.cost.tables.filter(|_| row.format_spec.is_some());
+    row.cost = cost.clone();
+    row.cost.source = source;
+    if variants.is_some() {
+        row.cost.tables = variants;
+    }
+}
+
 fn apply_known_facts(
     row: &mut Entry,
     known: &std::collections::HashMap<PathBuf, crate::cache::DatasetFacts>,
@@ -2460,9 +2474,7 @@ fn apply_known_facts(
     }
     // The source is filled in from the live mount table afterwards, so what is
     // restored here is only what the file itself said about itself.
-    let source = row.cost.source.take();
-    row.cost = facts.cost.clone();
-    row.cost.source = source;
+    take_cost(row, &facts.cost);
     if remote {
         // A remote row was never stat'ed, so these are all it has. A record with no
         // size to give — one object's, whose open read its footer and nothing else —
@@ -4412,9 +4424,7 @@ impl HomeState {
                     }
                     // Keep the source, which came from the mount table just now; take
                     // everything else, which came from the file.
-                    let source = row.cost.source.take();
-                    row.cost = m.cost.clone();
-                    row.cost.source = source;
+                    take_cost(row, &m.cost);
                 }
             }
             // The door's name says what it opens, and a measurement can change that: the

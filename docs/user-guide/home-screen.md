@@ -111,14 +111,14 @@ and automounts.
 | Field | Says |
 |---|---|
 | Kind, storage | The format, and the file system or object store. A file a [format spec](../formats/format-specs.md#which-spec-reads-a-file) reads, by its glob or its magic, says `acme.l2feed file` |
-| Spec, match | For a spec's file: the spec's file, and what its `match` says files of it look like |
+| Spec, match | For a spec's file: the spec's file, cut in the middle to fit, and what chose the file, a chip per condition: `[magic L2FD] [version 3]` ([format specs](../formats/format-specs.md#which-spec-reads-a-file)) |
 | Read | How a file opens: `lazy scan`, `decompressed copy`, `converted to Arrow`, `in memory`, or `download →` one of those ([formats](../formats/index.md#how-each-format-is-read)) |
 | Contains | Files by format, directories and partitions |
 | Rows × columns | Known counts; blank when finding them would read the data. Parquet counts come from footers, up to 64 files; past that, `? × 39+` |
 | On disk, in memory | The stored size; Parquet's uncompressed size |
 | Row groups | Parquet's read units |
 | Partitions | Keys and values from the directory names |
-| Schema | The known columns and types; `3 columns (spec)` or `2 variants (spec)` when a format spec says them; `on open` when only opening the file reads them |
+| Schema | The known columns and types; `3 columns (spec)` or `2 variants (spec)` when a format spec says them, then each column, or each variant and its column count (`add 5 · cancel 3`); `on open` when only opening the file reads them |
 | `▲ footer unreadable` | A Parquet file whose footer could not be read; opening it will most likely fail too |
 | Enter, `→` | What <kbd>Enter</kbd> does on a directory, a door or a file of tables: `all partitions as one table`, `step in · first row opens all`, `its tables` |
 | `ROWS` | The first eight rows of a local CSV, TSV, PSV, NDJSON, Arrow IPC or Parquet file, read when the row is selected. <kbd>Enter</kbd> opens the file on those rows, so they are read once. `[home] preview_max` sets the largest file read; `0` turns it off. Network shares and object stores are not read before opening |

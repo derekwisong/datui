@@ -585,6 +585,68 @@ pub enum Expected {
     Text(String),
 }
 
+/// One condition of a spec's `match`, as the home pane, the Info panel and `datui
+/// formats` show it: `magic MKTD`, `version 1`, `glob *.bin *.dat`. Separate chips must
+/// all hold, but for a glob and a magic: a file the glob names is not asked for its
+/// magic. Alternatives live inside one chip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchChip {
+    pub name: String,
+    pub value: String,
+    pub kind: ChipKind,
+    /// Where the magic sits, when not at the start.
+    pub offset: Option<u64>,
+}
+
+/// What a chip's value is, for its color and whether plain text quotes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChipKind {
+    /// Printable magic bytes, as text. Never quoted: a magic is bytes either way.
+    Magic,
+    /// Magic bytes in hex.
+    Hex,
+    /// A header value that is text. Quoted where no color tells it from a number.
+    Text,
+    /// A header value that is a number.
+    Int,
+    /// File name patterns, any of which names the file.
+    Glob,
+}
+
+/// The most of a magic a chip shows before it cuts it.
+const CHIP_MAGIC_CHARS: usize = 16;
+const CHIP_MAGIC_BYTES: usize = 8;
+
+impl MatchChip {
+    /// The value as plain text: text header values quoted when `quote`.
+    pub fn value_text(&self, quote: bool) -> String {
+        let value = match self.kind {
+            ChipKind::Text if quote => format!("\"{}\"", self.value),
+            _ => self.value.clone(),
+        };
+        match self.offset {
+            Some(at) => format!("{value} @ {at}"),
+            None => value,
+        }
+    }
+
+    /// `name value`, as plain text.
+    pub fn plain(&self, quote: bool) -> String {
+        format!("{} {}", self.name, self.value_text(quote))
+    }
+}
+
+/// Chips as one line of plain text, for the command line and the Info panel:
+/// `magic MKTD · version 1 · glob *.bin *.dat`.
+pub fn chips_plain(chips: &[MatchChip]) -> String {
+    let sep = format!(" {} ", crate::glyphs::get().middot);
+    chips
+        .iter()
+        .map(|c| c.plain(true))
+        .collect::<Vec<_>>()
+        .join(&sep)
+}
+
 /// The most a spec file may hold, local or remote: far more than any spec needs, and
 /// a bound on what `--format FILE` reads before it knows what it read.
 pub const MAX_SPEC_BYTES: u64 = 1 << 20;
@@ -3425,32 +3487,90 @@ impl Spec {
         magic.max(header).min(MAX_MATCH_READ)
     }
 
-    /// What the spec says files of it look like, for listings: its globs, magic and
-    /// header values.
-    pub fn match_summary(&self) -> String {
-        let mut said = Vec::new();
-        if !self.globs.is_empty() {
-            said.push(self.globs.join(" "));
-        }
+    /// What the spec says files of it look like, one chip per condition: its magic,
+    /// its header values, then its globs. Empty when only `--format` picks it.
+    pub fn match_chips(&self) -> Vec<MatchChip> {
+        let mut chips = Vec::new();
         if !self.magic.is_empty() {
-            let magic = if self.magic.iter().all(|b| b.is_ascii_graphic()) {
-                format!("\"{}\"", String::from_utf8_lossy(&self.magic))
+            let ellipsis = crate::glyphs::get().ellipsis;
+            let (value, kind) = if self.magic.iter().all(|b| b.is_ascii_graphic()) {
+                let text = String::from_utf8_lossy(&self.magic);
+                let value = if text.chars().count() > CHIP_MAGIC_CHARS {
+                    let head: String = text.chars().take(CHIP_MAGIC_CHARS).collect();
+                    format!("{head}{ellipsis}")
+                } else {
+                    text.into_owned()
+                };
+                (value, ChipKind::Magic)
+            } else if self.magic.len() > CHIP_MAGIC_BYTES {
+                let head = crate::fixed_records::hex(&self.magic[..CHIP_MAGIC_BYTES]);
+                (format!("{head} {ellipsis}"), ChipKind::Hex)
             } else {
-                crate::fixed_records::hex(&self.magic)
+                (crate::fixed_records::hex(&self.magic), ChipKind::Hex)
             };
-            if self.magic_offset > 0 {
-                said.push(format!("magic {magic} at {}", self.magic_offset));
-            } else {
-                said.push(format!("magic {magic}"));
-            }
-        }
-        for (field, wanted) in &self.expect {
-            said.push(match wanted {
-                Expected::Int(v) => format!("header.{field} = {v}"),
-                Expected::Text(v) => format!("header.{field} = \"{v}\""),
+            chips.push(MatchChip {
+                name: "magic".to_string(),
+                value,
+                kind,
+                offset: (self.magic_offset > 0).then_some(self.magic_offset),
             });
         }
-        said.join(", ")
+        for (field, wanted) in &self.expect {
+            let (value, kind) = match wanted {
+                Expected::Int(v) => (v.to_string(), ChipKind::Int),
+                Expected::Text(v) => (v.clone(), ChipKind::Text),
+            };
+            chips.push(MatchChip {
+                name: field.clone(),
+                value,
+                kind,
+                offset: None,
+            });
+        }
+        if !self.globs.is_empty() {
+            chips.push(MatchChip {
+                name: "glob".to_string(),
+                value: self.globs.join(" "),
+                kind: ChipKind::Glob,
+                offset: None,
+            });
+        }
+        chips
+    }
+
+    /// The chips that picked `path`: the glob when it names the file, else the magic,
+    /// with the header values either way. All of them when neither does.
+    pub fn match_chips_for(&self, path: &Path) -> Vec<MatchChip> {
+        let by = if self.glob_matches(path) {
+            Some(ChipKind::Glob)
+        } else if !self.magic.is_empty() {
+            Some(ChipKind::Magic)
+        } else {
+            None
+        };
+        self.match_chips_by(by)
+    }
+
+    /// The chips of the rule that chose the spec: `Chosen::Glob` or `Chosen::Magic`
+    /// leave the other out; any other choice keeps every chip.
+    pub fn match_chips_chosen(&self, by: Chosen) -> Vec<MatchChip> {
+        match by {
+            Chosen::Glob => self.match_chips_by(Some(ChipKind::Glob)),
+            Chosen::Magic => self.match_chips_by(Some(ChipKind::Magic)),
+            Chosen::SpecFile | Chosen::Named => self.match_chips(),
+        }
+    }
+
+    fn match_chips_by(&self, by: Option<ChipKind>) -> Vec<MatchChip> {
+        let mut chips = self.match_chips();
+        match by {
+            Some(ChipKind::Glob) => {
+                chips.retain(|c| !matches!(c.kind, ChipKind::Magic | ChipKind::Hex));
+            }
+            Some(_) => chips.retain(|c| c.kind != ChipKind::Glob),
+            None => {}
+        }
+        chips
     }
 
     /// Whether the spec reads a file's records as several variants, each listed as a
@@ -4492,6 +4612,20 @@ pub enum Chosen {
     Magic,
 }
 
+/// Why `spec` read a file, for the Notes tab: `matched by magic MKTD · version 1`
+/// when its glob or its magic chose it, `chosen by --format FILE` otherwise.
+pub fn chosen_words(spec: &Spec, by: Chosen) -> String {
+    let chips = match by {
+        Chosen::Glob | Chosen::Magic => spec.match_chips_chosen(by),
+        Chosen::SpecFile | Chosen::Named => Vec::new(),
+    };
+    if chips.is_empty() {
+        format!("chosen by {}", by.words())
+    } else {
+        format!("matched by {}", chips_plain(&chips))
+    }
+}
+
 impl Chosen {
     pub fn words(self) -> &'static str {
         match self {
@@ -4799,12 +4933,11 @@ impl Registry {
         for found in &self.specs {
             let spec = &found.spec;
             out.push_str(&spec.name);
-            let summary = spec.match_summary();
-            match (spec.is_delimited(), summary.is_empty()) {
-                (true, true) => out.push_str("  (delimited)"),
-                (true, false) => out.push_str(&format!("  (delimited; {summary})")),
-                (false, true) => {}
-                (false, false) => out.push_str(&format!("  ({summary})")),
+            let said = match_words(spec);
+            if spec.is_delimited() {
+                out.push_str(&format!("  (delimited; {said})"));
+            } else {
+                out.push_str(&format!("  ({said})"));
             }
             out.push('\n');
             if let Some(description) = &spec.description {
@@ -5133,7 +5266,11 @@ impl Read {
             .as_ref()
             .map_or_else(|| "the spec".to_string(), |p| p.display().to_string());
         let mut notes = vec![note(
-            format!("read as {}, chosen by {}", self.spec.name, self.by.words()),
+            format!(
+                "read as {}, {}",
+                self.spec.name,
+                chosen_words(&self.spec, self.by)
+            ),
             format!("from {from}"),
         )];
         if !self.also.is_empty() {
@@ -5171,6 +5308,20 @@ impl Read {
         notes
     }
 }
+
+/// A spec's match conditions as the command line prints them: its chips, or
+/// `--format only` when nothing but `--format` picks it.
+fn match_words(spec: &Spec) -> String {
+    let chips = spec.match_chips();
+    if chips.is_empty() {
+        FORMAT_ONLY.to_string()
+    } else {
+        chips_plain(&chips)
+    }
+}
+
+/// What a spec with no `match` says in place of its conditions.
+pub const FORMAT_ONLY: &str = "--format only";
 
 /// `datui formats`, or `datui formats check SPEC [FILE]`: what to print, and the exit
 /// code (non-zero when the check finds an error).
@@ -5230,10 +5381,7 @@ fn check(
     if let Some(from) = &spec.path {
         out.push_str(&format!("  from {}\n", from.display()));
     }
-    let summary = spec.match_summary();
-    if !summary.is_empty() {
-        out.push_str(&format!("  matches {summary}\n"));
-    }
+    out.push_str(&format!("  matches {}\n", match_words(&spec)));
     if spec.is_delimited() {
         return crate::delimited_spec::check(&spec, file, CHECK_ROWS, options)
             .map(|rest| out.clone() + &rest)
@@ -6634,7 +6782,7 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
         assert!(text.contains("2024-03-01 15:00:00 UTC"), "{text}");
         let listing = Registry::of(vec![Spec::parse(LOG, None).unwrap()]).listing(&[]);
         assert!(
-            listing.contains("acme.instrument-log  (delimited; magic \"#device_info\")"),
+            listing.contains("acme.instrument-log  (delimited; magic #device_info)"),
             "{listing}"
         );
     }
@@ -6792,5 +6940,167 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
         )
         .unwrap_err();
         assert!(e.contains("broken.toml\":3:1: tags.nine"), "{e}");
+    }
+}
+
+#[cfg(test)]
+mod chip_tests {
+    use super::*;
+
+    /// A spec of one header and one record field, with `matches` as its `match`.
+    fn spec(matches: &str) -> Spec {
+        let text = format!(
+            r#"name = "acme.chips"
+{matches}
+[header]
+fields = [
+  {{ name = "magic", type = "str", size = 4 }},
+  {{ name = "version", type = "u2" }},
+  {{ name = "kind", type = "str", size = 1 }},
+]
+
+[records]
+fields = [{{ name = "x", type = "u1" }}]
+"#
+        );
+        Spec::parse(&text, None).unwrap()
+    }
+
+    fn plain(spec: &Spec) -> Vec<String> {
+        spec.match_chips().iter().map(|c| c.plain(true)).collect()
+    }
+
+    #[test]
+    fn printable_magic_is_text_and_where_drops_the_header_prefix() {
+        let s = spec(r#"match = { magic = "MKTD", where = { "header.version" = 1 } }"#);
+        let chips = s.match_chips();
+        assert_eq!(chips[0].kind, ChipKind::Magic);
+        assert_eq!(chips[1].kind, ChipKind::Int);
+        assert_eq!(plain(&s), ["magic MKTD", "version 1"]);
+    }
+
+    #[test]
+    fn unprintable_magic_is_hex_and_a_long_one_is_cut() {
+        let s = spec("match = { magic = [127, 69, 76, 70] }");
+        assert_eq!(s.match_chips()[0].kind, ChipKind::Hex);
+        assert_eq!(plain(&s), ["magic 7f 45 4c 46"]);
+        let s = spec("match = { magic = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] }");
+        let ellipsis = crate::glyphs::get().ellipsis;
+        assert_eq!(
+            plain(&s),
+            [format!("magic 00 01 02 03 04 05 06 07 {ellipsis}")]
+        );
+        let s = spec(r#"match = { magic = "ABCDEFGHIJKLMNOPQRST" }"#);
+        assert_eq!(plain(&s), [format!("magic ABCDEFGHIJKLMNOP{ellipsis}")]);
+    }
+
+    #[test]
+    fn a_magic_offset_folds_into_its_chip_when_not_zero() {
+        let s = spec(r#"match = { magic = "MKTD", magic_offset = 8 }"#);
+        assert_eq!(plain(&s), ["magic MKTD @ 8"]);
+        let s = spec(r#"match = { magic = "MKTD", magic_offset = 0 }"#);
+        assert_eq!(plain(&s), ["magic MKTD"]);
+    }
+
+    #[test]
+    fn a_glob_list_is_one_chip_of_alternatives() {
+        let s = spec(r#"match = { glob = ["*.bin", "*.dat"] }"#);
+        assert_eq!(plain(&s), ["glob *.bin *.dat"]);
+        assert_eq!(s.match_chips()[0].kind, ChipKind::Glob);
+    }
+
+    #[test]
+    fn a_text_value_is_quoted_only_in_plain_text() {
+        let s = spec(
+            r#"match = { magic = "MKTD", where = { "header.kind" = "A", "header.version" = 2 } }"#,
+        );
+        let chips = s.match_chips();
+        let kind = chips.iter().find(|c| c.name == "kind").unwrap();
+        assert_eq!(kind.kind, ChipKind::Text);
+        assert_eq!(kind.plain(true), "kind \"A\"");
+        assert_eq!(kind.plain(false), "kind A");
+        let version = chips.iter().find(|c| c.name == "version").unwrap();
+        assert_eq!(version.plain(true), "version 2");
+    }
+
+    #[test]
+    fn a_spec_with_no_match_is_for_format_only() {
+        let s = spec("");
+        assert!(s.match_chips().is_empty());
+        assert_eq!(match_words(&s), FORMAT_ONLY);
+    }
+
+    /// A glob that names the file stands without the magic, and the magic is asked only
+    /// of a file no glob names, so the pane and the Notes show the one that chose it.
+    #[test]
+    fn the_rule_that_chose_the_spec_keeps_its_chips() {
+        let s =
+            spec(r#"match = { glob = "*.bin", magic = "MKTD", where = { "header.version" = 1 } }"#);
+        let names = |chips: Vec<MatchChip>| chips.into_iter().map(|c| c.name).collect::<Vec<_>>();
+        assert_eq!(names(s.match_chips()), ["magic", "version", "glob"]);
+        assert_eq!(
+            names(s.match_chips_chosen(Chosen::Glob)),
+            ["version", "glob"]
+        );
+        assert_eq!(
+            names(s.match_chips_chosen(Chosen::Magic)),
+            ["magic", "version"]
+        );
+        assert_eq!(
+            names(s.match_chips_for(Path::new("x/day.bin"))),
+            ["version", "glob"]
+        );
+        assert_eq!(
+            names(s.match_chips_for(Path::new("x/day"))),
+            ["magic", "version"]
+        );
+        let middot = crate::glyphs::get().middot;
+        assert_eq!(
+            chips_plain(&s.match_chips()),
+            format!("magic MKTD {middot} version 1 {middot} glob *.bin")
+        );
+        assert_eq!(
+            chosen_words(&s, Chosen::Magic),
+            format!("matched by magic MKTD {middot} version 1")
+        );
+        assert_eq!(chosen_words(&s, Chosen::Named), "chosen by its name");
+    }
+
+    /// `datui formats` lists each spec with its conditions, `--format only` without.
+    #[test]
+    fn the_listing_shows_each_specs_chips() {
+        let mut one = spec(r#"match = { magic = "MKTD", where = { "header.version" = 1 } }"#);
+        one.name = "acme.mktd".to_string();
+        let two = spec("");
+        let listing = Registry::of(vec![one, two]).listing(&[]);
+        let middot = crate::glyphs::get().middot;
+        assert!(
+            listing.contains(&format!("acme.mktd  (magic MKTD {middot} version 1)")),
+            "{listing}"
+        );
+        assert!(listing.contains("acme.chips  (--format only)"), "{listing}");
+
+        // `datui formats check` says the same.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("spec-chips-mktd.toml");
+        std::fs::write(
+            &file,
+            "name = \"acme.mktd\"\nmatch = { magic = \"MKTD\", where = { \"header.version\" = 1 } }\n\
+             [header]\nfields = [{ name = \"magic\", type = \"str\", size = 4 }, \
+             { name = \"version\", type = \"u2\" }]\n\
+             [records]\nfields = [{ name = \"x\", type = \"u1\" }]\n",
+        )
+        .unwrap();
+        let text = check(
+            &file.to_string_lossy(),
+            None,
+            &Registry::default(),
+            &crate::OpenOptions::default(),
+        )
+        .unwrap();
+        assert!(
+            text.contains(&format!("  matches magic MKTD {middot} version 1\n")),
+            "{text}"
+        );
     }
 }

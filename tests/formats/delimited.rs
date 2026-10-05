@@ -120,7 +120,7 @@ fn a_log_opens_by_its_magic_with_units_metadata_and_a_utc_time() {
     assert!(
         notes
             .iter()
-            .any(|n| n == "read as acme.instrument-log, chosen by its magic"),
+            .any(|n| n == "read as acme.instrument-log, matched by magic #device_info"),
         "{notes:?}"
     );
 

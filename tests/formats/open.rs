@@ -304,7 +304,7 @@ fn magic_matches_a_file_no_glob_names() {
     assert!(
         notes(&app)
             .iter()
-            .any(|n| n.ends_with("chosen by its magic"))
+            .any(|n| n.contains("matched by magic L2FD"))
     );
 }
 

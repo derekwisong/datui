@@ -64,9 +64,12 @@ arbitrary = { version = "1", features = ["derive"] }
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
 
-# Packaging: deb, rpm, AUR.
+# Packaging: deb, rpm. The AUR package is
+# scripts/packaging/PKGBUILD.in, filled in by build_package.py.
 [package.metadata.deb]
 maintainer = "Derek Wisong"
+# From dpkg-shlibdeps on the binary: libc6 (>= 2.28) and libgcc-s1, nothing else.
+depends = "$auto"
 # generated: deb-description
 extended-description = "datui reads 27 formats: Parquet, CSV, TSV, PSV, JSON, NDJSON, Arrow IPC, Avro, ORC, Excel, SafeTensors, GGUF, NMEA, GPX, WAV/AIFF audio, MIDI, SQLite, VCD, FIX, SDF, NumPy, ELF, ULog, DataFlash, candump, plain text, systemd journal, and binary formats you describe in a format spec. Query with SQL or q, sort and filter, chart, analyze and export."
 # end generated: deb-description
@@ -84,6 +87,7 @@ assets = [
     ["scripts/packaging/datui.desktop", "usr/share/applications/datui.desktop", "0644"],
 ]
 
+# Requires come from ldd on the binary: libc.so.6(GLIBC_2.28) and libgcc_s.
 [package.metadata.generate-rpm]
 [[package.metadata.generate-rpm.assets]]
 source = "target/release/datui"
@@ -133,18 +137,6 @@ source = "LICENSE"
 dest = "/usr/share/licenses/datui/LICENSE"
 mode = "0644"
 doc = true
-
-[package.metadata.aur]
-# Do not add LICENSE to files: cargo-aur already includes it when license is MIT
-# (must_copy_license). Adding it here too made tar store it twice (second as hardlink),
-# which caused "Can't create 'LICENSE'" when bsdtar extracted on the AUR.
-# The manpages and completions go in through build_package.py, which adds
-# man/ and completions/ to the tarball and their install lines to the PKGBUILD.
-files = [
-    # Puts datui in desktop launchers. On Omarchy that means it appears under the
-    # menu's Apps section automatically, with no Omarchy-specific integration.
-    ["scripts/packaging/datui.desktop", "/usr/share/applications/datui.desktop"],
-]
 
 # Dev-loop build speed. A full-debuginfo build produced a 1.9 GB binary, of which
 # 1.5 GB was DWARF (.debug_str alone was 1.09 GB). Linking that into the binary

@@ -9,7 +9,7 @@ InstallModes:
   - silent
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/derekwisong/datui/releases/download/TAG/datui-TAG-windows-x86_64.zip
+    InstallerUrl: https://github.com/derekwisong/datui/releases/download/TAG/datui-TAG-x86_64-pc-windows-msvc.zip
     InstallerSha256: SHA256
     NestedInstallerType: portable
     NestedInstallerFiles:

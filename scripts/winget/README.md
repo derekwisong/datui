@@ -16,8 +16,8 @@ Templates and a generator for [Windows Package Manager (winget)](https://learn.m
 > Use the appropriate version number
 
 1. Download the Windows zip from the [release](https://github.com/derekwisong/datui/releases) and compute its SHA256:
-   - Linux/macOS: `sha256sum datui-v0.2.34-windows-x86_64.zip`
-   - Windows: `Get-FileHash -Algorithm SHA256 .\datui-v0.2.34-windows-x86_64.zip | Select-Object -ExpandProperty Hash`
+   - Linux/macOS: `sha256sum datui-v0.2.34-x86_64-pc-windows-msvc.zip`
+   - Windows: `Get-FileHash -Algorithm SHA256 .\datui-v0.2.34-x86_64-pc-windows-msvc.zip | Select-Object -ExpandProperty Hash`
 2. From the repo root:
    ```bash
    export VERSION=0.2.34 TAG=v0.2.34 SHA256=<paste_hash_here>

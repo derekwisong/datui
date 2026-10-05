@@ -108,12 +108,19 @@ fn test_packaging_ships_it_everywhere() {
     let cargo_toml = std::fs::read_to_string("Cargo.toml").expect("Cargo.toml");
     let mentions = cargo_toml.matches("datui.desktop").count();
     assert!(
-        mentions >= 4,
-        "expected the desktop file in the deb, rpm and aur asset lists \
+        mentions >= 3,
+        "expected the desktop file in the deb and rpm asset lists \
          (source + dest for rpm), found {mentions} mentions"
     );
     assert!(
         cargo_toml.contains("usr/share/applications/datui.desktop"),
         "should install to the freedesktop applications directory"
+    );
+    let pkgbuild = std::fs::read_to_string("scripts/packaging/PKGBUILD.in")
+        .expect("scripts/packaging/PKGBUILD.in");
+    assert!(
+        pkgbuild.contains("scripts/packaging/datui.desktop")
+            && pkgbuild.contains("usr/share/applications/datui.desktop"),
+        "the AUR package should install the desktop file from the tarball"
     );
 }

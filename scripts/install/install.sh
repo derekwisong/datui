@@ -1,50 +1,88 @@
 #!/bin/sh
-set -e
+# Installs the latest datui release on Linux or macOS.
+#
+#   curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh -s -- --user
+#
+# POSIX sh. Everything runs from main() at the end, so a download cut short
+# runs nothing. Questions are read from the terminal (/dev/tty), which is
+# still there when the script itself arrives on standard input.
+set -eu
+
+REPO="derekwisong/datui"
+BINARY_NAME="datui"
+APT_REPO="https://derekwisong.github.io/datui-apt"
+APT_KEYRING="/usr/share/keyrings/datui-archive-keyring.gpg"
+APT_LIST="/etc/apt/sources.list.d/datui.list"
+MIN_GLIBC="2.28"
+
+ASSUME_YES=false
+USER_INSTALL=false
+VERIFY=true
+TMP_DIR=""
+
+usage() {
+    cat <<EOF
+Install the latest datui release.
+
+Usage: install.sh [OPTION]...
+
+  -y, --yes        Answer yes to every question
+      --user       Install into ~/.local/bin (or \$XDG_BIN_HOME) without root; the
+                   default where there is no sudo
+      --no-verify  Skip checking the download against the release's SHA256SUMS
+  -h, --help       Show this and exit
+
+Debian and Ubuntu: adds the datui apt repository and its signing key with sudo, then
+installs the package with apt. Fedora and RHEL: installs the release's .rpm with dnf.
+Elsewhere, and with --user: unpacks the release archive, the binary and the manual
+pages, into /usr/local or your home directory.
+
+Linux needs glibc $MIN_GLIBC or newer (Debian 10, Ubuntu 20.04, RHEL 8 and later).
+Uninstall and other methods: https://derekwisong.github.io/datui/latest/getting-started/installation.html
+EOF
+}
 
 cleanup() {
-    # Only proceed if TMP_DIR is set, is a directory, and is NOT root or home
-    if [ -n "${TMP_DIR:-}" ] && [ -d "$TMP_DIR" ] && [ "$TMP_DIR" != "/" ] && [ "$TMP_DIR" != "$HOME" ]; then
+    # Only a directory this script made, never / or the home directory.
+    if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ] && [ "$TMP_DIR" != "/" ] && [ "$TMP_DIR" != "$HOME" ]; then
         rm -rf "$TMP_DIR"
     fi
 }
 
-# Run cleanup when the script exits
-trap cleanup EXIT
+say() {
+    printf '%s\n' "$*"
+}
 
-# Configuration
-REPO="derekwisong/datui"
-BINARY_NAME="datui"
-MANPAGE_NAME="${BINARY_NAME}.1"
-MANPAGE_GZ_NAME="${MANPAGE_NAME}.gz"
-GITHUB_URL="https://github.com/$REPO/releases/latest/download"
+fail() {
+    printf 'install.sh: %s\n' "$*" >&2
+    exit 1
+}
 
-# Does the user want to assume yes, or an install into their home directory?
-for arg in "$@"; do
-  if [ "$arg" = "-y" ] || [ "$arg" = "--yes" ]; then
-    ASSUME_YES=true
-  fi
-  if [ "$arg" = "--user" ]; then
-    USER_INSTALL=true
-  fi
-done
+# Ask a yes/no question on the terminal. $1 is the question, $2 the answer
+# when there is no terminal or -y was given (y or n). Returns 0 for yes.
+ask() {
+    question="$1"
+    default="$2"
+    if [ "$ASSUME_YES" = true ]; then
+        return 0
+    fi
+    if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+        say "No terminal to ask on; taking the default ($default)."
+        [ "$default" = y ]
+        return
+    fi
+    printf '%s ' "$question" > /dev/tty
+    read -r answer < /dev/tty || answer=""
+    case "$answer" in
+        [yY]|[yY][eE][sS]) return 0 ;;
+        [nN]|[nN][oO]) return 1 ;;
+        "") [ "$default" = y ] ;;
+        *) return 1 ;;
+    esac
+}
 
-# When piped (e.g. curl ... | sh), stdin is not a terminal; use -y to avoid
-# apt/dnf prompting and aborting the installation.
-if [ ! -t 0 ] || [ "$ASSUME_YES" = true ]; then
-    NONINTERACTIVE="-y"
-else
-    NONINTERACTIVE=""
-fi
-
-# Without root and without sudo (Azure Cloud Shell, many shared hosts), install the
-# tarball into the home directory instead of failing on the first privileged step.
-if [ "$(id -u)" != 0 ] && ! command -v sudo > /dev/null 2>&1; then
-    USER_INSTALL=true
-fi
-USER_BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
-USER_MAN_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/man"
-
-# Use sudo only when not root (e.g. containers often run as root and may not have sudo).
+# Use sudo only when not root (containers often run as root without sudo).
 run_priv() {
     if [ "$(id -u)" = 0 ]; then
         "$@"
@@ -53,265 +91,274 @@ run_priv() {
     fi
 }
 
-# Identify System
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-ARCH=$(uname -m)
+fetch() {
+    # -f: an HTTP error is a failure, not a saved error page.
+    curl -fsSL --retry 3 --retry-delay 2 "$1" -o "$2"
+}
 
-# Normalize Architecture
-case "$ARCH" in
-    x86_64)  CANONICAL_ARCH="amd64" ;;
-    aarch64|arm64) CANONICAL_ARCH="arm64" ;;
-    *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
-esac
-
-# If Arch user in an interactive terminal, prompt to install via AUR instead.
-# When stdin is not a TTY (e.g. piped or CI), skip the prompt and proceed with binary install.
-if [ -f /etc/arch-release ] && [ "$ASSUME_YES" != true ] && [ -t 0 ]; then
-    echo "-------------------------------------------------------"
-    echo " ARCH LINUX DETECTED"
-    echo "-------------------------------------------------------"
-    echo "You may install via the AUR instead if desired:"
-    echo "  paru -S datui-bin  (or your preferred AUR helper)"
-    echo ""
-
-    printf "Would you like to continue with the direct binary install anyway? [y/N]: "
-    read -r response
-    case "$response" in
-        [yY][eE][sS]|[yY])
-            echo "Proceeding with binary installation..."
-            ;;
-        *)
-            echo "Installation cancelled. Please use the AUR package."
-            exit 0
-            ;;
-    esac
-fi
-
-# Determine latest version tag from GitHub (used for rpm/tarball installs)
-TAG=$(curl -sI https://github.com/$REPO/releases/latest | grep -i "location:" | awk -F/ '{print $NF}' | tr -d '\r\n')
-VERSION="${TAG#v}"
-
-# Detect Package Manager / Format
-case "$OS" in
-    linux*)
-        if [ "$USER_INSTALL" = true ]; then
-            # Packages need root; the tarball does not.
-            FORMAT="tar.gz"
-            FILENAME="${BINARY_NAME}-${VERSION}-${ARCH}.tar.gz"
-        elif [ -f /etc/debian_version ]; then
-            # on ubuntu/debian-based systems use the APT repository
-            FORMAT="apt"
-        elif [ -f /etc/redhat-release ] || [ -f /etc/fedora-release ]; then
-            # on redhat/rpm-based systems use the rpm package
-            FORMAT="rpm"
-            FILENAME="${BINARY_NAME}-${VERSION}-1.${ARCH}.rpm"
-        else
-            # on other systems use the binary tarball
-            FORMAT="tar.gz"
-            FILENAME="${BINARY_NAME}-${VERSION}-${ARCH}.tar.gz"
-        fi
-        ;;
-    darwin*)
-        # macOS: release tarballs use target triple (datui-v0.2.32-aarch64-apple-darwin.tar.gz)
-        FORMAT="tar.gz"
-        case "$ARCH" in
-            arm64|aarch64) MACOS_TARGET="aarch64-apple-darwin" ;;
-            x86_64)        MACOS_TARGET="x86_64-apple-darwin" ;;
-            *) echo "Unsupported macOS architecture: $ARCH"; exit 1 ;;
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -y|--yes) ASSUME_YES=true ;;
+            --user) USER_INSTALL=true ;;
+            --no-verify) VERIFY=false ;;
+            -h|--help) usage; exit 0 ;;
+            *) say "install.sh: unknown option: $1" >&2; say "" >&2; usage >&2; exit 2 ;;
         esac
-        FILENAME="${BINARY_NAME}-${TAG}-${MACOS_TARGET}.tar.gz"
-        ;;
-    *)
-        echo "Unsupported OS: $OS"
-        exit 1
-        ;;
-esac
+        shift
+    done
+}
 
-# --- Helper functions ---
+detect_system() {
+    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    ARCH=$(uname -m)
+    case "$OS" in
+        linux) ;;
+        darwin) ;;
+        *) fail "unsupported system: $OS. Windows: winget install derekwisong.datui" ;;
+    esac
+    case "$ARCH" in
+        x86_64|amd64) ARCH=x86_64 ;;
+        aarch64|arm64) ARCH=aarch64 ;;
+        *) fail "no build for $OS/$ARCH. Build it with: cargo install datui --locked" ;;
+    esac
 
-# Check a downloaded file against the release's SHA256SUMS.
-#
-# This catches a truncated or corrupted download, and a mirror serving something
-# other than what was released. It does not prove the file came from datui:
-# whoever could replace the asset could replace SHA256SUMS beside it. Signing is
-# the next step and a separate one.
-#
-# Releases before SHA256SUMS existed have no such file, and a missing one is not
-# treated as failure — otherwise this script stops working for older versions.
-# A checksum that is present and wrong always fails.
-verify_checksum() {
-    file="$1"
-    name="$2"
+    if [ "$OS" = linux ]; then
+        check_libc
+    fi
 
-    if command -v sha256sum > /dev/null 2>&1; then
-        sum_cmd="sha256sum"
-    elif command -v shasum > /dev/null 2>&1; then
-        sum_cmd="shasum -a 256"
+    if [ "$(id -u)" != 0 ] && ! command -v sudo > /dev/null 2>&1; then
+        # Azure Cloud Shell and many shared hosts: the home directory, not /usr/local.
+        USER_INSTALL=true
+    fi
+    USER_BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
+    USER_MAN_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/man"
+}
+
+# The Linux binaries are built against glibc 2.28. musl (Alpine) cannot load
+# them, and an older glibc refuses them with a message about GLIBC_2.28.
+check_libc() {
+    if [ -f /etc/alpine-release ] || ls /lib/ld-musl-*.so.1 > /dev/null 2>&1; then
+        fail "this system uses musl, and the Linux builds need glibc $MIN_GLIBC or newer. Build it with: cargo install datui --locked"
+    fi
+    glibc=$(getconf GNU_LIBC_VERSION 2> /dev/null | awk '{print $2}') || glibc=""
+    if [ -n "$glibc" ]; then
+        oldest=$(printf '%s\n%s\n' "$MIN_GLIBC" "$glibc" | sort -t. -k1,1n -k2,2n | head -n 1)
+        if [ "$oldest" != "$MIN_GLIBC" ]; then
+            fail "glibc $glibc found, and the Linux builds need $MIN_GLIBC or newer. Build it with: cargo install datui --locked"
+        fi
+    fi
+}
+
+offer_aur() {
+    if [ -f /etc/arch-release ] && [ "$USER_INSTALL" != true ]; then
+        say "Arch Linux: the AUR has this release as datui-bin (paru -S datui-bin)."
+        if ! ask "Install the release binary into /usr/local anyway? [Y/n]" y; then
+            say "Stopped. Install it from the AUR."
+            exit 0
+        fi
+    fi
+}
+
+# The latest release's tag, from where GitHub redirects releases/latest.
+resolve_release() {
+    final=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest") || final=""
+    TAG=${final##*/}
+    case "$TAG" in
+        v[0-9]*) ;;
+        *) fail "could not find the latest release of $REPO (got '$final'). Check the network, or install from https://github.com/$REPO/releases" ;;
+    esac
+    VERSION="${TAG#v}"
+    DOWNLOAD_URL="https://github.com/$REPO/releases/download/$TAG"
+    SUMS="$TMP_DIR/SHA256SUMS"
+    fetch "$DOWNLOAD_URL/SHA256SUMS" "$SUMS" || fail "release $TAG publishes no SHA256SUMS, so there is nothing to verify a download against. Install it by hand from https://github.com/$REPO/releases/tag/$TAG"
+}
+
+# Whether the release has an asset of this name.
+has_asset() {
+    awk -v n="$1" '$2 == n || $2 == "*" n { found = 1 } END { exit !found }' "$SUMS"
+}
+
+# The archive for this machine. Releases from 0.4.0 name it by target triple;
+# the names before are kept so the script still installs an older latest.
+choose_archive() {
+    case "$OS" in
+        linux) candidates="datui-$TAG-$ARCH-unknown-linux-gnu.tar.gz datui-$VERSION-$ARCH.tar.gz" ;;
+        darwin) candidates="datui-$TAG-$ARCH-apple-darwin.tar.gz" ;;
+    esac
+    for name in $candidates; do
+        if has_asset "$name"; then
+            ARCHIVE="$name"
+            return
+        fi
+    done
+    fail "release $TAG has no build for $OS/$ARCH. Build it with: cargo install datui --locked"
+}
+
+choose_format() {
+    if [ "$OS" = darwin ] || [ "$USER_INSTALL" = true ]; then
+        FORMAT=tarball
+    elif [ -f /etc/debian_version ]; then
+        FORMAT=apt
+    elif command -v dnf > /dev/null 2>&1; then
+        # Fedora, RHEL and its rebuilds, Amazon Linux: the release's .rpm.
+        FORMAT=rpm
     else
-        echo "Note: no sha256sum or shasum found; skipping checksum verification."
-        return 0
+        FORMAT=tarball
     fi
-
-    sums="$TMP_DIR/SHA256SUMS"
-    if ! curl -fsSL "$GITHUB_URL/SHA256SUMS" -o "$sums" 2> /dev/null; then
-        echo "Note: this release publishes no SHA256SUMS; skipping verification."
-        return 0
-    fi
-
-    expected=$(awk -v n="$name" '$2 == n || $2 == "*" n { print $1; exit }' "$sums")
-    if [ -z "$expected" ]; then
-        echo "Note: $name is not listed in SHA256SUMS; skipping verification."
-        return 0
-    fi
-
-    actual=$($sum_cmd "$file" | awk '{print $1}')
-    if [ "$actual" != "$expected" ]; then
-        echo "Checksum mismatch for $name."
-        echo "  expected: $expected"
-        echo "  actual:   $actual"
-        echo "Refusing to install. Try again, and report it if it persists:"
-        echo "  https://github.com/$REPO/security/advisories/new"
-        exit 1
-    fi
-    echo "Checksum OK."
 }
 
-download_tarball() {
-    FILENAME="$1"
-    TMP_DIR=$(mktemp -d)
-    echo "Downloading $FILENAME... ($TMP_DIR)"
-    curl -sSL "$GITHUB_URL/$FILENAME" -o "$TMP_DIR/$FILENAME"
-    verify_checksum "$TMP_DIR/$FILENAME" "$FILENAME"
-}
-
-# Copy the archive's manpages into DIR/manN: man/manN/ in archives from 0.4.0, a
-# lone datui.1 (macOS) or target/release/datui.1.gz (Linux) before. RUN runs the
-# install, through run_priv when the directory needs root.
-install_manpages() {
-    DIR="$1"
-    RUN="$2"
-    if [ -d "$TMP_DIR/man" ]; then
-        for SECTION_DIR in "$TMP_DIR"/man/man*; do
-            [ -d "$SECTION_DIR" ] || continue
-            $RUN install -d "$DIR/$(basename "$SECTION_DIR")"
-            $RUN install -m 644 "$SECTION_DIR"/* "$DIR/$(basename "$SECTION_DIR")/"
-        done
+# Download an asset into TMP_DIR and check it against SHA256SUMS.
+download() {
+    name="$1"
+    say "Downloading $name..."
+    fetch "$DOWNLOAD_URL/$name" "$TMP_DIR/$name" || fail "could not download $DOWNLOAD_URL/$name"
+    if [ "$VERIFY" != true ]; then
+        say "Not verifying the checksum (--no-verify)."
         return
     fi
-    if [ -f "$TMP_DIR/$MANPAGE_NAME" ]; then
-        MANPAGE_PATH="$TMP_DIR/$MANPAGE_NAME"
+    if command -v sha256sum > /dev/null 2>&1; then
+        actual=$(sha256sum "$TMP_DIR/$name" | awk '{print $1}')
+    elif command -v shasum > /dev/null 2>&1; then
+        actual=$(shasum -a 256 "$TMP_DIR/$name" | awk '{print $1}')
     else
-        MANPAGE_PATH="$TMP_DIR/target/release/$MANPAGE_GZ_NAME"
+        fail "neither sha256sum nor shasum is installed, so the download cannot be verified. Install one, or pass --no-verify"
     fi
-    if [ -f "$MANPAGE_PATH" ]; then
-        $RUN install -d "$DIR/man1"
-        $RUN install -m 644 "$MANPAGE_PATH" "$DIR/man1/"
+    expected=$(awk -v n="$name" '$2 == n || $2 == "*" n { print $1; exit }' "$SUMS")
+    [ -n "$expected" ] || fail "$name is not listed in the release's SHA256SUMS, so it cannot be verified. Pass --no-verify to install it anyway"
+    if [ "$actual" != "$expected" ]; then
+        say "Checksum mismatch for $name." >&2
+        say "  expected: $expected" >&2
+        say "  actual:   $actual" >&2
+        fail "refusing to install. Try again, and if it persists report it at https://github.com/$REPO/security/advisories/new"
+    fi
+    say "Checksum OK."
+}
+
+# Copy the archive's man/manN/ into DIR, or the lone datui.1 of releases before
+# 0.4.0. RUN runs each install, through run_priv when the directory needs root.
+install_manpages() {
+    dir="$1"
+    runner="$2"
+    if [ -d "$TMP_DIR/man" ]; then
+        for section_dir in "$TMP_DIR"/man/man*; do
+            [ -d "$section_dir" ] || continue
+            section=$(basename "$section_dir")
+            $runner install -d "$dir/$section"
+            $runner install -m 644 "$section_dir"/* "$dir/$section/"
+        done
+    elif [ -f "$TMP_DIR/$BINARY_NAME.1" ]; then
+        $runner install -d "$dir/man1"
+        $runner install -m 644 "$TMP_DIR/$BINARY_NAME.1" "$dir/man1/"
+    elif [ -f "$TMP_DIR/target/release/$BINARY_NAME.1.gz" ]; then
+        $runner install -d "$dir/man1"
+        $runner install -m 644 "$TMP_DIR/target/release/$BINARY_NAME.1.gz" "$dir/man1/"
     fi
 }
 
 install_tarball() {
-    tar -xzf "$TMP_DIR/$FILENAME" -C "$TMP_DIR"
+    download "$ARCHIVE"
+    tar -xzf "$TMP_DIR/$ARCHIVE" -C "$TMP_DIR"
+    [ -f "$TMP_DIR/$BINARY_NAME" ] || fail "$ARCHIVE holds no $BINARY_NAME at its root"
 
     if [ "$USER_INSTALL" = true ]; then
-        echo "Installing into $USER_BIN_DIR (no root needed)..."
+        say "Installing into $USER_BIN_DIR (no root needed)..."
         install -d "$USER_BIN_DIR"
         install -m 755 "$TMP_DIR/$BINARY_NAME" "$USER_BIN_DIR/$BINARY_NAME"
         install_manpages "$USER_MAN_DIR" ""
+        INSTALLED="$USER_BIN_DIR/$BINARY_NAME"
         return
     fi
 
-    echo "Installing into /usr/local/bin..."
+    say "Installing into /usr/local/bin, with the manual pages in /usr/local/share/man (sudo)..."
     run_priv install -d /usr/local/bin
     run_priv install -m 755 "$TMP_DIR/$BINARY_NAME" "/usr/local/bin/$BINARY_NAME"
     install_manpages /usr/local/share/man run_priv
+    INSTALLED="/usr/local/bin/$BINARY_NAME"
 }
 
 install_apt() {
+    say "Debian/Ubuntu: this adds the datui apt repository and its signing key, with sudo:"
+    say "  $APT_KEYRING  (key from $APT_REPO/public.key)"
+    say "  $APT_LIST     (deb [signed-by=...] $APT_REPO/ ./)"
+    say "then installs the datui package with apt. apt upgrade keeps it current;"
+    say "remove those two files and the package to undo it."
+    if ! ask "Continue? [Y/n]" y; then
+        say "Stopped before changing apt."
+        exit 0
+    fi
     export DEBIAN_FRONTEND=noninteractive
-    echo "Installing $BINARY_NAME for $OS ($CANONICAL_ARCH) via APT repository"
-    echo "Ensuring gnupg is installed..."
     run_priv apt-get update -qq || true
-    run_priv apt-get install $NONINTERACTIVE --no-install-recommends gnupg
-    echo "Adding Datui APT repository..."
-    curl -fsSL https://derekwisong.github.io/datui-apt/public.key | gpg --dearmor | run_priv tee /usr/share/keyrings/datui-archive-keyring.gpg > /dev/null
-    echo "deb [signed-by=/usr/share/keyrings/datui-archive-keyring.gpg] https://derekwisong.github.io/datui-apt/ ./" | run_priv tee /etc/apt/sources.list.d/datui.list > /dev/null
-    echo "Installing via apt..."
+    run_priv apt-get install -y --no-install-recommends gnupg ca-certificates curl
+    say "Adding the datui apt repository..."
+    fetch "$APT_REPO/public.key" "$TMP_DIR/public.key" || fail "could not download $APT_REPO/public.key"
+    gpg --dearmor < "$TMP_DIR/public.key" > "$TMP_DIR/keyring.gpg"
+    run_priv install -m 644 "$TMP_DIR/keyring.gpg" "$APT_KEYRING"
+    say "deb [signed-by=$APT_KEYRING] $APT_REPO/ ./" | run_priv tee "$APT_LIST" > /dev/null
+    say "Installing with apt..."
     run_priv apt-get update -qq || true
-    run_priv apt-get install $NONINTERACTIVE datui
+    run_priv apt-get install -y datui
+    INSTALLED="/usr/bin/$BINARY_NAME"
 }
 
 apt_with_fallback() {
     if install_apt; then
         return
     fi
-
-    echo ""
-    echo "-------------------------------------------------------"
-    echo " APT installation failed — falling back to tarball"
-    echo "-------------------------------------------------------"
-
-    FALLBACK_FILENAME="${BINARY_NAME}-${VERSION}-${ARCH}.tar.gz"
-
-    if [ -t 0 ] && [ "$ASSUME_YES" != true ]; then
-        printf "Continue with tarball install? [Y/n]: "
-        read -r response
-        case "$response" in
-            [nN][oO]|[nN])
-                echo "Installation cancelled."
-                exit 1
-                ;;
-        esac
-    else
-        echo "Non-interactive mode: proceeding with tarball install automatically."
+    say ""
+    say "The apt install failed."
+    if ! ask "Install the release archive into /usr/local instead? [Y/n]" y; then
+        fail "stopped"
     fi
-
-    echo "Installing $BINARY_NAME $VERSION for $OS ($CANONICAL_ARCH)"
-    download_tarball "$FALLBACK_FILENAME"
     install_tarball
 }
 
-# --- Download & Install ---
+install_rpm() {
+    package="datui-$VERSION-1.$ARCH.rpm"
+    has_asset "$package" || fail "release $TAG has no $package. Build it with: cargo install datui --locked"
+    download "$package"
+    say "Installing with dnf (sudo)..."
+    run_priv dnf install -y "$TMP_DIR/$package"
+    INSTALLED="/usr/bin/$BINARY_NAME"
+}
 
-# Download (skip when using APT repository)
-if [ "$FORMAT" != "apt" ]; then
-    echo "Installing $BINARY_NAME $VERSION for $OS ($CANONICAL_ARCH)"
-    download_tarball "$FILENAME"
-fi
+finish() {
+    if ! installed_version=$("$INSTALLED" --version 2>&1); then
+        say "$installed_version" >&2
+        fail "$INSTALLED is installed but does not run. On Linux it needs glibc $MIN_GLIBC or newer: run 'getconf GNU_LIBC_VERSION'"
+    fi
+    say ""
+    say "--- $installed_version installed at $INSTALLED ---"
+    say ""
+    if [ "$USER_INSTALL" = true ]; then
+        case ":$PATH:" in
+            *":$USER_BIN_DIR:"*) ;;
+            *)
+                say "$USER_BIN_DIR is not on your PATH. Add it in your shell's startup file, for example:"
+                say "  export PATH=\"$USER_BIN_DIR:\$PATH\""
+                say ""
+                ;;
+        esac
+    fi
+    say "Start with: $BINARY_NAME --help"
+    say "The manual: man $BINARY_NAME"
+}
 
-# Install based on format
-case "$FORMAT" in
-    apt)
-        apt_with_fallback
-        ;;
-    rpm)
-        echo "Installing via dnf..."
-        run_priv dnf install $NONINTERACTIVE "$TMP_DIR/$FILENAME"
-        ;;
-    tar.gz)
-        install_tarball
-        ;;
-esac
-
-INSTALLED="$BINARY_NAME"
-if [ "$USER_INSTALL" = true ]; then
-    INSTALLED="$USER_BIN_DIR/$BINARY_NAME"
-fi
-
-echo ""
-echo "--- $("$INSTALLED" --version) installed successfully! ---"
-echo ""
-if [ "$USER_INSTALL" = true ]; then
-    case ":$PATH:" in
-        *":$USER_BIN_DIR:"*) ;;
-        *)
-            echo "$USER_BIN_DIR is not on your PATH. Add it, for example in ~/.bashrc:"
-            echo "  export PATH=\"$USER_BIN_DIR:\$PATH\""
-            echo ""
-            ;;
+main() {
+    parse_args "$@"
+    detect_system
+    offer_aur
+    TMP_DIR=$(mktemp -d)
+    trap cleanup EXIT
+    resolve_release
+    choose_format
+    say "Installing $BINARY_NAME $VERSION for $OS/$ARCH"
+    case "$FORMAT" in
+        apt) apt_with_fallback ;;
+        rpm) install_rpm ;;
+        tarball) choose_archive; install_tarball ;;
     esac
-fi
-echo "For instructions, see: $BINARY_NAME --help"
-# if linux or macos, suggest the man page
-if [ "$OS" = "linux" ] || [ "$OS" = "macos" ]; then
-    echo "For the manpage, run: man $BINARY_NAME"
-fi
+    finish
+}
+
+main "$@"

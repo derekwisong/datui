@@ -3,6 +3,12 @@
 datui runs on Linux, macOS and Windows. Pick one method, check it with
 `datui --version`, then go on to the [quick start](quick-start.md).
 
+| System | Needs |
+|---|---|
+| Linux | glibc 2.28 or newer, on x86_64 or arm64: Debian 10, Ubuntu 20.04, RHEL 8 and later, and their derivatives. Alpine and other musl systems: [build from source](#from-source) |
+| macOS | 10.12 on Intel, 11 on Apple silicon |
+| Windows | Windows 10 or newer, x64 |
+
 ## Linux and macOS, one line
 
 <!-- generated: install-script -->
@@ -11,9 +17,27 @@ curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/inst
 ```
 <!-- end generated: install-script -->
 
-The script downloads the latest release for your platform and installs it: a
-`.deb` on Debian and Ubuntu, an `.rpm` on Fedora and RHEL, the binary elsewhere.
-Package-manager and binary-download options are below.
+The script installs the latest release for your platform:
+
+| System | What it does |
+|---|---|
+| Debian, Ubuntu | Adds the [apt repository](#apt-repository) and its signing key with `sudo`, then installs the package with apt; `apt upgrade` keeps it current |
+| Fedora, RHEL, Amazon Linux | Downloads the release's `.rpm` and installs it with `dnf` |
+| Other Linux, macOS | Unpacks the release archive: `datui` into `/usr/local/bin`, the manual pages into `/usr/local/share/man` |
+
+It checks each download against the release's `SHA256SUMS`, asks before it
+changes apt (with no terminal to ask on, it goes ahead), and runs the installed
+binary before it reports success. Options go after `sh -s --`:
+
+| Option | Effect |
+|---|---|
+| `--user` | Install into `~/.local/bin` (or `$XDG_BIN_HOME`) without root; the default where there is no `sudo` |
+| `-y`, `--yes` | Answer yes to every question |
+| `--no-verify` | Install without checking the download against `SHA256SUMS` |
+| `-h`, `--help` | Print the options and exit without installing |
+
+Package-manager and binary-download options are below; [Uninstall](#uninstall)
+says how to remove each.
 
 ### Without root
 
@@ -45,6 +69,9 @@ the release, as [below](#pre-built-binaries).
 
 Homebrew needs `brew trust` before it will install from a third-party tap. The
 pip package installs the `datui` command and the [Python module](../user-guide/python-module.md).
+`cargo install` compiles datui, which takes a C compiler and some minutes; with
+[cargo-binstall](https://github.com/cargo-bins/cargo-binstall) installed,
+`cargo binstall datui` fetches the release archive for your platform instead.
 
 ### Apt repository
 
@@ -63,11 +90,24 @@ After that, `apt upgrade` keeps datui current.
 
 ## Pre-built binaries
 
-Every release on [GitHub][latest-release] carries binaries for Linux (x86_64
-and arm64), macOS (Intel and Apple silicon) and Windows, plus `.deb`, `.rpm`
-and Arch tarballs.
-Download, unpack, and put `datui` somewhere on your `PATH`. To install a
-package instead, replace `<VERSION>` with the release's version, such as `0.4.0`:
+Every release on [GitHub][latest-release] carries these, with a `SHA256SUMS`
+file and its Sigstore signature. `<VERSION>` is the release's version, such as
+`0.4.0`:
+
+| Asset | For |
+|---|---|
+| `datui-v<VERSION>-x86_64-unknown-linux-gnu.tar.gz` | Linux x86_64, glibc 2.28 or newer |
+| `datui-v<VERSION>-aarch64-unknown-linux-gnu.tar.gz` | Linux arm64, glibc 2.28 or newer |
+| `datui_<VERSION>-1_amd64.deb`, `datui_<VERSION>-1_arm64.deb` | Debian, Ubuntu |
+| `datui-<VERSION>-1.x86_64.rpm`, `datui-<VERSION>-1.aarch64.rpm` | Fedora, RHEL |
+| `datui-v<VERSION>-aarch64-apple-darwin.tar.gz` | macOS, Apple silicon |
+| `datui-v<VERSION>-x86_64-apple-darwin.tar.gz` | macOS, Intel |
+| `datui-v<VERSION>-x86_64-pc-windows-msvc.zip` | Windows |
+| `PKGBUILD` | The AUR package's build file |
+| `datui-<VERSION>-cp38-abi3-*.whl` | The Python wheels PyPI serves |
+
+An archive holds `datui`, `LICENSE`, `man/` and `completions/`. Unpack one and
+put `datui` somewhere on your `PATH`, or install a package:
 
 ```bash,template
 sudo apt install ./datui_<VERSION>-1_amd64.deb
@@ -154,5 +194,30 @@ winget install derekwisong.datui
 | Globs | cmd and PowerShell pass `*.csv` to datui as typed; quote it in Git Bash, as on Linux |
 | A file open in another program | A spreadsheet app or database that holds a file exclusively stops datui reading it: datui says so. Close it there and reopen |
 | A file datui has open | datui reads files through memory maps, and Windows lets no program truncate, rename or delete a file while it is mapped. A program rotating a log datui has open can fail; close it in datui first (<kbd>Ctrl+O</kbd> or <kbd>q</kbd>) |
+
+## Uninstall
+
+| Installed by | Remove with |
+|---|---|
+| The script, on Debian or Ubuntu | `sudo apt remove datui`; then `sudo rm /etc/apt/sources.list.d/datui.list /usr/share/keyrings/datui-archive-keyring.gpg` drops the repository |
+| The script, on Fedora, RHEL or Amazon Linux | `sudo dnf remove datui` |
+| The script, elsewhere | `sudo rm /usr/local/bin/datui /usr/local/share/man/man*/datui*` |
+| The script with `--user` | `rm ~/.local/bin/datui ~/.local/share/man/man*/datui*` |
+| A `.deb` or `.rpm` | `sudo apt remove datui` or `sudo dnf remove datui` |
+| WinGet | `winget uninstall derekwisong.datui` |
+| Homebrew | `brew uninstall datui`, then `brew untap derekwisong/datui` |
+| pip | `pip uninstall datui` |
+| cargo | `cargo uninstall datui` |
+| AUR | `paru -R datui-bin` |
+| An archive | Delete `datui` from where you put it |
+
+None of these touch your config, themes, saved views, cache or log. `datui
+config path` names the config files; the directories are:
+
+| | Config | Cache and log |
+|---|---|---|
+| Linux | `~/.config/datui` | `~/.cache/datui` |
+| macOS | `~/Library/Application Support/datui` | `~/Library/Caches/datui` |
+| Windows | `%APPDATA%\datui` | `%LOCALAPPDATA%\datui` |
 
 [latest-release]: https://github.com/derekwisong/datui/releases/latest

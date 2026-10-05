@@ -318,7 +318,7 @@ mod tests {
             &theme,
             10,
             ExportDefaults {
-                description: "delay, mean by month".to_string(),
+                description: "Mean by month".to_string(),
                 source: "NYC flights · CC0".to_string(),
                 legend: false,
             },
@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn the_chart_fills_the_words_and_legend_off_carries_over() {
         let modal = opened();
-        assert_eq!(modal.description_input.value(), "delay, mean by month");
+        assert_eq!(modal.description_input.value(), "Mean by month");
         assert_eq!(modal.source_input.value(), "NYC flights · CC0");
         assert_eq!(modal.legend, LegendPlace::Off);
         assert_eq!(modal.fields().len(), FIELDS.len());

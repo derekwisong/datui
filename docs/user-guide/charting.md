@@ -27,10 +27,13 @@ the options. A shelf the type does not use stays in place, dimmed, with why
 | **Y** | A column, several on a line or scatter (one series each); on a histogram, count or share | On a line, scatter or bar, the **Aggregate** row, and cumulative when it is on |
 | **Color** | A category column: one series per value | Which values: `top 7 of 16 by rows`, `all 3`, `3 picked of 4,812` |
 
-The plot's title line says what is charted and how: `delay · mean by month,
-cumulative, by carrier`. When it would only name the Y column, which the y
-axis's title already does, it is left blank. An export's description still
-starts from it.
+The plot's title row says how the chart is made of the rows: `mean by month,
+running sum, colored by carrier`, `count per bin`, `one box per carrier`. The
+columns are named at their axes, the Y column over the y axis and X under the
+x axis at the right, so the title row is blank for a plain line or scatter. At
+its right end, dimmed, the chart says what it read: `sample of 10,000 of 337k
+rows`, `1,207 values outside p1-p99`. When the row is too narrow for both, the
+notes are cut with `…`, or left out.
 
 ## Plot two columns
 
@@ -61,7 +64,7 @@ dataset starts over.
 The **Aggregate** row under **Y**, on a line, scatter or bar: <kbd>←</kbd>
 <kbd>→</kbd> step through none, count, sum, mean, median, min and max. With
 one, the rows that share an X (and a color) are made one point, or one bar, over every row of the view, in one
-group-by in the background; the chart says how many rows under the plot (`all
+group-by in the background; the chart says how many rows in its title row (`all
 336,776 rows`, or `rows in the groups shown` under a color),
 and the footer `Grouping 337k rows...` while it runs. Without one, a
 chart samples, and says so.
@@ -184,7 +187,7 @@ The same sixteen bars as the mean above, F9 longest at 21.92 minutes.
 | More bars than rows | The bars that fit, then `+ 212 more` counting the rest |
 | Negative values | Bars grow left of zero |
 | A null category | Its own bar, labeled `∅` |
-| A null value | That category is left out and counted under the plot |
+| A null value | That category is left out and counted in the title row |
 
 A chart with no aggregate reads at most **Rows** rows, so a grouped result
 with more categories than that is sampled, and says so.
@@ -208,7 +211,7 @@ Each starts from the dataset of that name under **Public datasets**.
 
 | Option | What it does |
 |---|---|
-| **Rows** | Rows a chart without an aggregate reads. A larger table is sampled across all of it, and the chart says so under the plot: `sample of 10,000 of 3.5M rows`. Every row reads the whole view. A **Line** over a larger table is not sampled: see below |
+| **Rows** | Rows a chart without an aggregate reads. A larger table is sampled across all of it, and the chart says so at the right of the title row: `sample of 10,000 of 3.5M rows`. Every row reads the whole view. A **Line** over a larger table is not sampled: see below |
 | Aggregate | Reads every row, whatever the sample size |
 
 The sample is drawn as the [analysis tools](analysis-features.md#sampling)
@@ -224,7 +227,7 @@ size, draws an envelope instead: X is cut into half as many steps as the sample
 size, and each step draws its lowest and highest value, so every peak of a
 waveform or a long time series stays on the plot where a sample would miss it.
 Two streamed passes read the view: the rows and X's range, then each step. The
-chart says so under the plot: `min and max of 192M rows in 5,000 steps`.
+chart says so in its title row: `min and max of 192M rows in 5,000 steps`.
 Scatter keeps the sample, and so does a Line over Parquet read in place from
 S3, GCS or Azure, which the envelope would download whole twice.
 
@@ -265,7 +268,7 @@ existing file is overwritten, and a failed export leaves it as it was
 | **Style** | **Light**: white, with colors that stay apart for color-blind readers and in print. **Dark**: the terminal theme's colors. **Transparent**: Light with no background |
 | **Size** | A preset, below; typing **Width** or **Height** makes it **Custom** |
 | **Legend** | **Line ends**: each line named at its right end, the default for line and KDE charts (other charts take a legend at the top right). A corner, or **Off**. A chart whose legend is off exports with it off |
-| **Title**, **Description** | Over the chart. The description starts as what the chart is: `delay, mean by month, by carrier` |
+| **Title**, **Description** | Over the chart. The description starts as the title row's words, how the chart is made: `Mean by month, colored by carrier`; empty when it has none. The Y column is named over the plot's left edge, as on screen |
 | **Notes** | Under the chart, after what the chart says about its rows (a sample, values a range left out) |
 | **Source**, **Byline** | The last line: `Source: …` and the byline. Source starts from the catalog entry when the dataset came from one: its name, publisher and license |
 

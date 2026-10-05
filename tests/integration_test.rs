@@ -1178,7 +1178,17 @@ fn chart_export_dialog_presets_and_legend() {
         LegendPlace::Off,
         "legend off carries"
     );
-    assert_eq!(app.chart_export_modal.description_input.value(), "y");
+    // The description is how the chart was made; a plain line has none to say, and
+    // the figure names y at its axis.
+    assert_eq!(app.chart_export_modal.description_input.value(), "");
+    press(&mut app, KeyCode::Esc);
+    app.chart_modal.spec.encoding.y.aggregate = datui::chart_modal::Aggregate::Mean;
+    press(&mut app, KeyCode::Char('e'));
+    assert_eq!(
+        app.chart_export_modal.description_input.value(),
+        "Mean by x"
+    );
+    app.chart_modal.spec.encoding.y.aggregate = datui::chart_modal::Aggregate::None;
     // Size: Document -> Slide 16:9.
     datui::form::Form::focus(&mut app.chart_export_modal, ChartExportFocus::Size);
     press(&mut app, KeyCode::Left);

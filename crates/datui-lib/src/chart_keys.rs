@@ -141,15 +141,10 @@ impl App {
         }
     }
 
-    /// Open the export dialog, its words started from the chart: what it is, and
-    /// where its data comes from.
+    /// Open the export dialog, its words started from the chart: how it was made of
+    /// the rows, and where its data comes from. The figure names Y at its axis.
     fn open_chart_export(&mut self) {
-        let (main, sub) = self.chart_modal.title();
-        let description = if sub.is_empty() {
-            main
-        } else {
-            format!("{main}, {sub}")
-        };
+        let description = sentence_case(&self.chart_modal.how());
         self.chart_export_modal.open(
             &self.theme,
             self.history_limit,
@@ -308,6 +303,15 @@ impl App {
         if at.is_some() {
             self.chart_modal.cursor_x = at;
         }
+    }
+}
+
+/// `phrase` with its first letter capitalized, to start a sentence.
+fn sentence_case(phrase: &str) -> String {
+    let mut chars = phrase.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
     }
 }
 

@@ -41,11 +41,11 @@ pub const SERIES_COLORS: [&str; 7] = [
     "chart_1", "chart_2", "chart_3", "chart_4", "chart_5", "chart_6", "chart_7",
 ];
 
-/// What the chart area shows: the plot, the notes under it about its input, or the
+/// What the chart area shows: the plot, the notes over it about its input, or the
 /// reason it could not be prepared.
 pub struct ChartView<'a> {
     pub data: ChartRenderData<'a>,
-    /// One line each, dimmed under the plot: a sample, values a range left out.
+    /// Dimmed at the right of the title row: a sample, values a range left out.
     pub notes: Vec<String>,
     /// Preparing the selection failed; shown in place of an empty plot.
     pub error: Option<&'a str>,
@@ -589,32 +589,40 @@ fn render_picker(
     picker.render(list, buf, ctx);
 }
 
-/// The plot's title line: what is charted, and how it was made of the rows.
+/// The fewest cells the notes are cut to; with less room they are left out.
+const NOTE_MIN: usize = 8;
+
+/// The plot's title row: how the chart was made of the rows at the left, what it
+/// says of the rows it read (a sample, values left out) at the right. The columns
+/// are named at their axes. The how keeps its room; the notes are cut to what is
+/// left, or left out when hardly any is. A row with nothing to say stays blank, so
+/// the plot does not move when it gets something.
 fn render_title(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     modal: &ChartModal,
+    notes: &[String],
     ctx: &RenderContext,
 ) {
-    let (main, sub) = modal.title();
-    // With nothing said of how, the title is the Y column(s) alone, which the y
-    // axis's title already names just under it. The row stays, so the plot does
-    // not move when a step gives the title something to say. An export keeps it.
-    if main.is_empty() || sub.is_empty() {
+    let g = crate::glyphs::get();
+    let width = area.width as usize;
+    let how = cut(&modal.how(), width, g);
+    buf.set_string(
+        area.x,
+        area.y,
+        &how,
+        Style::default().fg(ctx.text_secondary),
+    );
+    let used = how.width();
+    // Two cells of air after the how.
+    let room = width.saturating_sub(if used > 0 { used + 2 } else { 0 });
+    let notes = notes.join(&format!(" {} ", g.middot));
+    if notes.is_empty() || room < NOTE_MIN.min(notes.width()) {
         return;
     }
-    let g = crate::glyphs::get();
-    let mut spans = vec![Span::styled(
-        main,
-        Style::default()
-            .fg(ctx.text_primary)
-            .add_modifier(Modifier::BOLD),
-    )];
-    if !sub.is_empty() {
-        spans.push(quiet(format!(" {} ", g.middot), ctx));
-        spans.push(Span::styled(sub, Style::default().fg(ctx.text_secondary)));
-    }
-    Paragraph::new(Line::from(spans)).render(area, buf);
+    let notes = cut(&notes, room, g);
+    let x = area.right() - notes.width() as u16;
+    buf.set_string(x, area.y, &notes, Style::default().fg(ctx.dimmed));
 }
 
 /// Renders the chart view: the panel, a rule, and the plot under its title.
@@ -646,9 +654,14 @@ pub fn render_chart_view(
         width: plot_area.width.saturating_sub(1),
         ..plot_area
     };
-    let [title, mut chart_inner] =
+    let [title, chart_inner] =
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(plot_area);
-    render_title(title, buf, modal, ctx);
+    let notes: &[String] = if view.error.is_some() {
+        &[]
+    } else {
+        &view.notes
+    };
+    render_title(title, buf, modal, notes, ctx);
 
     modal.plot = None;
     if let Some(message) = view.error {
@@ -658,29 +671,6 @@ pub fn render_chart_view(
             .centered()
             .render(chart_inner, buf);
     } else {
-        // The notes sit under the plot, where the axis ends, wrapped rather than cut on
-        // a narrow canvas: the plot gives up the rows, never the notes, so the chart
-        // cannot look whole when it is not.
-        let lines: Vec<Line> = view
-            .notes
-            .iter()
-            .map(|note| Line::styled(note.as_str(), Style::default().fg(ctx.dimmed)))
-            .collect();
-        let wrapped: usize = lines
-            .iter()
-            .map(|line| crate::render::home_view::wrapped_rows(line, chart_inner.width as usize))
-            .sum();
-        let note_rows = (wrapped as u16).min(chart_inner.height / 2);
-        if note_rows > 0 {
-            let [plot, notes] =
-                Layout::vertical([Constraint::Fill(1), Constraint::Length(note_rows)])
-                    .areas(chart_inner);
-            Paragraph::new(lines)
-                .right_aligned()
-                .wrap(Wrap { trim: true })
-                .render(notes, buf);
-            chart_inner = plot;
-        }
         match view.working {
             Some(working) if !view.data.draws_plot() => {
                 working.render_centered(chart_inner, buf, ctx)
@@ -1757,10 +1747,11 @@ fn render_heatmap_chart(
             Constraint::Length(HEATMAP_X_LABEL_HEIGHT),
         ])
         .split(area);
-    let title = format!("{} vs {}", data.x_column, data.y_column);
-    Paragraph::new(title)
-        .style(Style::default().fg(theme.get("text_primary")))
-        .render(layout[0], buf);
+    // The axes' titles sit as every plot's do: Y over its labels, X at the right
+    // under its own.
+    let title_style = Style::default().fg(theme.get("text_primary"));
+    let y_title = cut(&data.y_column, layout[0].width as usize, g);
+    buf.set_string(layout[0].x, layout[0].y, &y_title, title_style);
 
     const Y_LABEL_MAX: u16 = 12;
     // Nice values up the side, one per few rows, each on the row its value falls in.
@@ -1833,20 +1824,9 @@ fn render_heatmap_chart(
         buf.set_string(x, x_label_area.y, label, label_style);
     }
     if x_label_area.height > 1 {
-        // Each title keeps half the row when both do not fit, a space between them.
-        let x_title = format!("X: {}", data.x_column);
-        let y_title = format!("Y: {}", data.y_column);
-        let width = x_label_area.width as usize;
-        let (x_title, y_title) = if x_title.width() + y_title.width() < width {
-            (x_title, y_title)
-        } else {
-            let half = width.saturating_sub(1) / 2;
-            (cut(&x_title, half, g), cut(&y_title, half, g))
-        };
-        let row = x_label_area.y + 1;
-        buf.set_string(x_label_area.x, row, &x_title, label_style);
-        let y_x = x_label_area.right() - y_title.width() as u16;
-        buf.set_string(y_x, row, &y_title, label_style);
+        let x_title = cut(&data.x_column, x_label_area.width as usize, g);
+        let x = x_label_area.right() - x_title.width() as u16;
+        buf.set_string(x, x_label_area.y + 1, &x_title, title_style);
     }
 }
 
@@ -1997,31 +1977,35 @@ mod tests {
         assert_eq!(buf[(2, row)].fg, ctx.accent, "the focused label");
     }
 
-    /// The title says how the rows were made; when it would only repeat the Y
-    /// column, which the y axis's title names under it, it is not drawn.
+    /// The title row says only how the rows were made; the Y column is named once,
+    /// at its axis. With nothing to say the row is blank.
     #[test]
-    fn the_title_does_not_repeat_the_y_axis() {
+    fn the_title_says_how_and_y_is_named_at_its_axis() {
         let mut modal = open_modal();
         modal.set_mark(Mark::Scatter);
         modal.spec.encoding.x.field = Some("volume".to_string());
         modal.spec.encoding.y.field = vec!["price".to_string()];
-        let rows = render_rows(&mut modal, 100, 30);
         let plot = |r: &String| -> String { r.chars().skip(SIDEBAR_WIDTH as usize + 1).collect() };
-        let named: Vec<String> = rows
-            .iter()
-            .map(plot)
-            .filter(|r| r.contains("price"))
-            .collect();
-        assert_eq!(named.len(), 1, "price once, the y axis's title: {named:#?}");
-        assert!(plot(&rows[0]).trim().is_empty(), "{:?}", rows[0]);
-
+        let check = |modal: &mut ChartModal, how: &str| {
+            let rows = render_rows(modal, 100, 30);
+            assert_eq!(plot(&rows[0]).trim(), how, "{:?}", rows[0]);
+            let named: Vec<String> = rows
+                .iter()
+                .map(plot)
+                .filter(|r| r.contains("price"))
+                .collect();
+            assert_eq!(named.len(), 1, "price once, at its axis: {named:#?}");
+            assert_eq!(named[0].trim(), "price", "{named:#?}");
+        };
+        check(&mut modal, "");
+        modal.spec.encoding.color.field = Some("carrier".to_string());
+        check(&mut modal, "colored by carrier");
+        modal.spec.encoding.color.field = None;
         modal.spec.encoding.y.aggregate = Aggregate::Mean;
-        let rows = render_rows(&mut modal, 100, 30);
-        let g = crate::glyphs::get();
-        assert_eq!(
-            plot(&rows[0]).trim(),
-            format!("price {} mean by volume", g.middot)
-        );
+        check(&mut modal, "mean by volume");
+        modal.set_mark(Mark::Line);
+        modal.spec.encoding.y.cumulative = Cumulative::Sum;
+        check(&mut modal, "by volume, running sum");
     }
 
     /// A shelf the type does not use stays, dimmed, with why.
@@ -2123,13 +2107,15 @@ mod tests {
             .collect()
     }
 
-    /// A sampled or clipped chart says so under the plot, even at 80x24.
+    /// A sampled or clipped chart says so at the right of the title row, at 80x24
+    /// too; the bottom right holds only the X axis's title.
     #[test]
-    fn notes_sit_under_the_plot() {
+    fn notes_sit_at_the_title_rows_right() {
         let mut modal = open_modal();
         modal.spec.encoding.x.field = Some("price".to_string());
         modal.spec.encoding.y.field = vec!["volume".to_string()];
         let series = vec![vec![(0.0, 1.0), (1.0, 2.0)]];
+        let note = "sample of 10,000 of 3.5M rows";
         let rows = render_view(
             &mut modal,
             ChartView {
@@ -2142,24 +2128,27 @@ mod tests {
                     x_bounds: None,
                     numbers: PlotNumbers::default(),
                 },
-                notes: vec!["sample of 10,000 of 3.5M rows".to_string()],
+                notes: vec![note.to_string()],
                 error: None,
                 working: None,
                 schema: None,
             },
-            80,
+            120,
             24,
         );
+        assert!(rows[0].trim_end().ends_with(note), "{:?}", rows[0]);
+        assert!(rows[23].trim_end().ends_with("price"), "{:?}", rows[23]);
+        let canvas = |r: &String| r.chars().skip(42).collect::<String>();
         assert!(
-            rows[23].contains("sample of 10,000 of 3.5M rows"),
-            "{:?}",
-            rows[23]
+            rows[1..].iter().all(|r| !canvas(r).contains("sample")),
+            "{rows:#?}"
         );
     }
 
-    /// On a canvas narrower than a note, the note wraps; nothing of it is cut.
+    /// On a narrow canvas the how keeps its room and the notes are cut to the rest,
+    /// with the ellipsis.
     #[test]
-    fn notes_wrap_on_a_narrow_canvas() {
+    fn notes_give_way_to_the_how() {
         let mut modal = open_modal();
         modal.set_mark(Mark::Histogram);
         let notes = [
@@ -2178,18 +2167,19 @@ mod tests {
                 working: None,
                 schema: None,
             },
-            60,
+            100,
             20,
         );
-        // The canvas is the right half; read its last rows as one line of words.
-        let text = rows[14..]
-            .iter()
-            .map(|r| r.chars().skip(32).collect::<String>().trim().to_string())
-            .collect::<Vec<_>>()
-            .join(" ");
-        for note in notes {
-            assert!(text.contains(note), "{note:?} whole in {text:?}");
-        }
+        let g = crate::glyphs::get();
+        let title = rows[0].chars().skip(42).collect::<String>();
+        assert!(title.starts_with("count per bin  "), "{title:?}");
+        assert!(title.contains("sample of 1,000,000"), "{title:?}");
+        assert!(title.trim_end().ends_with(g.ellipsis), "{title:?}");
+        let canvas = |r: &String| r.chars().skip(42).collect::<String>();
+        assert!(
+            rows[1..].iter().all(|r| !canvas(r).contains("sample")),
+            "{rows:#?}"
+        );
     }
 
     /// A failed preparation shows its message where the plot would be.

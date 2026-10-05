@@ -1301,77 +1301,53 @@ impl ChartModal {
         Self::is_complete(&self.effective_spec())
     }
 
-    /// What the chart says it is: the measure, and how it was made of the rows.
-    /// `(arr_delay, "mean by month, cumulative, by symbol")`.
-    pub fn title(&self) -> (String, String) {
+    /// How the chart was made of the rows, as a phrase that stands alone: `mean by
+    /// month, running sum, colored by carrier`; empty when there is nothing to say.
+    /// The columns charted are named at their axes, not here.
+    pub fn how(&self) -> String {
         let spec = self.effective_spec();
         let encoding = &spec.encoding;
         let x = encoding.x.field.clone().unwrap_or_default();
-        let y = encoding.y.field.join(", ");
         let mut parts: Vec<String> = Vec::new();
-        let by_color = self
-            .colored()
-            .then(|| format!("by {}", self.color().unwrap()));
-        let main = match spec.mark {
-            Mark::Histogram => {
-                parts.push(if self.share {
-                    "share per bin".to_string()
-                } else {
-                    "count per bin".to_string()
-                });
-                x
-            }
-            Mark::Kde => {
-                parts.push("density".to_string());
-                x
-            }
-            Mark::Box => {
-                if !x.is_empty() {
-                    parts.push(format!("by {x}"));
-                }
-                y
-            }
-            Mark::Heatmap => {
-                parts.push(format!("against {x}"));
-                y
-            }
+        match spec.mark {
+            Mark::Histogram => parts.push(if self.share {
+                "share per bin".to_string()
+            } else {
+                "count per bin".to_string()
+            }),
+            // The y axis already says density.
+            Mark::Kde => {}
+            Mark::Box if !x.is_empty() => parts.push(format!("one box per {x}")),
+            Mark::Box => {}
+            Mark::Heatmap => parts.push("rows per cell".to_string()),
             Mark::Line | Mark::Scatter | Mark::Bar => {
                 let aggregate = encoding.y.aggregate;
-                let main = if aggregate == Aggregate::Count {
-                    "rows".to_string()
-                } else {
-                    y
-                };
                 let mut how = String::new();
                 // Cumulative runs over the rows, not the aggregate.
-                if !matches!(aggregate, Aggregate::None | Aggregate::Count)
-                    && encoding.y.cumulative == Cumulative::Off
-                {
+                if aggregate != Aggregate::None && encoding.y.cumulative == Cumulative::Off {
                     how.push_str(aggregate.label());
                     how.push(' ');
                 }
                 let unit = encoding.x.time_unit;
                 if unit != TimeUnit::None {
                     how.push_str(&format!("by {}", unit.label()));
-                } else if aggregate != Aggregate::None || spec.mark == Mark::Bar {
+                } else if aggregate != Aggregate::None {
                     how.push_str(&format!("by {x}"));
                 }
                 if !how.trim().is_empty() {
                     parts.push(how.trim().to_string());
                 }
-                if encoding.y.cumulative != Cumulative::Off {
-                    parts.push(match encoding.y.cumulative {
-                        Cumulative::Compound => "compounded".to_string(),
-                        _ => "cumulative".to_string(),
-                    });
+                match encoding.y.cumulative {
+                    Cumulative::Off => {}
+                    Cumulative::Sum => parts.push("running sum".to_string()),
+                    Cumulative::Compound => parts.push("compounded".to_string()),
                 }
-                main
             }
-        };
-        if let Some(by) = by_color {
-            parts.push(by);
         }
-        (main, parts.join(", "))
+        if self.colored() {
+            parts.push(format!("colored by {}", self.color().unwrap()));
+        }
+        parts.join(", ")
     }
 }
 
@@ -1657,13 +1633,35 @@ mod tests {
         modal.step(ChartFocus::TimeUnit, 3);
         modal.spec.encoding.y.cumulative = Cumulative::Sum;
         modal.spec.encoding.color.field = Some("carrier".to_string());
-        assert_eq!(
-            modal.title(),
-            (
-                "delay".to_string(),
-                "by month, cumulative, by carrier".to_string()
-            )
-        );
+        assert_eq!(modal.how(), "by month, running sum, colored by carrier");
+    }
+
+    /// Each type's phrase reads alone and never names the Y column, which its axis
+    /// names.
+    #[test]
+    fn the_how_names_no_y_column() {
+        let mut modal = open_on(Some(("date", &DataType::Date)));
+        modal.step(ChartFocus::TimeUnit, 3);
+        assert_eq!(modal.how(), "mean by month");
+        modal.set_mark(Mark::Scatter);
+        modal.spec.encoding.x.time_unit = TimeUnit::None;
+        modal.spec.encoding.y.aggregate = Aggregate::None;
+        assert_eq!(modal.how(), "");
+        modal.spec.encoding.color.field = Some("carrier".to_string());
+        assert_eq!(modal.how(), "colored by carrier");
+        modal.spec.encoding.color.field = None;
+        modal.spec.encoding.y.aggregate = Aggregate::Mean;
+        assert_eq!(modal.how(), "mean by date");
+        modal.set_mark(Mark::Histogram);
+        assert_eq!(modal.how(), "count per bin");
+        modal.set_mark(Mark::Kde);
+        assert_eq!(modal.how(), "");
+        modal.set_mark(Mark::Heatmap);
+        assert_eq!(modal.how(), "rows per cell");
+        for mark in Mark::ALL {
+            modal.set_mark(mark);
+            assert!(!modal.how().contains("delay"), "{mark:?}: {}", modal.how());
+        }
     }
 
     /// Reopening from the same column on the same dataset keeps the chart; another

@@ -1,28 +1,74 @@
 # Build and publish packages
 
 `scripts/packaging/build_package.py` builds a Debian/Ubuntu `.deb`, a
-Fedora/RHEL `.rpm` or an Arch Linux AUR package, from the repository root:
+Fedora/RHEL `.rpm`, the release tarball, or the tarball and the Arch Linux
+AUR package's `PKGBUILD`, from the repository root:
 
 ```bash,repo
 python3 scripts/packaging/build_package.py deb
 python3 scripts/packaging/build_package.py rpm
+python3 scripts/packaging/build_package.py tarball
 python3 scripts/packaging/build_package.py aur
 ```
 
 It runs `cargo build --release`, stages the manpages and shell completions in
 `target/dist` (below), runs the packaging tool and prints where the package
-went. Install the tools as needed:
+went. The tarball and the PKGBUILD need no tool; the others:
 
 ```bash,repo
 cargo install cargo-deb
 cargo install cargo-generate-rpm
-cargo install cargo-aur
 ```
 
 | Option | Effect |
 |---|---|
-| `--no-build` | Skip `cargo build --release`; the release artifacts must exist |
+| `--no-build` | Skip `cargo build --release`; `target/release/datui` must exist. The release puts its glibc 2.28 build there (below) |
 | `--repo-root PATH` | The repository root, when not the one `git` finds |
+
+## Linux builds and glibc
+
+A binary built on a machine needs that machine's glibc or newer, so one built on
+the Ubuntu 24.04 runner failed on Ubuntu 22.04, Debian 12, RHEL 9 and Amazon
+Linux 2023. The release builds the Linux binaries with
+[cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild): zig links them
+against glibc 2.28 (`--target x86_64-unknown-linux-gnu.2.28`), the oldest a
+supported distribution ships (Debian 10, Ubuntu 20.04, RHEL 8), whatever the
+runner has. liblzma is compiled in (`xz2`'s `static` feature), as zstd, bzip2,
+zlib and SQLite already were, so the binary needs nothing beyond glibc. The
+wheels' extension is built the same way, as `manylinux_2_28` wheels, for x86_64
+and arm64. `scripts/requirements-release.txt` pins zig, cargo-zigbuild and
+maturin; the Nightly workflow builds the same way, so its cache serves the
+release. To build one yourself:
+
+```bash,repo
+pip install -r scripts/requirements-release.txt
+cargo zigbuild --release --locked -p datui --target x86_64-unknown-linux-gnu.2.28
+install -D target/x86_64-unknown-linux-gnu/release/datui target/release/datui
+python3 scripts/packaging/build_package.py deb --no-build
+```
+
+`scripts/packaging/check_linux_release.py` is the release gate, which `publish`
+waits on. `symbols BINARY...` fails on any `GLIBC_` symbol version above 2.28,
+or a `NEEDED` library beyond glibc and libgcc_s, in the tarball's binary, the
+wheel's copy of it and the wheel's extension. `smoke DIR` runs the tarball's
+binary and installs the `.deb` or `.rpm` on Ubuntu 20.04 and 22.04, Debian 11
+and 12, Rocky 8 and 9 and Amazon Linux 2023, in docker, on x86_64 and arm64
+runners; `datui --version`, then `datui formats check` over a CSV, which reads
+the file and exits.
+
+The `.deb` takes its `Depends` from dpkg-shlibdeps (`$auto`) and the `.rpm` its
+`Requires` from ldd, so each names `libc.so.6(GLIBC_2.28)` and the package
+managers refuse an older system instead of installing a binary that cannot load.
+
+The archives are named by target triple, `datui-vX.Y.Z-TRIPLE.tar.gz` and
+`.zip`, with `datui` at the root; `[package.metadata.binstall]` in `Cargo.toml`
+tells `cargo binstall` so. `install.sh`, the Homebrew formula, the PKGBUILD,
+`publish-packages.yml`'s winget regex and Nightly's startup guard all read these
+names; change them together.
+
+`Release` runs by hand (Actions → Release → Run workflow) as a dry run from any
+branch: every build and the gate, no fuzz replay, no docs, and nothing
+published. Run one before a tag depends on a change to the builds.
 
 ## Manpages and completions
 
@@ -45,8 +91,8 @@ date is `crates/datui-cli/release-date.txt`, which `bump_version.py` sets.
 |---|---|---|---|
 | deb | `/usr/share/man/man{1,5,7}`, gzipped | bash, zsh (`vendor-completions`), fish | `build_package.py` (`target/dist`) |
 | rpm | `/usr/share/man/man{1,5,7}`, gzipped | bash, zsh (`site-functions`), fish | `build_package.py` |
-| AUR | `/usr/share/man/man{1,5,7}` (makepkg gzips them) | bash, zsh, fish | `build_package.py` adds `man/` and `completions/` to the tarball and their `install` lines to the PKGBUILD |
-| Linux and macOS archives | `man/manN/` | `completions/` | `release.yml`; `install.sh` installs the pages |
+| AUR | `/usr/share/man/man{1,5,7}` (makepkg gzips them) | bash, zsh, fish | `PKGBUILD.in`, from the Linux x86_64 tarball |
+| Linux and macOS archives | `man/manN/` | `completions/` | `build_package.py tarball` and `release.yml`; `install.sh` installs the pages |
 | Windows zip | `man/manN/` | `completions/` (`_datui.ps1`) | `release.yml` |
 | Homebrew | `man1`, `man5`, `man7` | bash, zsh, fish | the formula, from the macOS archive |
 | PyPI wheel | `<prefix>/share/man/manN/` | none | `scripts/packaging/wheel_manpages.py` (Linux and macOS wheels) |
@@ -63,7 +109,7 @@ All packages include the MIT license as required:
 
 - **deb**: `[package.metadata.deb]` sets `license-file = ["LICENSE", "0"]`; cargo-deb installs it in the package.
 - **rpm**: `[[package.metadata.generate-rpm.assets]]` includes `LICENSE` at `/usr/share/licenses/datui/LICENSE`.
-- **aur**: `[package.metadata.aur]` `files` includes `["LICENSE", "/usr/share/licenses/datui/LICENSE"]`.
+- **aur**: `scripts/packaging/PKGBUILD.in` installs the tarball's `LICENSE` at `/usr/share/licenses/datui-bin/LICENSE`.
 - **desktop entry**: `scripts/packaging/datui.desktop` installs to
   `/usr/share/applications/datui.desktop` in all three package formats, putting
   datui in desktop launchers. `tests/desktop_entry_test.rs` validates the file and
@@ -76,14 +122,15 @@ All packages include the MIT license as required:
 |---------|-----------------|------------------|
 | deb | `target/debian/` | `datui_X.Y.Z-1_amd64.deb` |
 | rpm | `target/generate-rpm/` | `datui-X.Y.Z-1.x86_64.rpm` |
-| aur | `target/cargo-aur/` | `PKGBUILD`, `datui-X.Y.Z-x86_64.tar.gz` |
+| tarball | `target/tarball/` | `datui-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz`, named for the host's triple |
+| aur | `target/aur/` | `PKGBUILD`, filled in from `scripts/packaging/PKGBUILD.in` with the tarball's sha256 |
 
 ## CI and releases
 
 | Workflow | Packages |
 |---|---|
-| Nightly (`nightly.yml`) | Builds the `.deb`, `.rpm`, AUR tarball and wheel from `main`, kept as the run's artifacts |
-| Release (`release.yml`) | Attaches the `.deb`, `.rpm` and Arch `.tar.gz` to the GitHub release |
+| Nightly (`nightly.yml`) | Builds the `.deb`, `.rpm`, tarball, PKGBUILD and wheel from `main`, kept as the run's artifacts |
+| Release (`release.yml`) | Attaches the `.deb`, `.rpm`, tarball, PKGBUILD and wheel for Linux x86_64 and arm64, the macOS tarballs and wheels, the Windows zip and wheel, and `SHA256SUMS` with its signature, to the GitHub release, once the Linux gate passes |
 
 Release publishing requires every committed fuzz corpus to pass an AddressSanitizer
 replay on the tagged commit, regardless of the latest Nightly result.
@@ -113,7 +160,7 @@ replacing `<VERSION>` and `<AUR_REPO>` (a clone of `datui-bin` from the AUR):
 git checkout v<VERSION>
 cargo build --release --locked
 python3 scripts/packaging/build_package.py aur --no-build
-cd target/cargo-aur
+cd target/aur
 makepkg --printsrcinfo > .SRCINFO
 cp PKGBUILD .SRCINFO <AUR_REPO>/
 cd <AUR_REPO>
@@ -141,9 +188,9 @@ If these secrets are not set, the "Publish to AUR" step will fail. To disable au
 
 ## PyPI
 
-The release workflow builds Linux x86_64, Windows x86_64 and macOS ARM64/x86_64
-wheels with maturin. Each contains the Python extension and a bundled datui
-binary. Linux ARM64 currently has a standalone binary but no wheel.
+The release workflow builds Linux x86_64 and arm64 (`manylinux_2_28`),
+Windows x86_64 and macOS ARM64/x86_64 wheels with maturin. Each contains the
+Python extension and a bundled datui binary.
 
 After the GitHub release is created, `publish-packages.yml` downloads the wheels
 and uploads them with twine using `PYPI_API_TOKEN`. The workflow also accepts a

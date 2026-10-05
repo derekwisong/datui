@@ -144,6 +144,56 @@ fn journal_json_is_known_from_a_pipe() {
     assert_eq!(df.get_column_names()[0].as_str(), "time");
 }
 
+/// A journal piped in larger than the first rows shown, as `journalctl -o json -n
+/// 1000 | datui` sends: it shows its rows and reads on to the end.
+#[test]
+fn a_large_journal_from_a_pipe_shows_its_rows() {
+    let fixture = std::fs::read(FIXTURE).unwrap();
+    let bytes: Vec<u8> = std::iter::repeat_n(fixture.as_slice(), 300)
+        .flatten()
+        .copied()
+        .collect();
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    let writer = std::thread::spawn(move || producer.write_all(&bytes));
+    let (mut app, rx, tx) = app();
+    app.read_stdin_from(reader);
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("-")],
+        OpenOptions::default(),
+    );
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    assert_eq!(frame(&app).get_column_names()[..2], ["time", "level"]);
+    let _ = writer.join();
+}
+
+/// NDJSON piped in, larger than the first rows: read to its end and shown whole, never
+/// cut mid-object.
+#[test]
+fn a_large_ndjson_pipe_shows_every_row() {
+    let bytes: Vec<u8> = (0..5_000)
+        .flat_map(|i| {
+            format!("{{\"id\": {i}, \"note\": \"{}\"}}\n", "x".repeat(i % 40)).into_bytes()
+        })
+        .collect();
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    let writer = std::thread::spawn(move || producer.write_all(&bytes));
+    let (mut app, rx, tx) = app();
+    app.read_stdin_from(reader);
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("-")],
+        OpenOptions::default(),
+    );
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    assert_eq!(frame(&app).height(), 5_000);
+    let _ = writer.join();
+}
+
 /// A field first seen after a thousand entries is a column too.
 #[test]
 fn a_field_first_seen_late_is_a_column() {

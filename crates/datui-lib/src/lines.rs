@@ -1121,8 +1121,11 @@ mod tests {
     }
 
     /// A file that shrinks while it is indexed stops the indexing where it is, and a
-    /// read of every line says so rather than taking the lines so far for all.
+    /// read of every line says so rather than taking the lines so far for all. Unix
+    /// only: Windows refuses to shorten a file another handle has mapped (os error
+    /// 1224), so a rotation there fails in the rotating process, not here.
     #[test]
+    #[cfg(unix)]
     fn a_file_that_shrinks_while_indexed_has_no_count() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("rotated.log");

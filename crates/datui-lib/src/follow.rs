@@ -2011,8 +2011,16 @@ pub(crate) fn spool<R: Read + Send + 'static>(
         ..options
     };
     if progressive {
-        let read_on = followed_stream(&path, options.format, &options)
-            || refusal(options.format, &options).is_none();
+        // Not JSON lines (NDJSON, the journal): a read of the whole of a stream still
+        // sending ends mid-object, which does not parse, and the journal's summary
+        // reads the whole of it at once. Those are read to the end first.
+        let json = matches!(
+            options.format,
+            Some(FileFormat::Jsonl | FileFormat::Journal)
+        );
+        let read_on = !json
+            && (followed_stream(&path, options.format, &options)
+                || refusal(options.format, &options).is_none());
         if read_on {
             return Ok((
                 spooled,

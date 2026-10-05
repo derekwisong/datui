@@ -31,7 +31,8 @@ printf 'id,amount\n1,9.50\n' > sales.csv && datui - < sales.csv
   [charts](charting.md) opened meanwhile keep the rows they opened on, and
   <kbd>t</kbd> there reads the new ones, as for `--follow`.
 - What cannot be read before it is finished (Parquet, an Arrow IPC file,
-  Excel, a compressed stream) is read to its end first; the loading screen
+  Excel, a compressed stream), and NDJSON and journal JSON, whose last object
+  is cut off until it ends, are read to the end first; the loading screen
   counts the bytes.
 - The data is written to a temporary file in `spool` under the cache
   directory as it arrives, not the system temp directory (memory on many

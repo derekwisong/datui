@@ -49,9 +49,10 @@ Each line names its key, and running it presses that key on the cell.
 | Click a row of a list (a sort, a filter, a column in Sort & Filter) | Focuses it; a second click acts as <kbd>Space</kbd> |
 | Right-click a choice | Steps it back, as <kbd>←</kbd> does; on any other field, only focuses it |
 | Click a line of an open picker | Chooses it (flips it, in a list of checkboxes) |
-| Click a value in a list beside its field (export formats) | Chooses it |
+| Click a value in a list beside its field (export formats, compression) | Chooses it |
 | Click a tab | Switches to it |
 | Wheel over an open picker | Moves through its lines |
+| Click a key in a dialog's footer (`Esc Cancel`) | Presses it; over help, an error or a question, only its footer's keys take clicks |
 | Click outside a dialog | Nothing |
 
 ## In the footer

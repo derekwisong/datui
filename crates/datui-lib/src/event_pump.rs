@@ -1387,6 +1387,42 @@ mod tests {
         assert_eq!(cell(&p), (Some(0), Some("name".to_string())));
     }
 
+    /// A dialog's footer chips press their keys as the status footer's do: Esc
+    /// Cancel closes the export form, and over a question only its own chips take
+    /// clicks.
+    #[test]
+    fn a_dialog_s_footer_chips_press_their_keys() {
+        let (mut p, _dir) = loaded_pump();
+        p.send(AppEvent::Terminal(Event::Key(plain(KeyCode::Char('e')))))
+            .unwrap();
+        settle(&mut p);
+        assert!(p.app.export_modal.active);
+        let cancel = on_screen(&mut p.app, "Cancel");
+        assert!(p.terminal_mouse(click(cancel)).unwrap());
+        settle(&mut p);
+        assert!(!p.app.export_modal.active, "Esc Cancel closed the form");
+
+        // A question: its Cancel chip answers it; a click beside it does nothing.
+        p.app.confirmation_modal.show("Delete it?".to_string());
+        p.terminal_mouse(click((0, 2))).unwrap();
+        settle(&mut p);
+        assert!(p.app.confirmation_modal.active, "outside the question");
+        let cancel = on_screen(&mut p.app, "Cancel");
+        p.terminal_mouse(click(cancel)).unwrap();
+        settle(&mut p);
+        assert!(!p.app.confirmation_modal.active, "its Esc chip answered it");
+
+        // Help's own footer: Esc Close.
+        p.send(AppEvent::Terminal(Event::Key(plain(KeyCode::Char('?')))))
+            .unwrap();
+        settle(&mut p);
+        assert!(p.app.help_visible());
+        let close = on_screen(&mut p.app, "Close");
+        p.terminal_mouse(click(close)).unwrap();
+        settle(&mut p);
+        assert!(!p.app.help_visible(), "help's Close chip closed it");
+    }
+
     /// Mouse events reach the app through the channel, in order with the keys typed
     /// around them, as `run()` reads them.
     #[test]

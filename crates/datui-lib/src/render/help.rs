@@ -213,6 +213,8 @@ fn frame(area: Rect, two: bool, content_height: u16) -> Rect {
 /// Draw the help over `area`. The scroll is kept so the selected key is in view and
 /// written back to `help`.
 pub fn render_help(area: Rect, buf: &mut Buffer, help: &mut Help, ctx: &RenderContext) {
+    // Help owns the clicks over the view: only its footer's keys take them.
+    crate::pointer::record(area, crate::pointer::Hit::Modal);
     let blocks = help.blocks();
     let shown = key_count(&blocks);
     if shown > 0 {

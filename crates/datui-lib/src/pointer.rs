@@ -149,6 +149,9 @@ pub enum Hit {
     Tool(usize),
     /// Something a key names, a chart kind's tab (`1`-`6`): a click presses it.
     Key(KeyEvent),
+    /// A dialog's footer chip: a click presses its key, even while a picker or an
+    /// editor has the other clicks, or a question is up.
+    Chip(KeyEvent),
     /// A line of the context menu.
     MenuItem(usize),
     /// The context menu's frame.
@@ -377,7 +380,9 @@ impl Pointing {
             .any(|(_, hit)| matches!(hit, Hit::Picker | Hit::Editor));
         hits.iter()
             .rev()
-            .filter(|(_, hit)| !open || matches!(hit, Hit::Picker | Hit::PickerItem { .. }))
+            .filter(|(_, hit)| {
+                !open || matches!(hit, Hit::Picker | Hit::PickerItem { .. } | Hit::Chip(_))
+            })
             .find(|(rect, _)| rect.contains(at))
             .map(|(_, hit)| hit)
     }
@@ -503,7 +508,7 @@ fn click_hit(hit: &Hit, back: bool) -> Pointer {
             Pointer::Keys(keys)
         }
         Hit::Tool(i) => Pointer::Tool(*i),
-        Hit::Key(key) => Pointer::Keys(vec![*key]),
+        Hit::Key(key) | Hit::Chip(key) => Pointer::Keys(vec![*key]),
         Hit::MenuItem(i) => Pointer::MenuChoose(*i),
         Hit::Picker | Hit::Editor | Hit::Menu | Hit::Modal => Pointer::Nothing,
     }
@@ -743,9 +748,13 @@ impl App {
             self.pointer.last_click = None;
             return Pointer::Keys(vec![key]);
         }
+        // Over help, an error or a question, only its footer's keys take clicks.
         if self.dialog_over_all() {
             self.pointer.last_click = None;
-            return Pointer::Nothing;
+            return match self.pointer.hit_at(at) {
+                Some(Hit::Chip(key)) => Pointer::Keys(vec![*key]),
+                _ => Pointer::Nothing,
+            };
         }
         if let Some(hit) = self.pointer.hit_at(at).cloned() {
             self.pointer.last_click = None;

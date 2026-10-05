@@ -49,6 +49,9 @@ pub fn render_confirmation_modal(
     modal: &mut crate::ConfirmationModal,
     ctx: &RenderContext,
 ) {
+    // A question owns the screen: a click outside it does nothing, and its own
+    // footer keys, drawn after, take theirs.
+    crate::pointer::record(area, crate::pointer::Hit::Modal);
     let g = crate::glyphs::get();
     let footer = confirmation_keys()
         .into_iter()
@@ -105,6 +108,7 @@ pub fn render_error_modal(
     modal: &mut crate::ErrorModal,
     ctx: &RenderContext,
 ) {
+    crate::pointer::record(area, crate::pointer::Hit::Modal);
     // One way out, named once: Esc closes it too, as every dialog.
     let footer = HintBar::from_ctx(ctx).hint("Enter", "Close");
     let popup = message_popup(area, &modal.message, 0, 64);

@@ -162,9 +162,14 @@ impl<'a> HintBar<'a> {
     /// Where each chip [`Widget::render`] draws in `area` lands, key and label without
     /// the gap after it, with its key: what a click on the bar presses.
     pub fn chips_in(&self, area: Rect) -> Vec<(Rect, &'a str)> {
+        self.chips(area, false)
+    }
+
+    /// Where each kept chip lands in `area`, drawn flush or not.
+    fn chips(&self, area: Rect, flush: bool) -> Vec<(Rect, &'a str)> {
         let mut x = area.x;
         let mut chips = Vec::new();
-        for (hint, keep) in self.hints.iter().zip(self.kept(area.width, false)) {
+        for (hint, keep) in self.hints.iter().zip(self.kept(area.width, flush)) {
             if !keep {
                 continue;
             }
@@ -179,6 +184,13 @@ impl<'a> HintBar<'a> {
     }
 
     fn draw(&self, area: Rect, buf: &mut Buffer, flush: bool) {
+        // Every chip that names one key is a click target that presses it, as the
+        // status footer's are; drawn after what it sits on, it lies on top.
+        for (rect, key) in self.chips(area, flush) {
+            if let Some(key) = crate::pointer::chip_key(key) {
+                crate::pointer::record(rect, crate::pointer::Hit::Chip(key));
+            }
+        }
         let kept = self.kept(area.width, flush);
         let mut spans = Vec::new();
         for (hint, keep) in self.hints.iter().zip(kept) {

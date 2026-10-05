@@ -31,9 +31,16 @@ printf 'id,amount\n1,9.50\n' > sales.csv && datui - < sales.csv
   [charts](charting.md) opened meanwhile keep the rows they opened on, and
   <kbd>t</kbd> there reads the new ones, as for `--follow`.
 - What cannot be read before it is finished (Parquet, an Arrow IPC file,
-  Excel, a compressed stream), and NDJSON and journal JSON, whose last object
-  is cut off until it ends, are read to the end first; the loading screen
+  Excel, a compressed stream) is read to the end first; the loading screen
   counts the bytes.
+- NDJSON and [journal JSON](../formats/signals-and-logs.md#systemd-journal)
+  show the entries whose lines have ended; an object still being written
+  waits for its newline. The journal's columns are the fields of every line
+  that had arrived when the table opened; NDJSON's, those of its first 100
+  lines. A field first seen later joins as a column at
+  the right once the stream ends, so the final columns cover every line.
+  Filters and the sort stay; under a query, a reshape, a group or a
+  drill-down, the column joins once that is cleared.
 - The data is written to a temporary file in `spool` under the cache
   directory as it arrives, not the system temp directory (memory on many
   Linux systems); `--temp-dir` puts it elsewhere. The file is removed when the
@@ -70,9 +77,10 @@ and how many have arrived since, and offers <kbd>t</kbd> and <kbd>Esc</kbd>.
 | What | How it behaves |
 |---|---|
 | The cursor | A follow starts on the last row and stays there as rows arrive. Moved elsewhere, it stays put, and the bar counts the rows that came in below |
-| A partial last line | Waits for its newline |
+| A partial last line | Waits for its newline. Once standard input ends, a last line with no newline is a row |
 | The query, filters, sort, hidden columns | Apply to new rows. [Value counts](value-counts.md), [analysis](analysis-features.md) and [charts](charting.md) keep the rows they opened on; the bar counts the new ones, and <kbd>t</kbd> there reads them |
 | A row that does not fit the types of the first rows | Counted on the bar in the warning color; its values read as null. The follow goes on |
+| An NDJSON field the first rows did not have | In a file, the row is counted as not fitting. From standard input, the field joins as a column when the stream ends |
 | A refresh | Reads only the rows on screen, from a mark near them: a 10 GB file costs what a 10 MB one does. Under a filter, only the new rows are counted |
 | Truncation, rotation | The file is read again from its start, and the bar says so. A deleted file stops the follow; its rows stay |
 | How often | On Linux, as an append lands, at most every 250ms; elsewhere and on network file systems, the size is checked every 250ms. `read.follow_interval` changes it: `-c read.follow_interval=1s` |

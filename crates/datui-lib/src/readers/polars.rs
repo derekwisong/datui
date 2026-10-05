@@ -172,8 +172,13 @@ fn scan_json(input: ScanIn<'_>) -> Result<Scan> {
 fn scan_json_lines(input: ScanIn<'_>) -> Result<Scan> {
     if input.options.follow {
         let path = input.paths[0].clone();
-        return crate::follow::scan_lines(&path, input.options, &mut input.report.read_python)
-            .map(Scan::from);
+        return crate::follow::scan_lines(
+            &path,
+            input.options,
+            false,
+            &mut input.report.read_python,
+        )
+        .map(Scan::from);
     }
     let state = match input.paths {
         [one] => DataTableState::from_json_lines(one, input.options)?,

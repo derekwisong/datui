@@ -30,6 +30,7 @@ use crate::download::TempDownload;
 use crate::unfinished::Writer;
 use crate::{AppEvent, CompressionFormat, FileFormat, OpenOptions};
 
+pub(crate) mod lines;
 #[cfg(target_os = "linux")]
 mod notify;
 pub(crate) mod stream;
@@ -176,21 +177,28 @@ pub(crate) fn format_of(path: &Path, found: Option<FileFormat>) -> FileFormat {
 }
 
 /// An NDJSON file followed, scanned lazily rather than read whole as an unfollowed one
-/// is: the frame reads more of it as it grows.
+/// is: the frame reads more of it as it grows, and only its complete lines
+/// ([`lines::LinesScan`]). The schema comes from the first `infer_schema_length` lines,
+/// or from every line there is when `every_line` (the journal, whose fields vary).
 pub(crate) fn scan_lines(
     path: &Path,
     options: &OpenOptions,
+    every_line: bool,
     read_python: &mut Vec<String>,
 ) -> color_eyre::Result<LazyFrame> {
-    let mut reader =
-        LazyJsonLineReader::new(PlRefPath::try_from_path(path)?).with_ignore_errors(true);
-    if let Some(n) = options
-        .infer_schema_length
-        .and_then(std::num::NonZeroUsize::new)
-    {
-        reader = reader.with_infer_schema_length(Some(n));
-    }
-    let lf = reader.finish()?;
+    let infer = if every_line {
+        None
+    } else {
+        // Polars' own default for an NDJSON scan.
+        Some(
+            options
+                .infer_schema_length
+                .and_then(std::num::NonZeroUsize::new)
+                .unwrap_or(std::num::NonZeroUsize::new(100).expect("not zero")),
+        )
+    };
+    let spool = options.spool.as_ref().map(|handle| handle.spool().clone());
+    let lf = lines::LinesScan::open(path, infer, true, spool)?.lazy()?;
     crate::widgets::datatable::DataTableState::apply_parse_dates_to_json_lazyframe(
         lf,
         options,
@@ -208,6 +216,9 @@ pub(crate) fn bound_to_complete(
 ) -> color_eyre::Result<(LazyFrame, Tail)> {
     let schema = lf.collect_schema()?;
     let mut tail = Tail::new(format, options, &schema);
+    if options.spool.is_some() {
+        tail = tail.widening();
+    }
     tail.path = path.to_path_buf();
     let mut file = File::open(path)?;
     let len = file.metadata()?.len();
@@ -322,6 +333,60 @@ pub struct Tail {
     marks: NewMarks,
     /// How far apart marks are: rows, bytes. Small in tests.
     mark_every: (u64, u64),
+    /// Standard input's NDJSON: a field the schema does not have is not a misfit but a
+    /// column to come, joined once the stream ends ([`Self::new_fields`]).
+    widens: bool,
+    /// The fields that arrived after the open, in the order they first came, and what
+    /// their values have been.
+    arrived: Vec<(String, Arrived)>,
+}
+
+/// The most fields that can arrive after the open: past this many, a row with another
+/// is a misfit, as in a followed file.
+const MOST_NEW_FIELDS: usize = 4096;
+
+/// What the values of a field that arrived after the open have been, for its column's
+/// type: the widest of them, and text once they disagree.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Arrived {
+    Nothing,
+    Integer,
+    Number,
+    Boolean,
+    Text,
+}
+
+impl Arrived {
+    fn of(value: &serde_json::Value) -> Arrived {
+        match value {
+            serde_json::Value::Null => Arrived::Nothing,
+            serde_json::Value::Bool(_) => Arrived::Boolean,
+            serde_json::Value::Number(n) if n.is_i64() || n.is_u64() => Arrived::Integer,
+            serde_json::Value::Number(_) => Arrived::Number,
+            // Polars reads an array or an object into a text column as its JSON text.
+            _ => Arrived::Text,
+        }
+    }
+
+    fn and(self, other: Arrived) -> Arrived {
+        match (self, other) {
+            (a, b) if a == b => a,
+            (Arrived::Nothing, x) | (x, Arrived::Nothing) => x,
+            (Arrived::Integer, Arrived::Number) | (Arrived::Number, Arrived::Integer) => {
+                Arrived::Number
+            }
+            _ => Arrived::Text,
+        }
+    }
+
+    fn dtype(self) -> DataType {
+        match self {
+            Arrived::Integer => DataType::Int64,
+            Arrived::Number => DataType::Float64,
+            Arrived::Boolean => DataType::Boolean,
+            Arrived::Nothing | Arrived::Text => DataType::String,
+        }
+    }
 }
 
 impl Tail {
@@ -366,7 +431,24 @@ impl Tail {
             fields: None,
             marks: NewMarks::default(),
             mark_every: (MARK_ROWS, MARK_BYTES),
+            widens: false,
+            arrived: Vec::new(),
         }
+    }
+
+    /// Fields the schema does not have are columns to come rather than misfits:
+    /// standard input's NDJSON, read again with them once it ends.
+    pub fn widening(mut self) -> Tail {
+        self.widens = matches!(self.layout, Layout::Lines);
+        self
+    }
+
+    /// The fields that arrived that the schema does not have, typed by their values.
+    pub fn new_fields(&self) -> Vec<Field> {
+        self.arrived
+            .iter()
+            .map(|(name, values)| Field::new(name.as_str().into(), values.dtype()))
+            .collect()
     }
 
     /// The file counted.
@@ -397,6 +479,7 @@ impl Tail {
         self.misfits = 0;
         self.fields = None;
         self.marks = NewMarks::default();
+        self.arrived.clear();
     }
 
     /// Mark where row `row`, whose record starts at byte `start`, is: the first row, and
@@ -420,6 +503,17 @@ impl Tail {
     /// Count the records `file` completes between what was counted and `len`, checking
     /// each new row against the schema when `check`.
     pub fn read_on(&mut self, file: &mut File, len: u64, check: bool) -> std::io::Result<()> {
+        self.read(file, len, check, false)
+    }
+
+    /// As [`Self::read_on`], with nothing more to come: a last record with no newline
+    /// is a record too. Text read as lines and streams wait for their ends as before.
+    pub fn read_to_end(&mut self, file: &mut File, len: u64, check: bool) -> std::io::Result<()> {
+        let last = matches!(self.layout, Layout::Lines | Layout::Delimited { .. });
+        self.read(file, len, check, last)
+    }
+
+    fn read(&mut self, file: &mut File, len: u64, check: bool, last: bool) -> std::io::Result<()> {
         if len <= self.complete {
             return Ok(());
         }
@@ -470,6 +564,10 @@ impl Tail {
                 }
             }
             at += n as u64;
+        }
+        if last && at > self.complete {
+            self.end_record(&record, oversized, check);
+            self.complete = at;
         }
         Ok(())
     }
@@ -549,8 +647,13 @@ impl Tail {
                 }
                 Self::mark(&mut self.marks, self.mark_every, self.rows, start, false);
                 self.rows += 1;
-                if check && (oversized || !self.object_fits(record)) {
-                    self.misfits += 1;
+                // Read at the open too when widening: a field first seen there, past the
+                // lines the schema came from, is a column to come as well.
+                if check || self.widens {
+                    let fits = !oversized && self.object_fits(record);
+                    if check && !fits {
+                        self.misfits += 1;
+                    }
                 }
             }
         }
@@ -570,16 +673,36 @@ impl Tail {
             })
     }
 
-    fn object_fits(&self, record: &[u8]) -> bool {
+    /// Whether an NDJSON record fits the schema. Widening, a field it does not have is
+    /// noted as arrived, and fits.
+    fn object_fits(&mut self, record: &[u8]) -> bool {
         let Ok(serde_json::Value::Object(object)) = serde_json::from_slice(record) else {
             return false;
         };
-        object.iter().all(|(key, value)| {
-            self.columns
-                .iter()
-                .find(|(name, _)| name == key)
-                .is_some_and(|(_, fits)| fits.value(value))
-        })
+        let mut fits = true;
+        for (key, value) in &object {
+            match self.columns.iter().find(|(name, _)| name == key) {
+                Some((_, kind)) => fits &= kind.value(value),
+                None if self.widens => fits &= Self::arrive(&mut self.arrived, key, value),
+                None => fits = false,
+            }
+        }
+        fits
+    }
+
+    /// Note `key`, a field the schema does not have, and its value. False when there
+    /// is no room for another field.
+    fn arrive(arrived: &mut Vec<(String, Arrived)>, key: &str, value: &serde_json::Value) -> bool {
+        let kind = Arrived::of(value);
+        if let Some((_, seen)) = arrived.iter_mut().find(|(name, _)| name == key) {
+            *seen = seen.and(kind);
+            return true;
+        }
+        if arrived.len() >= MOST_NEW_FIELDS {
+            return false;
+        }
+        arrived.push((key.to_string(), kind));
+        true
     }
 }
 
@@ -637,7 +760,10 @@ fn scans(plan: &polars::lazy::dsl::DslPlan, path: &str) -> bool {
             sources: ScanSources::Paths(paths),
             ..
         } if paths.len() == 1 => same_file(paths[0].as_str(), path),
-        DslPlan::Scan { .. } => stream::StreamScan::of(plan, path).is_some(),
+        DslPlan::Scan { .. } => {
+            stream::StreamScan::of(plan, path).is_some()
+                || lines::LinesScan::of(plan, path).is_some()
+        }
         DslPlan::IR { dsl, .. } => scans(dsl, path),
         _ => false,
     }
@@ -706,7 +832,14 @@ fn read_through_plan(plan: &mut polars::lazy::dsl::DslPlan, path: &str, file: &F
             return;
         }
         DslPlan::Scan { .. } if scans(plan, path) => {
-            let held = stream::StreamScan::of(plan, path).and_then(|scan| scan.held(file));
+            let held: Option<Arc<dyn AnonymousScan>> = match stream::StreamScan::of(plan, path) {
+                Some(scan) => scan
+                    .held(file)
+                    .map(|s| Arc::new(s) as Arc<dyn AnonymousScan>),
+                None => lines::LinesScan::of(plan, path)
+                    .and_then(|scan| scan.held(file))
+                    .map(|s| Arc::new(s) as Arc<dyn AnonymousScan>),
+            };
             if let DslPlan::Scan {
                 sources,
                 scan_type,
@@ -717,7 +850,7 @@ fn read_through_plan(plan: &mut polars::lazy::dsl::DslPlan, path: &str, file: &F
             {
                 match (held, &mut **scan_type) {
                     (Some(held), polars::lazy::dsl::FileScanDsl::Anonymous { function, .. }) => {
-                        *function = Arc::new(held);
+                        *function = held;
                     }
                     _ => *sources = ScanSources::Files(Arc::from([handle])),
                 }
@@ -816,6 +949,11 @@ impl Parse {
         if let Some(stream) = stream::StreamScan::in_plan(scan_node(scan)) {
             return Some(Parse::Stream(stream.schema().clone()));
         }
+        if let Some(lines) = lines::LinesScan::in_plan(scan_node(scan)) {
+            return Some(Parse::Lines {
+                ignore_errors: lines.ignore_errors(),
+            });
+        }
         let DslPlan::Scan {
             scan_type,
             unified_scan_args,
@@ -897,7 +1035,7 @@ impl polars::prelude::AnonymousScan for Piece {
                     .finish()?
             }
             Parse::Lines { ignore_errors } => {
-                polars::io::ndjson::core::parse_ndjson(&bytes, None, &self.schema, *ignore_errors)?
+                lines::parse_run(&bytes, &self.schema, *ignore_errors)?
             }
             Parse::Stream(schema) => stream::decode_run(bytes, schema, self.skip + take)?,
         };
@@ -1009,6 +1147,70 @@ pub(crate) fn bound_of(lf: &LazyFrame, path: &Path) -> Option<usize> {
     })
 }
 
+/// `root`, the frame of the followed NDJSON file at `path` read as `format` and bounded
+/// to `rows`, reading `fields` too, after the columns it has. `None` when it has no
+/// lines scan of the file, or `fields` brings no column it lacks.
+pub(crate) fn widen(
+    root: &LazyFrame,
+    path: &Path,
+    format: FileFormat,
+    fields: &[Field],
+    rows: usize,
+) -> Option<LazyFrame> {
+    let path_text = path.to_string_lossy();
+    let mut plan = root.logical_plan.clone();
+    let mut widened = None;
+    replace_lines_scan(&mut plan, &path_text, &mut |scan| {
+        let mut schema = (**scan.schema()).clone();
+        for field in fields {
+            if !schema.contains(field.name()) {
+                schema.with_column(field.name().clone(), field.dtype().clone());
+            }
+        }
+        if schema.len() == scan.schema().len() {
+            return None;
+        }
+        let schema = Arc::new(schema);
+        let lf = scan.with_schema(schema.clone()).lazy().ok()?;
+        widened = Some((lf.clone(), schema));
+        Some(lf.logical_plan)
+    });
+    let (raw, schema) = widened?;
+    if format == FileFormat::Journal {
+        // The journal names every column it shows: built again from the scan.
+        let mut raw = raw;
+        bound(&mut raw, path, rows);
+        return Some(crate::journal::derive(raw, &schema).0);
+    }
+    let mut out = root.clone();
+    out.logical_plan = plan;
+    Some(out)
+}
+
+/// Put `with(scan)` where `plan` reads the file at `path` through a lines scan.
+fn replace_lines_scan(
+    plan: &mut polars::lazy::dsl::DslPlan,
+    path: &str,
+    with: &mut dyn FnMut(&lines::LinesScan) -> Option<polars::lazy::dsl::DslPlan>,
+) {
+    use polars::lazy::dsl::DslPlan;
+    if let DslPlan::IR { dsl, .. } = plan {
+        let mut inner = Arc::unwrap_or_clone(dsl.clone());
+        replace_lines_scan(&mut inner, path, with);
+        *plan = inner;
+        return;
+    }
+    if let Some(scan) = lines::LinesScan::of(plan, path) {
+        if let Some(replaced) = with(scan) {
+            *plan = replaced;
+        }
+        return;
+    }
+    crate::widgets::datatable::for_each_input(plan, &mut |input| {
+        replace_lines_scan(input, path, with)
+    });
+}
+
 /// The windows of a followed file's view, each read from the mark before it. A view
 /// of the rows as they are reads its rows straight; one that only filters them reads
 /// on from `known`, a point where the rows of the view before it are known (view row,
@@ -1048,6 +1250,9 @@ pub enum Change {
     Restarted { rows: usize, misfits: usize },
     /// The file is gone. `handle` still reads what it held.
     Gone { handle: Option<Arc<File>> },
+    /// Fields that arrived in standard input's NDJSON after the open, which the schema
+    /// does not have: sent once it has ended, just before [`Change::Ended`].
+    NewFields(Vec<Field>),
     /// Standard input ended: with the reason when it ended in an error.
     Ended(Option<String>),
     /// The file could not be read.
@@ -1199,6 +1404,12 @@ pub struct Follow {
     /// Standard input read as it arrives without `--follow`: the view stays where it
     /// is, and the rows so far are a part of what is coming.
     pipe: bool,
+    /// Fields that arrived after the open, for the frames to join once standard input
+    /// has ended.
+    new_fields: Vec<Field>,
+    /// What the format says of the whole stream (the journal's Info tab) has been
+    /// asked for again, now that it has ended.
+    pub(crate) described: bool,
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -1253,6 +1464,8 @@ impl Follow {
             held: None,
             marks,
             pipe: false,
+            new_fields: Vec::new(),
+            described: false,
         }
     }
 
@@ -1345,6 +1558,10 @@ impl Follow {
                 self.last_append = Some(Instant::now());
                 Some("The file was truncated or replaced: reading it from the start".to_string())
             }
+            Change::NewFields(fields) => {
+                self.new_fields = fields.clone();
+                None
+            }
             Change::Gone { handle } => {
                 self.held = handle.clone();
                 self.end();
@@ -1371,6 +1588,11 @@ impl Follow {
     pub fn catch_up(&mut self) -> (usize, bool) {
         self.shown = self.counted;
         (self.shown, std::mem::take(&mut self.restarted))
+    }
+
+    /// The fields that arrived after the open, once, for the frames to join.
+    pub(crate) fn take_new_fields(&mut self) -> Vec<Field> {
+        std::mem::take(&mut self.new_fields)
     }
 
     /// The handle a deleted file is read through, once, for the frames to take.
@@ -1567,7 +1789,12 @@ impl Watcher {
                 });
                 continue;
             }
-            if let Err(e) = self.tail.read_on(&mut file, len, true) {
+            let read = if spool_ended.is_some() {
+                self.tail.read_to_end(&mut file, len, true)
+            } else {
+                self.tail.read_on(&mut file, len, true)
+            };
+            if let Err(e) = read {
                 self.send(Change::Failed(self.failed("reading it stopped", &e)));
                 return;
             }
@@ -1584,6 +1811,10 @@ impl Watcher {
                 }
             }
             if let Some(reason) = spool_ended {
+                let fields = self.tail.new_fields();
+                if !fields.is_empty() && !self.send(Change::NewFields(fields)) {
+                    return;
+                }
                 self.send(Change::Ended(reason));
                 return;
             }
@@ -2011,16 +2242,8 @@ pub(crate) fn spool<R: Read + Send + 'static>(
         ..options
     };
     if progressive {
-        // Not JSON lines (NDJSON, the journal): a read of the whole of a stream still
-        // sending ends mid-object, which does not parse, and the journal's summary
-        // reads the whole of it at once. Those are read to the end first.
-        let json = matches!(
-            options.format,
-            Some(FileFormat::Jsonl | FileFormat::Journal)
-        );
-        let read_on = !json
-            && (followed_stream(&path, options.format, &options)
-                || refusal(options.format, &options).is_none());
+        let read_on = followed_stream(&path, options.format, &options)
+            || refusal(options.format, &options).is_none();
         if read_on {
             return Ok((
                 spooled,
@@ -2347,7 +2570,7 @@ mod tests {
         ];
         for (text, format, options) in cases {
             let scan = |path: &Path| match format {
-                FileFormat::Jsonl => scan_lines(path, &options, &mut Vec::new()).unwrap(),
+                FileFormat::Jsonl => scan_lines(path, &options, false, &mut Vec::new()).unwrap(),
                 FileFormat::Arrow => stream::scan(path).unwrap(),
                 _ => csv_scan(path, &options),
             };

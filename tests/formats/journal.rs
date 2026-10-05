@@ -287,3 +287,307 @@ fn copy_as_python_derives_the_journal_s_columns() {
     assert!(script.contains("infer_schema_length=None"), "{script}");
     assert_eq!(rows, view_csv(&app), "{script}");
 }
+
+/// Hand the app what arrives, asking the watcher to look each time, until `done`.
+#[track_caller]
+fn follow_until(app: &mut App, rx: &mpsc::Receiver<AppEvent>, done: impl Fn(&App) -> bool) {
+    let caller = std::panic::Location::caller();
+    let deadline = std::time::Instant::now() + common::HANG_GUARD;
+    while !done(app) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the follow at {caller} never got there"
+        );
+        assert!(app.error_message().is_none(), "{:?}", app.error_message());
+        app.check_follow_now();
+        app.request_what_the_frame_needs();
+        if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            let mut next = Some(event);
+            while let Some(event) = next {
+                next = app.event(&event);
+            }
+            drain_events(app, rx);
+        }
+    }
+}
+
+/// Synthetic journal entry `i`: fields vary from line to line, `CODE_FILE` on every
+/// seventh, and `LATE_FIELD` on every third from entry `late` on.
+fn entry(i: usize, late: usize) -> String {
+    let code = if i.is_multiple_of(7) {
+        ",\"CODE_FILE\":\"main.c\""
+    } else {
+        ""
+    };
+    let extra = if i >= late && i.is_multiple_of(3) {
+        format!(",\"LATE_FIELD\":\"late {i}\"")
+    } else {
+        String::new()
+    };
+    format!(
+        "{{\"__CURSOR\":\"s=1;i={i:x}\",\"__REALTIME_TIMESTAMP\":\"{}\",\"PRIORITY\":\"{}\",\
+         \"_SYSTEMD_UNIT\":\"unit{}.service\",\"_BOOT_ID\":\"b\",\"MESSAGE\":\"m{i}\"{code}{extra}}}\n",
+        1_767_225_600_000_000u64 + i as u64,
+        i % 8,
+        i % 5
+    )
+}
+
+fn ended(app: &App) -> bool {
+    app.follow()
+        .is_some_and(|f| *f.standing() == datui::follow::Standing::Ended)
+        && app.follow_settled()
+        && !app.is_busy()
+}
+
+/// Rows the follow shows.
+fn shown(app: &App) -> usize {
+    app.follow().map_or(0, |f| f.shown())
+}
+
+/// Write `bytes` from `at` on in steps cut anywhere, mid-entry included, each read
+/// before the next lands: every read of every row stops at the last whole entry.
+fn write_in_steps(
+    app: &mut App,
+    rx: &mpsc::Receiver<AppEvent>,
+    producer: &mut std::io::PipeWriter,
+    bytes: &[u8],
+    mut at: usize,
+    step: usize,
+) {
+    while at < bytes.len() {
+        let to = (at + step).min(bytes.len());
+        producer.write_all(&bytes[at..to]).unwrap();
+        let whole = bytes[..to].iter().filter(|&&b| b == b'\n').count();
+        follow_until(app, rx, |app| shown(app) == whole && app.follow_settled());
+        assert_eq!(frame(app).height(), whole, "at byte {to}");
+        at = to;
+    }
+}
+
+/// `journalctl -o json | datui` from a producer slower than the copy: the first rows
+/// show while it still sends, each read of the spool stops at the last whole entry
+/// wherever the producer has got to, and once it ends every entry is there, with the
+/// field first seen late a column at the end.
+#[test]
+fn a_slow_journal_pipe_shows_rows_before_it_ends() {
+    let (total, late) = (6_000, 4_000);
+    let bytes: Vec<u8> = (0..total)
+        .flat_map(|i| entry(i, late).into_bytes())
+        .collect();
+    let first = bytes
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| **b == b'\n')
+        .nth(1_999)
+        .unwrap()
+        .0
+        + 41;
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    // Two thousand entries, and part of the next: more than a pipe holds, so written
+    // while the app reads.
+    let head = bytes[..first].to_vec();
+    let writer = std::thread::spawn(move || {
+        producer.write_all(&head).unwrap();
+        producer
+    });
+    let (mut app, rx, _tx) = app();
+    app.read_stdin_from(reader);
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("-")],
+        OpenOptions::default(),
+    );
+    let mut producer = writer.join().unwrap();
+    drain_events(&mut app, &rx);
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    assert!((1..total).contains(&shown(&app)), "{}", shown(&app));
+    assert!(app.follow().is_some_and(|f| f.live()));
+    assert_eq!(frame(&app).get_column_names()[..2], ["time", "level"]);
+    write_in_steps(&mut app, &rx, &mut producer, &bytes, first, 9_973);
+    drop(producer);
+    follow_until(&mut app, &rx, ended);
+    let df = frame(&app);
+    assert_eq!(df.height(), total);
+    // On screen, the new column goes on the end.
+    let area = Rect::new(0, 0, 160, 30);
+    app.render(area, &mut Buffer::empty(area));
+    follow_until(&mut app, &rx, |app| {
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .display_slice_df()
+            .is_some()
+    });
+    let shown_df = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .display_slice_df()
+        .unwrap();
+    let names: Vec<&str> = shown_df
+        .get_column_names()
+        .iter()
+        .map(|n| n.as_str())
+        .collect();
+    assert_eq!(names.last(), Some(&"LATE_FIELD"), "{names:?}");
+    let late_values = texts(&df, "LATE_FIELD");
+    assert_eq!(late_values[4_002].as_deref(), Some("late 4002"));
+    assert_eq!(
+        late_values.iter().filter(|v| v.is_some()).count(),
+        (late..total).filter(|i| i.is_multiple_of(3)).count()
+    );
+    assert_eq!(texts(&df, "MESSAGE")[total - 1].as_deref(), Some("m5999"));
+    assert_eq!(
+        app.follow().unwrap().misfits(),
+        0,
+        "a new field is no misfit"
+    );
+    // The Info tab is read again over every entry once the stream has ended.
+    let entries = format!("Entries: {}", datui::numfmt::group_chrome(total));
+    follow_until(&mut app, &rx, |app| {
+        app.data_table_state
+            .as_ref()
+            .and_then(|s| s.format_detail())
+            .is_some_and(|d| d.lines.contains(&entries))
+    });
+}
+
+/// NDJSON whose later lines add fields, piped whole: the columns are every line's,
+/// typed by their values, and a last line with no newline is a row too.
+#[test]
+fn ndjson_piped_whole_has_every_line_s_fields() {
+    let mut text: String = (0..300).map(|i| format!("{{\"id\": {i}}}\n")).collect();
+    text.push_str("{\"id\": 300, \"score\": 1.5, \"ok\": true}\n{\"id\": 301, \"score\": 2}");
+    let (mut app, rx) = piped(text.into_bytes(), OpenOptions::default());
+    follow_until(&mut app, &rx, ended);
+    let df = frame(&app);
+    assert_eq!(df.height(), 302);
+    assert_eq!(df.column("ok").unwrap().dtype(), &DataType::Boolean);
+    let score = df.column("score").unwrap().f64().unwrap().clone();
+    assert_eq!(score.get(300), Some(1.5));
+    assert_eq!(score.get(301), Some(2.0));
+    assert_eq!(score.null_count(), 300);
+}
+
+/// `journalctl -o json -f | datui -f -`, cut mid-entry between writes: no read fails,
+/// and a field first seen after the open joins once the stream ends.
+#[test]
+fn a_followed_journal_pipe_reads_whole_entries_only() {
+    let total = 3_000;
+    let bytes: Vec<u8> = (0..total)
+        .flat_map(|i| entry(i, 2_500).into_bytes())
+        .collect();
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    producer.write_all(&bytes[..1_234]).unwrap();
+    let (mut app, rx, _tx) = app();
+    app.read_stdin_from(reader);
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("-")],
+        OpenOptions {
+            follow: true,
+            ..Default::default()
+        },
+    );
+    drain_events(&mut app, &rx);
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    write_in_steps(&mut app, &rx, &mut producer, &bytes, 1_234, 31_337);
+    drop(producer);
+    follow_until(&mut app, &rx, ended);
+    let df = frame(&app);
+    assert_eq!(df.height(), total);
+    assert!(
+        df.get_column_names()
+            .iter()
+            .any(|n| n.as_str() == "LATE_FIELD")
+    );
+}
+
+/// Nothing piped in says so, NDJSON named or not.
+#[test]
+fn an_empty_pipe_says_nothing_came_in() {
+    let (reader, producer) = std::io::pipe().unwrap();
+    drop(producer);
+    let (mut app, rx, tx) = app();
+    app.read_stdin_from(reader);
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("-")],
+        OpenOptions {
+            format: Some(datui::FileFormat::Jsonl),
+            ..Default::default()
+        },
+    );
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(
+        app.error_message()
+            .is_some_and(|m| m.contains("Nothing came in on standard input")),
+        "{:?}",
+        app.error_message()
+    );
+}
+
+/// Fields that arrive while a query is the view wait for the view to come back to the
+/// data, which the query is built on: then they join.
+#[test]
+fn new_fields_wait_for_a_query_to_be_cleared() {
+    let (reader, mut producer) = std::io::pipe().unwrap();
+    let head: String = (0..50).map(|i| format!("{{\"id\": {i}}}\n")).collect();
+    producer.write_all(head.as_bytes()).unwrap();
+    let (mut app, rx, _tx) = app();
+    app.read_stdin_from(reader);
+    pump_open_until_loaded(
+        &mut app,
+        &rx,
+        vec![PathBuf::from("-")],
+        OpenOptions::default(),
+    );
+    drain_events(&mut app, &rx);
+    let mut next = Some(AppEvent::QQuery("select id where id < 10".to_string()));
+    while let Some(event) = next {
+        next = app.event(&event);
+    }
+    drain_events(&mut app, &rx);
+    producer
+        .write_all(b"{\"id\": 50, \"extra\": \"x\"}\n")
+        .unwrap();
+    drop(producer);
+    follow_until(&mut app, &rx, ended);
+    let has_extra = |app: &App| {
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .schema()
+            .contains("extra")
+    };
+    assert!(!has_extra(&app), "held under the query");
+    let mut next = Some(AppEvent::QQuery(String::new()));
+    while let Some(event) = next {
+        next = app.event(&event);
+    }
+    follow_until(&mut app, &rx, |app| has_extra(app) && !app.is_busy());
+    let df = frame(&app);
+    assert_eq!(df.height(), 51);
+    assert_eq!(texts(&df, "extra")[50].as_deref(), Some("x"));
+}
+
+/// Blank, whitespace-only and non-JSON lines in piped NDJSON: a query over it reads
+/// every object, and a line that is not JSON is a row of nulls.
+#[test]
+fn a_query_reads_ndjson_with_short_lines() {
+    let text = "{\"a\":1}\n\n   \n{\"a\":2}\ngarbage\n{\"a\":3}\n";
+    let (mut app, rx) = piped(text.as_bytes().to_vec(), OpenOptions::default());
+    follow_until(&mut app, &rx, ended);
+    let mut next = Some(AppEvent::QQuery("select a where a > 0".to_string()));
+    while let Some(event) = next {
+        next = app.event(&event);
+    }
+    drain_events(&mut app, &rx);
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    let a = frame(&app).column("a").unwrap().i64().unwrap().to_vec();
+    assert_eq!(a, vec![Some(1), Some(2), Some(3)]);
+}

@@ -451,6 +451,12 @@ pub enum AppEvent {
     DoExport(ExportRequest),
     /// A followed file's watcher found more rows, or that the file went.
     Followed(crate::follow::News),
+    /// The Info tab of a piped journal, read again once it ended, for the dataset of
+    /// that generation.
+    FollowedDetail {
+        dataset_generation: u64,
+        detail: Box<crate::text_formats::Detail>,
+    },
     Exit,
     Crash(String),
     QQuery(String),
@@ -1224,6 +1230,9 @@ pub struct App {
     /// the scan under a query takes the query's own columns away, and offered again the
     /// moment the view comes back to the dataset itself.
     footers_held: Option<(u64, crate::widgets::datatable::FootersFound)>,
+    /// Fields a followed pipe's NDJSON brought after the open, held as footers are
+    /// until the view is back on the data.
+    followed_fields_held: Option<(u64, Vec<polars::prelude::Field>)>,
     /// A re-read the dataset is owed by a footer pass that came back empty-handed, held
     /// back because the collect it goes through would bump the generation out from
     /// under work already running. The pass that failed brings no columns to hold, so
@@ -3399,13 +3408,78 @@ impl App {
             return;
         };
         let message = follow.take(&news.change);
+        let fields = follow.take_new_fields();
         if let Some(handle) = follow.take_held() {
             state.read_followed_through(&handle);
         }
         if let Some(message) = message {
             self.flash_note(message);
         }
+        if !fields.is_empty() {
+            self.followed_fields_held = Some((self.dataset_generation, fields));
+        }
         self.catch_up_follow();
+        self.join_followed_fields();
+        self.describe_ended_journal();
+    }
+
+    /// Read a piped journal's Info tab again once it has ended, over every entry: the
+    /// one the open read describes the entries that had arrived then. Not a job, which
+    /// the user would wait on; the table works meanwhile.
+    fn describe_ended_journal(&mut self) {
+        let Some(lf) = self
+            .data_table_state
+            .as_mut()
+            .and_then(|state| state.ended_journal_to_describe())
+        else {
+            return;
+        };
+        let generation = self.dataset_generation;
+        let tx = self.events.clone();
+        self.runtime.spawn_blocking(move || {
+            let detail = logging::catch_panic(|| crate::journal::summary(&lf).ok())
+                .ok()
+                .flatten();
+            if let Some(detail) = detail {
+                let _ = tx.send(AppEvent::FollowedDetail {
+                    dataset_generation: generation,
+                    detail: Box::new(detail),
+                });
+            }
+        });
+    }
+
+    /// Join the fields a followed pipe brought after the open, if the dataset can
+    /// take them now, and read the rows on screen through the wider frame. Tried again
+    /// after every event while they wait, as footers are.
+    fn join_followed_fields(&mut self) {
+        let Some((generation, _)) = self.followed_fields_held.as_ref() else {
+            return;
+        };
+        if *generation != self.dataset_generation {
+            self.followed_fields_held = None;
+            return;
+        }
+        // Not under rows still being taken: the view reads the new rows first.
+        if self.data_table_state.is_none()
+            || self.work_the_join_would_cancel()
+            || self.follow().is_some_and(|f| f.behind())
+        {
+            return;
+        }
+        let Some((generation, fields)) = self.followed_fields_held.take() else {
+            return;
+        };
+        let Some(state) = self.data_table_state.as_mut() else {
+            return;
+        };
+        match state.join_followed_fields(&fields) {
+            Ok(true) => {
+                self.spawn_async_collect(Self::LOADING_BUFFER);
+            }
+            Ok(false) => {}
+            Err(()) => self.followed_fields_held = Some((generation, fields)),
+        }
     }
 
     /// Show the rows a follow counted, when the table is on screen with nothing
@@ -5924,6 +5998,7 @@ impl App {
             pending_footers_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
             dataset_generation: 0,
             footers_held: None,
+            followed_fields_held: None,
             reread_owed: None,
             #[cfg(test)]
             home_worker_dies: None,
@@ -12784,6 +12859,8 @@ impl App {
         if self.join_held_footers() {
             self.reread_after_the_footers_joined();
         }
+        self.join_followed_fields();
+        self.describe_ended_journal();
         // And the same turn for a re-read owed to a dataset whose footers could not be
         // read: it waits on the same work, and gets in the same way.
         self.reread_when_the_work_allows();
@@ -14247,6 +14324,17 @@ impl App {
             }
             AppEvent::Followed(news) => {
                 self.followed(news);
+                None
+            }
+            AppEvent::FollowedDetail {
+                dataset_generation,
+                detail,
+            } => {
+                if *dataset_generation == self.dataset_generation
+                    && let Some(state) = self.data_table_state.as_mut()
+                {
+                    state.set_format_detail((**detail).clone());
+                }
                 None
             }
             AppEvent::DoExport(request) => {

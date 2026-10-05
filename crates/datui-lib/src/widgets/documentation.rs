@@ -107,16 +107,6 @@ fn layered(over: &ColumnNote, under: &ColumnNote) -> ColumnNote {
     }
 }
 
-/// A note as one line: `description (unit)`.
-fn note_text(note: &ColumnNote) -> String {
-    match (note.description.is_empty(), note.unit.is_empty()) {
-        (false, false) => format!("{} ({})", note.description, note.unit),
-        (false, true) => note.description.clone(),
-        (true, false) => note.unit.clone(),
-        (true, true) => String::new(),
-    }
-}
-
 /// A section of named fields of a spec's header or footer, each with its note.
 fn field_section(out: &mut Vec<DocLine>, title: &'static str, fields: &[(String, ColumnNote)]) {
     if fields.is_empty() {
@@ -127,7 +117,7 @@ fn field_section(out: &mut Vec<DocLine>, title: &'static str, fields: &[(String,
     for (name, note) in fields {
         out.push(DocLine::Column {
             name: name.clone(),
-            about: note_text(note),
+            about: note.about(),
             values: 0,
         });
     }
@@ -260,7 +250,7 @@ pub fn lines(doc: &Documented, expanded: &HashSet<String>, measured: Option<u64>
         for (name, note) in &columns {
             out.push(DocLine::Column {
                 name: name.clone(),
-                about: note_text(note),
+                about: note.about(),
                 values: note.values.len(),
             });
             if expanded.contains(name) {

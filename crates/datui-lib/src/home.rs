@@ -3220,11 +3220,6 @@ impl HomeState {
             })
     }
 
-    /// The column notes of the catalog dataset `path` is, or is in.
-    pub fn codebook_at(&self, path: &Path) -> Option<std::sync::Arc<crate::codebook::Codebook>> {
-        codebook_for(&self.catalogs, path)
-    }
-
     /// What a catalog says an HTTP(S) file at `path` weighs, while nothing has measured
     /// it: shown as `~33 MB`.
     pub fn size_hint(&self, path: &Path) -> Option<u64> {

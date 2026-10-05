@@ -122,6 +122,7 @@ and automounts.
 | Records | For a file a format spec reads as several record types: `2 types (spec)`, then each type and its column count (`add 5 · cancel 3`) |
 | `▲ footer unreadable` | A Parquet file whose footer could not be read; opening it will most likely fail too |
 | Enter, `→` | What <kbd>Enter</kbd> and <kbd>→</kbd> do on a directory, a door, a file of tables or a file of record types: `all partitions as one table`, `step in · first row opens all`, `its tables`, `every record` and `its record types` |
+| `COLUMNS` | What each column means, for a catalog dataset or bookmark with column notes, or a file a format spec documents: the catalog's description, unit and legend each over the spec's, as in the [Documentation view](#documentation-view), or `2 values` for a legend alone; `… 4 more` when the pane is short. <kbd>Ctrl</kbd>+<kbd>E</kbd> shows the whole page |
 | `ROWS` | The first eight rows of a local CSV, TSV, PSV, NDJSON, Arrow IPC or Parquet file, read when the row is selected. <kbd>Enter</kbd> opens the file on those rows, so they are read once. `[home] preview_max` sets the largest file read; `0` turns it off. Network shares and object stores are not read before opening |
 
 Below about 100 columns the pane hides, and the first rows show in a strip at
@@ -309,7 +310,7 @@ no login, listed after your own. datui ships none of the data;
   before you use the data.
 - NYC flights, NOAA daily weather, NYC yellow taxis and Earthquakes carry
   their publisher's documentation: the pane lists what the columns mean
-  under `DOCUMENTATION`, <kbd>Ctrl</kbd>+<kbd>E</kbd> shows the whole
+  under `COLUMNS`, <kbd>Ctrl</kbd>+<kbd>E</kbd> shows the whole
   [Documentation view](#documentation-view), and the
   [Info panel](dataset-info.md) and the [inspector](inspecting-rows.md)
   explain them once the data is open.

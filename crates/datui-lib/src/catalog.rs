@@ -95,6 +95,18 @@ pub struct ColumnNote {
     pub values: Vec<(String, String)>,
 }
 
+impl ColumnNote {
+    /// The note as one line: `description (unit)`.
+    pub fn about(&self) -> String {
+        match (self.description.is_empty(), self.unit.is_empty()) {
+            (false, false) => format!("{} ({})", self.description, self.unit),
+            (false, true) => self.description.clone(),
+            (true, false) => self.unit.clone(),
+            (true, true) => String::new(),
+        }
+    }
+}
+
 /// A mistake in a catalog file: where, and what to do about it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CatalogError {

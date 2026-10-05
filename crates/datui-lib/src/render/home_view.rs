@@ -1925,59 +1925,55 @@ fn pane_heading(text: &str, width: usize, ctx: &RenderContext) -> Line<'static> 
     ])
 }
 
-/// The most columns of a codebook the details pane lists a line each.
+/// The most column notes the details pane lists a line each.
 const CODEBOOK_ROWS: usize = 12;
 
-/// A catalog dataset's column notes in the details pane: each column and what it means,
-/// wrapped when the pane has `room` rows for all of it, else a line a column cut to the
-/// pane. The Info panel and the inspector say the rest.
-fn codebook_block(
-    book: &crate::codebook::Codebook,
+/// What a documented file's columns mean, in the details pane: each column and its
+/// note, wrapped when the pane has `room` rows for all of it, else a line a column cut
+/// to the pane. Ctrl+E shows the whole page.
+fn column_notes_block(
+    columns: &[(String, crate::catalog::ColumnNote)],
     width: usize,
     room: usize,
     ctx: &RenderContext,
 ) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(""), pane_heading("DOCUMENTATION", width, ctx)];
-    let key_w = key_column(book.columns.keys().map(String::as_str)).min(22);
+    let mut lines = vec![Line::from(""), pane_heading("COLUMNS", width, ctx)];
+    let key_w = key_column(columns.iter().map(|(name, _)| name.as_str())).min(22);
     let style = Style::default().fg(ctx.text_secondary);
-    let wrapped: Vec<Line<'static>> = book
-        .columns
+    // A column with only a legend (a spec's enum) says how long it is, as the page does.
+    let about = |note: &crate::catalog::ColumnNote| match note.about() {
+        about if about.is_empty() && !note.values.is_empty() => {
+            format!("{} values", note.values.len())
+        }
+        about => about,
+    };
+    let wrapped: Vec<Line<'static>> = columns
         .iter()
-        .flat_map(|(name, column)| fact_lines(name, column.about(), key_w, width, style, ctx))
+        .flat_map(|(name, note)| fact_lines(name, about(note), key_w, width, style, ctx))
         .collect();
-    // Where the whole page is: the legends and links the pane has no room for.
-    let more = Line::from(vec![
-        Span::styled("^E", Style::default().fg(ctx.keybind_hints)),
-        Span::styled(" Documentation", Style::default().fg(ctx.dimmed)),
-    ]);
-    if lines.len() + wrapped.len() < room {
+    if lines.len() + wrapped.len() <= room {
         lines.extend(wrapped);
-        lines.push(more);
         return lines;
     }
     let value_w = width.saturating_sub(key_w + 2);
-    let fits = room.saturating_sub(lines.len() + 2).clamp(1, CODEBOOK_ROWS);
-    for (name, column) in book.columns.iter().take(fits) {
+    // A row kept for the count of the rest.
+    let fits = room.saturating_sub(lines.len() + 1).clamp(1, CODEBOOK_ROWS);
+    for (name, note) in columns.iter().take(fits) {
         let name = glyphs::fit_cells(name, key_w, glyphs::get().ellipsis);
         lines.push(Line::from(vec![
             Span::styled(format!("{name:<key_w$}  "), Style::default().fg(ctx.dimmed)),
             Span::styled(
-                glyphs::fit_cells(&column.about(), value_w, glyphs::get().ellipsis).into_owned(),
+                glyphs::fit_cells(&about(note), value_w, glyphs::get().ellipsis).into_owned(),
                 style,
             ),
         ]));
     }
-    if book.columns.len() > fits {
+    if columns.len() > fits {
         lines.push(Line::from(Span::styled(
-            format!(
-                "{} {} more",
-                glyphs::get().ellipsis,
-                book.columns.len() - fits
-            ),
+            format!("{} {} more", glyphs::get().ellipsis, columns.len() - fits),
             Style::default().fg(ctx.dimmed),
         )));
     }
-    lines.push(more);
     lines
 }
 
@@ -2680,13 +2676,21 @@ fn render_preview(
             lines.extend(fact_lines(&key, value, key_w, width, style, ctx));
         }
     }
-    // What the columns of a catalog dataset mean.
-    if (app.home.catalog_dataset(&entry.path).is_some() || app.home.bookmark(&entry.path).is_some())
-        && let Some(book) = app.home.codebook_at(&entry.path)
-    {
-        let drawn: usize = lines.iter().map(|line| wrapped_rows(line, width)).sum();
-        let room = (area.height as usize).saturating_sub(drawn);
-        lines.extend(codebook_block(&book, width, room, ctx));
+    // What the columns mean, merged as the Documentation page merges them: the
+    // catalog's note over the format spec's. A file inside a catalog dataset gets no
+    // catalog notes here: they are the dataset's columns, which need not be the file's.
+    if let Some((_, mut doc)) = app.home_documented_row().filter(|(p, _)| *p == entry.path) {
+        if app.home.catalog_dataset(&entry.path).is_none()
+            && app.home.bookmark(&entry.path).is_none()
+        {
+            doc.catalog = None;
+        }
+        let columns = doc.columns();
+        if !columns.is_empty() {
+            let drawn: usize = lines.iter().map(|line| wrapped_rows(line, width)).sum();
+            let room = (area.height as usize).saturating_sub(drawn);
+            lines.extend(column_notes_block(&columns, width, room, ctx));
+        }
     }
 
     // ---- Rows --------------------------------------------------------------------
@@ -5102,5 +5106,33 @@ fields = [{ name = "x", type = "u1" }]
         let cut = texts(&variant_lines(&variants, 8, 30, 2, &ctx));
         assert_eq!(cut.len(), 2, "{cut:#?}");
         assert!(cut[1].trim_start().ends_with("more"), "{cut:#?}");
+    }
+
+    /// The pane's column notes sit under COLUMNS, a line each, with no key hint among
+    /// them (the footer has `^E Docs`); cut to the pane, the rest are counted.
+    #[test]
+    fn column_notes_are_listed_under_columns_and_counted_when_cut() {
+        let ctx = RenderContext::for_test();
+        let columns: Vec<(String, crate::catalog::ColumnNote)> = (0..6)
+            .map(|i| {
+                let note = crate::catalog::ColumnNote {
+                    description: format!("Note {i}"),
+                    unit: if i == 0 { "USD".into() } else { String::new() },
+                    values: Vec::new(),
+                };
+                (format!("col{i}"), note)
+            })
+            .collect();
+        let whole = texts(&column_notes_block(&columns, 50, 20, &ctx));
+        assert!(whole[1].starts_with("COLUMNS "), "{whole:#?}");
+        assert_eq!(whole.len(), 2 + 6, "{whole:#?}");
+        assert!(whole[2].contains("col0") && whole[2].contains("Note 0 (USD)"));
+        assert!(!whole.iter().any(|l| l.contains("^E")), "{whole:#?}");
+
+        let cut = texts(&column_notes_block(&columns, 50, 6, &ctx));
+        assert_eq!(cut.len(), 6, "{cut:#?}");
+        let more = format!("{} 3 more", glyphs::get().ellipsis);
+        assert_eq!(cut.last(), Some(&more), "{cut:#?}");
+        assert!(!cut.iter().any(|l| l.contains("^E")), "{cut:#?}");
     }
 }

@@ -16,7 +16,7 @@ command line, the config file and Python.
 | **catalog** | collection, sources, remembered directory | A file of named datasets the home screen lists as a section: `catalog.toml` (yours; <kbd>Ctrl</kbd>+<kbd>D</kbd> adds to it), the files in `catalogs/` and those `catalogs` lists, and the bundled `public` |
 | **theme** | color scheme | A named set of colors, one per slot: `night-market`, `day-market`, or a file in `themes/`; `theme.dark` and `theme.light` pick one per mode |
 | **bookmark** | suggested place | A place inside a catalog dataset to start from: `bookmarks."Name" = "path/"` |
-| **documentation** | codebook, data dictionary, column notes | What a catalog says of its dataset and its columns, or a format spec of its files: `documentation`, `columns`, a field's `description` and `unit`; the `DOCUMENTATION` heading on the home screen, the Documentation view (<kbd>Ctrl</kbd>+<kbd>E</kbd>) and Info's Documentation tab |
+| **documentation** | codebook, data dictionary, column notes | What a catalog says of its dataset and its columns, or a format spec of its files: `documentation`, `columns`, a field's `description` and `unit`; the details pane's `COLUMNS` notes on the home screen, the Documentation view (<kbd>Ctrl</kbd>+<kbd>E</kbd>) and Info's Documentation tab |
 | **Info** (the Info panel) | Dataset Info | `i`: facts about the dataset |
 | **inspector** | row inspector, detail | One row's values (`Space`) |
 | **byte inspector** | inspector | The hex view's decoder of the bytes at the cursor |

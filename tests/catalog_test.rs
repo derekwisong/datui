@@ -556,10 +556,12 @@ bookmarks."Daily highs, 2024" = "by_year/YEAR=2024/ELEMENT=TMAX/"
         "the bookmark sits under its dataset: {rows:?}"
     );
 
-    // The details pane says what the columns mean, and where that comes from.
+    // The details pane says what the columns mean, and where that comes from; the
+    // footer, not the pane, offers the whole page.
     select(&mut app, "Weather");
     let shown = screen(&mut app);
-    assert!(shown.contains("DOCUMENTATION"), "{shown}");
+    assert!(shown.contains("COLUMNS"), "{shown}");
+    assert!(!shown.contains("^E Documentation"), "{shown}");
     assert!(shown.contains("Quality flag"), "{shown}");
     assert!(shown.contains("https://example.com/readme.txt"), "{shown}");
 
@@ -936,6 +938,62 @@ columns.shares = {{ unit = "lots" }}
     for unsaid in ["Order entry capture", "orders.pdf", "Limit price"] {
         assert!(!text.contains(unsaid), "{unsaid} in\n{text}");
     }
+}
+
+/// The details pane lists a documented file's column notes under COLUMNS: a file a
+/// format spec reads shows the spec's, and one a catalog lists too shows the two
+/// merged as the Documentation page merges them.
+#[test]
+fn the_details_pane_shows_a_spec_files_column_notes() {
+    let (_formats, registry, data) = orders_files();
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("catalog.toml"),
+        format!(
+            r#"label = "Mine"
+
+[lab]
+name = "Lab orders"
+path = "{}"
+columns.price = {{ description = "Price the lab quotes" }}
+columns.shares = {{ unit = "lots" }}
+"#,
+            toml_path(&data.path().join("lab.ord"))
+        ),
+    )
+    .unwrap();
+    let (mut app, rx) = app_with_specs(dir.path(), registry.clone());
+    app.home.browsing = Some(data.path().to_path_buf());
+    app.enter_home();
+    pump(&mut app, &rx, |app| spec_row_listed(app, "day.ord"));
+
+    // The spec alone: its notes.
+    select(&mut app, "day.ord");
+    let shown = screen(&mut app);
+    for said in [
+        "COLUMNS",
+        "Limit price (USD)",
+        "side    2 values",
+        "Shares executed",
+    ] {
+        assert!(shown.contains(said), "{said} in\n{shown}");
+    }
+    assert!(!shown.contains("^E Documentation"), "{shown}");
+
+    // The catalog over the spec, field by field.
+    let (mut app, rx) = app_with_specs(dir.path(), registry);
+    app.enter_home();
+    pump(&mut app, &rx, |app| spec_row_listed(app, "Lab orders"));
+    select(&mut app, "Lab orders");
+    let shown = screen(&mut app);
+    for said in [
+        "COLUMNS",
+        "Price the lab quotes (USD)",
+        "Shares executed (lots)",
+    ] {
+        assert!(shown.contains(said), "{said} in\n{shown}");
+    }
+    assert!(!shown.contains("Limit price"), "{shown}");
 }
 
 /// `o` on a documentation link asks with the whole URL, as the browser will get it,

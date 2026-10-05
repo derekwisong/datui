@@ -122,6 +122,13 @@ fn a_query_runs_over_the_sample_and_clearing_it_keeps_the_query() {
     let query = line.rfind("query").expect(&line);
     assert!(sample < query, "pipeline order: {line}");
 
+    // Another sample keeps the query laid on it.
+    draw(&mut app, "300");
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.sampled().map(|s| s.rows()), Some(300));
+    assert_eq!(state.get_active_query(), "select where group = \"a\"");
+
     // No sample: the form takes it away.
     key(&mut app, KeyCode::Char('S'));
     let form = app.sample_form.as_mut().unwrap();

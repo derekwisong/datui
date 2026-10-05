@@ -206,7 +206,12 @@ impl App {
         // is what the sample stands for, so it is not laid on again.
         let through = !sample.scope.uses_source() && source.changes_rows()
             || !source.column_changes().is_empty() && !sample.scope.uses_source();
-        let replay = replay.or_else(|| (!through).then(|| crate::view_settings_of(source)));
+        // The steps to lay on the new sample: a view's being applied; those on the
+        // sample it replaces; or the view's own, unless the sample stands for them.
+        let replay = replay.or_else(|| match state.sampled() {
+            Some(_) => Some(crate::view_settings_of(state)),
+            None => (!through).then(|| crate::view_settings_of(source)),
+        });
         let (cut, known_total) = Self::table_sample_source(source, &sample.scope);
         let known_total = of.or(known_total);
         let bytes_per_row = Some(source.estimated_row_bytes());

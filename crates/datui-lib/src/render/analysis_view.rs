@@ -155,6 +155,11 @@ fn render_body(
                         == crate::data_quality::QualityCompute::Metadata
                 {
                     "   Reads file metadata only, no values".to_string()
+                } else if let Some(sampled) =
+                    app.data_table_state.as_ref().and_then(|s| s.sampled())
+                {
+                    // The view's sample, read whole.
+                    format!("   Reads the view's {}", sampled.label())
                 } else {
                     format!("   Reads {}", app.analysis_modal.sample.summary())
                 },

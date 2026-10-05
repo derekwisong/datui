@@ -100,7 +100,9 @@ impl Drop for TakenTerminal {
     }
 }
 
-#[cfg(test)]
+// Unix only: on a Windows console Crossterm sends these through the console API, not
+// as bytes.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

@@ -3708,6 +3708,8 @@ impl Spec {
 pub struct SpecDocs {
     /// The spec's name.
     pub spec: String,
+    /// The file the spec was read from; none for one built in or parsed from text.
+    pub file: Option<PathBuf>,
     pub description: String,
     /// An `https://` link to the format's own documentation.
     pub documentation: String,
@@ -3718,12 +3720,30 @@ pub struct SpecDocs {
     pub columns: Vec<(String, ColumnNote)>,
 }
 
+/// The condition on the type field that picks a variant: `msg_type = 1`, or
+/// `kind in ("E", "C")`, text quoted.
+fn picked_by(type_field: Option<&str>, when: &[Expected]) -> String {
+    let field = type_field.unwrap_or("type");
+    let values: Vec<String> = when
+        .iter()
+        .map(|value| match value {
+            Expected::Int(v) => v.to_string(),
+            Expected::Text(v) => format!("\"{v}\""),
+        })
+        .collect();
+    match values.as_slice() {
+        [one] => format!("{field} = {one}"),
+        _ => format!("{field} in ({})", values.join(", ")),
+    }
+}
+
 /// One variant of a spec, as its documentation shows it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RecordType {
     pub name: String,
-    /// The type values that pick it, as the spec writes them: text quoted.
-    pub when: Vec<String>,
+    /// What picks it, as a condition on the type field: `msg_type = 1`, or
+    /// `kind in ("E", "C")` for several values.
+    pub picked_by: String,
     pub description: String,
     /// Its columns: the common ones and its own.
     pub columns: usize,
@@ -3782,14 +3802,7 @@ impl Spec {
             .zip(&tables)
             .map(|(variant, table)| RecordType {
                 name: variant.name.clone(),
-                when: variant
-                    .when
-                    .iter()
-                    .map(|value| match value {
-                        Expected::Int(v) => v.to_string(),
-                        Expected::Text(v) => format!("\"{v}\""),
-                    })
-                    .collect(),
+                picked_by: picked_by(self.records.type_field.as_deref(), &variant.when),
                 description: variant.description.clone().unwrap_or_default(),
                 columns: table.columns.len(),
             })
@@ -3800,6 +3813,7 @@ impl Spec {
             || record_types.iter().any(|r| !r.description.is_empty());
         documented.then(|| SpecDocs {
             spec: self.name.clone(),
+            file: self.path.clone(),
             description: self.description.clone().unwrap_or_default(),
             documentation: self.documentation.clone().unwrap_or_default(),
             record_types,
@@ -7294,13 +7308,13 @@ fields = [{ name = "ref", type = "u8" }, { name = "shares", type = "u4", unit = 
             [
                 RecordType {
                     name: "add".into(),
-                    when: vec!["\"A\"".into()],
+                    picked_by: "kind = \"A\"".into(),
                     description: "An order added to the book".into(),
                     columns: 5,
                 },
                 RecordType {
                     name: "exec".into(),
-                    when: vec!["\"E\"".into(), "\"C\"".into()],
+                    picked_by: "kind in (\"E\", \"C\")".into(),
                     description: String::new(),
                     columns: 4,
                 },

@@ -246,8 +246,9 @@ Documentation tab shows the same page for the open dataset.
 | `catalog`, `publisher`, `license` | Where the entry is from, and the terms |
 | `format`, `path` or `url`, `login`, `size` | What it is, where, how it is read, and how big (`~` until measured) |
 | `format spec` | The spec that reads the file |
+| `spec file` | Where that spec was read from |
 | `LINKS` | `homepage` and `documentation`, a line each; a long one is cut with `…` |
-| `RECORD TYPES` | A spec's variants: each one's name, the type values that pick it, its column count and its description |
+| `RECORD TYPES` | A spec's variants: each one's name, the type field's value that picks it (`msg_type = 1`, `kind in ("E", "C")`), its column count and its description |
 | `COLUMNS` | Each column, its meaning and unit; `▸ 30 values` when it has a legend, which a spec's `enum` gives |
 | `BOOKMARKS` | The places to start from, and their paths |
 

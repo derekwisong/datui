@@ -165,6 +165,9 @@ pub fn lines(doc: &Documented, expanded: &HashSet<String>, measured: Option<u64>
     }
     if let Some(spec) = spec {
         out.push(DocLine::Field("format spec", spec.spec.clone()));
+        if let Some(file) = &spec.file {
+            out.push(DocLine::Field("spec file", crate::home::display_path(file)));
+        }
     }
     let documentation = first_said(
         entry.map(|e| e.documentation.as_str()),
@@ -196,7 +199,7 @@ pub fn lines(doc: &Documented, expanded: &HashSet<String>, measured: Option<u64>
                 1 => "1 column".to_string(),
                 n => format!("{n} columns"),
             };
-            let mut about = format!("when {} {middot} {columns}", record.when.join(", "));
+            let mut about = format!("{} {middot} {columns}", record.picked_by);
             if !record.description.is_empty() {
                 about = format!("{about} {middot} {}", record.description);
             }
@@ -806,6 +809,26 @@ fields = [{ name = "shares", type = "u4", description = "Shares executed" }]
     }
 
     #[test]
+    fn a_spec_read_from_a_file_names_its_file() {
+        let file = dirs::home_dir().unwrap().join("specs").join("orders.toml");
+        let spec = crate::formats::Spec::parse(ORDERS, Some(&file)).unwrap();
+        let doc = Documented::new(None, spec.docs().map(Arc::new), "day.ord".into()).unwrap();
+        let page = lines(&doc, &HashSet::new(), None);
+        let at = |line: &DocLine| page.iter().position(|l| l == line);
+        let name = at(&DocLine::Field("format spec", "acme.orders".into())).unwrap();
+        let shown = crate::home::display_path(&file);
+        assert!(shown.starts_with('~'), "{shown}");
+        assert_eq!(at(&DocLine::Field("spec file", shown)), Some(name + 1));
+        // Parsed from text, there is no file to name.
+        let parsed = lines(&spec_page(ORDERS), &HashSet::new(), None);
+        assert!(
+            !parsed
+                .iter()
+                .any(|l| matches!(l, DocLine::Field("spec file", _)))
+        );
+    }
+
+    #[test]
     fn a_variant_specs_page_lists_record_types_columns_and_legends() {
         let mut state = DocState::default();
         state.open(spec_page(ORDERS), None);
@@ -820,11 +843,11 @@ fields = [{ name = "shares", type = "u4", description = "Shares executed" }]
         assert!(lines.contains(&DocLine::Section("RECORD TYPES", 2)));
         assert!(lines.contains(&DocLine::RecordType(
             "add".into(),
-            format!("when \"A\" {m} 4 columns {m} An order added to the book")
+            format!("kind = \"A\" {m} 4 columns {m} An order added to the book")
         )));
         assert!(lines.contains(&DocLine::RecordType(
             "exec".into(),
-            format!("when \"E\", \"C\" {m} 3 columns")
+            format!("kind in (\"E\", \"C\") {m} 3 columns")
         )));
         assert!(lines.contains(&DocLine::Section("COLUMNS", 3)));
         assert!(lines.contains(&DocLine::Column {

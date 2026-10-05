@@ -5443,10 +5443,12 @@ mod build_feature_tests {
     #[test]
     fn an_empty_examples_toml_hides_the_section() {
         let mut config = crate::config::AppConfig::default();
-        assert!(
+        // The examples are all HTTP or S3: a build that reads neither has none.
+        assert_eq!(
             catalogs(&config)
                 .iter()
-                .any(|c| c.origin == crate::catalog::Origin::Bundled)
+                .any(|c| c.origin == crate::catalog::Origin::Bundled),
+            cfg!(any(feature = "http", feature = "cloud"))
         );
         config.read_catalogs = vec![
             crate::catalog::parse(

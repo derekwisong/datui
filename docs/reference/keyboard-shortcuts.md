@@ -261,7 +261,7 @@ Where a dataset opens.
 | `Home / End` | First and last field |
 | `PgUp / PgDn` | A page of fields |
 | `← / → (h/l)` | Previous and next row; the table's cursor moves with it |
-| `Tab` | Into the value, to scroll and find in it |
+| `Tab / Shift+Tab` | Into the value, to scroll and find in it. Nothing moves: the panes are split by what they hold, not by where the cursor is |
 | `Enter` | On a group's row, its rows, as at the table. Else open a struct, a list, or text holding a JSON object or array; or read a field the table's rows do not hold (hidden and binary columns) |
 | `r` | On a group's row, read a field the rows do not hold |
 | `/` | Find a field by name, then by value: type to narrow, Enter or ↓ keeps the list narrowed, Esc clears it |
@@ -269,7 +269,7 @@ Where a dataset opens.
 | `s` | Order: the table's, A-Z, or nulls last |
 | `c` | Compare: a column for the next row, or the pinned one |
 | `m` | Pin this row to compare others with; again to unpin |
-| `Esc / Space` | Close; Esc clears a find first |
+| `Esc / Space` | Close. Esc backs out one level at a time: a find first, then Compare, then the inspector |
 
 ### Inspector · Output
 
@@ -290,13 +290,14 @@ Where a dataset opens.
 | `Home / End` | Top and end, at once however long the value |
 | `/` | Find in the value; n and N go to the next and last place |
 | `e, w, y, o` | As in the fields |
-| `Esc / Tab` | Back to the fields; Esc clears a find first |
+| `Esc / Tab` | Back to the fields (Shift+Tab too); Esc clears a find first |
 
 ### Inspector · Nested
 
 | Key | Action |
 |---|---|
 | `Enter / → (l)` | Open the focused item |
+| `Tab / Shift+Tab` | Into the item's value; not in an empty level |
 | `Esc / ← (h)` | Up a level; at the row, Esc closes |
 | `y` | Copy the focused item: text as itself, a JSON object or array indented |
 

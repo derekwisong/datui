@@ -413,8 +413,8 @@ A page of fields
 \fB\(<- / \(-> (h/l)\fR
 Previous and next row; the table's cursor moves with it
 .TP
-\fBTab\fR
-Into the value, to scroll and find in it
+\fBTab / Shift+Tab\fR
+Into the value, to scroll and find in it. Nothing moves: the panes are split by what they hold, not by where the cursor is
 .TP
 \fBEnter\fR
 On a group's row, its rows, as at the table. Else open a struct, a list, or text holding a JSON object or array; or read a field the table's rows do not hold (hidden and binary columns)
@@ -438,7 +438,7 @@ Compare: a column for the next row, or the pinned one
 Pin this row to compare others with; again to unpin
 .TP
 \fBEsc / Space\fR
-Close; Esc clears a find first
+Close. Esc backs out one level at a time: a find first, then Compare, then the inspector
 .PP
 \fIOutput\fR
 .TP
@@ -475,12 +475,15 @@ Find in the value; n and N go to the next and last place
 As in the fields
 .TP
 \fBEsc / Tab\fR
-Back to the fields; Esc clears a find first
+Back to the fields (Shift+Tab too); Esc clears a find first
 .PP
 \fINested\fR
 .TP
 \fBEnter / \(-> (l)\fR
 Open the focused item
+.TP
+\fBTab / Shift+Tab\fR
+Into the item's value; not in an empty level
 .TP
 \fBEsc / \(<- (h)\fR
 Up a level; at the row, Esc closes

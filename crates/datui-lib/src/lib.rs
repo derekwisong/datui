@@ -17618,7 +17618,13 @@ impl App {
         self.refresh_inspector_list();
         let modal = &mut self.inspector_modal;
         match event.code {
+            // Esc backs out one level at a time: the find, then Compare, then the
+            // inspector.
             KeyCode::Esc if !modal.filter.is_empty() => modal.clear_find(),
+            KeyCode::Esc if modal.compare => {
+                modal.compare = false;
+                modal.filled_only = false;
+            }
             KeyCode::Esc | KeyCode::Char(' ') => self.close_inspector(),
             KeyCode::Down | KeyCode::Char('j') => modal.next_field(),
             KeyCode::Up | KeyCode::Char('k') => modal.prev_field(),
@@ -17626,7 +17632,8 @@ impl App {
             KeyCode::End => modal.last_field(),
             KeyCode::PageDown => modal.page_fields(1),
             KeyCode::PageUp => modal.page_fields(-1),
-            KeyCode::Tab => {
+            // Two panes: Tab and Shift+Tab both cross to the value.
+            KeyCode::Tab | KeyCode::BackTab => {
                 if modal.focused().is_some() {
                     modal.focus = inspector_modal::Focus::Value;
                 }
@@ -17798,7 +17805,15 @@ impl App {
             KeyCode::End => modal.last_field(),
             KeyCode::PageDown => modal.page_fields(1),
             KeyCode::PageUp => modal.page_fields(-1),
-            KeyCode::Tab => modal.focus = inspector_modal::Focus::Value,
+            // A level with nothing in it has no value to cross to.
+            KeyCode::Tab | KeyCode::BackTab
+                if modal
+                    .drill
+                    .as_ref()
+                    .is_some_and(|drill| drill.level().focused().is_some()) =>
+            {
+                modal.focus = inspector_modal::Focus::Value;
+            }
             KeyCode::Char('e') => self.inspector_view(),
             KeyCode::Char('w') => self.inspector_wrap(),
             KeyCode::Char('y') => self.copy_drilled_item(),

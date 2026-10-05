@@ -686,7 +686,8 @@ pub const SCREENS: &[Screen] = &[
                     k("PgUp / PgDn", "Page", "A page of fields"),
                     k("← / → (h/l)", "Row", "Previous and next row")
                         .more("Previous and next row; the table's cursor moves with it"),
-                    k("Tab", "Value", "Into the value, to scroll and find in it"),
+                    k("Tab / Shift+Tab", "Value", "Into the value, to scroll and find in it")
+                        .more("Into the value, to scroll and find in it. Nothing moves: the panes are split by what they hold, not by where the cursor is"),
                     k("Enter", "Open", "Open a struct, list or JSON; read a field")
                         .more("On a group's row, its rows, as at the table. Else open a struct, a list, or text holding a JSON object or array; or read a field the table's rows do not hold (hidden and binary columns)"),
                     k("r", "Read", "On a group's row, read a field the rows lack")
@@ -699,7 +700,8 @@ pub const SCREENS: &[Screen] = &[
                     k("c", "Compare", "Compare with the next row, or the pinned one")
                         .more("Compare: a column for the next row, or the pinned one"),
                     k("m", "Pin", "Pin this row to compare others with; again to unpin"),
-                    k("Esc / Space", "Close", "Close; Esc clears a find first"),
+                    k("Esc / Space", "Close", "Close; Esc clears a find, then Compare, first")
+                        .more("Close. Esc backs out one level at a time: a find first, then Compare, then the inspector"),
                 ],
             },
             Group {
@@ -722,13 +724,15 @@ pub const SCREENS: &[Screen] = &[
                     k("/", "Find", "Find in the value; n and N go on")
                         .more("Find in the value; n and N go to the next and last place"),
                     k("e, w, y, o", "As fields", "As in the fields"),
-                    k("Esc / Tab", "Fields", "Back to the fields; Esc clears a find first"),
+                    k("Esc / Tab", "Fields", "Back to the fields; Esc clears a find first")
+                        .more("Back to the fields (Shift+Tab too); Esc clears a find first"),
                 ],
             },
             Group {
                 name: "Nested",
                 keys: &[
                     k("Enter / → (l)", "Open", "Open the focused item"),
+                    k("Tab / Shift+Tab", "Value", "Into the item's value; not in an empty level"),
                     k("Esc / ← (h)", "Up", "Up a level; at the row, Esc closes"),
                     k("y", "Copy", "Copy the item: text, or JSON indented")
                         .more("Copy the focused item: text as itself, a JSON object or array indented"),

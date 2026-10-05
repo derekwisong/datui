@@ -21255,6 +21255,67 @@ fn test_inspector_compares_rows_and_lists_only_the_differences() {
     assert_eq!(first, "amount");
 }
 
+/// Esc backs out of Compare before it closes the inspector; Tab and Shift+Tab
+/// cross to the value without moving a field; Tab in a level with nothing in it
+/// stays on its list.
+#[test]
+fn test_inspector_esc_leaves_compare_first_and_tab_moves_nothing() {
+    use datui::inspector_modal::Focus;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, rx, tx) = open_orders_fixture(dir.path());
+    let none = KeyModifiers::NONE;
+    press_key(&mut app, KeyCode::Char(' '), none);
+    press_key(&mut app, KeyCode::Char('c'), none);
+    assert!(app.inspector_modal.compare);
+    let wide = rows_at(&mut app, 200, 24).join("\n");
+    assert!(wide.contains("Esc  No compare"), "{wide}");
+    press_key(&mut app, KeyCode::Esc, none);
+    assert!(!app.inspector_modal.compare, "Esc leaves Compare");
+    assert_eq!(app.input_mode, InputMode::Inspect, "and only Compare");
+    let wide = rows_at(&mut app, 200, 24).join("\n");
+    assert!(wide.contains("Y  Copy row"), "{wide}");
+    assert!(wide.contains("c  Compare"), "{wide}");
+    assert!(wide.contains("Esc  Close"), "{wide}");
+
+    // The panes are split by what they hold: crossing to the value moves no
+    // field of the list.
+    let line_of = |rows: &[String], name: &str| {
+        rows.iter()
+            .position(|row| row.contains(&format!(" {name} ")))
+            .unwrap_or_else(|| panic!("{name}: {}", rows.join("\n")))
+    };
+    let before = rows_at(&mut app, 120, 40);
+    for code in [KeyCode::Tab, KeyCode::BackTab] {
+        press_key(&mut app, code, none);
+        assert_eq!(app.inspector_modal.focus, Focus::Value, "{code:?}");
+        let after = rows_at(&mut app, 120, 40);
+        for name in ["customer_name", "region"] {
+            assert_eq!(line_of(&before, name), line_of(&after, name), "{code:?}");
+        }
+        press_key(&mut app, KeyCode::Esc, none);
+        assert_eq!(app.inspector_modal.focus, Focus::List);
+    }
+
+    // `{}` opens as JSON into a level with no items: no value to cross to.
+    press_key(&mut app, KeyCode::Char('l'), none);
+    pump_until_idle(&mut app, &rx, &tx);
+    while inspected_field(&app) != "payload_json" {
+        press_key(&mut app, KeyCode::Down, none);
+    }
+    press_key(&mut app, KeyCode::Enter, none);
+    pump_until_idle(&mut app, &rx, &tx);
+    rows_at(&mut app, 120, 40);
+    assert!(
+        app.inspector_modal.drill.is_some(),
+        "Enter opens the object"
+    );
+    for code in [KeyCode::Tab, KeyCode::BackTab] {
+        press_key(&mut app, code, none);
+        assert_eq!(app.inspector_modal.focus, Focus::List, "{code:?}");
+    }
+}
+
 /// #661: from 240 columns Compare shows the row before too: previous, this,
 /// next, in row order and named over their columns; narrower, the next only.
 #[test]

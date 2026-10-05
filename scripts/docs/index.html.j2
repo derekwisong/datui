@@ -86,11 +86,10 @@
     .tabs button { border: 1px solid var(--line); background: transparent; color: var(--muted); border-radius: 5px; padding: 5px 12px; font-size: 14px; }
     .tabs button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--bg); }
     .install-after { margin: 24px 0 12px; font-size: 15px; }
-    .proof { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin: 0 0 18px; }
-    .stat { padding: 22px; border-radius: 8px; background: var(--panel); min-width: 0; }
-    .stat .figure { font: 700 44px/1.1 var(--mono); letter-spacing: -.04em; color: var(--accent); margin: 0 0 8px; }
-    .stat p { font-size: 15px; margin: 0 0 12px; }
-    .stat pre { background: var(--bg); }
+    .hero pre { max-width: 720px; }
+    ul.section-lead { padding-left: 20px; }
+    .features + .small { margin-top: 30px; }
+    ul.section-lead li { margin-bottom: 6px; }
     .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 34px 30px; }
     .features .placeholder { aspect-ratio: 16 / 10; margin-bottom: 14px; }
     .features p { font-size: 15px; color: var(--muted); margin-bottom: 8px; }
@@ -104,7 +103,8 @@
     .paths pre { margin-bottom: 12px; }
     .compare { width: 100%; border-collapse: collapse; font-size: 15px; }
     .compare th, .compare td { text-align: left; vertical-align: top; padding: 12px 14px 12px 0; border-bottom: 1px solid var(--line); }
-    .compare th { white-space: nowrap; }
+    .compare thead th { white-space: nowrap; }
+    .compare .num { text-align: right; white-space: nowrap; }
     .compare td { color: var(--muted); }
     .version-list { list-style: none; margin: 18px 0; padding: 0; }
     .version-list li { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; border-bottom: 1px solid var(--line); padding: 10px 0; }
@@ -118,12 +118,14 @@
     @media (max-width: 640px) {
       .wrap { width: calc(100% - 32px); } nav { gap: 16px; }
       .hero { padding: 44px 0 28px; } .capture { margin-bottom: 40px; }
-      .features, .proof, .paths, .format-families { grid-template-columns: 1fr; }
+      .features, .paths, .format-families { grid-template-columns: 1fr; }
       section { padding: 38px 0; }
       .compare, .compare tbody, .compare tr, .compare th, .compare td { display: block; }
       .compare thead { display: none; }
       .compare tr { border-bottom: 1px solid var(--line); padding: 10px 0; }
       .compare th, .compare td { border: 0; padding: 2px 0; white-space: normal; }
+      .compare td.num { text-align: left; }
+      .compare td[data-label]::before { content: attr(data-label) ": "; }
       .version-list time { width: 100%; margin-left: 0; }
     }
   </style>
@@ -147,12 +149,13 @@
       <div class="hero">
         <p class="eyebrow">A terminal UI for tabular data</p>
         <h1>Explore tabular data in your terminal.</h1>
-        <p class="lead">{{ format_count }} formats, on your disk or in S3, GCS, Azure and HTTP(S). Sort, filter and query with SQL; chart, analyze and export.</p>
+        <p class="lead">{{ format_count }} formats, from your disk, S3, GCS, Azure, HTTP(S), a pipe or Python. Query with SQL or q, chart, reshape and export.</p>
+        <pre data-example="bash,network"><code>datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/   # 38M rows, no login</code></pre>
         <div class="actions">
           <a class="primary" href="#install">Install</a>
           <a href="{{ guide('getting-started/quick-start') }}">Quick start →</a>
         </div>
-        <p class="small">Linux, macOS and Windows · One binary, built on Polars · MIT license</p>
+        <p class="small">Linux, macOS and Windows · One binary, built on Polars · MIT license · No telemetry</p>
       </div>
 
       <figure class="capture">
@@ -208,26 +211,27 @@ sudo apt install datui</code></pre>
   </section>
 </div>
 {# end generated: install #}
-        <p class="install-after">On Linux and macOS the packages install the manual: <code>man datui</code>. After <code>cargo install</code>, this writes it where <code>man</code> finds it for your user:</p>
-        <pre data-example="bash"><code>datui man --dir ~/.local/share/man</code></pre>
-        <p class="install-after"><a href="{{ guide('getting-started/installation') }}">Installation guide</a>: user-only installs, shell completions, building from source · <a href="{{ repo }}/releases/latest">Latest release</a></p>
+        <p class="install-after">One binary; only <code>cargo install</code> needs Rust. <a href="{{ guide('getting-started/installation') }}">Installation guide</a>: user-only installs, RPMs, the manual page, shell completions, building from source · <a href="{{ repo }}/releases/latest">Latest release</a></p>
       </section>
 
       <section aria-labelledby="proof-title">
-        <h2 id="proof-title">First rows in milliseconds</h2>
-        <p class="section-lead">Before the first frame datui reads only the rows on screen, so the first rows do not wait on the file's size.</p>
-        <div class="proof">
-          <div class="stat">
-            <p class="figure">8 ms</p>
-            <p>From launch to the first rows of a 30-million-row Parquet file (397 MB), warm cache.</p>
-          </div>
-          <div class="stat">
-            <p class="figure">540 ms</p>
-            <p>To the first rows of a year of NOAA daily highs: nine Parquet files, read in place on public S3. No account, no login:</p>
-            <pre data-example="bash,network"><code>datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2023/ELEMENT=TMAX/</code></pre>
-          </div>
-        </div>
-        <p class="small">Medians of measured runs of a 0.4.0-dev release build; the remote one depends on the network. <a href="{{ guide('reference/performance') }}">Every measurement, and the machine</a>.</p>
+        <h2 id="proof-title">How it stays fast</h2>
+        <ul class="section-lead">
+          <li>Rust on Polars. Every table is a <code>LazyFrame</code> until it is drawn.</li>
+          <li>Only the rows on screen and a lookahead buffer are collected. Sort, filter and query build on the lazy plan; analyses read a sample, 100,000 rows by default.</li>
+          <li>A Parquet file in S3, GCS or Azure is read in place: footers for the schema and row count, then only the row groups the screen needs.</li>
+          <li>The row count runs in the background; the table is usable before it is done.</li>
+        </ul>
+        <table class="compare">
+          <thead><tr><th scope="col">Open</th><th scope="col" class="num">First rows</th><th scope="col" class="num">Exact row count</th></tr></thead>
+          <tbody>
+            <tr><th scope="row">CSV, 4,000,000 rows, 234 MB, local</th><td class="num" data-label="First rows">14 ms</td><td class="num" data-label="Exact row count">0.36 s</td></tr>
+            <tr><th scope="row">Parquet, the same rows, 53 MB, local</th><td class="num" data-label="First rows">10 ms</td><td class="num" data-label="Exact row count">10 ms</td></tr>
+            <tr><th scope="row">Text log, the same 234 MB as <code>.log</code>, local</th><td class="num" data-label="First rows">12 ms</td><td class="num" data-label="Exact row count">not measured</td></tr>
+            <tr><th scope="row"><a href="https://registry.opendata.aws/noaa-ghcn/">NOAA GHCN-D</a> 2024, public S3: 137 Parquet files, 38,465,374 rows</th><td class="num" data-label="First rows">0.54 s</td><td class="num" data-label="Exact row count">0.52 s</td></tr>
+          </tbody>
+        </table>
+        <p class="small">Time from launch, median of 5 runs (S3: 3, no cache, home network). Release build of 0.4.0-dev, Ryzen 7 9800X3D, Linux, warm page cache, 120×30 pseudo-terminal. <code>-c theme.mode=dark</code> skips the background-color query, which a terminal that never answers it waits 100 ms for. The local files are <code>scripts/bench/startup.py generate DIR 4000000</code>. Piped input shows its first rows once 1,000 lines have arrived, sooner from a slower producer. <a href="{{ guide('reference/performance') }}">Performance</a> has more.</p>
       </section>
 
       <section aria-labelledby="features-title">
@@ -236,32 +240,32 @@ sudo apt install datui</code></pre>
           <div>
             <div class="placeholder" role="img" aria-label="Screenshot to come">STILL PLACEHOLDER (#356)<br>Formats</div>
             <h3>{{ format_count }} formats, and yours</h3>
-            <p>From Parquet, CSV, Arrow and JSON to SQLite, GGUF, audio and flight logs. Describe your own binary format in a TOML format spec; any file opens in the hex view.</p>
-            <a href="{{ guide('formats/index') }}">Formats →</a>
+            <p>From Parquet, CSV, Arrow and JSON to SQLite, GGUF, audio and flight logs. A TOML format spec describes your own binary or delimited format; any file opens in the hex view.</p>
+            <a href="{{ guide('formats/index') }}">Formats →</a> · <a href="{{ guide('formats/format-specs') }}">Format specs →</a>
           </div>
           <div>
             <div class="placeholder" role="img" aria-label="Screenshot to come">STILL PLACEHOLDER (#356)<br>Home screen, cloud sources</div>
-            <h3>Wherever the data lives</h3>
-            <p>Local files, S3, GCS, Azure and HTTP(S). Hive-partitioned folders read as one table, and the home screen lists example datasets that need no login.</p>
-            <a href="{{ guide('user-guide/home-screen') }}">Home screen →</a>
-          </div>
-          <div>
-            <div class="placeholder" role="img" aria-label="Screenshot to come">STILL PLACEHOLDER (#356)<br>A large table</div>
-            <h3>Large files, lazily</h3>
-            <p>Parquet, CSV, Arrow and the other scanned formats stay Polars LazyFrames: datui collects the rows on screen. Sorting and analysis read more when they need it.</p>
-            <a href="{{ guide('user-guide/large-datasets') }}">Large datasets →</a>
+            <h3>Cloud or home</h3>
+            <p>Local files, directories, globs, S3, GCS, Azure and HTTP(S). Hive-partitioned folders read as one table. The home screen lists your catalogs, the cloud accounts it finds logins for, and Example datasets that need no login.</p>
+            <a href="{{ guide('user-guide/home-screen') }}">Home screen →</a> · <a href="{{ guide('user-guide/remote-data') }}">Cloud storage →</a>
           </div>
           <div>
             <div class="placeholder" role="img" aria-label="Screenshot to come">STILL PLACEHOLDER (#356)<br>The command line</div>
-            <h3>Query</h3>
-            <p>Press <kbd>/</kbd> for SQL, q or Text. Sort and filter with keys, and save the steps as a view for the next file.</p>
+            <h3>Query and find</h3>
+            <p><kbd>:</kbd> runs SQL or q; <kbd>/</kbd> finds text, a regex or letters in order. <kbd>[</kbd> <kbd>]</kbd> sort by the cursor's column, <kbd>+</kbd> <kbd>-</kbd> keep or drop its value, and <kbd>v</kbd> saves the steps as a view for the next file.</p>
             <a href="{{ guide('user-guide/querying-data') }}">Query data →</a>
           </div>
           <div>
-            <div class="placeholder" role="img" aria-label="Screenshot to come">STILL PLACEHOLDER (#356)<br>Analysis, Data Quality</div>
-            <h3>Analyze</h3>
-            <p>Value counts, charts, and Analysis: Describe, Distribution, Correlation and Data Quality.</p>
-            <a href="{{ guide('user-guide/analysis-features') }}">Analysis →</a>
+            <div class="placeholder" role="img" aria-label="Screenshot to come">STILL PLACEHOLDER (#356)<br>A chart, Analysis</div>
+            <h3>Analyze and chart</h3>
+            <p>Value counts (<kbd>F</kbd>), Analysis (<kbd>a</kbd>): Describe, Distribution, Correlation and Data Quality. Charts (<kbd>c</kbd>) export to PNG, SVG or PDF.</p>
+            <a href="{{ guide('user-guide/analysis-features') }}">Analysis →</a> · <a href="{{ guide('user-guide/charting') }}">Charts →</a>
+          </div>
+          <div>
+            <div class="placeholder" role="img" aria-label="Screenshot to come">STILL PLACEHOLDER (#356)<br>Pivot, column types</div>
+            <h3>Reshape and retype</h3>
+            <p>Pivot or melt (<kbd>p</kbd>) with a live preview. Change a column's type from the Info panel's Schema tab or a right click on a cell.</p>
+            <a href="{{ guide('user-guide/reshaping') }}">Reshaping →</a> · <a href="{{ guide('user-guide/dataset-info') }}">Column types →</a>
           </div>
           <div>
             <div class="placeholder" role="img" aria-label="Screenshot to come">STILL PLACEHOLDER (#356)<br>A pipe, or Python</div>
@@ -270,6 +274,7 @@ sudo apt install datui</code></pre>
             <a href="{{ guide('user-guide/pipes-and-follow') }}">Pipes →</a> · <a href="{{ guide('user-guide/python-module') }}">Python →</a>
           </div>
         </div>
+        <p class="small">Also: catalogs of your own datasets with a Documentation view (<kbd>Ctrl+E</kbd>), themes (<code>datui theme list</code>), the mouse, and copy over SSH through OSC 52. <a href="{{ guide('reference/keyboard-shortcuts') }}">Every key</a></p>
       </section>
 
       <section aria-labelledby="formats-title">
@@ -292,7 +297,7 @@ sudo apt install datui</code></pre>
         <div class="paths">
           <div>
             <h3>In your terminal</h3>
-            <pre data-example="bash,network"><code>datui     # home screen: your files and example datasets
+            <pre data-example="bash,network"><code>datui     # home screen: your files, and Example datasets to open with no login
 datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv</code></pre>
             <pre data-example="bash"><code>printf 'id,amount\n1,9.50\n2,3.25\n' | datui</code></pre>
             <p class="small">Press <kbd>?</kbd> for the keys on any screen; <kbd>Ctrl+Q</kbd> quits. <a href="{{ guide('getting-started/quick-start') }}">Quick start</a> · <a href="{{ guide('reference/keyboard-shortcuts') }}">Keys</a></p>
@@ -309,18 +314,12 @@ datui.view(pl.scan_csv(url))</code></pre>
         </div>
       </section>
 
-      <section aria-labelledby="why-title">
-        <h2 id="why-title">Why datui</h2>
-        <p class="section-lead">Good tools sit next to it. Where it differs:</p>
-        <table class="compare">
-          <thead><tr><th scope="col">Next to</th><th scope="col">datui</th></tr></thead>
-          <tbody>
-            <tr><th scope="row"><a href="https://www.visidata.org/">VisiData</a></th><td>One native binary: no Python, no format packages to add. Parquet and cloud prefixes stay lazy through Polars. VisiData edits cells; datui does not.</td></tr>
-            <tr><th scope="row"><a href="https://github.com/YS-L/csvlens">csvlens</a></th><td>csvlens is a pager for CSV. datui reads {{ format_count }} formats and adds queries, charts and analysis.</td></tr>
-            <tr><th scope="row"><a href="https://github.com/shshemi/tabiew">tabiew</a></th><td>Both are Rust on Polars, with SQL. datui also reads S3, GCS, Azure and HTTP(S), reads your formats through format specs, and runs from Python.</td></tr>
-            <tr><th scope="row"><a href="https://harlequin.sh/">Harlequin</a>, DuckDB UI</th><td>SQL editors over a database. datui starts at a file and its rows: keys sort, filter and chart, and SQL is one of three query modes.</td></tr>
-          </tbody>
-        </table>
+      <section aria-labelledby="not-title">
+        <h2 id="not-title">What it is not</h2>
+        <ul class="section-lead">
+          <li>An editor: cells cannot be changed, and datui does not write to the files it opens unless you export over one. Results leave as an export or a copy.</li>
+          <li>A service: no telemetry, no update check. datui connects only to the data and the cloud accounts you open or browse.</li>
+        </ul>
       </section>
 
       <section id="versions" aria-labelledby="docs-title">

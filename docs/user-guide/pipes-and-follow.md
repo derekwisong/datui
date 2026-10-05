@@ -35,10 +35,12 @@ printf 'id,amount\n1,9.50\n' > sales.csv && datui - < sales.csv
   counts the bytes.
 - NDJSON and [journal JSON](../formats/signals-and-logs.md#systemd-journal)
   show the entries whose lines have ended; an object still being written
-  waits for its newline. The columns are the fields of the lines that had
-  arrived when the table opened; a field first seen later joins as a column at
-  the right once the stream ends, the query, filters and sort kept, so the
-  final columns cover every line.
+  waits for its newline. The journal's columns are the fields of every line
+  that had arrived when the table opened; NDJSON's, those of its first 100
+  lines. A field first seen later joins as a column at
+  the right once the stream ends, so the final columns cover every line.
+  Filters and the sort stay; under a query, a reshape, a group or a
+  drill-down, the column joins once that is cleared.
 - The data is written to a temporary file in `spool` under the cache
   directory as it arrives, not the system temp directory (memory on many
   Linux systems); `--temp-dir` puts it elsewhere. The file is removed when the

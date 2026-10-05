@@ -14,7 +14,7 @@ datui -c analysis.sample_memory_limit=8GiB https://d37ci6vzurychx.cloudfront.net
 | <kbd>S</kbd> | The Sample form, on the view's sample or a new one |
 | <kbd>Enter</kbd> | Draw the sample; again past a memory warning, to draw anyway |
 | <kbd>Esc</kbd> in the form | Close it; the view's sample stays as it was |
-| <kbd>Esc</kbd> while it is drawn | Stop; the rows so far stay. A sample that keeps its rows to the end (below) has none yet, and goes |
+| <kbd>Esc</kbd> while it is drawn | Stop; the rows so far stay. Before the first rows come, the view stays as it was |
 | **Method** → **No sample**, or <kbd>R</kbd> | Take the sample away |
 
 The form's settings (which rows, the method, the size, the seed) are the
@@ -45,10 +45,19 @@ queried view. Taking the sample away keeps the query, filters and sort laid on
 it, over the source again; a sample drawn from a query's rows returns to that
 query.
 
+A pivot is read whole, so no sample is drawn under one: sample the pivoted view
+(**Rows from** **All rows**) instead. A sample with a pivot laid on it is taken
+away with <kbd>R</kbd>, which takes the pivot too.
+
+The same seed keeps the same rows. A random sample of a stream is kept row by
+row when the total is known and in a reservoir when it is not; drawn again, in
+the session or from a [view](views.md), it is drawn the way it was first.
+
 ## Rows as they arrive
 
 The table shows the rows while the sample is drawn, the view staying where it
-is, as a [pipe](pipes-and-follow.md) does. Rows show in the order they arrive,
+is, as a [pipe](pipes-and-follow.md) does. Until the first rows come, the view
+it replaces stays; a draw that fails or stops before then leaves it as it was. Rows show in the order they arrive,
 then in the order the source holds them once the sample ends.
 
 | Read | Rows show |
@@ -80,7 +89,7 @@ shows the cost when the table has measured its rows: `100,000 rows · ~380.0 MiB
 | When | datui |
 |---|---|
 | The estimate is more than the memory available now | Warns on the form, naming the setting; <kbd>Enter</kbd> again draws anyway, with no running check |
-| Memory runs low while it is drawn | Stops, keeps the rows so far, and says so: `Sample stopped at 3.9 GiB (58,700 rows): memory ran low` |
+| Memory runs low while it is drawn | Stops, keeps the rows so far, and says so: `Sample stopped at 3.9 GiB (58,700 rows): memory ran low`. A sample that keeps its rows to the end (an unknown total, equal per value) stops when what it holds could not fit twice, keeping those |
 | There is no estimate | Draws, the running check as the backstop |
 
 [`analysis.sample_memory_limit`](../reference/settings.md#analysis) sets a

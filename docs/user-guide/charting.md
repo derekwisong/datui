@@ -323,10 +323,16 @@ write, keeps the dialog open with the reason under the fields.
 | Double column | 2100 × 1300 | 7 × 4.3 in, 300 dpi |
 | Custom | 16 to 8,192 a side | the last preset's resolution |
 
-The recipe is a [view](views.md)'s JSON: the datui version, the source path or
-URL, the query, filters and sort, the sample (size, seed, scope, method) or
-every row, the chart, and the export's settings. Saved as a view, it draws the
-chart again. The image is the same either way; the recipe can carry paths,
+The recipe is a JSON document that reads back as a [view](views.md):
+
+| Key | Holds |
+|---|---|
+| `datui` | The version that wrote it |
+| `source` | The path, or the URL without its user, password, query string or fragment |
+| `table` | The table of a file of tables, when it is one |
+| `rows` | What the chart read: the sample with its seed, or `every row` |
+| `settings` | The view's: the sample's scope, method, size, seed and how it was drawn, with the view it was drawn through; the query, filters, sort, column layout and types, reshape; the chart, its options and its export settings, the dialog's words included |
+ The image is the same either way; the recipe can carry paths,
 bucket names and query values, so Omit before sharing a file that should not.
 
 | Format | Recipe in |

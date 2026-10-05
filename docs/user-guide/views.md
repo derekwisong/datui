@@ -28,7 +28,9 @@ its own results.
 | A view with | When applied |
 |---|---|
 | A [sample](sampling.md) | Draws it again from its scope, method, size and seed: the same rows, never stored. Its query, filters and sort go on as the rows arrive |
-| A [chart](charting.md) | Lands on the table; <kbd>c</kbd> draws the chart, with its options and how it was last exported. The footer offers <kbd>c</kbd> | Saving is unavailable until the current table has a change
+| A [chart](charting.md) | Lands on the table; <kbd>c</kbd> draws the chart, with its options and how it was last exported. The footer offers <kbd>c</kbd> |
+
+Saving is unavailable until the current table has a change
 to store. In the description field, <kbd>Enter</kbd> inserts a newline;
 <kbd>Ctrl</kbd>+<kbd>J</kbd> saves from there, or <kbd>Tab</kbd> out and press <kbd>Enter</kbd>.
 The form takes the keys every [dialog](../reference/dialogs.md) takes; in the

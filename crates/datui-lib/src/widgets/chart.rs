@@ -2950,11 +2950,20 @@ mod tests {
                 },
             },
         };
+        // 12,000 to 12,600 fits in steps of 200, not out to 13,000 in steps of 500.
         let text = plot_text_with(&ctx, &modal, xy(), g, Rect::new(0, 0, 40, 12));
-        assert_eq!(y_labels(&text), ["13.000", "12.500", "12.000"], "{text}");
+        assert_eq!(
+            y_labels(&text),
+            ["12.600", "12.400", "12.200", "12.000"],
+            "{text}"
+        );
         // Too narrow for those: the short form, each in the same unit and places.
         let text = plot_text_with(&ctx, &modal, xy(), g, Rect::new(0, 0, 16, 12));
-        assert_eq!(y_labels(&text), ["13,0k", "12,5k", "12,0k"], "{text}");
+        assert_eq!(
+            y_labels(&text),
+            ["12,6k", "12,4k", "12,2k", "12,0k"],
+            "{text}"
+        );
     }
 
     /// A heatmap's y labels in one format; an integer column's middle label is left

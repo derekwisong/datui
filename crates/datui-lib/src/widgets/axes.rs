@@ -118,7 +118,8 @@ impl<'a> AxisSpec<'a> {
     }
 
     /// A numeric y axis: widened out to the nice ticks either side of its range, so
-    /// it starts and ends on a label.
+    /// it starts and ends on a label, short of a tick that would leave most of a
+    /// step empty ([`ticks::widen_snug`]).
     pub fn y_numbers(bounds: [f64; 2], numbers: &AxisNumbers, title: &'a str) -> Self {
         Self {
             scale: Scale::Numbers {
@@ -328,7 +329,7 @@ fn number_sets(
         .into_iter()
         .map(|step| {
             let range = if widen {
-                ticks::widen(lo, hi, step)
+                ticks::widen_snug(lo, hi, step, numbers.whole)
             } else {
                 bounds
             };

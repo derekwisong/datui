@@ -200,6 +200,30 @@ fn enter_on_the_excel_tab_opens_the_worksheet_under_the_cursor() {
     assert_eq!(app.open_path(), Some(book.join("2023").as_path()));
 }
 
+/// Enter means a tab's own thing: the column's type on Schema, the worksheet on Excel.
+#[test]
+fn enter_on_the_schema_tab_retypes_and_on_the_excel_tab_opens() {
+    let (_dir, book) = copy_of("sheets.xlsx");
+    let (mut app, _rx, _tx) = open(vec![book.clone()], OpenOptions::default());
+    press(&mut app, KeyCode::Char('i'));
+    while app.info_modal.active_tab != InfoTab::Schema {
+        press(&mut app, KeyCode::Left);
+    }
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.input_mode, InputMode::Retype);
+    assert_eq!(app.open_path(), Some(book.as_path()), "no table opened");
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.input_mode, InputMode::Info, "back to the panel");
+
+    while app.info_modal.active_tab != InfoTab::Format {
+        press(&mut app, KeyCode::Right);
+    }
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.retype.is_none(), "no type picker");
+    assert_ne!(app.input_mode, InputMode::Retype);
+}
+
 #[cfg(feature = "sqlite")]
 #[test]
 fn t_opens_another_table_of_a_database_and_leaves_the_query_behind() {

@@ -24,11 +24,13 @@ the options. A shelf the type does not use stays in place, dimmed, with why
 |---|---|---|
 | **Type** | Line, Scatter, Bar, Histogram, Box, KDE, Heatmap | `suggested for <type>` |
 | **X** | A column: what the type takes on X | The time bucket of a date X on a line or scatter; the bar order; the histogram's bins |
-| **Y** | A column, several on a line or scatter (one series each); on a histogram, count or share | The aggregate, and cumulative when it is on |
+| **Y** | A column, several on a line or scatter (one series each); on a histogram, count or share | On a line, scatter or bar, the **Aggregate** row, and cumulative when it is on |
 | **Color** | A category column: one series per value | Which values: `top 7 of 16 by rows`, `all 3`, `3 picked of 4,812` |
 
 The plot's title line says what is charted and how: `delay · mean by month,
-cumulative, by carrier`.
+cumulative, by carrier`. When it would only name the Y column, which the y
+axis's title already does, it is left blank. An export's description still
+starts from it.
 
 ## Plot two columns
 
@@ -56,9 +58,9 @@ dataset starts over.
 
 ## Aggregate
 
-The line under **Y** is the aggregate: <kbd>←</kbd> <kbd>→</kbd> step through
-none, count, sum, mean, median, min and max. With one, the rows that share an
-X (and a color) are made one point, over every row of the view, in one
+The **Aggregate** row under **Y**, on a line, scatter or bar: <kbd>←</kbd>
+<kbd>→</kbd> step through none, count, sum, mean, median, min and max. With
+one, the rows that share an X (and a color) are made one point, or one bar, over every row of the view, in one
 group-by in the background; the chart says how many rows under the plot (`all
 336,776 rows`, or `rows in the groups shown` under a color),
 and the footer `Grouping 337k rows...` while it runs. Without one, a
@@ -68,7 +70,7 @@ chart samples, and says so.
 |---|---|
 | Aggregate | **count** needs no Y column: the rows per X. The others make the Y column's values one |
 | Time bucket | Line and Scatter, under a date or datetime X: none, day, week (from Monday), month, quarter, year. A bucket with no aggregate takes **mean**; an aggregate on a date X with no bucket starts by the day |
-| **Cumulative** | Line and Scatter, with an aggregate: **off**, **running sum**, or **compound**. The rows run as a total in X order, per series, and each point is the total at the end of its X or bucket: a running sum of Y, or Y's rates compounded over every row, `(1 + y1)(1 + y2)… − 1`. The aggregate is set aside meanwhile (a count runs as a count of rows); the line under **Y** says `mean · compound of rows` |
+| **Cumulative** | Line and Scatter, with an aggregate: **off**, **running sum**, or **compound**. The rows run as a total in X order, per series, and each point is the total at the end of its X or bucket: a running sum of Y, or Y's rates compounded over every row, `(1 + y1)(1 + y2)… − 1`. The aggregate is set aside meanwhile (a count runs as a count of rows); **Aggregate** says `mean · compound of rows` |
 
 An X of more than about 200,000 values is refused before any row is grouped,
 judged from a sample of X, with the advice to bucket it.

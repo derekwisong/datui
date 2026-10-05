@@ -165,8 +165,10 @@ a click) takes the keys from the panel: its line is in the accent, under the
 series, and its readout sits under the plot.
 
 **Shelves** — the chart panel (`widgets/chart.rs`): the same rows for every
-chart type, `label  value` with the line under a shelf (bucket, aggregate,
+chart type, `label  value` with the line under a shelf (bucket, order, bins,
 which values) indented to the value column, then an Options section rule. A
+setting that reads as a value without its name gets its own labeled row
+(`Aggregate` under `Y`: unlabeled, `none` read as a second Y column; #757). A
 shelf the type does not use stays where it is, dimmed with a word of why
 (`density`, `same as X`), and Tab skips it: nothing moves when the type
 changes. Column names take their type's color. A picker drops over the panel

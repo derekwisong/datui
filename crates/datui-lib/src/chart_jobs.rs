@@ -194,6 +194,16 @@ impl ChartRequest {
         } == *other
     }
 
+    /// Whether this is `last` with another aggregate: a step through the aggregates.
+    pub(crate) fn steps_aggregate_from(&self, last: &Self) -> bool {
+        let mut spec = self.spec.clone();
+        if spec.encoding.y.aggregate == last.spec.encoding.y.aggregate {
+            return false;
+        }
+        spec.encoding.y.aggregate = last.spec.encoding.y.aggregate;
+        spec == last.spec
+    }
+
     /// Whether `other` is the same chart of the same columns, whatever its options.
     pub(crate) fn same_columns(&self, other: &Self) -> bool {
         let (a, b) = (&self.spec, &other.spec);

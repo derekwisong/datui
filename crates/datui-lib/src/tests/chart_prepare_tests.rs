@@ -593,6 +593,47 @@ fn a_sort_or_filter_keeps_the_chart_columns() {
     assert_eq!(xy.series[0].len(), 3, "drawn from the filtered view");
 }
 
+/// Stepping through the aggregates prepares only where the steps stop: none was
+/// drawn, then count, distinct and sum are passed over, and mean is grouped once
+/// the steps have paused.
+#[test]
+fn quick_aggregate_steps_group_only_where_they_stop() {
+    crate::tests::ensure_sample_data();
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_xy_csv(dir.path(), "steps.csv", 10);
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), crate::tests::test_runtime());
+    open(&mut app, &rx, &tx, path);
+    select_xy(&mut app);
+    pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
+
+    for aggregate in [
+        Aggregate::Count,
+        Aggregate::Distinct,
+        Aggregate::Sum,
+        Aggregate::Mean,
+    ] {
+        app.chart_modal.spec.encoding.y.aggregate = aggregate;
+        app.event(&AppEvent::Wake);
+        assert!(
+            app.chart_inflight.is_none(),
+            "{aggregate:?} waits for the next"
+        );
+        assert!(app.chart_preparing(), "and says it is coming");
+    }
+    pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
+    let request = ChartRequest::from_modal(&app.chart_modal).unwrap();
+    assert_eq!(request.spec.encoding.y.aggregate, Aggregate::Mean);
+    let mut passed = request.clone();
+    for aggregate in [Aggregate::Count, Aggregate::Distinct, Aggregate::Sum] {
+        passed.spec.encoding.y.aggregate = aggregate;
+        assert!(
+            app.chart_cache.get(&passed).is_none(),
+            "{aggregate:?} never ran"
+        );
+    }
+}
+
 /// A selection that cannot be prepared says why on the chart, instead of drawing
 /// empty axes.
 #[test]

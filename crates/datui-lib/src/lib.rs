@@ -1151,6 +1151,9 @@ pub struct App {
     /// `busy`: the sidebar stays live while the data is computed, and the newest
     /// selection is prepared once this one lands.
     chart_inflight: Option<ChartInflight>,
+    /// The selection the chart last asked for, and, when it stepped the aggregate of
+    /// the one before, until when it waits for the next step before it is prepared.
+    chart_asked: Option<(ChartRequest, Option<std::time::Instant>)>,
     /// The result of the background chart preparation, like `pending_collect_result`:
     /// the data stays out of the event.
     pending_chart_result: ChartResultSlot,
@@ -6020,6 +6023,7 @@ impl App {
             pending_copy: None,
             chart_cache: ChartCache::default(),
             chart_inflight: None,
+            chart_asked: None,
             pending_chart_result: Arc::new(Mutex::new(None)),
             chart_export_waiting: None,
             error_modal: ErrorModal::new(),
@@ -13106,8 +13110,17 @@ impl App {
         match self.chart_inflight.as_ref() {
             Some(inflight) if !inflight.stale => true,
             Some(_) => self.chart_request_pending(),
-            None => false,
+            None => self.chart_settling(),
         }
+    }
+
+    /// Whether the selection on screen is a step through the aggregates still waiting
+    /// for the next step.
+    fn chart_settling(&self) -> bool {
+        self.chart_asked
+            .as_ref()
+            .and_then(|(_, until)| *until)
+            .is_some_and(|until| std::time::Instant::now() < until)
     }
 
     /// Whether the chart view wants data it does not have and cannot be told it will
@@ -13129,6 +13142,7 @@ impl App {
     /// dataset changes or is left for the home screen.
     fn reset_chart_state(&mut self) {
         self.chart_cache.clear();
+        self.chart_asked = None;
         if let Some(inflight) = self.chart_inflight.as_mut() {
             inflight.stale = true;
             inflight
@@ -13196,6 +13210,7 @@ impl App {
     /// selection is picked up when that one lands). Runs after every event, so a change
     /// of column or option is noticed as soon as it is made and render only ever draws.
     fn ensure_chart_data(&mut self) {
+        const CHART_AGGREGATE_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
         if self.input_mode != InputMode::Chart || !self.chart_modal.active {
             return;
         }
@@ -13214,6 +13229,22 @@ impl App {
         let Some(request) = request else {
             return;
         };
+        // Stepping none, count, distinct, sum, mean grouped every row at each step, and
+        // drew each: a step waits a moment for the next, and only where it stops is
+        // prepared. A Wake when the wait ends prepares it.
+        let settle = match self.chart_asked.take() {
+            Some((asked, until)) if asked == request => until,
+            Some((asked, _)) if request.steps_aggregate_from(&asked) => {
+                let tx = self.events.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(CHART_AGGREGATE_SETTLE);
+                    let _ = tx.send(AppEvent::Wake);
+                });
+                Some(std::time::Instant::now() + CHART_AGGREGATE_SETTLE)
+            }
+            _ => None,
+        };
+        self.chart_asked = Some((request.clone(), settle));
         if self.chart_cache.get(&request).is_some() {
             self.chart_cache.touch(&request, self.chart_modal.log_scale);
             // A cached chart's colors were counted with it.
@@ -13229,7 +13260,7 @@ impl App {
             }
             return;
         }
-        if self.chart_inflight.is_some() {
+        if self.chart_inflight.is_some() || self.chart_settling() {
             return;
         }
         let Some(state) = self.data_table_state.as_ref() else {

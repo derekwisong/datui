@@ -64,7 +64,7 @@ arbitrary = { version = "1", features = ["derive"] }
 [target.'cfg(unix)'.dev-dependencies]
 libc = "0.2"
 
-# Packaging: deb, rpm. The AUR package is
+# Packaging: deb, rpm, cargo-binstall. The AUR package is
 # scripts/packaging/PKGBUILD.in, filled in by build_package.py.
 [package.metadata.deb]
 maintainer = "Derek Wisong"
@@ -137,6 +137,16 @@ source = "LICENSE"
 dest = "/usr/share/licenses/datui/LICENSE"
 mode = "0644"
 doc = true
+
+# `cargo binstall datui`: the release archives, named datui-vX.Y.Z-TRIPLE, with
+# the binary at the archive's root. release.yml names them; keep the two in step.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }{ archive-suffix }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
 
 # Dev-loop build speed. A full-debuginfo build produced a 1.9 GB binary, of which
 # 1.5 GB was DWARF (.debug_str alone was 1.09 GB). Linking that into the binary

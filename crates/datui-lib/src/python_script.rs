@@ -1028,6 +1028,17 @@ pub(crate) fn csv_arguments(call: &mut Call<'_>) -> Option<Source> {
     if let Some(nulls) = csv_null_values(options, call.record.schema) {
         call.args.push(format!("null_values={nulls}"));
     }
+    // Columns datui read as text where Polars would infer a number: `02134`.
+    if !options.typing.text.is_empty() {
+        let text: Vec<String> = options
+            .typing
+            .text
+            .iter()
+            .map(|name| format!("{}: pl.String", py_str(name)))
+            .collect();
+        call.args
+            .push(format!("schema_overrides={{{}}}", text.join(", ")));
+    }
     if let Some(s) = call.storage_for(call.names) {
         call.args.push(s);
     }

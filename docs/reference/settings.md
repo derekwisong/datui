@@ -34,7 +34,7 @@ lives, imports, the theme and troubleshooting.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `read.infer_types` | bool \| list of columns | `true` | `--infer-types` | Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. |
+| `read.infer_types` | bool \| list of columns | `true` | `--infer-types` | Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. A column with a leading zero (02134) stays text; a later value that does not parse is null, and the Notes tab counts them. |
 | `read.parquet_schema` | union \| first | `"union"` |  | A partitioned Parquet dataset's schema: union is every column any file has, from their footers; first lets Polars take one file's. |
 | `read.decompress_in_memory` | bool | `false` |  | Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file. |
 | `read.temp_dir` | path | unset | `--temp-dir` | Directory for decompression temp files. Unset: the system's. |

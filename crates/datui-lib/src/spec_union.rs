@@ -83,6 +83,12 @@ pub(crate) fn read_head(file: &Path, options: &OpenOptions, spec: &Delimited) ->
     })
 }
 
+/// The first data rows of the file at `file`, as [`read_head`] reads them, for a read
+/// with or without a spec: the rows a scan infers its types from.
+pub(crate) fn head_window(file: &Path, options: &OpenOptions) -> Result<Vec<Vec<String>>> {
+    Ok(read_head(file, options, &Delimited::default())?.window)
+}
+
 /// What a column's values in a file's window are, after trimming.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Seen {

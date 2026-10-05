@@ -94,7 +94,7 @@ character's code (`ord(";")`).
 | `footer_rows` | integer | `--footer-rows` | Skip this many rows at the end, such as a footer. Reads the whole file to count rows |
 | `skip_rows` | integer | `--skip-rows` | Skip this many rows at the start; the header is read after them. Quote-aware, unlike --skip-lines |
 | `skip_lines` | integer | `--skip-lines` | Skip this many raw lines at the start, split on newlines alone: a newline inside quotes counts |
-| `infer_types` | bool \| list of columns | `--infer-types` | Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. |
+| `infer_types` | bool \| list of columns | `--infer-types` | Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. A column with a leading zero (02134) stays text; a later value that does not parse is null, and the Notes tab counts them. |
 | `parquet_schema` | union \| first | `-c read.parquet_schema=...` | A partitioned Parquet dataset's schema: union is every column any file has, from their footers; first lets Polars take one file's. |
 | `decompress_in_memory` | bool | `-c read.decompress_in_memory=...` | Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file. |
 | `temp_dir` | path | `--temp-dir` | Directory for decompression temp files. Unset: the system's. |

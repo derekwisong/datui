@@ -273,6 +273,14 @@ pub fn durations(text: &StringChunked) -> DurationChunked {
         .into_duration(TimeUnit::Nanoseconds)
 }
 
+/// Whether `value` starts with a zero another digit follows, as `02134`, `007` and
+/// `-01` do and `0`, `0.5`, `-0.5` and `0e3` do not: a code or an ID, kept as text
+/// rather than read as a number.
+pub fn has_leading_zero(value: &str) -> bool {
+    let digits = value.trim().trim_start_matches(['+', '-']).as_bytes();
+    digits.len() > 1 && digits[0] == b'0' && digits[1].is_ascii_digit()
+}
+
 /// A column given a type, and the type it had before: what [`unfit_frame`] counts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Typed {
@@ -381,6 +389,16 @@ mod tests {
             out.column("v").unwrap().as_materialized_series().clone(),
             unfit_counts(&counted, &typed),
         )
+    }
+
+    #[test]
+    fn a_leading_zero_is_a_code() {
+        for code in ["02134", "007", "-01", " 0012 "] {
+            assert!(has_leading_zero(code), "{code}");
+        }
+        for number in ["0", "0.5", "-0.5", "0e3", "10", "", "-"] {
+            assert!(!has_leading_zero(number), "{number}");
+        }
     }
 
     #[test]

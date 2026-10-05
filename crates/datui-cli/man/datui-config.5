@@ -44,7 +44,7 @@ Catalog files elsewhere, listed on the home screen after catalog.toml and the co
 How files are read. A file's own layout (delimiter, header, rows to skip) is a flag for that file, not a setting.
 .TP
 \fBread.infer_types\fR (\fIbool | list of columns\fR)
-Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. Default: \fBtrue\fR. Flag: \fB\-\-infer\-types\fR.
+Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. A column with a leading zero (02134) stays text; a later value that does not parse is null, and the Notes tab counts them. Default: \fBtrue\fR. Flag: \fB\-\-infer\-types\fR.
 .TP
 \fBread.parquet_schema\fR (\fIunion | first\fR)
 A partitioned Parquet dataset's schema: union is every column any file has, from their footers; first lets Polars take one file's. Default: \fB"union"\fR.

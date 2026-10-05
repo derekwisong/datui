@@ -968,6 +968,11 @@ fn a_specs_types_read_its_columns() {
         assert!(notes.contains(&said.to_string()), "{said}: {notes:?}");
     }
     assert!(!notes.iter().any(|n| n.starts_with("OnGrnd:")), "{notes:?}");
+    assert_eq!(
+        notes.iter().filter(|n| n.starts_with("Latitude:")).count(),
+        1,
+        "typed by the spec, not by read.infer_types as well: {notes:?}"
+    );
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(
         state.unit_of("Latitude"),
@@ -1060,5 +1065,67 @@ fn the_contributed_specs_parse() {
             .unwrap()
             .to_string()
             .starts_with("2024-05-04 13:12:01")
+    );
+}
+
+/// `read.infer_types` leaves a column of codes with leading zeros as text, though
+/// Polars would read `02134` as a number, and types `0.5` as one.
+#[test]
+fn a_leading_zero_keeps_a_column_text() {
+    let path = common::fixture_dir().join("infer_zip_codes.csv");
+    std::fs::write(&path, "zip,amount,id\n02134,0.5,7\n10001,1.5,8\n").unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    let options = OpenOptions {
+        parse_strings: Some(datui::ParseStringsTarget::All),
+        ..OpenOptions::default()
+    };
+    pump_open_until_loaded(&mut app, &rx, vec![path], options);
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    let df = collected(&app);
+    assert_eq!(df.column("zip").unwrap().dtype(), &DataType::String);
+    assert_eq!(
+        df.column("zip").unwrap().str().unwrap().get(0),
+        Some("02134")
+    );
+    assert_eq!(df.column("amount").unwrap().dtype(), &DataType::Float64);
+    assert_eq!(df.column("id").unwrap().dtype(), &DataType::Int64);
+}
+
+/// A value past the sample `read.infer_types` typed from that does not parse is null,
+/// and the Notes count it once the Info panel opens.
+#[test]
+fn infer_types_counts_what_it_nulls() {
+    let path = common::fixture_dir().join("infer_past_sample.csv");
+    let mut text = String::from("id,volts\n");
+    for i in 0..1100 {
+        let volts = if i == 1050 {
+            "n/a".to_string()
+        } else {
+            format!("{:.1}", 25.0 + (i % 10) as f64 / 10.0)
+        };
+        text.push_str(&format!("{i},   {volts}\n"));
+    }
+    std::fs::write(&path, text).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    let options = OpenOptions {
+        parse_strings: Some(datui::ParseStringsTarget::All),
+        ..OpenOptions::default()
+    };
+    pump_open_until_loaded(&mut app, &rx, vec![path], options);
+    pump_until_idle(&mut app, &rx, &tx);
+    let df = collected(&app);
+    assert_eq!(df.column("volts").unwrap().dtype(), &DataType::Float64);
+    assert_eq!(df.column("volts").unwrap().null_count(), 1);
+    app.event(&AppEvent::Key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('i'),
+        crossterm::event::KeyModifiers::NONE,
+    )));
+    pump_until(&mut app, &rx, &tx, |app| !app.unfit_count_pending());
+    let notes = note_summaries(&app);
+    assert!(
+        notes.contains(&"volts: 1 value not f64, read as null".to_string()),
+        "{notes:?}"
     );
 }

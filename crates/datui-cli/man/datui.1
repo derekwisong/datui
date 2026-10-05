@@ -91,7 +91,7 @@ Ignore the spaces after a delimiter, so padded numbers are numbers and a cell of
 Values read as null: VAL in every column, COL=VAL in column COL only. \-\-null is repeatable and replaces this list. [config: csv.null_values].
 .TP
 \fB\-\-infer\-types\fR[=\fICOLS|off\fR]
-Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. [config: read.infer_types].
+Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. A column with a leading zero (02134) stays text; a later value that does not parse is null, and the Notes tab counts them. [config: read.infer_types].
 .TP
 \fB\-\-infer\-rows\fR \fIN\fR
 Rows read to infer column types. [config: csv.infer_rows].

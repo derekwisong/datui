@@ -45,7 +45,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `--comment <PREFIX>` | Lines starting with this are comments, before the header and among the data. [config: csv.comment] |
 | `--skip-initial-space[=<BOOL>]` | Ignore the spaces after a delimiter, so padded numbers are numbers and a cell of spaces is null. [config: csv.skip_initial_space] |
 | `--null <VAL>` | Values read as null: VAL in every column, COL=VAL in column COL only. --null is repeatable and replaces this list. [config: csv.null_values] |
-| `--infer-types[=<COLS\|off>]` | Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. [config: read.infer_types] |
+| `--infer-types[=<COLS\|off>]` | Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. A column with a leading zero (02134) stays text; a later value that does not parse is null, and the Notes tab counts them. [config: read.infer_types] |
 | `--infer-rows <N>` | Rows read to infer column types. [config: csv.infer_rows] |
 | `--ignore-errors[=<BOOL>]` | Skip rows that do not parse instead of failing. [config: csv.ignore_errors] |
 

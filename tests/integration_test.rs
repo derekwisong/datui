@@ -17979,6 +17979,22 @@ fn copy_format(app: &mut App, format: datui::clipboard::CopyFormat) {
     assert_eq!(app.copy_modal.format, format);
 }
 
+/// The copy dialog keeps one size whatever its scope offers: stepping the scope
+/// moves no edge of the frame.
+#[test]
+fn test_copy_dialog_keeps_its_size_across_scopes() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("copy_fixed_height.csv");
+    press(&mut app, KeyCode::Char('y'));
+    assert!(app.copy_modal.active);
+    let mut frames = std::collections::HashSet::new();
+    for scope in datui::copy_modal::CopyScope::ALL {
+        copy_scope(&mut app, scope);
+        let rows = rows_at(&mut app, 80, 24);
+        frames.insert(common::frame_bottoms(&rows));
+    }
+    assert_eq!(frames.len(), 1, "one frame for every scope: {frames:?}");
+}
+
 /// The Columns list is a list: PgUp/PgDn page it, Home/End reach its ends, ↓
 /// stops at the last column, and the rows out of view are counted above and below.
 #[test]

@@ -259,13 +259,13 @@ pub fn render(
 
     if app.copy_modal.active {
         // A commitment like export: compact and centered. The dialog holds
-        // its rows, the spec and the footer; an open Picker earns the room
-        // it drops into.
+        // the most rows any scope offers, so stepping the scope moves nothing,
+        // the spec and the footer; an open Picker earns the room it drops into.
         let modal_width = (area.width * 3 / 4).min(46);
         let wanted = if app.copy_modal.picker.is_some() {
             15
         } else {
-            app.copy_modal.row_order().len() as u16 + 6
+            crate::copy_modal::CopyModal::MOST_ROWS + 6
         };
         let modal_height = wanted.min(area.height);
         let modal_area = Rect {

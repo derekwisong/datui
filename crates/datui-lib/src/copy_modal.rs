@@ -146,6 +146,9 @@ impl CopyModal {
         self.picker = None;
     }
 
+    /// The most rows any scope offers: the dialog's height, whatever the scope.
+    pub const MOST_ROWS: u16 = 3;
+
     /// The rows the dialog offers, in Tab order. The cell scope trades the
     /// format and header rows for the column row; a Markdown table without its
     /// header row is not a table, so Markdown drops the header row too.

@@ -323,7 +323,7 @@ pub const SETTINGS: &[Setting] = &[
     s("log.file", Path, Unset("\"~/datui.log\""), "Where the log goes. Unset: datui.log in the cache directory.").flag("log-file"),
     s("log.level", Choice(&["error", "warn", "info", "debug", "trace", "off"]), Unset("\"warn\""), "How much the log says (default warn). DATUI_LOG beats a config file's; -c and --log-level beat DATUI_LOG.").flag("log-level"),
     // [theme]
-    s("theme.mode", Choice(&["auto", "dark", "light"]), Unset("\"auto\""), "Which built-in palette to start from. auto reads COLORFGBG and falls back to dark."),
+    s("theme.mode", Choice(&["auto", "dark", "light"]), Unset("\"auto\""), "Which built-in palette to use. auto asks the terminal for its background, then reads COLORFGBG, then falls back to dark; it asks again when the terminal regains focus."),
     color("theme.colors.chip_key", "#7dcfff", "#2e7de9", "Keys named in the footer, dialogs, the breadcrumb and the correlation matrix."),
     color("theme.colors.chip_label", "#a9b1d6", "#3760bf", "Labels beside keys in the footer, and the footer's status."),
     color("theme.colors.throbber", "#7dcfff", "#2e7de9", "The busy spinner."),
@@ -527,7 +527,7 @@ pub const ENVIRONMENT: &[EnvVar] = &[
     env(
         &["COLORFGBG"],
         EnvGroup::Terminal,
-        "With `theme.mode = \"auto\"`, says whether the background is light or dark",
+        "With `theme.mode = \"auto\"`, says whether the background is light or dark, for a terminal that does not answer when asked",
     ),
     env(
         &["LC_ALL", "LC_CTYPE", "LANG"],

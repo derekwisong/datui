@@ -18,11 +18,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{JoinHandle, Thread};
+use std::time::Instant;
 
 use crossterm::event::{Event, EventStream};
 use futures_core::Stream;
 
 use crate::AppEvent;
+use crate::terminal_color::{self, ReplyScanner, Scanned};
 
 /// Wakes the reader thread when Crossterm has an event, or when it is told to stop.
 struct Unpark(Thread);
@@ -80,10 +82,18 @@ fn read(tx: Sender<AppEvent>, stop: &AtomicBool) {
     let mut stream = EventStream::new();
     let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
     let mut cx = Context::from_waker(&waker);
+    // The terminal's answer about its background arrives as keys; this takes it off.
+    let mut replies = ReplyScanner::default();
+    let mut scanned = Vec::new();
+    let mut held_since: Option<Instant> = None;
     while !stop.load(Ordering::SeqCst) {
         match Pin::new(&mut stream).poll_next(&mut cx) {
             Poll::Ready(Some(Ok(event))) => {
-                if forward(&tx, event).is_err() {
+                replies.feed(event, terminal_color::armed(), &mut scanned);
+                held_since = replies
+                    .holding()
+                    .then(|| held_since.unwrap_or_else(Instant::now));
+                if pass_on(&tx, &mut scanned).is_err() {
                     break;
                 }
             }
@@ -93,12 +103,45 @@ fn read(tx: Sender<AppEvent>, stop: &AtomicBool) {
             }
             Poll::Ready(None) => break,
             // A spurious unpark only costs one more poll.
-            Poll::Pending => std::thread::park(),
+            Poll::Pending => match held_since {
+                None => std::thread::park(),
+                Some(since) => {
+                    let left = terminal_color::HOLD.saturating_sub(since.elapsed());
+                    if left.is_zero() {
+                        // Not a reply after all: the keys go on as typed.
+                        replies.flush(&mut scanned);
+                        held_since = None;
+                        if pass_on(&tx, &mut scanned).is_err() {
+                            break;
+                        }
+                    } else {
+                        std::thread::park_timeout(left);
+                    }
+                }
+            },
         }
     }
     // Dropping the stream wakes Crossterm's own blocked poll and lets its thread end,
     // releasing the terminal.
     drop(stream);
+}
+
+/// Hand what the scanner let through to the loop: events through [`forward`], a reply
+/// as [`AppEvent::TerminalBackground`].
+fn pass_on(tx: &Sender<AppEvent>, scanned: &mut Vec<Scanned>) -> Result<(), ()> {
+    for item in scanned.drain(..) {
+        match item {
+            Scanned::Event(event) => forward(tx, event)?,
+            Scanned::Background(mode) => {
+                terminal_color::disarm();
+                if let Some(mode) = mode {
+                    tx.send(AppEvent::TerminalBackground(mode))
+                        .map_err(|_| ())?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Hand one event to the loop. Only presses are keys: a terminal speaking the kitty
@@ -109,6 +152,8 @@ fn forward(tx: &Sender<AppEvent>, event: Event) -> Result<(), ()> {
         Event::Key(key) if !key.is_press() => return Ok(()),
         Event::Key(_) | Event::Resize(..) => event,
         Event::Mouse(mouse) if crate::pointer::wanted(&mouse) => event,
+        // The terminal is back in front: its scheme may have changed meanwhile.
+        Event::FocusGained => return tx.send(AppEvent::TerminalFocused).map_err(|_| ()),
         _ => return Ok(()),
     };
     tx.send(AppEvent::Terminal(event)).map_err(|_| ())
@@ -145,7 +190,7 @@ mod tests {
             Event::Key(release),
             Event::Key(press),
             Event::Key(repeat),
-            Event::FocusGained,
+            Event::FocusLost,
             Event::Mouse(mouse(MouseEventKind::Moved)),
             Event::Mouse(mouse(MouseEventKind::Drag(MouseButton::Left))),
             Event::Mouse(mouse(MouseEventKind::Up(MouseButton::Left))),
@@ -176,5 +221,41 @@ mod tests {
                 Event::Resize(80, 24)
             ]
         );
+    }
+
+    /// Focus coming back is news for the palette; focus leaving is not.
+    #[test]
+    fn focus_gained_is_sent_as_its_own_event() {
+        let (tx, rx) = mpsc::channel();
+        forward(&tx, Event::FocusLost).unwrap();
+        forward(&tx, Event::FocusGained).unwrap();
+        drop(tx);
+        let got: Vec<_> = rx.iter().collect();
+        assert!(matches!(got.as_slice(), [AppEvent::TerminalFocused]));
+    }
+
+    /// A reply the scanner took off the stream reaches the loop as the mode it names,
+    /// with the keys around it in order; one whose color could not be read is dropped.
+    #[test]
+    fn a_reply_is_sent_as_the_terminal_background() {
+        let (tx, rx) = mpsc::channel();
+        let key = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        let mut scanned = vec![
+            Scanned::Event(key('j')),
+            Scanned::Background(Some(crate::config::ThemeMode::Light)),
+            Scanned::Background(None),
+            Scanned::Event(key('k')),
+        ];
+        pass_on(&tx, &mut scanned).unwrap();
+        drop(tx);
+        let got: Vec<_> = rx.iter().collect();
+        assert!(matches!(
+            got.as_slice(),
+            [
+                AppEvent::Terminal(Event::Key(j)),
+                AppEvent::TerminalBackground(crate::config::ThemeMode::Light),
+                AppEvent::Terminal(Event::Key(k)),
+            ] if j.code == KeyCode::Char('j') && k.code == KeyCode::Char('k')
+        ));
     }
 }

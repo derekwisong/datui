@@ -171,9 +171,23 @@ mode = "light"
 `theme.mode` picks the built-in palette: `auto` (the default), `dark` or
 `light`. The header fill, row stripes, borders and dim text sit a few shades
 off the terminal's background, so the dark palette's shades are unreadable on
-a light background. `auto` reads `COLORFGBG` and falls back to `dark`.
-**Alacritty, Kitty and Ghostty do not set `COLORFGBG`**: on a light scheme in
-those terminals, set `mode = "light"`.
+a light background. Your `[theme.colors]` sit over whichever palette is in use.
+
+`auto` decides in this order:
+
+| Source | When |
+|---|---|
+| The terminal's answer to a background color query (OSC 11) | The terminal answers within 100 ms of startup; light when black text reads better on it than white |
+| `COLORFGBG` | The terminal does not answer, and sets it |
+| `dark` | Neither |
+
+Under `auto` the palette follows the terminal: when its window comes back into
+focus, datui asks again and switches if the scheme changed. That takes a
+terminal that reports focus; in tmux, turn on `set -g focus-events on`.
+
+The question is not asked on Windows, on the Linux console (`TERM=linux`), or
+when standard output is not a terminal. A terminal that does not answer is
+left at `COLORFGBG` or `dark`: set `mode` there.
 
 ## Colors
 

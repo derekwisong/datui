@@ -10,15 +10,19 @@
 /// the panic hook and abort.
 pub(crate) fn restore_terminal() {
     use std::io::Write;
-    // Whether or not it was taken: a terminal not reporting the mouse ignores this.
-    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::event::PopKeyboardEnhancementFlags
-    );
+    let_go(&mut std::io::stdout());
     if let Err(e) = ratatui::try_restore() {
         let _ = writeln!(std::io::stderr(), "Failed to restore terminal: {e}");
     }
+}
+
+/// Turn off what the session may have asked of the terminal, whether or not it did:
+/// a terminal ignores turning off what is not on.
+fn let_go(out: &mut impl std::io::Write) {
+    let _ = crossterm::execute!(out, crossterm::event::DisableMouseCapture);
+    // Focus reports, asked for under `theme.mode = "auto"`.
+    let _ = crossterm::execute!(out, crossterm::event::DisableFocusChange);
+    let _ = crossterm::execute!(out, crossterm::event::PopKeyboardEnhancementFlags);
 }
 
 /// Ask the terminal to tell Ctrl+Enter from Enter.
@@ -42,6 +46,14 @@ pub(crate) fn push_keyboard_flags() {
             crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
         )
     );
+}
+
+/// Ask the terminal to report focus (`CSI ? 1004 h`), so the palette can follow a
+/// scheme changed while datui was in the background: on focus the background is asked
+/// again. A terminal without focus reports ignores it; [`restore_terminal`] turns it
+/// off on every way out.
+pub(crate) fn follow_focus(out: &mut impl std::io::Write) {
+    let _ = crossterm::execute!(out, crossterm::event::EnableFocusChange);
 }
 
 /// Ratatui's terminal, let go without its `Drop` when the terminal has gone. That
@@ -85,5 +97,24 @@ impl Drop for TakenTerminal {
         if !std::thread::panicking() {
             self.restore();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Handing the terminal back turns off focus reports, which `auto` turns on.
+    #[test]
+    fn letting_go_turns_off_focus_reports() {
+        let mut out = Vec::new();
+        let_go(&mut out);
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains("\x1b[?1004l"), "{out:?}");
+        assert!(out.contains("\x1b[<1u"), "{out:?}");
+
+        let mut on = Vec::new();
+        follow_focus(&mut on);
+        assert_eq!(on, b"\x1b[?1004h");
     }
 }

@@ -1035,7 +1035,7 @@ impl polars::prelude::AnonymousScan for Piece {
                     .finish()?
             }
             Parse::Lines { ignore_errors } => {
-                polars::io::ndjson::core::parse_ndjson(&bytes, None, &self.schema, *ignore_errors)?
+                lines::parse_run(&bytes, &self.schema, *ignore_errors)?
             }
             Parse::Stream(schema) => stream::decode_run(bytes, schema, self.skip + take)?,
         };

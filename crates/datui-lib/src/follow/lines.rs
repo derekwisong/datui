@@ -96,7 +96,29 @@ impl LinesScan {
         let bytes = map.as_deref().unwrap_or_default();
         let bytes = &bytes[..complete(bytes, ended)];
         let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes);
-        let schema = polars::io::ndjson::infer_schema(&mut Cursor::new(bytes), infer)?;
+        let schema = match polars::io::ndjson::infer_schema(&mut Cursor::new(bytes), infer) {
+            Err(_) if ignore_errors => {
+                // A line that is not a JSON object is a row of nulls: the schema comes
+                // from the lines that are.
+                let mut objects = Vec::new();
+                let wanted = infer.map_or(usize::MAX, NonZeroUsize::get);
+                let lines = bytes
+                    .split(|&b| b == b'\n')
+                    .filter(|line| {
+                        matches!(
+                            serde_json::from_slice::<serde_json::Value>(line),
+                            Ok(serde_json::Value::Object(_))
+                        )
+                    })
+                    .take(wanted);
+                for line in lines {
+                    objects.extend_from_slice(line);
+                    objects.push(b'\n');
+                }
+                polars::io::ndjson::infer_schema(&mut Cursor::new(objects), infer)?
+            }
+            inferred => inferred?,
+        };
         Ok(LinesScan {
             path: path.to_path_buf(),
             schema: Arc::new(schema),
@@ -222,11 +244,7 @@ impl AnonymousScan for LinesScan {
         let mut start = 0;
         while start < bytes.len() {
             let end = run_end(bytes, start, RUN);
-            let mut df = JsonReader::new(Cursor::new(&bytes[start..end]))
-                .with_json_format(JsonFormat::JsonLines)
-                .with_schema(columns.clone())
-                .with_ignore_errors(self.ignore_errors)
-                .finish()?;
+            let mut df = parse_run(&bytes[start..end], &columns, self.ignore_errors)?;
             if let Some(predicate) = &args.predicate {
                 df = df.lazy().filter(predicate.clone()).collect()?;
             }
@@ -234,9 +252,34 @@ impl AnonymousScan for LinesScan {
             start = end;
         }
         out.rechunk_mut();
-        let df = out;
-        Ok(df)
+        Ok(out)
     }
+}
+
+/// The rows of `run`, whole lines, read as `columns` by Polars' NDJSON line parser, as
+/// a read from a mark is: its whole-file reader samples line lengths and panics on some
+/// short lines. With `ignore_errors`, a line that is not JSON is a row of nulls, as the
+/// watcher counts it, rather than the end of the read.
+pub(super) fn parse_run(
+    run: &[u8],
+    columns: &Schema,
+    ignore_errors: bool,
+) -> PolarsResult<DataFrame> {
+    let run = run.strip_prefix(b"\xef\xbb\xbf").unwrap_or(run);
+    match polars::io::ndjson::core::parse_ndjson(run, None, columns, ignore_errors) {
+        Err(_) if ignore_errors => {}
+        read => return read,
+    }
+    let mut out = DataFrame::empty_with_schema(columns);
+    for line in run.split(|&b| b == b'\n') {
+        if !polars::io::ndjson::core::is_json_line(line) {
+            continue;
+        }
+        let row = polars::io::ndjson::core::parse_ndjson(line, Some(1), columns, true)
+            .unwrap_or_else(|_| DataFrame::full_null(columns, 1));
+        out.vstack_mut(&row)?;
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -250,6 +293,52 @@ mod tests {
         assert_eq!(complete(b"{\"a\":1}\n{\"a\"", false), 8);
         assert_eq!(complete(b"{\"a\":1}\n", false), 8);
         assert_eq!(complete(b"{\"a\":1}\n{\"a\":2}", true), 15);
+    }
+
+    /// Short lines (blank, whitespace, not JSON) among the objects never fail a read:
+    /// every read gives the objects, and a line that is not JSON a row of nulls.
+    #[test]
+    fn short_and_bad_lines_read_as_the_watcher_counts_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases: [(&str, Vec<Option<i64>>); 4] = [
+            ("{\"a\":1}\n\n   \n{\"a\":2}\n", vec![Some(1), Some(2)]),
+            (
+                "{\"a\":1}\n{\"a\":2}\ngarbage\n{\"a\":3}\n",
+                vec![Some(1), Some(2), None, Some(3)],
+            ),
+            (
+                "{\"a\":1} \n{\"a\":2}\t\n{\"a\":3}\n",
+                vec![Some(1), Some(2), Some(3)],
+            ),
+            ("\u{feff}{\"a\":1}\n{\"a\":2}\n", vec![Some(1), Some(2)]),
+        ];
+        for (text, ids) in cases {
+            let path = dir.path().join("short.ndjson");
+            std::fs::write(&path, text).unwrap();
+            let lf = LinesScan::open(&path, None, true, None)
+                .unwrap()
+                .lazy()
+                .unwrap();
+            let all = lf.clone().collect().unwrap();
+            let got: Vec<Option<i64>> = all.column("a").unwrap().i64().unwrap().to_vec();
+            assert_eq!(got, ids, "{text:?}");
+            let head = lf.clone().slice(0, 2).collect().unwrap();
+            assert_eq!(head.height(), 2, "{text:?}");
+            let kept = lf.clone().filter(col("a").gt(lit(1))).collect().unwrap();
+            let above = ids.iter().filter(|v| v.is_some_and(|v| v > 1)).count();
+            assert_eq!(kept.height(), above, "{text:?}");
+            let count = lf.clone().select([len()]).collect().unwrap();
+            assert_eq!(
+                count
+                    .column("len")
+                    .unwrap()
+                    .get(0)
+                    .unwrap()
+                    .extract::<usize>(),
+                Some(ids.len()),
+                "{text:?}"
+            );
+        }
     }
 
     #[test]

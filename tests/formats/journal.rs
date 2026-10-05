@@ -574,3 +574,20 @@ fn new_fields_wait_for_a_query_to_be_cleared() {
     assert_eq!(df.height(), 51);
     assert_eq!(texts(&df, "extra")[50].as_deref(), Some("x"));
 }
+
+/// Blank, whitespace-only and non-JSON lines in piped NDJSON: a query over it reads
+/// every object, and a line that is not JSON is a row of nulls.
+#[test]
+fn a_query_reads_ndjson_with_short_lines() {
+    let text = "{\"a\":1}\n\n   \n{\"a\":2}\ngarbage\n{\"a\":3}\n";
+    let (mut app, rx) = piped(text.as_bytes().to_vec(), OpenOptions::default());
+    follow_until(&mut app, &rx, ended);
+    let mut next = Some(AppEvent::QQuery("select a where a > 0".to_string()));
+    while let Some(event) = next {
+        next = app.event(&event);
+    }
+    drain_events(&mut app, &rx);
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    let a = frame(&app).column("a").unwrap().i64().unwrap().to_vec();
+    assert_eq!(a, vec![Some(1), Some(2), Some(3)]);
+}

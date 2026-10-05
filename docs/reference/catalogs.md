@@ -235,6 +235,9 @@ example of every key.
 > `columns` notes taken from it, never from memory. `bookmarks` names places inside a
 > directory dataset to start from; each must list with no login.
 >
+> A raw.githubusercontent.com link names a commit, not a branch, so a push upstream
+> can't move, rename or change the file under its `size`.
+>
 > The weekly `Example datasets` workflow checks every entry and every bookmark.
 
 ```toml,output
@@ -274,7 +277,7 @@ homepage = "https://www.openintro.org/data/index.php?data=fastfood"
 
 [baby-names]
 name = "US baby names (1880-2017)"
-url = "https://raw.githubusercontent.com/rfordatascience/tidytuesday/main/data/2022/2022-03-22/babynames.csv"
+url = "https://raw.githubusercontent.com/rfordatascience/tidytuesday/8bfa9d9a7279192cb41cab041f426f2aacefde91/data/2022/2022-03-22/babynames.csv"
 size = 48788378
 description = "Published name counts by year and sex; counts below five are suppressed"
 publisher = "SSA / babynames; CSV hosted by TidyTuesday"
@@ -405,7 +408,7 @@ z = "Uzbekistan update"
 
 [premier-league]
 name = "Premier League (2020-21)"
-url = "https://raw.githubusercontent.com/footballcsv/england/master/2020s/2020-21/eng.1.csv"
+url = "https://raw.githubusercontent.com/footballcsv/england/de3945297668d7114006a8ca1c4c3740010b111c/2020s/2020-21/eng.1.csv"
 size = 17834
 description = "Match rounds, dates, teams and full-time scores"
 publisher = "OpenFootball / football.csv"
@@ -500,7 +503,7 @@ mint = "Intensity magnitude: estimated from the maximum reported intensity"
 
 [space-launches]
 name = "Space launches (1957-2018)"
-url = "https://raw.githubusercontent.com/rfordatascience/tidytuesday/main/data/2019/2019-01-15/launches.csv"
+url = "https://raw.githubusercontent.com/rfordatascience/tidytuesday/4557eb755d1a6a6f21bbf6d9009e21e363167c4c/data/2019/2019-01-15/launches.csv"
 size = 430817
 description = "Historical launch records and agencies; includes failed attempts"
 publisher = "Jonathan McDowell / The Economist; CSV hosted by TidyTuesday"
@@ -518,7 +521,7 @@ homepage = "https://allisonhorst.github.io/palmerpenguins/"
 
 [solubility]
 name = "Aqueous solubility (SDF)"
-url = "https://raw.githubusercontent.com/rdkit/rdkit/master/Docs/Book/data/solubility.train.sdf"
+url = "https://raw.githubusercontent.com/rdkit/rdkit/bfc98b529561d11e4a20a64f272c5f6900393cb2/Docs/Book/data/solubility.train.sdf"
 size = 1376487
 description = "1,025 molecules: measured solubility (log mol/L), a low, medium or high class, and SMILES"
 publisher = "Huuskonen (2000); SDF from the RDKit book's data"

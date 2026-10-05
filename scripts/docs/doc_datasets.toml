@@ -13,13 +13,13 @@ url = "https://vincentarelbundock.github.io/Rdatasets/csv/nycflights13/flights.c
 url = "https://vincentarelbundock.github.io/Rdatasets/csv/openintro/fastfood.csv"
 
 [names]
-url = "https://raw.githubusercontent.com/rfordatascience/tidytuesday/main/data/2022/2022-03-22/babynames.csv"
+url = "https://raw.githubusercontent.com/rfordatascience/tidytuesday/8bfa9d9a7279192cb41cab041f426f2aacefde91/data/2022/2022-03-22/babynames.csv"
 
 [football]
-url = "https://raw.githubusercontent.com/footballcsv/england/master/2020s/2020-21/eng.1.csv"
+url = "https://raw.githubusercontent.com/footballcsv/england/de3945297668d7114006a8ca1c4c3740010b111c/2020s/2020-21/eng.1.csv"
 
 [launches]
-url = "https://raw.githubusercontent.com/rfordatascience/tidytuesday/main/data/2019/2019-01-15/launches.csv"
+url = "https://raw.githubusercontent.com/rfordatascience/tidytuesday/4557eb755d1a6a6f21bbf6d9009e21e363167c4c/data/2019/2019-01-15/launches.csv"
 
 [taxis]
 url = "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2025-01.parquet"

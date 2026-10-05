@@ -528,7 +528,7 @@ product includes software developed by quickfixengine.org
 ## SDF
 
 ```bash,network
-datui https://raw.githubusercontent.com/rdkit/rdkit/master/Docs/Book/data/solubility.train.sdf
+datui https://raw.githubusercontent.com/rdkit/rdkit/bfc98b529561d11e4a20a64f272c5f6900393cb2/Docs/Book/data/solubility.train.sdf
 ```
 
 An SDF (structure-data) file of molecules, as PubChem, ChEMBL and screening

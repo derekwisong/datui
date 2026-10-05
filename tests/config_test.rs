@@ -575,10 +575,10 @@ cross_filesystems = false
 #[test]
 fn test_lists_that_add_up_across_files() {
     let config = layered(&[
-        "[home]\nhide = [\"public\"]\n[cloud]\nhide = [\"a\"]\nenv_files = [\".env\"]\n",
-        "[home]\nhide = [\"mine\", \"public\"]\n[cloud]\nhide = []\nenv_files = [\"cloud.env\"]\n",
+        "[home]\nhide = [\"examples\"]\n[cloud]\nhide = [\"a\"]\nenv_files = [\".env\"]\n",
+        "[home]\nhide = [\"mine\", \"examples\"]\n[cloud]\nhide = []\nenv_files = [\"cloud.env\"]\n",
     ]);
-    assert_eq!(config.home.hide, ["public", "mine"]);
+    assert_eq!(config.home.hide, ["examples", "mine"]);
     assert_eq!(config.cloud.hide, ["a"], "an empty list adds nothing");
     assert_eq!(config.cloud.env_files, [".env", "cloud.env"]);
 }
@@ -2693,7 +2693,7 @@ fn a_catalog_mixes_local_and_remote_datasets() {
     );
     // The bundled catalog still follows it.
     let ids: Vec<String> = config.catalogs().into_iter().map(|c| c.id).collect();
-    assert_eq!(ids, ["my-datasets", "public"]);
+    assert_eq!(ids, ["my-datasets", "examples"]);
 }
 
 #[test]
@@ -2719,8 +2719,8 @@ fn catalog_mistakes_are_named_with_their_line() {
             "connection applies only to a url",
         ),
         (
-            "url = \"s3://b/\"\nauth = \"public\"",
-            "auth \"public\" is not valid",
+            "url = \"s3://b/\"\nauth = \"examples\"",
+            "auth \"examples\" is not valid",
         ),
         ("url = \"ftp://host/a.csv\"", "is not an s3://"),
         ("url = \"https://example.com/data/\"", "is not a data file"),
@@ -2905,10 +2905,10 @@ fn the_bundled_catalog_is_replaced_or_hidden() {
     let default = AppConfig::default();
     assert_eq!(
         names(&default, true),
-        [("public".to_string(), "Public datasets".to_string())]
+        [("examples".to_string(), "Example datasets".to_string())]
     );
 
-    // A listed public.toml replaces the whole bundled catalog.
+    // A listed examples.toml replaces the whole bundled catalog.
     let dir = TempDir::new().unwrap();
     fs::write(
         dir.path().join("catalog.toml"),
@@ -2916,18 +2916,18 @@ fn the_bundled_catalog_is_replaced_or_hidden() {
     )
     .unwrap();
     fs::write(
-        dir.path().join("public.toml"),
+        dir.path().join("examples.toml"),
         "label = \"Curated\"\n[weather]\nname = \"Weather\"\nurl = \"s3://weather/\"\nauth = \"anonymous\"\n",
     )
     .unwrap();
     let config_path = dir.path().join("config.toml");
-    fs::write(&config_path, "catalogs = [\"public.toml\"]\n").unwrap();
+    fs::write(&config_path, "catalogs = [\"examples.toml\"]\n").unwrap();
     let replaced = AppConfig::load_from_file(&config_path).expect("loads");
     assert_eq!(
         names(&replaced, true),
         [
             ("mine".to_string(), "My datasets".to_string()),
-            ("public".to_string(), "Curated".to_string())
+            ("examples".to_string(), "Curated".to_string())
         ]
     );
     assert_eq!(
@@ -2947,17 +2947,17 @@ fn the_bundled_catalog_is_replaced_or_hidden() {
     );
 
     let hidden = layered(&[
-        "[home]\nhide = [\"public\"]\n",
+        "[home]\nhide = [\"examples\"]\n",
         "[home]\nhide = [\"mine\"]\n",
     ]);
-    assert_eq!(hidden.home.hide, ["public", "mine"], "hides add up");
+    assert_eq!(hidden.home.hide, ["examples", "mine"], "hides add up");
     assert!(names(&hidden, true).is_empty());
     assert_eq!(names(&hidden, false).len(), 1, "hidden, not gone");
 
     // One entry, as catalog/id: the rest of its catalog stays.
     let one = layered(&[
-        "[home]\nhide = [\"public/nyc-taxis\"]\n",
-        "[home]\nhide = [\"public/penguins\", \"public/nowhere\", \"nobody\"]\n",
+        "[home]\nhide = [\"examples/nyc-taxis\"]\n",
+        "[home]\nhide = [\"examples/penguins\", \"examples/nowhere\", \"nobody\"]\n",
     ]);
     one.validate().expect("catalog/id is a hide name");
     let shown = one.shown_catalogs();
@@ -2972,8 +2972,8 @@ fn the_bundled_catalog_is_replaced_or_hidden() {
         ids.len() + 2,
         "hidden, not gone"
     );
-    assert_eq!(one.unknown_hidden(), ["public/nowhere", "nobody"]);
-    let bad = layered(&["[home]\nhide = [\"public/Bad Id\"]\n"])
+    assert_eq!(one.unknown_hidden(), ["examples/nowhere", "nobody"]);
+    let bad = layered(&["[home]\nhide = [\"examples/Bad Id\"]\n"])
         .validate()
         .expect_err("not an id")
         .to_string();
@@ -3019,7 +3019,7 @@ fn every_toml_in_the_catalogs_directory_is_a_catalog() {
     let dir = TempDir::new().unwrap();
     let folder = dir.path().join("catalogs");
     fs::create_dir_all(&folder).unwrap();
-    for (name, label) in [("zeta", "Zeta"), ("acme", "Acme"), ("public", "Curated")] {
+    for (name, label) in [("zeta", "Zeta"), ("acme", "Acme"), ("examples", "Curated")] {
         fs::write(
             folder.join(format!("{name}.toml")),
             format!("label = \"{label}\"\n[x]\nname = \"X\"\npath = \"/{name}.csv\"\n"),
@@ -3031,7 +3031,7 @@ fn every_toml_in_the_catalogs_directory_is_a_catalog() {
     fs::write(&config_path, "").unwrap();
     let config = AppConfig::load_from_file(&config_path).expect("loads");
     let labels: Vec<String> = config.catalogs().into_iter().map(|c| c.label).collect();
-    // By file name; public.toml replaces the bundled catalog.
+    // By file name; examples.toml replaces the bundled catalog.
     assert_eq!(labels, ["Acme", "Curated", "Zeta"]);
 
     // A listed file of a name the directory has is refused, naming both.
@@ -3072,7 +3072,7 @@ fn a_listed_catalog_can_be_given_an_id_and_a_label() {
     let dir = TempDir::new().unwrap();
     let shared = dir.path().join("shared");
     fs::create_dir_all(&shared).unwrap();
-    // A shared file named catalog.toml and one named public.toml: neither takes those
+    // A shared file named catalog.toml and one named examples.toml: neither takes those
     // roles when an id says otherwise.
     fs::write(
         shared.join("catalog.toml"),
@@ -3080,7 +3080,7 @@ fn a_listed_catalog_can_be_given_an_id_and_a_label() {
     )
     .unwrap();
     fs::write(
-        shared.join("public.toml"),
+        shared.join("examples.toml"),
         "[w]\nname = \"W\"\npath = \"/w\"\n",
     )
     .unwrap();
@@ -3098,7 +3098,7 @@ fn a_listed_catalog_can_be_given_an_id_and_a_label() {
         AppConfig::load_from_file(&config_path)
     };
     let config = load(
-        "import = [\"team/team.toml\"]\ncatalogs = [\"shared/public.toml\", { path = \"shared/public.toml\", id = \"weather\" }]\n",
+        "import = [\"team/team.toml\"]\ncatalogs = [\"shared/examples.toml\", { path = \"shared/examples.toml\", id = \"weather\" }]\n",
     )
     .expect("loads");
     let ids: Vec<(String, String)> = config
@@ -3110,32 +3110,34 @@ fn a_listed_catalog_can_be_given_an_id_and_a_label() {
         ids,
         [
             ("acme".to_string(), "ACME".to_string()),
-            ("public".to_string(), "public".to_string()),
+            ("examples".to_string(), "examples".to_string()),
             ("weather".to_string(), "weather".to_string()),
         ],
-        "the label is the table's; a public.toml listed by its name replaces the bundled one"
+        "the label is the table's; a examples.toml listed by its name replaces the bundled one"
     );
-    let kept =
-        load("catalogs = [{ path = \"shared/public.toml\", id = \"weather\" }]\n").expect("loads");
+    let kept = load("catalogs = [{ path = \"shared/examples.toml\", id = \"weather\" }]\n")
+        .expect("loads");
     assert!(
-        kept.catalogs().iter().any(|c| c.label == "Public datasets"),
-        "an id that is not public leaves the bundled catalog"
+        kept.catalogs()
+            .iter()
+            .any(|c| c.label == "Example datasets"),
+        "an id that is not examples leaves the bundled catalog"
     );
 
     // Each rule says what is wrong: the config's own shape stops the load, a catalog's
     // id leaves that file out.
     let error = |text: &str| load(text).expect_err(text).to_string();
-    let e = error("catalogs = [{ path = \"shared/public.toml\", name = \"x\" }]\n");
+    let e = error("catalogs = [{ path = \"shared/examples.toml\", name = \"x\" }]\n");
     assert!(e.contains("unknown key 'name'"), "{e}");
     let e = error("catalogs = [{ id = \"x\" }]\n");
     assert!(e.contains("needs path"), "{e}");
     let out = |text: &str| left_out(&load(text).expect(text));
-    let e = out("catalogs = [{ path = \"shared/public.toml\", id = \"Bad Id\" }]\n");
+    let e = out("catalogs = [{ path = \"shared/examples.toml\", id = \"Bad Id\" }]\n");
     assert!(e.contains("cannot be a catalog's id"), "{e}");
-    let e = out("catalogs = [{ path = \"shared/public.toml\", id = \"mine\" }]\n");
+    let e = out("catalogs = [{ path = \"shared/examples.toml\", id = \"mine\" }]\n");
     assert!(e.contains("catalog.toml's"), "{e}");
     let e = out(
-        "catalogs = [{ path = \"shared/public.toml\", id = \"acme\" }, { path = \"shared/catalog.toml\", id = \"acme\" }]\n",
+        "catalogs = [{ path = \"shared/examples.toml\", id = \"acme\" }, { path = \"shared/catalog.toml\", id = \"acme\" }]\n",
     );
     assert!(e.contains("are both the catalog \"acme\""), "{e}");
 }
@@ -3186,13 +3188,13 @@ fn config_init_writes_an_empty_catalog_and_never_replaces_one() {
     let written = fs::read_to_string(&catalog).expect("catalog.toml written");
     let parsed = datui::catalog::parse(&written, "mine", datui::catalog::Origin::Mine, None)
         .expect("the empty catalog parses");
-    // Its header says how to hide and take over the public catalog.
+    // Its header says how to hide and take over the example datasets.
     assert!(
-        written.contains("hide = [\"public/nyc-taxis\"]"),
+        written.contains("hide = [\"examples/nyc-taxis\"]"),
         "{written}"
     );
     assert!(
-        written.contains("datui catalog show public > public.toml"),
+        written.contains("datui catalog show examples > examples.toml"),
         "{written}"
     );
     assert!(parsed.datasets.is_empty());
@@ -3657,4 +3659,30 @@ fn test_memory_warning() {
     assert_eq!(config.read.memory_warning(), None);
     let config = layered(&["[read]\nmemory_warning = \"5MiB\"\n"]);
     assert_eq!(config.read.memory_warning(), Some(5 * 1024 * 1024));
+}
+
+/// `public` was the bundled catalog's id before 0.4.0: a hide that still names it
+/// hides nothing, and the warning gives the new id, an entry's too.
+#[test]
+fn the_old_public_hide_warns_with_the_new_id() {
+    use datui::config::AppConfig;
+    assert_eq!(
+        AppConfig::hides_nothing("public"),
+        "`public` is now `examples`: hide = [\"examples\"]"
+    );
+    assert_eq!(
+        AppConfig::hides_nothing("public/nyc-taxis"),
+        "`public/nyc-taxis` is now `examples/nyc-taxis`: hide = [\"examples/nyc-taxis\"]"
+    );
+    assert_eq!(
+        AppConfig::hides_nothing("nobody"),
+        "no catalog or entry is named nobody"
+    );
+    let mut config = AppConfig::default();
+    config.home.hide = vec!["public".to_string()];
+    assert_eq!(config.unknown_hidden(), ["public"]);
+    assert!(
+        config.shown_catalogs().iter().any(|c| c.id == "examples"),
+        "no silent alias: the old id hides nothing"
+    );
 }

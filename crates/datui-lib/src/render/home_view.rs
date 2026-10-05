@@ -2530,6 +2530,57 @@ fn chip_fact_lines(
 /// The details pane for a cloud source: what it points at, how it logs in, and when
 /// its buckets were listed. When listing failed, the whole message, since the row only
 /// had room for a word of it.
+/// A catalog's heading: what the catalog is, where it comes from, and how to hide
+/// it. Delete hides only the catalog that comes with datui; any catalog hides for
+/// good by its id in `[home] hide`.
+fn catalog_details(
+    catalog: &crate::home::ShownCatalog,
+    width: usize,
+    ctx: &RenderContext,
+) -> Vec<Line<'static>> {
+    let plain = Style::default().fg(ctx.text_secondary);
+    let middot = glyphs::get().middot;
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            catalog.label.clone(),
+            Style::default()
+                .fg(ctx.text_primary)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        pane_heading("DETAILS", width, ctx),
+    ];
+    let bundled = catalog.origin == crate::catalog::Origin::Bundled;
+    let for_good = format!("[home] hide = [\"{}\"]", catalog.id);
+    let mut facts: Vec<(&str, String)> = vec![("datasets", catalog.datasets.len().to_string())];
+    match (&catalog.file, bundled) {
+        (_, true) => facts.push((
+            "source",
+            format!(
+                "{} {middot} datui catalog show {}",
+                crate::home::BUNDLED_ORIGIN,
+                catalog.id
+            ),
+        )),
+        (Some(file), false) => facts.push(("file", crate::home::display_path(file))),
+        (None, false) => {}
+    }
+    if !catalog.description.is_empty() {
+        facts.push(("about", catalog.description.clone()));
+    }
+    if bundled {
+        facts.push(("hide", "Del hides it until datui cache clear".to_string()));
+        facts.push(("", format!("{for_good} for good")));
+    } else {
+        facts.push(("hide", for_good));
+    }
+    let key_w = key_column(facts.iter().map(|(k, _)| *k));
+    for (key, value) in facts {
+        lines.extend(fact_lines(key, value, key_w, width, plain, ctx));
+    }
+    lines
+}
+
 fn source_details(
     entry: &Entry,
     source: &crate::home::CloudSource,
@@ -2626,6 +2677,12 @@ fn render_preview(
             ctx,
         ))
         .render(area, buf);
+        return;
+    }
+    if let Some(catalog) = app.home.selected_catalog() {
+        Paragraph::new(catalog_details(catalog, width, ctx))
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .render(area, buf);
         return;
     }
     let Some(entry) = app.home.selected_entry() else {

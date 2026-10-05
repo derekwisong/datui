@@ -94,7 +94,7 @@ fn a_web_file_in_a_catalog_is_fetched_only_when_opened() {
             );
         }
     });
-    let config = config_with("public", "Foods", &url);
+    let config = config_with("examples", "Foods", &url);
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new_with_config(
         tx,

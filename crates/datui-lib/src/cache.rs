@@ -1133,6 +1133,19 @@ impl CacheManager {
         .or_log("hide a cloud source");
     }
 
+    /// Whether Delete on its heading hid the Example datasets that come with datui.
+    /// Only the bundled catalog: a user's own `examples.toml` still shows.
+    pub fn examples_hidden(&self) -> bool {
+        !self.load_history_or_log("examples_hidden").is_empty()
+    }
+
+    /// Hide the bundled Example datasets from the home screen until the cache is
+    /// cleared.
+    pub fn hide_examples(&self) {
+        self.save_history_file("examples_hidden", &["hidden".to_string()])
+            .or_log("hide the example datasets");
+    }
+
     /// The directories Ctrl+D kept here before 0.4.0, which keeps them in
     /// `catalog.toml`, in the order they were added.
     pub fn load_remembered_places(&self) -> Vec<PathBuf> {

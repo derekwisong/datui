@@ -45,7 +45,7 @@ has q alone.
 
 ## Run a query
 
-Open **NYC flights (2013)** from **Public datasets** on the home screen: 336,776
+Open **NYC flights (2013)** from **Example datasets** on the home screen: 336,776
 departures from JFK, LaGuardia and Newark, delays in minutes. When does a JFK
 departure leave late? At `sql:`:
 

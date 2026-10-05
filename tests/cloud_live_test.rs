@@ -1255,7 +1255,7 @@ fn first_openable(
 }
 
 /// Every built-in public dataset lists and opens, with whatever credentials this
-/// machine has for other stores, or none. The weekly `Public datasets` workflow runs
+/// machine has for other stores, or none. The weekly `Example datasets` workflow runs
 /// this with none.
 ///
 /// ```bash
@@ -1349,7 +1349,7 @@ fn public_datasets_browse_and_open_from_the_home_screen() {
     let (mut app, rx) = live_app();
     assert!(pump_until(&mut app, &rx, 10, |app| section_named(
         app,
-        "Public datasets"
+        "Example datasets"
     )
     .is_some_and(|s| !s.rows.is_empty())));
     assert!(select_row(&mut app, "NOAA daily weather (GHCN-D)"));
@@ -1362,7 +1362,7 @@ fn public_datasets_browse_and_open_from_the_home_screen() {
     let text = screen_text(&mut app, 120, 30);
     assert!(
         text.contains(&format!(
-            "Public datasets {sep} NOAA daily weather (GHCN-D)"
+            "Example datasets {sep} NOAA daily weather (GHCN-D)"
         )),
         "{text}"
     );
@@ -1887,7 +1887,7 @@ fn partitioned_cloud_directories_are_hive_datasets() {
     // The bundled catalog is a section of the home screen, its datasets its rows.
     assert!(pump_until(&mut app, &rx, 10, |app| section_named(
         app,
-        "Public datasets"
+        "Example datasets"
     )
     .is_some_and(|s| !s.rows.is_empty())));
     let row_kind = |app: &datui::App, name: &str| {
@@ -2070,7 +2070,7 @@ fn bitcoin_transactions_open_count_and_reach_any_row() {
 /// A directory is offered as one table only when its files agree on a schema, and the
 /// question is settled from a few footers while browsing rather than by opening it.
 ///
-/// Public datasets, so this needs no credentials. The negative case — a directory holding
+/// Example datasets, so this needs no credentials. The negative case — a directory holding
 /// one Parquet file per table — has no public home worth hard-coding; the in-memory
 /// tests in `cloud_browse` cover it from both directions.
 #[test]

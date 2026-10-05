@@ -175,9 +175,16 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
             // moving the selection never moves the footer.
             let enter = Some(enter_label(app.what_enter_does())).filter(|l| !l.is_empty());
             let docs = registry_hint(Context::Home, "Ctrl+E");
+            // The bundled catalog's heading has nothing for ^D; its slot offers
+            // Delete, the same width: `Del Hide ` for `^D Forget`.
+            let catalog = if app.home_hides_catalog() {
+                Hint::new("Del", format!("{:<w$}", "Hide", w = CATALOG_SLOT - 1))
+            } else {
+                slot("^D", app.home_catalog_action(), CATALOG_SLOT)
+            };
             vec![
                 slot("Enter", enter, ENTER_SLOT),
-                slot("^D", app.home_catalog_action(), CATALOG_SLOT),
+                catalog,
                 slot(
                     "^E",
                     app.home_documented_row()

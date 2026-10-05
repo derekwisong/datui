@@ -1168,6 +1168,8 @@ pub struct App {
     pending_export: Option<ExportRequest>,
     /// The saved view `d` asked to delete, by id, while the confirmation is up.
     pending_delete_view: Option<String>,
+    /// Delete on the Example datasets heading asked to hide them.
+    pending_hide_examples: bool,
     pending_chart_export: Option<ChartExportRequest>,
     /// A Data Quality report export waiting on the overwrite confirmation.
     pending_quality_export: Option<(PathBuf, crate::quality_export::ReportFormat)>,
@@ -6055,6 +6057,7 @@ impl App {
             confirmation_modal: ConfirmationModal::new(),
             pending_export: None,
             pending_delete_view: None,
+            pending_hide_examples: false,
             pending_chart_export: None,
             pending_quality_export: None,
             help: help::Help::default(),
@@ -7045,6 +7048,13 @@ impl App {
 
         self.move_remembered_places();
         self.home.catalogs = home::catalogs(&self.app_config);
+        // Hidden with Delete on its heading: the catalog that comes with datui only,
+        // never a user's own `examples.toml`.
+        if self.cache.examples_hidden() {
+            self.home
+                .catalogs
+                .retain(|c| c.origin != crate::catalog::Origin::Bundled);
+        }
         let mut request = home::ListingRequest {
             // Filled in on the worker, from the cache and the desktop's recents: files
             // all the same, and the first frame does not wait on a file.
@@ -7402,6 +7412,24 @@ impl App {
     /// forgetting it there would either do nothing or imply a deletion datui is not
     /// going to perform.
     fn home_forget_selected(&mut self) {
+        // A catalog's heading: Delete hides the one that comes with datui, until the
+        // cache is cleared. A catalog of the user's is hidden by its id in the config.
+        if let Some(catalog) = self.home.selected_catalog() {
+            if catalog.origin == crate::catalog::Origin::Bundled {
+                let message = format!(
+                    "Hide {}? It comes back after datui cache clear.",
+                    catalog.label
+                );
+                self.pending_hide_examples = true;
+                self.confirmation_modal.show_destructive(message, "Hide");
+            } else {
+                self.home.status = Some(format!(
+                    "[home] hide = [\"{}\"] in config.toml hides it",
+                    catalog.id
+                ));
+            }
+            return;
+        }
         // A place row stands for every recent under it. Forgetting them all is one
         // keystroke from forgetting one, so it asks first, the way Shift+Delete does.
         if let Some(home::Row::Place { path, held, .. }) = self.home.selected_row() {
@@ -7767,6 +7795,14 @@ impl App {
 
     /// What Ctrl+D does on the row under the cursor, as the footer names it: add it to
     /// `catalog.toml`, or forget it from there; `None` on a row it cannot add.
+    /// Whether Delete on the selected row hides a catalog: the heading of the one
+    /// that comes with datui.
+    pub(crate) fn home_hides_catalog(&self) -> bool {
+        self.home
+            .selected_catalog()
+            .is_some_and(|c| c.origin == crate::catalog::Origin::Bundled)
+    }
+
     pub(crate) fn home_catalog_action(&self) -> Option<&'static str> {
         let (location, _) = self.home_row_for_catalog()?;
         Some(if self.mine_entry_at(&location).is_some() {
@@ -12261,6 +12297,13 @@ impl App {
                             self.analysis_modal.data_quality_confirm_run = false;
                             return event;
                         }
+                        if std::mem::take(&mut self.pending_hide_examples) {
+                            self.confirmation_modal.hide();
+                            self.cache.hide_examples();
+                            self.home_refresh();
+                            self.home.select_first_entry();
+                            return None;
+                        }
                         if let Some(id) = self.pending_delete_view.take() {
                             self.confirmation_modal.hide();
                             if self.view_manager.delete_view(&id).is_ok() {
@@ -12318,6 +12361,7 @@ impl App {
                         self.pending_read_all = false;
                         self.pending_forget_place = None;
                         self.pending_delete_view = None;
+                        self.pending_hide_examples = false;
                         // Declining the full read leaves the draft staged, and the
                         // sample and report as they were.
                         self.analysis_modal.data_quality_confirm_run = false;
@@ -12348,6 +12392,7 @@ impl App {
                     self.pending_read_all = false;
                     self.pending_forget_place = None;
                     self.pending_delete_view = None;
+                    self.pending_hide_examples = false;
                     self.analysis_modal.data_quality_confirm_run = false;
                     // Staying: the recording goes on, and so does the view.
                     self.pending_leave = None;

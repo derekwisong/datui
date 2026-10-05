@@ -553,8 +553,8 @@ pub const SCREENS: &[Screen] = &[
                         .more("Add the dataset or directory under the cursor to catalog.toml, listed under My datasets; on a row from catalog.toml, forget it. A heading stands for the directory it lists. Only catalog.toml is written; another catalog is hidden with home.hide"),
                     k("Ctrl+E", "Docs", "The row's documentation, full screen")
                         .more("Open the Documentation view of a catalog row, of a place inside one, or of a file whose format spec documents it: description, publisher, license, links, record types, columns with units and value legends, bookmarks. A catalog's description, link and column notes stand over the spec's. Ctrl+E here is not readline's end of line: the filter is edited at its end"),
-                    k("Delete", "Forget", "Forget a recent, a place, or a catalog.toml row")
-                        .more("Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source"),
+                    k("Delete", "Forget", "Forget a recent, place or catalog.toml row; hide")
+                        .more("Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source. On the Example datasets heading, hide them until datui cache clear, after confirming"),
                     k("Shift+Delete", "Forget all", "Forget every recent entry, after confirming"),
                 ],
             },

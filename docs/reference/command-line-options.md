@@ -84,7 +84,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `datui config path` | Print the config files read, lowest precedence first |
 | `datui config keys` | List every key: its type, default, the value in effect and what set it |
 | `datui catalog` | Show the catalogs of named datasets on the home screen, or check a catalog file |
-| `datui catalog show [NAME]` | With NAME, print that catalog's file (public is the one datui ships); without, list the catalogs: id, label, datasets and file |
+| `datui catalog show [NAME]` | With NAME, print that catalog's file (examples is the one datui ships); without, list the catalogs: id, label, datasets and file |
 | `datui catalog check FILE` | Check a catalog file and list its datasets; a mistake is named by its line, with the fix, and exits non-zero |
 | `datui theme` | List the themes, built in and in the config directory's themes/, or print one as a file to start from |
 | `datui theme list` | List the themes: name, the mode it is set for, where it comes from and its description |
@@ -102,7 +102,7 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 
 | Command | Does |
 |---|---|
-| `datui` | Open the home screen. Public datasets lists the built-in catalog |
+| `datui` | Open the home screen. Example datasets lists the catalog that comes with datui |
 | `datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv` | Palmer penguins from the web |
 | `datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=TMAX/` | NOAA daily highs for 2024, one table from public S3 |
 | `datui --hive 's3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/ELEMENT=T*/*.parquet'` | A glob, read as one partitioned table: every 2024 element starting with T |
@@ -116,4 +116,4 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `datui config init` | Write the config file, every key commented out at its default |
 | `datui formats` | List the format specs and dictionaries datui finds |
 | `datui man keys` | The keys of every screen, as a manual page |
-| `datui catalog show public` | Print the catalog datui ships, the worked example of the format |
+| `datui catalog show examples` | Print the catalog datui ships, the worked example of the format |

@@ -547,7 +547,7 @@ temporary Arrow IPC file. The atom and bond blocks are passed over, never held.
 - Press <kbd>i</kbd> for the SDF tab: the record count, and each field's type and
   how many records hold it.
 - **Aqueous solubility (SDF)** in the home screen's
-  [public datasets](../user-guide/home-screen.md#public-datasets) is one to try: 1,025
+  [example datasets](../user-guide/home-screen.md#example-datasets) is one to try: 1,025
   molecules with `SOL` as a float and `SOL_classification` as text. Sort by
   `SOL`, or filter `SOL_classification` to `(C) high`.
 

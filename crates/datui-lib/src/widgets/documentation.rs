@@ -762,7 +762,7 @@ mod tests {
 
     fn page(entry: Arc<Dataset>) -> Documented {
         Documented {
-            catalog: Some(("Public datasets".into(), entry)),
+            catalog: Some(("Example datasets".into(), entry)),
             ..Documented::default()
         }
     }

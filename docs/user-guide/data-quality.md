@@ -20,7 +20,7 @@ in Setup. After a run, <kbd>e</kbd> opens Setup again.
 
 ## Check missing values
 
-Open **Food nutrition (fast food)** from **Public datasets**, then:
+Open **Food nutrition (fast food)** from **Example datasets**, then:
 
 1. Press <kbd>a</kbd>, choose **Data Quality** and press <kbd>Enter</kbd>.
 2. Press <kbd>Enter</kbd> in Setup. The table's 515 rows are fewer than the

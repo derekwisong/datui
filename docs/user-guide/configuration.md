@@ -50,7 +50,7 @@ your [catalog](../reference/catalogs.md), `catalog.toml`, which
 | Row buffers and the streaming engine | [Performance](../reference/settings.md#performance) |
 | Analysis sample size or chart rows | [Analysis](../reference/settings.md#analysis) |
 | The home screen and its search | [Home](../reference/settings.md#home) · [Home search](../reference/settings.md#home-search) |
-| Named datasets and directories, local or remote, and the public catalog | [Catalogs](../reference/catalogs.md) |
+| Named datasets and directories, local or remote, and the example datasets | [Catalogs](../reference/catalogs.md) |
 | Cloud accounts and connections | [Cloud connections](../reference/cloud-sources.md) |
 | Clipboard over SSH | [Clipboard](../reference/settings.md#clipboard) |
 | Colors and symbols | [Colors](#colors) · [Glyph overrides](#glyph-overrides) |

@@ -194,7 +194,7 @@ datui abfss://release@overturemapswestus2.dfs.core.windows.net/
 | No login for that cloud | Reads unsigned |
 | A login | Signs with it. If refused, tries once more unsigned, and remembers for the session which worked (Azure refuses a public container to a login from another tenant) |
 
-The home screen's [Public datasets](home-screen.md#public-datasets) lists
+The home screen's [Example datasets](home-screen.md#example-datasets) lists
 public data with publishers and licenses. A
 [catalog](../reference/catalogs.md) of your own reads its datasets with no
 login, even on a machine that has one, with `auth = "anonymous"`. GBIF's
@@ -217,7 +217,7 @@ with `PAR1`.
 ### Examples on public data
 
 NOAA's daily weather for 2024 is one hive partition, `YEAR=2024`, with an
-`ELEMENT=` directory per measurement. On the home screen: **Public datasets**,
+`ELEMENT=` directory per measurement. On the home screen: **Example datasets**,
 <kbd>Enter</kbd> on **NOAA daily weather (GHCN-D)**, <kbd>→</kbd> on `by_year`,
 <kbd>Enter</kbd> on `YEAR=2024`. Or:
 

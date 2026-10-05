@@ -19,7 +19,7 @@ draws them. Each change to the form runs the preview again in the background;
 
 ## Pivot
 
-Open **US baby names (1880-2017)** from **Public datasets**: 1.9 million rows
+Open **US baby names (1880-2017)** from **Example datasets**: 1.9 million rows
 of `year`, `sex`, `name`, `n` and `prop`. Keep three girls' names:
 
 ```sql,dataset=names,network,rows=376

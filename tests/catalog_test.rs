@@ -228,7 +228,7 @@ connection = "onprem"
     let titles = section_titles(&app);
     assert!(
         titles.iter().position(|t| t == "My datasets")
-            < titles.iter().position(|t| t == "Public datasets"),
+            < titles.iter().position(|t| t == "Example datasets"),
         "the bundled catalog follows: {titles:?}"
     );
     assert!(app.home.cloud.is_empty(), "no catalog is a cloud row");
@@ -343,7 +343,7 @@ fn catalogs_are_listed_replaced_or_hidden() {
     )
     .unwrap();
     std::fs::write(
-        team.join("public.toml"),
+        team.join("examples.toml"),
         format!(
             "label = \"Curated\"\n[mine]\nname = \"Mine\"\npath = \"{}\"\n",
             toml_path(&local)
@@ -360,7 +360,7 @@ fn catalogs_are_listed_replaced_or_hidden() {
 
     let default = listed("");
     assert!(
-        default.iter().any(|t| t == "Public datasets"),
+        default.iter().any(|t| t == "Example datasets"),
         "{default:?}"
     );
     assert!(
@@ -370,29 +370,31 @@ fn catalogs_are_listed_replaced_or_hidden() {
 
     let teamed = listed(&format!("catalogs = [\"{}\"]\n", at("acme.toml")));
     let acme = teamed.iter().position(|t| t == "Acme");
-    let public = teamed.iter().position(|t| t == "Public datasets");
+    let public = teamed.iter().position(|t| t == "Example datasets");
     assert!(acme.is_some() && acme < public, "{teamed:?}");
 
-    let replaced = listed(&format!("catalogs = [\"{}\"]\n", at("public.toml")));
+    let replaced = listed(&format!("catalogs = [\"{}\"]\n", at("examples.toml")));
     assert!(replaced.iter().any(|t| t == "Curated"), "{replaced:?}");
     assert!(
-        !replaced.iter().any(|t| t == "Public datasets"),
+        !replaced.iter().any(|t| t == "Example datasets"),
         "replaced whole: {replaced:?}"
     );
 
     let hidden = listed(&format!(
-        "catalogs = [\"{}\"]\n[home]\nhide = [\"public\", \"acme\"]\n",
+        "catalogs = [\"{}\"]\n[home]\nhide = [\"examples\", \"acme\"]\n",
         at("acme.toml")
     ));
     assert!(
-        !hidden.iter().any(|t| t == "Acme" || t == "Public datasets"),
+        !hidden
+            .iter()
+            .any(|t| t == "Acme" || t == "Example datasets"),
         "{hidden:?}"
     );
 
     // A missing listed file is skipped; a broken one names its line.
     let skipped = listed(&format!("catalogs = [\"{}\"]\n", at("nowhere.toml")));
     assert!(
-        skipped.iter().any(|t| t == "Public datasets"),
+        skipped.iter().any(|t| t == "Example datasets"),
         "{skipped:?}"
     );
     std::fs::write(team.join("broken.toml"), "[a]\nname = \"A\"\n").unwrap();

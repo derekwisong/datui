@@ -1,6 +1,6 @@
 # Check the examples
 
-The numbers the guides quote from the built-in **Public datasets** are checked
+The numbers the guides quote from the **Example datasets** that come with datui are checked
 by one script; that every command and query runs is
 [the doc-example runner's](documentation.md#code-blocks) job.
 

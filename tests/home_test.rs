@@ -4506,8 +4506,8 @@ fn test_catalogs_are_sections_of_named_datasets() {
             ),
             // The same place as `Weather`: the catalog listed first names it.
             shown_catalog(
-                "public",
-                "Public datasets",
+                "examples",
+                "Example datasets",
                 datui::catalog::Origin::Bundled,
                 &[("Overture Maps", &overture), ("NOAA", &noaa)],
             ),
@@ -4524,7 +4524,7 @@ fn test_catalogs_are_sections_of_named_datasets() {
     };
     let mine = section("My datasets");
     assert_eq!(mine.origin, Some("catalog.toml"));
-    assert_eq!(section("Public datasets").origin, Some("built in"));
+    assert_eq!(section("Example datasets").origin, Some("comes with datui"));
     let rows: Vec<(&str, EntryKind)> = mine
         .rows
         .iter()
@@ -4544,7 +4544,10 @@ fn test_catalogs_are_sections_of_named_datasets() {
     let titles: Vec<&str> = home.sections.iter().map(|s| s.title.as_str()).collect();
     let (mine_at, public_at) = (
         titles.iter().position(|t| *t == "My datasets").unwrap(),
-        titles.iter().position(|t| *t == "Public datasets").unwrap(),
+        titles
+            .iter()
+            .position(|t| *t == "Example datasets")
+            .unwrap(),
     );
     assert!(
         mine_at < public_at,
@@ -5628,7 +5631,7 @@ mod coming_back {
     /// shared cache mid-test moved the rows a test was coming back to (#658).
     pub(super) fn home_app(mut config: datui::config::AppConfig) -> (App, Receiver<AppEvent>) {
         config.home.desktop_recents = false;
-        config.home.hide = vec!["public".to_string()];
+        config.home.hide = vec!["examples".to_string()];
         // Whatever this machine is logged in to is not part of the test.
         config.cloud.discover = Some(datui::config::CloudDiscover::None);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -8276,7 +8279,7 @@ mod first_rows {
 }
 
 // ---------------------------------------------------------------------------
-// The public catalog: rows that say what they are, one key away (#547 M5, D12)
+// The example datasets: rows that say what they are, one key away (#547 M5, D12)
 // ---------------------------------------------------------------------------
 
 mod catalog {
@@ -8305,6 +8308,158 @@ mod catalog {
         app.enter_home();
         settle(&mut app, &rx, |_| true);
         (app, rx, cache)
+    }
+
+    /// The home screen over `config`, on the cache in `dir`: a second one on the
+    /// same directory is the next run.
+    fn app_on_cache(
+        config: datui::config::AppConfig,
+        dir: &std::path::Path,
+    ) -> (App, Receiver<AppEvent>) {
+        let mut config = config;
+        config.home.desktop_recents = false;
+        config.cloud.discover = Some(datui::config::CloudDiscover::None);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new_with_config(
+            tx,
+            crate::common::test_runtime(),
+            datui::Theme {
+                colors: std::collections::HashMap::new(),
+            },
+            config,
+        );
+        app.use_cache(datui::CacheManager::with_dir(dir.to_path_buf()));
+        app.enter_home();
+        settle(&mut app, &rx, |_| true);
+        (app, rx)
+    }
+
+    fn titles(app: &App) -> Vec<String> {
+        app.home.sections.iter().map(|s| s.title.clone()).collect()
+    }
+
+    /// Put the selection on the heading of the section titled `title`.
+    fn select_heading(app: &mut App, title: &str) {
+        let index = app
+            .home
+            .visible()
+            .iter()
+            .position(|row| {
+                matches!(row, Row::Header { section, .. }
+                    if app.home.sections[*section].title == title)
+            })
+            .unwrap_or_else(|| panic!("a heading {title}: {:?}", titles(app)));
+        app.home.selected = index;
+    }
+
+    /// The Example datasets heading says what they are, where they come from, and
+    /// both ways to hide them; Delete there asks first, on No, hides them until the
+    /// cache is cleared, across a restart, and says `Del Hide` in the footer.
+    #[test]
+    fn delete_on_the_example_heading_hides_them_until_cache_clear() {
+        let cache = TempDir::new().unwrap();
+        let (mut app, rx) = app_on_cache(Default::default(), cache.path());
+        select_heading(&mut app, "Example datasets");
+        let text = screen(&mut app, 220, 40).join("\n");
+        for want in [
+            "datasets",
+            "comes with datui",
+            "datui catalog show examples",
+            "Del hides it until datui cache clear",
+            "[home] hide = [\"examples\"] for good",
+        ] {
+            assert!(text.contains(want), "{want}:\n{text}");
+        }
+        let footer = screen(&mut app, 120, 40).last().cloned().unwrap();
+        assert!(
+            footer.contains("Del") && footer.contains("Hide"),
+            "{footer}"
+        );
+
+        press(&mut app, KeyCode::Delete);
+        assert!(app.confirmation_modal.active);
+        assert!(!app.confirmation_modal.focus_yes, "starts on No");
+        assert!(
+            app.confirmation_modal
+                .message
+                .contains("Hide Example datasets? It comes back after datui cache clear."),
+            "{}",
+            app.confirmation_modal.message
+        );
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            titles(&app).iter().any(|t| t == "Example datasets"),
+            "No keeps them"
+        );
+        press(&mut app, KeyCode::Delete);
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Enter);
+        settle(&mut app, &rx, |_| true);
+        assert!(!titles(&app).iter().any(|t| t == "Example datasets"));
+
+        let (next_run, _rx) = app_on_cache(Default::default(), cache.path());
+        assert!(
+            !titles(&next_run).iter().any(|t| t == "Example datasets"),
+            "hidden in the next run too"
+        );
+        datui::CacheManager::with_dir(cache.path().to_path_buf())
+            .clear_all()
+            .unwrap();
+        let (cleared, _rx) = app_on_cache(Default::default(), cache.path());
+        assert!(titles(&cleared).iter().any(|t| t == "Example datasets"));
+    }
+
+    /// Delete hides the catalog that comes with datui, not the id: an
+    /// `examples.toml` of the user's shows after it, and its heading, as any of the
+    /// user's, offers no Delete, only the config's hide by id, which hides either.
+    #[test]
+    fn a_users_examples_toml_shows_after_delete_hid_the_bundled_one() {
+        let cache = TempDir::new().unwrap();
+        datui::CacheManager::with_dir(cache.path().to_path_buf()).hide_examples();
+        let mut config = datui::config::AppConfig::default();
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("examples.toml");
+        std::fs::write(
+            &file,
+            "label = \"Our examples\"\ndescription = \"The team's\"\n[sales]\nname = \"Sales\"\npath = \"/tmp/sales.csv\"\n",
+        )
+        .unwrap();
+        config.read_catalogs = vec![
+            datui::catalog::parse(
+                &std::fs::read_to_string(&file).unwrap(),
+                "examples",
+                datui::catalog::Origin::Listed,
+                Some(&file),
+            )
+            .unwrap(),
+        ];
+        let (mut app, _rx) = app_on_cache(config.clone(), cache.path());
+        assert!(
+            titles(&app).iter().any(|t| t == "Our examples"),
+            "{:?}",
+            titles(&app)
+        );
+        select_heading(&mut app, "Our examples");
+        let rows = screen(&mut app, 220, 40);
+        let text = rows.join("\n");
+        assert!(text.contains("examples.toml"), "the file:\n{text}");
+        assert!(text.contains("The team's"), "{text}");
+        assert!(text.contains("[home] hide = [\"examples\"]"), "{text}");
+        assert!(
+            !rows.last().unwrap().contains("Del"),
+            "{}",
+            rows.last().unwrap()
+        );
+        press(&mut app, KeyCode::Delete);
+        assert!(
+            !app.confirmation_modal.active,
+            "no Delete on a user's heading"
+        );
+        assert!(titles(&app).iter().any(|t| t == "Our examples"));
+
+        config.home.hide = vec!["examples".to_string()];
+        let (hidden, _rx) = app_on_cache(config, cache.path());
+        assert!(!titles(&hidden).iter().any(|t| t == "Our examples"));
     }
 
     fn select_named(app: &mut App, name: &str) {
@@ -8426,8 +8581,8 @@ mod catalog {
         let listing = build_listing(&ListingRequest {
             recents: vec![url.clone()],
             catalogs: vec![crate::shown_catalog(
-                "public",
-                "Public datasets",
+                "examples",
+                "Example datasets",
                 datui::catalog::Origin::Bundled,
                 &[("Palmer penguins", &url)],
             )],
@@ -8490,7 +8645,7 @@ mod frecency {
             ..Default::default()
         };
         config.home.desktop_recents = false;
-        config.home.hide = vec!["public".to_string()];
+        config.home.hide = vec!["examples".to_string()];
         config.cloud.discover = Some(datui::config::CloudDiscover::None);
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new_with_config(
@@ -8751,7 +8906,7 @@ mod path_prompt {
         );
     }
 
-    /// A bucket completes from what datui already knows of it, the public catalog
+    /// A bucket completes from what datui already knows of it, the example datasets
     /// included, with nothing asked of the store: `s3://noaa` + Tab is the bucket.
     #[test]
     fn a_bucket_completes_from_what_is_known() {

@@ -37,7 +37,7 @@ notes are cut with `…`, or left out.
 
 ## Plot two columns
 
-Open **Palmer penguins** from **Public datasets**, as in the
+Open **Palmer penguins** from **Example datasets**, as in the
 [quick start](../getting-started/quick-start.md), then:
 
 1. Press <kbd>c</kbd>, then <kbd>2</kbd> for **Scatter**.
@@ -209,7 +209,7 @@ with more categories than that is sampled, and says so.
 
 ## Examples on the built-in datasets
 
-Each starts from the dataset of that name under **Public datasets**.
+Each starts from the dataset of that name under **Example datasets**.
 
 | Chart | Data and query | Settings | What you see |
 |---|---|---|---|

@@ -3,7 +3,7 @@
 //! A catalog's top level holds `label` and `description`; every table in it is one
 //! dataset, keyed by a short id. `catalog.toml` in the config directory is the user's
 //! own, the one file datui writes (Ctrl+D on home); `catalogs = [...]` in the config
-//! lists others; the `public` catalog is bundled. Each is a section of the home screen.
+//! lists others; the `examples` catalog is bundled. Each is a section of the home screen.
 //!
 //! Parsed with `toml_edit` rather than `toml`: it keeps the file's order, which is the
 //! order the home screen lists, and the place of every key, which an error names.
@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 use crate::config::{CloudConnectionConfig, expand_path, is_valid_source_id};
 
 /// The bundled catalog's id.
-pub const PUBLIC: &str = "public";
+pub const EXAMPLES: &str = "examples";
+/// The bundled catalog's id before 0.4.0: a `home.hide` naming it is warned about.
+pub const OLD_EXAMPLES_ID: &str = "public";
 /// The id of the user's own catalog, `catalog.toml`.
 pub const MINE: &str = "mine";
 /// The user's own catalog, in the config directory.
@@ -39,14 +41,14 @@ pub enum Origin {
     Folder,
     /// A file named in `catalogs`: read, never written.
     Listed,
-    /// The `public` catalog datui ships.
+    /// The `examples` catalog datui ships.
     Bundled,
 }
 
 /// One catalog file.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Catalog {
-    /// What `home.hide` names: `mine`, `public`, or a listed file's stem.
+    /// What `home.hide` names: `mine`, `examples`, or a listed file's stem.
     pub id: String,
     /// The section's title.
     pub label: String,
@@ -739,12 +741,12 @@ impl Catalog {
         Ok(())
     }
 
-    /// The file's name for errors: its path, `public` for the bundled one, or the
+    /// The file's name for errors: its path, `examples` for the bundled one, or the
     /// file its id names.
     pub fn file_name(&self) -> String {
         match (&self.file, self.origin) {
             (Some(file), _) => file.display().to_string(),
-            (None, Origin::Bundled) => PUBLIC.to_string(),
+            (None, Origin::Bundled) => EXAMPLES.to_string(),
             (None, _) => format!("{}.toml", self.id),
         }
     }
@@ -775,12 +777,12 @@ fn url_key(url: &str) -> String {
     format!("url:{}", crate::source::canonical_cloud_place(&plain))
 }
 
-/// The bundled `public` catalog.
+/// The bundled `examples` catalog.
 pub fn bundled() -> Catalog {
     static CATALOG: std::sync::OnceLock<Catalog> = std::sync::OnceLock::new();
     CATALOG
         .get_or_init(|| {
-            parse(BUNDLED, PUBLIC, Origin::Bundled, None)
+            parse(BUNDLED, EXAMPLES, Origin::Bundled, None)
                 .unwrap_or_else(|e| panic!("{}", e.in_file("public_catalog.toml")))
         })
         .clone()
@@ -950,11 +952,11 @@ pub const MINE_TEMPLATE: &str = "\
 #   path = \"~/datasets/sales.parquet\"
 #   columns.amount = { description = \"Net of returns\", unit = \"USD\" }
 #
-# The bundled \"Public datasets\" catalog is separate:
-#   hide all of it      [home] hide = [\"public\"]                 (config.toml)
-#   hide some entries   [home] hide = [\"public/nyc-taxis\"]       (config.toml)
-#   make it your own    datui catalog show public > public.toml
-#                       then move public.toml into catalogs/ here, and edit it:
+# The bundled \"Example datasets\" catalog is separate:
+#   hide all of it      [home] hide = [\"examples\"]               (config.toml)
+#   hide some entries   [home] hide = [\"examples/nyc-taxis\"]     (config.toml)
+#   make it your own    datui catalog show examples > examples.toml
+#                       then move examples.toml into catalogs/ here, and edit it:
 #                       it replaces the bundled one
 #
 # Any other *.toml in catalogs/ here is a catalog too, named by its file name.
@@ -1138,7 +1140,7 @@ pub fn command(
                 ]];
                 for catalog in &catalogs {
                     let hidden = if config.home.hide.contains(&catalog.id) {
-                        " (hidden)"
+                        " (hidden by home.hide)"
                     } else {
                         ""
                     };
@@ -1150,7 +1152,7 @@ pub fn command(
                             Origin::Mine => MINE_FILE,
                             Origin::Folder => "catalogs/",
                             Origin::Listed => "catalogs = [...]",
-                            Origin::Bundled => "built in",
+                            Origin::Bundled => crate::home::BUNDLED_ORIGIN,
                         }
                         .to_string(),
                         catalog
@@ -1182,8 +1184,16 @@ pub fn command(
             }
             let Some(catalog) = catalogs.iter().find(|c| c.id == *name) else {
                 let ids: Vec<&str> = catalogs.iter().map(|c| c.id.as_str()).collect();
+                let renamed = if name == OLD_EXAMPLES_ID {
+                    format!(" (`{OLD_EXAMPLES_ID}` is now `{EXAMPLES}`)")
+                } else {
+                    String::new()
+                };
                 return (
-                    format!("No catalog is named {name}. Catalogs: {}\n", ids.join(", ")),
+                    format!(
+                        "No catalog is named {name}{renamed}. Catalogs: {}\n",
+                        ids.join(", ")
+                    ),
                     FAILURE,
                 );
             };
@@ -1271,7 +1281,7 @@ mod tests {
     #[test]
     fn the_bundled_catalog_reads_in_file_order() {
         let catalog = bundled();
-        assert_eq!(catalog.label, "Public datasets");
+        assert_eq!(catalog.label, "Example datasets");
         assert_eq!(catalog.datasets[0].id, "nyc-flights");
         let noaa = catalog.datasets.iter().find(|d| d.id == "noaa").unwrap();
         assert_eq!(noaa.columns[0].0, "ID");
@@ -1409,7 +1419,7 @@ mod tests {
         let config = crate::config::AppConfig::default();
         let (text, code) = command(
             &CatalogAction::Show {
-                name: Some(PUBLIC.into()),
+                name: Some(EXAMPLES.into()),
             },
             Ok(config.clone()),
         );
@@ -1418,9 +1428,23 @@ mod tests {
         let (list, code) = command(&CatalogAction::Show { name: None }, Ok(config.clone()));
         assert_eq!(code, 0);
         assert!(
-            list.contains("public") && list.contains("built in"),
+            list.contains("examples") && list.contains("comes with datui"),
             "{list}"
         );
+        // A catalog the config hides is listed, and says why it is not on home.
+        let mut hiding = config.clone();
+        hiding.home.hide = vec![EXAMPLES.to_string()];
+        let (list, _) = command(&CatalogAction::Show { name: None }, Ok(hiding));
+        assert!(list.contains("(hidden by home.hide)"), "{list}");
+        // The id before 0.4.0 says what it is now.
+        let (text, code) = command(
+            &CatalogAction::Show {
+                name: Some(OLD_EXAMPLES_ID.into()),
+            },
+            Ok(config.clone()),
+        );
+        assert_ne!(code, 0);
+        assert!(text.contains("`public` is now `examples`"), "{text}");
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("team.toml");
         std::fs::write(

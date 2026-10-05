@@ -16,7 +16,7 @@ The sidebar takes the keys every [dialog](../reference/dialogs.md) takes:
 
 ## Filter, sort and hide columns
 
-Open **Food nutrition (fast food)** from **Public datasets**: 515 menu items
+Open **Food nutrition (fast food)** from **Example datasets**: 515 menu items
 from eight chains, nutrients per item. Find the chicken dishes with at least
 40 g of protein, heaviest first:
 

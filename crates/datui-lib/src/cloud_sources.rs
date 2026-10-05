@@ -1636,7 +1636,7 @@ mod tests {
                 }
                 let resolved = resolve_with(url, &config, env).unwrap();
                 assert_eq!(resolved.signing, Signing::Unsigned, "{url}");
-                assert_eq!(resolved.source_id, crate::catalog::PUBLIC);
+                assert_eq!(resolved.source_id, crate::catalog::EXAMPLES);
                 assert_eq!(resolved.s3.access_key_id, None);
             }
             let inside = resolve_with(
@@ -1650,17 +1650,17 @@ mod tests {
             let beside = resolve_with("s3://noaa-ghcn-pds/csv/", &config, env).unwrap();
             assert_eq!(beside.signing, Signing::Try);
 
-            // A public.toml listed replaces the bundled catalog.
+            // An examples.toml listed replaces the bundled catalog.
             let off = with_catalog(
                 "",
-                "public",
+                "examples",
                 "[w]\nname = \"W\"\nurl = \"s3://other-bucket/w/\"\n",
                 env,
             );
             let resolved = resolve_with("s3://noaa-ghcn-pds/parquet/", &off, env).unwrap();
             assert_eq!(resolved.signing, Signing::Try, "no catalog, no claim on it");
             // No home-screen row stands for a catalog: they are sections.
-            assert!(discover(&config, env).iter().all(|s| s.id != "public"));
+            assert!(discover(&config, env).iter().all(|s| s.id != "examples"));
         });
     }
 

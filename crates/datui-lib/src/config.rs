@@ -146,7 +146,7 @@ impl ConfigManager {
         if !catalog.exists() {
             std::fs::write(&catalog, crate::catalog::MINE_TEMPLATE)?;
         }
-        // Where more catalogs go: the header's `> catalogs/public.toml` needs it there.
+        // Where more catalogs go: the header's `> catalogs/examples.toml` needs it there.
         self.ensure_subdir(crate::catalog::FOLDER)?;
         // Where theme files go: `datui theme show NAME` prints one to start from.
         self.ensure_subdir(crate::themes::FOLDER)?;
@@ -2377,7 +2377,7 @@ const RETIRED_KEYS: &[(&str, &str)] = &[
     ),
     (
         "home.builtin_catalog",
-        "home.hide = [\"public\"] hides the public catalog",
+        "home.hide = [\"examples\"] hides the example datasets",
     ),
 ];
 
@@ -2612,7 +2612,7 @@ impl AppConfig {
         }
         // A name that hides nothing is likely a typo, but not worth refusing to start.
         for name in config.unknown_hidden() {
-            eprintln!("datui: warning: home.hide: no catalog or entry is named {name}");
+            eprintln!("datui: warning: home.hide: {}", Self::hides_nothing(&name));
         }
 
         config
@@ -2739,11 +2739,11 @@ impl AppConfig {
     }
 
     /// Every catalog, hidden ones included: `catalog.toml`, the listed files in order,
-    /// then the bundled `public` catalog, unless a listed file named `public.toml`
+    /// then the bundled `examples` catalog, unless a listed file named `examples.toml`
     /// replaces it.
     pub fn catalogs(&self) -> Vec<crate::catalog::Catalog> {
         let mut all = self.read_catalogs.clone();
-        if !all.iter().any(|c| c.id == crate::catalog::PUBLIC) {
+        if !all.iter().any(|c| c.id == crate::catalog::EXAMPLES) {
             all.push(crate::catalog::bundled());
         }
         all
@@ -2769,6 +2769,23 @@ impl AppConfig {
     }
 
     /// The `[home] hide` names no catalog or entry has, each once.
+    /// Why `name` in `home.hide` hides nothing, with the fix when the name is the
+    /// bundled catalog's old id: `public` is now `examples`.
+    pub fn hides_nothing(name: &str) -> String {
+        let old = crate::catalog::OLD_EXAMPLES_ID;
+        let renamed = match name.split_once('/') {
+            None if name == old => Some(crate::catalog::EXAMPLES.to_string()),
+            Some((catalog, id)) if catalog == old => {
+                Some(format!("{}/{id}", crate::catalog::EXAMPLES))
+            }
+            _ => None,
+        };
+        match renamed {
+            Some(new) => format!("`{name}` is now `{new}`: hide = [\"{new}\"]"),
+            None => format!("no catalog or entry is named {name}"),
+        }
+    }
+
     pub fn unknown_hidden(&self) -> Vec<String> {
         let catalogs = self.catalogs();
         let mut out: Vec<String> = Vec::new();
@@ -2979,7 +2996,7 @@ impl AppConfig {
         if let Some(name) = self.home.hide.iter().find(|name| !hide_name(name)) {
             return Err(eyre!(
                 "home.hide: \"{name}\" is not a catalog id or catalog/id. Use the ids (mine, \
-                 public, a listed file's name; public/nyc-taxis for one entry), not the labels"
+                 examples, a listed file's name; examples/nyc-taxis for one entry), not the labels"
             ));
         }
 

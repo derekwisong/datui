@@ -160,7 +160,7 @@ Where a dataset opens.
 | `Ctrl+X` | Show the local file under the cursor as bytes, in the hex view, whatever datui would read it as |
 | `Ctrl+D` | Add the dataset or directory under the cursor to catalog.toml, listed under My datasets; on a row from catalog.toml, forget it. A heading stands for the directory it lists. Only catalog.toml is written; another catalog is hidden with home.hide |
 | `Ctrl+E` | Open the Documentation view of a catalog row, of a place inside one, or of a file whose format spec documents it: description, publisher, license, links, record types, columns with units and value legends, bookmarks. A catalog's description, link and column notes stand over the spec's. Ctrl+E here is not readline's end of line: the filter is edited at its end |
-| `Delete` | Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source |
+| `Delete` | Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source. On the Example datasets heading, hide them until datui cache clear, after confirming |
 | `Shift+Delete` | Forget every recent entry, after confirming |
 
 ### Home screen · Mouse

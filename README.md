@@ -48,7 +48,7 @@ completions and building from source.
 ## Try it
 
 ```bash,network
-datui                     # home screen: your files and a catalog of public datasets
+datui                     # home screen: your files and the example datasets
 datui https://vincentarelbundock.github.io/Rdatasets/csv/palmerpenguins/penguins.csv
 datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/   # 37 million rows of NOAA weather, no login
 ```

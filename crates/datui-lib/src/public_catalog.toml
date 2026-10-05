@@ -1,4 +1,4 @@
-# The bundled `public` catalog: data its publishers host and maintain, read with no
+# The bundled `examples` catalog: data its publishers host and maintain, read with no
 # login. These are remote links, not bundled data: object-store roots browse, HTTP(S)
 # files open directly, and nothing is fetched until an entry is opened.
 #
@@ -11,9 +11,9 @@
 # `columns` notes taken from it, never from memory. `bookmarks` names places inside a
 # directory dataset to start from; each must list with no login.
 #
-# The weekly `Public datasets` workflow checks every entry and every bookmark.
+# The weekly `Example datasets` workflow checks every entry and every bookmark.
 
-label = "Public datasets"
+label = "Example datasets"
 description = "Data its publishers host and maintain, read with no login"
 
 [nyc-flights]

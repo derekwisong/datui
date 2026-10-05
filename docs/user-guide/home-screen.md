@@ -33,7 +33,7 @@ the first name picked.
 | <kbd>Esc</kbd> | Closes the prompt |
 
 `s3://`, `gs://` and `az://` complete from names datui already knows (listed
-sources and prefixes, recents, the public catalog); nothing is asked of the
+sources and prefixes, recents, the example datasets); nothing is asked of the
 store, so `s3://noaa` <kbd>Tab</kbd> gives `s3://noaa-ghcn-pds/`.
 
 The footer names where the list is, how many rows the filter matches and the
@@ -53,7 +53,7 @@ then types). Letters type into the filter, so
 | `CLOUD` | [Cloud sources](#cloud-sources): stores found on this machine and configured ones |
 | `MY DATASETS` | Your [catalog](#catalogs), `catalog.toml`: what <kbd>Ctrl</kbd>+<kbd>D</kbd> added and what you wrote |
 | Other catalogs | Each `*.toml` in the config directory's `catalogs/`, then each file `catalogs` lists, under its label |
-| `PUBLIC DATASETS` | The bundled [public datasets](#public-datasets) |
+| `EXAMPLE DATASETS` | The [example datasets](#example-datasets) that come with datui |
 | `ELSEWHERE` | Directories your desktop recorded (freedesktop `recently-used.xbel`); starts folded |
 | `Found` | [Search](#search-below-the-current-directory) results, while you type |
 
@@ -216,7 +216,7 @@ and old versions may show. How files combine is in
 
 A catalog is a file of named datasets, local and remote, shown as a section
 under its label: `catalog.toml` (`MY DATASETS`), each file in `catalogs/` or listed in `catalogs`, and
-`PUBLIC DATASETS`. [Catalogs](../reference/catalogs.md) has the keys.
+`EXAMPLE DATASETS`. [Catalogs](../reference/catalogs.md) has the keys.
 
 ```text
 ▾ MY DATASETS  5   catalog.toml  ─────────────────────────────────
@@ -284,12 +284,18 @@ the browser would not open in front of you, so <kbd>o</kbd> is not offered:
 <kbd>Ctrl</kbd>+<kbd>E</kbd> takes the place of readline's end of line: the
 filter has no cursor, and is edited at its end.
 
-### Public datasets
+### Example datasets
 
-`Public datasets` is the bundled catalog: data its publishers host, read with
-no login, listed after your own. datui ships none of the data;
-`datui catalog show public` prints the
-[catalog](../reference/catalogs.md#the-public-catalog).
+Don't want them? `[home] hide = ["examples"]` in `config.toml` hides them for
+good; <kbd>Delete</kbd> on the heading hides them until `datui cache clear`; an
+`examples.toml` of your own, in `catalogs/`, replaces them.
+
+`Example datasets` is the catalog that comes with datui: data its publishers
+host, read with no login, listed after your own. datui ships none of the data;
+`datui catalog show examples` prints the
+[catalog](../reference/catalogs.md#the-example-datasets). Selecting its heading
+shows how many datasets it lists, where it comes from, and how to hide it; a
+heading of your own catalog shows its file and its `[home] hide` id.
 
 | Dataset | Data | License |
 |---|---|---|
@@ -323,8 +329,9 @@ no login, listed after your own. datui ships none of the data;
   still steps inside.
 - A build without the `http` or `cloud` feature leaves out the rows it cannot
   open.
-- A catalog file named `public.toml`, in `catalogs/` or listed, replaces this one;
-  `[home] hide = ["public"]` hides it, and `["public/nyc-taxis"]` one entry.
+- A catalog file named `examples.toml`, in `catalogs/` or listed, replaces this one,
+  even after <kbd>Delete</kbd> hid it; `[home] hide = ["examples"]` hides either,
+  and `["examples/nyc-taxis"]` one entry. An empty `examples.toml` hides the section.
 
 The guides use them:
 
@@ -345,7 +352,7 @@ The guides use them:
 `CLOUD` lists a row per store: logins found on this machine and
 [connections](../reference/cloud-sources.md) you configure. For private
 storage, [sign in first](remote-data.md); for a first try with no login, use
-[Public datasets](#public-datasets).
+[Example datasets](#example-datasets).
 
 ```text
 ▾ CLOUD  5  ──────────────────────────────────────────────────────

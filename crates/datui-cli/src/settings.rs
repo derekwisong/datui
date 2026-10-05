@@ -289,7 +289,7 @@ pub const SETTINGS: &[Setting] = &[
     // [home]
     s("home.desktop_recents", Bool, Value("true"), "Also list directories from the desktop's recently-used files; never the file names."),
     s("home.show_unreadable", Bool, Value("false"), "List files datui cannot read, dimmed (Ctrl+A toggles)."),
-    s("home.hide", List, Value("[]"), "Catalogs not shown, by id: mine (catalog.toml), public, or a listed file's name; one entry as catalog/id, such as public/nyc-taxis. Adds up across imports."),
+    s("home.hide", List, Value("[]"), "Catalogs not shown, by id: mine (catalog.toml), examples, or a listed file's name; one entry as catalog/id, such as examples/nyc-taxis. Adds up across imports."),
     s("home.preview_max", Size, Value("\"64MiB\""), "Largest local file whose first rows the home screen previews; 0 turns the preview off."),
     s("home.search.enabled", Bool, Value("true"), "Search below the working directory as you type."),
     s("home.search.max_depth", Count, Value("8"), "How many directories deep the search goes."),

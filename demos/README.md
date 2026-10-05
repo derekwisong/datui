@@ -11,7 +11,7 @@ Most tapes open datasets under `demo/data`, built by `demo/build.py`. The home-s
 tapes (`12` through `16`) copy that directory into a throwaway workspace under
 `/tmp/datui-demo`, with their own home directory, cache and config. The generator also
 removes inherited cloud credentials, so those recordings show seeded local data and
-the built-in public catalog rather than anything belonging to the machine recording
+the example datasets that come with datui rather than anything belonging to the machine recording
 them. It also pins true-color output and ignores an inherited `NO_COLOR` setting.
 
 For prerequisites, options, and detailed instructions, see the [Demos documentation][demos-docs].

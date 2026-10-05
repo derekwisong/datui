@@ -5,7 +5,7 @@ filtered and sorted.
 
 ## Export a CSV
 
-1. Open **Premier League (2020-21)** from **Public datasets** and run the
+1. Open **Premier League (2020-21)** from **Example datasets** and run the
    [goals query](querying-data.md#dates-and-messy-text).
 2. Press <kbd>e</kbd> and type `goals.csv` in **Path**.
 3. Press <kbd>Enter</kbd>. If the file exists, confirm whether to overwrite it.

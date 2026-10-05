@@ -5,19 +5,19 @@ lists each catalog as a section under its label, one row per dataset, wherever
 the data lives. Logins are in [Cloud connections](cloud-sources.md).
 
 ```bash,expect=exit
-datui catalog show public
+datui catalog show examples
 ```
 
 | Catalog | File | Written by |
 |---|---|---|
 | Yours, `My datasets` | `catalog.toml` in the config directory | You, and <kbd>Ctrl</kbd>+<kbd>D</kbd> on the home screen |
 | A team's or a project's | Any `*.toml` in `catalogs/` in the config directory, or a file elsewhere that `catalogs` in the config lists | You; datui only reads it |
-| `Public datasets` | Ships with datui; `datui catalog show public` prints it | datui |
+| `Example datasets` | Comes with datui; `datui catalog show examples` prints it | datui |
 
 | Command | Does |
 |---|---|
 | `datui catalog show` | List the catalogs: id, label, datasets, where each comes from, and its file |
-| `datui catalog show NAME` | Print a catalog's file: `mine`, `public`, or another catalog's file name |
+| `datui catalog show NAME` | Print a catalog's file: `mine`, `examples`, or another catalog's file name |
 | `datui catalog check FILE` | Check a file and list its datasets; a mistake is named by its line, with the fix |
 | `datui config init` | Write the config file, an empty `catalog.toml` and the `catalogs/` directory; an existing `catalog.toml` is kept |
 
@@ -204,25 +204,25 @@ it cannot read; `datui catalog check` names the mistake and exits non-zero.
 `catalogs` adds up across
 [imported files](../user-guide/configuration.md#importing-other-config-files),
 imports first. The sections follow `My datasets`: `catalogs/` in file-name
-order, then the listed files, then `Public datasets`.
+order, then the listed files, then `Example datasets`.
 
 | To | Do |
 |---|---|
-| Replace the public catalog | A catalog file named `public.toml`, in `catalogs/` or listed: it replaces the whole catalog; nothing bundled is merged in |
-| Rename a catalog you cannot edit | List it as `{ path = "...", id = "acme", label = "ACME" }`: a shared `catalog.toml` or `public.toml` then takes neither role |
-| Hide a catalog, or one entry | `[home] hide = ["acme", "public/nyc-taxis"]`: a catalog by its id, an entry as `catalog/id`; hides add up across files, and a name that hides nothing is warned about |
-| Edit the public catalog | `datui catalog show public > public.toml`, move `public.toml` into the config directory's `catalogs/` (`~/.config/datui/catalogs/` on Linux), then edit it. Written there directly, the shell empties the file before datui reads it |
+| Replace the example datasets | A catalog file named `examples.toml`, in `catalogs/` or listed: it replaces the whole catalog; nothing bundled is merged in |
+| Rename a catalog you cannot edit | List it as `{ path = "...", id = "acme", label = "ACME" }`: a shared `catalog.toml` or `examples.toml` then takes neither role |
+| Hide a catalog, or one entry | `[home] hide = ["acme", "examples/nyc-taxis"]`: a catalog by its id, an entry as `catalog/id`; hides add up across files, and a name that hides nothing is warned about (`public`, the id before 0.4.0, says it is now `examples`). `datui catalog show` marks a hidden catalog `(hidden by home.hide)` |
+| Edit the example datasets | `datui catalog show examples > examples.toml`, move `examples.toml` into the config directory's `catalogs/` (`~/.config/datui/catalogs/` on Linux), then edit it. Written there directly, the shell empties the file before datui reads it |
 
 Catalogs are apart from `RECENT`. Whatever you open goes into `RECENT` whether
 or not a catalog names it.
 
-## The public catalog
+## The example datasets
 
-This is the bundled catalog, as `datui catalog show public` prints it: a worked
+This is the catalog that comes with datui, as `datui catalog show examples` prints it: a worked
 example of every key.
 
 <!-- generated: public-catalog -->
-> The bundled `public` catalog: data its publishers host and maintain, read with no
+> The bundled `examples` catalog: data its publishers host and maintain, read with no
 > login. These are remote links, not bundled data: object-store roots browse, HTTP(S)
 > files open directly, and nothing is fetched until an entry is opened.
 >
@@ -235,10 +235,10 @@ example of every key.
 > `columns` notes taken from it, never from memory. `bookmarks` names places inside a
 > directory dataset to start from; each must list with no login.
 >
-> The weekly `Public datasets` workflow checks every entry and every bookmark.
+> The weekly `Example datasets` workflow checks every entry and every bookmark.
 
 ```toml,output
-label = "Public datasets"
+label = "Example datasets"
 description = "Data its publishers host and maintain, read with no login"
 
 [nyc-flights]

@@ -849,6 +849,10 @@ pub struct ShownCatalog {
     pub label: String,
     /// `catalog.toml`, a listed file, or the bundled catalog.
     pub origin: crate::catalog::Origin,
+    /// What the catalog says it is, for its heading's details.
+    pub description: String,
+    /// The file it was read from; none for the bundled one.
+    pub file: Option<PathBuf>,
     pub datasets: Vec<ShownDataset>,
     /// Left out for a mistake: the one line its section says instead of rows.
     pub broken: Option<String>,
@@ -880,6 +884,8 @@ impl ShownCatalog {
             id: catalog.id.clone(),
             label: catalog.label.clone(),
             origin: catalog.origin,
+            description: catalog.description.clone(),
+            file: catalog.file.clone(),
             datasets: catalog
                 .datasets
                 .iter()
@@ -928,6 +934,8 @@ impl ShownCatalog {
             id: broken.id.clone(),
             label: broken.id.clone(),
             origin: broken.origin,
+            description: String::new(),
+            file: None,
             datasets: Vec::new(),
             broken: Some(broken.callout()),
         }
@@ -939,13 +947,16 @@ impl ShownCatalog {
         match self.origin {
             crate::catalog::Origin::Mine => "catalog.toml",
             crate::catalog::Origin::Listed | crate::catalog::Origin::Folder => "catalog",
-            crate::catalog::Origin::Bundled => "built in",
+            crate::catalog::Origin::Bundled => BUNDLED_ORIGIN,
         }
     }
 }
 
+/// The chip on the bundled catalog's section.
+pub const BUNDLED_ORIGIN: &str = "comes with datui";
+
 /// The chips a catalog's section carries, and nothing else does.
-pub const CATALOG_ORIGINS: [&str; 3] = ["catalog.toml", "catalog", "built in"];
+pub const CATALOG_ORIGINS: [&str; 3] = ["catalog.toml", "catalog", BUNDLED_ORIGIN];
 
 /// Whether a section's origin chip says it is a catalog.
 pub fn is_catalog_origin(origin: &str) -> bool {
@@ -4080,6 +4091,18 @@ impl HomeState {
     }
 
     /// Whether the highlighted row is a section header.
+    /// The catalog whose section heading is selected, if the selection is one.
+    pub fn selected_catalog(&self) -> Option<&ShownCatalog> {
+        if !self.selection_is_header() {
+            return None;
+        }
+        let section = self.sections.get(self.selected_section()?)?;
+        let origin = section.origin?;
+        self.catalogs
+            .iter()
+            .find(|c| c.label == section.title && c.origin_note() == origin)
+    }
+
     pub fn selection_is_header(&self) -> bool {
         matches!(self.visible().get(self.selected), Some(Row::Header { .. }))
     }
@@ -5372,6 +5395,28 @@ mod build_feature_tests {
         assert_eq!(web + stores, urls.len(), "{urls:?}");
         assert_eq!(web > 0, cfg!(feature = "http"), "{urls:?}");
         assert_eq!(stores > 0, cfg!(feature = "cloud"), "{urls:?}");
+    }
+
+    /// An empty `examples.toml` of the user's replaces the Example datasets with
+    /// nothing, and an empty catalog has no section: the section is gone.
+    #[test]
+    fn an_empty_examples_toml_hides_the_section() {
+        let mut config = crate::config::AppConfig::default();
+        assert!(
+            catalogs(&config)
+                .iter()
+                .any(|c| c.origin == crate::catalog::Origin::Bundled)
+        );
+        config.read_catalogs = vec![
+            crate::catalog::parse(
+                "label = \"Mine\"\n",
+                crate::catalog::EXAMPLES,
+                crate::catalog::Origin::Folder,
+                None,
+            )
+            .unwrap(),
+        ];
+        assert!(catalogs(&config).is_empty(), "{:?}", catalogs(&config));
     }
 
     /// A catalog of the user's stays whole whatever the build: the user named it, and

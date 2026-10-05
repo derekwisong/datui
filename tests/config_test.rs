@@ -1470,6 +1470,13 @@ fn test_unparseable_root_config_is_an_error_naming_it() {
     assert!(first.contains("line 3"), "says where: {msg}");
     assert!(first.contains("expected usize"), "says why: {msg}");
     assert!(msg.contains("^^^^^"), "points at it: {msg}");
+    // Then one line on how to get going again.
+    assert_eq!(
+        msg.lines().last().unwrap_or_default(),
+        "Fix that line, or move the file aside to start from the defaults; \
+         `datui config init` then writes a fresh one.",
+        "{msg}"
+    );
 
     let not_toml = write_config(&temp_dir, "other.toml", "this is not toml =\n");
     let msg = AppConfig::load_from_file(&not_toml)
@@ -3684,5 +3691,37 @@ fn the_old_public_hide_warns_with_the_new_id() {
     assert!(
         config.shown_catalogs().iter().any(|c| c.id == "examples"),
         "no silent alias: the old id hides nothing"
+    );
+}
+
+/// A broken import is named, as the file that failed, with the way out that fits
+/// an import: a missing one is skipped.
+#[test]
+fn a_broken_import_names_itself_and_the_way_out() {
+    let dir = TempDir::new().unwrap();
+    let theme = write_config(&dir, "theme.toml", "[display\n");
+    let root = write_config(&dir, "config.toml", "import = [\"theme.toml\"]\n");
+    let msg = AppConfig::load_from_file(&root)
+        .expect_err("a broken import is an error")
+        .to_string();
+    let first = msg.lines().next().unwrap_or_default();
+    assert!(first.contains(&theme.display().to_string()), "{msg}");
+    assert!(first.contains("imported by"), "{msg}");
+    assert_eq!(
+        msg.lines().last().unwrap_or_default(),
+        "Fix that line, or move the file aside: a missing import is skipped.",
+        "{msg}"
+    );
+    // A bad value that parses is a setting to fix, in the root.
+    let root = write_config(&dir, "values.toml", "[read]\nfollow_interval = \"1h\"\n");
+    let msg = AppConfig::load_from_file(&root)
+        .expect_err("out of range")
+        .to_string();
+    assert!(
+        msg.lines()
+            .last()
+            .unwrap_or_default()
+            .starts_with("Fix that setting, or move the file aside"),
+        "{msg}"
     );
 }

@@ -25,6 +25,13 @@ that explains it.
 | A file has no extension, or the wrong one | `--format NAME`; `datui --help` lists the names: [Formats](../formats/index.md) |
 | A file datui cannot read opens as bytes | No reader and no format spec takes it: [Hex view](../user-guide/hex-view.md), and [Format specs](../formats/format-specs.md) to describe it |
 
+## Config and cache
+
+| Problem | What to do |
+|---|---|
+| datui stops on a config error | Fix the line it names, or move the file aside to start from the defaults; `datui config init` then writes a fresh one: [Configure datui](../user-guide/configuration.md#troubleshooting) |
+| Odd home-screen state: recents, folded sections, a hidden source | `datui cache clear` resets the cache, never your data or config: [Configure datui](../user-guide/configuration.md#troubleshooting) |
+
 ## Cloud logins
 
 A cloud source's row on the home screen says why it lists nothing; its details

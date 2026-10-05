@@ -417,7 +417,9 @@ warning on stderr. Name it `datui.override.toml`: a file named `datui.toml`
 | `Invalid color value for 'accent': Unknown color name` | A typo in a name. Names ignore case; hex needs six digits; indexed is `indexed(0)` to `indexed(255)` |
 | Colors look wrong | The terminal may not take true color, so hex is approximated; try names or `indexed(...)`. Everything monochrome: `NO_COLOR` is set |
 | Header or chip text cut off or garbled in VS Code's terminal or on `xterm-256color` | Some terminals mishandle a background color on those rows; set them to the terminal's own, below |
+| The config file does not parse | The error names the file, line and reason, then the way out: fix that line, or move the file aside to start from the defaults, after which `datui config init` writes a fresh one. A broken import is named by its own path; moved aside, it is skipped |
 | Start over | `datui config init --force` rewrites the file with the defaults; with no file, datui runs on them |
+| Odd home-screen state: recents, folded sections, a hidden source | `datui cache clear` resets the cache: recents, folds, remembered places, hidden sources and Example datasets, measurements and histories; never your data or config, and not the log. A cache line that cannot be read is skipped and logged in `datui.log` ([The log](#the-log)) |
 
 ```toml
 [theme.colors]

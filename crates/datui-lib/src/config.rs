@@ -2243,6 +2243,20 @@ const COMBINED_KEYS: &[(&str, Combine)] = &[
     ("home.hide", Combine::Union),
 ];
 
+/// The line after a config file's mistake: how to get going again. An import that
+/// is not there is skipped, and `datui config init` writes a root file only where
+/// there is none.
+pub fn way_out(imported: bool, what: &str) -> String {
+    if imported {
+        format!("Fix that {what}, or move the file aside: a missing import is skipped.")
+    } else {
+        format!(
+            "Fix that {what}, or move the file aside to start from the defaults; \
+             `datui config init` then writes a fresh one."
+        )
+    }
+}
+
 impl ConfigLayer {
     /// A layer from TOML text. Types are checked here, so a mistake is reported
     /// against the file that holds it rather than after merging.
@@ -2299,8 +2313,9 @@ impl ConfigLayer {
         };
         let mut layer = Self::parse(&content).map_err(|e| {
             eyre!(
-                "Failed to parse config file at {named}: {}",
-                parse_reason(&e)
+                "Failed to parse config file at {named}: {}\n{}",
+                parse_reason(&e),
+                way_out(importer.is_some(), "line")
             )
         })?;
         // Serde passes over a key it does not know; a renamed or misspelled one would
@@ -2615,9 +2630,12 @@ impl AppConfig {
             eprintln!("datui: warning: home.hide: {}", Self::hides_nothing(&name));
         }
 
-        config
-            .validate()
-            .map_err(|e| eyre!("Invalid configuration in {place}: {e}"))?;
+        config.validate().map_err(|e| {
+            eyre!(
+                "Invalid configuration in {place}: {e}\n{}",
+                way_out(false, "setting")
+            )
+        })?;
 
         Ok(config)
     }

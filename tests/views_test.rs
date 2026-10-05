@@ -464,3 +464,89 @@ fn a_view_draws_its_sample_again_from_the_seed() {
     assert_eq!(app.chart_modal.spec, chart.spec);
     assert_eq!(app.chart_modal.hist_bins, 17);
 }
+
+/// A sample drawn from the view's rows keeps the whole view it was drawn through: a
+/// row range of a sorted view is the first rows in that order, and applied again the
+/// view sorts the source the same way before it draws.
+#[test]
+fn a_view_keeps_the_sorted_view_its_row_range_was_drawn_through() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ranged_view.parquet");
+    let mut df = df!("rv_id" => (0..5_000i64).collect::<Vec<_>>()).unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let path = path.canonicalize().unwrap();
+    let views = datui::view::ViewManager::new(&datui::config::ConfigManager::with_dir(
+        dir.path().join("config"),
+    ))
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let config = datui::AppConfig::default();
+    let theme = datui::Theme::from_config(&config.theme).unwrap();
+    let mut app = App::new_with_views(tx, common::test_runtime(), theme, config, views.into());
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+    drain_events(&mut app, &rx);
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .sort_by(vec!["rv_id".to_string()], vec![true]);
+    drain_events(&mut app, &rx);
+
+    press(&mut app, KeyCode::Char('S'));
+    let form = app.sample_form.as_mut().unwrap();
+    form.kind = datui::sample_modal::RowsKind::Range;
+    form.range_from.set_value("1");
+    form.range_to.set_value("200");
+    form.draft.method = datui::sampling::SampleMethod::FirstRows;
+    form.size.set_value("200");
+    press(&mut app, KeyCode::Enter);
+    drain_events(&mut app, &rx);
+    let ids = |app: &App| -> Vec<i64> {
+        let df = app
+            .data_table_state
+            .as_ref()
+            .unwrap()
+            .lf()
+            .clone()
+            .collect()
+            .unwrap();
+        df.column("rv_id")
+            .unwrap()
+            .i64()
+            .unwrap()
+            .into_no_null_iter()
+            .collect()
+    };
+    let drawn = ids(&app);
+    assert_eq!(drawn.first(), Some(&4_999), "the sorted view's first rows");
+    assert_eq!(drawn.len(), 200);
+
+    let criteria = datui::view::MatchCriteria {
+        exact_path: Some(path.clone()),
+        ..Default::default()
+    };
+    let saved = app
+        .create_view_from_current_state("ranged".to_string(), None, criteria)
+        .unwrap();
+    let through = saved.settings.sample.as_ref().unwrap().through.as_ref();
+    assert_eq!(
+        through.map(|t| t.sort_columns.clone()),
+        Some(vec!["rv_id".to_string()]),
+        "the sort it was drawn through is kept"
+    );
+    if let Some(reset) = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('R'),
+        KeyModifiers::NONE,
+    ))) {
+        app.event(&reset);
+    }
+    drain_events(&mut app, &rx);
+    press(&mut app, KeyCode::Char('V'));
+    drain_events(&mut app, &rx);
+    assert_eq!(
+        ids(&app),
+        drawn,
+        "the same rows, drawn through the same sort"
+    );
+}

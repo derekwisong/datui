@@ -942,31 +942,22 @@ pub(crate) fn view_settings_of(state: &DataTableState) -> view::ViewSettings {
 /// drawn through, when it was drawn from the view's rows.
 fn saved_sample_of(state: &DataTableState) -> Option<view::SavedSample> {
     let sampled = state.sampled()?;
-    let through = sampled.through().then(|| {
-        let source = sampled.source();
-        let (query, sql_query, fuzzy_query) = active_query_settings(
-            source.get_active_query(),
-            source.get_active_sql_query(),
-            source.get_active_fuzzy_query(),
-        );
-        crate::pivot_melt_modal::ReshapeSource {
-            query,
-            sql_query,
-            fuzzy_query,
-            filters: source.get_filters().to_vec(),
-            sort_columns: source.get_sort_columns().to_vec(),
-            sort_descending: source.get_sort_descending().to_vec(),
-        }
+    // The whole view it was drawn through: column types, a reshape and a sort pick
+    // its rows as much as a query does.
+    let through = sampled.through().then(|| view::ViewSettings {
+        sample: None,
+        chart: None,
+        ..view_settings_of(sampled.source())
     });
-    let of = sampled
-        .drawn()
-        .filter(|drawn| drawn.about)
-        .and_then(|drawn| drawn.total);
-    Some(view::SavedSample::of(sampled.sample(), of, through))
+    Some(view::SavedSample::of(
+        sampled.sample(),
+        sampled.path(),
+        through,
+    ))
 }
 
 /// How far planning a view's steps got.
-enum Replayed {
+pub(crate) enum Replayed {
     /// Every step is planned; the view's rows are still to be read.
     Planned,
     /// Stopped at the pivot, which has to be read before the steps after it can be
@@ -1154,6 +1145,10 @@ pub struct App {
     /// Where the memory available now is read from, which a sample is checked
     /// against. The system's, unless a test says otherwise.
     memory_probe: table_sample::MemoryProbe,
+    /// How each random sample of a stream was drawn on this dataset, by what it was
+    /// drawn from: drawn again, the same seed keeps the same rows whether or not the
+    /// count has come in since.
+    sample_paths: Vec<(String, table_sample::DrawPath)>,
     /// Reports, newest first, within [`QUALITY_MEMORY_BUDGET`].
     quality_cache: Vec<QualityCacheEntry>,
     /// See [`KeptQualitySample`]. Newest first, within [`QUALITY_MEMORY_BUDGET`].
@@ -2942,7 +2937,8 @@ impl App {
         let mut form = sample_modal::SampleForm::new(&sample, context, &self.theme);
         form.inline = inline;
         form.view = view;
-        form.bytes_per_row = Some(state.unsampled().estimated_row_bytes());
+        form.bytes_per_row = Some(state.unsampled().sample_row_bytes(false));
+        form.source_bytes_per_row = Some(state.unsampled().sample_row_bytes(true));
         self.analysis_modal.sample_form = Some(form);
         self.sync_sample_form_focus();
     }
@@ -5262,8 +5258,9 @@ impl App {
         // is that dataset's view. So was a view waiting on its pivot.
         self.query_running = None;
         self.jobs.supersede(|job| matches!(job, Job::ViewPivot(_)));
-        // A sample being drawn was the last dataset's.
+        // A sample being drawn was the last dataset's, and so were its paths.
         self.put_down_sample_draw();
+        self.sample_paths.clear();
         // Whatever chart state survived belongs to the dataset being replaced.
         self.reset_chart_state();
         self.debug.schema_load = debug_label;
@@ -6154,6 +6151,7 @@ impl App {
             analysis_modal: AnalysisModal::with_sample_rows(app_config.analysis.sample_rows),
             sample_form: None,
             memory_probe: std::sync::Arc::new(table_sample::available_memory),
+            sample_paths: Vec::new(),
             quality_cache: Vec::new(),
             quality_samples: Vec::new(),
             quality_released: Vec::new(),

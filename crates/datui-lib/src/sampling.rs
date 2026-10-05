@@ -193,9 +193,54 @@ pub struct ReadWatch {
     /// Whether anything has counted rows yet: a read that cannot observe its batches
     /// has no count to show, which is not a count of zero.
     counted: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Judges the rows a sampler holds, in bytes, as it reads: the reason to stop
+    /// when they would not fit.
+    held: Option<HeldCheck>,
+    /// Why the held rows stopped the read, once they did.
+    memory: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+}
+
+/// What [`ReadWatch::hold`] asks of the bytes a sampler holds and the rows they are.
+pub type HeldJudge = dyn Fn(u64, usize) -> Option<String> + Send + Sync;
+
+#[derive(Clone)]
+struct HeldCheck(std::sync::Arc<HeldJudge>);
+
+impl std::fmt::Debug for HeldCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HeldCheck")
+    }
 }
 
 impl ReadWatch {
+    /// A watch whose sampler stops, keeping what it holds, once `judge` says the
+    /// bytes it holds will not fit.
+    pub(crate) fn judging_held(judge: std::sync::Arc<HeldJudge>) -> Self {
+        Self {
+            held: Some(HeldCheck(judge)),
+            ..Self::default()
+        }
+    }
+
+    /// A sampler holds `bytes` in `rows` rows now: past what fits, the read stops.
+    pub(crate) fn hold(&self, bytes: u64, rows: usize) {
+        let Some(HeldCheck(judge)) = &self.held else {
+            return;
+        };
+        if let Some(reason) = judge(bytes, rows) {
+            *self.memory.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
+            self.stop();
+        }
+    }
+
+    /// Why memory stopped the read, if it did: its rows so far are kept.
+    pub(crate) fn memory_stopped(&self) -> Option<String> {
+        self.memory
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     pub fn stop(&self) {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -228,9 +273,10 @@ impl ReadWatch {
         counted.then_some(rows)
     }
 
-    /// Stopped: the read's partial rows are not a sample, so it fails instead.
+    /// Stopped: the read's partial rows are not a sample, so it fails instead. Not
+    /// when memory stopped it: what it holds is kept.
     pub(crate) fn check(&self) -> Result<()> {
-        if self.stopped() {
+        if self.stopped() && self.memory_stopped().is_none() {
             Err(Report::msg(CANCELLED))
         } else {
             Ok(())
@@ -640,10 +686,13 @@ fn per_group_sample_within(
                     }
                     watch.saw(batch.height());
                 }
-                callback_state
+                let mut state = callback_state
                     .lock()
-                    .map_err(|_| PolarsError::ComputeError("sampler lock failed".into()))?
-                    .observe(batch)?;
+                    .map_err(|_| PolarsError::ComputeError("sampler lock failed".into()))?;
+                state.observe(batch)?;
+                if let Some(watch) = &callback_watch {
+                    watch.hold(state.bytes(), state.held);
+                }
                 Ok(false)
             }),
             true,
@@ -747,6 +796,15 @@ impl GroupSample {
 }
 
 impl GroupState {
+    /// Bytes the rows held take.
+    fn bytes(&self) -> u64 {
+        self.groups
+            .values()
+            .filter_map(|group| group.rows.as_ref())
+            .map(|rows| rows.estimated_size() as u64)
+            .sum()
+    }
+
     fn observe(&mut self, mut batch: DataFrame) -> PolarsResult<()> {
         self.counter.observe(&mut batch)?;
         self.seen += batch.height();

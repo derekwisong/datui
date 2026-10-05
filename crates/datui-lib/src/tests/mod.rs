@@ -4222,6 +4222,8 @@ fn test_active_query_settings_only_one_set() {
 }
 
 mod export_format_tests;
+#[cfg(test)]
+mod table_sample_tests;
 
 mod quality_memory_tests;
 

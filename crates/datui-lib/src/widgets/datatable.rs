@@ -509,6 +509,8 @@ pub struct Sampled {
     through: bool,
     /// What the draw read, once it ended; `None` while it runs.
     drawn: Option<crate::table_sample::Drawn>,
+    /// How a random sample of a stream is drawn, which a view keeps.
+    path: Option<crate::table_sample::DrawPath>,
 }
 
 impl Sampled {
@@ -538,6 +540,17 @@ impl Sampled {
 
     pub fn drawn(&self) -> Option<&crate::table_sample::Drawn> {
         self.drawn.as_ref()
+    }
+
+    /// How a random sample of a stream is drawn: what draws the same rows again.
+    pub fn path(&self) -> Option<crate::table_sample::DrawPath> {
+        self.path
+    }
+
+    /// The frame the view's plans scan.
+    #[cfg(test)]
+    pub(crate) fn frame(&self) -> &DataFrame {
+        &self.frame
     }
 
     /// Rows the view has taken of the sample.
@@ -6003,6 +6016,7 @@ impl DataTableState {
         schema: &Schema,
         rows: Arc<crate::table_sample::SampleRows>,
         through: bool,
+        path: Option<crate::table_sample::DrawPath>,
     ) -> Result<Self> {
         let mut view = source.sample_view(DataFrame::empty_with_schema(schema))?;
         let frame = scanned_frame(&view.original_lf)
@@ -6014,6 +6028,7 @@ impl DataTableState {
             frame,
             through,
             drawn: None,
+            path,
         }));
         Ok(view)
     }
@@ -6041,25 +6056,22 @@ impl DataTableState {
     }
 
     /// Take the chunks the draw kept since the last call: every frame reads them, so
-    /// the query, filters and sort run over them too. Returns whether there were any.
-    /// The view stays where it is, and the rows on hand stand while nothing reorders
-    /// them, since the new rows come after them.
-    pub(crate) fn sample_grew(&mut self) -> bool {
-        let Some(sampled) = self.sampled.as_ref() else {
-            return false;
-        };
+    /// the query, filters and sort run over them too. `None` when there were none;
+    /// otherwise whether the rows on hand still stand. The view stays where it is,
+    /// and the rows on hand stand while nothing reorders them, since the new rows
+    /// come after them.
+    pub(crate) fn sample_grew(&mut self) -> Option<bool> {
+        let sampled = self.sampled.as_ref()?;
         let chunks = sampled.rows.take_new();
         if chunks.is_empty() {
-            return false;
+            return None;
         }
+        // On the same buffers: each column takes the chunks' arrays, nothing copied.
         let mut frame = (*sampled.frame).clone();
         for chunk in &chunks {
-            if frame.vstack_mut(chunk).is_err() {
-                return false;
-            }
+            frame.vstack_mut(chunk).ok()?;
         }
-        self.rebind_sample(Arc::new(frame), false);
-        true
+        Some(self.rebind_sample(Arc::new(frame), false))
     }
 
     /// The draw ended, having read what `drawn` says: the rows go into the order the
@@ -6068,9 +6080,11 @@ impl DataTableState {
         let Some(sampled) = self.sampled.as_mut() else {
             return;
         };
-        // Taken so the chunks are not stacked a second time later.
-        let _ = sampled.rows.take_new();
-        let ordered = sampled.rows.in_source_order().ok().flatten();
+        // One chunk per column from here: the many the draw left would slow every
+        // read, and the chunks are let go so the rows are held once.
+        let ordered = sampled.rows.take_in_source_order().ok().flatten();
+        // A seeded read of one file needs no path; it was not one, then.
+        sampled.path = drawn.path;
         sampled.drawn = Some(drawn);
         if let Some(frame) = ordered {
             self.rebind_sample(Arc::new(frame), true);
@@ -6078,10 +6092,10 @@ impl DataTableState {
     }
 
     /// Every frame scans `frame` in place of the sample's last one. `reordered` when
-    /// the rows already shown changed places.
-    fn rebind_sample(&mut self, frame: Arc<DataFrame>, reordered: bool) {
+    /// the rows already shown changed places. Returns whether the rows on hand stand.
+    fn rebind_sample(&mut self, frame: Arc<DataFrame>, reordered: bool) -> bool {
         let Some(old) = self.sampled.as_ref().map(|sampled| sampled.frame.clone()) else {
-            return;
+            return false;
         };
         let rows_stand = !reordered
             && self.sort_columns.is_empty()
@@ -6102,6 +6116,28 @@ impl DataTableState {
             self.drop_buffer();
         }
         self.needs_recollect = true;
+        rows_stand
+    }
+
+    /// Bytes a row of a sample of this view takes: of the source's columns when it
+    /// is drawn from the source, of the view's when from the view, every column of
+    /// either, shown or not.
+    pub(crate) fn sample_row_bytes(&self, from_source: bool) -> usize {
+        let schema = if from_source {
+            &self.original_schema
+        } else {
+            &self.schema
+        };
+        let columns: Vec<String> = schema
+            .iter_names()
+            .filter(|name| name.as_str() != crate::schema_union::DRIFT_COLUMN)
+            .map(|name| name.to_string())
+            .collect();
+        // What the table measured, when it measured these columns.
+        if !from_source && columns.len() == self.column_order.len() {
+            return self.bytes_per_row();
+        }
+        estimate_bytes_per_row(schema, &columns, &self.column_bytes)
     }
 
     /// Draws from the shared counter rather than incrementing, so a mutation here can

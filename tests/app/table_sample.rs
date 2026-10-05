@@ -328,3 +328,163 @@ fn an_exported_chart_carries_its_recipe_unless_omitted() {
         );
     }
 }
+
+/// A random sample of a stream is drawn the same way again: the same seed keeps the
+/// same rows whether the count had come in for the first draw or not.
+#[test]
+fn the_same_seed_draws_the_same_rows_before_and_after_the_count() {
+    use datui::filter_modal::FilterOperator;
+    use datui::table_sample::DrawPath;
+    let (mut app, rx, tx) = open(parquet("table_sample_path.parquet", 20_000));
+    // A filter streams the rows, and its count is not in yet when the sample is
+    // drawn: a reservoir.
+    let mut next = app.event(&AppEvent::Filter(vec![filter_stmt(
+        "id",
+        FilterOperator::Gt,
+        "-1",
+    )]));
+    // Its page read, and no frame painted: the count waits for one.
+    while next.is_some() || app.is_busy() {
+        let event = match next.take() {
+            Some(event) => event,
+            None => rx
+                .recv_timeout(common::HANG_GUARD)
+                .expect("the page is read"),
+        };
+        next = app.event(&event);
+    }
+    assert!(!app.data_table_state.as_ref().unwrap().is_num_rows_valid());
+    draw(&mut app, "500");
+    pump_until_idle(&mut app, &rx, &tx);
+    let sampled = app.data_table_state.as_ref().unwrap().sampled().unwrap();
+    assert_eq!(sampled.path(), Some(DrawPath::Reservoir));
+    let first = ids(&app);
+    assert_eq!(first.len(), 500);
+
+    // Back to the filtered view, whose count comes in now; drawn again, the same.
+    key(&mut app, KeyCode::Char('S'));
+    let form = app.sample_form.as_mut().unwrap();
+    while form.draft.method != SampleMethod::EveryRow {
+        form.field = datui::sample_modal::SampleField::Method;
+        form.adjust(true);
+    }
+    key(&mut app, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(app.data_table_state.as_ref().unwrap().is_num_rows_valid());
+    draw(&mut app, "500");
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(ids(&app), first);
+}
+
+fn ids(app: &App) -> Vec<i64> {
+    app.data_table_state
+        .as_ref()
+        .unwrap()
+        .lf()
+        .clone()
+        .collect()
+        .unwrap()
+        .column("id")
+        .unwrap()
+        .i64()
+        .unwrap()
+        .into_no_null_iter()
+        .collect()
+}
+
+/// A pivot is never left off a sample: drawing one under a pivot, or taking a
+/// sample away from under one, is refused with the way out.
+#[test]
+fn a_pivot_is_refused_never_dropped() {
+    use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
+    let pivot = || {
+        AppEvent::Pivot(PivotSpec {
+            index: vec!["id".to_string()],
+            pivot_column: "group".to_string(),
+            value_column: "value".to_string(),
+            aggregation: PivotAggregation::First,
+            sort_columns: None,
+        })
+    };
+    let (mut app, rx, tx) = open(parquet("table_sample_pivot.parquet", 400));
+    draw(&mut app, "100");
+    pump_until_idle(&mut app, &rx, &tx);
+    app.event(&pivot());
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .last_pivot_spec()
+            .is_some()
+    );
+
+    // Taking the sample away would leave the pivot off the source.
+    key(&mut app, KeyCode::Char('S'));
+    let form = app.sample_form.as_mut().unwrap();
+    while form.draft.method != SampleMethod::EveryRow {
+        form.field = datui::sample_modal::SampleField::Method;
+        form.adjust(true);
+    }
+    key(&mut app, KeyCode::Enter);
+    let refused = app.error_message().expect("refused").to_string();
+    assert!(refused.contains("pivot"), "{refused}");
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.sampled().is_some() && state.last_pivot_spec().is_some());
+    app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Enter,
+        KeyModifiers::NONE,
+    )));
+
+    // Drawn again from the source, under the pivot.
+    key(&mut app, KeyCode::Char('S'));
+    let form = app.sample_form.as_mut().unwrap();
+    form.draft.method = SampleMethod::Spread;
+    form.kind = datui::sample_modal::RowsKind::Source;
+    form.size.set_value("50");
+    key(&mut app, KeyCode::Enter);
+    assert!(!app.sample_drawing(), "nothing drawn under the pivot");
+    let refused = app.error_message().expect("refused").to_string();
+    assert!(refused.contains("pivot"), "{refused}");
+}
+
+/// A redraw that fails before a row comes leaves the sample it would have replaced,
+/// with the steps laid on it.
+#[test]
+fn a_redraw_that_fails_keeps_the_sample_it_would_replace() {
+    let (mut app, rx, tx) = open(parquet("table_sample_redraw.parquet", 5_000));
+    draw(&mut app, "300");
+    pump_until_idle(&mut app, &rx, &tx);
+    run_query(&mut app, &rx, &tx, "select where group = \"c\"");
+    let before = ids(&app);
+    // A time range of a column that holds no times cannot be read.
+    key(&mut app, KeyCode::Char('S'));
+    let form = app.sample_form.as_mut().unwrap();
+    form.kind = datui::sample_modal::RowsKind::Time;
+    form.context.time_columns = vec!["id".to_string()];
+    form.time_column = 0;
+    form.time_from.set_value("2024-01-01");
+    form.time_before.set_value("2024-02-01");
+    key(&mut app, KeyCode::Enter);
+    pump_until_idle(&mut app, &rx, &tx);
+    assert!(app.error_message().is_some(), "the draw failed");
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.sampled().map(|s| s.rows()), Some(300));
+    assert_eq!(state.get_active_query(), "select where group = \"c\"");
+    assert_eq!(ids(&app), before);
+}
+
+/// The estimate is of what the sample reads: the source's every column for a source
+/// scope, the view's for the view.
+#[test]
+fn the_estimate_is_of_the_columns_drawn() {
+    let (mut app, rx, tx) = open(parquet("table_sample_estimate.parquet", 1_000));
+    run_query(&mut app, &rx, &tx, "select id");
+    key(&mut app, KeyCode::Char('S'));
+    let form = app.sample_form.as_ref().unwrap();
+    let (view, source) = (
+        form.bytes_per_row.unwrap(),
+        form.source_bytes_per_row.unwrap(),
+    );
+    assert!(view < source, "{view} of one column, {source} of three");
+}

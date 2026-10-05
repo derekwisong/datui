@@ -226,6 +226,14 @@ pub(crate) struct SampleDraw {
     pub(crate) replay: Option<crate::view::ViewSettings>,
     /// Analysis asked for it, and runs its tool once it is drawn.
     pub(crate) then_analyze: bool,
+    /// How a random sample of a stream is drawn, decided before it starts.
+    pub(crate) path: Option<crate::table_sample::DrawPath>,
+    /// What the draw is remembered by, for drawing it the same way again.
+    pub(crate) path_key: String,
+    /// The columns of the rows drawn, once they are cut to their scope. The view
+    /// becomes the sample's when its first rows land, not before: until then the
+    /// view it replaces stays, and stays if no row comes.
+    pub(crate) schema: Option<polars::prelude::SchemaRef>,
 }
 
 impl std::fmt::Debug for SampleDraw {

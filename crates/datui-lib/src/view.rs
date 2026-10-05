@@ -252,23 +252,25 @@ pub struct SavedSample {
     /// Rows to keep: in all, or per value.
     pub rows: usize,
     pub seed: u64,
-    /// The rows a sample kept row by row by chance was drawn from: each row is kept
-    /// with chance `rows / of`, so the same total and seed keep the same rows again.
+    /// How a random sample of a stream was drawn: a reservoir, or row by row with
+    /// chance `rows / of`. Drawn the same way again, the same seed keeps the same
+    /// rows, whatever is counted by then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub of: Option<usize>,
-    /// The query and filters the sample was drawn through, when it was drawn from a
-    /// view's rows rather than the source: replayed before it is drawn.
+    pub path: Option<crate::table_sample::DrawPath>,
+    /// The view the sample was drawn through, when it was drawn from a view's rows
+    /// rather than the source: its query, filters, sort, column types and reshape,
+    /// replayed before the sample is drawn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub through: Option<ReshapeSource>,
+    pub through: Option<Box<ViewSettings>>,
 }
 
 impl SavedSample {
-    /// `sample` as a view keeps it, drawn `through` the query and filters given, and
-    /// row by row from `of` rows when it was.
+    /// `sample` as a view keeps it, drawn `through` the view given, the way `path`
+    /// says.
     pub fn of(
         sample: &crate::sampling::Sample,
-        of: Option<usize>,
-        through: Option<ReshapeSource>,
+        path: Option<crate::table_sample::DrawPath>,
+        through: Option<ViewSettings>,
     ) -> Self {
         use crate::sampling::SampleMethod;
         let (method, per) = match &sample.method {
@@ -283,8 +285,8 @@ impl SavedSample {
             per,
             rows: sample.rows,
             seed: sample.seed,
-            of,
-            through,
+            path,
+            through: through.map(Box::new),
         }
     }
 

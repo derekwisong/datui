@@ -88,6 +88,20 @@ impl SampleRows {
         self.lock().stopped = Some(reason);
     }
 
+    /// Every chunk, in the order the source holds its rows, as one frame of one
+    /// chunk per column, the chunks let go: what the view keeps once the draw ends.
+    pub fn take_in_source_order(&self) -> Result<Option<DataFrame>> {
+        let ordered = self.in_source_order()?;
+        let mut inner = self.lock();
+        inner.chunks.clear();
+        inner.taken = 0;
+        drop(inner);
+        Ok(ordered.map(|mut frame| {
+            frame.rechunk_mut_par();
+            frame
+        }))
+    }
+
     /// Every chunk, in the order the source holds its rows, as one frame on the
     /// same buffers. `None` before anything was kept.
     pub fn in_source_order(&self) -> Result<Option<DataFrame>> {
@@ -193,7 +207,17 @@ impl MemoryCheck {
 
     /// Why the draw stops now, holding `rows`, when `still` more bytes are to come.
     fn stops(&self, rows: &SampleRows, still: u64) -> Option<String> {
-        let held = rows.bytes() as u64;
+        self.past(rows.bytes() as u64, rows.rows(), still)
+    }
+
+    /// Why a sampler that keeps its rows to the end (a reservoir, equal per value)
+    /// stops, holding `held` bytes in `rows` rows: it may come to hold as much again
+    /// before it trims, so that much more must fit.
+    pub fn holds_too_much(&self, held: u64, rows: usize) -> Option<String> {
+        self.past(held, rows, held)
+    }
+
+    fn past(&self, held: u64, rows: usize, still: u64) -> Option<String> {
         let room = self.room(held)?;
         (still > room).then(|| {
             let why = match self.limit {
@@ -203,7 +227,7 @@ impl MemoryCheck {
             format!(
                 "Sample stopped at {} ({} rows): {why}; -c {MEMORY_SETTING}=0 draws on",
                 crate::widgets::info::format_bytes(held),
-                crate::numfmt::group_chrome(rows.rows())
+                crate::numfmt::group_chrome(rows)
             )
         })
     }
@@ -276,6 +300,17 @@ pub(crate) fn rebind(
     crate::widgets::datatable::for_each_input(plan, &mut |input| rebind(input, old, new));
 }
 
+/// How a random sample of a stream was drawn: what makes the same seed draw the same
+/// rows again, so a view keeps it and a redraw takes it again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum DrawPath {
+    /// Exactly the size, the rows with the lowest seeded rank: shown at the end.
+    Reservoir,
+    /// Each row kept with chance size ÷ `of`, as it is read: shown as it arrives.
+    Bernoulli { of: usize },
+}
+
 /// What a draw read, beside the rows it kept.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Drawn {
@@ -287,16 +322,20 @@ pub struct Drawn {
     pub per_value: Option<usize>,
     /// The draw ended before its end: stopped, or out of memory. The rows so far stay.
     pub cut: bool,
+    /// How a random sample of a stream was drawn; `None` for every other read.
+    pub path: Option<DrawPath>,
 }
 
 /// Draw `sample` from `lf`, already cut to its scope, into `live`'s chunks.
 ///
-/// `known_total` is the scope's row count when the table knows it: it picks a
-/// Bernoulli sample over a reservoir, and saves a count before seeded runs.
+/// `known_total` is the scope's row count when the table knows it: it saves a count
+/// before seeded runs, and picks a Bernoulli sample of a stream over a reservoir,
+/// unless `path` says which, as a redraw or a view does: the same rows again.
 pub fn draw(
     lf: &LazyFrame,
     sample: &Sample,
     known_total: Option<usize>,
+    path: Option<DrawPath>,
     polars_streaming: bool,
     live: &Live,
 ) -> Result<Drawn> {
@@ -352,23 +391,21 @@ pub fn draw(
                 ..Drawn::default()
             }
         }
-        SampleMethod::Spread => match known_total {
-            Some(total) if total <= n => {
-                stream(lf, live, Some(total))?;
+        SampleMethod::Spread => match path.unwrap_or(match known_total {
+            Some(of) => DrawPath::Bernoulli { of },
+            None => DrawPath::Reservoir,
+        }) {
+            DrawPath::Bernoulli { of } => {
+                // Every row, when the sample is the whole scope.
+                bernoulli(lf, n, of, sample.seed, live)?;
                 Drawn {
-                    total: Some(total),
+                    total: Some(live.watch.rows_seen().unwrap_or(of)),
+                    about: of > n,
+                    path: Some(DrawPath::Bernoulli { of }),
                     ..Drawn::default()
                 }
             }
-            Some(total) => {
-                bernoulli(lf, n, total, sample.seed, live)?;
-                Drawn {
-                    total: Some(total),
-                    about: true,
-                    ..Drawn::default()
-                }
-            }
-            None => {
+            DrawPath::Reservoir => {
                 let read = crate::sampling::acquire(
                     lf,
                     sample,
@@ -381,6 +418,7 @@ pub fn draw(
                 live.keep(0, read.rows.df, Some(n));
                 Drawn {
                     total: Some(total),
+                    path: Some(DrawPath::Reservoir),
                     ..Drawn::default()
                 }
             }
@@ -404,6 +442,12 @@ pub fn draw(
             }
         }
     };
+    // A sampler that keeps its rows to the end stops itself when they would not fit.
+    if let Some(reason) = live.watch.memory_stopped()
+        && live.rows.stopped().is_none()
+    {
+        live.rows.stop(reason);
+    }
     let cut = live.watch.stopped() || live.rows.stopped().is_some();
     if cut && live.rows.rows() == 0 {
         return Err(Report::msg(CANCELLED));
@@ -603,7 +647,7 @@ mod tests {
             method: SampleMethod::EveryRow,
             ..Sample::default()
         };
-        let drawn = draw(&table(5_000), &sample, None, false, &all).unwrap();
+        let drawn = draw(&table(5_000), &sample, None, None, false, &all).unwrap();
         assert_eq!((drawn.total, all.rows.rows()), (Some(5_000), 5_000));
         let head = live();
         let sample = Sample {
@@ -611,7 +655,7 @@ mod tests {
             rows: 120,
             ..Sample::default()
         };
-        draw(&table(5_000), &sample, Some(5_000), false, &head).unwrap();
+        draw(&table(5_000), &sample, Some(5_000), None, false, &head).unwrap();
         assert_eq!(
             values(&head.rows.in_source_order().unwrap().unwrap()),
             (0..120).collect::<Vec<_>>()
@@ -627,10 +671,10 @@ mod tests {
             ..Sample::default()
         };
         let known = live();
-        let drawn = draw(&table(20_000), &sample, Some(20_000), false, &known).unwrap();
+        let drawn = draw(&table(20_000), &sample, Some(20_000), None, false, &known).unwrap();
         assert!(drawn.about);
         let unknown = live();
-        let drawn = draw(&table(20_000), &sample, None, false, &unknown).unwrap();
+        let drawn = draw(&table(20_000), &sample, None, None, false, &unknown).unwrap();
         assert!(!drawn.about);
         assert_eq!((drawn.total, unknown.rows.rows()), (Some(20_000), 500));
     }
@@ -651,12 +695,72 @@ mod tests {
         // Five frames read one after another: batches, not one frame whole.
         let parts: Vec<LazyFrame> = (0..5).map(|_| table(100_000)).collect();
         let lf = concat(parts, UnionArgs::default()).unwrap();
-        let drawn = draw(&lf, &sample, Some(500_000), false, &low).unwrap();
+        let drawn = draw(&lf, &sample, Some(500_000), None, false, &low).unwrap();
         assert!(drawn.cut);
         let held = low.rows.rows();
         assert!(held > 0 && held < 500_000, "{held}");
         let reason = low.rows.stopped().unwrap();
         assert!(reason.contains("memory ran low"), "{reason}");
+        assert!(reason.contains(MEMORY_SETTING), "{reason}");
+    }
+
+    /// A path given draws that way whatever is known now: a reservoir with the count
+    /// in, and a Bernoulli sample of the total recorded with none. The same seed and
+    /// path keep the same rows.
+    #[test]
+    fn a_recorded_path_draws_the_same_rows_whatever_is_known_now() {
+        let sample = Sample {
+            rows: 500,
+            ..Sample::default()
+        };
+        let rows = |live: &Live| values(&live.rows.in_source_order().unwrap().unwrap());
+        let reservoir = live();
+        draw(&table(20_000), &sample, None, None, false, &reservoir).unwrap();
+        let counted = live();
+        let drawn = draw(
+            &table(20_000),
+            &sample,
+            Some(20_000),
+            Some(DrawPath::Reservoir),
+            false,
+            &counted,
+        )
+        .unwrap();
+        assert_eq!(drawn.path, Some(DrawPath::Reservoir));
+        assert_eq!(rows(&counted), rows(&reservoir));
+
+        let known = live();
+        let drawn = draw(&table(20_000), &sample, Some(20_000), None, false, &known).unwrap();
+        assert_eq!(drawn.path, Some(DrawPath::Bernoulli { of: 20_000 }));
+        let uncounted = live();
+        let path = drawn.path;
+        draw(&table(20_000), &sample, None, path, false, &uncounted).unwrap();
+        assert_eq!(rows(&uncounted), rows(&known));
+    }
+
+    /// A reservoir holds its rows to the end: past the memory there is, it stops
+    /// there, keeps what it holds, and says why as a live draw does.
+    #[test]
+    fn a_reservoir_past_the_memory_stops_and_keeps_what_it_holds() {
+        let check = MemoryCheck {
+            limit: Limit::Fixed(1),
+            probe: Arc::new(|| None),
+        };
+        let mut low = live();
+        low.watch = ReadWatch::judging_held(Arc::new(move |bytes, rows| {
+            check.holds_too_much(bytes, rows)
+        }));
+        let parts: Vec<LazyFrame> = (0..5).map(|_| table(100_000)).collect();
+        let lf = concat(parts, UnionArgs::default()).unwrap();
+        let sample = Sample {
+            rows: 400_000,
+            ..Sample::default()
+        };
+        let drawn = draw(&lf, &sample, None, None, false, &low).unwrap();
+        assert!(drawn.cut);
+        assert!(low.rows.rows() > 0);
+        assert!(drawn.total.unwrap() < 500_000, "it stopped early");
+        let reason = low.rows.stopped().unwrap();
         assert!(reason.contains(MEMORY_SETTING), "{reason}");
     }
 

@@ -102,9 +102,12 @@ pub struct SampleForm {
     /// The form edits the view's sample, the step under its query: Every row is
     /// "No sample" there, which takes the sample away.
     pub view: bool,
-    /// Bytes a row of the table takes, as the table measured them: what the Size
-    /// row's estimate is worked out from.
+    /// Bytes a row of the view takes, every column, as the table measured them:
+    /// what the Size row's estimate of a sample of the view is worked out from.
     pub bytes_per_row: Option<usize>,
+    /// The same of a row of the source, every column it has: a sample of the
+    /// source (partitions, files, a time range, the source unfiltered) reads them.
+    pub source_bytes_per_row: Option<usize>,
     /// The memory warning has been shown for the form as it stands: Enter again
     /// draws anyway. Any edit takes it back.
     pub anyway: bool,
@@ -137,6 +140,7 @@ impl SampleForm {
             inline: false,
             view: false,
             bytes_per_row: None,
+            source_bytes_per_row: None,
             anyway: false,
             draft: sample.clone(),
             kind: RowsKind::All,
@@ -545,10 +549,14 @@ impl SampleForm {
         Some(there.map_or(asked, |rows| asked.min(rows)))
     }
 
-    /// The bytes the sample will take, from the table's bytes per row.
+    /// The bytes the sample will take, from the bytes per row of what it reads.
     pub fn estimate(&self) -> Option<u64> {
         let rows = self.rows_expected()? as u64;
-        Some(rows.saturating_mul(self.bytes_per_row? as u64))
+        let per_row = match self.kind {
+            RowsKind::All | RowsKind::Range => self.bytes_per_row?,
+            _ => self.source_bytes_per_row?,
+        };
+        Some(rows.saturating_mul(per_row as u64))
     }
 
     /// An edit: what was said about the form as it stood no longer stands.

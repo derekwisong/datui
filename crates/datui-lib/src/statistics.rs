@@ -1240,10 +1240,17 @@ fn stream_sample(
                     }
                     watch.saw(batch.height());
                 }
-                callback_state
+                let mut reservoir = callback_state
                     .lock()
-                    .map_err(|_| PolarsError::ComputeError("sampler lock failed".into()))?
-                    .observe(batch)?;
+                    .map_err(|_| PolarsError::ComputeError("sampler lock failed".into()))?;
+                reservoir.observe(batch)?;
+                if let Some(watch) = &callback_watch {
+                    let held = reservoir.kept.as_ref();
+                    watch.hold(
+                        held.map_or(0, |kept| kept.estimated_size() as u64),
+                        held.map_or(0, DataFrame::height),
+                    );
+                }
                 Ok(false)
             }),
             true,

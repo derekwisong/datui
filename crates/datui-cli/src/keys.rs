@@ -469,6 +469,12 @@ pub const SCREENS: &[Screen] = &[
                     k("Click", "Point", "The cursor to the cell; on a header, its column")
                         .no_run(),
                     k("Double-click", "Enter", "Enter on the row").no_run(),
+                    k("Double-click a header", "Sort", "Sort by it: up, down, off, as [ / ] do")
+                        .more("Double-click a column's header to sort by it, as [ and ] do: ascending, then descending, then back to no sort, replacing the sort in effect")
+                        .no_run(),
+                    k("Double-click a header's edge", "Fit", "Fit the column to the rows, as = does")
+                        .more("Double-click the gap right of a column's header to fit the column to the rows on screen, as = does; the column cursor moves to it, and nothing is sorted")
+                        .no_run(),
                     k("Wheel", "Scroll", "↑ / ↓, three rows a notch")
                         .more("↑ / ↓, three rows a notch; the same in help, the inspector and the sidebars")
                         .no_run(),

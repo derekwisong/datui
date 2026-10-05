@@ -110,6 +110,8 @@ Where a dataset opens.
 |---|---|
 | `Click` | The cursor to the cell; on a header, its column |
 | `Double-click` | Enter on the row |
+| `Double-click a header` | Double-click a column's header to sort by it, as [ and ] do: ascending, then descending, then back to no sort, replacing the sort in effect |
+| `Double-click a header's edge` | Double-click the gap right of a column's header to fit the column to the rows on screen, as = does; the column cursor moves to it, and nothing is sorted |
 | `Wheel` | ↑ / ↓, three rows a notch; the same in help, the inspector and the sidebars |
 | `Shift+wheel` | ← / →, the column cursor (a sideways wheel too) |
 | `Click a key` | Press a key the footer shows; a click on the filters and sort presses s, on query presses : |

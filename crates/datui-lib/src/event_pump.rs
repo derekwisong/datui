@@ -3859,6 +3859,75 @@ mod tests {
         assert_eq!(choice(&p), before);
     }
 
+    /// Press and let go at `at`, after a frame painted, as a click on what is drawn.
+    fn click_and_release(p: &mut EventPump, at: (u16, u16)) {
+        rendered(&mut p.app);
+        p.app.frame_painted();
+        p.terminal_mouse(click(at)).unwrap();
+        p.terminal_mouse(release(at)).unwrap();
+        settle(p);
+    }
+
+    /// The sort in effect: its columns and directions.
+    fn sorted(p: &EventPump) -> (Vec<String>, Vec<bool>) {
+        let state = p.app.data_table_state.as_ref().unwrap();
+        let columns = state.view_sort_columns().to_vec();
+        let descending = state.view_sort_descending().to_vec();
+        (
+            columns.clone(),
+            descending[..columns.len().min(descending.len())].to_vec(),
+        )
+    }
+
+    /// A double click on a header sorts by its column as `[` and `]` do: ascending,
+    /// descending, then off. One click only moves the column cursor.
+    #[test]
+    fn a_double_click_on_a_header_cycles_its_sort() {
+        let (mut p, _dir) = loaded_pump();
+        let (age, _, y) = header_of(&mut p, "age");
+        let at = (age + 1, y);
+        click_and_release(&mut p, at);
+        assert_eq!(cell(&p).1.as_deref(), Some("age"));
+        assert_eq!(sorted(&p), (vec![], vec![]), "one click only moves");
+
+        click_and_release(&mut p, at);
+        assert_eq!(sorted(&p), (vec!["age".to_string()], vec![false]));
+        assert_eq!(order(&p), ["name", "age"], "a sort moves no column");
+
+        click_and_release(&mut p, at);
+        click_and_release(&mut p, at);
+        assert_eq!(sorted(&p), (vec!["age".to_string()], vec![true]));
+
+        click_and_release(&mut p, at);
+        click_and_release(&mut p, at);
+        assert_eq!(sorted(&p), (vec![], vec![]), "the third takes it away");
+    }
+
+    /// A double click on the gap after a header fits the column, as `=` does, and
+    /// sorts nothing.
+    #[test]
+    fn a_double_click_on_a_header_edge_fits_the_column() {
+        use crate::widgets::column_widths::WidthChoice;
+        let (mut p, _dir) = loaded_pump();
+        let (_, to, y) = header_of(&mut p, "name");
+        // The cursor elsewhere, to see it come to the column fitted.
+        let (age, _, _) = header_of(&mut p, "age");
+        click_and_release(&mut p, (age + 1, y));
+        click_and_release(&mut p, (to, y));
+        let state = p.app.data_table_state.as_ref().unwrap();
+        assert_ne!(
+            state.width_choice("name"),
+            WidthChoice::Fit,
+            "one press only"
+        );
+        click_and_release(&mut p, (to, y));
+        let state = p.app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.width_choice("name"), WidthChoice::Fit);
+        assert_eq!(sorted(&p), (vec![], vec![]), "never a sort");
+        assert_eq!(cell(&p).1.as_deref(), Some("name"));
+        assert_eq!(order(&p), ["name", "age"]);
+    }
+
     /// A key handled marks the frame on screen out of date, so a click read after it
     /// waits for the frame that shows what the key did, a replayed key included.
     #[test]

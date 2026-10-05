@@ -10,6 +10,8 @@ it stands for do, and nothing the mouse does needs it.
 | Click a cell | Puts the cursor on it |
 | Click a header | The column cursor on its column |
 | Double-click a cell | <kbd>Enter</kbd> on the row |
+| Double-click a header | Sorts by its column, as <kbd>[</kbd> <kbd>]</kbd> do: ascending, then descending, then off. The header carries the direction |
+| Double-click the gap right of a header | Fits the column to the rows on screen, as <kbd>=</kbd> does on the cursor's column, which moves there; it never sorts |
 | Drag a header onto another column | Moves the column there, as <kbd>H</kbd> <kbd>L</kbd> do; a rule on the header marks where it lands. Let go off the columns, or press a key, and nothing moves |
 | Drag the gap right of a header | Sets the column's width by hand, as <kbd>&lt;</kbd> <kbd>&gt;</kbd> do, from 4 to 240 cells; a column cut at the right side, by its last header cell |
 | Right-click a cell | The cursor goes there and the cell's menu opens |

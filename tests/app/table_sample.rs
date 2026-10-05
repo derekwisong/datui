@@ -298,10 +298,13 @@ fn an_exported_chart_carries_its_recipe_unless_omitted() {
         let json: serde_json::Value = serde_json::from_str(&recipe).unwrap();
         assert!(json["datui"].is_string(), "{json}");
         assert_eq!(
-            json["match_criteria"]["exact_path"].as_str(),
+            json["source"].as_str(),
             Some(path.to_str().unwrap()),
             "{json}"
         );
+        for left_out in ["id", "name", "created", "match_criteria"] {
+            assert!(json.get(left_out).is_none(), "{left_out}: {json}");
+        }
         let settings = &json["settings"];
         assert_eq!(settings["query"], "select where group = \"b\"", "{json}");
         assert_eq!(settings["sample"]["seed"], 7, "{json}");

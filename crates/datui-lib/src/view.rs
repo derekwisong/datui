@@ -60,25 +60,31 @@ mod time_serde {
     }
 }
 
+/// Every field but the settings may be left out, so an exported chart's recipe, which
+/// carries only the settings, reads as a view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedView {
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub name: String,
     pub description: Option<String>,
-    #[serde(with = "time_serde")]
+    #[serde(with = "time_serde", default = "SystemTime::now")]
     pub created: SystemTime,
     #[serde(with = "time_serde::option")]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub last_used: Option<SystemTime>,
+    #[serde(default)]
     pub usage_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_matched_file: Option<PathBuf>,
+    #[serde(default)]
     pub match_criteria: MatchCriteria,
     pub settings: ViewSettings,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MatchCriteria {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exact_path: Option<PathBuf>,

@@ -2,8 +2,7 @@
 //! written into an exported chart as its recipe.
 
 use crate::App;
-use crate::view::{MatchCriteria, SavedChart, SavedView};
-use std::path::Path;
+use crate::view::SavedChart;
 
 impl App {
     /// The chart drawn of the dataset on screen, as a view keeps it; `None` before a
@@ -36,22 +35,19 @@ impl App {
         self.chart_export_modal.restore = chart.export.clone();
     }
 
-    /// How the chart on screen was made, as a view's JSON that can be saved as one:
-    /// the datui version, the source, the query, filters and sort, the sample or
-    /// every row, and the chart. Written into an export of it, at `path`.
-    pub(crate) fn chart_recipe(&self, path: &Path) -> Option<String> {
+    /// How the chart on screen was made, as a view's JSON that reads back as one:
+    /// the datui version, the source (a URL without its credentials or query), the
+    /// table of a file of tables, what rows the chart read, and the view's settings
+    /// (sample, query, filters, sort, columns, reshape, chart and its export).
+    pub(crate) fn chart_recipe(&self) -> Option<String> {
         let state = self.data_table_state.as_ref()?;
         let mut settings = crate::view_settings_of(state);
         settings.chart = self.saved_chart();
         let source = if self.reads_stdin() {
-            std::path::PathBuf::from(crate::stdin::PATH)
+            crate::stdin::PATH.to_string()
         } else {
-            self.path.clone()?
+            public_location(&self.path.as_ref()?.to_string_lossy())
         };
-        let name = path
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().to_string())
-            .unwrap_or_else(|| "chart".to_string());
         let rows = match (state.sampled(), &settings.chart) {
             (Some(sampled), _) => {
                 let sample = sampled.sample();
@@ -70,29 +66,49 @@ impl App {
             ),
             _ => "every row".to_string(),
         };
-        let view = SavedView {
-            id: format!("recipe-{name}"),
-            name,
-            description: Some(format!("The recipe of a chart exported by datui: {rows}")),
-            created: std::time::SystemTime::now(),
-            last_used: None,
-            usage_count: 0,
-            last_matched_file: None,
-            match_criteria: MatchCriteria {
-                exact_path: Some(source),
-                relative_path: None,
-                path_pattern: None,
-                filename_pattern: None,
-                schema_columns: None,
-                schema_types: None,
-                table: self.view_table().map(str::to_string),
-            },
-            settings,
-        };
-        let mut json = serde_json::to_value(&view).ok()?;
-        let object = json.as_object_mut()?;
-        object.insert("datui".into(), env!("CARGO_PKG_VERSION").into());
-        object.insert("rows".into(), rows.into());
-        serde_json::to_string_pretty(&json).ok()
+        let mut recipe = serde_json::Map::new();
+        recipe.insert("datui".into(), env!("CARGO_PKG_VERSION").into());
+        recipe.insert("source".into(), source.into());
+        if let Some(table) = self.view_table() {
+            recipe.insert("table".into(), table.into());
+        }
+        recipe.insert("rows".into(), rows.into());
+        recipe.insert("settings".into(), serde_json::to_value(&settings).ok()?);
+        serde_json::to_string_pretty(&recipe).ok()
+    }
+}
+
+/// `location` as a recipe may say it: a URL without its user, password, query or
+/// fragment, which can carry credentials or a presigned signature; a path as it is.
+pub(crate) fn public_location(location: &str) -> String {
+    let Some(at) = location.find("://") else {
+        return location.to_string();
+    };
+    let (scheme, rest) = location.split_at(at + 3);
+    let rest = rest.split(['?', '#']).next().unwrap_or_default();
+    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    format!("{scheme}{host}{path}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::public_location;
+
+    #[test]
+    fn a_url_in_a_recipe_says_no_credentials_or_query() {
+        for (given, said) in [
+            (
+                "https://user:secret@host.example/data/x.parquet?X-Amz-Signature=abc#top",
+                "https://host.example/data/x.parquet",
+            ),
+            ("s3://key@bucket/prefix/", "s3://bucket/prefix/"),
+            ("https://host.example", "https://host.example"),
+            ("/data/x?.csv", "/data/x?.csv"),
+        ] {
+            assert_eq!(public_location(given), said);
+        }
     }
 }

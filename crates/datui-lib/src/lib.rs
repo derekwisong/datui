@@ -15243,7 +15243,7 @@ impl App {
         // How the chart was made, from the view and chart as they are now; none
         // when the dialog says Omit.
         request.options.recipe = if request.recipe {
-            self.chart_recipe(&request.path)
+            self.chart_recipe()
         } else {
             None
         };

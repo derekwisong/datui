@@ -15070,7 +15070,8 @@ impl App {
         };
         Ok(Some(Figure {
             plot,
-            chart_notes: prepared.notes(),
+            // The file always has the middle dot; the terminal may be ASCII.
+            chart_notes: prepared.notes("·"),
             grid: modal.grid,
         }))
     }

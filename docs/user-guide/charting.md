@@ -32,7 +32,8 @@ running sum, colored by carrier`, `count per bin`, `one box per carrier`. The
 columns are named at their axes, the Y column over the y axis and X under the
 x axis at the right, so the title row is blank for a plain line or scatter. At
 its right end, dimmed, the chart says what it read: `sample of 10,000 of 337k
-rows`, `1,207 values outside p1-p99`. When the row is too narrow for both, the
+rows · seed 42891`, `1,207 values outside p1-p99`. The seed draws the same
+sample again; a chart of every row names none. When the row is too narrow for both, the
 notes are cut with `…`, or left out.
 
 ## Plot two columns
@@ -230,7 +231,7 @@ Each starts from the dataset of that name under **Example datasets**.
 
 | Option | What it does |
 |---|---|
-| **Rows** | Rows a chart without an aggregate reads. A larger table is sampled across all of it, and the chart says so at the right of the title row: `sample of 10,000 of 3.5M rows`. Every row reads the whole view. A **Line** over a larger table is not sampled: see below |
+| **Rows** | Rows a chart without an aggregate reads. A larger table is sampled across all of it, and the chart says so at the right of the title row, with the sample's seed: `sample of 10,000 of 3.5M rows · seed 42891`. Every row reads the whole view. A **Line** over a larger table is not sampled: see below |
 | Aggregate | Reads every row, whatever the sample size |
 
 On **Rows**:

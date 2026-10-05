@@ -43,7 +43,9 @@ pub fn render(
         Some(request) if computing => app.chart_cache.standing_in(request),
         _ => outcome.and_then(|o| o.as_ref().ok()),
     };
-    let notes = prepared.map(ChartPrepared::notes).unwrap_or_default();
+    let notes = prepared
+        .map(|p| p.notes(crate::glyphs::get().middot))
+        .unwrap_or_default();
     let aggregating = request.as_ref().is_some_and(ChartRequest::aggregates);
 
     // Axis numbers print as the table prints their columns; whole ones tick whole.

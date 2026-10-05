@@ -336,6 +336,7 @@ fn histogram_of(
             total_rows: total as usize,
             sample_size: None,
             envelope_steps: None,
+            seed: None,
         },
         clipped: clip.then_some(Clipped {
             range: ValueRange::Percentile1To99,

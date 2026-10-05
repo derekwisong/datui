@@ -515,6 +515,8 @@ pub struct RowsRead {
     /// along X as its lowest and highest value instead of sampling: see
     /// [`prepare_chart_data`].
     pub envelope_steps: Option<usize>,
+    /// The seed the sample was drawn with, when it is a sample.
+    pub seed: Option<u64>,
 }
 
 /// Which values a histogram, box plot or KDE draws. Outliers far from the body squash
@@ -553,9 +555,9 @@ pub struct Clipped {
 }
 
 /// What a chart says under the plot about its input, one line each: that it is a
-/// sample, and how many values a range left out. Empty when it shows every row and
-/// every value.
-pub fn chart_notes(rows: &RowsRead, clipped: Option<&Clipped>) -> Vec<String> {
+/// sample, with the seed that draws it again, and how many values a range left out.
+/// Empty when it shows every row and every value. `middot` joins the seed on.
+pub fn chart_notes(rows: &RowsRead, clipped: Option<&Clipped>, middot: &str) -> Vec<String> {
     let mut notes = Vec::new();
     if let Some(steps) = rows.envelope_steps {
         notes.push(format!(
@@ -565,11 +567,15 @@ pub fn chart_notes(rows: &RowsRead, clipped: Option<&Clipped>) -> Vec<String> {
         ));
     }
     if let Some(n) = rows.sample_size {
-        notes.push(format!(
+        let mut note = format!(
             "sample of {} of {} rows",
             crate::numfmt::group_chrome(n),
             crate::discover::format_rows(rows.total_rows)
-        ));
+        );
+        if let Some(seed) = rows.seed {
+            note.push_str(&format!(" {middot} seed {seed}"));
+        }
+        notes.push(note);
     }
     if let Some(clipped) = clipped {
         let noun = if clipped.outside == 1 {
@@ -633,6 +639,7 @@ fn read_columns(
         total_rows: read.total_rows,
         sample_size: read.sample_size,
         envelope_steps: None,
+        seed: read.sample_size.map(|_| sampling.seed),
     };
     holding.rows = Some(Held {
         limit: sampling.limit,
@@ -877,6 +884,7 @@ pub fn prepare_chart_data(
                         total_rows: rows,
                         sample_size: None,
                         envelope_steps: Some(steps),
+                        seed: None,
                     },
                 });
             }
@@ -1898,6 +1906,7 @@ fn count_bars(
             total_rows: total,
             sample_size: None,
             envelope_steps: None,
+            seed: None,
         },
         value_dtype: DataType::UInt64,
         counted: sampling.limit.is_some_and(|n| total > n).then_some(total),
@@ -2651,6 +2660,7 @@ pub fn prepare_aggregate_xy(
             total_rows: counts.iter().sum::<u64>() as usize,
             sample_size: None,
             envelope_steps: None,
+            seed: None,
         },
         other: spec.color.is_some_and(|c| c.other),
     })
@@ -2805,6 +2815,7 @@ pub fn prepare_bar_aggregate(
             total_rows: rows,
             sample_size: None,
             envelope_steps: None,
+            seed: None,
         },
         value_dtype: if whole {
             DataType::Int64
@@ -3117,6 +3128,7 @@ mod tests {
                 total_rows: n,
                 sample_size: None,
                 envelope_steps: Some(500),
+                seed: None,
             }
         );
         let points = &result.series[0];
@@ -3127,7 +3139,7 @@ mod tests {
         assert!(bottom < -0.99, "so is every trough: {bottom}");
         assert!(points.windows(2).all(|w| w[0].0 <= w[1].0), "in X order");
         assert_eq!(
-            chart_notes(&result.rows, None),
+            chart_notes(&result.rows, None, "·"),
             ["min and max of 100k rows in 500 steps"]
         );
 
@@ -3263,10 +3275,11 @@ mod tests {
                 total_rows: 3,
                 sample_size: None,
                 envelope_steps: None,
+                seed: None,
             },
             "every row read: nothing to say"
         );
-        assert!(chart_notes(&result.rows, None).is_empty());
+        assert!(chart_notes(&result.rows, None, "·").is_empty());
     }
 
     #[test]
@@ -3321,11 +3334,18 @@ mod tests {
                 total_rows: n as usize,
                 sample_size: Some(1_000),
                 envelope_steps: None,
+                seed: Some(crate::sampling::Sample::default().seed),
             }
         );
+        // The seed draws the same sample again; the terminal joins it as ASCII.
+        let seed = crate::sampling::Sample::default().seed;
         assert_eq!(
-            chart_notes(&result.rows, None),
-            ["sample of 1,000 of 50k rows"]
+            chart_notes(&result.rows, None, "·"),
+            [format!("sample of 1,000 of 50k rows · seed {seed}")]
+        );
+        assert_eq!(
+            chart_notes(&result.rows, None, "-"),
+            [format!("sample of 1,000 of 50k rows - seed {seed}")]
         );
 
         // No limit reads every row.
@@ -3371,6 +3391,7 @@ mod tests {
                 total_rows: n as usize,
                 sample_size: Some(2_000),
                 envelope_steps: None,
+                seed: Some(crate::sampling::Sample::default().seed),
             }
         );
         assert!(data.x_max > 90_000.0, "reaches the end: {}", data.x_max);
@@ -3565,7 +3586,7 @@ mod tests {
         let counted: f64 = clipped.bins.iter().map(|b| b.count).sum();
         assert_eq!(counted as usize + outside, 102);
         assert_eq!(
-            chart_notes(&clipped.rows, clipped.clipped.as_ref()),
+            chart_notes(&clipped.rows, clipped.clipped.as_ref(), "·"),
             ["4 values outside p1-p99"]
         );
     }

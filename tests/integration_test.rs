@@ -1280,7 +1280,7 @@ fn chart_rows_are_read_on_enter() {
     assert!(app.chart_preparing());
     pump_until_chart_ready(&mut app, &rx, &tx);
     let text = screen(&mut app);
-    assert!(text.contains("sample of 250 of 900 rows"), "{text}");
+    assert!(text.contains("sample of 250 of 900 rows · seed "), "{text}");
     assert!(text.contains("Sample 250"), "{text}");
 
     // Every row is one key away, and read on Enter too.

@@ -503,12 +503,13 @@ pub(crate) enum ChartPrepared {
 }
 
 impl ChartPrepared {
-    /// What the chart says under the plot about the rows and values it drew.
-    pub(crate) fn notes(&self) -> Vec<String> {
+    /// What the chart says under the plot about the rows and values it drew;
+    /// `middot` joins a sample's seed on.
+    pub(crate) fn notes(&self, middot: &str) -> Vec<String> {
         let rows_of = |rows: usize| crate::discover::format_rows(rows);
         match self {
             Self::Bar(d) => {
-                let mut notes = chart_data::chart_notes(&d.rows, None);
+                let mut notes = chart_data::chart_notes(&d.rows, None, middot);
                 if let Some(note) = &d.rows_note {
                     notes.push(note.clone());
                 } else if let Some(rows) = d.counted {
@@ -533,11 +534,11 @@ impl ChartPrepared {
                 notes
             }
             Self::XY(c) if c.rows_note.is_some() => c.rows_note.iter().cloned().collect(),
-            Self::XY(c) => chart_data::chart_notes(&c.rows, None),
-            Self::XRange(c) => chart_data::chart_notes(&c.rows, None),
-            Self::Histogram(d) => chart_data::chart_notes(&d.rows, d.clipped.as_ref()),
+            Self::XY(c) => chart_data::chart_notes(&c.rows, None, middot),
+            Self::XRange(c) => chart_data::chart_notes(&c.rows, None, middot),
+            Self::Histogram(d) => chart_data::chart_notes(&d.rows, d.clipped.as_ref(), middot),
             Self::BoxPlot(d) => {
-                let mut notes = chart_data::chart_notes(&d.rows, d.clipped.as_ref());
+                let mut notes = chart_data::chart_notes(&d.rows, d.clipped.as_ref(), middot);
                 if d.of > 0 {
                     notes.push(format!(
                         "the {} largest of {} categories",
@@ -547,8 +548,8 @@ impl ChartPrepared {
                 }
                 notes
             }
-            Self::Kde(d) => chart_data::chart_notes(&d.rows, d.clipped.as_ref()),
-            Self::Heatmap(d) => chart_data::chart_notes(&d.rows, None),
+            Self::Kde(d) => chart_data::chart_notes(&d.rows, d.clipped.as_ref(), middot),
+            Self::Heatmap(d) => chart_data::chart_notes(&d.rows, None, middot),
         }
     }
 }

@@ -60,7 +60,9 @@ pub fn render(
     let y_numbers = || {
         use crate::chart_modal::Aggregate;
         match spec.encoding.y.aggregate {
-            Aggregate::Count => chart_data::AxisNumbers::count(&ctx.number_format),
+            Aggregate::Count | Aggregate::Distinct => {
+                chart_data::AxisNumbers::count(&ctx.number_format)
+            }
             // A mean or median of whole numbers is not whole.
             Aggregate::Mean | Aggregate::Median => columns(&spec.encoding.y.field).fractional(),
             _ => columns(&spec.encoding.y.field),

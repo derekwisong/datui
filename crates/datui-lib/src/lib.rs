@@ -14538,7 +14538,9 @@ impl App {
             use chart_modal::Aggregate;
             let aggregate = spec.encoding.y.aggregate;
             let numbers = match aggregate {
-                Aggregate::Count => chart_data::AxisNumbers::count(&self.number_format),
+                Aggregate::Count | Aggregate::Distinct => {
+                    chart_data::AxisNumbers::count(&self.number_format)
+                }
                 Aggregate::Mean | Aggregate::Median => self.axes_numbers(ys).fractional(),
                 _ => self.axes_numbers(ys),
             };

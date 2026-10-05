@@ -2382,10 +2382,22 @@ pub struct AggregateSpec<'a> {
     pub color: Option<ColorSplit<'a>>,
 }
 
+/// Y as an aggregate reads it: as numbers, or as it is for a distinct count, which
+/// counts strings and dates too.
+fn y_values(y: Expr, aggregate: crate::chart_modal::Aggregate) -> Expr {
+    if aggregate.takes_any_y() {
+        y
+    } else {
+        y.cast(DataType::Float64)
+    }
+}
+
 /// `values`' aggregate in a plan.
 fn aggregate_expr(values: Expr, aggregate: crate::chart_modal::Aggregate) -> Expr {
     use crate::chart_modal::Aggregate;
     match aggregate {
+        // Nulls are no value: a group of only nulls has none, a gap.
+        Aggregate::Distinct => values.drop_nulls().n_unique().cast(DataType::Float64),
         Aggregate::Sum => values.sum(),
         Aggregate::Mean => values.mean(),
         Aggregate::Median => values.median(),
@@ -2484,11 +2496,7 @@ pub fn prepare_aggregate_xy(
     let mut select = vec![x];
     let mut keys = vec![col("__x")];
     for (i, y) in ys.iter().enumerate() {
-        select.push(
-            col(y.as_str())
-                .cast(DataType::Float64)
-                .alias(format!("__y{i}")),
-        );
+        select.push(y_values(col(y.as_str()), spec.aggregate).alias(format!("__y{i}")));
     }
     let mut plan = lf.clone();
     if let Some(color) = spec.color {
@@ -2680,7 +2688,7 @@ pub fn prepare_bar_aggregate(
     let mut select = vec![until_cancelled(col(category), &sampling.cancel)];
     let mut keys = vec![col(category)];
     if let Some(value) = value {
-        select.push(col(value).cast(DataType::Float64).alias("__v"));
+        select.push(y_values(col(value), aggregate).alias("__v"));
     }
     if let Some(color) = color {
         select.push(group_expr(color).alias("__g"));
@@ -2717,7 +2725,7 @@ pub fn prepare_bar_aggregate(
         .map(|n| n.unwrap_or(0) as usize)
         .sum();
     // A sum, least or greatest of whole numbers is whole; a count always is.
-    let whole = count
+    let whole = aggregate.is_count()
         || (value_dtype.is_integer()
             && matches!(aggregate, Aggregate::Sum | Aggregate::Min | Aggregate::Max));
     let categories = df.column(category)?.as_materialized_series().clone();
@@ -4323,6 +4331,75 @@ mod tests {
         assert_eq!(out.names, ["a", "b"]);
         assert_eq!(out.series[0], [(1.0, 10.0), (2.0, 20.0), (3.0, 30.0)]);
         assert_eq!(out.series[1], [(1.0, 1.0)]);
+    }
+
+    /// A distinct count of a string Y per X: nulls are no value, a group of only
+    /// nulls is a gap; per color, and within a time bucket.
+    #[test]
+    fn distinct_counts_any_y_per_x() {
+        use crate::chart_modal::{Aggregate, Cumulative, TimeUnit};
+        let mut df = df!(
+            "date" => [19723i32, 19723, 19723, 19724, 19724, 19754, 19755],
+            "name" => [Some("Ann"), Some("Bo"), Some("Ann"), None, None, Some("Cy"), Some("Di")],
+            "sex" => ["F", "M", "F", "F", "M", "M", "M"]
+        )
+        .unwrap();
+        df.apply("date", |c| c.cast(&DataType::Date).unwrap())
+            .unwrap();
+        let lf = df.lazy();
+        let schema = lf.clone().collect_schema().unwrap();
+        let ys = ["name".to_string()];
+        let distinct = |unit, color| {
+            prepare_aggregate_xy(
+                &lf,
+                schema.as_ref(),
+                &AggregateSpec {
+                    x: "date",
+                    time_unit: unit,
+                    ys: &ys,
+                    aggregate: Aggregate::Distinct,
+                    cumulative: Cumulative::Off,
+                    color,
+                },
+                &all_rows(),
+            )
+            .unwrap()
+        };
+        let by_day = distinct(TimeUnit::Day, None);
+        let ys_of = |s: &[(f64, f64)]| s.iter().map(|p| p.1).collect::<Vec<_>>();
+        // Day 1: Ann, Bo; day 2: only nulls, a gap; then Cy, then Di.
+        assert_eq!(ys_of(&by_day.series[0]), [2.0, 1.0, 1.0]);
+        assert_eq!(by_day.breaks[0], [1], "the day of nulls breaks the line");
+        let by_month = distinct(TimeUnit::Month, None);
+        assert_eq!(ys_of(&by_month.series[0]), [2.0, 2.0], "Ann, Bo; Cy, Di");
+        let groups = [Some("F".to_string()), Some("M".to_string())];
+        let split = ColorSplit {
+            column: "sex",
+            groups: &groups,
+            other: false,
+        };
+        let colored = distinct(TimeUnit::Month, Some(split));
+        assert_eq!(colored.names, ["F", "M"]);
+        assert_eq!(ys_of(&colored.series[0]), [1.0], "Ann");
+        assert_eq!(ys_of(&colored.series[1]), [1.0, 2.0], "Bo; Cy, Di");
+        // A bar of distinct names per sex: whole numbers.
+        let bars = prepare_bar_aggregate(
+            &lf,
+            &BarAggregate {
+                category: "sex",
+                value: Some("name"),
+                aggregate: Aggregate::Distinct,
+                color: None,
+                order: BarOrder::Label,
+                cap: BAR_CAP,
+            },
+            &all_rows(),
+        )
+        .unwrap();
+        let values: Vec<f64> = bars.bars.iter().map(|b| b.value).collect();
+        assert_eq!(values, [1.0, 3.0]);
+        assert!(bars.value_dtype.is_integer());
+        assert_eq!(bars.value_column, "distinct name");
     }
 
     /// With Other, every value without a group of its own (a null among them) is one

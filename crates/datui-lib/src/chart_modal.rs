@@ -136,6 +136,8 @@ pub enum Aggregate {
     #[default]
     None,
     Count,
+    /// The distinct values of Y: `nunique` of the query language, nulls left out.
+    Distinct,
     Sum,
     Mean,
     Median,
@@ -144,9 +146,10 @@ pub enum Aggregate {
 }
 
 impl Aggregate {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::None,
         Self::Count,
+        Self::Distinct,
         Self::Sum,
         Self::Mean,
         Self::Median,
@@ -158,6 +161,7 @@ impl Aggregate {
         match self {
             Self::None => "none",
             Self::Count => "count",
+            Self::Distinct => "distinct",
             Self::Sum => "sum",
             Self::Mean => "mean",
             Self::Median => "median",
@@ -168,6 +172,23 @@ impl Aggregate {
 
     pub fn vega_lite(self) -> Option<&'static str> {
         (self != Self::None).then(|| self.label())
+    }
+
+    /// Whether Y may be any column, not only a number: a count of its distinct
+    /// values is a number whatever they are.
+    pub fn takes_any_y(self) -> bool {
+        self == Self::Distinct
+    }
+
+    /// Whether cumulative can run with it. A running sum of distinct counts is not
+    /// the distinct count so far, so it is left out rather than drawn wrong.
+    pub fn runs_cumulative(self) -> bool {
+        !matches!(self, Self::None | Self::Distinct)
+    }
+
+    /// Whether every value it makes is a whole number, whatever Y is.
+    pub fn is_count(self) -> bool {
+        matches!(self, Self::Count | Self::Distinct)
     }
 }
 
@@ -634,6 +655,23 @@ impl ChartModal {
                 Mark::Bar | Mark::Box => self.category_candidates.clone(),
                 Mark::Histogram | Mark::Kde | Mark::Heatmap => self.numeric_candidates.clone(),
             },
+            // A distinct count takes any column; the rest a number.
+            PickerFor::Y
+                if self.spec.encoding.y.aggregate.takes_any_y() && self.takes_aggregate() =>
+            {
+                let mut all = self.numeric_candidates.clone();
+                for c in self
+                    .temporal_candidates
+                    .iter()
+                    .chain(&self.category_candidates)
+                {
+                    if !all.contains(c) {
+                        all.push(c.clone());
+                    }
+                }
+                all.retain(|c| Some(c) != x);
+                all
+            }
             // The X column against itself is only a diagonal.
             PickerFor::Y => self
                 .numeric_candidates
@@ -745,7 +783,7 @@ impl ChartModal {
         // Options.
         match mark {
             Mark::Line | Mark::Scatter => {
-                if self.aggregates() {
+                if self.aggregates() && self.aggregate().runs_cumulative() {
                     rows.push(Cumulative);
                 }
                 rows.extend([YStartsAtZero, LogScale, ShowLegend, Grid]);
@@ -870,7 +908,7 @@ impl ChartModal {
         if !matches!(mark, Mark::Line | Mark::Scatter | Mark::Bar) {
             encoding.y.aggregate = Aggregate::None;
         }
-        if encoding.y.aggregate == Aggregate::None || !mark.is_xy() {
+        if !encoding.y.aggregate.runs_cumulative() || !mark.is_xy() {
             encoding.y.cumulative = Cumulative::Off;
         }
     }
@@ -1565,10 +1603,21 @@ mod tests {
         assert!(modal.row_order().contains(&Bins));
     }
 
+    /// Step the aggregate row by one until it reads `to`.
+    fn step_to(modal: &mut ChartModal, to: Aggregate, delta: i8) {
+        for _ in 0..Aggregate::ALL.len() {
+            if modal.aggregate() == to {
+                return;
+            }
+            modal.step(ChartFocus::Aggregate, delta);
+        }
+        assert_eq!(modal.aggregate(), to);
+    }
+
     #[test]
     fn the_aggregate_steps_through_every_one() {
         let mut modal = open_on(Some(("date", &DataType::Date)));
-        let labels: Vec<&str> = (0..7)
+        let labels: Vec<&str> = (0..Aggregate::ALL.len())
             .map(|_| {
                 modal.step(ChartFocus::Aggregate, 1);
                 modal.aggregate().label()
@@ -1576,7 +1625,9 @@ mod tests {
             .collect();
         assert_eq!(
             labels,
-            ["count", "sum", "mean", "median", "min", "max", "none"]
+            [
+                "count", "distinct", "sum", "mean", "median", "min", "max", "none"
+            ]
         );
         modal.step(ChartFocus::Aggregate, -1);
         assert_eq!(modal.aggregate(), Aggregate::Max);
@@ -1590,8 +1641,7 @@ mod tests {
         assert_eq!(modal.spec.encoding.y.cumulative, Cumulative::Sum);
         modal.step(ChartFocus::Cumulative, 1);
         assert_eq!(modal.spec.encoding.y.cumulative, Cumulative::Compound);
-        modal.step(ChartFocus::Aggregate, -2);
-        assert_eq!(modal.aggregate(), Aggregate::None);
+        step_to(&mut modal, Aggregate::None, -1);
         assert_eq!(modal.spec.encoding.y.cumulative, Cumulative::Off);
     }
 
@@ -1670,6 +1720,32 @@ mod tests {
         modal.spec.encoding.y.cumulative = Cumulative::Sum;
         modal.spec.encoding.color.field = Some("carrier".to_string());
         assert_eq!(modal.how(), "by month, running sum, colored by carrier");
+    }
+
+    /// Distinct takes any Y, strings too, and reads `distinct by month`; leaving it
+    /// for an aggregate of numbers lets a string Y go, as a sum never had one. It
+    /// takes no cumulative.
+    #[test]
+    fn distinct_takes_any_y_and_no_cumulative() {
+        let mut modal = open_on(Some(("date", &DataType::Date)));
+        step_to(&mut modal, Aggregate::Distinct, 1);
+        modal.focus = ChartFocus::Y;
+        modal.open_picker();
+        let items = modal.picker.as_ref().unwrap().items().to_vec();
+        assert!(items.contains(&"carrier".to_string()), "{items:?}");
+        modal.close_picker();
+        modal.spec.encoding.y.field = vec!["carrier".to_string()];
+        modal.step(ChartFocus::TimeUnit, 2);
+        assert_eq!(modal.how(), "distinct by month");
+        assert!(!modal.row_order().contains(&ChartFocus::Cumulative));
+        modal.spec.encoding.y.cumulative = Cumulative::Sum;
+        modal.step(ChartFocus::Aggregate, 0);
+        assert_eq!(modal.spec.encoding.y.cumulative, Cumulative::Off);
+        // Over to sum: a string is no number to add.
+        modal.step(ChartFocus::Aggregate, 1);
+        assert_eq!(modal.aggregate(), Aggregate::Sum);
+        assert!(modal.spec.encoding.y.field.is_empty());
+        assert_eq!(Aggregate::Distinct.vega_lite(), Some("distinct"));
     }
 
     /// Each type's phrase reads alone and never names the Y column, which its axis
@@ -1769,8 +1845,7 @@ mod tests {
         modal.step(ChartFocus::TimeUnit, 3);
         assert_eq!(modal.spec.encoding.x.time_unit, TimeUnit::Month);
         modal.spec.encoding.y.aggregate = Aggregate::Sum;
-        modal.step(ChartFocus::Aggregate, -2);
-        assert_eq!(modal.aggregate(), Aggregate::None);
+        step_to(&mut modal, Aggregate::None, -1);
         assert_eq!(modal.spec.encoding.x.time_unit, TimeUnit::None);
 
         let numeric = s(&["delay"]);
@@ -1798,8 +1873,9 @@ mod tests {
     fn an_aggregate_on_a_date_starts_by_the_day() {
         let mut modal = open_on(Some(("date", &DataType::Date)));
         assert_eq!(modal.spec.encoding.x.time_unit, TimeUnit::None);
-        modal.step(ChartFocus::Aggregate, 3);
-        assert_eq!(modal.aggregate(), Aggregate::Mean);
+        modal.step(ChartFocus::Aggregate, 1);
+        assert_eq!(modal.spec.encoding.x.time_unit, TimeUnit::Day);
+        step_to(&mut modal, Aggregate::Mean, 1);
         assert_eq!(modal.spec.encoding.x.time_unit, TimeUnit::Day);
         modal.step(ChartFocus::TimeUnit, -1);
         assert_eq!(

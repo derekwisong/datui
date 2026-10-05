@@ -62,7 +62,7 @@ dataset starts over.
 ## Aggregate
 
 The **Aggregate** row under **Y**, on a line, scatter or bar: <kbd>←</kbd>
-<kbd>→</kbd> step through none, count, sum, mean, median, min and max. With
+<kbd>→</kbd> step through none, count, distinct, sum, mean, median, min and max. With
 one, the rows that share an X (and a color) are made one point, or one bar, over every row of the view, in one
 group-by in the background; the chart says how many rows in its title row (`all
 336,776 rows`, or `rows in the groups shown` under a color),
@@ -71,9 +71,9 @@ chart samples, and says so.
 
 | Option | What it does |
 |---|---|
-| Aggregate | **count** needs no Y column: the rows per X. The others make the Y column's values one |
+| Aggregate | **count** needs no Y column: the rows per X. **distinct** counts the Y column's different values per X, as `nunique` does in a query but with nulls left out; Y can be any column, text too, and turning to another aggregate lets a text Y go. The others make the Y column's values one |
 | Time bucket | Line and Scatter, under a date or datetime X: none, day, week (from Monday), month, quarter, year. A bucket with no aggregate takes **mean**; an aggregate on a date X with no bucket starts by the day |
-| **Cumulative** | Line and Scatter, with an aggregate: **off**, **running sum**, or **compound**. The rows run as a total in X order, per series, and each point is the total at the end of its X or bucket: a running sum of Y, or Y's rates compounded over every row, `(1 + y1)(1 + y2)… − 1`. The aggregate is set aside meanwhile (a count runs as a count of rows); **Aggregate** says `mean · compound of rows` |
+| **Cumulative** | Line and Scatter, with an aggregate other than distinct (a running sum of distinct counts is not a count of the distinct values so far): **off**, **running sum**, or **compound**. The rows run as a total in X order, per series, and each point is the total at the end of its X or bucket: a running sum of Y, or Y's rates compounded over every row, `(1 + y1)(1 + y2)… − 1`. The aggregate is set aside meanwhile (a count runs as a count of rows); **Aggregate** says `mean · compound of rows` |
 
 An X of more than about 200,000 values is refused before any row is grouped,
 judged from a sample of X, with the advice to bucket it.
@@ -207,6 +207,7 @@ Each starts from the dataset of that name under **Public datasets**.
 | JFK delay by hour | NYC flights, the [JFK query](querying-data.md#run-a-query) | Line; X `hour`, Y `mean_delay` | A climb from 0.5 minutes at 5:00 to 26.1 at 21:00 |
 | A year of delays | NYC flights, the [daily query](querying-data.md#dates-and-messy-text) | Line; X `flight_date`, Y `delay` | 2013 on a date axis; the peak is 83.54 on 2013-03-08 |
 | Delay by carrier | NYC flights, no query | Bar; X `carrier`, Y `arr_delay`, mean | F9 longest at 21.92 minutes |
+| Names per year | US baby names, no query | Line; X `year`, Y `name`, distinct | 1,889 different names in 1880, a peak of 32,510 in 2008 |
 | Three names | US baby names, the [pivot](reshaping.md#pivot) of Emma, Jennifer and Olivia | Line; X `year`, Y `Emma`, `Jennifer`, `Olivia` | Jennifer's peak of 63,604 in 1972; Emma and Olivia rising after 2000. Emma and Olivia start in 1880; Jennifer, with no published counts before 1916, starts there |
 | Launches per year | Space launches, the [count pivot](reshaping.md#count-with-a-pivot) | Line; X `launch_year`, Y `F`, `O` | `O`, launches that reached orbit, near 130 a year from the late 1960s to the mid-1980s, then a slump in the 1990s; `F`, failures, along the bottom |
 | Central Park highs | NOAA daily weather, `by_year/YEAR=2024/ELEMENT=TMAX`, the [station query](remote-data.md#examples-on-public-data) | Line; X `day`, Y `high_c` | 366 daily highs from −6.0 to 35.0 °C |

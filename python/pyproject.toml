@@ -44,7 +44,7 @@ Changelog = "https://github.com/derekwisong/datui/releases"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
+    "pytest>=9.1.1",
 ]
 
 [project.scripts]

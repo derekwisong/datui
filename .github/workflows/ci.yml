@@ -79,7 +79,7 @@ jobs:
           # hang fails here rather than holding the job until its own timeout.
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config libfontconfig1-dev
+          sudo apt-get install -y pkg-config
 
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -117,7 +117,7 @@ jobs:
         run: |
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config libfontconfig1-dev
+          sudo apt-get install -y pkg-config
 
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -150,7 +150,7 @@ jobs:
         run: |
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config libfontconfig1-dev
+          sudo apt-get install -y pkg-config
 
       # Its own key: fuzz/Cargo.lock is a separate lockfile.
       - name: Cache cargo dependencies
@@ -191,7 +191,7 @@ jobs:
         run: |
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config libfontconfig1-dev
+          sudo apt-get install -y pkg-config
 
       # Its own cache key: artifacts from a different compiler are not shareable.
       - name: Cache cargo dependencies
@@ -229,7 +229,7 @@ jobs:
         run: |
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config libfontconfig1-dev
+          sudo apt-get install -y pkg-config
 
       - name: Cache cargo dependencies
         uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -348,7 +348,7 @@ jobs:
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
           # mandoc and groff lint the manpages; man-db's lexgrog reads their NAME lines.
-          sudo apt-get install -y pkg-config libfontconfig1-dev python3-dev mandoc groff-base man-db
+          sudo apt-get install -y pkg-config python3-dev mandoc groff-base man-db
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

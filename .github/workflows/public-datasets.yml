@@ -56,7 +56,7 @@ jobs:
         run: |
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config libfontconfig1-dev
+          sudo apt-get install -y pkg-config
 
       # CI linux's entry from main, restore only: the same debug test build and env.
       - name: Cache cargo dependencies

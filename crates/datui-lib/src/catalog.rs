@@ -93,11 +93,24 @@ pub struct ColumnNote {
     pub unit: String,
     /// Code to meaning, in file order. `""` is what a blank or null value means.
     pub values: Vec<(String, String)>,
+    /// The type a spec declares for the column (`f64`), as the type row names it.
+    pub ty: String,
 }
 
 impl ColumnNote {
-    /// The note as one line: `description (unit)`.
+    /// The note as one line: `description (unit)`; with a declared type, `f64 · deg
+    /// description`, as the type row pairs a type and a unit.
     pub fn about(&self) -> String {
+        if !self.ty.is_empty() {
+            let mut typed = self.ty.clone();
+            if !self.unit.is_empty() {
+                typed = format!("{typed} {} {}", crate::glyphs::get().middot, self.unit);
+            }
+            if self.description.is_empty() {
+                return typed;
+            }
+            return format!("{typed}  {}", self.description);
+        }
         match (self.description.is_empty(), self.unit.is_empty()) {
             (false, false) => format!("{} ({})", self.description, self.unit),
             (false, true) => self.description.clone(),

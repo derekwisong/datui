@@ -245,7 +245,7 @@ plus `match`, `kind`, the layout keys, `[columns]`, `description` and
 | `metadata_line` | A line of `key="value"` or `key=value` pairs, separated by commas, for the Info panel. It must not be data: above the last header line, within `skip_lines`, or a comment line |
 | `null_values` | A value, or a list, read as null: `"NA"`, or `"COL=-999"` for one column |
 | `skip_lines` | Lines to pass over before the header |
-| `[columns]` | Derived columns, below, and what columns mean: `description` and `unit` |
+| `[columns]` | Column types and derived columns, below, and what columns mean: `description` and `unit` |
 
 Lines count from 1 at the top of the file. Each option the spec sets replaces
 the config's; a flag typed on the command line (`--delimiter`,
@@ -268,6 +268,61 @@ not. A column a query computes has no unit, even under the name of one that had.
 The Info panel's **Metadata** tab lists the metadata line's pairs, under its
 leading item when it has one (`device_info`). A line that is not pairs is shown
 as it is. For a directory, the first file's line is shown.
+
+### Column types
+
+A column of the file takes a `type`, beside its `unit` and `description`:
+
+**`typed.toml`**
+
+```toml,file=typed.toml
+name = "acme.typed-log"
+kind = "delimited"
+match = { magic = "#device_info" }
+comment = "#"
+skip_initial_space = true
+header_rows = { name = 3, unit = 2 }
+metadata_line = 1
+
+[columns]
+"Lcl Date" = { type = "date", format = "%Y-%m-%d" }
+Latitude = { type = "f64", description = "GPS latitude" }
+bus1volts = { type = "f64", unit = "V" }
+```
+
+**`typed.csv`**
+
+```csv,file=typed.csv
+#device_info, log_version="1.03"
+#yyyy-mm-dd, degrees, volts
+  Lcl Date,     Latitude, bus1volts
+2024-03-01,    40.100000,      25.0
+2024-03-01,             ,      n/a
+```
+
+```bash
+datui formats check ./typed.toml typed.csv
+```
+
+| `type` | Reads |
+|---|---|
+| `str` | Text as it is, never typed by `read.infer_types`: `02134` keeps its zero |
+| `bool` | `true`/`false` or `1`/`0`, in any case |
+| `i8` `i16` `i32` `i64` | Signed integers |
+| `u8` `u16` `u32` `u64` | Unsigned integers |
+| `f32` `f64` | Decimals. `f32` keeps about 7 significant digits |
+| `date` `time` `datetime` | With `format`, a strftime format; without, the format is inferred |
+| `duration` | `1d`, `2h30m`, `-1w2d` |
+
+Use `i64` and `f64` unless a narrower type is wanted for an export or to hold
+values to a range. A value is trimmed first, and one that does not fit the type,
+or is out of an integer type's range, is null. The first time the Info panel
+opens, one pass counts them, and the Notes tab says how many per column:
+`RPM: 2 values out of range for u8, read as null`. A typed column the file does
+not have is a note, not an error, since the files of a family differ. A typed
+column is the same type in every file read together, and `read.infer_types`
+leaves it alone. `type` beside `from` or `as` is refused: a derived column
+takes its type from `as`.
 
 ### Derived columns
 

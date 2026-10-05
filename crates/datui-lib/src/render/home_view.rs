@@ -5119,6 +5119,7 @@ fields = [{ name = "x", type = "u1" }]
                     description: format!("Note {i}"),
                     unit: if i == 0 { "USD".into() } else { String::new() },
                     values: Vec::new(),
+                    ty: String::new(),
                 };
                 (format!("col{i}"), note)
             })

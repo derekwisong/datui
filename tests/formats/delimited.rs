@@ -855,3 +855,160 @@ fn a_byte_that_is_not_utf8_reads_as_a_replacement() {
         "{notes:?}"
     );
 }
+
+const TYPED_SPEC: &str = r##"
+name = "acme.typed-log"
+kind = "delimited"
+match = { magic = "#device_info" }
+
+comment = "#"
+skip_initial_space = true
+header_rows = { name = 3, unit = 2 }
+metadata_line = 1
+
+[columns]
+time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
+"Lcl Date" = { type = "date", format = "%Y-%m-%d" }
+Latitude = { type = "f64", unit = "deg", description = "GPS latitude" }
+LogIdx = { type = "i64" }
+AtvWpt = { type = "str" }
+RPM = { type = "u8" }
+OnGrnd = { type = "bool" }
+Speed = { type = "f32" }
+Missing = { type = "i64" }
+"##;
+
+fn typed_app() -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    app.set_formats(Registry::of(vec![Spec::parse(TYPED_SPEC, None).unwrap()]));
+    (app, rx, tx)
+}
+
+/// A spec's types read its columns: each type, a date with a format, text that keeps
+/// its zero, a value that does not fit null and counted in a note once the Info panel
+/// opens, and a typed column the file lacks noted. The derived column still reads.
+#[test]
+fn a_specs_types_read_its_columns() {
+    let blank: &[&str] = &["", "", ""];
+    let path = common::fixture_dir().join("delimited_spec_typed_columns.csv");
+    std::fs::write(
+        &path,
+        family_log(
+            "2024-03-01",
+            &[
+                ("Latitude", "degrees", &["40.1", "x", "40.3"]),
+                ("LogIdx", "#", &["1", "2", "two"]),
+                ("AtvWpt", "ident", &["02134", "KPOU", ""]),
+                ("RPM", "rpm", &["2400", "120", "300"]),
+                ("OnGrnd", "bool", &["1", "0", "TRUE"]),
+                ("Speed", "kt", &["1.5", "2.25", "3"]),
+                ("Note", "", blank),
+            ],
+        ),
+    )
+    .unwrap();
+    let (mut app, rx, tx) = typed_app();
+    open(&mut app, &rx, path, OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    let df = collected(&app);
+    let dtype = |name: &str| df.column(name).unwrap().dtype().clone();
+    assert_eq!(dtype("Lcl Date"), DataType::Date);
+    assert_eq!(dtype("Latitude"), DataType::Float64);
+    assert_eq!(dtype("LogIdx"), DataType::Int64);
+    assert_eq!(dtype("AtvWpt"), DataType::String);
+    assert_eq!(dtype("RPM"), DataType::UInt8);
+    assert_eq!(dtype("OnGrnd"), DataType::Boolean);
+    assert_eq!(dtype("Speed"), DataType::Float32);
+    assert_eq!(
+        df.column("AtvWpt").unwrap().str().unwrap().get(0),
+        Some("02134"),
+        "text keeps its zero"
+    );
+    let rpm: Vec<Option<u8>> = df.column("RPM").unwrap().u8().unwrap().iter().collect();
+    assert_eq!(rpm, [None, Some(120), None]);
+    let on: Vec<Option<bool>> = df
+        .column("OnGrnd")
+        .unwrap()
+        .bool()
+        .unwrap()
+        .iter()
+        .collect();
+    assert_eq!(on, [Some(true), Some(false), Some(true)]);
+    assert_eq!(df.column("Latitude").unwrap().null_count(), 1);
+    assert!(
+        df.column("time")
+            .unwrap()
+            .get(0)
+            .unwrap()
+            .to_string()
+            .starts_with("2024-03-01 15:00:00")
+    );
+
+    let notes = note_summaries(&app);
+    assert!(
+        notes.contains(&"typed in the spec, not in the file: Missing".to_string()),
+        "{notes:?}"
+    );
+    assert!(
+        !notes.iter().any(|n| n.starts_with("LogIdx:")),
+        "not counted before the panel opens: {notes:?}"
+    );
+    app.event(&AppEvent::Key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('i'),
+        crossterm::event::KeyModifiers::NONE,
+    )));
+    pump_until(&mut app, &rx, &tx, |app| !app.unfit_count_pending());
+    let notes = note_summaries(&app);
+    for said in [
+        "LogIdx: 1 value not i64, read as null",
+        "Latitude: 1 value not f64, read as null",
+        "RPM: 2 values out of range for u8, read as null",
+    ] {
+        assert!(notes.contains(&said.to_string()), "{said}: {notes:?}");
+    }
+    assert!(!notes.iter().any(|n| n.starts_with("OnGrnd:")), "{notes:?}");
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(
+        state.unit_of("Latitude"),
+        Some("degrees"),
+        "the file's units line"
+    );
+}
+
+/// A typed column is its type in every file of a directory, a file blank in it too.
+#[test]
+fn a_typed_column_is_one_type_across_files() {
+    let dir = fresh_dir("delimited_spec_typed_family");
+    let blank: &[&str] = &["", "", ""];
+    std::fs::write(
+        dir.join("log_a.csv"),
+        family_log(
+            "2021-06-01",
+            &[
+                ("Latitude", "degrees", blank),
+                ("LogIdx", "#", &["1", "2", "3"]),
+            ],
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("log_b.csv"),
+        family_log(
+            "2023-06-01",
+            &[
+                ("Latitude", "degrees", &["40.1", "40.2", "40.3"]),
+                ("LogIdx", "#", &["4", "5", "6"]),
+            ],
+        ),
+    )
+    .unwrap();
+    let (mut app, rx, tx) = typed_app();
+    open_dir(&mut app, &rx, dir);
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    pump_until_idle(&mut app, &rx, &tx);
+    let df = collected(&app);
+    assert_eq!(df.column("Latitude").unwrap().dtype(), &DataType::Float64);
+    assert_eq!(df.column("LogIdx").unwrap().dtype(), &DataType::Int64);
+    assert_eq!(df.column("Latitude").unwrap().null_count(), 3);
+}

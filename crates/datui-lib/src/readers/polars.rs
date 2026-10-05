@@ -124,6 +124,7 @@ fn said(e: &polars::prelude::PolarsError) -> String {
 fn frame(state: DataTableState, input: ScanIn<'_>) -> Result<Scan> {
     input.report.read_python = state.read_python().to_vec();
     input.report.read_notes = state.read_notes().to_vec();
+    input.report.typing = state.typing().clone();
     if let (Some(units), Some(read)) = (state.read_units(), input.report.delimited.as_mut()) {
         let mut merged = (**read).clone();
         merged.units = units.to_vec();

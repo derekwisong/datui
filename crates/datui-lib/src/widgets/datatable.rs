@@ -438,6 +438,10 @@ pub struct DataTableState {
     /// Each column's unit, from the first of several files read through a spec that
     /// has the column; `None` when the first file's header said them all.
     read_units: Option<Vec<(String, String)>>,
+    /// The columns the read gave a type, and the frame before it did.
+    typing: Typing,
+    /// The notes on the values the types made null, once counted.
+    unfit_notes: Option<Vec<crate::notes::Note>>,
     /// How `reshaped_lf` was built, while there is one: what SQL runs over.
     reshape_steps: Option<Vec<Step>>,
     /// Which loaded column each column of the base is (see [`Lineage`]).
@@ -1026,6 +1030,8 @@ pub struct OpenFacts {
     pub indexing: Option<Arc<crate::lines::Lines>>,
     /// The lines of several files, which `#` numbers by their line in their own file.
     pub numbering: Option<Arc<crate::lines::Lines>>,
+    /// The columns the read gave a type, for the count of what did not fit.
+    pub typing: Typing,
 }
 
 /// The footers' account of a dataset of many files.
@@ -2054,6 +2060,8 @@ impl DataTableState {
             read_python: Vec::new(),
             read_notes: Vec::new(),
             read_units: None,
+            typing: Typing::default(),
+            unfit_notes: None,
             reshape_steps: None,
             lineage: None,
             reshape_lineage: None,
@@ -2226,6 +2234,8 @@ impl DataTableState {
             read_python: Vec::new(),
             read_notes: Vec::new(),
             read_units: None,
+            typing: Typing::default(),
+            unfit_notes: None,
             reshape_steps: None,
             lineage: None,
             reshape_lineage: None,
@@ -2276,8 +2286,10 @@ impl DataTableState {
             units,
             indexing,
             numbering,
+            typing,
         } = facts;
         self.numbering = numbering;
+        self.typing = typing;
         debug_assert!(
             self.is_pristine(),
             "an open's facts are for the data as loaded"
@@ -3873,9 +3885,10 @@ impl DataTableState {
         options: &OpenOptions,
         header: Option<&[String]>,
         read: &mut Vec<String>,
+        typing: &mut Typing,
     ) -> Result<LazyFrame> {
         let lf = Self::name_csv_columns(lf, header, Some(read))?;
-        Self::finish_csv_values(lf, options, read)
+        Self::finish_csv_values(lf, options, read, typing)
     }
 
     /// [`crate::csv_dialect::name_columns`], with the renames as Python in `read`.
@@ -3908,20 +3921,109 @@ impl DataTableState {
         mut lf: LazyFrame,
         options: &OpenOptions,
         read: &mut Vec<String>,
+        typing: &mut Typing,
     ) -> Result<LazyFrame> {
         if options.skip_initial_space {
             lf = crate::csv_dialect::skip_initial_space(lf, |column| {
                 Self::csv_null_values_for(options, column)
             })?;
         }
-        lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options, read)?;
-        // Read without a header (`H`), the columns have no names to derive from.
-        if let Some(spec_read) = &options.delimited
-            && options.has_header != Some(false)
-        {
-            lf = spec_read.delimited().derive(lf)?;
+        // Read without a header (`H`), the columns have no names to derive from, or to
+        // type by. Derived columns read the file's text, before any column is typed.
+        let spec = options
+            .delimited
+            .as_ref()
+            .filter(|_| options.has_header != Some(false))
+            .map(|read| read.delimited());
+        if let Some(spec) = spec {
+            lf = spec.derive(lf)?;
+            lf = Self::declare_types(lf, &spec.types, typing)?;
         }
+        let typed: Vec<String> = typing.typed.iter().map(|t| t.column.clone()).collect();
+        lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options, read, &typed)?;
         Self::apply_skip_tail_rows_csv(lf, options)
+    }
+
+    /// `lf` with each column `types` names read as its type, lazily; `typing` records
+    /// them and the frame before, for the count of the values that did not fit, and a
+    /// note names the ones the frame does not have.
+    fn declare_types(
+        mut lf: LazyFrame,
+        types: &[(String, crate::column_types::ColumnType)],
+        typing: &mut Typing,
+    ) -> Result<LazyFrame> {
+        if types.is_empty() {
+            return Ok(lf);
+        }
+        let schema = lf.collect_schema()?;
+        let mut exprs = Vec::with_capacity(types.len());
+        let mut missing = Vec::new();
+        for (name, ty) in types {
+            match schema.get(name.as_str()) {
+                Some(from) => {
+                    exprs.push(ty.expr(name, from).alias(name.as_str()));
+                    typing.typed.push(crate::column_types::Typed {
+                        column: name.clone(),
+                        ty: ty.clone(),
+                        from: from.clone(),
+                    });
+                }
+                None => missing.push(name.as_str()),
+            }
+        }
+        if !missing.is_empty() {
+            typing.notes.push(crate::notes::Note {
+                summary: format!(
+                    "typed in the spec, not in the file: {}",
+                    crate::notes::some_names(&missing)
+                ),
+                scope: "the spec's [columns]".to_string(),
+                read_as_text: None,
+                passed_over: None,
+            });
+        }
+        if exprs.is_empty() {
+            return Ok(lf);
+        }
+        typing.source = Some(lf.clone());
+        Ok(lf.with_columns(exprs))
+    }
+
+    /// `reader`, the scan of a file a spec types columns of, reading those columns as
+    /// text: [`Self::declare_types`] types them, a value that does not fit null rather
+    /// than a failed read, and a value such as `02134` keeps its zero.
+    pub(crate) fn read_typed_as_text(
+        reader: LazyCsvReader,
+        options: &OpenOptions,
+        header: Option<&[String]>,
+    ) -> Result<LazyCsvReader> {
+        let Some(read) = options
+            .delimited
+            .as_ref()
+            .filter(|_| options.has_header != Some(false))
+        else {
+            return Ok(reader);
+        };
+        let names: Vec<String> = read
+            .delimited()
+            .types
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect();
+        if names.is_empty() {
+            return Ok(reader);
+        }
+        let header = header.map(<[String]>::to_vec);
+        Ok(reader.with_schema_modify(move |mut schema| {
+            let raw: Vec<PlSmallStr> = schema.iter_names().cloned().collect();
+            let shown = crate::csv_dialect::shown_names(&raw, header.as_deref());
+            for (raw, shown) in raw.iter().zip(&shown) {
+                if names.contains(shown) {
+                    schema.with_column(raw.clone(), DataType::String);
+                }
+            }
+            Ok(schema)
+        })?)
     }
 
     /// If options.skip_tail_rows is set, run a count query and slice the LazyFrame to drop that many rows from the end. Used for CSV with trailing garbage/footer.
@@ -4031,6 +4133,7 @@ impl DataTableState {
         lf: LazyFrame,
         options: &OpenOptions,
         read: &mut Vec<String>,
+        except: &[String],
     ) -> Result<LazyFrame> {
         let Some(target) = &options.parse_strings else {
             return Ok(lf);
@@ -4044,6 +4147,7 @@ impl DataTableState {
                 numbers: true,
             },
             read,
+            except,
         )
     }
 
@@ -4067,6 +4171,7 @@ impl DataTableState {
                 numbers: false,
             },
             read,
+            &[],
         )
     }
 
@@ -4132,11 +4237,14 @@ impl DataTableState {
         sample_rows: usize,
         types: StringTypes,
         read: &mut Vec<String>,
+        except: &[String],
     ) -> Result<LazyFrame> {
         // The scan already inferred the schema; the sample below is the one read.
         let schema = lf.clone().collect_schema()?;
         let string_cols: Vec<String> = schema
             .iter()
+            // A column given a type keeps it.
+            .filter(|(name, _)| !except.iter().any(|e| e == name.as_str()))
             .filter(|(_name, dtype)| **dtype == DataType::String)
             .map(|(name, _)| name.to_string())
             .collect();
@@ -4489,7 +4597,14 @@ impl DataTableState {
                     }
                 };
                 let mut read = Vec::new();
-                let lf = Self::finish_csv_frame(df.lazy(), options, header.as_deref(), &mut read)?;
+                let mut typing = Typing::default();
+                let lf = Self::finish_csv_frame(
+                    df.lazy(),
+                    options,
+                    header.as_deref(),
+                    &mut read,
+                    &mut typing,
+                )?;
                 let mut state = Self::new(
                     lf,
                     options.pages_lookahead,
@@ -4501,6 +4616,7 @@ impl DataTableState {
                 state.row_numbers = options.row_numbers;
                 state.row_start_index = options.row_start_index;
                 state.read_python = read;
+                state.take_typing(typing);
                 Ok(state)
             } else {
                 // Decompress to temp file, then lazy scan
@@ -4566,9 +4682,11 @@ impl DataTableState {
         let header = Self::csv_header_names_of(options, path, None)?;
         let nv = Self::build_null_values_for_csv(options, path, header.as_deref())?;
         let reader = Self::csv_reader_of(path)?;
-        let lf = Self::configure_csv_reader(reader, options, nv.as_ref()).finish()?;
+        let reader = Self::configure_csv_reader(reader, options, nv.as_ref());
+        let lf = Self::read_typed_as_text(reader, options, header.as_deref())?.finish()?;
         let mut read = Vec::new();
-        let lf = Self::finish_csv_frame(lf, options, header.as_deref(), &mut read)?;
+        let mut typing = Typing::default();
+        let lf = Self::finish_csv_frame(lf, options, header.as_deref(), &mut read, &mut typing)?;
         let mut state = Self::new(
             lf,
             options.pages_lookahead,
@@ -4580,6 +4698,7 @@ impl DataTableState {
         state.row_numbers = options.row_numbers;
         state.row_start_index = options.row_start_index;
         state.read_python = read;
+        state.take_typing(typing);
         Ok(state)
     }
 
@@ -4653,7 +4772,9 @@ impl DataTableState {
             let nv =
                 Self::build_null_values_for_csv(options, p, header.as_deref()).map_err(in_file)?;
             let reader = Self::csv_reader_of(p).map_err(in_file)?;
-            let lf = Self::configure_csv_reader(reader, options, nv.as_ref())
+            let reader = Self::configure_csv_reader(reader, options, nv.as_ref());
+            let lf = Self::read_typed_as_text(reader, options, header.as_deref())
+                .map_err(in_file)?
                 .finish()
                 .map_err(|e| in_file(e.into()))?;
             let record = lazy_frames.is_empty().then_some(&mut read);
@@ -4694,10 +4815,12 @@ impl DataTableState {
             notes.extend(lined.notes);
             units = Some(lined.units);
         }
+        let mut typing = Typing::default();
         let lf = Self::finish_csv_values(
             polars::prelude::concat(lazy_frames.as_slice(), Self::union_of_files())?,
             options,
             &mut read,
+            &mut typing,
         )?;
         let mut state = Self::new(
             lf,
@@ -4712,6 +4835,7 @@ impl DataTableState {
         state.read_python = read;
         state.read_notes = notes;
         state.read_units = units;
+        state.take_typing(typing);
         Ok(state)
     }
 
@@ -6440,6 +6564,7 @@ impl DataTableState {
         if let Some(pushdown) = &self.pushdown {
             notes.extend(pushdown.notes());
         }
+        notes.extend(self.unfit_notes.iter().flatten().cloned());
         notes
     }
 
@@ -9599,6 +9724,34 @@ impl DataTableState {
         self.read_units.as_deref()
     }
 
+    /// The read's typing: its notes go with the read's, its columns are counted later.
+    fn take_typing(&mut self, mut typing: Typing) {
+        self.read_notes.append(&mut typing.notes);
+        self.typing = typing;
+    }
+
+    /// See [`Self::take_typing`]: what the scan hands the open, for the dataset.
+    pub(crate) fn typing(&self) -> &Typing {
+        &self.typing
+    }
+
+    /// What is left to count of the values the read's types made null: the frame
+    /// before the types, and the columns. `None` once counted, or with nothing typed.
+    pub(crate) fn unfit_to_count(&self) -> Option<(LazyFrame, Vec<crate::column_types::Typed>)> {
+        if self.unfit_notes.is_some() || self.typing.typed.is_empty() {
+            return None;
+        }
+        Some((self.typing.source.clone()?, self.typing.typed.clone()))
+    }
+
+    /// The counts of the values the types made null, as notes.
+    pub(crate) fn unfit_counted(&mut self, unfit: &[crate::column_types::Unfit]) {
+        self.unfit_notes = Some(crate::column_types::unfit_notes(
+            unfit,
+            "counted over every row",
+        ));
+    }
+
     /// How `lf` was built: the base's steps, then the filters and the sort.
     fn view_steps(&self) -> Vec<Step> {
         let mut steps = self.base_steps.clone();
@@ -10407,36 +10560,22 @@ pub(crate) fn row_count_lf(lf: &LazyFrame) -> LazyFrame {
     lf.clone().select([len().cast(DataType::UInt64)])
 }
 
-/// The short name of a column's type, as the type row and the schema pane spell it.
-///
-/// Polars' own `Display` says `Datetime(Microseconds, None)`; the row under the header
-/// has room for one word.
-pub fn dtype_label(dtype: &DataType) -> String {
-    match dtype {
-        DataType::String => "str".to_string(),
-        DataType::Boolean => "bool".to_string(),
-        DataType::Int8 => "i8".to_string(),
-        DataType::Int16 => "i16".to_string(),
-        DataType::Int32 => "i32".to_string(),
-        DataType::Int64 => "i64".to_string(),
-        DataType::UInt8 => "u8".to_string(),
-        DataType::UInt16 => "u16".to_string(),
-        DataType::UInt32 => "u32".to_string(),
-        DataType::UInt64 => "u64".to_string(),
-        DataType::Float32 => "f32".to_string(),
-        DataType::Float64 => "f64".to_string(),
-        DataType::Date => "date".to_string(),
-        DataType::Datetime(_, _) => "datetime".to_string(),
-        DataType::Time => "time".to_string(),
-        DataType::Duration(_) => "duration".to_string(),
-        DataType::Binary => "binary".to_string(),
-        DataType::Null => "null".to_string(),
-        DataType::List(inner) => format!("list[{}]", dtype_label(inner)),
-        DataType::Struct(_) => "struct".to_string(),
-        other if other.is_categorical() => "cat".to_string(),
-        other if other.is_enum() => "enum".to_string(),
-        other if other.is_decimal() => "decimal".to_string(),
-        other => other.to_string().to_ascii_lowercase(),
+pub use crate::column_types::dtype_label;
+
+/// The columns a read gave a type, the frame before it did, and its notes.
+#[derive(Clone, Default)]
+pub struct Typing {
+    pub(crate) source: Option<LazyFrame>,
+    pub(crate) typed: Vec<crate::column_types::Typed>,
+    pub(crate) notes: Vec<crate::notes::Note>,
+}
+
+impl std::fmt::Debug for Typing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Typing")
+            .field("typed", &self.typed)
+            .field("notes", &self.notes)
+            .finish_non_exhaustive()
     }
 }
 
@@ -12534,6 +12673,7 @@ mod tests {
                 1_000,
                 types,
                 &mut Vec::new(),
+                &[],
             )
             .unwrap()
             .collect()

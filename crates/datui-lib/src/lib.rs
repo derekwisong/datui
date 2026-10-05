@@ -70,6 +70,7 @@ mod cloud_hive;
 #[cfg(feature = "cloud")]
 pub mod cloud_sources;
 pub mod codebook;
+pub mod column_types;
 pub mod commands;
 pub mod config;
 pub mod config_command;
@@ -5154,6 +5155,7 @@ impl App {
         // A panel still up says what it says about the dataset on screen.
         if self.info_modal.active {
             self.read_file_facts();
+            self.count_unfit();
         }
         // The dataset is on screen now; whatever it still has to learn about itself is
         // read behind it.
@@ -9355,6 +9357,7 @@ impl App {
             table: None,
             guessed: false,
             read_notes: Vec::new(),
+            typing: Default::default(),
         };
         // A followed file reads every row it can and counts the rest: a row
         // that does not fit the schema never stops the follow.
@@ -9427,6 +9430,7 @@ impl App {
             table: report.table.or_else(|| options.table.clone()),
             format_guessed: options.format_guessed || report.guessed,
             read_notes: report.read_notes,
+            typing: report.typing,
             ..options
         };
         // The spec's dialect stays with the dataset, so a read again (`H`,
@@ -10460,6 +10464,7 @@ impl App {
             facts.delimited = Some(read.clone());
         }
         facts.open_notes.extend(options.read_notes.iter().cloned());
+        facts.typing = options.typing.clone();
         facts.read_mode = options.read_mode;
         facts.read_as = options.format;
         // The display path of a downloaded object is its URL too; only a scan that
@@ -12749,6 +12754,7 @@ impl App {
                     }
                     self.input_mode = InputMode::Info;
                     self.read_file_facts();
+                    self.count_unfit();
                 }
                 None
             }
@@ -15783,6 +15789,15 @@ impl App {
                 }
                 None
             }
+            Answer::UnfitCounted(unfit) => {
+                if let Job::UnfitCount { dataset } = job
+                    && dataset == self.dataset_generation
+                    && let Some(state) = self.data_table_state.as_mut()
+                {
+                    state.unfit_counted(&unfit);
+                }
+                None
+            }
             Answer::Found(found) => {
                 if let Job::Find(run) = job {
                     self.find_answered(run, current, found);
@@ -15991,6 +16006,10 @@ impl App {
                 };
                 self.file_facts_landed(*dataset, FileFacts::Failed(why));
             }
+            // The note is left unsaid; the log has why.
+            Job::UnfitCount { .. } => {
+                log::warn!(target: "datui", "counting values that did not fit their type failed: {message}");
+            }
         }
     }
 
@@ -16038,6 +16057,45 @@ impl App {
         self.spawn_job(Job::FileFacts { dataset }, None, move |_| {
             Ok(Answer::FileFacts(read(&path, facts)?))
         });
+    }
+
+    /// Count, behind the Info panel, the values the read's column types made null, for
+    /// the Notes: one pass over the frame before the types, the first time the panel
+    /// opens on a dataset with typed columns.
+    fn count_unfit(&mut self) {
+        let dataset = self.dataset_generation;
+        let Some((source, typed)) = self
+            .data_table_state
+            .as_ref()
+            .and_then(DataTableState::unfit_to_count)
+        else {
+            return;
+        };
+        if self
+            .jobs
+            .current(|job| matches!(job, Job::UnfitCount { dataset: asked } if *asked == dataset))
+            .is_some()
+        {
+            return;
+        }
+        let streaming = self.app_config.performance.streaming;
+        self.spawn_job(Job::UnfitCount { dataset }, None, move |_| {
+            let counted = crate::statistics::collect_lazy(
+                crate::column_types::unfit_frame(source, &typed),
+                streaming,
+            )
+            .map_err(|e| crate::error_display::user_message_from_polars(&e))?;
+            Ok(Answer::UnfitCounted(crate::column_types::unfit_counts(
+                &counted, &typed,
+            )))
+        });
+    }
+
+    /// Whether the values the read's column types made null are being counted.
+    pub fn unfit_count_pending(&self) -> bool {
+        self.jobs
+            .current(|job| matches!(job, Job::UnfitCount { .. }))
+            .is_some()
     }
 
     /// Whether the open dataset's file facts are being read.

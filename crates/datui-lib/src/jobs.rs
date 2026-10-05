@@ -83,6 +83,7 @@ pub enum JobKind {
     ValueCounts,
     HexOpen,
     HexFind,
+    UnfitCount,
 }
 
 /// One started operation. Issued when it starts, carried by its worker, and handed
@@ -182,6 +183,9 @@ pub(crate) enum Job {
     },
     /// A find reading the hex view's file.
     HexFind(crate::hex_view::HexFindRun),
+    /// Counting the values the read's column types made null, for the Notes: judged
+    /// by the `dataset_generation` it was asked for, as the file facts are.
+    UnfitCount { dataset: u64 },
 }
 
 /// A look at a path chosen on the home screen. Every key acts on the home screen even
@@ -239,6 +243,7 @@ impl Job {
             Job::ValueCounts => JobKind::ValueCounts,
             Job::HexOpen { .. } => JobKind::HexOpen,
             Job::HexFind(_) => JobKind::HexFind,
+            Job::UnfitCount { .. } => JobKind::UnfitCount,
         }
     }
 
@@ -275,6 +280,7 @@ impl Job {
                 | Job::OpenNamed(_)
                 | Job::LookAtDirectory { .. }
                 | Job::FileFacts { .. }
+                | Job::UnfitCount { .. }
                 | Job::ReshapePreview { .. }
         )
     }
@@ -287,6 +293,7 @@ impl Job {
         !matches!(
             self,
             Job::FileFacts { .. }
+                | Job::UnfitCount { .. }
                 | Job::ChartExport { .. }
                 | Job::OwedRows { .. }
                 | Job::ReshapePreview { .. }
@@ -387,6 +394,8 @@ pub(crate) enum Answer {
     HexOpened(Box<crate::hex_view::HexSource>),
     /// [`Job::HexFind`]: where the pattern is, if anywhere.
     HexFound(crate::hex_view::HexHit),
+    /// [`Job::UnfitCount`]: the columns whose types made values null.
+    UnfitCounted(Vec<crate::column_types::Unfit>),
     /// A test's answer, which says when it is dropped.
     #[cfg(test)]
     Probe(Arc<()>),

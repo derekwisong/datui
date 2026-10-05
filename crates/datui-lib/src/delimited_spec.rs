@@ -77,6 +77,8 @@ pub struct Delimited {
     pub null_values: Vec<String>,
     pub skip_lines: Option<usize>,
     pub columns: Vec<Derived>,
+    /// Columns of the file read as a declared type, by name.
+    pub types: Vec<(String, crate::column_types::ColumnType)>,
 }
 
 /// The `key="value"` line at the top of a file.
@@ -430,6 +432,13 @@ pub fn check(
             derived.kind.name(),
             derived.from.join(", ")
         ));
+    }
+    for (name, ty) in &delimited.types {
+        let format = ty
+            .format
+            .as_ref()
+            .map_or_else(String::new, |f| format!(", format {f:?}"));
+        out.push_str(&format!("  {name}: {}{format}\n", ty.name()));
     }
     let typed = typed_summary(base);
     if !typed.is_empty() {

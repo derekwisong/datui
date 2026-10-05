@@ -191,8 +191,20 @@ pub(crate) fn line_up(
             _ => Some(DataType::String),
         })
     };
+    // A column the spec types is read as text in every file and typed once stacked.
+    let declared: Vec<&str> = options
+        .delimited
+        .as_ref()
+        .map(|read| {
+            read.delimited()
+                .types
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect()
+        })
+        .unwrap_or_default();
     let mut targets: Vec<(PlSmallStr, DataType)> = Vec::new();
-    for name in &columns {
+    for name in columns.iter().filter(|n| !declared.contains(&n.as_str())) {
         let target = (0..frames.len())
             .filter_map(|file| says(file, name).flatten())
             .reduce(|a, b| wider(&a, &b));

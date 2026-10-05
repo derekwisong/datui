@@ -104,6 +104,7 @@ fn layered(over: &ColumnNote, under: &ColumnNote) -> ColumnNote {
         } else {
             over.values.clone()
         },
+        ty: pick(&over.ty, &under.ty),
     }
 }
 
@@ -951,6 +952,32 @@ temp = { description = "Air temperature", unit = "deg F" }
         }));
     }
 
+    /// A declared type stands beside the unit, as the type row pairs them.
+    #[test]
+    fn a_typed_column_shows_its_type_beside_its_unit() {
+        let doc = spec_page(
+            r#"
+name = "acme.log"
+kind = "delimited"
+
+[columns]
+Latitude = { type = "f64", unit = "deg", description = "GPS latitude" }
+LogIdx = { type = "i64" }
+"#,
+        );
+        let lines = lines(&doc, &HashSet::new(), None);
+        assert!(lines.contains(&DocLine::Column {
+            name: "Latitude".into(),
+            about: "f64 · deg  GPS latitude".into(),
+            values: 0,
+        }));
+        assert!(lines.contains(&DocLine::Column {
+            name: "LogIdx".into(),
+            about: "i64".into(),
+            values: 0,
+        }));
+    }
+
     #[test]
     fn a_catalogs_word_stands_over_the_specs() {
         let catalog = crate::catalog::parse(
@@ -1026,6 +1053,7 @@ columns.venue = { description = "Where it traded" }
             description: "Side".into(),
             unit: "flag".into(),
             values: vec![("1".into(), "BUY".into())],
+            ty: String::new(),
         };
         assert_eq!(
             layered(&over, &under),

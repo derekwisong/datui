@@ -1144,7 +1144,8 @@ fn aggregates_run_over_every_row() {
     press(&mut app, KeyCode::Char(' '));
     press(&mut app, KeyCode::Enter); // delay
     app.chart_modal.focus = ChartFocus::Aggregate;
-    press(&mut app, KeyCode::Right); // count -> sum
+    press(&mut app, KeyCode::Right); // count -> distinct
+    press(&mut app, KeyCode::Right); // -> sum
     press(&mut app, KeyCode::Right); // -> mean
     assert_eq!(app.chart_modal.aggregate(), Aggregate::Mean);
     pump_until_chart_ready(&mut app, &rx, &tx);

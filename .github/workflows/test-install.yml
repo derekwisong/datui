@@ -1,6 +1,10 @@
 # Manual workflow to test the one-line install (and on macOS, Homebrew tap install)
 # across supported platforms. Uses the install script and package managers as documented
-# in README.md.
+# in README.md, against the latest published release.
+#
+# The Linux list is the glibc floor and up: Ubuntu 20.04 (glibc 2.31), 22.04 and
+# the runner's 24.04, Debian 11 and 12, Rocky 8 (2.28, the floor itself) and 9,
+# Amazon Linux 2023, Fedora, Arch, on x86_64, and Ubuntu and Debian on arm64.
 name: Test Install
 
 on:
@@ -9,6 +13,9 @@ on:
 # Nothing here touches the repository: every job installs a published artifact
 # and runs `datui --version`.
 permissions: {}
+
+env:
+  INSTALL_URL: https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh
 
 jobs:
   install-macos-oneline-homebrew:
@@ -25,8 +32,7 @@ jobs:
             arch: x86_64
     steps:
       - name: One-line install
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
+        run: curl -fsSL "$INSTALL_URL" | sh
 
       - name: Verify one-line install
         run: datui --version
@@ -46,13 +52,20 @@ jobs:
         run: datui --version
 
   install-ubuntu-oneline:
-    name: Debian-based Linux
-    runs-on: ubuntu-latest
+    name: Ubuntu 24.04 ${{ matrix.arch }} (apt repository)
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
     steps:
       - name: One-line install
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
+        run: curl -fsSL "$INSTALL_URL" | sh
 
       - name: Verify install
         run: datui --version
@@ -64,23 +77,72 @@ jobs:
           man -w 5 datui-config
           man -w datui-keys
 
-  install-fedora-oneline:
-    name: RPM-based Linux
+  install-user:
+    name: Ubuntu 24.04 (--user, no root)
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    container:
-      # Deliberately a floating tag. This workflow exists to prove the
-      # documented install path still works on today's distro image; a
-      # digest pin would freeze it and quietly stop testing what users get.
-      image: fedora:40  # zizmor: ignore[unpinned-images]
-      options: --privileged --user 0
     steps:
-      - name: One-line install
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
+      - name: One-line install into the home directory
+        run: curl -fsSL "$INSTALL_URL" | sh -s -- --user
 
       - name: Verify install
-        run: datui --version
+        run: |
+          test ! -e /usr/local/bin/datui
+          ~/.local/bin/datui --version
+          man -w datui
+
+  install-linux-containers:
+    # Containers, as users on these releases run them; apt and dnf resolve the
+    # package's dependencies against each one's glibc.
+    name: ${{ matrix.image }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - ubuntu:20.04
+          - ubuntu:22.04
+          - debian:11
+          - debian:12
+          - rockylinux:8
+          - rockylinux:9
+          - amazonlinux:2023
+          - fedora:42
+        runner: [ubuntu-latest]
+        arch: [x86_64]
+        include:
+          - image: ubuntu:22.04
+            runner: ubuntu-24.04-arm
+            arch: arm64
+          - image: debian:12
+            runner: ubuntu-24.04-arm
+            arch: arm64
+          - image: rockylinux:9
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    container:
+      # Deliberately floating tags. This workflow exists to prove the
+      # documented install path still works on today's distro images; a
+      # digest pin would freeze it and quietly stop testing what users get.
+      image: ${{ matrix.image }}  # zizmor: ignore[unpinned-images]
+      options: --privileged --user 0
+    steps:
+      - name: Install curl
+        run: |
+          if command -v apt-get > /dev/null; then
+            apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl ca-certificates > /dev/null
+          else
+            dnf install -y -q curl
+          fi
+
+      - name: One-line install
+        run: curl -fsSL "$INSTALL_URL" | sh
+
+      - name: Verify install
+        run: |
+          datui --version
+          command -v man > /dev/null && man -w datui || echo "no man on this image"
 
   install-arch-oneline:
     name: Arch Linux
@@ -93,11 +155,8 @@ jobs:
       image: archlinux:latest  # zizmor: ignore[unpinned-images]
       options: --privileged --user 0
     steps:
-      - name: Install runtime dependency (fontconfig)
-        run: pacman -Sy --noconfirm fontconfig
       - name: One-line install
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/install/install.sh | sh
+        run: curl -fsSL "$INSTALL_URL" | sh
 
       - name: Verify install
         run: datui --version
@@ -134,3 +193,24 @@ jobs:
 
       - name: Verify AUR install
         run: datui --version
+
+  install-pip:
+    name: pip (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm, macos-14, windows-latest]
+    steps:
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.x'
+
+      - name: Install the wheel
+        run: pip install datui
+
+      - name: Verify install
+        run: |
+          datui --version
+          python -c "import datui; print(datui.PAIRED_POLARS)"

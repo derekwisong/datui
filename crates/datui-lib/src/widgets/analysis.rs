@@ -227,7 +227,10 @@ impl<'a> AnalysisWidget<'a> {
                                     method: self.correlation_method,
                                 }),
                                 self.correlation_table_state,
-                                &self.selected_correlation,
+                                MatrixCursor {
+                                    cell: self.selected_correlation,
+                                    focused: self.focus == AnalysisFocus::Main,
+                                },
                                 self.column_scroll,
                                 main_layout[0],
                                 buf,
@@ -1132,24 +1135,26 @@ fn render_distribution_table(
 /// so focus arriving moves nothing.
 const RAIL_WIDTH: u16 = 1;
 
-/// The rail beside the row the cursor is on while the table has focus: the
-/// tint alone vanishes on a 16-color terminal whose black is the background.
+/// The rail beside the row the cursor is on: in the accent while the table has
+/// focus, dimmed while the tool list has it, so the row stays marked without
+/// claiming the accent. The tint alone vanishes on a 16-color terminal whose
+/// black is the background.
 fn cursor_rail(focused: bool, theme: &Theme) -> Span<'static> {
-    let g = crate::glyphs::get();
-    Span::styled(
-        if focused { g.rail } else { " " },
-        Style::default().fg(theme.get("accent")),
-    )
+    Span::styled(crate::glyphs::get().rail, rail_style(focused, theme))
 }
 
-/// The row the cursor is on: the tint while the table has focus, the accent
-/// alone while the tool list has it, so the cursor stays visible without
-/// claiming focus.
+/// The rail's color: the accent with focus, dimmed without.
+pub(crate) fn rail_style(focused: bool, theme: &Theme) -> Style {
+    Style::default().fg(theme.get(if focused { "accent" } else { "dimmed" }))
+}
+
+/// The row the cursor is on: the tint while the table has focus; without it,
+/// only the dimmed rail marks it.
 fn cursor_style(focused: bool, theme: &Theme) -> Style {
     if focused {
         theme.highlight_style()
     } else {
-        Style::default().fg(theme.get("accent"))
+        Style::default()
     }
 }
 
@@ -1249,15 +1254,25 @@ fn draw_scroll_marks(
     }
 }
 
+/// The matrix's cell cursor, and whether the matrix has the focus.
+struct MatrixCursor {
+    cell: Option<(usize, usize)>,
+    focused: bool,
+}
+
 fn render_correlation_matrix(
     shown: Option<Shown>,
     table_state: &mut TableState,
-    selected_cell: &Option<(usize, usize)>,
+    cursor: MatrixCursor,
     columns: &mut ColumnScroll,
     area: Rect,
     buf: &mut Buffer,
     theme: &Theme,
 ) {
+    let MatrixCursor {
+        cell: selected_cell,
+        focused,
+    } = cursor;
     let (correlation_matrix, method) = match shown {
         Some(Shown { matrix, method }) => (matrix, method),
         None => {
@@ -1297,7 +1312,7 @@ fn render_correlation_matrix(
     let (mut start_col, mut end_col) =
         stat_window(&widths, available_width, column_spacing, columns);
     // Scroll to the selected cell, whatever moved it: a key, or a resize.
-    if let Some((_, col)) = *selected_cell {
+    if let Some((_, col)) = selected_cell {
         let col = col.min(n - 1);
         while col < start_col || (col >= end_col && columns.offset < columns.max) {
             columns.offset = if col < start_col {
@@ -1360,11 +1375,17 @@ fn render_correlation_matrix(
                 selected_cell.is_some() && i == selected_row && col_idx == selected_col;
             let is_in_selected_col = selected_cell.is_some() && col_idx == selected_col;
 
-            let cell_style = if is_selected_cell {
-                // Selected cell: use bright background with inverted text for visibility
+            let cell_style = if is_selected_cell && focused {
+                // The cell cursor, as the table draws its own.
                 Style::default()
-                    .fg(theme.get("text_inverse"))
-                    .bg(theme.get("modal_border_active"))
+                    .fg(text_color)
+                    .patch(theme.cell_cursor_style())
+            } else if is_selected_cell {
+                // The matrix without focus: its cell stays marked, quietly.
+                Style::default()
+                    .fg(text_color)
+                    .patch(theme.column_cursor_style())
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
             } else if is_selected_row || is_in_selected_col {
                 // Selected row or column: dim background with colored text
                 Style::default().fg(text_color).bg(theme.get("surface"))
@@ -1635,18 +1656,23 @@ pub(crate) fn render_sidebar(
     let list_focused = focus == AnalysisFocus::Sidebar;
     for (idx, (name, tool)) in tools.iter().enumerate().take(content.height as usize) {
         let is_cursor = list_focused && sidebar_state.selected() == Some(idx);
-        let name_style = if selected_tool == Some(*tool) {
+        let on_screen = selected_tool == Some(*tool);
+        // The tool on screen is bold; the accent is the cursor's alone.
+        let name_style = if on_screen {
             Style::default()
-                .fg(ctx.accent_bright)
+                .fg(ctx.text_primary)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(ctx.text_primary)
         };
+        // The tool on screen keeps a dimmed rail while its pane has the focus.
+        let rail = if is_cursor || (on_screen && !list_focused) {
+            g.rail
+        } else {
+            " "
+        };
         let mut line = Paragraph::new(Line::from(vec![
-            Span::styled(
-                if is_cursor { g.rail } else { " " },
-                Style::default().fg(ctx.accent),
-            ),
+            Span::styled(rail, rail_style(is_cursor, theme)),
             // Cut with a mark on a narrow screen, never silently.
             Span::styled(
                 crate::render::loading_view::truncate(
@@ -2818,7 +2844,10 @@ mod tests {
                     method: CorrelationMethod::Pearson,
                 }),
                 &mut state,
-                &Some(selected),
+                MatrixCursor {
+                    cell: Some(selected),
+                    focused: true,
+                },
                 columns,
                 area,
                 &mut buf,
@@ -2845,6 +2874,63 @@ mod tests {
             back.contains("col_0"),
             "and so is the first again: {back:?}"
         );
+    }
+
+    /// One accent on screen: the pane without focus keeps its selection marked by
+    /// a dimmed rail, never the accent, whichever side has the focus.
+    #[test]
+    fn the_unfocused_selection_is_dimmed() {
+        let theme = Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        let accent = theme.get("accent");
+        let dimmed = theme.get("dimmed");
+        let rail = crate::glyphs::get().rail;
+        let area = Rect::new(0, 0, 30, 8);
+        let sidebar = |focus: AnalysisFocus| {
+            let mut buf = Buffer::empty(area);
+            let mut state = TableState::default();
+            state.select(Some(2));
+            render_sidebar(
+                area,
+                &mut buf,
+                &mut state,
+                Some(AnalysisTool::Describe),
+                focus,
+                &theme,
+            );
+            buf
+        };
+        // The pane has the focus: the tool on screen keeps a dimmed rail.
+        let buf = sidebar(AnalysisFocus::Main);
+        let describe = (0..area.height)
+            .find(|&y| row_text(&buf, y).contains("Describe"))
+            .unwrap();
+        let at = |buf: &Buffer, y: u16| {
+            (0..area.width)
+                .find(|&x| buf[(x, y)].symbol() == rail)
+                .map(|x| buf[(x, y)].fg)
+        };
+        assert_eq!(at(&buf, describe), Some(dimmed));
+        for y in 1..area.height - 1 {
+            for x in 1..area.width - 1 {
+                assert_ne!(
+                    buf[(x, y)].fg,
+                    accent,
+                    "no accent in the list at ({x}, {y})"
+                );
+            }
+        }
+        // The list has the focus: the cursor's rail is the accent; the tool on
+        // screen is only bold.
+        let buf = sidebar(AnalysisFocus::Sidebar);
+        let cursor = (0..area.height)
+            .find(|&y| row_text(&buf, y).contains("Correlation"))
+            .unwrap();
+        assert_eq!(at(&buf, cursor), Some(accent));
+        assert_eq!(at(&buf, describe), None);
+    }
+
+    fn row_text(buf: &Buffer, y: u16) -> String {
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
     }
 
     #[test]

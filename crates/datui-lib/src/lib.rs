@@ -8604,6 +8604,15 @@ impl App {
         self.home_refresh();
     }
 
+    /// What an open the home screen starts reads with: the config's read and CSV
+    /// settings, as an open named on the command line has them under its flags.
+    fn open_defaults(&self) -> OpenOptions {
+        match crate::cli::parse_args(["datui"]) {
+            Ok(args) => OpenOptions::from_args_and_config(&args, &self.app_config),
+            Err(_) => OpenOptions::default(),
+        }
+    }
+
     /// Load a path from the home screen.
     ///
     /// The recent entry is recorded by the `Open` handler, which every open goes
@@ -8649,7 +8658,7 @@ impl App {
             read_as_plain_files_of: lake,
             format,
             left_out,
-            ..OpenOptions::default()
+            ..self.open_defaults()
         };
         self.input_mode = InputMode::Normal;
         // Chosen here, so a failure is reported here.

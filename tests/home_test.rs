@@ -8664,3 +8664,153 @@ mod path_prompt {
         assert_eq!(names, ["parquet"]);
     }
 }
+
+/// A file a delimited spec reads opens the same from the home screen as from the
+/// command line: each dialect key the spec sets, and the config's typing of text
+/// columns, reach both opens.
+#[test]
+fn a_spec_file_opens_the_same_from_home_and_the_command_line() {
+    use polars::prelude::DataType;
+    common::isolate_cache();
+    let padded =
+        "#log, a=\"1\"\n#u1, u2, u3\n  id,   volts,   name\n  1,    25.1,   x\n  2,    25.2,   y\n";
+    // One spec a key: the key, and a file the key changes the read of.
+    let cases: [(&str, &str, &str); 7] = [
+        (
+            "skip_initial_space",
+            "skip_initial_space = true\nheader_rows = 3\ncomment = \"#\"",
+            padded,
+        ),
+        (
+            "delimiter",
+            "delimiter = \";\"\ncomment = \"#\"",
+            "#log\nid;volts\n1;25.1\n2;25.2\n",
+        ),
+        (
+            "comment",
+            "comment = \"#\"",
+            "#log\nid,volts\n#note\n1,25.1\n2,25.2\n",
+        ),
+        (
+            "header_rows",
+            "header_rows = { name = 3, unit = 2 }\ncomment = \"#\"",
+            padded,
+        ),
+        (
+            "header_join",
+            "header_rows = [3, 2]\nheader_join = \"_\"\ncomment = \"#\"",
+            padded,
+        ),
+        (
+            "skip_lines",
+            "skip_lines = 2",
+            "#log\njunk\nid,volts\n1,25.1\n2,25.2\n",
+        ),
+        (
+            "null_values",
+            "null_values = \"NA\"\ncomment = \"#\"",
+            "#log\nid,volts\n1,25.1\n2,NA\n",
+        ),
+    ];
+    for (key, dialect, text) in cases {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("run.csv");
+        fs::write(&file, text).unwrap();
+        let spec_text = format!(
+            "name = \"acme.{key}\"\nkind = \"delimited\"\nmatch = {{ magic = \"#log\" }}\n{dialect}\n"
+        );
+        let spec = datui::formats::Spec::parse(&spec_text, None).unwrap();
+        let registry = || datui::formats::Registry::of(vec![spec.clone()]);
+        let mut config = datui::config::AppConfig::default();
+        config.home.desktop_recents = false;
+        config.cloud.hide = ["s3-default", "gcs-default", "az", "azure-env"]
+            .map(String::from)
+            .to_vec();
+
+        // As `datui run.csv` opens it: the options the command line and config give.
+        let args = datui::cli::parse_args(["datui", file.to_str().unwrap()]).unwrap();
+        let named = datui::OpenOptions::from_args_and_config(&args, &config);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = datui::App::new_with_config(
+            tx,
+            common::test_runtime(),
+            datui::Theme {
+                colors: std::collections::HashMap::new(),
+            },
+            config.clone(),
+        );
+        app.set_formats(registry());
+        common::pump_open_until_loaded(&mut app, &rx, vec![file.clone()], named);
+        assert!(
+            app.error_message().is_none(),
+            "{key}: {:?}",
+            app.error_message()
+        );
+        let from_cli = app
+            .data_table_state
+            .as_ref()
+            .unwrap()
+            .lf()
+            .clone()
+            .collect()
+            .unwrap();
+
+        // Enter on its row at home.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = datui::App::new_with_config(
+            tx,
+            common::test_runtime(),
+            datui::Theme {
+                colors: std::collections::HashMap::new(),
+            },
+            config,
+        );
+        app.set_formats(registry());
+        app.home.browsing = Some(tmp.path().to_path_buf());
+        app.enter_home();
+        listed(&mut app, &rx, |app| {
+            visible_names(&app.home).contains(&"run.csv".to_string())
+        });
+        let index = app
+            .home
+            .visible()
+            .iter()
+            .position(|r| matches!(r, Row::Entry { entry, .. } if entry.name == "run.csv"))
+            .unwrap();
+        let delta = index as isize - app.home.selected as isize;
+        app.home.move_selection(delta);
+        let Some(datui::AppEvent::Open(paths, options)) =
+            app.event(&datui::AppEvent::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            )))
+        else {
+            panic!("{key}: Enter on the file opens it");
+        };
+        common::pump_open_until_loaded(&mut app, &rx, paths, options);
+        assert!(
+            app.error_message().is_none(),
+            "{key}: {:?}",
+            app.error_message()
+        );
+        let from_home = app
+            .data_table_state
+            .as_ref()
+            .unwrap()
+            .lf()
+            .clone()
+            .collect()
+            .unwrap();
+
+        assert_eq!(from_home.schema(), from_cli.schema(), "{key}");
+        assert!(
+            from_home.equals_missing(&from_cli),
+            "{key}: {from_home} {from_cli}"
+        );
+        assert_eq!(
+            from_home.columns()[1].dtype(),
+            &DataType::Float64,
+            "{key}: volts is a number: {from_home}"
+        );
+    }
+}

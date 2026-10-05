@@ -15873,6 +15873,14 @@ impl App {
                 None
             }
             Answer::UnfitCounted(unfit) => {
+                // Every value fitting says nothing in the Notes; the log says it ran.
+                let columns: Vec<&str> = unfit.iter().map(|u| u.column.as_str()).collect();
+                let said = if columns.is_empty() {
+                    "none".to_string()
+                } else {
+                    columns.join(", ")
+                };
+                log::debug!(target: "datui", "values column types made null, by column: {said}");
                 if let Job::UnfitCount { dataset, version } = job
                     && dataset == self.dataset_generation
                     && let Some(state) = self.data_table_state.as_mut()

@@ -1129,3 +1129,35 @@ fn infer_types_counts_what_it_nulls() {
         "{notes:?}"
     );
 }
+
+/// A directory of logs read through a spec with a typed column: a value in one file that
+/// does not fit is counted over every file once the Info panel opens.
+#[test]
+fn a_specs_types_count_what_they_null_across_a_directory() {
+    let logs = fresh_dir("delimited_spec_typed_directory");
+    for (i, index) in [["1", "2"], ["3", "four"], ["5", "6"]].iter().enumerate() {
+        let text = family_log(
+            &format!("2024-03-0{}", i + 1),
+            &[
+                ("Latitude", "degrees", &["40.1", "40.2"]),
+                ("LogIdx", "#", index),
+            ],
+        );
+        std::fs::write(logs.join(format!("log_{i}.csv")), text).unwrap();
+    }
+    let (mut app, rx, tx) = typed_app();
+    open_dir(&mut app, &rx, logs);
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(collected(&app).height(), 6);
+    app.event(&AppEvent::Key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('i'),
+        crossterm::event::KeyModifiers::NONE,
+    )));
+    pump_until(&mut app, &rx, &tx, |app| !app.unfit_count_pending());
+    let notes = note_summaries(&app);
+    assert!(
+        notes.contains(&"LogIdx: 1 value not i64, read as null".to_string()),
+        "{notes:?}"
+    );
+}

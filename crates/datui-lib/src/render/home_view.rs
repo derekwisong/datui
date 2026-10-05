@@ -2432,7 +2432,8 @@ fn chips_filled(ctx: &RenderContext) -> bool {
 
 /// One condition of a spec's match as spans, at most `room` columns: a flat chip on the
 /// header tier, name dimmed and value in its type's color, or `[name value]` where no
-/// tint shows. The value is cut, never the name.
+/// tint shows. Too long for the line, the name is cut before the value, which keeps at
+/// least its first character.
 fn chip_spans(
     chip: &MatchChip,
     room: usize,
@@ -2451,14 +2452,26 @@ fn chip_spans(
     };
     let dim = base.fg(ctx.dimmed);
     let (open, close) = if filled { (" ", " ") } else { ("[", "]") };
-    let frame = glyphs::display_width(&chip.name) + 3;
+    let ellipsis = glyphs::get().ellipsis;
     let value = chip.value_text(!filled);
-    let value =
-        glyphs::fit_cells(&value, room.saturating_sub(frame), glyphs::get().ellipsis).into_owned();
-    let width = frame + glyphs::display_width(&value);
+    let (name_w, value_w) = (
+        glyphs::display_width(&chip.name),
+        glyphs::display_width(&value),
+    );
+    let inner = room.saturating_sub(3);
+    // A chip that says `exchange_feed_sequence_version` and not its number says
+    // nothing: the value keeps up to half the chip, the name what is left (a letter
+    // and the marker at least), and a long value takes what the name leaves.
+    let name_floor = name_w.min(1 + glyphs::display_width(ellipsis));
+    let name_room = name_w.min(inner.saturating_sub(value_w.min(inner / 2)).max(name_floor));
+    let name = glyphs::fit_cells(&chip.name, name_room, ellipsis).into_owned();
+    let name_w = glyphs::display_width(&name);
+    let value = glyphs::fit_cells(&value, inner.saturating_sub(name_w), ellipsis).into_owned();
+    let value_w = glyphs::display_width(&value);
+    let width = 3 + name_w + value_w;
     let spans = vec![
         Span::styled(open, dim),
-        Span::styled(chip.name.clone(), dim),
+        Span::styled(name, dim),
         Span::styled(" ", base),
         Span::styled(value, base.fg(value_color)),
         Span::styled(close, dim),
@@ -2467,7 +2480,7 @@ fn chip_spans(
 }
 
 /// The `match` fact: its chips laid out under the value column, wrapping between whole
-/// chips and never inside one. `--format only` when nothing else picks the spec.
+/// chips and never inside one. `no match` when the spec has none.
 fn chip_fact_lines(
     key: &str,
     chips: &[MatchChip],
@@ -4942,10 +4955,61 @@ fields = [{ name = "x", type = "u1" }]
     }
 
     #[test]
-    fn a_spec_without_a_match_is_for_format_only() {
+    fn a_spec_without_a_match_says_so() {
         let ctx = RenderContext::for_test();
         let lines = chip_fact_lines("match", &[], 5, 40, true, &ctx);
-        assert_eq!(texts(&lines), ["match  --format only"]);
+        assert_eq!(texts(&lines), ["match  no match"]);
+    }
+
+    /// A field name too long for the line is cut, not the value, and the chip stays on
+    /// its line whole: never past the pane, never broken in two.
+    #[test]
+    fn a_long_field_name_is_cut_before_its_value() {
+        use crate::formats::ChipKind;
+        let ctx = RenderContext::for_test();
+        let e = glyphs::get().ellipsis;
+        let chips = [
+            MatchChip {
+                name: "magic".to_string(),
+                value: "MKTD".to_string(),
+                kind: ChipKind::Magic,
+                offset: None,
+            },
+            MatchChip {
+                name: "exchange_feed_sequence_version".to_string(),
+                value: "3".to_string(),
+                kind: ChipKind::Int,
+                offset: None,
+            },
+        ];
+        for filled in [true, false] {
+            let shown = texts(&chip_fact_lines("match", &chips, 8, 40, filled, &ctx));
+            assert_eq!(shown.len(), 2, "{shown:#?}");
+            for line in &shown {
+                assert!(glyphs::display_width(line) <= 40, "{line:?}");
+            }
+            let long = &shown[1];
+            assert!(long.starts_with("          "), "{shown:#?}");
+            let chip = long.trim();
+            let (open, close) = if filled { ("", "") } else { ("[", "]") };
+            assert!(
+                chip.starts_with(&format!("{open}exchange_feed")),
+                "{chip:?}"
+            );
+            assert!(chip.ends_with(&format!("{e} 3{close}")), "{chip:?}");
+        }
+        // A long value with a short name still cuts the value.
+        let glob = MatchChip {
+            name: "glob".to_string(),
+            value: "*.alpha *.bravo *.charlie *.delta *.echo".to_string(),
+            kind: ChipKind::Glob,
+            offset: None,
+        };
+        let shown = texts(&chip_fact_lines("match", &[glob], 5, 30, false, &ctx));
+        assert_eq!(shown.len(), 1, "{shown:#?}");
+        assert!(shown[0].starts_with("match  [glob *.alpha"), "{shown:#?}");
+        assert!(shown[0].ends_with(&format!("{e}]")), "{shown:#?}");
+        assert_eq!(glyphs::display_width(&shown[0]), 30, "{shown:#?}");
     }
 
     /// Variants pack under the value column, `name count` each, a line breaking only

@@ -3538,16 +3538,17 @@ impl Spec {
         chips
     }
 
-    /// The chips that picked `path`: the glob when it names the file, else the magic,
-    /// with the header values either way. All of them when neither does.
+    /// The chips that named `path` on the home screen: the glob alone when it names the
+    /// file, since a listing names a file by its glob without reading its header; else
+    /// the magic and the header values it was checked against. All of them when
+    /// neither does.
     pub fn match_chips_for(&self, path: &Path) -> Vec<MatchChip> {
-        let by = if self.glob_matches(path) {
-            Some(ChipKind::Glob)
-        } else if !self.magic.is_empty() {
-            Some(ChipKind::Magic)
-        } else {
-            None
-        };
+        if self.glob_matches(path) {
+            let mut chips = self.match_chips();
+            chips.retain(|c| c.kind == ChipKind::Glob);
+            return chips;
+        }
+        let by = (!self.magic.is_empty()).then_some(ChipKind::Magic);
         self.match_chips_by(by)
     }
 
@@ -5310,7 +5311,7 @@ impl Read {
 }
 
 /// A spec's match conditions as the command line prints them: its chips, or
-/// `--format only` when nothing but `--format` picks it.
+/// `no match` when only a choice (`--format`, b, B) picks it.
 fn match_words(spec: &Spec) -> String {
     let chips = spec.match_chips();
     if chips.is_empty() {
@@ -5321,7 +5322,7 @@ fn match_words(spec: &Spec) -> String {
 }
 
 /// What a spec with no `match` says in place of its conditions.
-pub const FORMAT_ONLY: &str = "--format only";
+pub const FORMAT_ONLY: &str = "no match";
 
 /// `datui formats`, or `datui formats check SPEC [FILE]`: what to print, and the exit
 /// code (non-zero when the check finds an error).
@@ -7048,7 +7049,8 @@ fields = [{{ name = "x", type = "u1" }}]
         );
         assert_eq!(
             names(s.match_chips_for(Path::new("x/day.bin"))),
-            ["version", "glob"]
+            ["glob"],
+            "a listing names it by the glob alone, its header unread"
         );
         assert_eq!(
             names(s.match_chips_for(Path::new("x/day"))),
@@ -7066,7 +7068,7 @@ fields = [{{ name = "x", type = "u1" }}]
         assert_eq!(chosen_words(&s, Chosen::Named), "chosen by its name");
     }
 
-    /// `datui formats` lists each spec with its conditions, `--format only` without.
+    /// `datui formats` lists each spec with its conditions, `no match` without.
     #[test]
     fn the_listing_shows_each_specs_chips() {
         let mut one = spec(r#"match = { magic = "MKTD", where = { "header.version" = 1 } }"#);
@@ -7078,7 +7080,7 @@ fields = [{{ name = "x", type = "u1" }}]
             listing.contains(&format!("acme.mktd  (magic MKTD {middot} version 1)")),
             "{listing}"
         );
-        assert!(listing.contains("acme.chips  (--format only)"), "{listing}");
+        assert!(listing.contains("acme.chips  (no match)"), "{listing}");
 
         // `datui formats check` says the same.
         let dir = tempfile::tempdir().unwrap();

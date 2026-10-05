@@ -111,7 +111,7 @@ and automounts.
 | Field | Says |
 |---|---|
 | Kind, storage | The format, and the file system or object store. A file a [format spec](../formats/format-specs.md#which-spec-reads-a-file) reads, by its glob or its magic, says `acme.l2feed file` |
-| Spec, match | For a spec's file: the spec's file, cut in the middle to fit, and what chose the file, a chip per condition: `[magic L2FD] [version 3]` ([format specs](../formats/format-specs.md#which-spec-reads-a-file)) |
+| Spec, match | For a spec's file: the spec's file, cut in the middle to fit, and what named the file, a chip per condition: `[magic L2FD] [version 3]`, drawn without brackets where the header tint shows ([format specs](../formats/format-specs.md#which-spec-reads-a-file)) |
 | Read | How a file opens: `lazy scan`, `decompressed copy`, `converted to Arrow`, `in memory`, or `download →` one of those ([formats](../formats/index.md#how-each-format-is-read)) |
 | Contains | Files by format, directories and partitions |
 | Rows × columns | Known counts; blank when finding them would read the data. Parquet counts come from footers, up to 64 files; past that, `? × 39+` |

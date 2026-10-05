@@ -127,7 +127,7 @@ wins, as with `PATH`.
 | `[formats] path` in [config](../reference/settings.md#formats) | More directories. Lists add up across imported config files |
 
 `datui formats` lists each spec, what it matches (`magic L2FD · version 3 · glob
-*.l2`, or `--format only`), the file it came from, any copy of the same name it
+*.l2`, or `no match`), the file it came from, any copy of the same name it
 overrides, and the files that could not be read, with the
 line and column of each problem. The same places hold
 [FIX log dictionaries](signals-and-logs.md#fix-log-dictionaries): QuickFIX XML files and TOML
@@ -180,13 +180,14 @@ nothing more is read. Its row reads the spec's name, and its details:
 |---|---|
 | `kind` | `acme.l2feed file` |
 | `spec` | The spec's file, cut in the middle to fit: `~/…/formats/l2feed.toml` |
-| `match` | What chose the file, a chip per condition: `[magic L2FD] [version 3]`, or `[glob *.l2] [version 3]` when the glob named it |
+| `match` | What named the file, a chip per condition: `[magic L2FD] [version 3]` when the magic and the header did, `[glob *.l2]` when the glob did |
 | `schema` | `3 columns (spec)` and each column's type, when the spec alone says them (fixed records, no size from the header); `2 variants (spec)` and each variant's column count (`add 5 · cancel 3`); otherwise `on open` |
 
-Every chip must hold; a chip with several values (`[glob *.l2 *.lvl2]`) takes
-any of them. A glob that names the file stands without the magic, so the pane
-shows the one that chose it. Text values are quoted where the terminal shows no
-chip color (`[kind "A"]`), and a magic that is not text is hex (`7f 45 4c 46`).
+A chip with several values (`[glob *.l2 *.lvl2]`) takes any of them. The
+listing names a file by its glob without reading it, so a glob-named row shows
+no `where` values; the open still checks them. Chips are drawn without brackets
+where the header tint shows. Text values are quoted where it does not
+(`[kind "A"]`), and a magic that is not text is hex (`7f 45 4c 46`).
 
 ## Delimited text
 

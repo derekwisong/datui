@@ -7621,6 +7621,61 @@ fn details_pane(app: &mut datui::App, width: u16) -> (usize, Vec<String>) {
     (width as usize - heading, pane)
 }
 
+/// A file a spec's glob names is listed by its name alone, its header unread, so its
+/// pane shows the glob and no `where` value nothing checked: `day.gl` at header version
+/// 2 is not shown as `[version 3]`.
+#[test]
+fn a_glob_named_files_pane_shows_the_glob_alone() {
+    common::isolate_cache();
+    let formats = TempDir::new().unwrap();
+    fs::write(
+        formats.path().join("globbed.toml"),
+        r#"name = "acme.globbed"
+match = { glob = "*.gl", where = { "header.version" = 3 } }
+endian = "le"
+
+[header]
+fields = [{ name = "version", type = "u2" }]
+
+[records]
+fields = [{ name = "x", type = "u1" }]
+"#,
+    )
+    .unwrap();
+    let registry = datui::formats::Registry::load(&[formats.path().to_path_buf()]);
+    assert!(registry.errors.is_empty(), "{:?}", registry.errors);
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("day.gl"), [2, 0, 1, 2, 3]).unwrap();
+
+    let mut config = datui::config::AppConfig::default();
+    config.home.desktop_recents = false;
+    config.cloud.hide = ["s3-default", "gcs-default", "az", "azure-env"]
+        .map(String::from)
+        .to_vec();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = datui::App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: std::collections::HashMap::new(),
+        },
+        config,
+    );
+    app.set_formats(registry);
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.enter_home();
+    listed(&mut app, &rx, |app| {
+        visible_names(&app.home).contains(&"day.gl".to_string())
+    });
+    common::drain_events(&mut app, &rx);
+    let row = app.home.selected_entry().expect("day.gl under the cursor");
+    assert_eq!(row.format_spec.as_deref(), Some("acme.globbed"));
+    let (_, pane) = details_pane(&mut app, 168);
+    let shown = pane.join("\n");
+    assert!(shown.contains("[glob *.gl]"), "{shown}");
+    assert!(!shown.contains("version"), "{shown}");
+}
+
 /// The pane of a file a variants spec's magic names, at 40 and 80 columns: the spec's
 /// path cut in its middle on one line, the match as whole chips, and the variants with
 /// their column counts. A record of the file cached without the spec's variant count,

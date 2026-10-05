@@ -623,7 +623,10 @@ A spec reads fixed-size records, records that carry their length, several messag
 The format's name, namespaced: \fBacme.l2feed\fR. \fB\-\-format\fR takes it
 .TP
 \fBdescription\fR
-Shown by \fBdatui formats\fR
+Shown by \fBdatui formats\fR and the Documentation view
+.TP
+\fBdocumentation\fR
+An \fBhttps://\fR link to the format's own documentation, for the Documentation view
 .TP
 \fBmatch\fR
 Which files are this format: \fBglob\fR (a pattern or a list), \fBmagic\fR (a string or a list of bytes) at \fBmagic_offset\fR (default 0), \fBwhere\fR (header values)
@@ -731,7 +734,10 @@ The spec's file, cut in the middle to fit: \fB~/\[u2026]/formats/l2feed.toml\fR
 What named the file, a chip per condition: \fB[magic L2FD] [version 3]\fR when the magic and the header did, \fB[glob *.l2]\fR when the glob did
 .TP
 \fBschema\fR
-\fB3 columns (spec)\fR and each column's type, when the spec alone says them (fixed records, no size from the header); \fB2 variants (spec)\fR and each variant's column count (\fBadd 5 \(pc cancel 3\fR); otherwise \fBon open\fR
+\fB3 columns (spec)\fR and each column's type, when the spec alone says them (fixed records, no size from the header); otherwise \fBon open\fR
+.TP
+\fBrecords\fR
+For a spec with variants: \fB2 types (spec)\fR and each record type's column count (\fBadd 5 \(pc cancel 3\fR). \(-> lists the record types
 .PP
 A chip with several values (\fB[glob *.l2 *.lvl2]\fR) takes any of them. The listing names a file by its glob without reading it, so a glob-named row shows no \fBwhere\fR values; the open still checks them. Chips are drawn without brackets where the header tint shows. Text values are quoted where it does not (\fB[kind "A"]\fR), and a magic that is not text is hex (\fB7f 45 4c 46\fR).
 .SS "Delimited text"
@@ -751,6 +757,7 @@ metadata_line = 1
 
 [columns]
 time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
+bus1volts = { description = "Main bus voltage" }
 .EE
 .RE
 .PP
@@ -773,7 +780,7 @@ datui \-\-format ./instrument.toml flight.csv
 .EE
 .RE
 .PP
-A delimited spec takes the keys of the config's [\fB[csv]\fR](.\:.\:/\:reference/\:settings.\:md#csv), plus \fBmatch\fR, \fBkind\fR, the layout keys and \fB[columns]\fR.
+A delimited spec takes the keys of the config's [\fB[csv]\fR](.\:.\:/\:reference/\:settings.\:md#csv), plus \fBmatch\fR, \fBkind\fR, the layout keys, \fB[columns]\fR, \fBdescription\fR and \fBdocumentation\fR.
 .TP
 \fBkind\fR
 \fBdelimited\fR. Default \fBbinary\fR
@@ -806,7 +813,7 @@ A value, or a list, read as null: \fB"NA"\fR, or \fB"COL=\-999"\fR for one colum
 Lines to pass over before the header
 .TP
 \fB[columns]\fR
-Derived columns, below
+Derived columns, below, and what columns mean: \fBdescription\fR and \fBunit\fR
 .PP
 Lines count from 1 at the top of the file. Each option the spec sets replaces the config's; a flag typed on the command line (\fB\-\-delimiter\fR, \fB\-\-comment\fR, \fB\-\-skip\-initial\-space\fR, \fB\-\-header\-rows\fR, \fB\-\-skip\-lines\fR) wins over the spec. The options the spec does not set keep theirs. \fBdatui \-\-delimiter ';' formats check SPEC FILE\fR reads the file as an open with those flags would, and names the flags that override the spec. The header lines and the metadata line are the only lines read apart from the CSV reader.
 .PP
@@ -834,6 +841,8 @@ Column: A date
 from: one column
 .br
 Column: A time of day
+.PP
+A column of the file takes \fBdescription\fR and \fBunit\fR alone (\fBbus1volts = { description = "Main bus voltage" }\fR), and a derived one takes them beside \fBfrom\fR and \fBas\fR. They show in the Documentation view. A \fBunit\fR there is documentation only: the type row shows the units line's.
 .PP
 \fBformat = "%Y\-%m\-%d %H:%M:%S"\fR gives the strftime format of the text, a date and a time joined with a space; without it the format is inferred. A value that does not parse is null. The column goes before the first column it is made from, which stays; one named after a column it is made from replaces that column, and its unit. There is no expression language: anything more is a query.
 .PP
@@ -1002,6 +1011,16 @@ Example: \fB"header.px_off"\fR
 An integer indexes a list of symbols in a file beside the data: a categorical. \fBformat\fR is \fBlines\fR (default), \fBnul\fR or \fBstr:N\fR
 .br
 Example: \fB{ file = "../sym", format = "lines" }\fR
+.TP
+\fBdescription\fR
+What the column means, for the Documentation view. Not read
+.br
+Example: \fB"Limit price"\fR
+.TP
+\fBunit\fR
+The column's unit, for the Documentation view. Not read
+.br
+Example: \fB"USD"\fR
 .PP
 These keys are for record fields only:
 .TP
@@ -1101,12 +1120,72 @@ The fields after the common ones
 .TP
 \fBsize\fR, \fBsize_adjust\fR
 The whole record's size, when more than its fields take
+.TP
+\fBdescription\fR
+What a record of this type is, for the Documentation view
 .PP
-All records make one table, with a \fBtype\fR column naming each one's variant. A column of a field one variant lacks is null in that variant's rows; a field two variants share is one column, so it must be the same field in both. A record of a type no variant names shows as \fB?X\fR when its size is known (\fBlength_prefixed\fR); otherwise the read stops there, with a note.
+All records make one table, with a \fBtype\fR column naming each one's variant. A column of a field one variant lacks is null in that variant's rows. A record of a type no variant names shows as \fB?X\fR when its size is known (\fBlength_prefixed\fR); otherwise the read stops there, with a note.
+.PP
+A field name two variants share is one column, so it must be the same field in both: the same type, count, encoding, bits and group, and the same \fBtime\fR, \fBscale\fR, \fBfactor\fR or \fBenum\fR. Otherwise the spec is refused: \fBvariants: `px` is a different field in two variants; one column has one type, so name them apart\fR. A variant's field cannot take a common field's name either (\fBa second field named `kind`\fR), nor be named \fBtype\fR.
 .PP
 \fBdatui \-\-table add day.ord\fR opens one variant as its own table: only its records and its columns.
 .PP
-On the home screen, a file a spec reads that holds several variants counts them as tables ("2 tables" in its details, and each variant's column count). Enter opens every record; \(-> lists the tables inside it, one row each at \fBday.ord/add\fR, and Enter on one opens it alone. That path opens the table on the command line too, and is what recents record.
+On the home screen, each variant of a file a spec reads is a record type: its details read \fBrecords  2 types (spec)\fR and each type's column count (\fBadd 5 \(pc exec 4\fR). Enter opens every record; \(-> lists the record types, one row each at \fBday.ord/add\fR, and Enter on one opens it alone. That path opens the record type on the command line too, and is what recents record.
+.SS "Documentation"
+A spec says what its files mean with the words a catalog uses. \fBCtrl\fR+\fBE\fR on a file the spec reads, and the Info panel's Documentation tab once it is open, show it in the Documentation view. None of it changes how a file is read.
+.PP
+.RS 4
+.EX
+name = "acme.quotes"
+description = "Quotes and trades from the Acme feed"
+documentation = "https://example.com/acme\-feed.pdf"
+match = { glob = "*.acq" }
+
+[records]
+framing = "variant"
+type = "kind"
+fields = [{ name = "kind", type = "u1" }, { name = "ts", type = "u8", time = "ns", description = "When the exchange sent it" }]
+
+[[variants]]
+name = "quote"
+when = 1
+description = "The best bid and offer"
+fields = [{ name = "bid", type = "u4", scale = 4, unit = "USD" }, { name = "ask", type = "u4", scale = 4, unit = "USD" }]
+
+[[variants]]
+name = "trade"
+when = 2
+description = "A trade on the book"
+fields = [
+  { name = "px", type = "u4", scale = 4, description = "Trade price", unit = "USD" },
+  { name = "side", type = "u1", enum = { 1 = "BUY", 2 = "SELL" }, description = "The aggressor's side" },
+]
+.EE
+.RE
+.TP
+\fBdescription\fR
+Where: The spec, a variant, a field
+.br
+Says: What the format, the record type or the column is
+.TP
+\fBdocumentation\fR
+Where: The spec
+.br
+Says: An \fBhttps://\fR link to the format's own documentation
+.TP
+\fBunit\fR
+Where: A field
+.br
+Says: The column's unit
+.TP
+\fBenum\fR
+Where: A field
+.br
+Says: Its codes and labels are the column's value legend
+.PP
+A delimited spec takes \fBdescription\fR and \fBunit\fR in \fB[columns]\fR, for a column of the file or a derived one: \fBtemp = { description = "Air temperature", unit = "deg F" }\fR.
+.PP
+Each text is trimmed, and an empty one is refused. Where a catalog lists the same file, its description, its \fBdocumentation\fR link and its note of a column stand over the spec's; the spec's other notes and its record types stay.
 .SS "Footer"
 .RS 4
 .EX

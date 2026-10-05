@@ -8,6 +8,7 @@
 //! What a spec describes is decoded by [`crate::fixed_records`]; this module turns a
 //! spec and a file into that reader's columns.
 
+use crate::catalog::ColumnNote;
 use crate::fixed_records::{Bytes, ColumnLayout, FixedRecords, Logical, Null, Physical};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use polars::prelude::{
@@ -402,6 +403,10 @@ pub struct Field {
     /// An offset into this section of the file, where NUL-terminated text is.
     pub string_at: Option<String>,
     pub lookup: Option<Lookup>,
+    /// What the column means: documentation, never read.
+    pub description: Option<String>,
+    /// The column's unit: documentation, never read.
+    pub unit: Option<String>,
 }
 
 /// A spec's header: its fields, and its size when that is more than they take.
@@ -446,6 +451,8 @@ pub struct Variant {
     pub fields: Vec<Field>,
     /// The whole record's size, when more than its fields take.
     pub size: Option<Amount>,
+    /// What a record of this type is: documentation, never read.
+    pub description: Option<String>,
 }
 
 /// Fields at the end of the file.
@@ -658,6 +665,10 @@ pub const MAX_SPEC_SAID: &str = "1 MiB";
 pub struct Spec {
     pub name: String,
     pub description: Option<String>,
+    /// An `https://` link to the format's own documentation.
+    pub documentation: Option<String>,
+    /// A delimited spec's `[columns]` notes: what each column of the file means.
+    pub notes: Vec<(String, ColumnNote)>,
     /// The file it was read from.
     pub path: Option<PathBuf>,
     pub globs: Vec<String>,
@@ -689,6 +700,8 @@ impl PartialEq for Spec {
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name
             && self.description == other.description
+            && self.documentation == other.documentation
+            && self.notes == other.notes
             && self.path == other.path
             && self.globs == other.globs
             && self.magic == other.magic
@@ -771,6 +784,8 @@ const FIELD_KEYS: &[&str] = &[
     "group",
     "string_at",
     "lookup",
+    "description",
+    "unit",
 ];
 
 /// The parts a field can refer to by name: `header.NAME`, `footer.NAME`.
@@ -828,6 +843,27 @@ impl Reader<'_> {
             DeValue::String(s) => Ok(s.to_string()),
             _ => Err(self.error(&value.span(), format!("{what}: expected a string"))),
         }
+    }
+
+    /// Documentation text: trimmed, and never empty.
+    fn prose(&self, value: &Value<'_>, what: &str) -> Result<String, SpecError> {
+        let text = self.string(value, what)?.trim().to_string();
+        if text.is_empty() {
+            return Err(self.error(&value.span(), format!("{what}: must not be empty")));
+        }
+        Ok(text)
+    }
+
+    /// A link to documentation: an `https://` URL, as a catalog's `documentation` is.
+    fn documentation(&self, value: &Value<'_>) -> Result<String, SpecError> {
+        let link = self.prose(value, "documentation")?;
+        if !link.starts_with("https://") || link.chars().any(char::is_whitespace) {
+            return Err(self.error(
+                &value.span(),
+                format!("documentation: \"{link}\" is not an https:// link"),
+            ));
+        }
+        Ok(link)
     }
 
     fn integer(&self, value: &Value<'_>, what: &str) -> Result<i64, SpecError> {
@@ -1123,7 +1159,7 @@ impl Reader<'_> {
     fn delimited(
         &self,
         top: &BTreeMap<&str, &Value<'_>>,
-    ) -> Result<crate::delimited_spec::Delimited, SpecError> {
+    ) -> Result<(crate::delimited_spec::Delimited, Vec<(String, ColumnNote)>), SpecError> {
         use crate::delimited_spec::{Delimited, Derived, DerivedKind, HeaderRows, MAX_HEAD_LINE};
         let line = |value: &Value<'_>, what: &str| -> Result<usize, SpecError> {
             let n = self.integer(value, what)?;
@@ -1157,6 +1193,7 @@ impl Reader<'_> {
             }
         };
         let mut spec = Delimited::default();
+        let mut notes = Vec::new();
         // The `[csv]` keys and `--delimiter`'s words, read by the same rules.
         if let Some(v) = top.get("delimiter") {
             let text = self.string(v, "delimiter")?;
@@ -1265,11 +1302,42 @@ impl Reader<'_> {
                 let name: &str = key.get_ref();
                 let what = format!("columns.{name}");
                 let entry = self.table(value, &what)?;
-                let keys = self.entries(entry, &what, &["from", "as", "format"])?;
+                let keys = self.entries(
+                    entry,
+                    &what,
+                    &["from", "as", "format", "description", "unit"],
+                )?;
+                if name.trim().is_empty() {
+                    return Err(self.error(&key.span(), "columns: a column needs a name"));
+                }
+                // A column of the file, or a derived one, may say what it means.
+                let said = |k: &str| {
+                    keys.get(k)
+                        .map(|v| self.prose(v, &format!("{what}.{k}")))
+                        .transpose()
+                        .map(Option::unwrap_or_default)
+                };
+                let note = ColumnNote {
+                    description: said("description")?,
+                    unit: said("unit")?,
+                    values: Vec::new(),
+                };
+                let documented = !(note.description.is_empty() && note.unit.is_empty());
+                if documented {
+                    notes.push((name.to_string(), note));
+                }
+                let derived = ["from", "as", "format"]
+                    .iter()
+                    .any(|k| keys.contains_key(k));
+                if documented && !derived {
+                    continue;
+                }
                 let Some(from) = keys.get("from") else {
                     return Err(self.error(
                         &value.span(),
-                        format!("{what}: missing `from`, the columns it is made from"),
+                        format!(
+                            "{what}: missing `from`, the columns it is made from (a column of the file takes description or unit alone)"
+                        ),
                     ));
                 };
                 let from_columns: Vec<String> = match from.get_ref() {
@@ -1318,9 +1386,6 @@ impl Reader<'_> {
                     .get("format")
                     .map(|f| self.string(f, &format!("{what}.format")))
                     .transpose()?;
-                if name.trim().is_empty() {
-                    return Err(self.error(&key.span(), "columns: a column needs a name"));
-                }
                 spec.columns.push(Derived {
                     name: name.to_string(),
                     from: from_columns,
@@ -1329,7 +1394,7 @@ impl Reader<'_> {
                 });
             }
         }
-        Ok(spec)
+        Ok((spec, notes))
     }
 
     fn fields(
@@ -1748,6 +1813,14 @@ impl Reader<'_> {
                 "lookup: a field takes one of lookup and string_at",
             ));
         }
+        let description = keys
+            .get("description")
+            .map(|v| self.prose(v, "description"))
+            .transpose()?;
+        let unit = keys
+            .get("unit")
+            .map(|v| self.prose(v, "unit"))
+            .transpose()?;
         Ok(Field {
             name,
             ty,
@@ -1765,6 +1838,8 @@ impl Reader<'_> {
             group,
             string_at,
             lookup,
+            description,
+            unit,
         })
     }
 
@@ -2091,7 +2166,14 @@ impl Reader<'_> {
                 let k = self.entries(
                     t,
                     "a variant",
-                    &["name", "when", "fields", "size", "size_adjust"],
+                    &[
+                        "name",
+                        "when",
+                        "fields",
+                        "size",
+                        "size_adjust",
+                        "description",
+                    ],
                 )?;
                 let Some(n) = k.get("name") else {
                     return Err(self.error(&item.span(), "variant: missing `name`"));
@@ -2143,11 +2225,16 @@ impl Reader<'_> {
                         format!("size: the fields take {sum} bytes, more than {size}"),
                     ));
                 }
+                let description = k
+                    .get("description")
+                    .map(|d| self.prose(d, "description"))
+                    .transpose()?;
                 variants.push(Variant {
                     name,
                     when,
                     fields: vfields,
                     size,
+                    description,
                 });
             }
             // A name two variants share is one column, so it has one type.
@@ -2884,6 +2971,8 @@ impl Field {
             group: Vec::new(),
             string_at: None,
             lookup: None,
+            description: None,
+            unit: None,
         }
     }
 
@@ -3111,6 +3200,7 @@ impl Spec {
             &[
                 "name",
                 "description",
+                "documentation",
                 "kind",
                 "match",
                 "endian",
@@ -3129,7 +3219,11 @@ impl Spec {
         let name = reader.spec_name(&top)?;
         let description = top
             .get("description")
-            .map(|v| reader.string(v, "description"))
+            .map(|v| reader.prose(v, "description"))
+            .transpose()?;
+        let documentation = top
+            .get("documentation")
+            .map(|v| reader.documentation(v))
             .transpose()?;
         let (endian, endian_auto) = match top.get("endian") {
             None => (Endian::Little, false),
@@ -3317,6 +3411,8 @@ impl Spec {
         Ok(Self {
             name,
             description,
+            documentation,
+            notes: Vec::new(),
             path: path.map(Path::to_path_buf),
             globs,
             glob_set,
@@ -3350,7 +3446,11 @@ impl Spec {
         let name = reader.spec_name(&top)?;
         let description = top
             .get("description")
-            .map(|v| reader.string(v, "description"))
+            .map(|v| reader.prose(v, "description"))
+            .transpose()?;
+        let documentation = top
+            .get("documentation")
+            .map(|v| reader.documentation(v))
             .transpose()?;
         let MatchRules {
             globs,
@@ -3362,10 +3462,12 @@ impl Spec {
             Some(v) => reader.match_rules(v, None)?,
             None => MatchRules::default(),
         };
-        let delimited = reader.delimited(&top)?;
+        let (delimited, notes) = reader.delimited(&top)?;
         Ok(Self {
             name,
             description,
+            documentation,
+            notes,
             path: path.map(Path::to_path_buf),
             globs,
             glob_set,
@@ -3597,6 +3699,112 @@ impl Spec {
                 .map(|c| (c.name.to_string(), c.dtype()))
                 .collect(),
         )
+    }
+}
+
+/// What a spec says of its files, for the Documentation view: its own words and the
+/// notes its fields carry. None of it changes how a file is read.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SpecDocs {
+    /// The spec's name.
+    pub spec: String,
+    pub description: String,
+    /// An `https://` link to the format's own documentation.
+    pub documentation: String,
+    /// The variants, each a record type the file holds.
+    pub record_types: Vec<RecordType>,
+    /// What each column means, by its name, in the spec's order: a field's description,
+    /// its unit, and its enum as the value legend.
+    pub columns: Vec<(String, ColumnNote)>,
+}
+
+/// One variant of a spec, as its documentation shows it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RecordType {
+    pub name: String,
+    /// The type values that pick it, as the spec writes them: text quoted.
+    pub when: Vec<String>,
+    pub description: String,
+    /// Its columns: the common ones and its own.
+    pub columns: usize,
+}
+
+impl Spec {
+    /// What the spec documents, or `None` when it says nothing beyond how to read: no
+    /// description or link, no record type described, no column noted.
+    pub fn docs(&self) -> Option<SpecDocs> {
+        let mut columns: Vec<(String, ColumnNote)> = Vec::new();
+        // A name two variants share is one column: the first note of it stands.
+        let mut add = |name: &str, note: ColumnNote| {
+            if note != ColumnNote::default() && !columns.iter().any(|(n, _)| n == name) {
+                columns.push((name.to_string(), note));
+            }
+        };
+        let legend = |labels: &BTreeMap<i64, String>| {
+            labels
+                .iter()
+                .map(|(code, label)| (code.to_string(), label.clone()))
+                .collect::<Vec<_>>()
+        };
+        for field in all_fields(&self.records) {
+            let Some(name) = &field.name else { continue };
+            add(
+                name,
+                ColumnNote {
+                    description: field.description.clone().unwrap_or_default(),
+                    unit: field.unit.clone().unwrap_or_default(),
+                    values: match &field.meaning {
+                        Meaning::Enum(labels) => legend(labels),
+                        _ => Vec::new(),
+                    },
+                },
+            );
+            for bit in &field.bits {
+                if let Some(labels) = &bit.labels {
+                    add(
+                        &bit.name,
+                        ColumnNote {
+                            values: legend(labels),
+                            ..ColumnNote::default()
+                        },
+                    );
+                }
+            }
+        }
+        for (name, note) in &self.notes {
+            add(name, note.clone());
+        }
+        let tables = crate::members::variant_tables(self);
+        let record_types: Vec<RecordType> = self
+            .records
+            .variants
+            .iter()
+            .zip(&tables)
+            .map(|(variant, table)| RecordType {
+                name: variant.name.clone(),
+                when: variant
+                    .when
+                    .iter()
+                    .map(|value| match value {
+                        Expected::Int(v) => v.to_string(),
+                        Expected::Text(v) => format!("\"{v}\""),
+                    })
+                    .collect(),
+                description: variant.description.clone().unwrap_or_default(),
+                columns: table.columns.len(),
+            })
+            .collect();
+        let documented = self.description.is_some()
+            || self.documentation.is_some()
+            || !columns.is_empty()
+            || record_types.iter().any(|r| !r.description.is_empty());
+        documented.then(|| SpecDocs {
+            spec: self.name.clone(),
+            description: self.description.clone().unwrap_or_default(),
+            documentation: self.documentation.clone().unwrap_or_default(),
+            record_types,
+            columns,
+        })
     }
 }
 
@@ -5091,6 +5299,7 @@ fn delimited_spec_keys() -> Vec<&'static str> {
     let mut keys = vec![
         "name",
         "description",
+        "documentation",
         "kind",
         "match",
         "metadata_line",
@@ -6941,6 +7150,253 @@ time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
         )
         .unwrap_err();
         assert!(e.contains("broken.toml\":3:1: tags.nine"), "{e}");
+    }
+}
+
+#[cfg(test)]
+mod docs_tests {
+    use super::*;
+
+    const ORDERS: &str = r#"
+name = "acme.orders"
+description = "  Order entry capture  "
+documentation = "https://example.com/orders.pdf"
+match = { glob = "*.ord" }
+
+[records]
+framing = "length_prefixed"
+size = "len"
+size_adjust = 2
+type = "kind"
+fields = [
+  { name = "len", type = "u2" },
+  { name = "kind", type = "str", size = 1, description = "Message type" },
+]
+
+[[variants]]
+name = "add"
+when = "A"
+description = "An order added to the book"
+fields = [
+  { name = "ref", type = "u8", description = "Order reference" },
+  { name = "price", type = "u4", scale = 4, unit = "USD" },
+  { name = "side", type = "u1", enum = { 1 = "BUY", 2 = "SELL" } },
+]
+
+[[variants]]
+name = "exec"
+when = ["E", "C"]
+fields = [{ name = "ref", type = "u8" }, { name = "shares", type = "u4", unit = "shares" }]
+"#;
+
+    fn error_of(text: &str) -> String {
+        Spec::parse(text, None).unwrap_err().message
+    }
+
+    #[test]
+    fn a_spec_takes_the_catalogs_documentation_keys() {
+        let spec = Spec::parse(ORDERS, None).unwrap();
+        assert_eq!(spec.description.as_deref(), Some("Order entry capture"));
+        assert_eq!(
+            spec.documentation.as_deref(),
+            Some("https://example.com/orders.pdf")
+        );
+        let add = &spec.records.variants[0];
+        assert_eq!(
+            add.description.as_deref(),
+            Some("An order added to the book")
+        );
+        assert_eq!(add.fields[1].unit.as_deref(), Some("USD"));
+        assert_eq!(
+            spec.records.fields[1].description.as_deref(),
+            Some("Message type")
+        );
+        // Documentation only: the same spec without it reads the same columns.
+        let plain = Spec::parse(
+            &ORDERS
+                .replace(", description = \"Message type\"", "")
+                .replace(", unit = \"USD\"", ""),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            plain.static_columns(),
+            spec.static_columns(),
+            "nothing documented changes the columns"
+        );
+    }
+
+    #[test]
+    fn empty_documentation_and_unknown_keys_are_refused() {
+        for (from, to, said) in [
+            (
+                "description = \"  Order entry capture  \"",
+                "description = \"  \"",
+                "description: must not be empty",
+            ),
+            (
+                "documentation = \"https://example.com/orders.pdf\"",
+                "documentation = \"ftp://example.com/x\"",
+                "documentation: \"ftp://example.com/x\" is not an https:// link",
+            ),
+            (
+                "description = \"Order reference\"",
+                "description = \"\"",
+                "description: must not be empty",
+            ),
+            ("unit = \"USD\"", "unit = \" \"", "unit: must not be empty"),
+            (
+                "description = \"An order added to the book\"",
+                "description = \"\"",
+                "description: must not be empty",
+            ),
+            (
+                "unit = \"USD\"",
+                "units = \"USD\"",
+                "unknown key `units` in a field",
+            ),
+            (
+                "description = \"An order added to the book\"",
+                "about = \"x\"",
+                "unknown key `about` in a variant",
+            ),
+            (
+                "documentation = \"https://example.com/orders.pdf\"",
+                "url = \"https://example.com/orders.pdf\"",
+                "unknown key `url` in the spec",
+            ),
+            (
+                "unit = \"USD\"",
+                "values = { 1 = \"x\" }",
+                "unknown key `values` in a field",
+            ),
+        ] {
+            assert!(ORDERS.contains(from), "{from}");
+            let e = error_of(&ORDERS.replacen(from, to, 1));
+            assert!(e.contains(said), "{to}: {e}");
+        }
+        // Skipped bytes have no column to document.
+        let e = error_of(&ORDERS.replace(
+            "{ name = \"len\", type = \"u2\" },",
+            "{ name = \"len\", type = \"u2\" }, { type = \"pad\", size = 1, description = \"x\" },",
+        ));
+        assert!(e.contains("pad: skipped bytes take only a size"), "{e}");
+    }
+
+    #[test]
+    fn a_variant_spec_documents_its_record_types_and_columns() {
+        let docs = Spec::parse(ORDERS, None).unwrap().docs().unwrap();
+        assert_eq!(docs.spec, "acme.orders");
+        assert_eq!(docs.description, "Order entry capture");
+        assert_eq!(docs.documentation, "https://example.com/orders.pdf");
+        assert_eq!(
+            docs.record_types,
+            [
+                RecordType {
+                    name: "add".into(),
+                    when: vec!["\"A\"".into()],
+                    description: "An order added to the book".into(),
+                    columns: 5,
+                },
+                RecordType {
+                    name: "exec".into(),
+                    when: vec!["\"E\"".into(), "\"C\"".into()],
+                    description: String::new(),
+                    columns: 4,
+                },
+            ]
+        );
+        let names: Vec<&str> = docs.columns.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["kind", "ref", "price", "side", "shares"]);
+        let note = |name: &str| {
+            docs.columns
+                .iter()
+                .find(|(n, _)| n == name)
+                .unwrap()
+                .1
+                .clone()
+        };
+        assert_eq!(note("ref").description, "Order reference");
+        assert_eq!(note("price").unit, "USD");
+        // The enum is the column's value legend.
+        assert_eq!(
+            note("side").values,
+            [
+                ("1".to_string(), "BUY".to_string()),
+                ("2".into(), "SELL".into())
+            ]
+        );
+        // A spec that says nothing beyond how to read has no page.
+        let bare = "name = \"a.b\"\nmatch = { glob = \"*.b\" }\n[records]\nfields = [{ name = \"x\", type = \"u1\" }]\n";
+        assert_eq!(Spec::parse(bare, None).unwrap().docs(), None);
+    }
+
+    #[test]
+    fn a_delimited_specs_columns_take_a_description_and_unit() {
+        let text = r#"
+name = "acme.log"
+kind = "delimited"
+documentation = "https://example.com/log"
+header_rows = { name = 2, unit = 1 }
+
+[columns]
+time = { from = ["date", "clock"], as = "datetime", description = "When it was read" }
+temp = { description = "Air temperature", unit = "deg F" }
+volts = { unit = "V" }
+"#;
+        let spec = Spec::parse(text, None).unwrap();
+        let delimited = spec.delimited.as_ref().unwrap();
+        // A note alone is no derived column; the units line still works.
+        assert_eq!(delimited.columns.len(), 1);
+        assert_eq!(delimited.header_rows.as_ref().unwrap().unit, Some(1));
+        let docs = spec.docs().unwrap();
+        assert!(docs.record_types.is_empty());
+        assert_eq!(
+            docs.columns,
+            [
+                (
+                    "temp".to_string(),
+                    ColumnNote {
+                        description: "Air temperature".into(),
+                        unit: "deg F".into(),
+                        values: Vec::new(),
+                    }
+                ),
+                (
+                    "time".to_string(),
+                    ColumnNote {
+                        description: "When it was read".into(),
+                        ..Default::default()
+                    }
+                ),
+                (
+                    "volts".to_string(),
+                    ColumnNote {
+                        unit: "V".into(),
+                        ..Default::default()
+                    }
+                ),
+            ]
+        );
+        for (entry, said) in [
+            ("t = {}", "columns.t: missing `from`"),
+            (
+                "t = { description = \"\" }",
+                "columns.t.description: must not be empty",
+            ),
+            (
+                "t = { values = { a = \"b\" } }",
+                "unknown key `values` in columns.t",
+            ),
+            ("t = { format = \"%Y\" }", "columns.t: missing `from`"),
+        ] {
+            let e = error_of(&format!(
+                "name = \"a.b\"\nkind = \"delimited\"\n[columns]\n{entry}\n"
+            ));
+            assert!(e.contains(said), "{entry}: {e}");
+        }
+        let e = error_of("name = \"a.b\"\nkind = \"delimited\"\nurl = \"https://x\"\n");
+        assert!(e.contains("unknown key `url`"), "{e}");
     }
 }
 

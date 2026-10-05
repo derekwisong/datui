@@ -208,7 +208,7 @@ A screenful, stopping at the first and last
 The first or last row. The filter has no cursor to move: it is edited at its end
 .TP
 \fB\(<- / \(->\fR
-Fold or unfold a section; \(-> on a directory or a file of tables goes inside it
+Fold or unfold a section; \(-> on a directory or a file of tables goes inside it, and on a file a format spec reads as record types lists them, one row each
 .TP
 \fBSpace\fR
 While the filter is empty: fold or unfold the section header under the cursor. With a filter typed, it types
@@ -253,7 +253,7 @@ Show the local file under the cursor as bytes, in the hex view, whatever datui w
 Add the dataset or directory under the cursor to catalog.toml, listed under My datasets; on a row from catalog.toml, forget it. A heading stands for the directory it lists. Only catalog.toml is written; another catalog is hidden with home.hide
 .TP
 \fBCtrl+E\fR
-Open the Documentation view of a catalog row, or of a place inside one: publisher, license, links, columns with units and value legends, bookmarks. \(ua / \(da move, Enter opens a column's legend, y copies the line's link or value, Esc goes back. Ctrl+E here is not readline's end of line: the filter is edited at its end
+Open the Documentation view of a catalog row, of a place inside one, or of a file whose format spec documents it: description, publisher, license, links, record types, columns with units and value legends, bookmarks. A catalog's description, link and column notes stand over the spec's. \(ua / \(da move, Enter opens a column's legend, y copies the line's link or value, Esc goes back. Ctrl+E here is not readline's end of line: the filter is edited at its end
 .TP
 \fBDelete\fR
 Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source

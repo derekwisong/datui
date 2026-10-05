@@ -3452,6 +3452,31 @@ impl Spec {
         }
         said.join(", ")
     }
+
+    /// Whether the spec reads a file's records as several variants, each listed as a
+    /// table inside the file.
+    pub fn lists_variants(&self) -> bool {
+        !self.is_delimited() && self.records.variants.len() > 1 && self.variant.is_none()
+    }
+
+    /// The columns a file of the spec opens with, when the spec alone says them: fixed
+    /// records of one file whose fields take nothing from the file (no sizes, symbols or
+    /// dates from its header). `None` when the open has to read the file to know.
+    pub fn static_columns(&self) -> Option<Vec<(String, polars::prelude::DataType)>> {
+        if self.is_delimited() || self.layout != Layout::Rows || crate::framed_records::needed(self)
+        {
+            return None;
+        }
+        let (columns, _) = self
+            .record_columns(&HeaderValues::default(), 0, Some(1))
+            .ok()?;
+        Some(
+            columns
+                .iter()
+                .map(|c| (c.name.to_string(), c.dtype()))
+                .collect(),
+        )
+    }
 }
 
 /// Bytes one field takes in each record, when nothing about it comes from the file.
@@ -4652,13 +4677,42 @@ impl Registry {
         self.specs.is_empty()
     }
 
-    /// The spec whose glob names the file `file` first, when it reads the file's
-    /// records as several variants: the home screen lists them inside the file.
+    /// The spec that reads the file `file`, by its glob or else by its magic as an open
+    /// picks it, when it reads the file's records as several variants: the home screen
+    /// lists them inside the file. Its first bytes are read only when no glob names it.
     pub fn variants_of(&self, file: &Path) -> Option<Arc<Spec>> {
-        self.by_glob(file, false)
+        let globbed = self.by_glob(file, false);
+        let spec = if globbed.is_empty() {
+            let wanted = unnamed_may(file, false, false)?;
+            let compression = crate::CompressionFormat::from_extension(file);
+            if compression.is_some() || !self.specs.iter().any(|f| !f.spec.magic.is_empty()) {
+                return None;
+            }
+            self.matching_among(file, false, wanted, |reach| spec_head(file, None, reach))?
+                .specs
+                .into_iter()
+                .next()?
+        } else {
+            globbed.into_iter().find(|s| !s.is_delimited())?
+        };
+        spec.lists_variants().then_some(spec)
+    }
+
+    /// The spec that reads a local file a listing looked inside, as an open with
+    /// nothing asked picks it: by glob, else by magic and `match.where`, compared
+    /// against `head`, the bytes the listing already read from its front (all of it
+    /// when `whole`). A spec whose match needs more than `head` holds is not asked.
+    pub fn listed(&self, path: &Path, head: &[u8], whole: bool) -> Option<Arc<Spec>> {
+        if self.is_empty() || crate::CompressionFormat::from_extension(path).is_some() {
+            return None;
+        }
+        let wanted = unnamed_may(path, false, false)?;
+        let held = head.len() as u64;
+        let within = |s: &Spec| wanted(s) && (whole || s.match_reach() <= held);
+        self.matching_among(path, false, within, |_| Some(head.to_vec()))?
+            .specs
             .into_iter()
-            .find(|s| !s.is_delimited())
-            .filter(|s| s.records.variants.len() > 1 && s.variant.is_none())
+            .next()
     }
 
     /// The specs whose globs match `path`, a file or (for the columns layout) a
@@ -4913,6 +4967,43 @@ fn delimited_spec_keys() -> Vec<&'static str> {
     keys
 }
 
+/// Which specs may read `path` when nothing names one, or `None` when none may. What
+/// the name already says is read as it says, compressed or not: a spec of records takes
+/// only a name that says no format datui reads, and a delimited spec also one that says
+/// delimited text.
+fn unnamed_may(path: &Path, is_dir: bool, text_only: bool) -> Option<impl Fn(&Spec) -> bool> {
+    let said = (!is_dir)
+        .then(|| crate::discover::data_format(path))
+        .flatten()
+        // Text by its name (`.log`, `.txt`) says no more than no name does.
+        .filter(|f| !f.is_lines());
+    let parquet_key = crate::discover::is_parquet_key(&crate::discover::directory_and_name(path));
+    let records_may = said.is_none() && !parquet_key && !text_only;
+    let text_may =
+        !is_dir && !parquet_key && said.is_none_or(|f| crate::FileFormat::separator(f).is_some());
+    (records_may || text_may).then_some(move |s: &Spec| {
+        if s.is_delimited() {
+            text_may
+        } else {
+            records_may
+        }
+    })
+}
+
+/// The first `reach` bytes of `path` for comparing specs' magic, or `None` when its
+/// bytes say a format datui reads already: a file with no extension may be Parquet,
+/// Arrow, Avro or ORC by its bytes, which it stays.
+fn spec_head(
+    path: &Path,
+    compression: Option<crate::CompressionFormat>,
+    reach: u64,
+) -> Option<Vec<u8>> {
+    if compression.is_none() && crate::discover::sniff_format(path).is_some() {
+        return None;
+    }
+    head_of(path, compression, reach)
+}
+
 /// Whether, and with which spec, `path` is read. In order: `--format FILE`, then
 /// `--format NAME`, then a glob, then magic. A file whose name or bytes say it is a
 /// format datui reads already keeps opening that way.
@@ -4973,42 +5064,16 @@ pub fn route(path: &Path, asked: &Asked, registry: &Registry) -> Result<Route, S
                 return Ok(Route::Elsewhere);
             }
             let is_dir = path.is_dir();
-            // What the name already says is read as it says, compressed or not: a
-            // spec of records takes only a name that says no format datui reads, and a
-            // delimited spec also one that says delimited text.
-            let said = (!is_dir)
-                .then(|| crate::discover::data_format(path))
-                .flatten()
-                // Text by its name (`.log`, `.txt`) says no more than no name does.
-                .filter(|f| !f.is_lines());
-            let parquet_key =
-                crate::discover::is_parquet_key(&crate::discover::directory_and_name(path));
-            let records_may = said.is_none() && !parquet_key && !asked.text_only;
-            let text_may = !is_dir
-                && !parquet_key
-                && said.is_none_or(|f| crate::FileFormat::separator(f).is_some());
-            if !records_may && !text_may {
+            let Some(wanted) = unnamed_may(path, is_dir, asked.text_only) else {
                 return Ok(Route::Elsewhere);
-            }
+            };
             // A glob names the file as it is stored uncompressed: `day.l2.zst` is an `*.l2`.
             let inner = match compression {
                 Some(_) => path.with_extension(""),
                 None => path.to_path_buf(),
             };
-            let wanted = |s: &Spec| {
-                if s.is_delimited() {
-                    text_may
-                } else {
-                    records_may
-                }
-            };
             let matched = registry.matching_among(&inner, is_dir, wanted, |reach| {
-                // A file with no extension may be Parquet, Arrow, Avro or ORC by its bytes,
-                // which it stays.
-                if compression.is_none() && crate::discover::sniff_format(path).is_some() {
-                    return None;
-                }
-                head_of(path, compression, reach)
+                spec_head(path, compression, reach)
             });
             let Some(matched) = matched else {
                 return Ok(Route::Elsewhere);
@@ -6220,6 +6285,65 @@ fields = [{ name = "a", type = "u1" }, { name = "b", type = "u1" }]"#;
                 .matching(Path::new("a.dat"), false, |_| Some(b"nope".to_vec()))
                 .is_none()
         );
+    }
+
+    /// Fixed records say their columns from the spec alone, as the open finds them;
+    /// framed records and a size from the header leave it to the open.
+    #[test]
+    fn fixed_records_say_their_columns_without_a_file() {
+        let spec = Spec::parse(L2, None).unwrap();
+        let opened = open(&spec, l2_file(&[(1, "A", 1, 1)], 1, &[]));
+        let schema: Vec<(String, DataType)> = opened
+            .records
+            .schema()
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.clone()))
+            .collect();
+        assert_eq!(spec.static_columns(), Some(schema));
+        let sized = L2.replace("size = 8 }", "size = \"header.count\" }");
+        assert_eq!(Spec::parse(&sized, None).unwrap().static_columns(), None);
+        let framed = r#"name = "acme.f"
+[records]
+framing = "length_prefixed"
+size = "len"
+fields = [{ name = "len", type = "u2" }, { name = "x", type = "u1" }]"#;
+        assert_eq!(Spec::parse(framed, None).unwrap().static_columns(), None);
+    }
+
+    /// A listing names a file by a spec's magic and `where` from the bytes it read
+    /// already, never more; a glob still comes first, and a name that says a format
+    /// datui reads keeps it.
+    #[test]
+    fn a_listing_names_a_file_from_the_head_it_read() {
+        let versioned = r#"name = "acme.v1"
+match = { magic = "L2FD", where = { "header.version" = 1 } }
+[header]
+fields = [{ type = "pad", size = 4 }, { name = "version", type = "u1" }]
+[records]
+fields = [{ name = "x", type = "u1" }]"#;
+        let globbed = r#"name = "acme.named"
+match = { glob = "named.bin" }
+[records]
+fields = [{ name = "x", type = "u1" }]"#;
+        let registry = Registry::of(vec![
+            Spec::parse(versioned, None).unwrap(),
+            Spec::parse(globbed, None).unwrap(),
+        ]);
+        let name = |path: &str, head: &[u8], whole: bool| {
+            registry
+                .listed(Path::new(path), head, whole)
+                .map(|s| s.name.clone())
+        };
+        let v1 = b"L2FD\x01rest";
+        assert_eq!(name("data.bin", v1, true).as_deref(), Some("acme.v1"));
+        assert_eq!(name("data", v1, false).as_deref(), Some("acme.v1"));
+        assert_eq!(name("data.bin", b"L2FD\x02rest", true), None);
+        assert_eq!(name("data.bin", b"nope", true), None);
+        // Shorter than the header, and the file goes on: not settled, not named.
+        assert_eq!(name("data.bin", b"L2FD", false), None);
+        assert_eq!(name("named.bin", v1, true).as_deref(), Some("acme.named"));
+        assert_eq!(name("data.csv", v1, true), None);
+        assert_eq!(name("data.bin.gz", v1, true), None);
     }
 
     /// One spec per version, told apart by a header field after the magic.

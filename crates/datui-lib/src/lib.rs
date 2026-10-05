@@ -6771,6 +6771,7 @@ impl App {
         let generation = self.home_generation;
         self.home_search_generation = generation;
         let tx = self.events.clone();
+        let formats = self.formats.clone();
         // Ended, with what the batches already found kept.
         let owed = self.owed_answer(AppEvent::HomeSearchDone {
             generation,
@@ -6787,19 +6788,24 @@ impl App {
                 let batch_tx = tx.clone();
                 let batch_gen = generation;
                 let batch_root = root.clone();
-                let outcome = crate::search::walk(&walk_root, &config, move |found, outcome| {
-                    // Sent even when empty: it carries the progress count, and it is the
-                    // only place the walk learns that nobody is listening any more.
-                    batch_tx
-                        .send(AppEvent::HomeSearchBatch {
-                            generation: batch_gen,
-                            root: batch_root.clone(),
-                            found,
-                            scanned: outcome.scanned,
-                        })
-                        // A closed channel means the app is gone; stop walking.
-                        .is_ok()
-                });
+                let outcome = crate::search::walk_with_specs(
+                    &walk_root,
+                    &config,
+                    &formats,
+                    move |found, outcome| {
+                        // Sent even when empty: it carries the progress count, and it is the
+                        // only place the walk learns that nobody is listening any more.
+                        batch_tx
+                            .send(AppEvent::HomeSearchBatch {
+                                generation: batch_gen,
+                                root: batch_root.clone(),
+                                found,
+                                scanned: outcome.scanned,
+                            })
+                            // A closed channel means the app is gone; stop walking.
+                            .is_ok()
+                    },
+                );
                 let _ = tx.send(AppEvent::HomeSearchDone {
                     generation,
                     root,

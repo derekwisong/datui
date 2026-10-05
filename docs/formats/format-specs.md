@@ -170,6 +170,18 @@ spec on the search path for a file (or for a directory of column files).
 The Notes tab of <kbd>i</kbd> says which spec read the file and why, the header's
 values, and any bytes left out.
 
+The home screen and its search name a file the same way. A file whose name
+says nothing (no extension, or `.bin`) is matched by magic and `where` against
+the first 4 KiB the listing reads from it anyway, up to 256 files a directory;
+nothing more is read. Its row reads the spec's name, and its details:
+
+| Field | Says |
+|---|---|
+| `kind` | `acme.l2feed file` |
+| `spec` | The spec's file |
+| `match` | The spec's `match`: `*.l2, magic "L2FD", header.version = 3` |
+| `schema` | `3 columns (spec)` and each column's type, when the spec alone says them (fixed records, no size from the header); `2 variants (spec)` and each variant's column count; otherwise `on open` |
+
 ## Delimited text
 
 Loggers and instruments write a metadata line and a units line above a padded

@@ -415,7 +415,8 @@ pub struct Entry {
     /// parquet` beside it would name two of the twenty it is about to read. The name
     /// says what it does; the numbers beside it, once measured, say how much.
     pub opens_whole_directory: bool,
-    /// The format spec whose glob names this file, which reads it.
+    /// The format spec that reads this file: its glob names it, or its magic is at
+    /// the front of it.
     pub format_spec: Option<String>,
     /// A table inside a file of tables (a SQLite database, a NumPy archive), for the
     /// rows listed inside one: its path is the file's with the table's name after it,
@@ -641,9 +642,68 @@ pub fn sniff_format(path: &Path) -> Option<crate::FileFormat> {
     crate::readers::sniff_file(path, crate::readers::Asked::Listing)
 }
 
+/// What a listing finds a file to be by its first bytes.
+#[derive(Debug, Clone)]
+pub enum Sniffed {
+    /// A format datui reads.
+    Format(crate::FileFormat),
+    /// A format spec's, which reads it.
+    Spec(std::sync::Arc<crate::formats::Spec>),
+}
+
+/// [`sniff_format`], and when no format datui reads says it, the format spec that
+/// reads it as an open would pick one: by glob, else by magic and `match.where`. One
+/// read of the file's head answers both, so a listing reads nothing more for specs.
+pub fn sniff_listed(path: &Path, formats: &crate::formats::Registry) -> Option<Sniffed> {
+    use crate::readers::{Asked, HEAD, head_of, sniff};
+    let head = head_of(path)?;
+    if let Some(format) = sniff(&head, Some(path), Asked::Listing, |_| true) {
+        return Some(Sniffed::Format(format));
+    }
+    formats
+        .listed(path, &head, head.len() < HEAD)
+        .map(Sniffed::Spec)
+}
+
+/// Name `entry` a file of `spec`, which reads it; a spec that reads its records as
+/// several variants makes it a place too, whose tables → lists.
+pub fn name_spec_file(entry: &mut Entry, spec: &crate::formats::Spec) {
+    entry.kind = EntryKind::File;
+    entry.format_spec = Some(spec.name.clone());
+    if spec.lists_variants() {
+        entry.cost.tables = Some(spec.records.variants.len());
+    }
+}
+
+/// Name a local file row no listing classified (a recent) by the spec that reads it,
+/// as a listing names one: a spec's glob, else, when its name says nothing, the magic
+/// in its first bytes.
+pub fn name_unlisted_file(entry: &mut Entry, formats: &crate::formats::Registry) {
+    if formats.is_empty()
+        || entry.kind != EntryKind::File
+        || entry.table.is_some()
+        || is_data_file(&entry.path)
+    {
+        return;
+    }
+    let spec = match formats.by_glob(&entry.path, false).into_iter().next() {
+        Some(spec) => Some(spec),
+        None if worth_sniffing(&entry.path) && is_regular_file(&entry.path) => {
+            match sniff_listed(&entry.path, formats) {
+                Some(Sniffed::Spec(spec)) => Some(spec),
+                _ => None,
+            }
+        }
+        None => None,
+    };
+    if let Some(spec) = spec {
+        name_spec_file(entry, &spec);
+    }
+}
+
 /// How many extension-less files one listing looks inside. A directory of Spark output
 /// is a few hundred part files; past this the rest are listed by name alone.
-const MAX_SNIFFS_PER_DIR: usize = 256;
+pub(crate) const MAX_SNIFFS_PER_DIR: usize = 256;
 
 /// Whether a file's name has no extension at all: `part-00000`, `LICENSE`.
 pub fn has_no_extension(path: &Path) -> bool {
@@ -1439,13 +1499,27 @@ pub fn scan_dir_bounded(dir: &Path) -> Scan {
     scan_dir_progressive(dir, |_| {})
 }
 
+/// [`scan_dir_bounded`], naming the files it looks inside by `formats` too: a file
+/// whose first bytes carry a spec's magic is listed as that spec's.
+pub fn scan_dir_specs(dir: &Path, formats: &crate::formats::Registry) -> Scan {
+    scan_dir_with(dir, formats, |_| {})
+}
+
 /// How often a listing still being read shows what it has so far.
 const LISTING_PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// [`scan_dir_bounded`], handing `progress` the rows read so far, sorted, every
 /// [`LISTING_PROGRESS_EVERY`] while the read goes on. A directory a share takes seconds
 /// to list shows its first rows as they arrive rather than a spinner until the last.
-pub fn scan_dir_progressive(dir: &Path, mut progress: impl FnMut(&[Entry])) -> Scan {
+pub fn scan_dir_progressive(dir: &Path, progress: impl FnMut(&[Entry])) -> Scan {
+    scan_dir_with(dir, &crate::formats::Registry::default(), progress)
+}
+
+fn scan_dir_with(
+    dir: &Path,
+    formats: &crate::formats::Registry,
+    mut progress: impl FnMut(&[Entry]),
+) -> Scan {
     let Ok(iter) = std::fs::read_dir(dir) else {
         return Scan::default();
     };
@@ -1481,16 +1555,20 @@ pub fn scan_dir_progressive(dir: &Path, mut progress: impl FnMut(&[Entry])) -> S
             continue;
         };
 
+        let mut spec = None;
         let kind = if meta.is_dir() {
             EntryKind::Unknown
         } else if meta.is_file() && is_data_file(&path) {
             EntryKind::File
         } else if meta.is_file() && sniffs_left > 0 && worth_sniffing(&path) {
             sniffs_left -= 1;
-            if sniff_format(&path).is_some() {
-                EntryKind::File
-            } else {
-                EntryKind::Other
+            match sniff_listed(&path, formats) {
+                Some(Sniffed::Format(_)) => EntryKind::File,
+                Some(Sniffed::Spec(found)) => {
+                    spec = Some(found);
+                    EntryKind::File
+                }
+                None => EntryKind::Other,
             }
         } else if meta.is_file() {
             EntryKind::Other
@@ -1500,7 +1578,11 @@ pub fn scan_dir_progressive(dir: &Path, mut progress: impl FnMut(&[Entry])) -> S
             continue;
         };
 
-        entries.push(Entry::new(path, kind).with_fs_metadata(&meta));
+        let mut entry = Entry::new(path, kind).with_fs_metadata(&meta);
+        if let Some(spec) = spec {
+            name_spec_file(&mut entry, &spec);
+        }
+        entries.push(entry);
         if shown.elapsed() >= LISTING_PROGRESS_EVERY {
             let mut so_far = entries.clone();
             sort_entries(&mut so_far);

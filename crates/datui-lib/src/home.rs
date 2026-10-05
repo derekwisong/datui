@@ -552,7 +552,8 @@ pub fn door_reads(door: &Entry) -> Option<(String, Option<String>)> {
 }
 
 /// List a file a format spec's glob names as data, under the spec's name. Its name is
-/// all that is asked: the listing reads nothing more for it.
+/// all that is asked: the listing reads nothing more for it. A file a spec's magic
+/// names was named by the scan, from the bytes it read to sniff it.
 pub fn name_by_spec(formats: &crate::formats::Registry, rows: &mut [Entry]) {
     if formats.is_empty() {
         return;
@@ -563,18 +564,8 @@ pub fn name_by_spec(formats: &crate::formats::Registry, rows: &mut [Entry]) {
         .filter(|r| r.kind == EntryKind::Other && r.format_spec.is_none())
     {
         if let Some(spec) = formats.by_glob(&row.path, false).first() {
-            row.kind = EntryKind::File;
-            row.format_spec = Some(spec.name.clone());
+            discover::name_spec_file(row, spec);
             named = true;
-        }
-    }
-    // A file read as several variants is a place too: → lists them.
-    for row in rows
-        .iter_mut()
-        .filter(|r| r.kind == EntryKind::File && r.format_spec.is_some() && r.table.is_none())
-    {
-        if let Some(spec) = formats.variants_of(&row.path) {
-            row.cost.tables = Some(spec.records.variants.len());
         }
     }
     // Delimited text a delimited spec's glob names keeps its place and gains the name.
@@ -1871,7 +1862,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             };
             (rows, false)
         } else {
-            let scan = discover::scan_dir_bounded(&dir);
+            let scan = discover::scan_dir_specs(&dir, formats);
             // A Hugging Face cache's splits, before the files they are made of.
             let mut rows = discover::split_rows(&dir);
             rows.extend(scan.entries);
@@ -2015,6 +2006,9 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 return split;
             }
             let mut entry = entry_for_path(p, network_check(p));
+            if !network_check(p) {
+                discover::name_unlisted_file(&mut entry, formats);
+            }
             // A dataset opened from a catalog comes back under the catalog's name for
             // it, not its URL's last segment (#547 D12).
             if let Some(dataset) = catalogs
@@ -2068,7 +2062,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
                 .cloned()
                 .unwrap_or_default()
         } else if root.available {
-            let scan = discover::scan_dir_bounded(&root.path);
+            let scan = discover::scan_dir_specs(&root.path, formats);
             truncated = scan.truncated;
             scan.entries
         } else {

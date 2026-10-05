@@ -7238,6 +7238,263 @@ fn a_csv_a_delimited_spec_names_is_listed_under_the_spec() {
     assert_eq!(other.format_spec, None);
 }
 
+/// A spec matched by contents alone, as a market-data recorder's is: magic, a header
+/// version, length-prefixed records of two variants.
+const MKTD: &str = r#"name = "acme.mktd"
+match = { magic = "MKTD", where = { "header.version" = 1 } }
+endian = "le"
+
+[header]
+size = "header_len"
+fields = [
+  { name = "magic", type = "str", size = 4 },
+  { name = "version", type = "u2" },
+  { name = "header_len", type = "u2" },
+  { name = "start_timestamp_ns", type = "u8" },
+]
+
+[records]
+framing = "length_prefixed"
+size = "len"
+size_adjust = 2
+type = "kind"
+fields = [{ name = "len", type = "u2" }, { name = "kind", type = "u1" }]
+
+[[variants]]
+name = "status"
+when = 1
+fields = [{ name = "state", type = "u1" }]
+
+[[variants]]
+name = "order_add"
+when = 2
+fields = [
+  { name = "ref", type = "u8" },
+  { name = "price", type = "u4" },
+  { name = "qty", type = "u4" },
+]
+"#;
+
+/// Fixed records whose columns the spec alone says.
+const TICKS: &str = r#"name = "acme.ticks"
+match = { magic = "TICK" }
+
+[header]
+fields = [{ name = "magic", type = "str", size = 4 }]
+
+[records]
+fields = [
+  { name = "ts", type = "u8", time = "ns" },
+  { name = "price", type = "f8" },
+  { name = "qty", type = "u4" },
+]
+"#;
+
+/// A file of the MKTD spec at header version `version`: a status and an order.
+fn mktd_bytes(version: u16) -> Vec<u8> {
+    let mut out = b"MKTD".to_vec();
+    out.extend(version.to_le_bytes());
+    out.extend(16u16.to_le_bytes());
+    out.extend(1_700_000_000_000_000_000u64.to_le_bytes());
+    out.extend([2, 0, 1, 5]);
+    out.extend([17, 0, 2]);
+    out.extend(7u64.to_le_bytes());
+    out.extend(1234u32.to_le_bytes());
+    out.extend(10u32.to_le_bytes());
+    out
+}
+
+/// The specs above, read from files in a formats directory of their own.
+fn magic_specs() -> (TempDir, datui::formats::Registry) {
+    let formats = TempDir::new().unwrap();
+    fs::write(formats.path().join("mktd.toml"), MKTD).unwrap();
+    fs::write(formats.path().join("ticks.toml"), TICKS).unwrap();
+    let registry = datui::formats::Registry::load(&[formats.path().to_path_buf()]);
+    assert!(registry.errors.is_empty(), "{:?}", registry.errors);
+    (formats, registry)
+}
+
+/// A directory of files whose names say nothing: two a spec's magic names, one at a
+/// header version no spec takes, one of no format, and one a built-in format's bytes
+/// name.
+fn magic_files() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("data.bin"), mktd_bytes(1)).unwrap();
+    fs::write(tmp.path().join("old.bin"), mktd_bytes(2)).unwrap();
+    let mut ticks = b"TICK".to_vec();
+    ticks.extend([0u8; 20]);
+    fs::write(tmp.path().join("ticks"), ticks).unwrap();
+    fs::write(tmp.path().join("noise.bin"), [9u8; 64]).unwrap();
+    fs::write(tmp.path().join("model.bin"), b"GGUF\x03\x00\x00\x00").unwrap();
+    tmp
+}
+
+/// A file a spec's magic names, its name saying nothing, is listed under the spec as
+/// the open reads it, from the bytes the listing read to sniff it: its variants are
+/// tables → lists. A wrong header version, or no magic, is not the spec's; a built-in
+/// format's bytes keep the file that format's. The search names the same files.
+#[test]
+fn a_file_a_specs_magic_names_is_listed_under_the_spec() {
+    common::isolate_cache();
+    let (_formats, registry) = magic_specs();
+    let tmp = magic_files();
+    let mut home = HomeState {
+        browsing: Some(tmp.path().to_path_buf()),
+        formats: std::sync::Arc::new(registry.clone()),
+        ..HomeState::default()
+    };
+    home.rebuild(&[]);
+    let row = |name: &str| {
+        home.sections[0]
+            .rows
+            .iter()
+            .find(|r| r.name == name)
+            .unwrap_or_else(|| panic!("{name} in {:?}", visible_names(&home)))
+            .clone()
+    };
+    let data = row("data.bin");
+    assert_eq!(data.kind, EntryKind::File);
+    assert_eq!(data.format_spec.as_deref(), Some("acme.mktd"));
+    assert_eq!(data.label(), "acme.mktd");
+    assert_eq!(data.cost.tables, Some(2), "its variants are tables");
+    assert_eq!(row("ticks").format_spec.as_deref(), Some("acme.ticks"));
+    for name in ["old.bin", "noise.bin"] {
+        assert_eq!(row(name).kind, EntryKind::Other, "{name}");
+        assert_eq!(row(name).format_spec, None, "{name}");
+    }
+    let model = row("model.bin");
+    assert_eq!((model.kind, model.format_spec), (EntryKind::File, None));
+
+    // A recent of it, which no listing classified, is named the same way.
+    let mut recent = discover::Entry::for_test(&tmp.path().join("data.bin"), "data.bin");
+    discover::name_unlisted_file(&mut recent, &registry);
+    assert_eq!(recent.format_spec.as_deref(), Some("acme.mktd"));
+    let mut recent = discover::Entry::for_test(&tmp.path().join("old.bin"), "old.bin");
+    discover::name_unlisted_file(&mut recent, &registry);
+    assert_eq!(recent.format_spec, None);
+
+    // The open reads it with the same spec.
+    let path = tmp.path().join("data.bin");
+    let route = datui::formats::route(&path, &Default::default(), &registry).unwrap();
+    let datui::formats::Route::Read(read) = route else {
+        panic!("data.bin is read by a spec");
+    };
+    assert_eq!(read.spec.name, "acme.mktd");
+    assert_eq!(read.by, datui::formats::Chosen::Magic);
+
+    // Inside it, a row per variant.
+    let mut inside = HomeState {
+        browsing: Some(path.clone()),
+        formats: std::sync::Arc::new(registry.clone()),
+        ..HomeState::default()
+    };
+    inside.rebuild(&[]);
+    let mut variants = visible_names(&inside);
+    variants.sort();
+    assert_eq!(variants, ["order_add", "status"]);
+
+    // The search finds what the listing names.
+    let mut found = Vec::new();
+    datui::search::walk_with_specs(
+        tmp.path(),
+        &datui::config::SearchConfig::default(),
+        &registry,
+        |batch, _| {
+            found.extend(batch);
+            true
+        },
+    );
+    let mut named: Vec<(String, Option<String>)> =
+        found.into_iter().map(|e| (e.name, e.format_spec)).collect();
+    named.sort();
+    assert_eq!(
+        named,
+        [
+            ("data.bin".to_string(), Some("acme.mktd".to_string())),
+            ("ticks".to_string(), Some("acme.ticks".to_string())),
+        ]
+    );
+}
+
+/// The details pane of a file a spec's magic names says which spec, where it is, and
+/// what about the file matched; the columns the spec says, without reading the file.
+#[test]
+fn a_spec_files_details_name_the_spec_and_its_columns() {
+    use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
+    common::isolate_cache();
+    let (formats, registry) = magic_specs();
+    let tmp = magic_files();
+    let mut config = datui::config::AppConfig::default();
+    config.home.desktop_recents = false;
+    config.cloud.hide = ["s3-default", "gcs-default", "az", "azure-env"]
+        .map(String::from)
+        .to_vec();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = datui::App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: std::collections::HashMap::new(),
+        },
+        config,
+    );
+    app.set_formats(registry);
+    app.home.browsing = Some(tmp.path().to_path_buf());
+    app.enter_home();
+    listed(&mut app, &rx, |app| {
+        visible_names(&app.home).contains(&"data.bin".to_string())
+    });
+    let screen = |app: &mut datui::App, name: &str| {
+        let index = app
+            .home
+            .visible()
+            .iter()
+            .position(|r| matches!(r, Row::Entry { entry, .. } if entry.name == name))
+            .unwrap_or_else(|| panic!("{name} in {:?}", visible_names(&app.home)));
+        let delta = index as isize - app.home.selected as isize;
+        app.home.move_selection(delta);
+        let area = Rect::new(0, 0, 200, 40);
+        let mut buf = Buffer::empty(area);
+        Widget::render(&mut *app, area, &mut buf);
+        (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect::<Vec<String>>()
+            .join("\n")
+    };
+    let shown = screen(&mut app, "data.bin");
+    let spec_path = datui::home::display_path(&formats.path().join("mktd.toml"));
+    for said in [
+        "acme.mktd file",
+        spec_path.as_str(),
+        "match ",
+        "magic \"MKTD\", header.version = 1",
+        "2 variants (spec)",
+        "order_add",
+        "5 columns",
+        "3 columns",
+    ] {
+        assert!(shown.contains(said), "{said:?} in\n{shown}");
+    }
+    assert!(!shown.contains("on open"), "{shown}");
+
+    let shown = screen(&mut app, "ticks");
+    for said in [
+        "acme.ticks file",
+        "magic \"TICK\"",
+        "3 columns (spec)",
+        "datetime[ns]",
+        "f64",
+        "u32",
+    ] {
+        assert!(shown.contains(said), "{said:?} in\n{shown}");
+    }
+    assert!(!shown.contains("on open"), "{shown}");
+
+    let shown = screen(&mut app, "model.bin");
+    assert!(shown.contains("data file"), "{shown}");
+    assert!(!shown.contains("(spec)"), "{shown}");
+}
+
 /// A file row that is not read lazily where it is says how it is read, dim, beside
 /// its name: `in memory`, `converts`. Lazy rows say nothing. At 80 columns the word
 /// gives way before a long name is cut, and the details pane at 200 says it in full.

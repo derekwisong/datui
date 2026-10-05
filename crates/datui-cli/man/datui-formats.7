@@ -718,6 +718,20 @@ match = { glob = "*.l2", magic = "L2FD", where = { "header.version" = 3 } }
 When two specs match the same way, the first on the search path reads the file. The bar shows \fB2 formats match\fR, and the Notes tab names the others. A file no spec matches opens as it does without specs; a local file no reader takes either opens in the hex view, where \fBB\fR reads it with a spec and \fBr\fR lines the bytes up in records while you write one.
 .PP
 \fBb\fR on the table picks another spec and reads the file again with it, clearing the query, filters and sort. The list starts with the spec the file was read with, then the others that matched it the same way, then every other spec on the search path for a file (or for a directory of column files). The Notes tab of \fBi\fR says which spec read the file and why, the header's values, and any bytes left out.
+.PP
+The home screen and its search name a file the same way. A file whose name says nothing (no extension, or \fB.bin\fR) is matched by magic and \fBwhere\fR against the first 4 KiB the listing reads from it anyway, up to 256 files a directory; nothing more is read. Its row reads the spec's name, and its details:
+.TP
+\fBkind\fR
+\fBacme.l2feed file\fR
+.TP
+\fBspec\fR
+The spec's file
+.TP
+\fBmatch\fR
+The spec's \fBmatch\fR: \fB*.l2, magic "L2FD", header.version = 3\fR
+.TP
+\fBschema\fR
+\fB3 columns (spec)\fR and each column's type, when the spec alone says them (fixed records, no size from the header); \fB2 variants (spec)\fR and each variant's column count; otherwise \fBon open\fR
 .SS "Delimited text"
 Loggers and instruments write a metadata line and a units line above a padded header. A spec of \fBkind = "delimited"\fR holds the CSV options for such a family of files, so they open with no flags: from the command line, from the home screen, compressed, or as a directory.
 .PP
@@ -1090,7 +1104,7 @@ All records make one table, with a \fBtype\fR column naming each one's variant. 
 .PP
 \fBdatui \-\-table add day.ord\fR opens one variant as its own table: only its records and its columns.
 .PP
-On the home screen, a file a spec's glob names that holds several variants counts them as tables ("2 tables" in its details). Enter opens every record; \(-> lists the tables inside it, one row each at \fBday.ord/add\fR, and Enter on one opens it alone. That path opens the table on the command line too, and is what recents record.
+On the home screen, a file a spec reads that holds several variants counts them as tables ("2 tables" in its details, and each variant's column count). Enter opens every record; \(-> lists the tables inside it, one row each at \fBday.ord/add\fR, and Enter on one opens it alone. That path opens the table on the command line too, and is what recents record.
 .SS "Footer"
 .RS 4
 .EX

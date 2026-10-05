@@ -58,6 +58,12 @@ pub fn split_variant(path: &Path, formats: &crate::formats::Registry) -> Option<
 /// unless the spec reads several. Its name is all that is read.
 pub fn variants(file: &Path, formats: &crate::formats::Registry) -> Option<(String, Vec<Table>)> {
     let spec = formats.variants_of(file)?;
+    Some((spec.name.clone(), variant_tables(&spec)))
+}
+
+/// The variants `spec` reads records as, each a table with its columns, from the spec
+/// alone.
+pub fn variant_tables(spec: &crate::formats::Spec) -> Vec<Table> {
     let named = |fields: &[crate::formats::Field]| {
         fields
             .iter()
@@ -66,8 +72,7 @@ pub fn variants(file: &Path, formats: &crate::formats::Registry) -> Option<(Stri
             .collect::<Vec<_>>()
     };
     let common = named(&spec.records.fields);
-    let tables = spec
-        .records
+    spec.records
         .variants
         .iter()
         .map(|v| Table {
@@ -76,8 +81,7 @@ pub fn variants(file: &Path, formats: &crate::formats::Registry) -> Option<(Stri
             internal: false,
             columns: common.iter().cloned().chain(named(&v.fields)).collect(),
         })
-        .collect();
-    Some((spec.name.clone(), tables))
+        .collect()
 }
 
 /// [`split`], for files `holds` says are files of tables.

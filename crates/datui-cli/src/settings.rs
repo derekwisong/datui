@@ -324,8 +324,8 @@ pub const SETTINGS: &[Setting] = &[
     s("log.level", Choice(&["error", "warn", "info", "debug", "trace", "off"]), Unset("\"warn\""), "How much the log says (default warn). DATUI_LOG beats a config file's; -c and --log-level beat DATUI_LOG.").flag("log-level"),
     // [theme]
     s("theme.mode", Choice(&["auto", "dark", "light"]), Unset("\"auto\""), "Which mode's theme to use: theme.dark or theme.light. auto asks the terminal for its background, then reads COLORFGBG, then falls back to dark; it asks again when the terminal regains focus."),
-    s("theme.dark", Text, Value("\"night-market\""), "The theme used when the terminal is dark: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to night-market, with a warning."),
-    s("theme.light", Text, Value("\"day-market\""), "The theme used when the terminal is light: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to day-market, with a warning."),
+    s("theme.dark", Text, Value("\"night-market\""), "The theme used when the terminal is dark: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to night-market, with a warning when dark is in use."),
+    s("theme.light", Text, Value("\"day-market\""), "The theme used when the terminal is light: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to day-market, with a warning when light is in use."),
     color("theme.colors.chip_key", "#7dcfff", "#2e7de9", "Keys named in the footer, dialogs, the breadcrumb and the correlation matrix."),
     color("theme.colors.chip_label", "#a9b1d6", "#3760bf", "Labels beside keys in the footer, and the footer's status."),
     color("theme.colors.throbber", "#7dcfff", "#2e7de9", "The busy spinner."),

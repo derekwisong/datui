@@ -189,8 +189,8 @@ lives, imports, the theme and troubleshooting.
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
 | `theme.mode` | auto \| dark \| light | unset |  | Which mode's theme to use: theme.dark or theme.light. auto asks the terminal for its background, then reads COLORFGBG, then falls back to dark; it asks again when the terminal regains focus. |
-| `theme.dark` | string | `"night-market"` |  | The theme used when the terminal is dark: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to night-market, with a warning. |
-| `theme.light` | string | `"day-market"` |  | The theme used when the terminal is light: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to day-market, with a warning. |
+| `theme.dark` | string | `"night-market"` |  | The theme used when the terminal is dark: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to night-market, with a warning when dark is in use. |
+| `theme.light` | string | `"day-market"` |  | The theme used when the terminal is light: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to day-market, with a warning when light is in use. |
 
 ## Colors
 

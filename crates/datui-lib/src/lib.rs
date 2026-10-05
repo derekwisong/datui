@@ -5779,7 +5779,7 @@ impl App {
             log::warn!("format spec skipped: {error}");
         }
 
-        let theme_problem = app_config.theme.problems.first().cloned();
+        let theme_problem = app_config.theme.fallbacks.first().cloned();
         let mut app = App {
             path: None,
             data_table_state: None,
@@ -5956,7 +5956,7 @@ impl App {
             background_query: false,
             formats,
         };
-        // A theme that could not be used was said on stderr, which the screen hides.
+        // A theme that could not be used: why is said on stderr after exit.
         if let Some(problem) = theme_problem {
             app.flash_note(problem);
         }
@@ -17309,8 +17309,8 @@ impl App {
         });
     }
 
-    /// Under `theme.mode = "auto"`, switch to the built-in palette for the terminal's
-    /// background, keeping the configured `theme.colors` over it as at startup. An
+    /// Under `theme.mode = "auto"`, switch to the theme for the terminal's background
+    /// (`theme.dark` or `theme.light`), keeping the configured `theme.colors` over it as at startup. An
     /// explicit mode ignores the terminal.
     pub fn follow_terminal_background(&mut self, mode: ThemeMode) {
         let theme = &self.app_config.theme;

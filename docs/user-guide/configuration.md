@@ -196,9 +196,10 @@ chip_key = "#e0af68"
 | Any slot | The same slots and color forms as [`[theme.colors]`](#colors) |
 
 `datui theme list` lists the themes; `datui theme show NAME` prints one with
-every slot, to save into `themes/` and edit. A theme file with a mistake, or
-a theme name that does not exist, gets a warning, and that mode uses its
-built-in.
+every slot, to save into `themes/` and edit. A theme file with a mistake is
+left out with a warning. A theme name that cannot be used falls back to its
+mode's built-in, with a warning when that mode is in use: always under `auto`,
+otherwise only for the pinned mode.
 
 The colors are worked out in this order, each step over the one before:
 
@@ -251,10 +252,11 @@ for more than a few, write a [theme file](#themes). Every color is a slot
 | Name | `"bright_red"` | `black` `red` `green` `yellow` `blue` `magenta` `cyan` `white`, `bright_*`, `gray` `dark_gray` `light_gray`, `default` (the terminal's own) |
 | Indexed | `"indexed(236)"` | An entry of the xterm 256-color palette |
 
-`NO_COLOR` set to anything turns color off. A Dracula theme:
+`NO_COLOR` set to anything turns color off. A Dracula theme, saved as
+`themes/dracula.toml` and picked with `theme.dark = "dracula"`:
 
-```toml
-[theme.colors]
+```toml,theme=dracula
+description = "Dracula"
 accent = "#bd93f9"
 accent_bright = "#ff79c6"
 gradient_start = "#8be9fd"

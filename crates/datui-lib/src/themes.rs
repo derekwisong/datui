@@ -232,6 +232,11 @@ pub fn parse(name: &str, path: &Path, text: &str) -> Result<ThemeFile, String> {
                 }
                 file.colors.insert(key, toml::Value::String(color));
             }
+            "theme" | "colors" => {
+                return Err(format!(
+                    "a theme file holds the slots at its top level; drop the [{key}...] header"
+                ));
+            }
             _ => {
                 let near: Vec<&str> =
                     datui_cli::settings::suggestions(&format!("theme.colors.{key}"))
@@ -456,6 +461,7 @@ mod tests {
             ("self", "extends = \"self\"\n"),
             ("night-market", "accent = \"red\"\n"),
             ("good", "extends = \"bad-color\"\n"),
+            ("header", "[theme.colors]\naccent = \"red\"\n"),
         ]);
         let why = |name: &str| {
             lib.broken
@@ -472,6 +478,7 @@ mod tests {
         );
         assert!(why("bad-toml").starts_with("line 1"), "{}", why("bad-toml"));
         assert!(why("self").contains("extends itself"));
+        assert!(why("header").contains("top level"), "{}", why("header"));
         assert!(why("night-market").contains("built-in"));
         let e = lib.resolve("good", ThemeMode::Dark).unwrap_err();
         assert!(e.contains("left out for a mistake"), "{e}");

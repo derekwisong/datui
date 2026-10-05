@@ -1546,6 +1546,9 @@ pub struct ThemeConfig {
     /// Why a named theme was not used, one line each, for a warning.
     #[serde(skip)]
     pub problems: Vec<String>,
+    /// The same, without the why: short enough for the footer.
+    #[serde(skip)]
+    pub fallbacks: Vec<String>,
 }
 
 impl Default for ThemeConfig {
@@ -1563,6 +1566,7 @@ impl Default for ThemeConfig {
             dark_palette: ColorConfig::dark(),
             light_palette: ColorConfig::light(),
             problems: Vec::new(),
+            fallbacks: Vec::new(),
         }
     }
 }
@@ -1579,11 +1583,23 @@ impl ThemeConfig {
         Ok(toml::Value::Table(palette).try_into()?)
     }
 
+    /// Every theme file left out and every name not used, one warning each.
+    pub fn warnings(&self) -> Vec<String> {
+        let broken = self
+            .library
+            .broken
+            .iter()
+            .map(|b| format!("warning: theme left out: {}", b.full()));
+        let problems = self.problems.iter().map(|p| format!("warning: {p}"));
+        broken.chain(problems).collect()
+    }
+
     /// Resolve `dark` and `light` against `library`, which it keeps. A name that
     /// cannot be used falls back to its mode's built-in, with a line in `problems`
     /// when that mode can be in use: either under `auto`, else only the pinned one.
     pub fn use_library(&mut self, library: crate::themes::Library, active: ThemeMode) {
         self.problems.clear();
+        self.fallbacks.clear();
         for mode in [ThemeMode::Dark, ThemeMode::Light] {
             let (key, name) = match mode {
                 ThemeMode::Light => ("theme.light", self.light.clone()),
@@ -1594,8 +1610,9 @@ impl ThemeConfig {
                 Err(why) => {
                     let fallback = crate::themes::built_in_name(mode);
                     if self.follow || active == mode {
-                        self.problems
-                            .push(format!("{key}: using {fallback}, not {name}: {why}"));
+                        let short = format!("{key}: using {fallback}, not {name}");
+                        self.problems.push(format!("{short}: {why}"));
+                        self.fallbacks.push(short);
                     }
                     (fallback.to_string(), ColorConfig::for_mode(mode))
                 }
@@ -2698,15 +2715,11 @@ impl AppConfig {
     /// the built-in: as with catalogs, it never stops datui from starting.
     pub fn read_theme_files(&mut self, config_dir: Option<&Path>) -> Result<()> {
         let library = crate::themes::Library::read(config_dir);
-        for broken in &library.broken {
-            eprintln!("datui: warning: theme left out: {}", broken.full());
-            log::warn!(target: "datui", "theme left out: {}", broken.full());
-        }
         let active = self.theme.mode.unwrap_or_default().resolve();
         self.theme.use_library(library, active);
-        for problem in &self.theme.problems {
-            eprintln!("datui: warning: {problem}");
-            log::warn!(target: "datui", "{problem}");
+        for warning in self.theme.warnings() {
+            eprintln!("datui: {warning}");
+            log::warn!(target: "datui", "{warning}");
         }
         self.theme.colors = self.theme.palette_for(active)?;
         Ok(())

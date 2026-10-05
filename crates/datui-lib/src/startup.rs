@@ -113,6 +113,8 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
         notes.extend(crate::cloud_env::load(&config.cloud, &dir));
     }
     config.cloud = opts.effective_cloud(&config.cloud);
+    // Said on stderr while it was the log: said again once the terminal is back.
+    notes.extend(config.theme.warnings());
 
     let cache_dir = crate::cache::CacheManager::new(APP_NAME).ok();
     notes.extend(logging::init(&logging::LogSettings::resolve(

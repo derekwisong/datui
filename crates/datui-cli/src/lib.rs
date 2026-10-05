@@ -572,6 +572,12 @@ pub enum Command {
         #[command(subcommand)]
         action: CatalogAction,
     },
+    /// List the themes, built in and in the config directory's themes/, or print one as a file to start from
+    #[command(after_help = command_examples("theme"))]
+    Theme {
+        #[command(subcommand)]
+        action: ThemeAction,
+    },
     /// Clear the cache: recents, history, schemas and copies
     #[command(after_help = command_examples("cache"))]
     Cache {
@@ -593,7 +599,7 @@ pub enum Command {
     /// Show a manual page, list them, or write them all under a directory
     #[command(after_help = command_examples("man"))]
     Man {
-        /// The page: datui (the default), a command (config, catalog, cache, views, formats, completions, man), config.5, keys, query or formats.7
+        /// The page: datui (the default), a command (config, catalog, theme, cache, views, formats, completions, man), config.5, keys, query or formats.7
         #[arg(value_name = "PAGE")]
         page: Option<String>,
         /// List the pages and what each covers
@@ -651,6 +657,19 @@ pub enum CatalogAction {
         /// The catalog file
         #[arg(value_name = "FILE")]
         file: std::path::PathBuf,
+    },
+}
+
+/// What `datui theme` does.
+#[derive(Clone, Debug, Subcommand)]
+pub enum ThemeAction {
+    /// List the themes: name, the mode it is set for, where it comes from and its description
+    List,
+    /// Print a theme as a file with every slot, to save into themes/ and edit
+    Show {
+        /// The theme: night-market, day-market, or a file's name in themes/
+        #[arg(value_name = "NAME")]
+        name: String,
     },
 }
 
@@ -1065,6 +1084,18 @@ mod tests {
             Some(Command::Config {
                 action: ConfigAction::Keys
             })
+        ));
+        assert!(matches!(
+            command(&["datui", "theme", "list"]),
+            Some(Command::Theme {
+                action: ThemeAction::List
+            })
+        ));
+        assert!(matches!(
+            command(&["datui", "theme", "show", "night-market"]),
+            Some(Command::Theme {
+                action: ThemeAction::Show { name }
+            }) if name == "night-market"
         ));
         assert!(matches!(
             command(&["datui", "cache", "clear"]),

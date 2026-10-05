@@ -45,6 +45,7 @@ const RETIRED: &[(&str, &str)] = &[
     ("locate", "find"),
     ("go to line", "go to row"),
     // One concept for named datasets (0.4.0).
+    ("color scheme", "theme"),
     ("collection", "catalog"),
     ("collections", "catalogs"),
     ("codebook", "documentation"),

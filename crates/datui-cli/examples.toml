@@ -127,6 +127,20 @@ test = "run"
 pages = ["datui-catalog.1"]
 
 [[example]]
+command = "datui theme list"
+description = "List the themes: name, the mode it is set for, file and description"
+expect = "exit"
+test = "run"
+pages = ["datui-theme.1"]
+
+[[example]]
+command = "datui theme show night-market"
+description = "Print the built-in dark theme with every slot, a file to start a theme from"
+expect = "exit"
+test = "run"
+pages = ["datui-theme.1"]
+
+[[example]]
 command = "datui config path"
 description = "The config files read, lowest precedence first"
 test = "run"

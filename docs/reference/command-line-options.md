@@ -86,6 +86,9 @@ Usage: datui [OPTIONS] [PATH]... [COMMAND]
 | `datui catalog` | Show the catalogs of named datasets on the home screen, or check a catalog file |
 | `datui catalog show [NAME]` | With NAME, print that catalog's file (public is the one datui ships); without, list the catalogs: id, label, datasets and file |
 | `datui catalog check FILE` | Check a catalog file and list its datasets; a mistake is named by its line, with the fix, and exits non-zero |
+| `datui theme` | List the themes, built in and in the config directory's themes/, or print one as a file to start from |
+| `datui theme list` | List the themes: name, the mode it is set for, where it comes from and its description |
+| `datui theme show NAME` | Print a theme as a file with every slot, to save into themes/ and edit |
 | `datui cache` | Clear the cache: recents, history, schemas and copies |
 | `datui cache clear` | Delete the cache directory's contents, or with --recents only the recent datasets |
 | `datui views` | List or remove saved views |

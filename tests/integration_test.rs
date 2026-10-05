@@ -25083,3 +25083,59 @@ fn test_terminal_background_switches_the_palette_under_auto() {
     app.event(&AppEvent::TerminalFocused);
     assert!(!app.take_background_query());
 }
+
+/// The terminal's answer switches between the two named themes, a theme file
+/// included, keeping `theme.colors` over each.
+#[test]
+fn test_terminal_background_switches_between_named_themes() {
+    use datui::config::{AppConfig, ColorConfig, Theme, ThemeMode};
+    let hex = |s: &str| datui::ColorParser::new().parse(s).expect("color parses");
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("themes")).unwrap();
+    std::fs::write(
+        dir.path().join("themes").join("my-dusk.toml"),
+        "extends = \"night-market\"\naccent = \"#e0af68\"\ndimmed = \"#111111\"\n",
+    )
+    .unwrap();
+    let root = dir.path().join("config.toml");
+    std::fs::write(
+        &root,
+        "[theme]\ndark = \"my-dusk\"\n[theme.colors]\nfind_match = \"#ff9e64\"\n",
+    )
+    .unwrap();
+    let config = AppConfig::load_from_file(&root).expect("config loads");
+    assert!(config.theme.follow);
+    let theme = Theme::from_config(&config.theme).expect("theme builds");
+    let (tx, _rx) = mpsc::channel();
+    let mut app = App::new_with_config(tx, common::test_runtime(), theme, config);
+
+    for _ in 0..2 {
+        app.event(&AppEvent::TerminalBackground(ThemeMode::Light));
+        let light = ColorConfig::light();
+        assert_eq!(app.theme().get("accent"), hex(&light.accent));
+        assert_eq!(app.theme().get("dimmed"), hex(&light.dimmed));
+        assert_eq!(app.theme().get("find_match"), hex("#ff9e64"));
+
+        app.event(&AppEvent::TerminalBackground(ThemeMode::Dark));
+        assert_eq!(app.theme().get("accent"), hex("#e0af68"));
+        assert_eq!(app.theme().get("dimmed"), hex("#111111"));
+        assert_eq!(
+            app.theme().get("controls_bg"),
+            hex(&ColorConfig::dark().controls_bg)
+        );
+        assert_eq!(app.theme().get("find_match"), hex("#ff9e64"));
+    }
+    assert_eq!(app.flash_message(), None);
+
+    // A theme that cannot be used says so on the screen, where stderr is not seen.
+    std::fs::write(&root, "[theme]\nmode = \"dark\"\ndark = \"nope\"\n").unwrap();
+    let config = AppConfig::load_from_file(&root).expect("config loads");
+    let theme = Theme::from_config(&config.theme).expect("theme builds");
+    let (tx, _rx) = mpsc::channel();
+    let app = App::new_with_config(tx, common::test_runtime(), theme, config);
+    let said = app.flash_message().expect("a flash");
+    assert!(
+        said.contains("nope") && said.contains("night-market"),
+        "{said}"
+    );
+}

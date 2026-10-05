@@ -53,6 +53,7 @@ pub const PAGES: &[Page] = &[
     page!("datui-catalog", 1, |p, read| render_command(
         p, read, "catalog"
     )),
+    page!("datui-theme", 1, |p, read| render_command(p, read, "theme")),
     page!("datui-cache", 1, |p, read| render_command(p, read, "cache")),
     page!("datui-views", 1, |p, read| render_command(p, read, "views")),
     page!("datui-formats", 1, |p, read| render_command(
@@ -619,6 +620,9 @@ fn render_command(page: &Page, read: Read, name: &str) -> String {
         "catalog" => {
             "A catalog is one TOML file of named datasets, local or remote, that the home screen lists as a section under its label. *CONFIG*/catalog.toml is yours, and Ctrl+D on a home row adds to it; every *CONFIG*/catalogs/*.toml is a catalog, named by its file, and `catalogs` in the config lists files elsewhere; public ships with datui, and a catalogs/public.toml replaces it. A catalog's top level holds `label` and `description`; every other table is a dataset, keyed by a short id of lowercase letters, digits and `-`. A dataset's keys: `name` (its row), `path` or `url`, `auth` (`auto` or `anonymous`) or `connection` (a `[[cloud.connections]]` name), `description`, `publisher`, `license`, `homepage`, `documentation` (an https link), `size` (a web file's bytes, shown until measured), `columns.NAME = { description, unit, values = { CODE = \"meaning\" } }` and `bookmarks.\"Name\" = \"path/\"`. A long legend is a `[id.columns.NAME.values]` table, with the column's other keys written as dotted keys. `datui catalog show public` prints a worked example."
         }
+        "theme" => {
+            "A theme is a set of colors, one per slot. night-market (dark) and day-market (light) are built in; every *CONFIG*/themes/*.toml is a theme, named by its file. A theme file holds `theme.colors` slots, plus `extends` (the theme its unset slots come from; without it, the built-in for the mode it is used in) and `description`. `theme.dark` and `theme.light` in the config pick the theme for each mode, and `theme.colors` lies over whichever is in use. A file with a mistake is left out with a warning, and its mode uses the built-in."
+        }
         "cache" => {
             "The cache holds nothing datui cannot rebuild; clearing it loses the recents' order and the prompts' history."
         }
@@ -691,6 +695,14 @@ fn render_command(page: &Page, read: Read, name: &str) -> String {
             &["datui-config.5"],
         ),
         "catalog" => (
+            &["DATUI_CONFIG_DIR"],
+            Some(Files {
+                config: true,
+                cache: false,
+            }),
+            &["datui-config.5"],
+        ),
+        "theme" => (
             &["DATUI_CONFIG_DIR"],
             Some(Files {
                 config: true,

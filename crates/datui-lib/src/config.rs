@@ -148,6 +148,8 @@ impl ConfigManager {
         }
         // Where more catalogs go: the header's `> catalogs/public.toml` needs it there.
         self.ensure_subdir(crate::catalog::FOLDER)?;
+        // Where theme files go: `datui theme show NAME` prints one to start from.
+        self.ensure_subdir(crate::themes::FOLDER)?;
 
         Ok(config_path)
     }
@@ -1507,32 +1509,120 @@ impl Default for HomeConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemeConfig {
-    /// Which built-in palette to start from. `None` means the key was absent, which
-    /// is treated as `Auto`; a loaded config holds the resolved mode.
+    /// Which mode's theme to use. `None` means the key was absent, which is treated
+    /// as `Auto`; a loaded config holds the resolved mode.
     pub mode: Option<ThemeMode>,
+    /// The theme used when the terminal is dark: a built-in's name or a file's in
+    /// `themes/`.
+    pub dark: String,
+    /// The theme used when the terminal is light.
+    pub light: String,
     pub colors: ColorConfig,
     /// The mode was `auto`: the palette follows what the terminal says about its
     /// background, at startup and when asked again. Set by `from_layers`.
     #[serde(skip)]
     pub follow: bool,
-    /// The `theme.colors` slots the configuration set, laid over the built-in
-    /// palette whichever mode it is for.
+    /// The `theme.colors` slots the configuration set, laid over the active theme
+    /// whichever mode it is for.
     #[serde(skip)]
     pub overrides: toml::Table,
+    /// The themes there are, read from the config directory's `themes/`.
+    #[serde(skip)]
+    pub library: crate::themes::Library,
+    /// The theme in use for each mode: `dark` and `light`, or the built-in when the
+    /// named one could not be used.
+    #[serde(skip)]
+    pub dark_theme: String,
+    #[serde(skip)]
+    pub light_theme: String,
+    /// Each mode's theme resolved, before `overrides`.
+    #[serde(skip)]
+    pub dark_palette: ColorConfig,
+    #[serde(skip)]
+    pub light_palette: ColorConfig,
+    /// Why a named theme was not used, one line each, for a warning.
+    #[serde(skip)]
+    pub problems: Vec<String>,
+    /// The same, without the why: short enough for the footer.
+    #[serde(skip)]
+    pub fallbacks: Vec<String>,
+}
+
+impl Default for ThemeConfig {
+    fn default() -> Self {
+        Self {
+            mode: None,
+            dark: crate::themes::NIGHT_MARKET.to_string(),
+            light: crate::themes::DAY_MARKET.to_string(),
+            colors: ColorConfig::default(),
+            follow: false,
+            overrides: toml::Table::new(),
+            library: crate::themes::Library::default(),
+            dark_theme: crate::themes::NIGHT_MARKET.to_string(),
+            light_theme: crate::themes::DAY_MARKET.to_string(),
+            dark_palette: ColorConfig::dark(),
+            light_palette: ColorConfig::light(),
+            problems: Vec::new(),
+            fallbacks: Vec::new(),
+        }
+    }
 }
 
 impl ThemeConfig {
-    /// The built-in palette for `mode` with the configured slots laid over it.
+    /// The theme for `mode` with the configured slots laid over it.
     pub fn palette_for(&self, mode: ThemeMode) -> Result<ColorConfig> {
-        let mut palette = match toml::Value::try_from(ColorConfig::for_mode(mode))? {
-            toml::Value::Table(palette) => palette,
-            _ => unreachable!("a struct serializes to a table"),
+        let base = match mode.resolve() {
+            ThemeMode::Light => &self.light_palette,
+            _ => &self.dark_palette,
         };
+        let mut palette = crate::themes::slots(base);
         palette.extend(self.overrides.clone());
         Ok(toml::Value::Table(palette).try_into()?)
+    }
+
+    /// Every theme file left out and every name not used, one warning each.
+    pub fn warnings(&self) -> Vec<String> {
+        let broken = self
+            .library
+            .broken
+            .iter()
+            .map(|b| format!("warning: theme left out: {}", b.full()));
+        let problems = self.problems.iter().map(|p| format!("warning: {p}"));
+        broken.chain(problems).collect()
+    }
+
+    /// Resolve `dark` and `light` against `library`, which it keeps. A name that
+    /// cannot be used falls back to its mode's built-in, with a line in `problems`
+    /// when that mode can be in use: either under `auto`, else only the pinned one.
+    pub fn use_library(&mut self, library: crate::themes::Library, active: ThemeMode) {
+        self.problems.clear();
+        self.fallbacks.clear();
+        for mode in [ThemeMode::Dark, ThemeMode::Light] {
+            let (key, name) = match mode {
+                ThemeMode::Light => ("theme.light", self.light.clone()),
+                _ => ("theme.dark", self.dark.clone()),
+            };
+            let (used, palette) = match library.resolve(&name, mode) {
+                Ok(palette) => (name, palette),
+                Err(why) => {
+                    let fallback = crate::themes::built_in_name(mode);
+                    if self.follow || active == mode {
+                        let short = format!("{key}: using {fallback}, not {name}");
+                        self.problems.push(format!("{short}: {why}"));
+                        self.fallbacks.push(short);
+                    }
+                    (fallback.to_string(), ColorConfig::for_mode(mode))
+                }
+            };
+            match mode {
+                ThemeMode::Light => (self.light_theme, self.light_palette) = (used, palette),
+                _ => (self.dark_theme, self.dark_palette) = (used, palette),
+            }
+        }
+        self.library = library;
     }
 }
 
@@ -2416,8 +2506,9 @@ impl AppConfig {
             // No config directory on this platform: defaults are all there is.
             Err(_) => {
                 let layers = vec![ConfigLayer::from_overrides(overrides)?];
-                let config =
+                let mut config =
                     Self::from_layers(layers).map_err(|e| eyre!("Invalid configuration: {}", e))?;
+                config.read_theme_files(None)?;
                 config
                     .validate()
                     .map_err(|e| eyre!("Invalid configuration: {}", e))?;
@@ -2499,6 +2590,7 @@ impl AppConfig {
             .map_err(|e| eyre!("Invalid configuration in {place}: {e}"))?;
         // `import` is a load-time directive, never merged; report what the root declared.
         config.import = imports;
+        config.read_theme_files(config_path.parent())?;
         // A catalog's mistake names its own file and line.
         config.read_catalog_files(config_path.parent())?;
         for broken in &config.broken_catalogs {
@@ -2582,9 +2674,10 @@ impl AppConfig {
     /// The configuration `layers` describe, lowest precedence first, over datui's
     /// defaults. Defaults are resolved here, once: a layer holds only what it wrote.
     ///
-    /// The colors start from the built-in palette for the `theme.mode` the layers
-    /// declare, so a light theme's unset slots take light values. `import` is left
-    /// empty; `load_from_file` follows imports and reports them. Not validated.
+    /// The colors start from the theme `theme.dark` or `theme.light` names for the
+    /// `theme.mode` the layers declare, built-ins only: `from_read_layers` adds the
+    /// theme files. `import` is left empty; `load_from_file` follows imports and
+    /// reports them. Not validated.
     pub fn from_layers(layers: impl IntoIterator<Item = ConfigLayer>) -> Result<Self> {
         let mut merged = ConfigLayer::default();
         for layer in layers {
@@ -2605,11 +2698,31 @@ impl AppConfig {
         if let Some(toml::Value::Table(colors)) = colors {
             config.theme.overrides = colors;
         }
-        config.theme.colors = config.theme.palette_for(resolved)?;
-        config.theme.mode = Some(resolved);
         config.theme.follow = mode == ThemeMode::Auto;
+        config.theme.mode = Some(resolved);
+        // The built-ins only; `from_read_layers` reads the theme files and resolves again.
+        config
+            .theme
+            .use_library(crate::themes::Library::default(), resolved);
+        config.theme.colors = config.theme.palette_for(resolved)?;
         config.sync_dataset_access();
         Ok(config)
+    }
+
+    /// Resolve `theme.dark` and `theme.light` with the theme files in `config_dir`'s
+    /// `themes/` as well as the built-ins. A file with a mistake, or a name that
+    /// cannot be used, is said on stderr and the log, and its mode falls back to
+    /// the built-in: as with catalogs, it never stops datui from starting.
+    pub fn read_theme_files(&mut self, config_dir: Option<&Path>) -> Result<()> {
+        let library = crate::themes::Library::read(config_dir);
+        let active = self.theme.mode.unwrap_or_default().resolve();
+        self.theme.use_library(library, active);
+        for warning in self.theme.warnings() {
+            eprintln!("datui: {warning}");
+            log::warn!(target: "datui", "{warning}");
+        }
+        self.theme.colors = self.theme.palette_for(active)?;
+        Ok(())
     }
 
     /// Every catalog, hidden ones included: `catalog.toml`, the listed files in order,

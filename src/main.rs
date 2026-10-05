@@ -25,6 +25,9 @@ fn run_command(command: &Command, args: &Args) -> ! {
         Command::Catalog { action } => {
             datui::catalog::command(action, datui::AppConfig::load_with(APP_NAME, &args.config))
         }
+        Command::Theme { action } => {
+            datui::themes::command(action, datui::AppConfig::load_with(APP_NAME, &args.config))
+        }
         Command::Cache { action } => {
             let cache = datui::CacheManager::new(APP_NAME).ok();
             datui::commands::cache(cache.as_ref(), action)

@@ -190,6 +190,7 @@ mod terminal;
 mod terminal_color;
 pub mod terminal_input;
 pub mod text_formats;
+pub mod themes;
 pub mod typed_value;
 pub mod ulog;
 mod unfinished;
@@ -5778,7 +5779,8 @@ impl App {
             log::warn!("format spec skipped: {error}");
         }
 
-        App {
+        let theme_problem = app_config.theme.fallbacks.first().cloned();
+        let mut app = App {
             path: None,
             data_table_state: None,
             footer_progress: Arc::new(crate::schema_union::FooterProgress::default()),
@@ -5953,7 +5955,12 @@ impl App {
             app_config,
             background_query: false,
             formats,
+        };
+        // A theme that could not be used: why is said on stderr after exit.
+        if let Some(problem) = theme_problem {
+            app.flash_note(problem);
         }
+        app
     }
 
     /// Use `registry` as the format specs on the search path, for hosts and tests that
@@ -17302,8 +17309,8 @@ impl App {
         });
     }
 
-    /// Under `theme.mode = "auto"`, switch to the built-in palette for the terminal's
-    /// background, keeping the configured `theme.colors` over it as at startup. An
+    /// Under `theme.mode = "auto"`, switch to the theme for the terminal's background
+    /// (`theme.dark` or `theme.light`), keeping the configured `theme.colors` over it as at startup. An
     /// explicit mode ignores the terminal.
     pub fn follow_terminal_background(&mut self, mode: ThemeMode) {
         let theme = &self.app_config.theme;

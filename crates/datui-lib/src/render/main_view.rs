@@ -229,9 +229,10 @@ pub fn help_key(app: &crate::App, content: MainViewContent) -> Option<&'static s
                 || (app.input_mode == crate::InputMode::PivotMelt
                     && crate::widgets::pivot_melt::question_types(&app.pivot_melt_modal))
         }
-        // The Documentation view takes every key but F1.
+        // The Documentation view over home takes no text, whatever the filter holds.
         MainViewContent::Home => {
-            !app.home.filter.is_empty() || app.home.path_input_active || app.documentation.is_open()
+            !app.documentation.is_open()
+                && (!app.home.filter.is_empty() || app.home.path_input_active)
         }
         MainViewContent::Hex => app.hex.as_ref().is_some_and(|v| v.prompt.is_some()),
         _ => false,

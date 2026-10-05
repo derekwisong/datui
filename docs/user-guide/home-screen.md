@@ -118,9 +118,10 @@ and automounts.
 | On disk, in memory | The stored size; Parquet's uncompressed size |
 | Row groups | Parquet's read units |
 | Partitions | Keys and values from the directory names |
-| Schema | The known columns and types; `3 columns (spec)` or `2 variants (spec)` when a format spec says them, then each column, or each variant and its column count (`add 5 · cancel 3`); `on open` when only opening the file reads them |
+| Schema | The known columns and types; `3 columns (spec)` when a format spec says them, then each column; `on open` when only opening the file reads them |
+| Records | For a file a format spec reads as several record types: `2 types (spec)`, then each type and its column count (`add 5 · cancel 3`) |
 | `▲ footer unreadable` | A Parquet file whose footer could not be read; opening it will most likely fail too |
-| Enter, `→` | What <kbd>Enter</kbd> does on a directory, a door or a file of tables: `all partitions as one table`, `step in · first row opens all`, `its tables` |
+| Enter, `→` | What <kbd>Enter</kbd> and <kbd>→</kbd> do on a directory, a door, a file of tables or a file of record types: `all partitions as one table`, `step in · first row opens all`, `its tables`, `every record` and `its record types` |
 | `ROWS` | The first eight rows of a local CSV, TSV, PSV, NDJSON, Arrow IPC or Parquet file, read when the row is selected. <kbd>Enter</kbd> opens the file on those rows, so they are read once. `[home] preview_max` sets the largest file read; `0` turns it off. Network shares and object stores are not read before opening |
 
 Below about 100 columns the pane hides, and the first rows show in a strip at
@@ -146,8 +147,8 @@ A row reads its name, `/` for a directory, two spaces, and a label:
 A SQLite database with several tables lists them inside, a row each. A
 workbook, an NMEA log or an ELF file opens its first worksheet, fixes or
 symbols on <kbd>Enter</kbd>, and a file a [format spec](../formats/format-specs.md)
-reads as several tables opens whole; <kbd>→</kbd> lists the tables, and
-<kbd>Enter</kbd> on one opens it alone. A Hugging Face cache lists its splits,
+reads as several record types opens whole; <kbd>→</kbd> lists the record types,
+and <kbd>Enter</kbd> on one opens it alone. A Hugging Face cache lists its splits,
 as tables, above its files.
 
 Names starting `_` or `.` and `_$folder$` markers are passed over, except
@@ -235,17 +236,29 @@ description, publisher, license, homepage, URL and login.
 
 ### Documentation view
 
-<kbd>Ctrl</kbd>+<kbd>E</kbd> on a catalog row, or on a place inside one, shows
-what the catalog says of it, full screen. The Info panel's Documentation tab
-shows the same page for the open dataset.
+<kbd>Ctrl</kbd>+<kbd>E</kbd> on a catalog row, on a place inside one, or on a
+file whose [format spec documents it](../reference/format-specs.md#documentation),
+shows what the catalog and the spec say of it, full screen. The Info panel's
+Documentation tab shows the same page for the open dataset.
 
 | Line | Says |
 |---|---|
 | `catalog`, `publisher`, `license` | Where the entry is from, and the terms |
 | `format`, `path` or `url`, `login`, `size` | What it is, where, how it is read, and how big (`~` until measured) |
+| `format spec` | The spec that reads the file |
+| `spec file` | Where that spec was read from |
 | `LINKS` | `homepage` and `documentation`, a line each; a long one is cut with `…` |
-| `COLUMNS` | Each column, its meaning and unit; `▸ 30 values` when it has a legend |
+| `RECORD TYPES` | A spec's variants: each one's name, the type field's value that picks it (`msg_type = 1`, `kind in ("E", "C")`), its column count and its description |
+| `HEADER` | A spec's named `[header]` fields that have a description or unit, with them |
+| `COLUMNS` | Each column, its meaning and unit; `▸ 30 values` when it has a legend, which a spec's `enum` gives |
+| `FOOTER` | A spec's named `[footer]` fields that have a description or unit, with them |
 | `BOOKMARKS` | The places to start from, and their paths |
+
+When a catalog lists a file a spec documents, the catalog's description and
+`documentation` link stand. Where both note a column, the catalog's
+description, unit and legend each stand when it gives one, and the spec's fill
+the rest: a catalog description of `price` keeps the spec's unit. The columns
+only the spec notes, and its record types, stay.
 
 | Key | Does |
 |---|---|

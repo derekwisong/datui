@@ -7468,7 +7468,7 @@ fn a_spec_files_details_name_the_spec_and_its_columns() {
         spec_path.as_str(),
         "match ",
         "[magic MKTD] [version 1]",
-        "2 variants (spec)",
+        "2 types (spec)",
         "status 3",
         "order_add 5",
     ] {
@@ -7677,8 +7677,8 @@ fields = [{ name = "x", type = "u1" }]
 }
 
 /// The pane of a file a variants spec's magic names, at 40 and 80 columns: the spec's
-/// path cut in its middle on one line, the match as whole chips, and the variants with
-/// their column counts. A record of the file cached without the spec's variant count,
+/// path cut in its middle on one line, the match as whole chips, and the record types
+/// with their column counts. A record of the file cached without the spec's variant count,
 /// as a build before the spec named it wrote one, leaves both in place.
 #[test]
 fn a_variant_spec_files_pane_shows_chips_and_variants_at_any_width() {
@@ -7767,8 +7767,22 @@ fn a_variant_spec_files_pane_shows_chips_and_variants_at_any_width() {
         assert!(match_line.contains("magic MKTD"), "{shown}");
         assert!(pane.iter().any(|l| l.contains("version 1")), "{shown}");
         assert!(!shown.contains("header."), "{shown}");
-        // The variants, with their column counts.
-        assert!(shown.contains("5 variants (spec)"), "{shown}");
+        // The record types, with their column counts; no tables, which a spec's
+        // variants are not.
+        let said = |key: &str, value: &str| {
+            pane.iter().any(|l| {
+                l.strip_prefix(key)
+                    .is_some_and(|rest| rest.trim_start() == value)
+            })
+        };
+        assert!(said("records", "5 types (spec)"), "{shown}");
+        assert!(said("Enter", "every record"), "{shown}");
+        assert!(
+            said(datui::glyphs::get().arrow_right, "its record types"),
+            "{shown}"
+        );
+        assert!(!shown.contains("tables"), "{shown}");
+        assert!(!shown.contains("variants"), "{shown}");
         for item in [
             "Status 6",
             "OrderAdd 9",

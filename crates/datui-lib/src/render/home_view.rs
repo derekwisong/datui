@@ -2279,7 +2279,8 @@ fn preview_head_keyed(
         }
         None => {}
     }
-    if let Some(n) = entry.cost.tables {
+    // A spec's variants are record types, which its own `records` line counts.
+    if let Some(n) = entry.cost.tables.filter(|_| entry.format_spec.is_none()) {
         let what = if n == 1 { "table" } else { "tables" };
         facts.push(("contains", format!("{n} {what}"), plain));
     }
@@ -2757,7 +2758,13 @@ fn render_preview(
             let opens = discover::data_format(&entry.path)
                 .and_then(|f| f.descriptor().tables.as_ref())
                 .and_then(|t| t.opens);
-            let tables = (g.arrow_right, "its tables".to_string());
+            // What → lists: a spec's variants are record types, a real file's members
+            // tables.
+            let inside = if entry.format_spec.is_some() {
+                (g.arrow_right, "its record types".to_string())
+            } else {
+                (g.arrow_right, "its tables".to_string())
+            };
             // What the spec says the file holds: its variants, or its columns.
             let variants = spec
                 .as_deref()
@@ -2810,10 +2817,12 @@ fn render_preview(
                     let opens = opens.filter(|_| entry.cost.opens_one);
                     let mut notes = vec![
                         ("Enter", opens.unwrap_or("every record").to_string()),
-                        tables,
+                        inside,
                     ];
                     if let Some(variants) = &variants {
-                        notes.push(("schema", format!("{} variants (spec)", variants.len())));
+                        let n = variants.len();
+                        let what = if n == 1 { "type" } else { "types" };
+                        notes.push(("records", format!("{n} {what} (spec)")));
                     }
                     notes
                 }
@@ -2868,9 +2877,10 @@ fn render_preview(
         .render(area, buf);
 }
 
-/// What a spec says a file holds, under its `schema` line: its variants and their
-/// column counts packed under the value column (`Status 6 · OrderAdd 9 · …`), wrapping
-/// between whole items; or each column and its type. As many as `room` rows hold.
+/// What a spec says a file holds, under its `records` or `schema` line: its record
+/// types and their column counts packed under the value column (`Status 6 · OrderAdd 9
+/// · …`), wrapping between whole items; or each column and its type. As many as `room`
+/// rows hold.
 fn spec_schema_lines(
     variants: Option<&[crate::members::Table]>,
     columns: Option<&[(String, polars::prelude::DataType)]>,
@@ -4562,6 +4572,39 @@ mod tests {
         e
     }
 
+    /// A file of tables says how many it contains; a spec's file does not, whose
+    /// variants are record types its `records` line counts.
+    #[test]
+    fn only_a_file_of_real_tables_contains_tables() {
+        let db = costed(
+            "shop.db",
+            crate::discover::Cost {
+                tables: Some(3),
+                ..Default::default()
+            },
+            None,
+        );
+        let shown = preview_text(&db, 60);
+        assert!(
+            shown
+                .lines()
+                .any(|l| l.starts_with("contains") && l.ends_with(" 3 tables")),
+            "{shown}"
+        );
+        let mut spec_file = costed(
+            "day.ord",
+            crate::discover::Cost {
+                tables: Some(5),
+                ..Default::default()
+            },
+            None,
+        );
+        spec_file.format_spec = Some("acme.orders".into());
+        let shown = preview_text(&spec_file, 60);
+        assert!(!shown.contains("tables"), "{shown}");
+        assert!(shown.contains("acme.orders file"), "{shown}");
+    }
+
     #[test]
     fn a_network_source_is_named_rather_than_described() {
         // The filesystem's own name and nothing else. A sentence explaining that a
@@ -5019,7 +5062,7 @@ fields = [{ name = "x", type = "u1" }]
         let ctx = RenderContext::for_test();
         let table = |name: &str, n: usize| crate::members::Table {
             name: name.to_string(),
-            kind: "variant".to_string(),
+            kind: "record type".to_string(),
             internal: false,
             columns: (0..n).map(|i| (format!("c{i}"), String::new())).collect(),
         };

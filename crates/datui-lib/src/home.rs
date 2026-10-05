@@ -2221,7 +2221,21 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     // when there is nothing of your own yet.
     let mut missing = std::collections::HashSet::new();
     for catalog in catalogs {
-        sections.push(catalog_section(catalog, network_check, &mut missing));
+        let mut section = catalog_section(catalog, network_check, &mut missing);
+        // A catalog's local file is named by the spec whose glob names it, as a listing
+        // names one; nothing is read for it.
+        for row in section.rows.iter_mut().filter(|r| {
+            r.kind == EntryKind::File
+                && r.format_spec.is_none()
+                && r.table.is_none()
+                && !network_check(&r.path)
+                && !discover::is_data_file(&r.path)
+        }) {
+            if let Some(spec) = formats.by_glob(&row.path, false).first() {
+                discover::name_spec_file(row, spec);
+            }
+        }
+        sections.push(section);
     }
 
     if !elsewhere.is_empty() {

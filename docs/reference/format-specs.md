@@ -43,6 +43,8 @@ A `le` or `be` suffix (`u4be`, `s2le`, `bf2be`) overrides the spec's `endian`.
 | `file` | `"px.dat"` | In the columns layout, the file in the directory holding the field. Default: its name |
 | `offset` | `"header.px_off"` | In the columns layout, where the column starts in one file: see [columns layout](#columns-layout) |
 | `lookup` | `{ file = "../sym", format = "lines" }` | An integer indexes a list of symbols in a file beside the data: a categorical. `format` is `lines` (default), `nul` or `str:N` |
+| `description` | `"Limit price"` | What the column means, for the [Documentation view](#documentation). Not read |
+| `unit` | `"USD"` | The column's unit, for the Documentation view. Not read |
 
 These keys are for record fields only:
 
@@ -123,21 +125,84 @@ declares it in place.
 | `when` | The type value, or a list of them, that picks it |
 | `fields` | The fields after the common ones |
 | `size`, `size_adjust` | The whole record's size, when more than its fields take |
+| `description` | What a record of this type is, for the [Documentation view](#documentation) |
 
 All records make one table, with a `type` column naming each one's variant. A
-column of a field one variant lacks is null in that variant's rows; a field two
-variants share is one column, so it must be the same field in both. A record of
+column of a field one variant lacks is null in that variant's rows. A record of
 a type no variant names shows as `?X` when its size is known
 (`length_prefixed`); otherwise the read stops there, with a note.
+
+A field name two variants share is one column, so it must be the same field in
+both: the same type, count, encoding, bits and group, and the same `time`,
+`scale`, `factor` or `enum`. Otherwise the spec is refused: ``variants: `px` is
+a different field in two variants; one column has one type, so name them
+apart``. A variant's field cannot take a common field's name either (``a second
+field named `kind` ``), nor be named `type`.
 
 `datui --table add day.ord` opens one variant as its own table: only its
 records and its columns.
 
-On the home screen, a file a spec reads that holds several variants counts them
-as tables ("2 tables" in its details, and each variant's column count). Enter opens every record; →
-lists the tables inside it, one row each at `day.ord/add`, and Enter on one
-opens it alone. That path opens the table on the command line too, and is
-what recents record.
+On the home screen, each variant of a file a spec reads is a record type: its
+details read `records  2 types (spec)` and each type's column count
+(`add 5 · exec 4`). Enter opens every record; → lists the record types, one row
+each at `day.ord/add`, and Enter on one opens it alone. That path opens the
+record type on the command line too, and is what recents record.
+
+## Documentation
+
+A spec says what its files mean with the words a
+[catalog](catalogs.md#documentation) uses. <kbd>Ctrl</kbd>+<kbd>E</kbd> on a
+file the spec reads, and the Info panel's Documentation tab once it is open,
+show it in the [Documentation view](../user-guide/home-screen.md#documentation-view).
+None of it changes how a file is read.
+
+```toml,spec
+name = "acme.quotes"
+description = "Quotes and trades from the Acme feed"
+documentation = "https://example.com/acme-feed.pdf"
+match = { glob = "*.acq" }
+
+[records]
+framing = "variant"
+type = "kind"
+fields = [{ name = "kind", type = "u1" }, { name = "ts", type = "u8", time = "ns", description = "When the exchange sent it" }]
+
+[[variants]]
+name = "quote"
+when = 1
+description = "The best bid and offer"
+fields = [{ name = "bid", type = "u4", scale = 4, unit = "USD" }, { name = "ask", type = "u4", scale = 4, unit = "USD" }]
+
+[[variants]]
+name = "trade"
+when = 2
+description = "A trade on the book"
+fields = [
+  { name = "px", type = "u4", scale = 4, description = "Trade price", unit = "USD" },
+  { name = "side", type = "u1", enum = { 1 = "BUY", 2 = "SELL" }, description = "The aggressor's side" },
+]
+```
+
+| Key | Where | Says |
+|---|---|---|
+| `description` | The spec, a variant, a field | What the format, the record type, the column or the header or footer field is |
+| `documentation` | The spec | An `https://` link to the format's own documentation |
+| `unit` | A field | The column's, or the header or footer field's, unit |
+| `enum` | A record field | Its codes and labels are the column's value legend |
+
+A flattened field's note goes to each of its columns, `bid_0`, `bid_1` and on.
+Named `[header]` and `[footer]` fields with a `description` or `unit` are listed
+in sections of their own.
+
+A [delimited spec](../formats/format-specs.md#delimited-text) takes
+`description` and `unit` in `[columns]`, for a column of the file or a derived one:
+`temp = { description = "Air temperature", unit = "deg F" }`.
+
+Each text is trimmed, and an empty one is refused. Where a catalog lists the
+same file, its description and its `documentation` link stand over the spec's.
+Where both note a column, each of the catalog's `description`, `unit` and
+`values` stands over the spec's when the catalog gives it, and the spec's fills
+the rest. The spec's other notes and its record types stay.
 
 ## Footer
 

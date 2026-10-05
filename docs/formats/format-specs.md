@@ -96,7 +96,8 @@ every field type and key.
 | Key | What it says |
 |---|---|
 | `name` | The format's name, namespaced: `acme.l2feed`. `--format` takes it |
-| `description` | Shown by `datui formats` |
+| `description` | Shown by `datui formats` and the [Documentation view](../reference/format-specs.md#documentation) |
+| `documentation` | An `https://` link to the format's own documentation, for the Documentation view |
 | `match` | Which files are this format: `glob` (a pattern or a list), `magic` (a string or a list of bytes) at `magic_offset` (default 0), `where` (header values) |
 | `endian` | `le` (default), `be`, or `auto`: big-endian when the magic (at least two bytes) reads reversed. For fields without their own suffix |
 | `layout` | `rows` (default): one file of records. `columns`: a directory with one file per field |
@@ -181,7 +182,8 @@ nothing more is read. Its row reads the spec's name, and its details:
 | `kind` | `acme.l2feed file` |
 | `spec` | The spec's file, cut in the middle to fit: `~/…/formats/l2feed.toml` |
 | `match` | What named the file, a chip per condition: `[magic L2FD] [version 3]` when the magic and the header did, `[glob *.l2]` when the glob did |
-| `schema` | `3 columns (spec)` and each column's type, when the spec alone says them (fixed records, no size from the header); `2 variants (spec)` and each variant's column count (`add 5 · cancel 3`); otherwise `on open` |
+| `schema` | `3 columns (spec)` and each column's type, when the spec alone says them (fixed records, no size from the header); otherwise `on open` |
+| `records` | For a spec with variants: `2 types (spec)` and each record type's column count (`add 5 · cancel 3`). → lists the record types |
 
 A chip with several values (`[glob *.l2 *.lvl2]`) takes any of them. The
 listing names a file by its glob without reading it, so a glob-named row shows
@@ -209,6 +211,7 @@ metadata_line = 1
 
 [columns]
 time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
+bus1volts = { description = "Main bus voltage" }
 ```
 
 **`flight.csv`**
@@ -227,7 +230,8 @@ datui --format ./instrument.toml flight.csv
 ```
 
 A delimited spec takes the keys of the config's [`[csv]`](../reference/settings.md#csv),
-plus `match`, `kind`, the layout keys and `[columns]`.
+plus `match`, `kind`, the layout keys, `[columns]`, `description` and
+`documentation`.
 
 | Key | What it says |
 |---|---|
@@ -241,7 +245,7 @@ plus `match`, `kind`, the layout keys and `[columns]`.
 | `metadata_line` | A line of `key="value"` or `key=value` pairs, separated by commas, for the Info panel. It must not be data: above the last header line, within `skip_lines`, or a comment line |
 | `null_values` | A value, or a list, read as null: `"NA"`, or `"COL=-999"` for one column |
 | `skip_lines` | Lines to pass over before the header |
-| `[columns]` | Derived columns, below |
+| `[columns]` | Derived columns, below, and what columns mean: `description` and `unit` |
 
 Lines count from 1 at the top of the file. Each option the spec sets replaces
 the config's; a flag typed on the command line (`--delimiter`,
@@ -272,6 +276,12 @@ as it is. For a directory, the first file's line is shown.
 | `datetime` | a date and a time, and optionally a UTC offset such as `-05:00`, `+0530` or `-5`; or one column of text | A datetime. With an offset it is in UTC |
 | `date` | one column | A date |
 | `time` | one column | A time of day |
+
+A column of the file takes `description` and `unit` alone
+(`bus1volts = { description = "Main bus voltage" }`), and a derived one takes
+them beside `from` and `as`. They show in the
+[Documentation view](../reference/format-specs.md#documentation). A `unit`
+there is documentation only: the type row shows the units line's.
 
 `format = "%Y-%m-%d %H:%M:%S"` gives the strftime format of the text, a date
 and a time joined with a space; without it the format is inferred. A value that

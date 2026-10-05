@@ -1,9 +1,12 @@
-//! The Documentation view: what a catalog says of one dataset, as a page to read.
+//! The Documentation view: what a catalog says of one dataset, and what the format spec
+//! that reads a file says of it, as a page to read.
 //!
 //! `Ctrl+E` on a home row opens it full screen; the Info panel's Documentation tab
-//! draws the same page for the open dataset. Fields are `label  value` lines, each link
-//! is a line of its own that is cut with `…` rather than wrapped (`y` copies it whole),
-//! and a column's value legend opens under it with `Enter`.
+//! draws the same page for the open dataset. A catalog's word comes first: its
+//! description, its links, and a column's description, unit and legend each stand over
+//! the spec's. Fields are `label  value` lines, each link is a line of its own that is
+//! cut with `…` rather than wrapped (`y` copies it whole), and a column's value legend
+//! opens under it with `Enter`.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -15,7 +18,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use unicode_width::UnicodeWidthStr;
 
-use crate::catalog::Dataset;
+use crate::catalog::{ColumnNote, Dataset};
+use crate::formats::SpecDocs;
 use crate::glyphs;
 use crate::render::context::RenderContext;
 use crate::widgets::ui::{HintBar, SectionRule, Surface};
@@ -23,6 +27,111 @@ use crate::widgets::ui::{HintBar, SectionRule, Surface};
 /// The widest a line of prose runs on a wide terminal: a reading surface keeps its
 /// measure.
 const MEASURE: u16 = 110;
+
+/// What a page documents: a catalog's dataset, what the format spec that reads the file
+/// says of it, or both.
+#[derive(Debug, Clone, Default)]
+pub struct Documented {
+    /// The dataset, and the label of the catalog that lists it.
+    pub catalog: Option<(String, Arc<Dataset>)>,
+    /// What the format spec that reads the file says of it.
+    pub spec: Option<Arc<SpecDocs>>,
+    /// The file's name: the page's title when no catalog names it.
+    pub name: String,
+}
+
+impl Documented {
+    /// The page of a catalog's dataset, of what a spec says, or of both; `None` with
+    /// neither.
+    pub fn new(
+        catalog: Option<(String, Arc<Dataset>)>,
+        spec: Option<Arc<SpecDocs>>,
+        name: String,
+    ) -> Option<Self> {
+        (catalog.is_some() || spec.is_some()).then_some(Self {
+            catalog,
+            spec,
+            name,
+        })
+    }
+
+    /// The page's title: the catalog's name for the dataset, else the file's.
+    pub fn title(&self) -> &str {
+        match &self.catalog {
+            Some((_, entry)) => &entry.name,
+            None => &self.name,
+        }
+    }
+
+    /// Each column's note, in the spec's order, then the columns only the catalog
+    /// notes. Where both note a column, the catalog's description, unit and legend each
+    /// stand over the spec's when it gives one.
+    pub fn columns(&self) -> Vec<(String, ColumnNote)> {
+        let catalog: &[(String, ColumnNote)] = self
+            .catalog
+            .as_ref()
+            .map_or(&[], |(_, entry)| &entry.columns);
+        let spec: &[(String, ColumnNote)] = self.spec.as_ref().map_or(&[], |s| &s.columns);
+        let noted = |name: &str| catalog.iter().find(|(n, _)| n == name).map(|(_, n)| n);
+        let mut out: Vec<(String, ColumnNote)> = spec
+            .iter()
+            .map(|(name, note)| {
+                let note = match noted(name) {
+                    Some(over) => layered(over, note),
+                    None => note.clone(),
+                };
+                (name.clone(), note)
+            })
+            .collect();
+        out.extend(
+            catalog
+                .iter()
+                .filter(|(name, _)| !spec.iter().any(|(n, _)| n == name))
+                .cloned(),
+        );
+        out
+    }
+}
+
+/// `over`'s description, unit and legend, each in place of `under`'s when it gives one.
+fn layered(over: &ColumnNote, under: &ColumnNote) -> ColumnNote {
+    let pick = |a: &String, b: &String| if a.is_empty() { b } else { a }.clone();
+    ColumnNote {
+        description: pick(&over.description, &under.description),
+        unit: pick(&over.unit, &under.unit),
+        values: if over.values.is_empty() {
+            under.values.clone()
+        } else {
+            over.values.clone()
+        },
+    }
+}
+
+/// A note as one line: `description (unit)`.
+fn note_text(note: &ColumnNote) -> String {
+    match (note.description.is_empty(), note.unit.is_empty()) {
+        (false, false) => format!("{} ({})", note.description, note.unit),
+        (false, true) => note.description.clone(),
+        (true, false) => note.unit.clone(),
+        (true, true) => String::new(),
+    }
+}
+
+/// A section of named fields of a spec's header or footer, each with its note.
+fn field_section(out: &mut Vec<DocLine>, title: &'static str, fields: &[(String, ColumnNote)]) {
+    if fields.is_empty() {
+        return;
+    }
+    out.push(DocLine::Blank);
+    out.push(DocLine::Section(title, fields.len()));
+    for (name, note) in fields {
+        out.push(DocLine::Column {
+            name: name.clone(),
+            about: note_text(note),
+            values: 0,
+        });
+    }
+}
 
 /// One line of the page, before it is laid out to a width.
 #[derive(Debug, Clone, PartialEq)]
@@ -43,6 +152,9 @@ pub enum DocLine {
     },
     /// One code of an open legend.
     Legend(String, String),
+    /// A record type of a format spec: its name, and what picks it, its columns and
+    /// what it is.
+    RecordType(String, String),
     /// A bookmark: its name and where it goes.
     Bookmark(String, String),
     Blank,
@@ -62,25 +174,118 @@ impl DocLine {
             DocLine::Bookmark(_, path) => Some(path),
             DocLine::Legend(code, _) => Some(code),
             DocLine::Column { name, .. } => Some(name),
+            DocLine::RecordType(name, _) => Some(name),
             DocLine::About(text) => Some(text),
             DocLine::Section(..) | DocLine::Blank => None,
         }
     }
 }
 
-/// The page's lines for `entry` of the catalog labeled `catalog`, with the legends of
-/// `expanded` columns open. `measured` is the size something has measured, if any.
-pub fn lines(
-    entry: &Dataset,
-    catalog: &str,
-    expanded: &HashSet<String>,
-    measured: Option<u64>,
-) -> Vec<DocLine> {
+/// The page's lines for `doc`, with the legends of `expanded` columns open. `measured`
+/// is the size something has measured, if any.
+pub fn lines(doc: &Documented, expanded: &HashSet<String>, measured: Option<u64>) -> Vec<DocLine> {
     let mut out = Vec::new();
-    if !entry.description.is_empty() {
-        out.push(DocLine::About(entry.description.clone()));
+    let entry = doc.catalog.as_ref().map(|(_, entry)| entry.as_ref());
+    let spec = doc.spec.as_deref();
+    // The catalog's word, else the spec's.
+    let first_said = |of_entry: Option<&str>, of_spec: Option<&str>| {
+        [of_entry, of_spec]
+            .into_iter()
+            .flatten()
+            .find(|text| !text.is_empty())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let description = first_said(
+        entry.map(|e| e.description.as_str()),
+        spec.map(|s| s.description.as_str()),
+    );
+    if !description.is_empty() {
+        out.push(DocLine::About(description));
         out.push(DocLine::Blank);
     }
+    if let Some((catalog, entry)) = &doc.catalog {
+        catalog_fields(&mut out, entry, catalog, measured);
+    }
+    if let Some(spec) = spec {
+        out.push(DocLine::Field("format spec", spec.spec.clone()));
+        if let Some(file) = &spec.file {
+            out.push(DocLine::Field("spec file", crate::home::display_path(file)));
+        }
+    }
+    let documentation = first_said(
+        entry.map(|e| e.documentation.as_str()),
+        spec.map(|s| s.documentation.as_str()),
+    );
+    let links: Vec<(&'static str, String)> = [
+        (
+            "homepage",
+            entry.map(|e| e.homepage.clone()).unwrap_or_default(),
+        ),
+        ("documentation", documentation),
+    ]
+    .into_iter()
+    .filter(|(_, url)| !url.is_empty())
+    .collect();
+    if !links.is_empty() {
+        out.push(DocLine::Blank);
+        out.push(DocLine::Section("LINKS", links.len()));
+        for (label, url) in links {
+            out.push(DocLine::Link(label, url));
+        }
+    }
+    if let Some(spec) = spec {
+        field_section(&mut out, "HEADER", &spec.header);
+    }
+    if let Some(spec) = spec.filter(|s| !s.record_types.is_empty()) {
+        let middot = glyphs::get().middot;
+        out.push(DocLine::Blank);
+        out.push(DocLine::Section("RECORD TYPES", spec.record_types.len()));
+        for record in &spec.record_types {
+            let columns = match record.columns {
+                1 => "1 column".to_string(),
+                n => format!("{n} columns"),
+            };
+            let mut about = format!("{} {middot} {columns}", record.picked_by);
+            if !record.description.is_empty() {
+                about = format!("{about} {middot} {}", record.description);
+            }
+            out.push(DocLine::RecordType(record.name.clone(), about));
+        }
+    }
+    let columns = doc.columns();
+    if !columns.is_empty() {
+        out.push(DocLine::Blank);
+        out.push(DocLine::Section("COLUMNS", columns.len()));
+        for (name, note) in &columns {
+            out.push(DocLine::Column {
+                name: name.clone(),
+                about: note_text(note),
+                values: note.values.len(),
+            });
+            if expanded.contains(name) {
+                for (code, meaning) in &note.values {
+                    let code = if code.is_empty() { "blank" } else { code };
+                    out.push(DocLine::Legend(code.to_string(), meaning.clone()));
+                }
+            }
+        }
+    }
+    if let Some(spec) = spec {
+        field_section(&mut out, "FOOTER", &spec.footer);
+    }
+    if let Some(entry) = entry.filter(|e| !e.bookmarks.is_empty()) {
+        out.push(DocLine::Blank);
+        out.push(DocLine::Section("BOOKMARKS", entry.bookmarks.len()));
+        for (name, path) in &entry.bookmarks {
+            out.push(DocLine::Bookmark(name.clone(), path.clone()));
+        }
+    }
+    out
+}
+
+/// What the catalog says of where `entry` is and whose it is.
+fn catalog_fields(out: &mut Vec<DocLine>, entry: &Dataset, catalog: &str, measured: Option<u64>) {
     out.push(DocLine::Field("catalog", catalog.to_string()));
     for (label, value) in [("publisher", &entry.publisher), ("license", &entry.license)] {
         if !value.is_empty() {
@@ -107,51 +312,6 @@ pub fn lines(
         )),
         (None, None) => {}
     }
-    let links: Vec<(&'static str, &String)> = [
-        ("homepage", &entry.homepage),
-        ("documentation", &entry.documentation),
-    ]
-    .into_iter()
-    .filter(|(_, url)| !url.is_empty())
-    .collect();
-    if !links.is_empty() {
-        out.push(DocLine::Blank);
-        out.push(DocLine::Section("LINKS", links.len()));
-        for (label, url) in links {
-            out.push(DocLine::Link(label, url.clone()));
-        }
-    }
-    if !entry.columns.is_empty() {
-        out.push(DocLine::Blank);
-        out.push(DocLine::Section("COLUMNS", entry.columns.len()));
-        for (name, note) in &entry.columns {
-            let about = match (note.description.is_empty(), note.unit.is_empty()) {
-                (false, false) => format!("{} ({})", note.description, note.unit),
-                (false, true) => note.description.clone(),
-                (true, false) => note.unit.clone(),
-                (true, true) => String::new(),
-            };
-            out.push(DocLine::Column {
-                name: name.clone(),
-                about,
-                values: note.values.len(),
-            });
-            if expanded.contains(name) {
-                for (code, meaning) in &note.values {
-                    let code = if code.is_empty() { "blank" } else { code };
-                    out.push(DocLine::Legend(code.to_string(), meaning.clone()));
-                }
-            }
-        }
-    }
-    if !entry.bookmarks.is_empty() {
-        out.push(DocLine::Blank);
-        out.push(DocLine::Section("BOOKMARKS", entry.bookmarks.len()));
-        for (name, path) in &entry.bookmarks {
-            out.push(DocLine::Bookmark(name.clone(), path.clone()));
-        }
-    }
-    out
 }
 
 /// What the dataset is, in a word: its file format, or `directory`.
@@ -172,12 +332,10 @@ fn format_of(entry: &Dataset) -> String {
         })
 }
 
-/// The view's state: the entry shown, where the cursor is, which legends are open.
+/// The view's state: the page shown, where the cursor is, which legends are open.
 #[derive(Debug, Clone, Default)]
 pub struct DocState {
-    pub entry: Option<Arc<Dataset>>,
-    /// The label of the catalog that lists it.
-    pub catalog: String,
+    pub doc: Option<Documented>,
     /// What has measured the file, if anything has: shown in place of the hint.
     pub measured: Option<u64>,
     /// Index into [`Self::lines`] of the line the cursor is on.
@@ -191,11 +349,10 @@ pub struct DocState {
 }
 
 impl DocState {
-    /// Show `entry`, from the top, every legend closed.
-    pub fn open(&mut self, entry: Arc<Dataset>, catalog: String, measured: Option<u64>) {
+    /// Show `doc`, from the top, every legend closed.
+    pub fn open(&mut self, doc: Documented, measured: Option<u64>) {
         *self = Self {
-            entry: Some(entry),
-            catalog,
+            doc: Some(doc),
             measured,
             ..Self::default()
         };
@@ -207,12 +364,12 @@ impl DocState {
     }
 
     pub fn is_open(&self) -> bool {
-        self.entry.is_some()
+        self.doc.is_some()
     }
 
     pub fn lines(&self) -> Vec<DocLine> {
-        match &self.entry {
-            Some(entry) => lines(entry, &self.catalog, &self.expanded, self.measured),
+        match &self.doc {
+            Some(doc) => lines(doc, &self.expanded, self.measured),
             None => Vec::new(),
         }
     }
@@ -267,7 +424,7 @@ impl DocState {
         let lines = self.lines();
         if let Some(at) = lines
             .iter()
-            .position(|l| matches!(l, DocLine::Column { name, .. } if *name == column))
+            .position(|l| matches!(l, DocLine::Column { name, values: 1.., .. } if *name == column))
             && !self.expanded.contains(&column)
         {
             self.cursor = at;
@@ -353,8 +510,9 @@ fn layout(
     let col_w = lines
         .iter()
         .filter_map(|l| match l {
-            DocLine::Column { name, .. } => Some(name.width()),
-            DocLine::Bookmark(name, _) => Some(name.width()),
+            DocLine::Column { name, .. }
+            | DocLine::Bookmark(name, _)
+            | DocLine::RecordType(name, _) => Some(name.width()),
             _ => None,
         })
         .max()
@@ -438,6 +596,20 @@ fn layout(
                 let room = inner.saturating_sub(col_w);
                 let text = format!("{about}{marker}");
                 for (n, row) in wrap(&text, room).into_iter().enumerate() {
+                    let head = if n == 0 {
+                        format!("{:<col_w$}", cut(name, col_w - 2))
+                    } else {
+                        " ".repeat(col_w)
+                    };
+                    push(
+                        vec![Span::styled(head, key_style), Span::styled(row, plain)],
+                        n == 0,
+                    );
+                }
+            }
+            DocLine::RecordType(name, about) => {
+                let room = inner.saturating_sub(col_w);
+                for (n, row) in wrap(about, room).into_iter().enumerate() {
                     let head = if n == 0 {
                         format!("{:<col_w$}", cut(name, col_w - 2))
                     } else {
@@ -548,7 +720,7 @@ pub fn render_page(state: &mut DocState, area: Rect, buf: &mut Buffer, ctx: &Ren
 /// The full-screen view: the page in a frame titled with the dataset's name, and the
 /// keys that work on it.
 pub fn render_view(state: &mut DocState, area: Rect, buf: &mut Buffer, ctx: &RenderContext) {
-    let Some(entry) = state.entry.clone() else {
+    let Some(title) = state.doc.as_ref().map(|d| d.title().to_string()) else {
         return;
     };
     let mut footer = HintBar::from_ctx(ctx);
@@ -560,7 +732,7 @@ pub fn render_view(state: &mut DocState, area: Rect, buf: &mut Buffer, ctx: &Ren
         _ => {}
     }
     footer = footer.hint("y", "Copy").hint("Esc", "Back");
-    let title = format!("Documentation {} {}", glyphs::get().trail, entry.name);
+    let title = format!("Documentation {} {title}", glyphs::get().trail);
     let inner = Surface::new(&title).footer(&footer).render(area, buf, ctx);
     render_page(state, inner, buf, ctx);
 }
@@ -577,6 +749,13 @@ mod tests {
                 .find(|d| d.id == "noaa")
                 .unwrap(),
         )
+    }
+
+    fn page(entry: Arc<Dataset>) -> Documented {
+        Documented {
+            catalog: Some(("Public datasets".into(), entry)),
+            ..Documented::default()
+        }
     }
 
     fn screen(state: &mut DocState, width: u16, height: u16) -> Vec<String> {
@@ -598,7 +777,7 @@ mod tests {
     #[test]
     fn a_link_is_one_line_cut_never_wrapped() {
         let mut state = DocState::default();
-        state.open(noaa(), "Public datasets".into(), None);
+        state.open(page(noaa()), None);
         let rows = screen(&mut state, 50, 40);
         let text = rows.join("\n");
         assert!(text.contains("publisher"), "{text}");
@@ -615,7 +794,7 @@ mod tests {
     #[test]
     fn y_copies_the_whole_link_and_enter_opens_a_legend() {
         let mut state = DocState::default();
-        state.open(noaa(), "Public datasets".into(), None);
+        state.open(page(noaa()), None);
         while !matches!(
             state.lines()[state.cursor],
             DocLine::Link("documentation", _)
@@ -641,10 +820,274 @@ mod tests {
         );
     }
 
+    const ORDERS: &str = r#"
+name = "acme.orders"
+description = "Order entry capture"
+documentation = "https://example.com/orders.pdf"
+match = { glob = "*.ord" }
+
+[records]
+framing = "length_prefixed"
+size = "len"
+type = "kind"
+fields = [{ name = "len", type = "u2" }, { name = "kind", type = "str", size = 1 }]
+
+[[variants]]
+name = "add"
+when = "A"
+description = "An order added to the book"
+fields = [
+  { name = "price", type = "u4", scale = 4, description = "Limit price", unit = "USD" },
+  { name = "side", type = "u1", enum = { 1 = "BUY", 2 = "SELL" } },
+]
+
+[[variants]]
+name = "exec"
+when = ["E", "C"]
+fields = [{ name = "shares", type = "u4", description = "Shares executed" }]
+"#;
+
+    fn spec_page(text: &str) -> Documented {
+        let spec = crate::formats::Spec::parse(text, None).unwrap();
+        Documented::new(None, spec.docs().map(Arc::new), "day.ord".into()).unwrap()
+    }
+
+    #[test]
+    fn a_spec_read_from_a_file_names_its_file() {
+        let file = dirs::home_dir().unwrap().join("specs").join("orders.toml");
+        let spec = crate::formats::Spec::parse(ORDERS, Some(&file)).unwrap();
+        let doc = Documented::new(None, spec.docs().map(Arc::new), "day.ord".into()).unwrap();
+        let page = lines(&doc, &HashSet::new(), None);
+        let at = |line: &DocLine| page.iter().position(|l| l == line);
+        let name = at(&DocLine::Field("format spec", "acme.orders".into())).unwrap();
+        let shown = crate::home::display_path(&file);
+        assert!(shown.starts_with('~'), "{shown}");
+        assert_eq!(at(&DocLine::Field("spec file", shown)), Some(name + 1));
+        // Parsed from text, there is no file to name.
+        let parsed = lines(&spec_page(ORDERS), &HashSet::new(), None);
+        assert!(
+            !parsed
+                .iter()
+                .any(|l| matches!(l, DocLine::Field("spec file", _)))
+        );
+    }
+
+    #[test]
+    fn a_variant_specs_page_lists_record_types_columns_and_legends() {
+        let mut state = DocState::default();
+        state.open(spec_page(ORDERS), None);
+        let m = glyphs::get().middot;
+        let lines = state.lines();
+        assert_eq!(lines[0], DocLine::About("Order entry capture".into()));
+        assert!(lines.contains(&DocLine::Field("format spec", "acme.orders".into())));
+        assert!(lines.contains(&DocLine::Link(
+            "documentation",
+            "https://example.com/orders.pdf".into()
+        )));
+        assert!(lines.contains(&DocLine::Section("RECORD TYPES", 2)));
+        assert!(lines.contains(&DocLine::RecordType(
+            "add".into(),
+            format!("kind = \"A\" {m} 4 columns {m} An order added to the book")
+        )));
+        assert!(lines.contains(&DocLine::RecordType(
+            "exec".into(),
+            format!("kind in (\"E\", \"C\") {m} 3 columns")
+        )));
+        assert!(lines.contains(&DocLine::Section("COLUMNS", 3)));
+        assert!(lines.contains(&DocLine::Column {
+            name: "price".into(),
+            about: "Limit price (USD)".into(),
+            values: 0,
+        }));
+        // The enum is the column's legend, opened with Enter.
+        while !matches!(&state.lines()[state.cursor], DocLine::Column { name, .. } if name == "side")
+        {
+            state.move_cursor(1);
+        }
+        assert!(state.toggle_legend());
+        assert!(
+            state
+                .lines()
+                .contains(&DocLine::Legend("2".into(), "SELL".into()))
+        );
+        let text = screen(&mut state, 100, 40).join("\n");
+        assert!(text.contains("Documentation"), "{text}");
+        assert!(text.contains("day.ord"), "{text}");
+        assert!(text.contains("RECORD TYPES"), "{text}");
+        assert!(!text.contains("catalog"), "{text}");
+    }
+
+    #[test]
+    fn a_delimited_specs_page_lists_its_column_notes() {
+        let doc = spec_page(
+            r#"
+name = "acme.log"
+kind = "delimited"
+description = "Instrument log"
+
+[columns]
+temp = { description = "Air temperature", unit = "deg F" }
+"#,
+        );
+        let lines = lines(&doc, &HashSet::new(), None);
+        assert!(
+            !lines
+                .iter()
+                .any(|l| matches!(l, DocLine::Section("RECORD TYPES", _)))
+        );
+        assert!(lines.contains(&DocLine::Column {
+            name: "temp".into(),
+            about: "Air temperature (deg F)".into(),
+            values: 0,
+        }));
+    }
+
+    #[test]
+    fn a_catalogs_word_stands_over_the_specs() {
+        let catalog = crate::catalog::parse(
+            r#"
+label = "Mine"
+
+[orders]
+name = "Orders"
+path = "/data/day.ord"
+description = "Orders from the lab"
+documentation = "https://example.com/lab.txt"
+columns.price = { description = "Price the lab quotes" }
+columns.venue = { description = "Where it traded" }
+"#,
+            "mine",
+            crate::catalog::Origin::Mine,
+            None,
+        )
+        .unwrap();
+        let entry = Arc::new(catalog.datasets.into_iter().next().unwrap());
+        let spec = crate::formats::Spec::parse(ORDERS, None).unwrap();
+        let doc = Documented::new(
+            Some(("Mine".into(), entry)),
+            spec.docs().map(Arc::new),
+            "day.ord".into(),
+        )
+        .unwrap();
+        assert_eq!(doc.title(), "Orders");
+        let lines = lines(&doc, &HashSet::new(), None);
+        assert_eq!(lines[0], DocLine::About("Orders from the lab".into()));
+        assert!(lines.contains(&DocLine::Field("catalog", "Mine".into())));
+        assert!(lines.contains(&DocLine::Field("format spec", "acme.orders".into())));
+        let links: Vec<&DocLine> = lines
+            .iter()
+            .filter(|l| matches!(l, DocLine::Link("documentation", _)))
+            .collect();
+        assert_eq!(
+            links,
+            [&DocLine::Link(
+                "documentation",
+                "https://example.com/lab.txt".into()
+            )]
+        );
+        assert!(lines.contains(&DocLine::Section("RECORD TYPES", 2)));
+        let columns: Vec<(String, String)> = lines
+            .iter()
+            .filter_map(|l| match l {
+                DocLine::Column { name, about, .. } => Some((name.clone(), about.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            columns,
+            [
+                (
+                    "price".to_string(),
+                    "Price the lab quotes (USD)".to_string()
+                ),
+                ("side".into(), String::new()),
+                ("shares".into(), "Shares executed".into()),
+                ("venue".into(), "Where it traded".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_catalog_note_keeps_the_specs_legend_and_unit() {
+        let over = ColumnNote {
+            description: "Side of the book".into(),
+            ..ColumnNote::default()
+        };
+        let under = ColumnNote {
+            description: "Side".into(),
+            unit: "flag".into(),
+            values: vec![("1".into(), "BUY".into())],
+        };
+        assert_eq!(
+            layered(&over, &under),
+            ColumnNote {
+                description: "Side of the book".into(),
+                ..under.clone()
+            }
+        );
+        let legend = ColumnNote {
+            values: vec![("B".into(), "Buy".into())],
+            ..ColumnNote::default()
+        };
+        assert_eq!(layered(&legend, &under).values, legend.values);
+        assert_eq!(layered(&legend, &under).description, "Side");
+    }
+
+    #[test]
+    fn header_and_footer_fields_are_documented_in_their_own_sections() {
+        let doc = spec_page(
+            r#"
+name = "acme.tape"
+match = { glob = "*.tape" }
+
+[header]
+fields = [
+  { name = "magic", type = "str", size = 4 },
+  { type = "pad", size = 4 },
+  { name = "trade_date", type = "u4", description = "Session date" },
+  { name = "tick", type = "u4", unit = "ns" },
+]
+
+[records]
+fields = [{ name = "px", type = "u4", description = "Price" }]
+
+[footer]
+fields = [{ name = "rows", type = "u4", description = "Records written" }]
+"#,
+        );
+        let lines = lines(&doc, &HashSet::new(), None);
+        let at = |line: &DocLine| lines.iter().position(|l| l == line).unwrap();
+        let column = |name: &str, about: &str| DocLine::Column {
+            name: name.into(),
+            about: about.into(),
+            values: 0,
+        };
+        let header = at(&DocLine::Section("HEADER", 2));
+        assert_eq!(
+            lines[header + 1..header + 3],
+            [column("trade_date", "Session date"), column("tick", "ns")]
+        );
+        let columns = at(&DocLine::Section("COLUMNS", 1));
+        let footer = at(&DocLine::Section("FOOTER", 1));
+        assert!(header < columns && columns < footer);
+        assert_eq!(lines[footer + 1], column("rows", "Records written"));
+        // Nothing documented in the footer, no FOOTER section.
+        let bare = spec_page(
+            "name = \"a.b\"\n[header]\nfields = [{ name = \"v\", type = \"u1\", description = \"Version\" }]\n[records]\nfields = [{ name = \"x\", type = \"u1\" }]\n[footer]\nfields = [{ name = \"n\", type = \"u4\" }]\n",
+        );
+        let lines = super::lines(&bare, &HashSet::new(), None);
+        assert!(lines.contains(&DocLine::Section("HEADER", 1)));
+        assert!(
+            !lines
+                .iter()
+                .any(|l| matches!(l, DocLine::Section("FOOTER", _)))
+        );
+    }
+
     #[test]
     fn the_cursor_stays_in_view_and_bookmarks_are_listed() {
         let mut state = DocState::default();
-        state.open(noaa(), "Public datasets".into(), None);
+        state.open(page(noaa()), None);
         state.move_cursor(isize::MAX / 2);
         let text = screen(&mut state, 80, 16).join("\n");
         assert!(text.contains("Central Park, NY"), "{text}");

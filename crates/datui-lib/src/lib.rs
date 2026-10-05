@@ -5088,11 +5088,6 @@ impl App {
         self.catalog_entry = path
             .as_deref()
             .and_then(|p| home::catalog_entry_for(&shown, p));
-        self.info_documentation.close();
-        if let Some((label, entry)) = &self.catalog_entry {
-            self.info_documentation
-                .open(entry.clone(), label.clone(), None);
-        }
         // The footers it still has to read are counted on the open's counter, which is
         // the dataset's now; the last dataset's pass, if any is left, stops.
         self.footer_progress.cancel();
@@ -5128,6 +5123,8 @@ impl App {
         // A count still waiting for the last dataset's rows to paint is not owed now.
         self.retire_a_count_the_rows_answered();
         self.path = path.clone();
+        // Named for this file, so after its path is set.
+        self.open_info_documentation();
         if let Some(ref p) = path {
             let read_as = self
                 .data_table_state
@@ -7437,11 +7434,7 @@ impl App {
         self.catalog_entry = path
             .as_deref()
             .and_then(|p| home::catalog_entry_for(&shown, p));
-        self.info_documentation.close();
-        if let Some((label, entry)) = &self.catalog_entry {
-            self.info_documentation
-                .open(entry.clone(), label.clone(), None);
-        }
+        self.open_info_documentation();
         self.home_refresh();
         Ok(())
     }
@@ -7581,39 +7574,95 @@ impl App {
         }
     }
 
-    /// Ctrl+E: the Documentation view of the catalog row under the cursor, or of the
-    /// catalog dataset the row is inside.
+    /// Info's Documentation tab for the open dataset: the catalog entry it is, or is
+    /// inside, with what the format spec that read it says; closed when neither says.
+    fn open_info_documentation(&mut self) {
+        self.info_documentation.close();
+        let spec = self.data_table_state.as_ref().and_then(|state| {
+            state
+                .format_read()
+                .map(|read| read.spec.clone())
+                .or_else(|| state.delimited_read().map(|read| read.spec.clone()))
+        });
+        let name = self
+            .path
+            .as_deref()
+            .and_then(Path::file_name)
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if let Some(doc) = widgets::documentation::Documented::new(
+            self.catalog_entry.clone(),
+            spec.and_then(|s| s.docs()).map(std::sync::Arc::new),
+            name,
+        ) {
+            self.info_documentation.open(doc, None);
+        }
+    }
+
+    /// Ctrl+E: the Documentation view of the row under the cursor: the catalog dataset
+    /// it is or is inside, and what the format spec that reads it says.
     fn home_open_documentation(&mut self) {
-        let Some((path, catalog, entry)) = self.home_documented_row() else {
-            self.home.status = Some("Ctrl+E shows a catalog row's documentation".into());
+        let Some((path, doc)) = self.home_documented_row() else {
+            self.home.status =
+                Some("Ctrl+E shows what a catalog or a format spec says of a row".into());
             return;
         };
         let measured = self
             .home
             .selected_entry()
-            .filter(|e| e.path == path && entry.location() == path)
+            .filter(|e| {
+                e.path == path
+                    && doc
+                        .catalog
+                        .as_ref()
+                        .is_some_and(|(_, entry)| entry.location() == path)
+            })
             .and_then(|e| e.size);
-        self.documentation.open(entry, catalog, measured);
+        self.documentation.open(doc, measured);
     }
 
-    /// The catalog dataset the row under the cursor is, or is inside: what Ctrl+E
-    /// documents, with the row's path and the catalog's label.
+    /// What Ctrl+E documents for the row under the cursor, with the row's path: the
+    /// catalog dataset it is, or is inside, and what the format spec that reads a file
+    /// says of it, when the spec documents anything.
     pub(crate) fn home_documented_row(
         &self,
-    ) -> Option<(PathBuf, String, std::sync::Arc<catalog::Dataset>)> {
-        let path = match self.home.selected_row() {
+    ) -> Option<(PathBuf, widgets::documentation::Documented)> {
+        let row = self.home.selected_row();
+        let (path, file) = match &row {
             Some(home::Row::Entry { entry, .. }) | Some(home::Row::Door { entry, .. }) => {
-                Some(entry.path.clone())
+                (Some(entry.path.clone()), Some(*entry))
             }
-            Some(home::Row::Place { path, .. }) => Some(path),
-            Some(home::Row::Header { section, .. }) => {
-                self.home.sections.get(section).and_then(|s| s.root.clone())
-            }
-            _ => None,
+            Some(home::Row::Place { path, .. }) => (Some(path.clone()), None),
+            Some(home::Row::Header { section, .. }) => (
+                self.home
+                    .sections
+                    .get(*section)
+                    .and_then(|s| s.root.clone()),
+                None,
+            ),
+            _ => (None, None),
         };
         let path = path?;
-        let (catalog, entry) = home::catalog_entry_for(&self.home.catalogs, &path)?;
-        Some((path, catalog, entry))
+        let catalog = home::catalog_entry_for(&self.home.catalogs, &path);
+        let spec = file
+            .filter(|e| e.kind == discover::EntryKind::File)
+            .and_then(|e| e.format_spec.as_deref())
+            .and_then(|name| self.home.formats.get(name))
+            .and_then(|spec| spec.docs())
+            .map(std::sync::Arc::new);
+        // A record type's row (`day.ord/add`) documents its file.
+        let name = file
+            .map(|e| {
+                let text = e.path.to_string_lossy();
+                text.strip_suffix(e.name.as_str())
+                    .filter(|_| e.table.is_some())
+                    .map(|file| file.trim_end_matches(std::path::is_separator))
+                    .and_then(|file| Path::new(file).file_name())
+                    .map_or_else(|| e.name.clone(), |n| n.to_string_lossy().into_owned())
+            })
+            .unwrap_or_default();
+        let doc = widgets::documentation::Documented::new(catalog, spec, name)?;
+        Some((path, doc))
     }
 
     /// What Ctrl+D does on the row under the cursor, as the footer names it: add it to
@@ -7642,6 +7691,8 @@ impl App {
                 self.documentation.toggle_legend();
             }
             KeyCode::Char('y') => self.copy_documentation_line(),
+            // The view takes no text, so ? is help here, as at the table.
+            KeyCode::Char('?') => self.open_help_overlay(),
             _ => {}
         }
     }
@@ -11776,6 +11827,7 @@ impl App {
         // The home filter types too once something is typed into it.
         let typing = self.text_field_focused()
             || (self.input_mode == InputMode::Home
+                && !self.documentation.is_open()
                 && (!self.home.filter.is_empty() || self.home.path_input_active));
         self.help.open(context, typing);
     }
@@ -11828,6 +11880,7 @@ impl App {
             InputMode::PickFormat => Context::FormatPicker,
             InputMode::Info => Context::Info,
             InputMode::Chart => Context::Chart,
+            InputMode::Home if self.documentation.is_open() => Context::Documentation,
             InputMode::Home => Context::Home,
             InputMode::Hex => Context::Hex,
             InputMode::ValueCounts => Context::ValueCounts,

@@ -15,6 +15,7 @@
 pub enum Context {
     Table,
     Home,
+    Documentation,
     Query,
     Find,
     GoToColumn,
@@ -499,7 +500,7 @@ pub const SCREENS: &[Screen] = &[
                     k("Home / End", "First, last", "The first or last row")
                         .more("The first or last row. The filter has no cursor to move: it is edited at its end"),
                     k("← / →", "Fold", "Fold or unfold; → goes inside")
-                        .more("Fold or unfold a section; → on a directory or a file of tables goes inside it"),
+                        .more("Fold or unfold a section; → on a directory or a file of tables goes inside it, and on a file a format spec reads as record types lists them, one row each"),
                     k("Space", "Fold", "Fold the section (types once filtering)")
                         .more("While the filter is empty: fold or unfold the section header under the cursor. With a filter typed, it types"),
                     k("Tab", "Sort", "Cycle the sort")
@@ -538,8 +539,8 @@ pub const SCREENS: &[Screen] = &[
                         .more("Show the local file under the cursor as bytes, in the hex view, whatever datui would read it as"),
                     k("Ctrl+D", "Catalog", "Add the row to catalog.toml; on its rows, forget it")
                         .more("Add the dataset or directory under the cursor to catalog.toml, listed under My datasets; on a row from catalog.toml, forget it. A heading stands for the directory it lists. Only catalog.toml is written; another catalog is hidden with home.hide"),
-                    k("Ctrl+E", "Docs", "What the catalog says of the row, full screen")
-                        .more("Open the Documentation view of a catalog row, or of a place inside one: publisher, license, links, columns with units and value legends, bookmarks. ↑ / ↓ move, Enter opens a column's legend, y copies the line's link or value, Esc goes back. Ctrl+E here is not readline's end of line: the filter is edited at its end"),
+                    k("Ctrl+E", "Docs", "The row's documentation, full screen")
+                        .more("Open the Documentation view of a catalog row, of a place inside one, or of a file whose format spec documents it: description, publisher, license, links, record types, columns with units and value legends, bookmarks. A catalog's description, link and column notes stand over the spec's. Ctrl+E here is not readline's end of line: the filter is edited at its end"),
                     k("Delete", "Forget", "Forget a recent, a place, or a catalog.toml row")
                         .more("Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source"),
                     k("Shift+Delete", "Forget all", "Forget every recent entry, after confirming"),
@@ -555,6 +556,24 @@ pub const SCREENS: &[Screen] = &[
                 ],
             },
         ],
+    },
+    Screen {
+        context: Context::Documentation,
+        title: "Documentation",
+        reached: "<kbd>Ctrl</kbd>+<kbd>E</kbd> on the home screen, on a catalog row or a file a format spec documents.",
+        groups: &[Group {
+            name: "Read",
+            keys: &[
+                k("↑ / ↓ (j/k)", "Move", "Move the cursor a line"),
+                k("PgUp / PgDn", "Page", "A page"),
+                k("g / G", "Ends", "The first or last line (Home / End too)"),
+                k("Enter / Space / →", "Values", "Open or close the column's value legend")
+                    .more("Open or close the value legend of the column under the cursor: a catalog's values, or a spec's enum"),
+                k("y", "Copy", "Copy the line's link or value, whole")
+                    .more("Copy the link or value on the cursor's line, whole, however it is cut on screen"),
+                k("Esc / q / ←", "Back", "Back to the home screen"),
+            ],
+        }],
     },
     Screen {
         context: Context::Query,

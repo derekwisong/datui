@@ -572,7 +572,7 @@ bookmarks."Daily highs, 2024" = "by_year/YEAR=2024/ELEMENT=TMAX/"
     assert!(app.documentation.is_open());
     let line = footer(&mut app);
     assert!(
-        line.contains("documentation") && line.ends_with("F1 keys"),
+        line.contains("documentation") && line.ends_with("? keys"),
         "{line}"
     );
     assert!(!line.contains("^E"), "the page names its own keys: {line}");
@@ -739,4 +739,201 @@ fn a_web_files_size_is_a_hint_until_a_head_measures_it() {
     });
     let shown = screen(&mut app);
     assert!(!shown.contains("~4.0 KB"), "{shown}");
+}
+
+/// A format spec that documents its records, as a catalog documents a dataset.
+const ORDERS_SPEC: &str = r#"name = "acme.orders"
+description = "Order entry capture"
+documentation = "https://example.com/orders.pdf"
+match = { glob = "*.ord" }
+
+[records]
+framing = "length_prefixed"
+size = "len"
+type = "kind"
+fields = [{ name = "len", type = "u2" }, { name = "kind", type = "str", size = 1 }]
+
+[[variants]]
+name = "add"
+when = "A"
+description = "An order added to the book"
+fields = [
+  { name = "price", type = "u4", description = "Limit price", unit = "USD" },
+  { name = "side", type = "u1", enum = { 1 = "BUY", 2 = "SELL" } },
+]
+
+[[variants]]
+name = "exec"
+when = "E"
+fields = [{ name = "shares", type = "u4", description = "Shares executed" }]
+"#;
+
+/// A file of [`ORDERS_SPEC`]: an add and an exec, each led by its whole length.
+fn orders_bytes() -> Vec<u8> {
+    let mut out = vec![8, 0, b'A'];
+    out.extend(1_500u32.to_le_bytes());
+    out.push(1);
+    out.extend([7, 0, b'E']);
+    out.extend(100u32.to_le_bytes());
+    out
+}
+
+/// The specs' directory and registry, and a directory of order files.
+fn orders_files() -> (
+    tempfile::TempDir,
+    datui::formats::Registry,
+    tempfile::TempDir,
+) {
+    let formats = tempfile::TempDir::new().unwrap();
+    std::fs::write(formats.path().join("orders.toml"), ORDERS_SPEC).unwrap();
+    let registry = datui::formats::Registry::load(&[formats.path().to_path_buf()]);
+    assert!(registry.errors.is_empty(), "{:?}", registry.errors);
+    let data = tempfile::TempDir::new().unwrap();
+    std::fs::write(data.path().join("day.ord"), orders_bytes()).unwrap();
+    std::fs::write(data.path().join("lab.ord"), orders_bytes()).unwrap();
+    (formats, registry, data)
+}
+
+/// An app with the specs of `registry`, its catalogs read from `dir`.
+fn app_with_specs(dir: &Path, registry: datui::formats::Registry) -> (App, Receiver<AppEvent>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut app = App::new_with_config(
+        tx,
+        common::test_runtime(),
+        datui::Theme {
+            colors: std::collections::HashMap::new(),
+        },
+        config_in(dir, ""),
+    );
+    app.set_formats(registry);
+    (app, rx)
+}
+
+fn spec_row_listed(app: &App, name: &str) -> bool {
+    app.home.visible().iter().any(|row| {
+        matches!(row, datui::home::Row::Entry { entry, .. }
+            if entry.name == name && entry.format_spec.is_some())
+    })
+}
+
+fn doc_lines(state: &datui::widgets::documentation::DocState) -> Vec<String> {
+    state.lines().iter().map(|l| format!("{l:?}")).collect()
+}
+
+/// Ctrl+E documents a file a format spec reads: its description and link, its record
+/// types and its column notes; the open file's Info panel has the same page.
+#[test]
+fn ctrl_e_documents_a_file_a_format_spec_reads() {
+    let (_formats, registry, data) = orders_files();
+    let dir = tempfile::TempDir::new().unwrap();
+    let (mut app, rx) = app_with_specs(dir.path(), registry);
+    app.home.browsing = Some(data.path().to_path_buf());
+    app.enter_home();
+    pump(&mut app, &rx, |app| spec_row_listed(app, "day.ord"));
+    select(&mut app, "day.ord");
+    let line = footer(&mut app);
+    assert!(line.contains("^E Docs"), "{line}");
+    drive(&mut app, ctrl('e'));
+    assert!(app.documentation.is_open());
+    let lines = doc_lines(&app.documentation).join("\n");
+    for said in [
+        "About(\"Order entry capture\")",
+        "Field(\"format spec\", \"acme.orders\")",
+        "Link(\"documentation\", \"https://example.com/orders.pdf\")",
+        "Section(\"RECORD TYPES\", 2)",
+        "RecordType(\"add\"",
+        "An order added to the book",
+        "Limit price (USD)",
+        "Shares executed",
+    ] {
+        assert!(lines.contains(said), "{said} in\n{lines}");
+    }
+    let page = screen(&mut app);
+    assert!(page.contains("day.ord"), "{page}");
+    assert!(page.contains("RECORD TYPES"), "{page}");
+
+    let line = footer(&mut app);
+    assert!(line.ends_with("? keys"), "{line}");
+
+    // ? and F1 show the view's own keys, and closing the help leaves the view up.
+    use datui_cli::keys::Context;
+    for help in [key(KeyCode::Char('?')), key(KeyCode::F(1))] {
+        drive(&mut app, help);
+        assert_eq!(app.help_context(), Some(Context::Documentation));
+        drive(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.help_context(), None);
+        assert!(app.documentation.is_open());
+    }
+
+    drive(&mut app, key(KeyCode::Esc));
+    assert!(!app.documentation.is_open());
+
+    // Opened, the Info panel's Documentation tab shows the same page.
+    select(&mut app, "day.ord");
+    drive(&mut app, key(KeyCode::Enter));
+    pump(&mut app, &rx, |app| {
+        app.data_table_state.is_some() && !app.is_busy()
+    });
+    assert_eq!(app.error_message(), None);
+    assert!(app.info_documentation.is_open());
+    // Named for the file just opened, not the one before it.
+    assert_eq!(
+        app.info_documentation.doc.as_ref().map(|d| d.title()),
+        Some("day.ord")
+    );
+    let lines = doc_lines(&app.info_documentation).join("\n");
+    assert!(lines.contains("Section(\"RECORD TYPES\", 2)"), "{lines}");
+    assert!(lines.contains("Limit price (USD)"), "{lines}");
+}
+
+/// A catalog entry for a file a format spec reads layers its word over the spec's: its
+/// description and its link win, and of a column, each of description, unit and legend
+/// it gives; the spec fills the rest, and its record types stay.
+#[test]
+fn a_catalog_entry_layers_over_a_format_specs_documentation() {
+    let (_formats, registry, data) = orders_files();
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("catalog.toml"),
+        format!(
+            r#"label = "Mine"
+
+[lab]
+name = "Lab orders"
+path = "{}"
+description = "Orders from the lab"
+documentation = "https://example.com/lab.txt"
+columns.price = {{ description = "Price the lab quotes" }}
+columns.side = {{ description = "Side of the book" }}
+columns.shares = {{ unit = "lots" }}
+"#,
+            toml_path(&data.path().join("lab.ord"))
+        ),
+    )
+    .unwrap();
+    let (mut app, rx) = app_with_specs(dir.path(), registry);
+    app.enter_home();
+    pump(&mut app, &rx, |app| spec_row_listed(app, "Lab orders"));
+    select(&mut app, "Lab orders");
+    drive(&mut app, ctrl('e'));
+    assert!(app.documentation.is_open());
+    let lines = doc_lines(&app.documentation);
+    let text = lines.join("\n");
+    assert_eq!(lines[0], "About(\"Orders from the lab\")", "{text}");
+    for said in [
+        "Field(\"catalog\", \"Mine\")",
+        "Field(\"format spec\", \"acme.orders\")",
+        "Link(\"documentation\", \"https://example.com/lab.txt\")",
+        "Section(\"RECORD TYPES\", 2)",
+        // The spec's unit and legend stay under the catalog's description.
+        "Column { name: \"price\", about: \"Price the lab quotes (USD)\", values: 0 }",
+        "Column { name: \"side\", about: \"Side of the book\", values: 2 }",
+        // The spec's description stays under the catalog's unit.
+        "Column { name: \"shares\", about: \"Shares executed (lots)\", values: 0 }",
+    ] {
+        assert!(text.contains(said), "{said} in\n{text}");
+    }
+    for unsaid in ["Order entry capture", "orders.pdf", "Limit price"] {
+        assert!(!text.contains(unsaid), "{unsaid} in\n{text}");
+    }
 }

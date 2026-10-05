@@ -77,7 +77,7 @@ pub fn variant_tables(spec: &crate::formats::Spec) -> Vec<Table> {
         .iter()
         .map(|v| Table {
             name: v.name.clone(),
-            kind: "variant".to_string(),
+            kind: "record type".to_string(),
             internal: false,
             columns: common.iter().cloned().chain(named(&v.fields)).collect(),
         })

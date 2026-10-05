@@ -128,7 +128,7 @@ Where a dataset opens.
 | `Ctrl+↑ / Ctrl+↓` | Previous or next section |
 | `PgUp / PgDn` | A screenful, stopping at the first and last |
 | `Home / End` | The first or last row. The filter has no cursor to move: it is edited at its end |
-| `← / →` | Fold or unfold a section; → on a directory or a file of tables goes inside it |
+| `← / →` | Fold or unfold a section; → on a directory or a file of tables goes inside it, and on a file a format spec reads as record types lists them, one row each |
 | `Space` | While the filter is empty: fold or unfold the section header under the cursor. With a filter typed, it types |
 | `Tab` | Cycle the sort; the footer names the order in effect when it has room |
 
@@ -156,7 +156,7 @@ Where a dataset opens.
 | `Ctrl+A` | Show or hide files datui cannot read; inside a SQLite database, its internal tables |
 | `Ctrl+X` | Show the local file under the cursor as bytes, in the hex view, whatever datui would read it as |
 | `Ctrl+D` | Add the dataset or directory under the cursor to catalog.toml, listed under My datasets; on a row from catalog.toml, forget it. A heading stands for the directory it lists. Only catalog.toml is written; another catalog is hidden with home.hide |
-| `Ctrl+E` | Open the Documentation view of a catalog row, or of a place inside one: publisher, license, links, columns with units and value legends, bookmarks. ↑ / ↓ move, Enter opens a column's legend, y copies the line's link or value, Esc goes back. Ctrl+E here is not readline's end of line: the filter is edited at its end |
+| `Ctrl+E` | Open the Documentation view of a catalog row, of a place inside one, or of a file whose format spec documents it: description, publisher, license, links, record types, columns with units and value legends, bookmarks. A catalog's description, link and column notes stand over the spec's. Ctrl+E here is not readline's end of line: the filter is edited at its end |
 | `Delete` | Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source |
 | `Shift+Delete` | Forget every recent entry, after confirming |
 
@@ -166,6 +166,21 @@ Where a dataset opens.
 |---|---|
 | `Click` | Select the row; double-click is Enter |
 | `Wheel` | Move the selection three rows, stopping at the ends |
+
+## Documentation
+
+<kbd>Ctrl</kbd>+<kbd>E</kbd> on the home screen, on a catalog row or a file a format spec documents.
+
+### Documentation · Read
+
+| Key | Action |
+|---|---|
+| `↑ / ↓ (j/k)` | Move the cursor a line |
+| `PgUp / PgDn` | A page |
+| `g / G` | The first or last line (Home / End too) |
+| `Enter / Space / →` | Open or close the value legend of the column under the cursor: a catalog's values, or a spec's enum |
+| `y` | Copy the link or value on the cursor's line, whole, however it is cut on screen |
+| `Esc / q / ←` | Back to the home screen |
 
 ## Command line
 

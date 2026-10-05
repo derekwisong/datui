@@ -11334,7 +11334,12 @@ fn a_load_chosen_at_home_fails_at_home() {
     assert_eq!(app.input_mode, InputMode::Home);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    assert!(rendered_text(&buf).contains("broken.parquet\": "));
+    // The message from the app, the dialog from the screen: a long temp path (Windows')
+    // wraps inside the name.
+    let message = app.error_message().expect("the failure is said");
+    assert!(message.contains("broken.parquet\": "), "{message}");
+    let text = rendered_text(&buf);
+    assert!(text.contains("Error") && text.contains("broken"), "{text}");
 
     // Nor is it a recent: recorded when a dataset installs, not when it is asked for.
     // The one that did load is, and recording is off-thread, so that is waited for.
@@ -24682,7 +24687,10 @@ fn run_python_script(app: &App) -> Option<(String, String)> {
     }
     let state = app.data_table_state.as_ref().unwrap();
     let script = app.python_script(state);
-    let program = format!("{script}\nimport sys\nsys.stdout.write(df.collect().write_csv())\n");
+    // Bytes, not text: Windows' text stdout writes `\r\n` and encodes in its code page.
+    let program = format!(
+        "{script}\nimport sys\nsys.stdout.buffer.write(df.collect().write_csv().encode())\n"
+    );
     let output = std::process::Command::new(python)
         .arg("-c")
         .arg(&program)
@@ -25035,12 +25043,17 @@ fn test_copy_as_python_reads_streams_beside_ipc_files() {
         eprintln!("skipped: no .venv to run the scripts with");
         return;
     };
+    // Each file as the listing joined it, with the platform's separator.
+    let file = |name: &str| {
+        let path = PathBuf::from("tests/sample-data/arrow_mixed").join(name);
+        format!("{:?}", path.display().to_string())
+    };
     assert!(
-        script.contains("pl.scan_ipc(\"tests/sample-data/arrow_mixed/a.arrow\")"),
+        script.contains(&format!("pl.scan_ipc({})", file("a.arrow"))),
         "{script}"
     );
     assert!(
-        script.contains("pl.read_ipc_stream(\"tests/sample-data/arrow_mixed/b.arrow\")"),
+        script.contains(&format!("pl.read_ipc_stream({})", file("b.arrow"))),
         "{script}"
     );
     assert_eq!(rows, view_csv(&app), "{script}");

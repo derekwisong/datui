@@ -614,6 +614,10 @@ journalctl -o json -f | datui -f -
   characters) is shown as text, lossily; the Info panel says how many.
 - The Info panel's Journal tab gives the time span, the entries, and the units,
   boots and hosts, with the entries per unit.
-- The entries are read whole into memory. Narrow a large journal with
-  `--since`, `-u` or `-b` before it is piped.
+- From a pipe, the entries show as they arrive, as for any
+  [pipe](../user-guide/pipes-and-follow.md#standard-input); a field first seen
+  after the table opened joins as a column when the stream ends, and the
+  Journal tab is read again over every entry.
+- A journal file is read whole into memory. Narrow a large journal with
+  `--since`, `-u` or `-b`.
 - Copy as Python reads a journal file with `pl.scan_ndjson` and derives the same columns.

@@ -6498,6 +6498,27 @@ impl DataTableState {
         self.detail.as_deref()
     }
 
+    /// The Info panel tab of a followed pipe's journal, read again once it has ended
+    /// and its rows are all on hand: the frame that reads every entry. `None` for any
+    /// other dataset, or when it has been asked for already.
+    pub(crate) fn ended_journal_to_describe(&mut self) -> Option<LazyFrame> {
+        let follow = self.follow.as_mut()?;
+        if follow.described
+            || follow.live()
+            || follow.behind()
+            || follow.spool().is_none()
+            || self.read_as != Some(crate::FileFormat::Journal)
+        {
+            return None;
+        }
+        follow.described = true;
+        Some(self.original_lf.clone())
+    }
+
+    pub(crate) fn set_format_detail(&mut self, detail: crate::text_formats::Detail) {
+        self.detail = Some(Arc::new(detail));
+    }
+
     /// Whether datui noticed anything at all. Answers what `notes()` is usually asked
     /// — whether to offer the tab — without building the list to find out.
     pub fn has_notes(&self) -> bool {
@@ -8287,6 +8308,49 @@ impl DataTableState {
 
     pub fn follow_mut(&mut self) -> Option<&mut crate::follow::Follow> {
         self.follow.as_mut()
+    }
+
+    /// Join `fields`, which arrived in a followed pipe's NDJSON after the open, to the
+    /// dataset: its scan reads them, and they go on the end of the column order, as a
+    /// dataset's footers join theirs. `Err` while the view is a query, a reshape or a
+    /// group, which would lose the columns it is built from: the caller holds them
+    /// until the view is back on the data. `Ok(false)` when there is nothing to join.
+    pub(crate) fn join_followed_fields(
+        &mut self,
+        fields: &[Field],
+    ) -> std::result::Result<bool, ()> {
+        if !self.scan_is_the_root() {
+            return Err(());
+        }
+        let (Some(follow), Some(format)) = (self.follow.as_ref(), self.read_as) else {
+            return Ok(false);
+        };
+        let (path, rows) = (follow.path().to_path_buf(), follow.shown());
+        let Some(mut lf) = crate::follow::widen(&self.original_lf, &path, format, fields, rows)
+        else {
+            return Ok(false);
+        };
+        let Ok(schema) = lf.collect_schema() else {
+            return Ok(false);
+        };
+        let known: std::collections::HashSet<&str> =
+            self.column_order.iter().map(String::as_str).collect();
+        let joining: Vec<String> = schema
+            .iter_names()
+            .map(|name| name.to_string())
+            .filter(|name| !known.contains(name.as_str()))
+            .collect();
+        drop(known);
+        self.column_order.extend(joining);
+        self.replace_root(lf, schema);
+        if self.is_pristine() {
+            // The same rows the watcher counted, with more columns.
+            self.set_num_rows(rows);
+        }
+        // Rebuilt but not read, as a footer join is: the caller reads the rows on
+        // screen off the event loop.
+        self.deferred(Self::apply_transformations);
+        Ok(true)
     }
 
     /// Follow the file this dataset reads with `follow`, whose watcher is running.

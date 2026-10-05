@@ -4,9 +4,11 @@
 //! journalctl has already parsed the journal, so this is the NDJSON reader with a few
 //! expressions on top: `time` from `__REALTIME_TIMESTAMP`, `level` from `PRIORITY` in
 //! order of severity, `MESSAGE` as text where it came as bytes, and the columns put in
-//! the order a reader of logs looks for them. Every field stays. The records are read
-//! whole into memory, with the schema inferred from all of them, so a field first seen
-//! late is a column too.
+//! the order a reader of logs looks for them. Every field stays. A file's records are
+//! read whole into memory, with the schema inferred from all of them, so a field first
+//! seen late is a column too. A pipe or a followed file is scanned as it grows
+//! ([`crate::follow::lines`]); a pipe's fields first seen after the open join once it
+//! ends.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -111,7 +113,7 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
         crate::error_display::FileError::new(&path, format!("not journal JSON: {e}")).into()
     };
     let raw = if input.options.follow {
-        crate::follow::scan_lines(&path, input.options, &mut input.report.read_python)?
+        crate::follow::scan_lines(&path, input.options, true, &mut input.report.read_python)?
     } else {
         read_all(input.paths).map_err(|e| failed(&e))?.lazy()
     };
@@ -314,7 +316,7 @@ fn came_as_bytes(raw: &LazyFrame, schema: &Schema) -> PolarsResult<usize> {
 }
 
 /// The Info panel's tab: the span, the entries, units, boots and hosts.
-fn summary(lf: &LazyFrame) -> PolarsResult<Detail> {
+pub(crate) fn summary(lf: &LazyFrame) -> PolarsResult<Detail> {
     let schema = lf.clone().collect_schema()?;
     let has = |n: &str| schema.contains(n);
     let distinct = |n: &str| {

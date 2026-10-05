@@ -796,7 +796,10 @@ fn hex_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
         keys.push(("B", "Format"));
     }
     keys.push(("?", "Help"));
-    if view.origin == crate::hex_view::Origin::Table {
+    if matches!(
+        view.origin,
+        crate::hex_view::Origin::Table | crate::hex_view::Origin::Info
+    ) {
         keys.push(("Esc", "Back"));
     }
     keys.push(("q", app.hex_q_label()));

@@ -56,8 +56,8 @@ matches are 25 bytes apart; <kbd>R</kbd> makes that the bytes per row, and
 the records line up:
 
 ```text
-Hex · feed.bin · 12,500 bytes · 25 a row (fixed)
-offset h  00 01 02 03  04 05 06 07   08 09 0a 0b  0c 0d 0e 0f   10 11 12 13  14 15 16 17   18
+Hex · feed.bin · 12,500 bytes · 25 bytes/row (fixed)
+offset    00 01 02 03  04 05 06 07   08 09 0a 0b  0c 0d 0e 0f   10 11 12 13  14 15 16 17   18
 00000000  53 59 4e 43  00 00 00 00   00 00 00 00  00 00 00 00   00 00 00 00  00 00 00 00   00  SYNC·····················
 00000019  53 59 4e 43  01 00 00 00   00 00 00 00  03 00 00 00   ff ff 01 00  00 00 00 00   01  SYNC·····················
 00000032  53 59 4e 43  02 00 00 00   00 00 00 00  06 00 00 00   fe ff 02 00  00 00 00 00   02  SYNC·····················
@@ -71,7 +71,7 @@ layout is found.
 
 ## Layout
 
-| Width | Bytes a row |
+| Width | Bytes per row |
 |---|---|
 | 60 columns | 8 |
 | 80 columns | 16 |
@@ -79,8 +79,9 @@ layout is found.
 | About 300 columns | 64 |
 | Under 50 columns | As many as fit, without the ASCII column |
 
-The byte inspector sits beside the bytes when there is room for it and 16 bytes a
-row; elsewhere <kbd>i</kbd> opens it under them. <kbd>r</kbd> or
+The byte inspector sits beside the bytes when there is room for it and 16 bytes
+per row; elsewhere <kbd>i</kbd> opens it under them, in at most half the rows,
+counting the readings that do not fit. <kbd>r</kbd> or
 `--hex-width N` fixes the bytes per row (1 to 4096) so that records line up;
 a row wider than the screen shows the part the cursor is in.
 

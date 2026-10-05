@@ -1,5 +1,5 @@
-Hex · sample.bin · 4,024 bytes · 8 a row (auto)
-offset h  00 01 02 03  04 05 06 07
+Hex · sample.bin · 4,024 bytes · 8 bytes/row (auto)
+offset    00 01 02 03  04 05 06 07
 00000000  50 41 52 31  20 68 65 6c  PAR1 hel
 00000008  6c 6f 2c 20  77 6f 72 6c  lo, worl
 00000010  64 0a 00 00  01 02 ff 80  d·······

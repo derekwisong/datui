@@ -40,16 +40,16 @@ impl App {
                 self.info_modal.close();
                 self.input_mode = InputMode::Normal;
             }
-            // The file's bytes, in the hex view; Esc there comes back to the table.
             // The rows counted exactly, where they are an estimate.
             KeyCode::Char('c') if event.is_press() && self.row_estimate().is_some() => {
                 self.count_exactly();
             }
+            // The file's bytes, in the hex view; Esc there comes back to the panel.
             KeyCode::Char('x') if event.is_press() => {
                 if let Some(path) = self.hex_target() {
                     self.info_modal.close();
                     self.input_mode = InputMode::Normal;
-                    self.open_hex(path, crate::hex_view::Origin::Table, false, None);
+                    self.open_hex(path, crate::hex_view::Origin::Info, false, None);
                 }
             }
             // Delimited text: read the first row as data, or as names again. The read

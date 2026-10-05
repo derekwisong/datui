@@ -113,12 +113,12 @@ impl App {
                 self.enter_home();
                 None
             }
-            Origin::Table if quit && !self.opened_from_home => Some(AppEvent::Exit),
-            Origin::Table if quit => {
+            Origin::Table | Origin::Info if quit && !self.opened_from_home => Some(AppEvent::Exit),
+            Origin::Table | Origin::Info if quit => {
                 self.enter_home();
                 None
             }
-            Origin::Table => {
+            Origin::Table | Origin::Info => {
                 self.stop_hex_find();
                 self.hex = None;
                 self.input_mode = if self.data_table_state.is_some() {
@@ -126,6 +126,11 @@ impl App {
                 } else {
                     InputMode::Home
                 };
+                // Back to the panel it was opened from, on the tab it was on.
+                if origin == Origin::Info && self.data_table_state.is_some() {
+                    self.info_modal.active = true;
+                    self.input_mode = InputMode::Info;
+                }
                 None
             }
             Origin::Launch if quit => Some(AppEvent::Exit),
@@ -137,7 +142,7 @@ impl App {
     pub(crate) fn hex_q_label(&self) -> &'static str {
         match self.hex.as_ref().map(|v| v.origin) {
             Some(Origin::Home) => "Home",
-            Some(Origin::Table) if self.opened_from_home => "Home",
+            Some(Origin::Table | Origin::Info) if self.opened_from_home => "Home",
             _ => "Quit",
         }
     }

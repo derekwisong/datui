@@ -18422,6 +18422,39 @@ fn test_filter_editor_keyboard_flow() {
     assert_eq!(current_rows(&app), 100);
 }
 
+/// The filter row under edit gives the rail to its open picker's line, so one
+/// rail is on screen at every step; typing the value, with no picker, the row
+/// has it back.
+#[test]
+fn test_filter_editor_keeps_one_rail() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("filter_editor_one_rail.csv");
+    let rail = datui::glyphs::get().rail;
+    // Past the table's own rail, in its first column.
+    let rails = |screen: &str| {
+        screen
+            .lines()
+            .map(|line| {
+                line.chars()
+                    .skip(1)
+                    .collect::<String>()
+                    .matches(rail)
+                    .count()
+            })
+            .sum::<usize>()
+    };
+    start_new_filter(&mut app);
+    let column_step = draw_sized(&mut app, (80, 24));
+    assert_eq!(rails(&column_step), 1, "{column_step}");
+    type_text(&mut app, "na");
+    press(&mut app, KeyCode::Enter);
+    let operator_step = draw_sized(&mut app, (80, 24));
+    assert_eq!(rails(&operator_step), 1, "{operator_step}");
+    type_text(&mut app, "co");
+    press(&mut app, KeyCode::Enter);
+    let value_step = draw_sized(&mut app, (80, 24));
+    assert_eq!(rails(&value_step), 1, "{value_step}");
+}
+
 /// Ctrl+J applies mid-edit on every terminal, committing the row in progress,
 /// and the editor's footer names it.
 #[test]

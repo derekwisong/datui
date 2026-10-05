@@ -83,9 +83,7 @@ pub fn render_confirmation_modal(
     let choice = |label: &str, focused: bool| -> Vec<Span<'static>> {
         let rail = if focused { g.rail } else { " " };
         let style = if focused {
-            Style::default()
-                .fg(ctx.accent_bright)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(ctx.text_secondary)
         };
@@ -395,6 +393,13 @@ mod tests {
             "the rail is on Yes by default: {choice_row:?}"
         );
         assert!(text.contains("Confirm") && text.contains("Cancel"));
+        // The chosen label is in the accent, as focus is everywhere: never the
+        // brighter one.
+        let y = rows.iter().position(|r| r == choice_row).unwrap() as u16;
+        let x = (0..area.width)
+            .find(|&x| buf[(x, y)].symbol() == "Y")
+            .unwrap();
+        assert_eq!(buf[(x, y)].fg, ctx.accent);
 
         // Switching focus moves the rail, not the labels.
         modal.focus_yes = false;

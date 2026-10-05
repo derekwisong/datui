@@ -46,6 +46,13 @@ pub struct FormRow<'a> {
 
 impl FormRow<'_> {
     pub fn render(&self, area: Rect, buf: &mut Buffer, ctx: &RenderContext) {
+        self.render_picking(area, buf, ctx, false);
+    }
+
+    /// Draw the row, its picker open when `picking`: the picker's current line
+    /// has the keys and the one rail, so the row keeps its accent label and
+    /// gives up its rail.
+    pub fn render_picking(&self, area: Rect, buf: &mut Buffer, ctx: &RenderContext, picking: bool) {
         if area.height == 0 || area.width == 0 {
             return;
         }
@@ -54,7 +61,11 @@ impl FormRow<'_> {
         // walkable. Same mark as the table's current row and the Picker's
         // selection: one focus signal everywhere.
         let g = crate::glyphs::get();
-        let rail = if self.focused { g.rail } else { " " };
+        let rail = if self.focused && !picking {
+            g.rail
+        } else {
+            " "
+        };
         Paragraph::new(rail)
             .style(Style::default().fg(ctx.accent))
             .render(Rect { width: 1, ..area }, buf);
@@ -242,6 +253,30 @@ mod tests {
             let (text, _) = render_row(&row, 40);
             assert!(text.contains(marker), "expected {marker:?} in {text:?}");
         }
+    }
+
+    /// With its picker open the row gives the rail to the picker's line: one
+    /// rail on screen. The label keeps the accent, naming what is being picked.
+    #[test]
+    fn an_open_picker_takes_the_rail() {
+        let g = crate::glyphs::get();
+        let ctx = RenderContext::for_test();
+        let row = FormRow {
+            label: "Index:",
+            value: FormValue::Choice("dept"),
+            focused: true,
+            label_width: 10,
+        };
+        let area = Rect::new(0, 0, 30, 1);
+        let mut buf = Buffer::empty(area);
+        row.render_picking(area, &mut buf, &ctx, true);
+        assert_ne!(buf[(0, 0)].symbol(), g.rail);
+        assert_eq!(buf[(1, 0)].fg, ctx.accent, "the label keeps the accent");
+        let (text, _) = render_row(&row, 30);
+        assert!(
+            text.starts_with(g.rail),
+            "closed, the rail is back: {text:?}"
+        );
     }
 
     /// Focus is the rail and the accent, never a layout change: the gutter is

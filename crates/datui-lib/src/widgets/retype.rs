@@ -170,7 +170,7 @@ pub fn render_combine(area: Rect, buf: &mut Buffer, modal: &CombineModal, ctx: &
             focused: modal.focus == field,
             label_width: LABEL_WIDTH,
         }
-        .render(row, buf, ctx);
+        .render_picking(row, buf, ctx, modal.picker.is_some());
         y += 1;
     }
     if let Some((_, state)) = &modal.picker {

@@ -46,9 +46,9 @@ These are checkable, and CI or review should treat a violation as a defect:
 
 ## Color
 
-- One accent (`accent`, `accent_bright`): keys in chips, focused titles and
-  labels, the selection rail, the active tab. If two things on one screen
-  compete for the accent, one of them is wrong.
+- One accent (`accent`): keys in chips, focused titles and labels, the
+  selection rail, the active tab. If two things on one screen compete for
+  the accent, one of them is wrong. `accent_bright` never marks focus.
 - Three chrome tiers a few shades apart: `controls_bg`, `table_header_bg`,
   `table_alternate_row`. Backgrounds never carry meaning beyond these.
 - Column names take their type's color; nulls are `∅` in `dimmed`.
@@ -150,7 +150,8 @@ rule in `table_column_separator`, then one line with no fill.
   each landed).
 
 **Section rule** — the home screen's `TITLE ── count` line. The way to
-divide space inside a Surface without borders.
+divide space inside a Surface without borders. A rule never signals focus:
+same weight and color whether focus is in its section or not.
 
 **Plot axes** — `widgets/axes.rs`, shared by the chart view and the
 Distribution plots. Ticks at round values (1-2-5 steps, calendar boundaries
@@ -202,6 +203,13 @@ across shapes.
 One signal: the focused element carries the accent (title, label, or rail).
 Focus never silently jumps (the analysis screen's jump-to-results is a
 defect, not a pattern). Selection that is not focused stays visible, dimmed.
+
+- **One rail on screen.** A FormRow whose picker is open gives its rail to
+  the picker's current line (`FormRow::render_picking`) and keeps its accent
+  label; an inline editor does the same while its picker is open.
+- **Rules never signal focus**: no heavy rule, no brighter title.
+- **No `accent_bright` for focus**: the confirm choice, a focused label and a
+  focused title all use `accent`.
 
 ### Forms: one set of keys
 
@@ -423,3 +431,5 @@ strings: run `cargo run -p datui-cli --bin gen_docs -- write`.
 - A filter box that silently filters other lists than the one it sits on.
 - `Modifier::REVERSED` as a tab highlight in one screen and BOLD in another.
 - A dataset mutated with nothing on screen saying so.
+- Two rails on screen: a row's and its open picker's.
+- A heavy or brighter section rule to say where focus is.

@@ -345,7 +345,6 @@ fn inspector(area: Rect, buf: &mut Buffer, view: &HexView, ctx: &RenderContext) 
     crate::widgets::ui::SectionRule {
         title: &title,
         chip: None,
-        focused: false,
     }
     .render(Rect { height: 1, ..area }, buf, ctx);
     let label_w = 9usize;

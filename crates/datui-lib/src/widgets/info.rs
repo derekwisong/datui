@@ -1014,7 +1014,6 @@ impl<'a> DataTableInfo<'a> {
         SectionRule {
             title: &title,
             chip: None,
-            focused: body_focused,
         }
         .render(Rect { height: 1, ..area }, buf, self.theme);
         let inner = Rect {
@@ -1541,7 +1540,6 @@ impl<'a> DataTableInfo<'a> {
         SectionRule {
             title,
             chip: Some(&count),
-            focused: true,
         }
         .render(
             Rect {
@@ -2804,7 +2802,8 @@ mod tests {
 
         let (buf, text) = paint();
         let (x, y) = find(&text, "Schema: Inferred");
-        assert_eq!(buf[(x, y)].fg, theme.accent_bright, "{text:#?}");
+        // The rule's title in the plain accent: the rail marks focus, not the rule.
+        assert_eq!(buf[(x, y)].fg, theme.accent, "{text:#?}");
         let (_, id_row) = find(&text, " id ");
         assert!(text[id_row as usize].contains(g.rail), "{text:#?}");
         let (x, y) = find(&text, "Resources");

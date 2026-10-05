@@ -512,7 +512,6 @@ fn render_setup(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buff
             SetupLine::Rule(title, chip) => crate::widgets::ui::SectionRule {
                 title,
                 chip: chip.as_deref(),
-                focused: false,
             }
             .render(row_area, buf, ctx),
             SetupLine::Row(row) => {

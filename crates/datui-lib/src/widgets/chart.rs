@@ -434,12 +434,7 @@ fn render_sidebar(
         };
         match line {
             PanelLine::Blank => {}
-            PanelLine::Rule(title) => SectionRule {
-                title,
-                chip: None,
-                focused: false,
-            }
-            .render(
+            PanelLine::Rule(title) => SectionRule { title, chip: None }.render(
                 Rect {
                     x: area.x + 1,
                     width: area.width - 1,
@@ -460,7 +455,11 @@ fn render_sidebar(
                 }
                 if focused {
                     focused_at = Some(row);
-                    buf.set_string(area.x, y, g.rail, Style::default().fg(ctx.accent));
+                    // An open picker's line has the one rail; the row keeps its
+                    // accent label.
+                    if modal.picker.is_none() {
+                        buf.set_string(area.x, y, g.rail, Style::default().fg(ctx.accent));
+                    }
                 }
                 let label_style = if *dimmed {
                     Style::default().fg(ctx.dimmed)
@@ -1956,6 +1955,31 @@ mod tests {
         assert!(line("Y from zero").contains("off"));
         assert!(line("Rows").contains("sample 10,000"));
         assert!(line("Aggregate").contains("none"));
+    }
+
+    /// With a row's picker open, the picker's line carries the one rail on
+    /// screen; closed, the row has it back.
+    #[test]
+    fn an_open_picker_has_the_only_rail() {
+        let g = crate::glyphs::get();
+        let rails = |rows: &[String]| {
+            rows.iter()
+                .map(|row| row.matches(g.rail).count())
+                .sum::<usize>()
+        };
+        let mut modal = open_modal();
+        modal.set_mark(Mark::Line);
+        modal.focus = ChartFocus::X;
+        assert_eq!(rails(&render_rows(&mut modal, 100, 30)), 1);
+        modal.open_picker();
+        assert!(modal.picker.is_some());
+        let rows = render_rows(&mut modal, 100, 30);
+        assert_eq!(rails(&rows), 1, "{rows:#?}");
+        let x = rows
+            .iter()
+            .find(|row| row.chars().skip(2).collect::<String>().starts_with("X "))
+            .expect("the X row");
+        assert!(!x.starts_with(g.rail), "the row gave the rail up: {x:?}");
     }
 
     /// The aggregate is a row of its own under Y, labeled, so `none` does not read

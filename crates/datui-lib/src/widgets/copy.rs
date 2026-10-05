@@ -76,7 +76,7 @@ pub fn render_copy_modal(area: Rect, buf: &mut Buffer, modal: &mut CopyModal, ct
             focused: modal.focus == row,
             label_width: LABEL_WIDTH,
         }
-        .render(row_area, buf, ctx);
+        .render_picking(row_area, buf, ctx, modal.picker.is_some());
         crate::pointer::record_field::<CopyModal>(row_area, row);
         y += 1;
     }

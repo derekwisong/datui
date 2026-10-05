@@ -386,7 +386,6 @@ fn draw(
         Drawn::Heading(name) => SectionRule {
             title: name,
             chip: None,
-            focused: false,
         }
         .render(line, buf, ctx),
         Drawn::Key {

@@ -179,10 +179,6 @@ fn render_in_effect(
         return;
     }
     let entries = modal.sort.sort_entries();
-    let sort_focused = matches!(
-        modal.focus,
-        SortFilterField::Sort(_) | SortFilterField::AddSort
-    );
     let filter_focused = matches!(
         modal.focus,
         SortFilterField::Filter(_) | SortFilterField::AddFilter
@@ -192,7 +188,6 @@ fn render_in_effect(
     SectionRule {
         title: "Sort",
         chip: (!entries.is_empty()).then_some(count.as_str()),
-        focused: sort_focused,
     }
     .render(Rect { height: 1, ..area }, buf, ctx);
 
@@ -306,7 +301,6 @@ fn render_in_effect(
     SectionRule {
         title: "Filters",
         chip: (!modal.filter.statements.is_empty()).then_some(count.as_str()),
-        focused: filter_focused,
     }
     .render(
         Rect {
@@ -572,8 +566,15 @@ fn render_filters(
                     .map(|op| op.as_str().to_string())
                     .unwrap_or_default()
             };
+            // The open picker's line has the one rail; typing the value, there is
+            // no picker and the row keeps it.
+            let rail = if step == FilterEditStep::Value {
+                g.rail
+            } else {
+                " "
+            };
             let mut spans = vec![
-                Span::styled(g.rail, Style::default().fg(ctx.accent)),
+                Span::styled(rail, Style::default().fg(ctx.accent)),
                 Span::styled(
                     format!("{:<w$} ", column_text, w = col_w),
                     seg_style(step == FilterEditStep::Column),

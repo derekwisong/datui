@@ -352,7 +352,6 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &Render
     SectionRule {
         title: "Matching",
         chip: Some(&chip),
-        focused: matching_focused,
     }
     .render(
         Rect {

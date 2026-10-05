@@ -709,7 +709,6 @@ pub fn render_page(state: &mut DocState, area: Rect, buf: &mut Buffer, ctx: &Ren
         SectionRule {
             title,
             chip: Some(&chip),
-            focused: false,
         }
         .render(
             Rect {

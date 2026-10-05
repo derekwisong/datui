@@ -1320,7 +1320,6 @@ pub fn render(
         SectionRule {
             title: "Fields",
             chip: Some(&chip),
-            focused: modal.focus == Focus::List && lay.wide,
         }
         .render(lay.list_rule, buf, ctx);
         rule_used = Some("Fields".len() + 1 + crate::glyphs::cell_width(&chip) + 3);
@@ -1866,7 +1865,6 @@ fn draw_value(
             SectionRule {
                 title: &name,
                 chip: facts.as_deref(),
-                focused,
             }
             .render(rule, buf, ctx);
             let used = name_w
@@ -2233,7 +2231,6 @@ fn render_drill(
     SectionRule {
         title: shape.items_title(),
         chip: Some(&count),
-        focused: false,
     }
     .render(lay.list_rule, buf, ctx);
 

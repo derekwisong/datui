@@ -876,14 +876,19 @@ fn ctrl_e_documents_a_file_a_format_spec_reads() {
     });
     assert_eq!(app.error_message(), None);
     assert!(app.info_documentation.is_open());
+    // Named for the file just opened, not the one before it.
+    assert_eq!(
+        app.info_documentation.doc.as_ref().map(|d| d.title()),
+        Some("day.ord")
+    );
     let lines = doc_lines(&app.info_documentation).join("\n");
     assert!(lines.contains("Section(\"RECORD TYPES\", 2)"), "{lines}");
     assert!(lines.contains("Limit price (USD)"), "{lines}");
 }
 
 /// A catalog entry for a file a format spec reads layers its word over the spec's: its
-/// description, its link and its note of a column win; the spec's other notes and its
-/// record types stay.
+/// description and its link win, and of a column, each of description, unit and legend
+/// it gives; the spec fills the rest, and its record types stay.
 #[test]
 fn a_catalog_entry_layers_over_a_format_specs_documentation() {
     let (_formats, registry, data) = orders_files();
@@ -899,6 +904,8 @@ path = "{}"
 description = "Orders from the lab"
 documentation = "https://example.com/lab.txt"
 columns.price = {{ description = "Price the lab quotes" }}
+columns.side = {{ description = "Side of the book" }}
+columns.shares = {{ unit = "lots" }}
 "#,
             toml_path(&data.path().join("lab.ord"))
         ),
@@ -918,8 +925,11 @@ columns.price = {{ description = "Price the lab quotes" }}
         "Field(\"format spec\", \"acme.orders\")",
         "Link(\"documentation\", \"https://example.com/lab.txt\")",
         "Section(\"RECORD TYPES\", 2)",
-        "Price the lab quotes",
-        "Shares executed",
+        // The spec's unit and legend stay under the catalog's description.
+        "Column { name: \"price\", about: \"Price the lab quotes (USD)\", values: 0 }",
+        "Column { name: \"side\", about: \"Side of the book\", values: 2 }",
+        // The spec's description stays under the catalog's unit.
+        "Column { name: \"shares\", about: \"Shares executed (lots)\", values: 0 }",
     ] {
         assert!(text.contains(said), "{said} in\n{text}");
     }

@@ -7778,7 +7778,7 @@ fn a_variant_spec_files_pane_shows_chips_and_variants_at_any_width() {
         assert!(said("records", "5 types (spec)"), "{shown}");
         assert!(said("Enter", "every record"), "{shown}");
         assert!(
-            said(datui::glyphs::get().arrow_right, "one record type"),
+            said(datui::glyphs::get().arrow_right, "its record types"),
             "{shown}"
         );
         assert!(!shown.contains("tables"), "{shown}");

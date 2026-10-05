@@ -3,9 +3,10 @@
 //!
 //! `Ctrl+E` on a home row opens it full screen; the Info panel's Documentation tab
 //! draws the same page for the open dataset. A catalog's word comes first: its
-//! description, its links and its note of a column stand over the spec's. Fields are `label  value` lines, each link
-//! is a line of its own that is cut with `…` rather than wrapped (`y` copies it whole),
-//! and a column's value legend opens under it with `Enter`.
+//! description, its links, and a column's description, unit and legend each stand over
+//! the spec's. Fields are `label  value` lines, each link is a line of its own that is
+//! cut with `…` rather than wrapped (`y` copies it whole), and a column's value legend
+//! opens under it with `Enter`.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -62,21 +63,24 @@ impl Documented {
         }
     }
 
-    /// Each column's note, in the spec's order with the catalog's note in place of the
-    /// spec's, then the columns only the catalog notes.
+    /// Each column's note, in the spec's order, then the columns only the catalog
+    /// notes. Where both note a column, the catalog's description, unit and legend each
+    /// stand over the spec's when it gives one.
     pub fn columns(&self) -> Vec<(String, ColumnNote)> {
         let catalog: &[(String, ColumnNote)] = self
             .catalog
             .as_ref()
             .map_or(&[], |(_, entry)| &entry.columns);
         let spec: &[(String, ColumnNote)] = self.spec.as_ref().map_or(&[], |s| &s.columns);
-        let noted = |name: &str| catalog.iter().find(|(n, _)| n == name);
+        let noted = |name: &str| catalog.iter().find(|(n, _)| n == name).map(|(_, n)| n);
         let mut out: Vec<(String, ColumnNote)> = spec
             .iter()
             .map(|(name, note)| {
-                noted(name)
-                    .cloned()
-                    .unwrap_or_else(|| (name.clone(), note.clone()))
+                let note = match noted(name) {
+                    Some(over) => layered(over, note),
+                    None => note.clone(),
+                };
+                (name.clone(), note)
             })
             .collect();
         out.extend(
@@ -86,6 +90,46 @@ impl Documented {
                 .cloned(),
         );
         out
+    }
+}
+
+/// `over`'s description, unit and legend, each in place of `under`'s when it gives one.
+fn layered(over: &ColumnNote, under: &ColumnNote) -> ColumnNote {
+    let pick = |a: &String, b: &String| if a.is_empty() { b } else { a }.clone();
+    ColumnNote {
+        description: pick(&over.description, &under.description),
+        unit: pick(&over.unit, &under.unit),
+        values: if over.values.is_empty() {
+            under.values.clone()
+        } else {
+            over.values.clone()
+        },
+    }
+}
+
+/// A note as one line: `description (unit)`.
+fn note_text(note: &ColumnNote) -> String {
+    match (note.description.is_empty(), note.unit.is_empty()) {
+        (false, false) => format!("{} ({})", note.description, note.unit),
+        (false, true) => note.description.clone(),
+        (true, false) => note.unit.clone(),
+        (true, true) => String::new(),
+    }
+}
+
+/// A section of named fields of a spec's header or footer, each with its note.
+fn field_section(out: &mut Vec<DocLine>, title: &'static str, fields: &[(String, ColumnNote)]) {
+    if fields.is_empty() {
+        return;
+    }
+    out.push(DocLine::Blank);
+    out.push(DocLine::Section(title, fields.len()));
+    for (name, note) in fields {
+        out.push(DocLine::Column {
+            name: name.clone(),
+            about: note_text(note),
+            values: 0,
+        });
     }
 }
 
@@ -190,6 +234,9 @@ pub fn lines(doc: &Documented, expanded: &HashSet<String>, measured: Option<u64>
             out.push(DocLine::Link(label, url));
         }
     }
+    if let Some(spec) = spec {
+        field_section(&mut out, "HEADER", &spec.header);
+    }
     if let Some(spec) = spec.filter(|s| !s.record_types.is_empty()) {
         let middot = glyphs::get().middot;
         out.push(DocLine::Blank);
@@ -211,15 +258,9 @@ pub fn lines(doc: &Documented, expanded: &HashSet<String>, measured: Option<u64>
         out.push(DocLine::Blank);
         out.push(DocLine::Section("COLUMNS", columns.len()));
         for (name, note) in &columns {
-            let about = match (note.description.is_empty(), note.unit.is_empty()) {
-                (false, false) => format!("{} ({})", note.description, note.unit),
-                (false, true) => note.description.clone(),
-                (true, false) => note.unit.clone(),
-                (true, true) => String::new(),
-            };
             out.push(DocLine::Column {
                 name: name.clone(),
-                about,
+                about: note_text(note),
                 values: note.values.len(),
             });
             if expanded.contains(name) {
@@ -229,6 +270,9 @@ pub fn lines(doc: &Documented, expanded: &HashSet<String>, measured: Option<u64>
                 }
             }
         }
+    }
+    if let Some(spec) = spec {
+        field_section(&mut out, "FOOTER", &spec.footer);
     }
     if let Some(entry) = entry.filter(|e| !e.bookmarks.is_empty()) {
         out.push(DocLine::Blank);
@@ -380,7 +424,7 @@ impl DocState {
         let lines = self.lines();
         if let Some(at) = lines
             .iter()
-            .position(|l| matches!(l, DocLine::Column { name, .. } if *name == column))
+            .position(|l| matches!(l, DocLine::Column { name, values: 1.., .. } if *name == column))
             && !self.expanded.contains(&column)
         {
             self.cursor = at;
@@ -952,11 +996,91 @@ columns.venue = { description = "Where it traded" }
         assert_eq!(
             columns,
             [
-                ("price".to_string(), "Price the lab quotes".to_string()),
+                (
+                    "price".to_string(),
+                    "Price the lab quotes (USD)".to_string()
+                ),
                 ("side".into(), String::new()),
                 ("shares".into(), "Shares executed".into()),
                 ("venue".into(), "Where it traded".into()),
             ]
+        );
+    }
+
+    #[test]
+    fn a_catalog_note_keeps_the_specs_legend_and_unit() {
+        let over = ColumnNote {
+            description: "Side of the book".into(),
+            ..ColumnNote::default()
+        };
+        let under = ColumnNote {
+            description: "Side".into(),
+            unit: "flag".into(),
+            values: vec![("1".into(), "BUY".into())],
+        };
+        assert_eq!(
+            layered(&over, &under),
+            ColumnNote {
+                description: "Side of the book".into(),
+                ..under.clone()
+            }
+        );
+        let legend = ColumnNote {
+            values: vec![("B".into(), "Buy".into())],
+            ..ColumnNote::default()
+        };
+        assert_eq!(layered(&legend, &under).values, legend.values);
+        assert_eq!(layered(&legend, &under).description, "Side");
+    }
+
+    #[test]
+    fn header_and_footer_fields_are_documented_in_their_own_sections() {
+        let doc = spec_page(
+            r#"
+name = "acme.tape"
+match = { glob = "*.tape" }
+
+[header]
+fields = [
+  { name = "magic", type = "str", size = 4 },
+  { type = "pad", size = 4 },
+  { name = "trade_date", type = "u4", description = "Session date" },
+  { name = "tick", type = "u4", unit = "ns" },
+]
+
+[records]
+fields = [{ name = "px", type = "u4", description = "Price" }]
+
+[footer]
+fields = [{ name = "rows", type = "u4", description = "Records written" }]
+"#,
+        );
+        let lines = lines(&doc, &HashSet::new(), None);
+        let at = |line: &DocLine| lines.iter().position(|l| l == line).unwrap();
+        let column = |name: &str, about: &str| DocLine::Column {
+            name: name.into(),
+            about: about.into(),
+            values: 0,
+        };
+        let header = at(&DocLine::Section("HEADER", 2));
+        assert_eq!(
+            lines[header + 1..header + 3],
+            [column("trade_date", "Session date"), column("tick", "ns")]
+        );
+        let columns = at(&DocLine::Section("COLUMNS", 1));
+        let footer = at(&DocLine::Section("FOOTER", 1));
+        assert!(header < columns && columns < footer);
+        assert_eq!(lines[footer + 1], column("rows", "Records written"));
+        // Nothing documented in the footer, no FOOTER section.
+        let bare = spec_page(
+            "name = \"a.b\"\n[header]\nfields = [{ name = \"v\", type = \"u1\", description = \"Version\" }]\n[records]\nfields = [{ name = \"x\", type = \"u1\" }]\n[footer]\nfields = [{ name = \"n\", type = \"u4\" }]\n",
+        );
+        let lines = super::lines(&bare, &HashSet::new(), None);
+        assert!(lines.contains(&DocLine::Section("HEADER", 1)));
+        assert!(
+            !lines
+                .iter()
+                .any(|l| matches!(l, DocLine::Section("FOOTER", _)))
         );
     }
 

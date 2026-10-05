@@ -185,18 +185,24 @@ fields = [
 
 | Key | Where | Says |
 |---|---|---|
-| `description` | The spec, a variant, a field | What the format, the record type or the column is |
+| `description` | The spec, a variant, a field | What the format, the record type, the column or the header or footer field is |
 | `documentation` | The spec | An `https://` link to the format's own documentation |
-| `unit` | A field | The column's unit |
-| `enum` | A field | Its codes and labels are the column's value legend |
+| `unit` | A field | The column's, or the header or footer field's, unit |
+| `enum` | A record field | Its codes and labels are the column's value legend |
+
+A flattened field's note goes to each of its columns, `bid_0`, `bid_1` and on.
+Named `[header]` and `[footer]` fields with a `description` or `unit` are listed
+in sections of their own.
 
 A [delimited spec](../formats/format-specs.md#delimited-text) takes
 `description` and `unit` in `[columns]`, for a column of the file or a derived one:
 `temp = { description = "Air temperature", unit = "deg F" }`.
 
 Each text is trimmed, and an empty one is refused. Where a catalog lists the
-same file, its description, its `documentation` link and its note of a column
-stand over the spec's; the spec's other notes and its record types stay.
+same file, its description and its `documentation` link stand over the spec's.
+Where both note a column, each of the catalog's `description`, `unit` and
+`values` stands over the spec's when the catalog gives it, and the spec's fills
+the rest. The spec's other notes and its record types stay.
 
 ## Footer
 

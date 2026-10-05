@@ -1166,7 +1166,7 @@ fields = [
 \fBdescription\fR
 Where: The spec, a variant, a field
 .br
-Says: What the format, the record type or the column is
+Says: What the format, the record type, the column or the header or footer field is
 .TP
 \fBdocumentation\fR
 Where: The spec
@@ -1176,16 +1176,18 @@ Says: An \fBhttps://\fR link to the format's own documentation
 \fBunit\fR
 Where: A field
 .br
-Says: The column's unit
+Says: The column's, or the header or footer field's, unit
 .TP
 \fBenum\fR
-Where: A field
+Where: A record field
 .br
 Says: Its codes and labels are the column's value legend
 .PP
+A flattened field's note goes to each of its columns, \fBbid_0\fR, \fBbid_1\fR and on. Named \fB[header]\fR and \fB[footer]\fR fields with a \fBdescription\fR or \fBunit\fR are listed in sections of their own.
+.PP
 A delimited spec takes \fBdescription\fR and \fBunit\fR in \fB[columns]\fR, for a column of the file or a derived one: \fBtemp = { description = "Air temperature", unit = "deg F" }\fR.
 .PP
-Each text is trimmed, and an empty one is refused. Where a catalog lists the same file, its description, its \fBdocumentation\fR link and its note of a column stand over the spec's; the spec's other notes and its record types stay.
+Each text is trimmed, and an empty one is refused. Where a catalog lists the same file, its description and its \fBdocumentation\fR link stand over the spec's. Where both note a column, each of the catalog's \fBdescription\fR, \fBunit\fR and \fBvalues\fR stands over the spec's when the catalog gives it, and the spec's fills the rest. The spec's other notes and its record types stay.
 .SS "Footer"
 .RS 4
 .EX

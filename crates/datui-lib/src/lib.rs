@@ -5093,7 +5093,6 @@ impl App {
         self.footer_progress.cancel();
         self.footer_progress = footers;
         self.data_table_state = Some(state);
-        self.open_info_documentation();
         // A followed file's watcher starts with its dataset and stops with it.
         if options.follow
             && let Some(state) = self.data_table_state.as_mut()
@@ -5124,6 +5123,8 @@ impl App {
         // A count still waiting for the last dataset's rows to paint is not owed now.
         self.retire_a_count_the_rows_answered();
         self.path = path.clone();
+        // Named for this file, so after its path is set.
+        self.open_info_documentation();
         if let Some(ref p) = path {
             let read_as = self
                 .data_table_state

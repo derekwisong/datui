@@ -1193,7 +1193,9 @@ impl Reader<'_> {
             }
         };
         let mut spec = Delimited::default();
-        let mut notes = Vec::new();
+        // Each note with where its key sits, to keep the file's order: the table reads
+        // back sorted by name.
+        let mut notes: Vec<(usize, String, ColumnNote)> = Vec::new();
         // The `[csv]` keys and `--delimiter`'s words, read by the same rules.
         if let Some(v) = top.get("delimiter") {
             let text = self.string(v, "delimiter")?;
@@ -1324,7 +1326,7 @@ impl Reader<'_> {
                 };
                 let documented = !(note.description.is_empty() && note.unit.is_empty());
                 if documented {
-                    notes.push((name.to_string(), note));
+                    notes.push((key.span().start, name.to_string(), note));
                 }
                 let derived = ["from", "as", "format"]
                     .iter()
@@ -1394,6 +1396,11 @@ impl Reader<'_> {
                 });
             }
         }
+        notes.sort_by_key(|(at, ..)| *at);
+        let notes = notes
+            .into_iter()
+            .map(|(_, name, note)| (name, note))
+            .collect();
         Ok((spec, notes))
     }
 
@@ -2192,6 +2199,12 @@ impl Reader<'_> {
                     ));
                 };
                 let when = match w.get_ref() {
+                    DeValue::Array(values) if values.is_empty() => {
+                        return Err(self.error(
+                            &w.span(),
+                            "when: an empty list picks no record; give the type value",
+                        ));
+                    }
                     DeValue::Array(values) => values
                         .iter()
                         .map(|x| self.expected(x, &target, "when"))
@@ -3047,15 +3060,21 @@ pub fn path_parts(pattern: &str) -> Result<Vec<PathPart>, String> {
 
 /// The columns a field shows as: none for `pad`, `name_0`... when flattened.
 fn output_names(field: &Field) -> Vec<String> {
+    let mut names = own_names(field);
+    names.extend(field.bits.iter().map(|b| b.name.clone()));
+    names
+}
+
+/// The columns of a field's own value, without its bits: `name`, or `name_0`... when
+/// flattened.
+fn own_names(field: &Field) -> Vec<String> {
     let Some(name) = &field.name else {
         return Vec::new();
     };
-    let mut names = match (&field.count, field.flatten) {
+    match (&field.count, field.flatten) {
         (Some(Amount::Given(n)), true) => (0..*n).map(|i| format!("{name}_{i}")).collect(),
         _ => vec![name.clone()],
-    };
-    names.extend(field.bits.iter().map(|b| b.name.clone()));
-    names
+    }
 }
 
 /// The smallest and largest value an integer (or bool) type holds.
@@ -3718,6 +3737,21 @@ pub struct SpecDocs {
     /// What each column means, by its name, in the spec's order: a field's description,
     /// its unit, and its enum as the value legend.
     pub columns: Vec<(String, ColumnNote)>,
+    /// The `[header]` fields that say what they hold, in the spec's order.
+    pub header: Vec<(String, ColumnNote)>,
+    /// The `[footer]` fields that say what they hold, in the spec's order.
+    pub footer: Vec<(String, ColumnNote)>,
+}
+
+/// A field's description and unit, when it gives either.
+fn field_note(field: &Field) -> Option<(String, ColumnNote)> {
+    let name = field.name.clone()?;
+    let note = ColumnNote {
+        description: field.description.clone().unwrap_or_default(),
+        unit: field.unit.clone().unwrap_or_default(),
+        values: Vec::new(),
+    };
+    (note != ColumnNote::default()).then_some((name, note))
 }
 
 /// The condition on the type field that picks a variant: `msg_type = 1`, or
@@ -3767,18 +3801,18 @@ impl Spec {
                 .collect::<Vec<_>>()
         };
         for field in all_fields(&self.records) {
-            let Some(name) = &field.name else { continue };
-            add(
-                name,
-                ColumnNote {
-                    description: field.description.clone().unwrap_or_default(),
-                    unit: field.unit.clone().unwrap_or_default(),
-                    values: match &field.meaning {
-                        Meaning::Enum(labels) => legend(labels),
-                        _ => Vec::new(),
-                    },
+            let note = ColumnNote {
+                description: field.description.clone().unwrap_or_default(),
+                unit: field.unit.clone().unwrap_or_default(),
+                values: match &field.meaning {
+                    Meaning::Enum(labels) => legend(labels),
+                    _ => Vec::new(),
                 },
-            );
+            };
+            // A flattened field is filed under each column it makes.
+            for name in own_names(field) {
+                add(&name, note.clone());
+            }
             for bit in &field.bits {
                 if let Some(labels) = &bit.labels {
                     add(
@@ -3807,9 +3841,19 @@ impl Spec {
                 columns: table.columns.len(),
             })
             .collect();
+        let header: Vec<(String, ColumnNote)> =
+            self.header.fields.iter().filter_map(field_note).collect();
+        let footer: Vec<(String, ColumnNote)> = self
+            .footer
+            .iter()
+            .flat_map(|f| &f.fields)
+            .filter_map(field_note)
+            .collect();
         let documented = self.description.is_some()
             || self.documentation.is_some()
             || !columns.is_empty()
+            || !header.is_empty()
+            || !footer.is_empty()
             || record_types.iter().any(|r| !r.description.is_empty());
         documented.then(|| SpecDocs {
             spec: self.name.clone(),
@@ -3818,6 +3862,8 @@ impl Spec {
             documentation: self.documentation.clone().unwrap_or_default(),
             record_types,
             columns,
+            header,
+            footer,
         })
     }
 }
@@ -6306,6 +6352,7 @@ fields = [
             ("name = \"a.b\"\n[blocks]\nheader = [{ name = \"n\", type = \"u4\" }]\nsize = \"n\"\ncompression = \"lzma9\"\n[records]\nfields = [{ name = \"x\", type = \"u1\" }]".to_string(), "expected one of none"),
             ("name = \"a.b\"\n[footer]\nfields = [{ name = \"n\", type = \"u4\" }]\n[records]\ncount = \"footer.m\"\nfields = [{ name = \"x\", type = \"u1\" }]".to_string(), "no footer field named `m`"),
             ("name = \"a.b\"\n[records]\ntype = \"k\"\nfields = [{ name = \"k\", type = \"u1\" }]\n[[variants]]\nname = \"a\"\nwhen = \"x\"\nfields = []".to_string(), "`k` is a u1"),
+            ("name = \"a.b\"\n[records]\ntype = \"k\"\nfields = [{ name = \"k\", type = \"u1\" }]\n[[variants]]\nname = \"a\"\nwhen = []\nfields = []".to_string(), "empty list picks no record"),
             ("name = \"a.b\"\n[records]\nframing = \"sync\"\nsync = \"\u{1bb}a\"\nfields = [{ name = \"x\", type = \"u1\" }]".to_string(), "expected hex"),
             ("name = \"ab\"\n[records]\nfields = [{ name = \"x\", type = \"u1\" }]".to_string(), "namespaced"),
             ("name = \"a.b\"\n[records]\nsize = 2\nfields = [{ name = \"x\", type = \"u4\" }]".to_string(), "more than 2"),
@@ -7346,6 +7393,27 @@ fields = [{ name = "ref", type = "u8" }, { name = "shares", type = "u4", unit = 
     }
 
     #[test]
+    fn a_flattened_fields_note_is_filed_under_each_of_its_columns() {
+        let text = "name = \"a.b\"\n[records]\nfields = [{ name = \"bid\", type = \"u4\", count = 3, flatten = true, description = \"Bid level\", unit = \"USD\" }]\n";
+        let spec = Spec::parse(text, None).unwrap();
+        let docs = spec.docs().unwrap();
+        let names: Vec<&str> = docs.columns.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["bid_0", "bid_1", "bid_2"]);
+        assert!(
+            docs.columns
+                .iter()
+                .all(|(_, note)| note.description == "Bid level" && note.unit == "USD")
+        );
+        let schema: Vec<String> = spec
+            .static_columns()
+            .unwrap()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(schema, names);
+    }
+
+    #[test]
     fn a_delimited_specs_columns_take_a_description_and_unit() {
         let text = r#"
 name = "acme.log"
@@ -7369,18 +7437,18 @@ volts = { unit = "V" }
             docs.columns,
             [
                 (
+                    "time".to_string(),
+                    ColumnNote {
+                        description: "When it was read".into(),
+                        ..Default::default()
+                    }
+                ),
+                (
                     "temp".to_string(),
                     ColumnNote {
                         description: "Air temperature".into(),
                         unit: "deg F".into(),
                         values: Vec::new(),
-                    }
-                ),
-                (
-                    "time".to_string(),
-                    ColumnNote {
-                        description: "When it was read".into(),
-                        ..Default::default()
                     }
                 ),
                 (

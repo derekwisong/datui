@@ -2761,7 +2761,7 @@ fn render_preview(
             // What → lists: a spec's variants are record types, a real file's members
             // tables.
             let inside = if entry.format_spec.is_some() {
-                (g.arrow_right, "one record type".to_string())
+                (g.arrow_right, "its record types".to_string())
             } else {
                 (g.arrow_right, "its tables".to_string())
             };

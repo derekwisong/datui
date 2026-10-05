@@ -308,25 +308,8 @@ fn rows_block(
 
 /// `ROWS` on a rule, and how many of the columns the block shows when not all of them.
 fn rows_heading(shown: usize, total: usize, width: usize, ctx: &RenderContext) -> Line<'static> {
-    if shown >= total {
-        return pane_heading("ROWS", width, ctx);
-    }
-    let note = format!("{shown} of {total} columns");
-    let g = glyphs::get();
-    let used = "ROWS".len() + 2 + note.chars().count() + 1;
-    Line::from(vec![
-        Span::styled(
-            "ROWS",
-            Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled(note, Style::default().fg(ctx.dimmed)),
-        Span::raw(" "),
-        Span::styled(
-            g.rule_h.repeat(width.saturating_sub(used)),
-            Style::default().fg(ctx.column_separator),
-        ),
-    ])
+    let note = (shown < total).then(|| format!("{shown} of {total} columns"));
+    pane_heading_counted("ROWS", note.as_deref(), width, ctx)
 }
 
 /// Below this many rows the wordmark gives way to the one-line title bar.
@@ -1921,20 +1904,42 @@ fn read_words(how: discover::HowRead) -> String {
 /// The same grammar as the list's section headers — a filled bar, not a box — so the
 /// two halves of the screen read as one program.
 fn pane_heading(text: &str, width: usize, ctx: &RenderContext) -> Line<'static> {
+    pane_heading_counted(text, None, width, ctx)
+}
+
+/// A pane heading with a flat chip after its title, as the list's sections carry
+/// their counts: `COLUMNS [20]`, `ROWS [5 of 20 columns]`. The title is always a
+/// noun, the count always in the chip.
+fn pane_heading_counted(
+    text: &str,
+    chip: Option<&str>,
+    width: usize,
+    ctx: &RenderContext,
+) -> Line<'static> {
     let g = glyphs::get();
     let label = text.to_string();
-    let rule_w = width.saturating_sub(label.chars().count() + 2);
-    Line::from(vec![
+    let mut used = label.chars().count() + 2;
+    let mut spans = vec![
         Span::styled(
             label,
             Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
-        Span::styled(
-            g.rule_h.repeat(rule_w),
-            Style::default().fg(ctx.column_separator),
-        ),
-    ])
+    ];
+    if let Some(chip) = chip {
+        let chip = format!(" {chip} ");
+        used += chip.chars().count() + 1;
+        spans.push(Span::styled(
+            chip,
+            Style::default().bg(ctx.controls_bg).fg(ctx.text_primary),
+        ));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(
+        g.rule_h.repeat(width.saturating_sub(used)),
+        Style::default().fg(ctx.column_separator),
+    ));
+    Line::from(spans)
 }
 
 /// The most column notes the details pane lists a line each.
@@ -2780,8 +2785,9 @@ fn render_preview(
     lines.push(Line::from(""));
     match app.home_schema(&entry) {
         Some(schema) if !schema.is_empty() => {
-            lines.push(pane_heading(
-                &format!("{} COLUMNS", schema.len()),
+            lines.push(pane_heading_counted(
+                "COLUMNS",
+                Some(&crate::numfmt::group_chrome(schema.len())),
                 width,
                 ctx,
             ));
@@ -5187,6 +5193,43 @@ fields = [{ name = "x", type = "u1" }]
         let cut = texts(&variant_lines(&variants, 8, 30, 2, &ctx));
         assert_eq!(cut.len(), 2, "{cut:#?}");
         assert!(cut[1].trim_start().ends_with("more"), "{cut:#?}");
+    }
+
+    /// Every pane heading reads the same way: a noun on the rule, and any count
+    /// in a flat chip after it, as the list's sections carry theirs.
+    #[test]
+    fn pane_headings_put_counts_in_a_chip() {
+        let ctx = RenderContext::for_test();
+        let text = |line: &Line| {
+            line.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        let rows = rows_heading(5, 20, 40, &ctx);
+        assert!(
+            text(&rows).starts_with("ROWS  5 of 20 columns  "),
+            "{:?}",
+            text(&rows)
+        );
+        let chip = rows
+            .spans
+            .iter()
+            .find(|s| s.content.contains("5 of 20"))
+            .unwrap();
+        assert_eq!(chip.style.bg, Some(ctx.controls_bg));
+        assert!(text(&rows_heading(5, 5, 40, &ctx)).starts_with("ROWS "));
+        let columns = pane_heading_counted("COLUMNS", Some("1,200"), 40, &ctx);
+        assert!(
+            text(&columns).starts_with("COLUMNS  1,200  "),
+            "{:?}",
+            text(&columns)
+        );
+        assert_eq!(
+            text(&columns).chars().count(),
+            39,
+            "as wide as a heading without one"
+        );
     }
 
     /// The pane's column notes sit under COLUMNS, a line each, with no key hint among

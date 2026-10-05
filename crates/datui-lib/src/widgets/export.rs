@@ -3,7 +3,7 @@
 //! side by side on its row, where ←/→ visibly step along them.
 
 use crate::CompressionFormat;
-use crate::export_modal::{ExportFocus, ExportFormat, ExportModal};
+use crate::export_modal::{COMPRESSION_OPTIONS, ExportFocus, ExportFormat, ExportModal};
 use crate::pointer::FieldId;
 use crate::render::context::RenderContext;
 use crate::widgets::ui::{FormRow, FormValue, HintBar, Surface};
@@ -38,7 +38,7 @@ const FORMAT_NAMES: [&str; ExportFormat::ALL.len()] = {
     names
 };
 
-fn compression_name(compression: Option<CompressionFormat>) -> &'static str {
+const fn compression_name(compression: Option<CompressionFormat>) -> &'static str {
     match compression {
         None => "None",
         Some(CompressionFormat::Gzip) => "Gzip",
@@ -47,6 +47,18 @@ fn compression_name(compression: Option<CompressionFormat>) -> &'static str {
         Some(CompressionFormat::Xz) => "XZ",
     }
 }
+
+/// Compression names, in the order ←/→ step them: shown side by side, as the
+/// formats are, so the choices are on screen rather than a bare `None`.
+const COMPRESSION_NAMES: [&str; COMPRESSION_OPTIONS.len()] = {
+    let mut names = [""; COMPRESSION_OPTIONS.len()];
+    let mut i = 0;
+    while i < names.len() {
+        names[i] = compression_name(COMPRESSION_OPTIONS[i]);
+        i += 1;
+    }
+    names
+};
 
 /// Where the dialog sits in `area`: centered and compact, a fixed height so
 /// nothing moves as the format's fields come and go.
@@ -110,6 +122,11 @@ pub fn render_export_modal(
         .position(|f| *f == modal.selected_format)
         .unwrap_or(0);
     let format_field = FieldId::of::<ExportModal>(ExportFocus::FormatSelector);
+    let compression_field = FieldId::of::<ExportModal>(ExportFocus::Compression);
+    let compression = COMPRESSION_OPTIONS
+        .iter()
+        .position(|c| *c == modal.compression())
+        .unwrap_or(0);
     let fields = modal.focus_order();
     for (i, &field) in fields.iter().enumerate() {
         let y = content.y + i as u16;
@@ -134,7 +151,11 @@ pub fn render_export_modal(
             }
             ExportFocus::Compression => (
                 "Compression:",
-                FormValue::Choice(compression_name(modal.compression())),
+                FormValue::Options {
+                    items: &COMPRESSION_NAMES,
+                    selected: compression,
+                    clicks: Some(compression_field.clone()),
+                },
             ),
             ExportFocus::SourceFile => ("Source file:", FormValue::Toggle(modal.source_file)),
         };
@@ -276,6 +297,30 @@ mod tests {
         assert_eq!(x_of("CSV"), 2 + 1 + LABEL_WIDTH, "{row:?}");
     }
 
+    /// Compression shows its choices on its row, as Format does, the chosen one
+    /// tinted: `None` reads as a choice among others, not a bare word.
+    #[test]
+    fn compression_shows_its_choices() {
+        let ctx = RenderContext::for_test();
+        let tint = ctx.highlight_style().bg.expect("the default theme tints");
+        let mut modal = ExportModal::new();
+        modal.active = true;
+        modal.selected_format = ExportFormat::Csv;
+        modal.csv_compression = Some(CompressionFormat::Zstd);
+        let buf = draw(&mut modal, MAX_WIDTH, HEIGHT);
+        let rows = lines(&buf);
+        let (y, row) = rows
+            .iter()
+            .enumerate()
+            .find(|(_, r)| r.contains("Compression:"))
+            .expect("the compression row");
+        for name in COMPRESSION_NAMES {
+            assert!(row.contains(&format!(" {name} ")), "{name} in {row:?}");
+        }
+        let x = row[..row.find(" Zstd ").unwrap()].chars().count() as u16;
+        assert_eq!(buf[(x + 1, y as u16)].bg, tint, "Zstd chosen: {row:?}");
+    }
+
     /// Too narrow for every value, the row shows the chosen one alone between
     /// its step marks, and still in the value column.
     #[test]
@@ -365,7 +410,11 @@ mod tests {
         let steps: Vec<(usize, usize)> = hits
             .iter()
             .filter_map(|(_, hit)| match hit {
-                Hit::Option { index, current, .. } => Some((*index, *current)),
+                Hit::Option {
+                    field: f,
+                    index,
+                    current,
+                } if *f == field => Some((*index, *current)),
                 _ => None,
             })
             .collect();

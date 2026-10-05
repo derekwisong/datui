@@ -21,6 +21,11 @@ pub fn text_end(bytes: &[u8]) -> Option<usize> {
     if bytes.starts_with(b"\xFF\xFE") || bytes.starts_with(b"\xFE\xFF") {
         return None;
     }
+    // A compressed file is not text, and its trailer can end in a zero: gzip's length.
+    const COMPRESSED: [&[u8]; 4] = [b"\x1F\x8B", b"\x28\xB5\x2F\xFD", b"BZh", b"\xFD7zXZ\x00"];
+    if COMPRESSED.iter().any(|magic| bytes.starts_with(magic)) {
+        return None;
+    }
     let end = bytes.iter().rposition(|&b| b != 0).map_or(0, |at| at + 1);
     if end >= 2 && bytes[end - 2] == 0 {
         return None;
@@ -103,6 +108,11 @@ mod tests {
             text_end(b"a,\0,b\n1,2"),
             None,
             "an interior NUL is the text's"
+        );
+        assert_eq!(
+            text_end(b"\x1F\x8B\x08\x00rest\x46\x00\x00\x00"),
+            None,
+            "gzip's length ends in zeros"
         );
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("plain.csv");

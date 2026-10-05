@@ -588,15 +588,16 @@ fn a_dialect_reaches_data_piped_in() {
 
 /// No path and data piped in reads it. A producer that is slow shows what has come
 /// in so far, and Ctrl+O while it is read puts the read down and removes the partial
-/// file, though the producer has not finished.
+/// file, though the producer has not finished. What it sent is no row yet, so the
+/// loading screen is up when Ctrl+O is typed.
 #[test]
 fn a_slow_producer_shows_progress_and_ctrl_o_removes_the_partial_file() {
     const CTRL_O: &[u8] = b"\x0f";
     let dirs = Dirs::new();
     let (mut session, mut pipe) = dirs.spawn_piped(&[]);
-    pipe.write_all(b"id,label\n0,ROWMARK\n").unwrap();
+    pipe.write_all(b"id,label\n0,ROW").unwrap();
     session.wait_for_screen("Reading stdin");
-    session.wait_for_screen("19 B");
+    session.wait_for_screen("14 B");
     assert_eq!(
         files_in(&dirs.spool()),
         1,
@@ -614,6 +615,22 @@ fn a_slow_producer_shows_progress_and_ctrl_o_removes_the_partial_file() {
     }
     session.type_keys(CTRL_Q);
     assert!(session.wait_exit().success());
+    drop(pipe);
+}
+
+/// Rows show while the producer is still sending, the footer counting the bytes; a
+/// quit then removes the spooled file, though the producer has not finished.
+#[test]
+fn rows_show_before_a_slow_producer_ends_and_a_quit_removes_the_spool() {
+    let dirs = Dirs::new();
+    let (mut session, mut pipe) = dirs.spawn_piped(&[]);
+    pipe.write_all(b"id,label\n0,ROWMARK\n").unwrap();
+    session.wait_for_screen("ROWMARK");
+    session.wait_for_screen("19 B");
+    assert_eq!(files_in(&dirs.spool()), 1, "the file is in the spool");
+    session.type_keys(CTRL_Q);
+    assert!(session.wait_exit().success());
+    assert_eq!(dirs.left(), 0, "the spooled file is removed");
     drop(pipe);
 }
 

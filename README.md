@@ -68,8 +68,7 @@ building from source.
 
 Time from launch, median of 5 runs (S3: 3, no cache, home network). Release
 build of 0.4.0-dev, Ryzen 7 9800X3D, Linux, warm page cache, 120×30
-pseudo-terminal. `-c theme.mode=dark` skips the background-color query, which
-a terminal that never answers it waits 100 ms for. The local files are
+pseudo-terminal. The local files are
 `scripts/bench/startup.py generate DIR 4000000`. Piped input shows its first
 rows once 1,000 lines have arrived, sooner from a slower producer.
 [Performance][performance] has more.

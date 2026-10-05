@@ -8631,8 +8631,19 @@ mod frecency {
         last: &str,
     ) -> (App, std::sync::mpsc::Receiver<AppEvent>, PathBuf, PathBuf) {
         let dir = tmp.path().join("data");
-        let often = super::touch(&dir, often);
-        let last = super::touch(&dir, last);
+        opened_in(tmp, &dir, often, last)
+    }
+
+    /// As [`opened`], the catalog naming the files through `dir`.
+    fn opened_in(
+        tmp: &TempDir,
+        dir: &std::path::Path,
+        often: &str,
+        last: &str,
+    ) -> (App, std::sync::mpsc::Receiver<AppEvent>, PathBuf, PathBuf) {
+        let data = tmp.path().join("data");
+        let often = super::touch(&data, often);
+        let last = super::touch(&data, last);
         let cache = CacheManager::with_dir(tmp.path().join("cache"));
         for path in [&often, &often, &often, &last] {
             assert_eq!(
@@ -8641,7 +8652,7 @@ mod frecency {
             );
         }
         let mut config = datui::config::AppConfig {
-            read_catalogs: vec![crate::dir_catalog(&dir)],
+            read_catalogs: vec![crate::dir_catalog(dir)],
             ..Default::default()
         };
         config.home.desktop_recents = false;
@@ -8659,7 +8670,7 @@ mod frecency {
         app.use_cache(cache);
         app.enter_home();
         settle(&mut app, &rx, |app| !app.home.newest_recent.is_none());
-        let canonical = |p: &PathBuf| std::fs::canonicalize(p).unwrap();
+        let canonical = |p: &PathBuf| datui::canonical::canonicalize(p).unwrap();
         (app, rx, canonical(&often), canonical(&last))
     }
 
@@ -8692,30 +8703,54 @@ mod frecency {
 
     /// Of two files `sales` matches equally, the one opened most is first, in a
     /// catalog's section too, where the name would otherwise put the other first.
+    /// The catalog spells the paths as written, not as the recents keep them
+    /// (`/var` for `/private/var` on macOS), so they are compared by name.
     #[test]
     fn a_match_opened_most_comes_first() {
         let tmp = TempDir::new().unwrap();
-        let (mut app, _rx, often, last) = opened(&tmp, "sales_q2.csv", "sales_q1.csv");
+        let (app, _rx, often, last) = opened(&tmp, "sales_q2.csv", "sales_q1.csv");
+        assert_eq!(sales_in_catalog(app), [name(&often), name(&last)]);
+    }
+
+    /// The same through a catalog that names the files by a link to their directory,
+    /// as macOS's `/var` is one to `/private/var`: the recents keep the path the link
+    /// leads to, and the row is still lifted.
+    #[cfg(unix)]
+    #[test]
+    fn a_match_named_through_a_link_is_lifted_too() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("data")).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(tmp.path().join("data"), &link).unwrap();
+        let (app, _rx, often, last) = opened_in(&tmp, &link, "sales_q2.csv", "sales_q1.csv");
+        assert_eq!(sales_in_catalog(app), [name(&often), name(&last)]);
+    }
+
+    fn name(path: &std::path::Path) -> String {
+        path.file_name().unwrap().to_string_lossy().into_owned()
+    }
+
+    /// The catalog's rows `sales` matches, by name: the catalog spells their paths as
+    /// written, not as the recents keep them.
+    fn sales_in_catalog(mut app: App) -> Vec<String> {
         for c in "sales".chars() {
             app.event(&AppEvent::Key(KeyEvent::new(
                 KeyCode::Char(c),
                 KeyModifiers::NONE,
             )));
         }
-        let in_dir: Vec<PathBuf> = app
-            .home
+        app.home
             .visible()
             .iter()
             .filter_map(|row| match row {
                 Row::Entry { section, entry, .. }
                     if app.home.sections[*section].title == "My datasets" =>
                 {
-                    Some(entry.path.clone())
+                    Some(entry.name.clone())
                 }
                 _ => None,
             })
-            .collect();
-        assert_eq!(in_dir, [often, last]);
+            .collect()
     }
 
     /// Visits are counted per open and kept only for what is still recent.
@@ -8729,8 +8764,8 @@ mod frecency {
             cache.push_recent(path);
         }
         let visits = cache.load_visits();
-        let a = std::fs::canonicalize(&a).unwrap();
-        let b = std::fs::canonicalize(&b).unwrap();
+        let a = datui::canonical::canonicalize(&a).unwrap();
+        let b = datui::canonical::canonicalize(&b).unwrap();
         assert_eq!(visits[&a].count, 2);
         assert_eq!(visits[&b].count, 1);
         let ranked = datui::cache::by_frecency(cache.load_recents(), &visits);

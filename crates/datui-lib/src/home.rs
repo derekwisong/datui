@@ -1663,6 +1663,43 @@ pub struct Listing {
     pub missing: std::collections::HashSet<PathBuf>,
 }
 
+impl Listing {
+    /// Adds each row's own path to `visits` where its canonical path has visits. The
+    /// recents store keys them canonically, and a catalog spells a file as written:
+    /// `/var/…` for `/private/var/…` on macOS, a short name or `/` on Windows. Looked
+    /// up as written, an often-opened row went unlifted.
+    ///
+    /// Canonicalizing touches the filesystem, so this runs on the listing's worker,
+    /// and only for a local row named like a visited file.
+    pub fn alias_visits(
+        &self,
+        visits: &mut std::collections::HashMap<PathBuf, crate::cache::Visits>,
+    ) {
+        let names: std::collections::HashSet<std::ffi::OsString> = visits
+            .keys()
+            .filter_map(|p| p.file_name().map(|n| n.to_os_string()))
+            .collect();
+        let mut aliases = Vec::new();
+        for row in self.sections.iter().flat_map(|s| &s.rows) {
+            let path = &row.path;
+            if visits.contains_key(path)
+                || row.table.is_some()
+                || !path.file_name().is_some_and(|n| names.contains(n))
+                || is_network_path(path)
+            {
+                continue;
+            }
+            if let Some(v) = crate::canonical::canonicalize(path)
+                .ok()
+                .and_then(|canonical| visits.get(&canonical))
+            {
+                aliases.push((path.clone(), *v));
+            }
+        }
+        visits.extend(aliases);
+    }
+}
+
 /// Find out what a row is, and then what is in it.
 ///
 /// One pass, because the two questions are asked of the same filesystem and the

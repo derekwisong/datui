@@ -7234,6 +7234,8 @@ impl App {
                     request.desktop_dirs = home::desktop_recent_dirs();
                 }
                 let listing = home::build_listing(&request);
+                let mut visits = visits;
+                listing.alias_visits(&mut visits);
                 // A record shown is a record used: the ones eviction keeps.
                 let shown: Vec<PathBuf> = listing
                     .sections

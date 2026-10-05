@@ -887,6 +887,7 @@ fn chart_hints(app: &crate::App) -> Vec<Hint> {
                 ChartFocus::Type => "Type",
                 ChartFocus::TimeUnit => "Bucket",
                 ChartFocus::Aggregate => "Aggregate",
+                ChartFocus::Quantile => "Percentile",
                 ChartFocus::Bins | ChartFocus::Bandwidth | ChartFocus::LimitRows => "Adjust",
                 ChartFocus::Order => "Order",
                 ChartFocus::Range => "Range",

@@ -903,7 +903,7 @@ pub const SCREENS: &[Screen] = &[
                     k("Space / Enter", "Act", "Open a shelf's picker, toggle, or step the row")
                         .more("On X, Y or Color: open its picker. On the line under Color: pick the values that get a series, by rows. On an option: toggle it or take its next value. The panel applies as it changes, so Enter acts as Space does"),
                     k("← / → (h/l)", "Change", "Step the type, bucket, aggregate or option")
-                        .more("Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, min, max), cumulative, bins, range, order or sample size; on a shelf that takes one column, the previous or next column; on the line under Color, turn Other (every value without a series) on or off; flip a toggle"),
+                        .more("Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, stdev, quantile, min, max, first, last) and a quantile's percentile, cumulative, bins, range, order or sample size; on a shelf that takes one column, the previous or next column; on the line under Color, turn Other (every value without a series) on or off; flip a toggle"),
                     k("+ / -", "Adjust", "Bins, bandwidth or sample size"),
                     k("PgUp / PgDn", "Step", "Adjust the sample size in bigger steps"),
                     k("g", "Grid", "Grid on or off")

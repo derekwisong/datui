@@ -143,7 +143,7 @@ impl App {
     }
 
     /// The filters and sort in effect, as the footer writes them.
-    fn view_state(&self) -> ViewState {
+    pub(crate) fn view_state(&self) -> ViewState {
         let Some(state) = self.data_table_state.as_ref() else {
             return ViewState::default();
         };

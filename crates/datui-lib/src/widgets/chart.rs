@@ -267,6 +267,14 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
     if modal.takes_aggregate() {
         // With cumulative on the rows run as a total and the aggregate waits.
         let value = match encoding.y.cumulative {
+            // First and last say which order the rows are read in.
+            Cumulative::Off if encoding.y.aggregate.follows_row_order() => {
+                let order = modal.row_order.as_deref().unwrap_or("row order");
+                vec![
+                    plain(encoding.y.aggregate.label(), ctx),
+                    quiet(format!(" {} by {order}", g.middot), ctx),
+                ]
+            }
             Cumulative::Off => vec![plain(encoding.y.aggregate.label(), ctx)],
             _ if encoding.y.aggregate == Aggregate::Count => vec![plain("running count", ctx)],
             how => vec![
@@ -278,6 +286,10 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
         };
         // A row of its own: unlabeled under Y, `none` read as a second Y column.
         lines.push(row("Aggregate", value, Some(ChartFocus::Aggregate), false));
+        if rows.contains(&ChartFocus::Quantile) {
+            let p = format!("p{}", encoding.y.quantile());
+            lines.push(sub(vec![plain(p, ctx)], Some(ChartFocus::Quantile), false));
+        }
     }
     lines.push(PanelLine::Blank);
 
@@ -2119,6 +2131,54 @@ mod tests {
         assert_eq!(line(&mut modal), "top 10 + 6 other");
         modal.spec.encoding.color.values = vec![Some("C3".to_string()), Some("C9".to_string())];
         assert_eq!(line(&mut modal), "2 picked + 14 other");
+    }
+
+    /// A quantile's percentile sits on the line under Aggregate; first and last say
+    /// the order they read the rows in, the sort's own words when there is one, and
+    /// only then read the view sorted.
+    #[test]
+    fn the_aggregate_row_says_percentile_and_order() {
+        let mut modal = open_modal();
+        modal.set_mark(Mark::Line);
+        modal.spec.encoding.x.field = Some("volume".to_string());
+        modal.spec.encoding.y.field = vec!["price".to_string()];
+        let panel = |modal: &mut ChartModal| -> Vec<String> {
+            render_rows(modal, 100, 30)
+                .iter()
+                .map(|r| r.chars().take(40).collect::<String>().trim().to_string())
+                .collect()
+        };
+        let g = crate::glyphs::get();
+        modal.spec.encoding.y.aggregate = Aggregate::Quantile;
+        let rows = panel(&mut modal);
+        let at = rows
+            .iter()
+            .position(|r| r.starts_with("Aggregate"))
+            .unwrap();
+        assert_eq!(rows[at], "Aggregate    quantile");
+        assert_eq!(rows[at + 1], "p90");
+        modal.step(ChartFocus::Quantile, -1);
+        assert_eq!(panel(&mut modal)[at + 1], "p75");
+
+        modal.spec.encoding.y.aggregate = Aggregate::Last;
+        let rows = panel(&mut modal);
+        assert_eq!(
+            rows[at],
+            format!("Aggregate    last {} by row order", g.middot)
+        );
+        let request = crate::chart_jobs::ChartRequest::from_modal(&modal).unwrap();
+        assert!(!request.sorted);
+        modal.row_order = Some(format!("time {}", g.sort_asc));
+        let rows = panel(&mut modal);
+        assert_eq!(
+            rows[at],
+            format!("Aggregate    last {} by time {}", g.middot, g.sort_asc)
+        );
+        let request = crate::chart_jobs::ChartRequest::from_modal(&modal).unwrap();
+        assert!(request.sorted, "first and last read the view sorted");
+        modal.spec.encoding.y.aggregate = Aggregate::Mean;
+        let request = crate::chart_jobs::ChartRequest::from_modal(&modal).unwrap();
+        assert!(!request.sorted, "a mean needs no order");
     }
 
     /// Ten series take ten colors, each its own, and the legend names all ten.

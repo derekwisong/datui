@@ -141,20 +141,33 @@ pub enum Aggregate {
     Sum,
     Mean,
     Median,
+    /// The sample standard deviation (one degree of freedom); a group of one row
+    /// has none.
+    Stdev,
+    /// A percentile of Y, linearly interpolated: [`YEncoding::quantile`].
+    Quantile,
     Min,
     Max,
+    /// The first and last Y of each group in the view's row order: its sort, or the
+    /// order the rows were read in.
+    First,
+    Last,
 }
 
 impl Aggregate {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 12] = [
         Self::None,
         Self::Count,
         Self::Distinct,
         Self::Sum,
         Self::Mean,
         Self::Median,
+        Self::Stdev,
+        Self::Quantile,
         Self::Min,
         Self::Max,
+        Self::First,
+        Self::Last,
     ];
 
     pub fn label(self) -> &'static str {
@@ -165,13 +178,50 @@ impl Aggregate {
             Self::Sum => "sum",
             Self::Mean => "mean",
             Self::Median => "median",
+            Self::Stdev => "stdev",
+            Self::Quantile => "quantile",
             Self::Min => "min",
             Self::Max => "max",
+            Self::First => "first",
+            Self::Last => "last",
         }
     }
 
-    pub fn vega_lite(self) -> Option<&'static str> {
-        (self != Self::None).then(|| self.label())
+    /// How it reads in a title or a column name: a quantile as its percentile,
+    /// `p90`.
+    pub fn named(self, quantile: u8) -> String {
+        match self {
+            Self::Quantile => format!("p{quantile}"),
+            other => other.label().to_string(),
+        }
+    }
+
+    /// The Vega-Lite aggregate. A quantile is one only at the quartiles and the
+    /// median; first and last have none, and are left out.
+    pub fn vega_lite(self, quantile: u8) -> Option<&'static str> {
+        match self {
+            Self::None | Self::First | Self::Last => None,
+            Self::Quantile => match quantile {
+                25 => Some("q1"),
+                50 => Some("median"),
+                75 => Some("q3"),
+                _ => None,
+            },
+            other => Some(other.label()),
+        }
+    }
+
+    /// Whether it reads the rows in the view's order.
+    pub fn follows_row_order(self) -> bool {
+        matches!(self, Self::First | Self::Last)
+    }
+
+    /// Whether every value it makes may have a fraction, whatever Y is.
+    pub fn is_fractional(self) -> bool {
+        matches!(
+            self,
+            Self::Mean | Self::Median | Self::Stdev | Self::Quantile
+        )
     }
 
     /// Whether Y may be any column, not only a number: a count of its distinct
@@ -180,10 +230,15 @@ impl Aggregate {
         self == Self::Distinct
     }
 
-    /// Whether cumulative can run with it. A running sum of distinct counts is not
-    /// the distinct count so far, so it is left out rather than drawn wrong.
+    /// Whether cumulative can run with it: the rows run as a total, which for a
+    /// count, sum, mean, median, min or max is what was asked. A running sum of
+    /// distinct counts is not the distinct count so far, nor one of deviations,
+    /// percentiles or first and last values anything: those take none.
     pub fn runs_cumulative(self) -> bool {
-        !matches!(self, Self::None | Self::Distinct)
+        matches!(
+            self,
+            Self::Count | Self::Sum | Self::Mean | Self::Median | Self::Min | Self::Max
+        )
     }
 
     /// Whether every value it makes is a whole number, whatever Y is.
@@ -231,6 +286,27 @@ pub struct YEncoding {
     pub field: Vec<String>,
     pub aggregate: Aggregate,
     pub cumulative: Cumulative,
+    /// The percentile a quantile takes; unset, [`QUANTILE_DEFAULT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percentile: Option<u8>,
+}
+
+/// The percentiles the quantile steps through.
+pub const QUANTILES: [u8; 8] = [1, 5, 10, 25, 75, 90, 95, 99];
+
+/// The percentile a quantile starts at.
+pub const QUANTILE_DEFAULT: u8 = 90;
+
+impl YEncoding {
+    /// The percentile a quantile takes.
+    pub fn quantile(&self) -> u8 {
+        self.percentile.unwrap_or(QUANTILE_DEFAULT)
+    }
+
+    /// The aggregate as a title or a column name says it: `mean`, `p90`.
+    pub fn aggregate_name(&self) -> String {
+        self.aggregate.named(self.quantile())
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -274,7 +350,12 @@ impl ChartSpec {
         if let Some(field) = self.encoding.y.field.first() {
             y.insert("field".into(), field.clone().into());
         }
-        if let Some(aggregate) = self.encoding.y.aggregate.vega_lite() {
+        if let Some(aggregate) = self
+            .encoding
+            .y
+            .aggregate
+            .vega_lite(self.encoding.y.quantile())
+        {
             y.insert("aggregate".into(), aggregate.into());
         }
         let mut encoding = serde_json::Map::new();
@@ -341,6 +422,8 @@ pub enum ChartFocus {
     Y,
     /// Under Y: the aggregate.
     Aggregate,
+    /// Under the aggregate, a quantile's percentile.
+    Quantile,
     /// The Color shelf's column.
     Color,
     /// Under Color: which values get a series.
@@ -410,6 +493,9 @@ pub struct ChartModal {
     /// The distinct colors the series slots come out as on this terminal
     /// (`Theme::series_colors`); `None` before the app says, read as [`COLOR_MAX`].
     pub series_cap: Option<usize>,
+    /// The view's sort as the footer writes it (`time ▲`), which first and last
+    /// read the rows in; `None` for the order they were read in.
+    pub row_order: Option<String>,
     /// The cursor column's type when `c` chose the chart (`f64`), shown under Type
     /// until the type is changed.
     pub suggested: Option<String>,
@@ -773,6 +859,9 @@ impl ChartModal {
         }
         if self.takes_aggregate() {
             rows.push(Aggregate);
+            if self.aggregate() == self::Aggregate::Quantile {
+                rows.push(Quantile);
+            }
         }
         if self.color_use() == ShelfUse::Used {
             rows.push(Color);
@@ -1231,6 +1320,10 @@ impl ChartModal {
                 let y = &mut self.spec.encoding.y;
                 y.cumulative = crate::form::step_value(&Cumulative::ALL, y.cumulative, delta);
             }
+            ChartFocus::Quantile => {
+                let y = &mut self.spec.encoding.y;
+                y.percentile = Some(crate::form::step_value(&QUANTILES, y.quantile(), delta));
+            }
             ChartFocus::Y if self.spec.mark == Mark::Histogram => self.share = !self.share,
             ChartFocus::Order => {
                 self.bar_order = crate::form::step_value(&BarOrder::ALL, self.bar_order, delta);
@@ -1399,7 +1492,7 @@ impl ChartModal {
                 let mut how = String::new();
                 // Cumulative runs over the rows, not the aggregate.
                 if aggregate != Aggregate::None && encoding.y.cumulative == Cumulative::Off {
-                    how.push_str(aggregate.label());
+                    how.push_str(&encoding.y.aggregate_name());
                     how.push(' ');
                 }
                 let unit = encoding.x.time_unit;
@@ -1626,11 +1719,12 @@ mod tests {
         assert_eq!(
             labels,
             [
-                "count", "distinct", "sum", "mean", "median", "min", "max", "none"
+                "count", "distinct", "sum", "mean", "median", "stdev", "quantile", "min", "max",
+                "first", "last", "none"
             ]
         );
         modal.step(ChartFocus::Aggregate, -1);
-        assert_eq!(modal.aggregate(), Aggregate::Max);
+        assert_eq!(modal.aggregate(), Aggregate::Last);
     }
 
     #[test]
@@ -1745,7 +1839,47 @@ mod tests {
         modal.step(ChartFocus::Aggregate, 1);
         assert_eq!(modal.aggregate(), Aggregate::Sum);
         assert!(modal.spec.encoding.y.field.is_empty());
-        assert_eq!(Aggregate::Distinct.vega_lite(), Some("distinct"));
+        assert_eq!(Aggregate::Distinct.vega_lite(90), Some("distinct"));
+    }
+
+    /// A quantile's percentile is the line under Aggregate: ←/→ step it, the title
+    /// says `p95 by month`, and Vega-Lite names the quartiles. Stdev, quantile,
+    /// first and last take no cumulative.
+    #[test]
+    fn a_quantile_steps_its_percentile() {
+        let mut modal = open_on(Some(("date", &DataType::Date)));
+        step_to(&mut modal, Aggregate::Quantile, 1);
+        modal.step(ChartFocus::TimeUnit, 2);
+        assert_eq!(modal.spec.encoding.x.time_unit, TimeUnit::Month);
+        let rows = modal.row_order();
+        let at = rows
+            .iter()
+            .position(|r| *r == ChartFocus::Aggregate)
+            .unwrap();
+        assert_eq!(rows[at + 1], ChartFocus::Quantile);
+        assert_eq!(modal.how(), "p90 by month");
+        modal.step(ChartFocus::Quantile, 1);
+        assert_eq!(modal.spec.encoding.y.quantile(), 95);
+        assert_eq!(modal.how(), "p95 by month");
+        modal.step(ChartFocus::Quantile, 1);
+        modal.step(ChartFocus::Quantile, 1);
+        assert_eq!(modal.spec.encoding.y.quantile(), 1, "wraps");
+        assert_eq!(Aggregate::Quantile.vega_lite(25), Some("q1"));
+        assert_eq!(Aggregate::Quantile.vega_lite(75), Some("q3"));
+        assert_eq!(Aggregate::Quantile.vega_lite(90), None);
+        assert_eq!(Aggregate::Last.vega_lite(90), None);
+        for aggregate in [
+            Aggregate::Stdev,
+            Aggregate::Quantile,
+            Aggregate::First,
+            Aggregate::Last,
+        ] {
+            modal.spec.encoding.y.aggregate = aggregate;
+            assert!(!modal.row_order().contains(&ChartFocus::Cumulative));
+        }
+        modal.spec.encoding.y.aggregate = Aggregate::Last;
+        assert!(!modal.row_order().contains(&ChartFocus::Quantile));
+        assert_eq!(modal.how(), "last by month");
     }
 
     /// Each type's phrase reads alone and never names the Y column, which its axis

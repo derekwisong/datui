@@ -64,7 +64,7 @@ pub fn render(
                 chart_data::AxisNumbers::count(&ctx.number_format)
             }
             // A mean or median of whole numbers is not whole.
-            Aggregate::Mean | Aggregate::Median => columns(&spec.encoding.y.field).fractional(),
+            a if a.is_fractional() => columns(&spec.encoding.y.field).fractional(),
             _ => columns(&spec.encoding.y.field),
         }
     };

@@ -180,6 +180,8 @@ pub(crate) struct ChartRequest {
     pub(crate) x_only: bool,
     /// Most series drawn: one per distinct series color on this terminal.
     pub(crate) series_cap: usize,
+    /// First or last over a sorted view: the rows are read in its order.
+    pub(crate) sorted: bool,
 }
 
 impl ChartRequest {
@@ -261,6 +263,9 @@ impl ChartRequest {
             row_limit: if aggregates { None } else { modal.row_limit },
             envelope: mark == Mark::Line && !aggregates && !colored,
             x_only,
+            sorted: aggregates
+                && spec.encoding.y.aggregate.follows_row_order()
+                && modal.row_order.is_some(),
             spec,
             series_cap,
         })
@@ -323,6 +328,7 @@ impl ChartRequest {
                             time_unit: encoding.x.time_unit,
                             ys: &encoding.y.field,
                             aggregate,
+                            quantile: encoding.y.quantile(),
                             cumulative: encoding.y.cumulative,
                             color: split,
                         },
@@ -373,6 +379,7 @@ impl ChartRequest {
                         category: x,
                         value: first_y,
                         aggregate: encoding.y.aggregate,
+                        quantile: encoding.y.quantile(),
                         color: split,
                         order: self.order,
                         cap: chart_data::BAR_CAP,

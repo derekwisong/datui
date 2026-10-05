@@ -425,7 +425,7 @@ Where a dataset opens.
 | `[ / ]` | Previous or next chart type |
 | `Tab / Shift+Tab (↑ / ↓)` | Next or previous row of the panel, wrapping (j/k too). A shelf the type does not use is dimmed and skipped |
 | `Space / Enter` | On X, Y or Color: open its picker. On the line under Color: pick the values that get a series, by rows. On an option: toggle it or take its next value. The panel applies as it changes, so Enter acts as Space does |
-| `← / → (h/l)` | Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, min, max), cumulative, bins, range, order or sample size; on a shelf that takes one column, the previous or next column; on the line under Color, turn Other (every value without a series) on or off; flip a toggle |
+| `← / → (h/l)` | Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, stdev, quantile, min, max, first, last) and a quantile's percentile, cumulative, bins, range, order or sample size; on a shelf that takes one column, the previous or next column; on the line under Color, turn Other (every value without a series) on or off; flip a toggle |
 | `+ / -` | Bins, bandwidth or sample size |
 | `PgUp / PgDn` | Adjust the sample size in bigger steps |
 | `g` | Grid on or off at the labeled ticks: Line, Scatter, Histogram, Box and KDE. [analysis] chart_grid sets where it starts |

@@ -12783,6 +12783,7 @@ impl App {
                         .map(|(name, _)| name.to_string())
                         .collect();
                     self.chart_modal.series_cap = Some(self.theme.series_colors().len());
+                    self.chart_modal.row_order = self.view_state().sort;
                     self.chart_modal.open(
                         ChartColumns {
                             numeric: &numeric_columns,
@@ -13064,7 +13065,12 @@ impl App {
         };
         // Unsorted: the rows a chart draws do not depend on the table's order, a line
         // is drawn in X order anyway, and a sort would make a sampled read read it all.
-        let lf = state.analysis_lf();
+        // First and last are the order's: they read the view as sorted.
+        let lf = if request.sorted {
+            state.lf().clone()
+        } else {
+            state.analysis_lf()
+        };
         let schema = state.schema().clone();
         let dataset = Some(state.len_generation());
         let sampling = chart_data::ChartSampling {
@@ -14541,7 +14547,7 @@ impl App {
                 Aggregate::Count | Aggregate::Distinct => {
                     chart_data::AxisNumbers::count(&self.number_format)
                 }
-                Aggregate::Mean | Aggregate::Median => self.axes_numbers(ys).fractional(),
+                a if a.is_fractional() => self.axes_numbers(ys).fractional(),
                 _ => self.axes_numbers(ys),
             };
             let names = if aggregate == Aggregate::Count {
@@ -14551,7 +14557,7 @@ impl App {
             };
             let title = match aggregate {
                 Aggregate::None | Aggregate::Count => names,
-                aggregate => format!("{} {names}", aggregate.label()),
+                _ => format!("{} {names}", spec.encoding.y.aggregate_name()),
             };
             Axis {
                 title,

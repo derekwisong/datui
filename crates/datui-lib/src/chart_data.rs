@@ -2378,6 +2378,8 @@ pub struct AggregateSpec<'a> {
     pub time_unit: crate::chart_modal::TimeUnit,
     pub ys: &'a [String],
     pub aggregate: crate::chart_modal::Aggregate,
+    /// The percentile a quantile takes.
+    pub quantile: u8,
     pub cumulative: crate::chart_modal::Cumulative,
     pub color: Option<ColorSplit<'a>>,
 }
@@ -2392,18 +2394,45 @@ fn y_values(y: Expr, aggregate: crate::chart_modal::Aggregate) -> Expr {
     }
 }
 
-/// `values`' aggregate in a plan.
-fn aggregate_expr(values: Expr, aggregate: crate::chart_modal::Aggregate) -> Expr {
+/// The row index first and last read the rows' order by.
+const ROW_ORDER: &str = "__i";
+
+/// `values`' aggregate in a plan. A quantile takes `quantile` percent; first and
+/// last go by [`ROW_ORDER`], which the plan must carry, so a group's rows keep the
+/// view's order whatever order the engine hands them over in.
+fn aggregate_expr(values: Expr, aggregate: crate::chart_modal::Aggregate, quantile: u8) -> Expr {
     use crate::chart_modal::Aggregate;
+    let in_order = || {
+        values
+            .clone()
+            .sort_by([col(ROW_ORDER)], SortMultipleOptions::default())
+            .drop_nulls()
+    };
     match aggregate {
         // Nulls are no value: a group of only nulls has none, a gap.
         Aggregate::Distinct => values.drop_nulls().n_unique().cast(DataType::Float64),
         Aggregate::Sum => values.sum(),
         Aggregate::Mean => values.mean(),
         Aggregate::Median => values.median(),
+        // The sample deviation: null for a group of one, which draws no point.
+        Aggregate::Stdev => values.std(1),
+        Aggregate::Quantile => {
+            values.quantile(lit(f64::from(quantile) / 100.0), QuantileMethod::Linear)
+        }
         Aggregate::Min => values.min(),
         Aggregate::Max => values.max(),
+        Aggregate::First => in_order().first(),
+        Aggregate::Last => in_order().last(),
         Aggregate::None | Aggregate::Count => len().cast(DataType::Float64),
+    }
+}
+
+/// `lf` with [`ROW_ORDER`] when `aggregate` reads the rows' order.
+fn with_row_order(lf: &LazyFrame, aggregate: crate::chart_modal::Aggregate) -> LazyFrame {
+    if aggregate.follows_row_order() {
+        lf.clone().with_row_index(ROW_ORDER, None)
+    } else {
+        lf.clone()
     }
 }
 
@@ -2498,12 +2527,15 @@ pub fn prepare_aggregate_xy(
     for (i, y) in ys.iter().enumerate() {
         select.push(y_values(col(y.as_str()), spec.aggregate).alias(format!("__y{i}")));
     }
-    let mut plan = lf.clone();
+    let plan = with_row_order(lf, spec.aggregate);
+    if spec.aggregate.follows_row_order() {
+        select.push(col(ROW_ORDER));
+    }
     if let Some(color) = spec.color {
         select.push(group_expr(color).alias("__g"));
         keys.push(col("__g"));
     }
-    plan = plan.select(select).filter(col("__x").is_not_null());
+    let mut plan = plan.select(select).filter(col("__x").is_not_null());
     if spec.color.is_some() {
         plan = plan.filter(col("__g").is_not_null());
     }
@@ -2511,7 +2543,7 @@ pub fn prepare_aggregate_xy(
     for i in 0..ys.len() {
         let y = col(format!("__y{i}"));
         let made = match spec.cumulative {
-            Cumulative::Off => aggregate_expr(y.clone(), spec.aggregate),
+            Cumulative::Off => aggregate_expr(y.clone(), spec.aggregate, spec.quantile),
             Cumulative::Sum => y.clone().sum(),
             Cumulative::Compound => (lit(1.0) + y.clone()).log(lit(std::f64::consts::E)).sum(),
         };
@@ -2646,6 +2678,8 @@ pub struct BarAggregate<'a> {
     /// The Y column; none for a count.
     pub value: Option<&'a str>,
     pub aggregate: crate::chart_modal::Aggregate,
+    /// The percentile a quantile takes.
+    pub quantile: u8,
     pub color: Option<ColorSplit<'a>>,
     pub order: BarOrder,
     pub cap: usize,
@@ -2664,6 +2698,7 @@ pub fn prepare_bar_aggregate(
         category,
         value,
         aggregate,
+        quantile,
         color,
         order,
         cap,
@@ -2690,16 +2725,19 @@ pub fn prepare_bar_aggregate(
     if let Some(value) = value {
         select.push(y_values(col(value), aggregate).alias("__v"));
     }
+    if aggregate.follows_row_order() {
+        select.push(col(ROW_ORDER));
+    }
     if let Some(color) = color {
         select.push(group_expr(color).alias("__g"));
         keys.push(col("__g"));
     }
-    let mut plan = lf.clone().select(select);
+    let mut plan = with_row_order(lf, aggregate).select(select);
     if color.is_some() {
         plan = plan.filter(col("__g").is_not_null());
     }
     let measure = match value {
-        Some(_) => aggregate_expr(col("__v"), aggregate),
+        Some(_) => aggregate_expr(col("__v"), aggregate, quantile),
         None => len().cast(DataType::Float64),
     };
     // The values behind each bar: none is no bar, not the zero a sum of nothing is.
@@ -2727,7 +2765,14 @@ pub fn prepare_bar_aggregate(
     // A sum, least or greatest of whole numbers is whole; a count always is.
     let whole = aggregate.is_count()
         || (value_dtype.is_integer()
-            && matches!(aggregate, Aggregate::Sum | Aggregate::Min | Aggregate::Max));
+            && matches!(
+                aggregate,
+                Aggregate::Sum
+                    | Aggregate::Min
+                    | Aggregate::Max
+                    | Aggregate::First
+                    | Aggregate::Last
+            ));
     let categories = df.column(category)?.as_materialized_series().clone();
     let labels_series = crate::past_calendar::cast_text(&categories, CastOptions::NonStrict)?;
     let labels: Vec<Option<&str>> = labels_series.str()?.iter().collect();
@@ -2747,7 +2792,7 @@ pub fn prepare_bar_aggregate(
         .map(|(v, &n)| v.filter(|v| v.is_finite() && n > 0))
         .collect();
     let value_column = match value {
-        Some(value) => format!("{} {value}", aggregate.label()),
+        Some(value) => format!("{} {value}", aggregate.named(quantile)),
         None => "count".to_string(),
     };
     let mut data = BarData {
@@ -4102,6 +4147,7 @@ mod tests {
                 time_unit: unit,
                 ys: &ys,
                 aggregate,
+                quantile: 90,
                 cumulative,
                 color,
             },
@@ -4271,6 +4317,7 @@ mod tests {
                 time_unit: crate::chart_modal::TimeUnit::None,
                 ys: &ys,
                 aggregate: Aggregate::Mean,
+                quantile: 90,
                 cumulative: Cumulative::Off,
                 color: None,
             },
@@ -4333,6 +4380,104 @@ mod tests {
         assert_eq!(out.series[1], [(1.0, 1.0)]);
     }
 
+    /// Stdev, a quantile, first and last per X: the sample deviation (none for a
+    /// group of one, so no point), a linearly interpolated percentile, and the first
+    /// and last value in the rows' order, nulls passed over, which a sort sets.
+    #[test]
+    fn stdev_quantile_first_and_last_per_x() {
+        use crate::chart_modal::{Aggregate, Cumulative, TimeUnit};
+        // Read order is not value order: x=1 reads 4, 1, 3, 2.
+        let lf = df!(
+            "x" => [1i64, 1, 1, 1, 2, 3, 3],
+            "y" => [Some(4.0), Some(1.0), Some(3.0), Some(2.0), Some(9.0), Some(5.0), None],
+            "t" => [3i64, 1, 4, 2, 1, 2, 1],
+            "c" => ["a", "b", "a", "b", "a", "a", "a"]
+        )
+        .unwrap()
+        .lazy();
+        let schema = lf.clone().collect_schema().unwrap();
+        let ys = ["y".to_string()];
+        let run = |lf: &LazyFrame, aggregate, quantile| {
+            let out = prepare_aggregate_xy(
+                lf,
+                schema.as_ref(),
+                &AggregateSpec {
+                    x: "x",
+                    time_unit: TimeUnit::None,
+                    ys: &ys,
+                    aggregate,
+                    quantile,
+                    cumulative: Cumulative::Off,
+                    color: None,
+                },
+                &all_rows(),
+            )
+            .unwrap();
+            out.series[0].clone()
+        };
+        // x=1: 4, 1, 3, 2, mean 2.5, sample deviation sqrt(5/3).
+        let stdev = run(&lf, Aggregate::Stdev, 90);
+        assert_eq!(stdev.len(), 1, "x=2 and x=3 have one value each: {stdev:?}");
+        assert!((stdev[0].1 - (5.0f64 / 3.0).sqrt()).abs() < 1e-12);
+        // p90 of 1, 2, 3, 4: 3 + 0.7 = 3.7; p25: 1 + 0.75 = 1.75.
+        let p90 = run(&lf, Aggregate::Quantile, 90);
+        assert!((p90[0].1 - 3.7).abs() < 1e-12, "{p90:?}");
+        assert_eq!(p90[1], (2.0, 9.0));
+        let p25 = run(&lf, Aggregate::Quantile, 25);
+        assert!((p25[0].1 - 1.75).abs() < 1e-12, "{p25:?}");
+        // In read order: x=1 starts at 4 and ends at 2; x=3's last value is null,
+        // so its last is the value before.
+        assert_eq!(
+            run(&lf, Aggregate::First, 90),
+            [(1.0, 4.0), (2.0, 9.0), (3.0, 5.0)]
+        );
+        assert_eq!(
+            run(&lf, Aggregate::Last, 90),
+            [(1.0, 2.0), (2.0, 9.0), (3.0, 5.0)]
+        );
+        // Sorted by t: x=1 reads 1, 2, 4, 3.
+        let sorted = lf.clone().sort(["t"], Default::default());
+        assert_eq!(run(&sorted, Aggregate::First, 90)[0], (1.0, 1.0));
+        assert_eq!(run(&sorted, Aggregate::Last, 90)[0], (1.0, 3.0));
+        // A bar of the last per category, split by a color.
+        let groups = [Some("a".to_string()), Some("b".to_string())];
+        let bars = prepare_bar_aggregate(
+            &lf,
+            &BarAggregate {
+                category: "x",
+                value: Some("y"),
+                aggregate: Aggregate::Last,
+                quantile: 90,
+                color: Some(ColorSplit {
+                    column: "c",
+                    groups: &groups,
+                    other: false,
+                }),
+                order: BarOrder::Label,
+                cap: BAR_CAP,
+            },
+            &all_rows(),
+        )
+        .unwrap();
+        assert_eq!(bars.bars[0].by_group, [Some(3.0), Some(2.0)]);
+        assert_eq!(bars.value_column, "last y");
+        let p = prepare_bar_aggregate(
+            &lf,
+            &BarAggregate {
+                category: "x",
+                value: Some("y"),
+                aggregate: Aggregate::Quantile,
+                quantile: 90,
+                color: None,
+                order: BarOrder::Label,
+                cap: BAR_CAP,
+            },
+            &all_rows(),
+        )
+        .unwrap();
+        assert_eq!(p.value_column, "p90 y");
+    }
+
     /// A distinct count of a string Y per X: nulls are no value, a group of only
     /// nulls is a gap; per color, and within a time bucket.
     #[test]
@@ -4358,6 +4503,7 @@ mod tests {
                     time_unit: unit,
                     ys: &ys,
                     aggregate: Aggregate::Distinct,
+                    quantile: 90,
                     cumulative: Cumulative::Off,
                     color,
                 },
@@ -4389,6 +4535,7 @@ mod tests {
                 category: "sex",
                 value: Some("name"),
                 aggregate: Aggregate::Distinct,
+                quantile: 90,
                 color: None,
                 order: BarOrder::Label,
                 cap: BAR_CAP,
@@ -4441,6 +4588,7 @@ mod tests {
                     time_unit: TimeUnit::None,
                     ys: &ys,
                     aggregate: Aggregate::Sum,
+                    quantile: 90,
                     cumulative: Cumulative::Off,
                     color: Some(split(other)),
                 },
@@ -4461,6 +4609,7 @@ mod tests {
                 category: "x",
                 value: Some("y"),
                 aggregate: Aggregate::Mean,
+                quantile: 90,
                 color: Some(split(other)),
                 order: BarOrder::Label,
                 cap: BAR_CAP,
@@ -4506,6 +4655,7 @@ mod tests {
             category: "carrier",
             value: Some("delay"),
             aggregate: Aggregate::Mean,
+            quantile: 90,
             color: Some(split),
             order: BarOrder::Value,
             cap: BAR_CAP,
@@ -4530,6 +4680,7 @@ mod tests {
         let count = BarAggregate {
             value: None,
             aggregate: Aggregate::Count,
+            quantile: 90,
             ..spec
         };
         let data = prepare_bar_aggregate(&lf, &count, &all_rows()).unwrap();
@@ -4553,6 +4704,7 @@ mod tests {
         assert_eq!(data.no_value, 2);
         let sum = BarAggregate {
             aggregate: Aggregate::Sum,
+            quantile: 90,
             color: None,
             ..spec
         };

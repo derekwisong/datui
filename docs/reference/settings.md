@@ -62,7 +62,7 @@ lives, imports, the theme and troubleshooting.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `display.unicode` | auto \| always \| never | `"auto"` |  | Box-drawing and arrow glyphs, or plain ASCII. auto uses them when the locale is UTF-8. |
+| `display.unicode` | auto \| always \| never | `"auto"` |  | Box-drawing and arrow glyphs, or plain ASCII. auto uses them when the locale is UTF-8, or on Windows when no locale is set. |
 | `display.row_numbers` | "auto" \| bool | `"auto"` | `--row-numbers` | Number rows on the left by their place in the source, kept through a sort or filter (# toggles). auto: for text and logs; true or false: for all of them. |
 | `display.row_numbers_start` | integer | `1` |  | The number of the source's first row. |
 | `display.cell_padding` | "comfortable" \| "compact" \| integer | `"comfortable"` |  | Space between columns: comfortable (2 cells), compact (1) or a number of cells. |

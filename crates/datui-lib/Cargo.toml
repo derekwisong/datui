@@ -93,7 +93,7 @@ crc = "2.1"
 memchr = "2.8"
 lz4 = "1.28"
 snap = "1.1"
-brotli = { version = "8.0", default-features = false, features = ["std"] }
+brotli = { version = "9.0", default-features = false, features = ["std"] }
 # SQLite databases, read only. `bundled` compiles SQLite into the binary, so no
 # platform needs a system library; `hooks` lets a stopped open interrupt a statement.
 # Default features off, which leaves extension loading out.

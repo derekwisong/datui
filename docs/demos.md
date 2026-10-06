@@ -1,107 +1,41 @@
 # Demos
 
-These recordings use real data: the local
-[demo datasets](https://github.com/derekwisong/datui/blob/main/demo/DATA-LICENSES.md)
-and the publisher-hosted datasets in datui's public cloud catalog.
+Two recordings, each of a dataset from **Example datasets** on the home screen,
+opened as its publisher serves it. Every step they show is written out in the
+guides below.
 
-## Find a workflow
+## When should I fly out of JFK?
 
-| Watch | Guide |
-|---|---|
-| [Home and cloud](#home-and-cloud) | [Home](user-guide/home-screen.md) · [Cloud sources](user-guide/home-screen.md#cloud-sources) |
-| [Querying](#querying) | [Queries](user-guide/querying-data.md) |
-| [Sorting](#sorting) · [Filtering](#filtering) | [Table controls](user-guide/filtering-sorting.md) |
-| [Pivot](#pivot) · [Melt](#melt) | [Reshaping](user-guide/reshaping.md) |
-| [Export](#export) | [Export a file](user-guide/exporting-data.md) |
+**NYC flights (2013)**: 336,776 departures from New York's three airports.
+Sorted by `dep_delay`, inspected, then charted as the mean departure delay by
+`hour`, one line per `origin`. At JFK it climbs from 0.5 minutes at 5:00 to
+26.1 at 21:00. The data is 2013's; this is not a forecast.
 
-## Home and cloud
+<!-- CAPTURE PLACEHOLDER (#356): ![datui opening NYC flights, sorting by delay and charting the mean delay by hour per airport](demos/teaser.gif) -->
 
-Start with recent and local files, browse the built-in public cloud catalog,
-open Google's `us-states.parquet` without credentials, then return home and
-open the local Palmer penguins data.
+Do it yourself: [Query data](user-guide/querying-data.md#run-a-query) and
+[Make a chart](user-guide/charting.md#examples-on-the-built-in-datasets).
 
-![Home and Cloud Demo](demos/14-cloud-home.gif)
+## A public bucket, opened in place
 
-## Home screen variations
+**NOAA daily weather (GHCN-D)** on S3, with no login. Central Park's 155 years
+of daily highs, from the catalog's bookmark, charted by year; then one year of
+the whole bucket, `s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/`, opened as
+one table and scrolled to its last row. The waits are real; nothing is
+downloaded whole.
 
-The browse-first cut spends more time on the six publisher-maintained public
-datasets and their details, then descends into BigQuery sample data.
+<!-- CAPTURE PLACEHOLDER (#356): ![datui charting Central Park highs from NOAA's S3 bucket, then opening and scrolling 38 million rows of 2024](demos/noaa-cloud.gif) -->
 
-![Cloud Sources Demo](demos/15-cloud-home-browse.gif)
+Do it yourself: [Connect to cloud storage](user-guide/remote-data.md#examples-on-public-data).
 
-The local-first cut starts with populated recents and Central Park weather,
-then moves from the same home screen into NOAA's public Parquet directories. See
-[Home screen](user-guide/home-screen.md).
+## More examples
 
-![Local and Cloud Demo](demos/16-cloud-home-local.gif)
-
-## Light terminals
-
-The light palette, chosen automatically on a light terminal or
-with `mode = "light"`. See [Light and dark](user-guide/configuration.md#light-and-dark).
-
-![Light Theme Demo](demos/13-light-theme.gif)
-
-## Navigation
-
-The Meteoritical Society's catalog of 45,716 meteorites, with the arrow keys
-and <kbd>j</kbd> <kbd>k</kbd> <kbd>l</kbd>.
-
-![Basic Navigation Demo](demos/01-basic-navigation.gif)
-
-## Querying
-
-A hive-partitioned directory of US baby names, one file per year, and one
-name's popularity year by year:
-`select year, name, count, rank where name = "Derek", sex = "M"`.
-See [Querying Data](user-guide/querying-data.md).
-
-![Querying Demo](demos/02-querying.gif)
-
-## Info panel
-
-<kbd>i</kbd> on every orbital launch attempt since Sputnik: the schema and
-resources tabs. See [Info panel](user-guide/dataset-info.md).
-
-![Info Panel Demo](demos/03-info.gif)
-
-## Pivot
-
-Gapminder country-year data pivoted on year: one column per year of life
-expectancy. See [Pivot and Melt](user-guide/reshaping.md).
-
-![Pivot Demo](demos/04-pivot.gif)
-
-## Melt
-
-Central Park daily weather melted into `variable` and `value` rows, keeping
-`date` as the index.
-
-![Melt Demo](demos/05-melt.gif)
-
-## Sorting
-
-Every magnitude 6+ earthquake since 1900, sorted by magnitude descending:
-Chile 1960, Alaska 1964, Sumatra 2004. See
-[Filtering and Sorting](user-guide/filtering-sorting.md).
-
-![Sorting Demo](demos/06-sorting.gif)
-
-## Filtering
-
-The meteorite catalog with `mass_g > 1000000` applied: the 52 meteorites
-heavier than a metric ton.
-
-![Filtering Demo](demos/07-filtering.gif)
-
-## Export
-
-The Palmer penguins written to Parquet. See [Exporting Data](user-guide/exporting-data.md).
-
-![Export Demo](demos/08-export.gif)
-
-## Charts and analysis
-
-For chart settings, export formats and analysis scope, use the
-[charting guide](user-guide/charting.md), [analysis guide](user-guide/analysis-features.md)
-and [data-quality guide](user-guide/data-quality.md).
+| Question | Dataset | Guide |
+|---|---|---|
+| Which species is heaviest? | Palmer penguins | [Quick start](getting-started/quick-start.md) |
+| Which airlines arrive late, and where does AS fly? | NYC flights (2013) | [Query data](user-guide/querying-data.md#run-a-query) |
+| Which matches had the most goals? | Premier League (2020-21) | [Dates and messy text](user-guide/querying-data.md#dates-and-messy-text) |
+| The heaviest chicken dishes | Food nutrition (fast food) | [Sort, filter and arrange columns](user-guide/filtering-sorting.md) |
+| Emma, Jennifer and Olivia by year | US baby names (1880-2017) | [Pivot and melt](user-guide/reshaping.md#pivot) |
+| Every chart on the built-in data | Several | [Make a chart](user-guide/charting.md#examples-on-the-built-in-datasets) |
+| One query, two years of weather | NOAA daily weather (GHCN-D) | [Save and apply views](user-guide/views.md) |

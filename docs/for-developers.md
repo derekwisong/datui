@@ -35,7 +35,7 @@ faster to run. Install Rust with [rustup](https://rustup.rs/).
 | [Run tests](for-developers/tests.md) | Choosing tests, fixtures, the heavy-run queue |
 | [Build documentation](for-developers/documentation.md) | The book, its generated pages and its checked code blocks |
 | [Check the examples](for-developers/examples.md) | The numbers the guides quote |
-| [Record demos](for-developers/demos.md) | The GIFs |
+| [Record demos](for-developers/demos.md) | The GIFs, screenshots and theme gallery |
 | [Add configuration options](for-developers/adding-configuration-options.md) | The option registry |
 | [Add a format](for-developers/adding-a-format.md) | A descriptor and a reader |
 | [Run benchmarks](for-developers/benchmarks.md) | Time to first rows and peak memory |

@@ -18,6 +18,6 @@ pre-commit
 # is here because nothing audits this file, so "it happens to resolve safely
 # today" is not written down anywhere and nothing would notice if it stopped
 # being true. OpenSSF Scorecard reports both advisories against the repository.
-filelock>=4.0.3
+filelock>=4.0.9
 
 # Wheel build deps: requirements-wheel.txt (Linux/macOS), requirements-wheel-windows.txt (Windows)

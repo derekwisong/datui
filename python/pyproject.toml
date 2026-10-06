@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
+requires = ["maturin>=1.15.0,<2.0"]
 build-backend = "maturin"
 
 [project]
@@ -44,7 +44,7 @@ Changelog = "https://github.com/derekwisong/datui/releases"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
+    "pytest>=9.1.1",
 ]
 
 [project.scripts]

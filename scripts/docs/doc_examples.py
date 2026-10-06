@@ -51,6 +51,7 @@ import argparse
 import html
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -371,6 +372,28 @@ def datui_succeeded(work: Path) -> bool:
 SIGPIPE_EXIT = 141
 
 
+def last_statement_line(body: str) -> int:
+    """The 1-based line of the body's last statement's start, past comments, blanks
+    and backslash continuations."""
+    lines = body.splitlines()
+    i = len(lines) - 1
+    while i >= 0 and (not lines[i].strip() or lines[i].lstrip().startswith("#")):
+        i -= 1
+    while i > 0 and lines[i - 1].rstrip().endswith("\\"):
+        i -= 1
+    return i + 1
+
+
+def failed_on_last_statement(work: Path, body: str, prelude_lines: int) -> bool:
+    """Whether the ERR trap fired on the block's last statement: a SIGPIPE there
+    ends a block whose every line ran."""
+    try:
+        line = int((work / ".doc-err-line").read_text(encoding="utf-8").split()[-1])
+    except (OSError, ValueError, IndexError):
+        return False
+    return line - prelude_lines >= last_statement_line(body)
+
+
 def run_block(b: Block, work: Path, real: str | None, timeout: float) -> str | None:
     """Run one block in `work`; the failure, or None."""
     env = environment(work, real)
@@ -386,6 +409,8 @@ def run_block(b: Block, work: Path, real: str | None, timeout: float) -> str | N
         # An interactive block's producer is stopped by a closed pipe: its status is
         # not the block's.
         prelude = "set -eu\n" if "interactive" in b.attrs else "set -euo pipefail\n"
+        # Where a failure stopped the block, for the SIGPIPE rule below.
+        prelude += f"trap 'echo $LINENO > {shlex.quote(str(work / '.doc-err-line'))}' ERR\n"
         cmd = ["bash", "-c", prelude + b.body]
     elif b.lang == "toml" and "spec" in b.attrs:
         (work / "spec.toml").write_text(b.body, encoding="utf-8")
@@ -419,8 +444,14 @@ def run_block(b: Block, work: Path, real: str | None, timeout: float) -> str | N
     said = (proc.stdout + proc.stderr).strip()
     # Rows show as they arrive, so datui can be done while the producer still writes
     # (`journalctl | datui`); quit, it closes the pipe, as `less` does, and pipefail
-    # reports the producer's SIGPIPE. That is the block's success when datui's is.
-    if proc.returncode == SIGPIPE_EXIT and b.lang in ("bash", "sh") and datui_succeeded(work):
+    # reports the producer's SIGPIPE. That is the block's success when datui's is
+    # and nothing after it was skipped.
+    if (
+        proc.returncode == SIGPIPE_EXIT
+        and b.lang in ("bash", "sh")
+        and datui_succeeded(work)
+        and failed_on_last_statement(work, b.body, prelude.count("\n"))
+    ):
         return None
     if proc.returncode != 0:
         return f"exit {proc.returncode}: {said[-2000:]}"

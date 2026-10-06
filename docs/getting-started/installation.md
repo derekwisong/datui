@@ -22,12 +22,12 @@ The script installs the latest release for your platform:
 | System | What it does |
 |---|---|
 | Debian, Ubuntu | Adds the [apt repository](#apt-repository) and its signing key with `sudo`, then installs the package with apt; `apt upgrade` keeps it current |
-| Fedora, RHEL, Amazon Linux | Downloads the release's `.rpm` and installs it with `dnf` |
+| Fedora, RHEL, Amazon Linux | Adds the [dnf repository](#dnf-repository) with `sudo`, then installs the package with dnf; `dnf upgrade` keeps it current |
 | Arch Linux and derivatives, x86_64 | Asks, then installs `datui-bin` from the AUR with `yay` or `paru`; pacman owns it and the helper upgrades it. With neither, it says how and offers the archive |
 | Other Linux, macOS | Unpacks the release archive: `datui` into `/usr/local/bin`, the manual pages into `/usr/local/share/man` |
 
 It checks each download against the release's `SHA256SUMS`, asks before it
-changes apt or runs an AUR helper (with no terminal to ask on, it goes ahead),
+changes apt or dnf or runs an AUR helper (with no terminal to ask on, it goes ahead),
 and runs the installed binary before it reports success. Options go after `sh -s --`:
 
 | Option | Effect |
@@ -57,16 +57,14 @@ curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/inst
 | Platform | Command |
 |---|---|
 | Windows, WinGet | `winget install derekwisong.datui` |
-| [macOS, Homebrew](https://github.com/derekwisong/homebrew-datui) | `brew tap derekwisong/datui && brew trust derekwisong/datui && brew install datui` |
+| [macOS, Linux, Homebrew](https://github.com/derekwisong/homebrew-datui) | `brew tap derekwisong/datui && brew trust derekwisong/datui && brew install datui` |
 | [Python, PyPI](https://pypi.org/project/datui/) | `pip install datui` |
 | [Rust, crates.io](https://crates.io/crates/datui) | `cargo install datui --locked` |
 | [Arch Linux, AUR](https://aur.archlinux.org/packages/datui-bin) | `yay -S datui-bin   # or: paru -S datui-bin` |
 | Debian, Ubuntu | [Apt repository](#apt-repository) |
+| Fedora, RHEL | [Dnf repository](#dnf-repository) |
 | Binaries | Linux, macOS and Windows binaries, `.deb`, `.rpm` and Arch tarballs on the [latest release](https://github.com/derekwisong/datui/releases/latest) |
 <!-- end generated: install-table -->
-
-On Fedora and RHEL, the one-line script installs the `.rpm`; or install it from
-the release, as [below](#pre-built-binaries).
 
 Homebrew needs `brew trust` before it will install from a third-party tap. The
 pip package installs the `datui` command and the [Python module](../user-guide/python-module.md).
@@ -88,6 +86,21 @@ sudo apt install datui
 <!-- end generated: install-apt -->
 
 After that, `apt upgrade` keeps datui current.
+
+### Dnf repository
+
+Fedora, RHEL 8 and later, Amazon Linux 2023 and their derivatives. Add the
+repository once:
+
+<!-- generated: install-dnf -->
+```bash,install
+sudo curl -fsSL -o /etc/yum.repos.d/datui.repo https://derekwisong.github.io/datui-apt/rpm/datui.repo
+sudo dnf install datui
+```
+<!-- end generated: install-dnf -->
+
+dnf asks to import the signing key the first time. After that, `dnf upgrade`
+keeps datui current.
 
 ## Pre-built binaries
 
@@ -201,7 +214,7 @@ winget install derekwisong.datui
 | Installed by | Remove with |
 |---|---|
 | The script, on Debian or Ubuntu | `sudo apt remove datui`; then `sudo rm /etc/apt/sources.list.d/datui.list /usr/share/keyrings/datui-archive-keyring.gpg` drops the repository |
-| The script, on Fedora, RHEL or Amazon Linux | `sudo dnf remove datui` |
+| The script, on Fedora, RHEL or Amazon Linux | `sudo dnf remove datui`; then `sudo rm /etc/yum.repos.d/datui.repo` drops the repository |
 | The script, elsewhere | `sudo rm /usr/local/bin/datui /usr/local/share/man/man*/datui*` |
 | The script with `--user` | `rm ~/.local/bin/datui ~/.local/share/man/man*/datui*` |
 | A `.deb` or `.rpm` | `sudo apt remove datui` or `sudo dnf remove datui` |

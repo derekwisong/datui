@@ -166,8 +166,8 @@
     <h3>Windows, WinGet</h3>
     <pre data-example="powershell,install"><code>winget install derekwisong.datui</code></pre>
   </section>
-  <section class="install-panel" id="install-brew" data-label="macOS, Homebrew" data-os="">
-    <h3>macOS, Homebrew</h3>
+  <section class="install-panel" id="install-brew" data-label="macOS, Linux, Homebrew" data-os="">
+    <h3>macOS, Linux, Homebrew</h3>
     <pre data-example="bash,install"><code>brew tap derekwisong/datui &amp;&amp; brew trust derekwisong/datui &amp;&amp; brew install datui</code></pre>
   </section>
   <section class="install-panel" id="install-pip" data-label="Python, PyPI" data-os="">
@@ -188,6 +188,11 @@
 echo &quot;deb [signed-by=/usr/share/keyrings/datui-archive-keyring.gpg] https://derekwisong.github.io/datui-apt/ ./&quot; | sudo tee /etc/apt/sources.list.d/datui.list
 sudo apt update
 sudo apt install datui</code></pre>
+  </section>
+  <section class="install-panel" id="install-dnf" data-label="Fedora, RHEL" data-os="">
+    <h3>Fedora, RHEL</h3>
+    <pre data-example="bash,install"><code>sudo curl -fsSL -o /etc/yum.repos.d/datui.repo https://derekwisong.github.io/datui-apt/rpm/datui.repo
+sudo dnf install datui</code></pre>
   </section>
   <section class="install-panel" id="install-binaries" data-label="Binaries" data-os="">
     <h3>Binaries</h3>

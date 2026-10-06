@@ -1,6 +1,6 @@
 # Homebrew formula for datui. Placeholders are substituted by .github/workflows/publish-packages.yml
 # when updating the tap: VERSION_PLACEHOLDER, URL_ARM64_PLACEHOLDER, SHA_ARM64_PLACEHOLDER,
-# URL_X64_PLACEHOLDER, SHA_X64_PLACEHOLDER.
+# URL_X64_PLACEHOLDER, SHA_X64_PLACEHOLDER, and the URL_LINUX_*/SHA_LINUX_* pairs.
 class Datui < Formula
 # generated: desc
   desc "Explore tabular data in your terminal: Parquet, CSV, JSON and more"
@@ -17,6 +17,17 @@ class Datui < Formula
     on_intel do
       url "URL_X64_PLACEHOLDER"
       sha256 "SHA_X64_PLACEHOLDER"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "URL_LINUX_ARM64_PLACEHOLDER"
+      sha256 "SHA_LINUX_ARM64_PLACEHOLDER"
+    end
+    on_intel do
+      url "URL_LINUX_X64_PLACEHOLDER"
+      sha256 "SHA_LINUX_X64_PLACEHOLDER"
     end
   end
 

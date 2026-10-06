@@ -14,6 +14,7 @@ BINARY_NAME="datui"
 APT_REPO="https://derekwisong.github.io/datui-apt"
 APT_KEYRING="/usr/share/keyrings/datui-archive-keyring.gpg"
 APT_LIST="/etc/apt/sources.list.d/datui.list"
+DNF_REPO_FILE="/etc/yum.repos.d/datui.repo"
 MIN_GLIBC="2.28"
 
 ASSUME_YES=false
@@ -34,7 +35,8 @@ Usage: install.sh [OPTION]...
   -h, --help       Show this and exit
 
 Debian and Ubuntu: adds the datui apt repository and its signing key with sudo, then
-installs the package with apt. Fedora and RHEL: installs the release's .rpm with dnf.
+installs the package with apt. Fedora and RHEL: adds the datui dnf repository with
+sudo, then installs the package with dnf.
 Arch on x86_64: installs datui-bin from the AUR with yay or paru, after asking.
 Elsewhere, and with --user: unpacks the release archive, the binary and the manual
 pages, into /usr/local or your home directory.
@@ -267,7 +269,7 @@ choose_format() {
     elif [ -f /etc/debian_version ]; then
         FORMAT=apt
     elif command -v dnf > /dev/null 2>&1; then
-        # Fedora, RHEL and its rebuilds, Amazon Linux: the release's .rpm.
+        # Fedora, RHEL and its rebuilds, Amazon Linux: the dnf repository.
         FORMAT=rpm
     else
         FORMAT=tarball
@@ -379,6 +381,39 @@ apt_with_fallback() {
     install_tarball
 }
 
+install_dnf() {
+    say "Fedora/RHEL: this adds the datui dnf repository, with sudo:"
+    say "  $DNF_REPO_FILE  (from $APT_REPO/rpm/datui.repo)"
+    say "then installs the datui package with dnf, importing the repository's signing"
+    say "key. dnf upgrade keeps it current; remove that file and the package to undo it."
+    if ! ask "Continue? [Y/n]" y; then
+        say "Stopped before changing dnf."
+        exit 0
+    fi
+    say "Adding the datui dnf repository..."
+    fetch "$APT_REPO/rpm/datui.repo" "$TMP_DIR/datui.repo" || return 1
+    run_priv install -m 644 "$TMP_DIR/datui.repo" "$DNF_REPO_FILE" || return 1
+    say "Installing with dnf..."
+    run_priv dnf install -y datui || return 1
+    INSTALLED="/usr/bin/$BINARY_NAME"
+}
+
+dnf_with_fallback() {
+    if install_dnf; then
+        return
+    fi
+    say ""
+    say "The dnf repository install failed."
+    # A repository dnf cannot read would fail the .rpm install too.
+    if [ -f "$DNF_REPO_FILE" ]; then
+        run_priv rm -f "$DNF_REPO_FILE"
+    fi
+    if ! ask "Install the release's .rpm instead? [Y/n]" y; then
+        fail "stopped"
+    fi
+    install_rpm
+}
+
 install_rpm() {
     package="datui-$VERSION-1.$ARCH.rpm"
     has_asset "$package" || fail "release $TAG has no $package. Build it with: cargo install datui --locked"
@@ -421,7 +456,7 @@ main() {
     say "Installing $BINARY_NAME $VERSION for $OS/$ARCH"
     case "$FORMAT" in
         apt) apt_with_fallback ;;
-        rpm) install_rpm ;;
+        rpm) dnf_with_fallback ;;
         tarball) choose_archive; install_tarball ;;
     esac
     finish

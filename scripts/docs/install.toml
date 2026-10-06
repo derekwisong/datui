@@ -32,7 +32,7 @@ command = "winget install derekwisong.datui"
 
 [[channel]]
 id = "brew"
-label = "macOS, Homebrew"
+label = "macOS, Linux, Homebrew"
 link = "https://github.com/derekwisong/homebrew-datui"
 lang = "bash"
 command = "brew tap derekwisong/datui && brew trust derekwisong/datui && brew install datui"
@@ -68,6 +68,15 @@ curl -fsSL https://derekwisong.github.io/datui-apt/public.key | sudo gpg --dearm
 echo "deb [signed-by=/usr/share/keyrings/datui-archive-keyring.gpg] https://derekwisong.github.io/datui-apt/ ./" | sudo tee /etc/apt/sources.list.d/datui.list
 sudo apt update
 sudo apt install datui"""
+
+[[channel]]
+id = "dnf"
+label = "Fedora, RHEL"
+lang = "bash"
+anchor = "dnf-repository"
+command = """
+sudo curl -fsSL -o /etc/yum.repos.d/datui.repo https://derekwisong.github.io/datui-apt/rpm/datui.repo
+sudo dnf install datui"""
 
 [[channel]]
 id = "binaries"

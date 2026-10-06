@@ -96,7 +96,7 @@ date is `crates/datui-cli/release-date.txt`, which `bump_version.py` sets.
 | AUR | `/usr/share/man/man{1,5,7}` (makepkg gzips them) | bash, zsh, fish | `PKGBUILD.in`, from the Linux x86_64 tarball |
 | Linux and macOS archives | `man/manN/` | `completions/` | `build_package.py tarball` and `release.yml`; `install.sh` installs the pages |
 | Windows zip | `man/manN/` | `completions/` (`_datui.ps1`) | `release.yml` |
-| Homebrew | `man1`, `man5`, `man7` | bash, zsh, fish | the formula, from the macOS archive |
+| Homebrew | `man1`, `man5`, `man7` | bash, zsh, fish | the formula, from the macOS and Linux archives |
 | PyPI wheel | `<prefix>/share/man/manN/` | none | `scripts/packaging/wheel_manpages.py` (Linux and macOS wheels) |
 | `cargo install` | `datui man`, or `datui man --dir ~/.local/share/man` | `datui completions SHELL` | the binary |
 | winget | none: Windows has no `man` | none | |
@@ -187,6 +187,25 @@ The release workflow calls `publish-packages.yml` to push PKGBUILD and .SRCINFO 
 | `AUR_EMAIL` | Email for the AUR git commit (can be a noreply address). |
 
 If these secrets are not set, the "Publish to AUR" step will fail. To disable automated AUR updates, change the `publish-aur` job in `.github/workflows/publish-packages.yml`.
+
+### Apt and dnf repositories
+
+`publish-packages.yml`'s `publish-apt` job builds both repositories from the
+release's `.deb` and `.rpm` files and replaces the `gh-pages` branch of
+`derekwisong/datui-apt` with them:
+
+| Path | Holds |
+|---|---|
+| `/` | The apt repository: `Packages`, `Release`, `InRelease`, the `.deb` files |
+| `/public.key` | The signing key, for both |
+| `/rpm/` | The dnf repository: `repodata/`, its `repomd.xml.asc` signature, the `.rpm` files, signed |
+| `/rpm/datui.repo` | The file users put in `/etc/yum.repos.d/` |
+
+apt checks the signed index, which holds each package's checksum. dnf checks the
+signed `repomd.xml` and each package's signature, which the job adds to the
+repository's copies; the release's `.rpm` files stay unsigned. The job needs
+`GPG_PRIVATE_KEY`, `GPG_EMAIL` and `DATUI_APT_TOKEN` (a token that can push to
+`datui-apt`).
 
 ## PyPI
 

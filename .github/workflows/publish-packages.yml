@@ -1,7 +1,7 @@
-# Reusable workflow: publish to crates.io, AUR, PyPI, Homebrew, WinGet, and APT (datui-apt) after a release is created.
+# Reusable workflow: publish to crates.io, AUR, PyPI, Homebrew, WinGet, and the apt and dnf repositories (datui-apt) after a release is created.
 # Invoked by the Release workflow at the end of its publish step, or run manually (Actions → Publish packages → Run workflow).
 # Manual run with no tag uses the latest GitHub release.
-# Prerequisites: repository secrets for CARGO_REGISTRY_TOKEN (crates.io), HOMEBREW_TAP_TOKEN, PYPI_API_TOKEN, AUR_*, WINGET_TOKEN, and for APT: GPG_PRIVATE_KEY, GPG_EMAIL, DATUI_APT_TOKEN.
+# Prerequisites: repository secrets for CARGO_REGISTRY_TOKEN (crates.io), HOMEBREW_TAP_TOKEN, PYPI_API_TOKEN, AUR_*, WINGET_TOKEN, and for apt and dnf: GPG_PRIVATE_KEY, GPG_EMAIL, DATUI_APT_TOKEN.
 # WinGet: at least one version of derekwisong.datui must exist in winget-pkgs; fork microsoft/winget-pkgs; WINGET_TOKEN = classic PAT with public_repo scope;
 # WINGET_SYNC_TOKEN = fine-grained PAT on the fork only (Contents + Workflows: write), used to sync it.
 name: Publish packages
@@ -138,11 +138,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Download macOS tarballs
+      - name: Download macOS and Linux tarballs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release download "${{ needs.resolve-release.outputs.tag_name }}" --repo ${{ github.repository }} --pattern '*-apple-darwin.tar.gz'
+          gh release download "${{ needs.resolve-release.outputs.tag_name }}" --repo ${{ github.repository }} \
+            --pattern '*-apple-darwin.tar.gz' --pattern '*-unknown-linux-gnu.tar.gz'
 
       - name: Get Homebrew formula template
         env:
@@ -153,7 +154,7 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/contents/scripts/packaging/homebrew-formula.rb.template?ref=${{ needs.resolve-release.outputs.tag_name }}" \
             -o scripts/packaging/homebrew-formula.rb.template
 
-      - name: Compute macOS tarball checksums for Homebrew
+      - name: Compute tarball checksums for Homebrew
         id: brew_checksums
         run: |
           VERSION="${{ needs.resolve-release.outputs.tag_name }}"
@@ -161,6 +162,8 @@ jobs:
           echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
           echo "sha_arm64=$(sha256sum *-aarch64-apple-darwin.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
           echo "sha_x64=$(sha256sum *-x86_64-apple-darwin.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "sha_linux_arm64=$(sha256sum *-aarch64-unknown-linux-gnu.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "sha_linux_x64=$(sha256sum *-x86_64-unknown-linux-gnu.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
       - name: Update Homebrew tap
         if: env.HOMEBREW_TAP_TOKEN != ''
@@ -172,6 +175,8 @@ jobs:
           VERSION="${{ steps.brew_checksums.outputs.version }}"
           SHA_ARM64="${{ steps.brew_checksums.outputs.sha_arm64 }}"
           SHA_X64="${{ steps.brew_checksums.outputs.sha_x64 }}"
+          SHA_LINUX_ARM64="${{ steps.brew_checksums.outputs.sha_linux_arm64 }}"
+          SHA_LINUX_X64="${{ steps.brew_checksums.outputs.sha_linux_x64 }}"
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git clone --depth 1 "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/derekwisong/homebrew-datui.git" tap
@@ -182,6 +187,10 @@ jobs:
               -e "s/SHA_ARM64_PLACEHOLDER/$SHA_ARM64/" \
               -e "s|URL_X64_PLACEHOLDER|https://github.com/$REPO/releases/download/$TAG/datui-$TAG-x86_64-apple-darwin.tar.gz|" \
               -e "s/SHA_X64_PLACEHOLDER/$SHA_X64/" \
+              -e "s|URL_LINUX_ARM64_PLACEHOLDER|https://github.com/$REPO/releases/download/$TAG/datui-$TAG-aarch64-unknown-linux-gnu.tar.gz|" \
+              -e "s/SHA_LINUX_ARM64_PLACEHOLDER/$SHA_LINUX_ARM64/" \
+              -e "s|URL_LINUX_X64_PLACEHOLDER|https://github.com/$REPO/releases/download/$TAG/datui-$TAG-x86_64-unknown-linux-gnu.tar.gz|" \
+              -e "s/SHA_LINUX_X64_PLACEHOLDER/$SHA_LINUX_X64/" \
               "$GITHUB_WORKSPACE/scripts/packaging/homebrew-formula.rb.template" > Formula/datui.rb
           git add Formula/datui.rb
           git diff --staged --quiet || (git commit -m "datui $VERSION" && git push)
@@ -396,6 +405,7 @@ jobs:
           token: ${{ secrets.WINGET_TOKEN }}
           max-versions-to-keep: 20
 
+  # One job for both repositories: the deploy replaces the whole gh-pages branch.
   publish-apt:
     needs: resolve-release
     runs-on: ubuntu-latest
@@ -410,7 +420,7 @@ jobs:
           # indexes did not fetch, it fails there, for the right reason.
           echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
           sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y dpkg-dev apt-utils gpg
+          sudo apt-get install -y dpkg-dev apt-utils gpg createrepo-c rpm
 
       - name: Import GPG key
         env:
@@ -418,12 +428,13 @@ jobs:
         run: |
           echo "$GPG_PRIVATE_KEY" | gpg --batch --import
 
-      - name: Download .deb from release
+      - name: Download .deb and .rpm from release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p dist
+          mkdir -p dist/rpm
           gh release download "${{ needs.resolve-release.outputs.tag_name }}" --repo ${{ github.repository }} --pattern "*.deb" --dir dist
+          gh release download "${{ needs.resolve-release.outputs.tag_name }}" --repo ${{ github.repository }} --pattern "*.rpm" --dir dist/rpm
 
       - name: Generate repository metadata
         working-directory: dist
@@ -437,7 +448,31 @@ jobs:
           gpg --batch --yes -u "$GPG_EMAIL" -abs -o Release.gpg Release
           gpg --batch --yes -u "$GPG_EMAIL" --clearsign -o InRelease Release
 
-      - name: Deploy to datui-apt
+      # dnf checks both: the signed repomd.xml (repo_gpgcheck) and each package's
+      # own signature (gpgcheck; dnf5 warns on every install without it). Only
+      # the repository's copies are signed; the release's .rpm stays as built.
+      # skip_if_unavailable: a Pages outage must not stop a user's other dnf work.
+      - name: Generate dnf repository metadata
+        working-directory: dist/rpm
+        env:
+          GPG_EMAIL: ${{ secrets.GPG_EMAIL }}
+        run: |
+          rpmsign --define "_gpg_name $GPG_EMAIL" --addsign ./*.rpm
+          # gzip: createrepo_c's default zstd is newer than dnf on RHEL 8.
+          createrepo_c --general-compress-type=gz .
+          gpg --batch --yes -u "$GPG_EMAIL" --armor --detach-sign -o repodata/repomd.xml.asc repodata/repomd.xml
+          cat > datui.repo <<'REPO'
+          [datui]
+          name=datui
+          baseurl=https://derekwisong.github.io/datui-apt/rpm
+          enabled=1
+          gpgcheck=1
+          repo_gpgcheck=1
+          skip_if_unavailable=1
+          gpgkey=https://derekwisong.github.io/datui-apt/public.key
+          REPO
+
+      - name: Deploy to datui-apt (apt and dnf)
         # SHA-pinned to defend against upstream takeover; bump deliberately.
         uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
         with:

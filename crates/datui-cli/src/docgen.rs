@@ -114,6 +114,11 @@ pub const GENERATED: &[Generated] = &[
         render: |read| site::channel_block(read, "apt"),
     },
     Generated {
+        file: "docs/getting-started/installation.md",
+        region: Some("install-dnf"),
+        render: |read| site::channel_block(read, "dnf"),
+    },
+    Generated {
         file: "scripts/docs/index.html.j2",
         region: Some("formats"),
         render: |_| site::landing_formats(),

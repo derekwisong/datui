@@ -1,4 +1,4 @@
-# Manual workflow to test the one-line install (and on macOS, Homebrew tap install)
+# Manual workflow to test the one-line install (and on macOS and Linux, Homebrew tap install)
 # across supported platforms. Uses the install script and package managers as documented
 # in README.md, against the latest published release.
 #
@@ -50,6 +50,38 @@ jobs:
 
       - name: Verify Homebrew install
         run: datui --version
+
+  install-linux-homebrew:
+    name: Ubuntu 24.04 ${{ matrix.arch }} (Homebrew)
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      # The x86_64 image ships Homebrew off the PATH; the arm64 one does not ship it.
+      - name: Set up Homebrew
+        run: |
+          if [ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+            NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          fi
+          echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
+
+      - name: Homebrew tap install
+        run: |
+          brew tap derekwisong/datui
+          brew trust derekwisong/datui
+          brew install datui
+
+      - name: Verify Homebrew install
+        run: |
+          datui --version
+          man -w datui
 
   install-ubuntu-oneline:
     name: Ubuntu 24.04 ${{ matrix.arch }} (apt repository)

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "datui"
-version = "0.4.0"
+version = "0.4.1.dev0"
 # generated: description
 description = "Explore tabular data in your terminal: Parquet, CSV, JSON and more"
 # end generated: description

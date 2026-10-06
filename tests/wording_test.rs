@@ -122,10 +122,6 @@ const ALLOWED: &[(&str, &str)] = &[
     ("docs/for-developers/tests.md", "\"opens anything\" claims"),
     // GGUF's own key.
     ("docs/", "chat template"),
-    // The 0.4 release notes name what was renamed.
-    ("release-notes/", "| `[templates]`"),
-    ("release-notes/", "**Views**, formerly templates"),
-    ("release-notes/", "| Text query mode |"),
 ];
 
 fn root() -> PathBuf {

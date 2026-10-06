@@ -74,7 +74,13 @@ is actually applied.
 
 ## Columns tab
 
-![Sorting columns in the sidebar](../demos/06-sorting.gif)
+![The Sort & Filter sidebar on its Columns tab, find vit, vit_a and vit_c hidden (⊘); behind it the 30 chicken dishes with 40 g of protein or more, the footer reading has letters "chicken" · protein >= 40 · calories ▼](../demos/screenshots/sort-filter-columns.png)
+
+Which chicken dishes have the most protein, heaviest first? The
+[five steps above](#filter-sort-and-hide-columns): 30 of 515, McDonald's 20
+piece Buttermilk Crispy Chicken Tenders first. <kbd>s</kbd> again,
+<kbd>↑</kbd> <kbd>→</kbd> to **Columns**, <kbd>↓</kbd> and `vit` show the two
+hidden columns.
 
 One row per column, with its lock, its place and direction in the sort
 (`1▲`, `2▼`), a width set by hand, and a `⊘` when it is hidden. Each sorted column's header in the
@@ -210,8 +216,6 @@ there is room. It counts the columns the table shows, frozen first; hidden
 columns are not counted.
 
 ## Sort & Filter tab
-
-![Adding filters in the sidebar](../demos/07-filtering.gif)
 
 What is in effect, under two rules: **Sort**, one row per key in order
 (`1 ▲ restaurant`), then `add sort…`; **Filters**, one row per filter

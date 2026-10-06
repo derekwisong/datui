@@ -1146,7 +1146,11 @@ fn apply_infix(left_tokens: &[Token], op: &str, right_tokens: &[Token]) -> Resul
                 );
             }
             let left = parse_node(left_tokens)?;
-            check_copies(&left, items.len())?;
+            // A column or literal repeated grows only as the list typed does; a larger
+            // left side repeated per item is what multiplies.
+            if left.size() > 1 {
+                check_copies(&left, items.len())?;
+            }
             // One `=` per value, so each value compares exactly as `x = value` would,
             // with the same literal casting (numbers, dates, timestamps).
             let conditions = items
@@ -3536,6 +3540,15 @@ mod tests {
         let q = format!("select where x in [{}]", items.join(", "));
         let df = df!("x" => &[5i64, 1999, 2000]).unwrap();
         assert_eq!(values(&eval(&q, &df), "x"), ["5", "1999"]);
+    }
+
+    #[test]
+    fn test_in_a_list_past_the_node_cap_on_a_column() {
+        // A pasted list of ids: the column is not what multiplies.
+        let items: Vec<String> = (0..12_000).map(|i| i.to_string()).collect();
+        let q = format!("select where x in [{}]", items.join(", "));
+        let df = df!("x" => &[5i64, 11_999, 12_000]).unwrap();
+        assert_eq!(values(&eval(&q, &df), "x"), ["5", "11999"]);
     }
 
     #[test]

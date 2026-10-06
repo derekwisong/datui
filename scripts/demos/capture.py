@@ -7,7 +7,7 @@ PATH is a wrapper that adds `-c cloud.discover=false` and the take's theme, so t
 tapes type plain `datui`. Every tape gets header.tape's settings: one size, font
 and theme for all of them.
 
-Outputs land in --out (default: datui-captures in the system temp directory),
+Outputs land in --out (default: ~/tmp/datui-captures),
 never in the docs. --publish copies reviewed outputs from there into demos/.
 
 Usage:
@@ -31,7 +31,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,7 +40,9 @@ REPO = DEMOS_DIR.parents[1]
 HEADER = DEMOS_DIR / "header.tape"
 CONTRIB_THEMES = REPO / "contrib" / "themes"
 PUBLISH_DIR = REPO / "demos"
-DEFAULT_OUT = Path(tempfile.gettempdir()) / "datui-captures"
+# Not the system temp directory: on some machines it is RAM, and a full run is
+# hundreds of MB with its fixtures.
+DEFAULT_OUT = Path.home() / "tmp" / "datui-captures"
 
 # Prefixes and names of variables that could put a login, a project, a history or
 # a color override from the recording machine into a take.

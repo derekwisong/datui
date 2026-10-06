@@ -26,7 +26,7 @@ into `demos/`.
 |---|---|
 | `capture.py --list` | Lists the tapes: kind, expected length, where each is used |
 | `capture.py teaser shots-food` | Records only the tapes named |
-| `capture.py --out DIR` | Writes to `DIR`; the default is `datui-captures` in the system temp directory |
+| `capture.py --out DIR` | Writes to `DIR`; the default is `~/tmp/datui-captures` |
 | `capture.py --dry-run` | Shows each take's fixture, `datui` command, scrubbed variables and outputs |
 | `capture.py --cache-dir DIR` | Shares one datui cache across takes, warm after the first; each take starts cold otherwise |
 | `capture.py --network-note TEXT` | Records the connection for captions |

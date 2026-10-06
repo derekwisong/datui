@@ -225,7 +225,7 @@ NOAA's daily weather for 2024 is one hive partition, `YEAR=2024`, with an
 datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/
 ```
 
-38,465,374 rows, with `YEAR` and `ELEMENT` as columns from the directory
+38,466,379 rows, with `YEAR` and `ELEMENT` as columns from the directory
 names. The most common measurements:
 
 ```sql,dataset=noaa2024,network

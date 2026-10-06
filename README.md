@@ -46,9 +46,7 @@ curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/inst
 | Binaries | Linux, macOS and Windows binaries, `.deb`, `.rpm` and Arch tarballs on the [latest release](https://github.com/derekwisong/datui/releases/latest) |
 <!-- end generated: install -->
 
-One binary; only `cargo install` needs Rust. The [installation guide][install-guide]
-covers user-only installs, RPMs, the manual page, shell completions and
-building from source.
+More ways to install, and how to uninstall: the [installation guide][install-guide].
 
 ## How it stays fast
 

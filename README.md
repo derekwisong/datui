@@ -59,19 +59,8 @@ building from source.
   and row count, then only the row groups the screen needs.
 - The row count runs in the background; the table is usable before it is done.
 
-| Open | First rows | Exact row count |
-|---|---:|---:|
-| CSV, 4,000,000 rows, 234 MB, local | 14 ms | 0.36 s |
-| Parquet, the same rows, 53 MB, local | 10 ms | 10 ms |
-| Text log, the same 234 MB as `.log`, local | 12 ms | not measured |
-| [NOAA GHCN-D](https://registry.opendata.aws/noaa-ghcn/) 2024, public S3: 137 Parquet files, 38,465,374 rows | 0.54 s | 0.52 s |
-
-Time from launch, median of 5 runs (S3: 3, no cache, home network). Release
-build of 0.4.0-dev, Ryzen 7 9800X3D, Linux, warm page cache, 120×30
-pseudo-terminal. The local files are
-`scripts/bench/startup.py generate DIR 4000000`. Piped input shows its first
-rows once 1,000 lines have arrived, sooner from a slower producer.
-[Performance][performance] has more.
+First rows in milliseconds on local files, under a second from S3.
+[Performance][performance] has the numbers.
 
 ## What it does
 

@@ -3499,13 +3499,22 @@ mod tests {
                     if exempt.contains(&(*context, key.keys)) {
                         continue;
                     }
-                    let (mut p, _dir) = long_wide_pump();
+                    let (mut p, dir) = long_wide_pump();
                     for k in open {
                         p.terminal_key(*k).unwrap();
                         settle(&mut p);
                         paint(&mut p);
                     }
                     assert_eq!(p.app.keys_context(), *context, "opened {}", screen.title);
+                    // The suggested name is relative: an Enter would write it into the
+                    // crate directory.
+                    if *context == Context::Export {
+                        let out = dir.path().join("out.csv");
+                        p.app
+                            .export_modal
+                            .path_input
+                            .set_value(out.display().to_string());
+                    }
                     // The entry's keys in turn, the first at least: `← / →` at the
                     // first column is taken by its →.
                     let mut presses = keys::chords(key.keys);

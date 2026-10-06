@@ -1,0 +1,74 @@
+# High contrast, for a black terminal.
+#
+# Original to datui, MIT license like the rest of the repository. Every color
+# is an entry of the xterm 256-color palette, so a 256-color terminal shows it
+# exactly; text and marks are at least 7:1 against black.
+#
+# Copy into themes/ in the config directory (`datui config path` shows where)
+# and pick it with `theme.dark = "high-contrast"`.
+
+extends = "night-market"
+description = "High contrast on black"
+
+accent = "#00d7ff"
+accent_bright = "#87ffff"
+gradient_start = "#00d7ff"
+gradient_end = "#ff87ff"
+chip_key = "#00d7ff"
+chip_label = "#d0d0d0"
+throbber = "#00d7ff"
+
+success = "#5fff87"
+warning = "#ffd75f"
+error = "#ff5f5f"
+dimmed = "#a8a8a8"
+
+controls_bg = "#262626"
+text_primary = "#ffffff"
+text_secondary = "#d0d0d0"
+text_inverse = "#000000"
+
+table_header = "#ffffff"
+table_header_bg = "#303030"
+table_row_numbers = "#a8a8a8"
+table_column_separator = "#808080"
+table_selected = "#005f87"
+table_column_cursor = "#1c1c1c"
+table_cell_cursor = "#0087af"
+table_alternate_row = "#121212"
+
+sidebar_border = "#a8a8a8"
+modal_border_active = "#00d7ff"
+modal_border_error = "#ff5f5f"
+
+type_str = "#5fff87"
+type_int = "#5fd7ff"
+type_float = "#00ffd7"
+type_bool = "#ffd75f"
+type_temporal = "#ff87ff"
+type_binary = "#a8a8a8"
+
+distribution_normal = "#5fff87"
+distribution_skewed = "#ffd75f"
+distribution_other = "#ffffff"
+outlier_marker = "#ff5f5f"
+
+chart_1 = "#00d7ff"
+chart_2 = "#ff87ff"
+chart_3 = "#5fff87"
+chart_4 = "#ffd75f"
+chart_5 = "#87afff"
+chart_6 = "#ff5f5f"
+chart_7 = "#ffaf5f"
+chart_8 = "#00ffaf"
+chart_9 = "#ff5fd7"
+chart_10 = "#ffff87"
+chart_grid = "#4e4e4e"
+
+find_match = "#ffd75f"
+hex_null = "#a8a8a8"
+hex_printable = "#00d7ff"
+hex_whitespace = "#5fff87"
+hex_control = "#ff87ff"
+hex_high = "#ffd75f"
+hex_ff = "#ff5f5f"

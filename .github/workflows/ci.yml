@@ -374,6 +374,9 @@ jobs:
       - name: Test documentation navigation and builds
         run: .venv/bin/python -m unittest discover -s scripts/docs -p 'test_*.py'
 
+      - name: Test the capture harness
+        run: .venv/bin/python -m unittest discover -s scripts/demos -p 'test_*.py'
+
       # The book's structure, and every code block labeled runnable, template or
       # output (#683).
       - name: Lint the docs

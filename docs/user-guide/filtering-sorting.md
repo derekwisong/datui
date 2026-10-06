@@ -24,11 +24,12 @@ from eight chains, nutrients per item. Find the chicken dishes with at least
    in order. Type `chicken` and press <kbd>Ctrl</kbd>+<kbd>G</kbd> to keep the
    178 of 515 that match.
 2. Press <kbd>s</kbd>: the sidebar opens on `add sort…`. Press <kbd>↓</kbd>
-   to `add filter…` and <kbd>Space</kbd>. Type `protein` and press
-   <kbd>Enter</kbd>, `>=` and <kbd>Enter</kbd>, `40` and <kbd>Enter</kbd>.
-3. Press <kbd>↑</kbd> to `add sort…` and <kbd>Space</kbd>. Type `calories`
-   and press <kbd>Enter</kbd>, then <kbd>Space</kbd> on the new sort for
-   descending.
+   twice, past the find's filter, to `add filter…` and <kbd>Space</kbd>.
+   Type `protein` and press <kbd>Enter</kbd>, `>=` and <kbd>Enter</kbd>, `40`
+   and <kbd>Enter</kbd>.
+3. Press <kbd>↑</kbd> three times to `add sort…` and <kbd>Space</kbd>. Type
+   `calories` and press <kbd>Enter</kbd>, then <kbd>Space</kbd> on the new
+   sort for descending.
 4. Press <kbd>↑</kbd> to the tab bar, <kbd>→</kbd> for **Columns** and
    <kbd>↓</kbd> into the find field. Type `vit`, then <kbd>↓</kbd>
    <kbd>v</kbd> <kbd>↓</kbd> <kbd>v</kbd> to hide `vit_a` and `vit_c`.

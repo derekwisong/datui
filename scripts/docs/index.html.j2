@@ -101,11 +101,6 @@
     .paths { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; }
     .paths > div { min-width: 0; }
     .paths pre { margin-bottom: 12px; }
-    .compare { width: 100%; border-collapse: collapse; font-size: 15px; }
-    .compare th, .compare td { text-align: left; vertical-align: top; padding: 12px 14px 12px 0; border-bottom: 1px solid var(--line); }
-    .compare thead th { white-space: nowrap; }
-    .compare .num { text-align: right; white-space: nowrap; }
-    .compare td { color: var(--muted); }
     .version-list { list-style: none; margin: 18px 0; padding: 0; }
     .version-list li { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; border-bottom: 1px solid var(--line); padding: 10px 0; }
     .version-list a { font-family: var(--mono); font-size: 14px; }
@@ -120,12 +115,6 @@
       .hero { padding: 44px 0 28px; } .capture { margin-bottom: 40px; }
       .features, .paths, .format-families { grid-template-columns: 1fr; }
       section { padding: 38px 0; }
-      .compare, .compare tbody, .compare tr, .compare th, .compare td { display: block; }
-      .compare thead { display: none; }
-      .compare tr { border-bottom: 1px solid var(--line); padding: 10px 0; }
-      .compare th, .compare td { border: 0; padding: 2px 0; white-space: normal; }
-      .compare td.num { text-align: left; }
-      .compare td[data-label]::before { content: attr(data-label) ": "; }
       .version-list time { width: 100%; margin-left: 0; }
     }
   </style>
@@ -196,7 +185,7 @@
   </section>
   <section class="install-panel" id="install-aur" data-label="Arch Linux, AUR" data-os="">
     <h3>Arch Linux, AUR</h3>
-    <pre data-example="bash,install"><code>paru -S datui-bin</code></pre>
+    <pre data-example="bash,install"><code>yay -S datui-bin</code></pre>
   </section>
   <section class="install-panel" id="install-apt" data-label="Debian, Ubuntu" data-os="">
     <h3>Debian, Ubuntu</h3>
@@ -222,16 +211,7 @@ sudo apt install datui</code></pre>
           <li>A Parquet file in S3, GCS or Azure is read in place: footers for the schema and row count, then only the row groups the screen needs.</li>
           <li>The row count runs in the background; the table is usable before it is done.</li>
         </ul>
-        <table class="compare">
-          <thead><tr><th scope="col">Open</th><th scope="col" class="num">First rows</th><th scope="col" class="num">Exact row count</th></tr></thead>
-          <tbody>
-            <tr><th scope="row">CSV, 4,000,000 rows, 234 MB, local</th><td class="num" data-label="First rows">14 ms</td><td class="num" data-label="Exact row count">0.36 s</td></tr>
-            <tr><th scope="row">Parquet, the same rows, 53 MB, local</th><td class="num" data-label="First rows">10 ms</td><td class="num" data-label="Exact row count">10 ms</td></tr>
-            <tr><th scope="row">Text log, the same 234 MB as <code>.log</code>, local</th><td class="num" data-label="First rows">12 ms</td><td class="num" data-label="Exact row count">not measured</td></tr>
-            <tr><th scope="row"><a href="https://registry.opendata.aws/noaa-ghcn/">NOAA GHCN-D</a> 2024, public S3: 137 Parquet files, 38,465,374 rows</th><td class="num" data-label="First rows">0.54 s</td><td class="num" data-label="Exact row count">0.52 s</td></tr>
-          </tbody>
-        </table>
-        <p class="small">Time from launch, median of 5 runs (S3: 3, no cache, home network). Release build of 0.4.0-dev, Ryzen 7 9800X3D, Linux, warm page cache, 120×30 pseudo-terminal. The local files are <code>scripts/bench/startup.py generate DIR 4000000</code>. Piped input shows its first rows once 1,000 lines have arrived, sooner from a slower producer. <a href="{{ guide('reference/performance') }}">Performance</a> has more.</p>
+        <p>First rows in milliseconds on local files, under a second from S3. <a href="{{ guide('reference/performance') }}">Performance</a> has the numbers.</p>
       </section>
 
       <section aria-labelledby="features-title">

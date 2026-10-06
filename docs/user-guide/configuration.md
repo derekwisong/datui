@@ -195,6 +195,11 @@ chip_key = "#e0af68"
 | `description` | Shown by `datui theme list` |
 | Any slot | The same slots and color forms as [`[theme.colors]`](#colors) |
 
+The repository's
+[`contrib/themes/`](https://github.com/derekwisong/datui/tree/main/contrib/themes)
+has more, each crediting its palette: `gruvbox-dark` and `high-contrast`. Copy
+one into `themes/` to use it.
+
 `datui theme list` lists the themes; `datui theme show NAME` prints one with
 every slot, to save into `themes/` and edit. A theme file with a mistake is
 left out with a warning. A theme name that cannot be used falls back to its

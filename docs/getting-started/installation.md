@@ -23,11 +23,12 @@ The script installs the latest release for your platform:
 |---|---|
 | Debian, Ubuntu | Adds the [apt repository](#apt-repository) and its signing key with `sudo`, then installs the package with apt; `apt upgrade` keeps it current |
 | Fedora, RHEL, Amazon Linux | Downloads the release's `.rpm` and installs it with `dnf` |
+| Arch Linux and derivatives, x86_64 | Asks, then installs `datui-bin` from the AUR with `yay` or `paru`; pacman owns it and the helper upgrades it. With neither, it says how and offers the archive |
 | Other Linux, macOS | Unpacks the release archive: `datui` into `/usr/local/bin`, the manual pages into `/usr/local/share/man` |
 
 It checks each download against the release's `SHA256SUMS`, asks before it
-changes apt (with no terminal to ask on, it goes ahead), and runs the installed
-binary before it reports success. Options go after `sh -s --`:
+changes apt or runs an AUR helper (with no terminal to ask on, it goes ahead),
+and runs the installed binary before it reports success. Options go after `sh -s --`:
 
 | Option | Effect |
 |---|---|
@@ -59,7 +60,7 @@ curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/inst
 | [macOS, Homebrew](https://github.com/derekwisong/homebrew-datui) | `brew tap derekwisong/datui && brew trust derekwisong/datui && brew install datui` |
 | [Python, PyPI](https://pypi.org/project/datui/) | `pip install datui` |
 | [Rust, crates.io](https://crates.io/crates/datui) | `cargo install datui --locked` |
-| [Arch Linux, AUR](https://aur.archlinux.org/packages/datui-bin) | `paru -S datui-bin` |
+| [Arch Linux, AUR](https://aur.archlinux.org/packages/datui-bin) | `yay -S datui-bin` |
 | Debian, Ubuntu | [Apt repository](#apt-repository) |
 | Binaries | Linux, macOS and Windows binaries, `.deb`, `.rpm` and Arch tarballs on the [latest release](https://github.com/derekwisong/datui/releases/latest) |
 <!-- end generated: install-table -->
@@ -208,7 +209,7 @@ winget install derekwisong.datui
 | Homebrew | `brew uninstall datui`, then `brew untap derekwisong/datui` |
 | pip | `pip uninstall datui` |
 | cargo | `cargo uninstall datui` |
-| AUR | `paru -R datui-bin` |
+| AUR | `sudo pacman -R datui-bin` |
 | An archive | Delete `datui` from where you put it |
 
 None of these touch your config, themes, saved views, cache or log. `datui

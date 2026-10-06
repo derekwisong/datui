@@ -23,6 +23,12 @@ ORDER BY avg_calories DESC
 2. <kbd>↓</kbd> to **Format**, <kbd>→</kbd> until it reads **Markdown**.
 3. Press <kbd>Enter</kbd> to copy. The status line says `Copied 8 rows as Markdown`.
 
+![The Copy dialog over the restaurant summary, Scope Table and Format Markdown: Copy all 8 rows as Markdown](../demos/screenshots/copy-markdown.png)
+
+Which chain's menu is heaviest, in a note? <kbd>y</kbd>, **Table**,
+**Markdown**: the dialog says what <kbd>Enter</kbd> copies, all 8 rows,
+Mcdonalds first at 640 calories.
+
 Paste into a note:
 
 ```text

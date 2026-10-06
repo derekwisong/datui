@@ -37,28 +37,15 @@ SELECT year, name, n FROM df WHERE sex = 'F' AND name IN ('Emma', 'Jennifer', 'O
 
 Use <kbd>↓</kbd> to move through settings. <kbd>Space</kbd> opens a column
 picker; type to narrow, <kbd>Space</kbd> to select and <kbd>Enter</kbd> to
-close it. <kbd>←</kbd> <kbd>→</kbd> step **Aggregate**. The builder, at 100
-columns:
+close it. <kbd>←</kbd> <kbd>→</kbd> step **Aggregate**.
 
-```text
-╭Pivot & Melt──────────────────────────────────────────────────────────────────────────────────────╮
-│  Pivot │ Melt                                    Preview ─────────────────────────────────────── │
-│                                                  Input    all 376 rows                           │
-│  Index:          year                            Result   138 rows × 4 columns                   │
-│  Columns:        name                                                                            │
-│ ▎Values:         n                                                                               │
-│  Aggregate:      last                            year  Emma  Jennifer  Olivia                    │
-│                                                   i64   i64       i64     i64                    │
-│                                                  1880  2003         ∅      44                    │
-│                                                  1881  2034         ∅      51                    │
-│                                                  1882  2303         ∅      52                    │
-│                                                  1883  2367         ∅      46                    │
-│                                                  1884  2587         ∅      54                    │
-│ year × name → last(n)                            1885  2728         ∅      59                    │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
-```
+![The Pivot & Melt builder: Index year, Columns name, Values n, Aggregate last; the preview reads all 376 rows in, 138 rows × 4 columns out, with Jennifer null before 1916](../demos/screenshots/pivot-builder.png)
 
-The status footer under it reads `<dataset> › pivot & melt` and names the keys
+One column per name, a row per year? The preview says 138 rows × 4 columns
+before anything is applied. <kbd>p</kbd>, then **Index** `year`,
+**Columns** `name`, **Values** `n`.
+
+The status footer under the builder reads `<dataset> › pivot & melt` and names the keys
 that act on the focused field, here `Enter Apply  Space Open  Esc Close`.
 
 Press <kbd>Enter</kbd> to apply.

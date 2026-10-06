@@ -11,7 +11,7 @@ Sorted by `dep_delay`, inspected, then charted as the mean departure delay by
 `hour`, one line per `origin`. At JFK it climbs from 0.5 minutes at 5:00 to
 26.1 at 21:00. The data is 2013's; this is not a forecast.
 
-<!-- CAPTURE PLACEHOLDER (#356): ![datui opening NYC flights, sorting by delay and charting the mean delay by hour per airport](demos/teaser.gif) -->
+![datui opening NYC flights, sorting by delay and charting the mean delay by hour per airport](demos/teaser.gif)
 
 Do it yourself: [Query data](user-guide/querying-data.md#run-a-query) and
 [Make a chart](user-guide/charting.md#examples-on-the-built-in-datasets).
@@ -24,7 +24,12 @@ the whole bucket, `s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/`, opened as
 one table and scrolled to its last row. The waits are real; nothing is
 downloaded whole.
 
-<!-- CAPTURE PLACEHOLDER (#356): ![datui charting Central Park highs from NOAA's S3 bucket, then opening and scrolling 38 million rows of 2024](demos/noaa-cloud.gif) -->
+![datui charting Central Park highs from NOAA's S3 bucket, then opening and scrolling 38 million rows of 2024](demos/noaa-cloud.gif)
+
+Recorded 2026-10-05 with datui 0.4.0-dev on an 8-core Ryzen 7 9800X3D, over a
+wired home connection, with a cold cache: `YEAR=2024` opened its 135 files as
+one table of 38,466,379 rows in about a second. Your times depend on your
+connection and the bucket.
 
 Do it yourself: [Connect to cloud storage](user-guide/remote-data.md#examples-on-public-data).
 

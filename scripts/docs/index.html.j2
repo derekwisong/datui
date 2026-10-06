@@ -67,10 +67,9 @@
     .copy:hover { color: var(--accent); }
     section { padding: 56px 0; border-top: 1px solid var(--line); }
     .section-lead { max-width: 680px; color: var(--muted); margin-bottom: 26px; }
-    /* Slots for the captures of #356. Each says what goes in it until then. */
-    .placeholder { display: grid; place-items: center; align-content: center; text-align: center; padding: 18px; border: 2px dashed var(--line); border-radius: 8px; background: var(--panel); color: var(--muted); font: 13px/1.5 var(--mono); }
+    /* The captures: scripts/demos/capture.py, published with the docs. */
     .capture { margin: 0 0 64px; }
-    .capture .placeholder, .capture img { aspect-ratio: 16 / 9; width: 100%; height: auto; display: block; border-radius: 8px; }
+    .capture img, .features img, .gallery img { width: 100%; height: auto; display: block; border-radius: 8px; }
     .capture button { margin-top: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 8px 18px; }
     .install-panels { display: grid; gap: 22px; }
     .install-panel { padding: 0; border: 0; }
@@ -87,7 +86,9 @@
     .features + .small { margin-top: 30px; }
     ul.section-lead li { margin-bottom: 6px; }
     .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 34px 30px; }
-    .features .placeholder { aspect-ratio: 16 / 10; margin-bottom: 14px; }
+    .features img { border-radius: 6px; margin-bottom: 14px; }
+    .gallery { margin: 34px 0 0; }
+    .gallery figcaption { margin-top: 10px; }
     .features p { font-size: 15px; color: var(--muted); margin-bottom: 8px; }
     .features a { font-size: 14px; }
     .format-families { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 18px 30px; margin: 0; }
@@ -143,15 +144,13 @@
         <p class="small">Linux, macOS and Windows · One binary, built on Polars · MIT license · No telemetry</p>
       </div>
 
+      {% if teaser %}
       <figure class="capture">
-        {% if teaser %}
-        <img id="teaser" src="{{ teaser.poster }}" data-poster="{{ teaser.poster }}" data-src="{{ teaser.gif }}" alt="datui opening public data, querying it and charting the result" width="1600" height="900">
+        <img id="teaser" src="{{ teaser.poster }}" data-poster="{{ teaser.poster }}" data-src="{{ teaser.gif }}" alt="datui opening NYC flights (2013) from Example datasets, sorting by departure delay and charting the mean delay by hour, one line per airport" width="1376" height="788">
         <button id="play-teaser" hidden aria-controls="teaser">Play</button>
         <noscript><a href="{{ teaser.gif }}">Watch the demo (GIF)</a></noscript>
-        {% else %}
-        <div class="placeholder" role="img" aria-label="Capture to come">CAPTURE PLACEHOLDER (#356)<br>Teaser GIF behind a static poster, with Play and Stop</div>
-        {% endif %}
       </figure>
+      {% endif %}
 
       <section id="install" aria-labelledby="install-title">
         <p class="eyebrow">Get started</p>
@@ -214,43 +213,48 @@ sudo apt install datui</code></pre>
         <h2 id="features-title">What it does</h2>
         <div class="features">
           <div>
-            <div class="placeholder" role="img" aria-label="Screenshot to come">STILL PLACEHOLDER (#356)<br>Formats</div>
+            {% if shots['excel-tables'] %}<img src="{{ shots['excel-tables'] }}" alt="The worksheet picker over an Excel workbook opened by URL: three worksheets, each with its range and size" width="1376" height="788" loading="lazy">{% endif %}
             <h3>Formats, and yours</h3>
             <p>From Parquet, CSV, Arrow and JSON to SQLite, GGUF, audio and flight logs. A TOML format spec describes your own binary or delimited format; any file opens in the hex view.</p>
             <a href="{{ guide('formats/index') }}">Formats →</a> · <a href="{{ guide('formats/format-specs') }}">Format specs →</a>
           </div>
           <div>
-            <div class="placeholder" role="img" aria-label="Screenshot to come">STILL PLACEHOLDER (#356)<br>Home screen, cloud sources</div>
+            {% if shots['home-details'] %}<img src="{{ shots['home-details'] }}" alt="The home screen: Example datasets, NOAA daily weather selected, its publisher, license and column notes beside it" width="1376" height="788" loading="lazy">{% endif %}
             <h3>Cloud or home</h3>
             <p>Local files, directories, globs, S3, GCS, Azure and HTTP(S). Hive-partitioned folders read as one table. The home screen lists your catalogs, the cloud accounts it finds logins for, and Example datasets that need no login.</p>
             <a href="{{ guide('user-guide/home-screen') }}">Home screen →</a> · <a href="{{ guide('user-guide/remote-data') }}">Cloud storage →</a>
           </div>
           <div>
-            <div class="placeholder" role="img" aria-label="Screenshot to come">STILL PLACEHOLDER (#356)<br>The command line</div>
+            {% if shots['query-carriers'] %}<img src="{{ shots['query-carriers'] }}" alt="A SQL GROUP BY over NYC flights: mean arrival delay per carrier, F9 latest, AS early" width="1376" height="788" loading="lazy">{% endif %}
             <h3>Query and find</h3>
             <p><kbd>:</kbd> runs SQL or q; <kbd>/</kbd> finds text, a regex or letters in order. <kbd>[</kbd> <kbd>]</kbd> sort by the cursor's column, <kbd>+</kbd> <kbd>-</kbd> keep or drop its value, and <kbd>v</kbd> saves the steps as a view for the next file.</p>
             <a href="{{ guide('user-guide/querying-data') }}">Query data →</a>
           </div>
           <div>
-            <div class="placeholder" role="img" aria-label="Screenshot to come">STILL PLACEHOLDER (#356)<br>A chart</div>
+            {% if shots['chart-color-origin'] %}<img src="{{ shots['chart-color-origin'] }}" alt="A line chart of mean departure delay by hour, one line per New York airport, over all 336,776 rows" width="1376" height="788" loading="lazy">{% endif %}
             <h3>Chart</h3>
             <p><kbd>c</kbd> charts the column under the cursor: line, scatter, bar, histogram, box, KDE or heatmap, of the rows the query and filters leave. <kbd>e</kbd> exports it to PNG, SVG or PDF.</p>
             <a href="{{ guide('user-guide/charting') }}">Charts →</a>
           </div>
           <div>
-            <div class="placeholder" role="img" aria-label="Screenshot to come">STILL PLACEHOLDER (#356)<br>Pivot, column types</div>
+            {% if shots['pivot-builder'] %}<img src="{{ shots['pivot-builder'] }}" alt="The Pivot & Melt builder with its live preview: three names as columns, one row per year" width="1376" height="788" loading="lazy">{% endif %}
             <h3>Reshape and retype</h3>
             <p>Pivot or melt (<kbd>p</kbd>) with a live preview. Change a column's type from the Info panel's Schema tab or a right click on a cell.</p>
             <a href="{{ guide('user-guide/reshaping') }}">Reshaping →</a> · <a href="{{ guide('user-guide/dataset-info') }}">Column types →</a>
           </div>
           <div>
-            <div class="placeholder" role="img" aria-label="Screenshot to come">STILL PLACEHOLDER (#356)<br>A pipe, or Python</div>
             <h3>Pipes and Python</h3>
             <p>Pipe a command's output in, follow a file as it grows, or call <code>datui.view()</code> on a Polars frame.</p>
             <a href="{{ guide('user-guide/pipes-and-follow') }}">Pipes →</a> · <a href="{{ guide('user-guide/python-module') }}">Python →</a>
           </div>
         </div>
         <p class="small">Also: catalogs of your own datasets with a Documentation view (<kbd>Ctrl+E</kbd>), themes (<code>datui theme list</code>), the mouse, and copy over SSH through OSC 52. <a href="{{ guide('reference/keyboard-shortcuts') }}">Every key</a></p>
+        {% if gallery %}
+        <figure class="gallery">
+          <img src="{{ gallery }}" alt="One NYC flights view in four themes: night-market, day-market, gruvbox-dark and high-contrast" width="2752" height="1576" loading="lazy">
+          <figcaption class="small">Themes: <code>night-market</code> and <code>day-market</code> built in, <code>gruvbox-dark</code> and <code>high-contrast</code> from <code>contrib/themes/</code>. <a href="{{ guide('user-guide/configuration') }}#themes">Themes →</a></figcaption>
+        </figure>
+        {% endif %}
       </section>
 
       <section aria-labelledby="formats-title">

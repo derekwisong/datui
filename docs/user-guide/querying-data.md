@@ -79,6 +79,16 @@ F9 is last at +21.9 minutes; AS, at −9.9, arrives early on average. Press
 <kbd>Enter</kbd> on AS to see its 714 flights: every one is Newark to Seattle.
 <kbd>Esc</kbd> comes back. See [Drill down a GROUP BY](#drill-down-a-group-by).
 
+![The carrier ranking: F9 first at 21.92 minutes late on average, AS last at −9.93, with the cursor on AS](../demos/screenshots/query-carriers.png)
+
+Which airlines arrive late? F9, by 21.9 minutes on average; AS arrives early.
+<kbd>:</kbd>, the query, <kbd>Enter</kbd>, then <kbd>G</kbd> to AS.
+
+![AS drilled down: Group: carrier=AS, 714 flights, origin EWR and dest SEA on every row](../demos/screenshots/query-drill.png)
+
+Where does AS fly? <kbd>Enter</kbd> on AS: its 714 flights, Newark (`EWR`) to
+Seattle (`SEA`). <kbd>Esc</kbd> goes back.
+
 ## SQL
 
 SQL mode runs the SQL that the bundled version of
@@ -145,6 +155,11 @@ ORDER BY goals DESC, match_date, home
 
 `SUBSTR` drops the `(P)`. Two matches had nine goals: Aston Villa 7–2
 Liverpool on 2020-10-04 and Manchester Utd 9–0 Southampton on 2021-02-02.
+
+![Premier League 2020-21 matches by goals: Aston Villa against Liverpool on 2020-10-04 and Manchester Utd against Southampton on 2021-02-02 lead with 9](../demos/screenshots/query-goals.png)
+
+Which matches had the most goals? <kbd>:</kbd>, the query, <kbd>Enter</kbd>:
+`match_date` is a date and `goals` a number, two nine-goal matches first.
 
 NYC flights has a `time_hour` timestamp, but it is in UTC, so a late-evening
 departure lands on the next day. The local date is in `year`, `month` and `day`:

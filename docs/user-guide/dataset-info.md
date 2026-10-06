@@ -12,8 +12,6 @@ and the body always has the keys: the rail marks the schema's current row.
 When the schema is taller than the panel, the footer counts the columns out of
 view.
 
-![Info Panel Demo](../demos/03-info.gif)
-
 | Tab | Shows |
 |---|---|
 | **Schema** | Row and column counts, column types, schema source, file coverage, and a Parquet file's per-column compression. A column's unit, when a delimited format spec read a unit row or the file names one (DataFlash, a DBC dictionary). A dataset a [catalog](../reference/catalogs.md#columns) documents adds what each column means (`About`), the selected column's note and codes below, and the documentation's link |

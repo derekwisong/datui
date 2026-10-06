@@ -131,3 +131,8 @@ worksheet. The Excel tab gives each worksheet's range and size.
 opens another, and <kbd>Enter</kbd> on a worksheet of the Excel tab does the
 same. An `.xls` or `.xlsb` workbook is no different: the open has read its
 worksheet names already, so listing them reads nothing more.
+
+![The worksheet picker over SampleSS.xlsx: its three worksheets, each with its range and size, the first one open](../demos/screenshots/excel-tables.png)
+
+What else is in the workbook? <kbd>T</kbd>: three worksheets, each with its
+range and size; <kbd>Enter</kbd> opens one.

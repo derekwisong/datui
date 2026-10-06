@@ -22,6 +22,16 @@ Central Park's daily highs, in NOAA's public weather data, for 2024 and then
 
 The view runs the query on 2023: 365 rows, 2023-01-01 to 2023-12-31.
 
+![The Views list over NOAA's YEAR=2023/ELEMENT=TMAX: Central Park highs, matched by same columns](../demos/screenshots/views-list.png)
+
+Does a view saved on 2024 fit 2023? <kbd>v</kbd> on `YEAR=2023/ELEMENT=TMAX`:
+`Central Park highs`, matched by `same columns`.
+
+![The view applied to 2023: day and high_c, 365 rows from 2023-01-01](../demos/screenshots/views-applied.png)
+
+<kbd>Enter</kbd> applies it: 365 daily highs of 2023, 12.8 °C on New Year's
+Day.
+
 A view stores transformations, not a copy of the data. The next file produces
 its own results.
 

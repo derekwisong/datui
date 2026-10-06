@@ -93,6 +93,11 @@ On **NYC flights (2013)**, with no query: press <kbd>c</kbd> on `carrier`, pick
 longest at 21.92 minutes; HA and AS arrive early on average, so their bars
 grow left of zero.
 
+![A bar chart of mean arr_delay by carrier over all 336,776 rows: F9 longest at 21.92, HA at −6.92 and AS at −9.93 left of zero](../demos/screenshots/chart-carrier-bar.png)
+
+Which airlines arrive late? F9, by 21.92 minutes on average. <kbd>c</kbd> on
+`carrier`, **Y** `arr_delay`, <kbd>→</kbd> on **Aggregate** to **mean**.
+
 ## Color
 
 **Color** splits a chart into one series per value of a category column, each
@@ -102,6 +107,12 @@ are drawn (all of them, when the view is filtered to fewer); the line under
 rows, most first: type to narrow, <kbd>Space</kbd> toggles a value (up to
 ten), <kbd>Enter</kbd> charts the ones picked. The values are counted over
 the whole view.
+
+![Mean dep_delay by hour colored by origin, all 336,776 rows: three lines, EWR highest at 31.1 minutes at 19:00](../demos/screenshots/chart-color-origin.png)
+
+Which New York airport leaves latest, and when? Newark in the evening,
+31.1 minutes on average at 19:00. A line of `dep_delay` by `hour`,
+**Aggregate** **mean**, **Color** `origin`.
 
 **Other** gathers every value without a series of its own into one more
 series, the legend's last entry, in `dimmed`. <kbd>←</kbd> <kbd>→</kbd> on the
@@ -226,6 +237,23 @@ Each starts from the dataset of that name under **Example datasets**.
 | Central Park highs | NOAA daily weather, `by_year/YEAR=2024/ELEMENT=TMAX`, the [station query](remote-data.md#examples-on-public-data) | Line; X `day`, Y `high_c` | 366 daily highs from −6.0 to 35.0 °C |
 | Earthquakes on a map | Earthquakes (past month), no query | Scatter; X `longitude`, Y `latitude` | The Pacific Ring of Fire. A sample of 10,000; set **Rows** to **Every row** for all of them |
 | Calories by chain | Food nutrition, the [restaurant summary](copying.md#copy-a-table-into-a-note) | Bar; X `restaurant`, Y `avg_calories`, none | Mcdonalds first at 640, Chick Fil-A last at 384 |
+
+![JFK's mean departure delay by hour, from the JFK query: a climb from 0.5 minutes at 5:00 to 26.1 at 21:00](../demos/screenshots/chart-jfk-hour.png)
+
+When does a JFK departure leave late? In the evening, 26.1 minutes on average
+at 21:00. The [JFK query](querying-data.md#run-a-query), then <kbd>c</kbd>
+<kbd>1</kbd> on `mean_delay`, **X** `hour`.
+
+![Emma, Jennifer and Olivia per year from the pivot: Jennifer peaks above 60,000 in the early 1970s, Emma and Olivia rise after 2000](../demos/screenshots/chart-names.png)
+
+How did three names rise and fall? Jennifer peaks at 63,604 in 1972; Emma and
+Olivia rise after 2000. The [pivot](reshaping.md#pivot), then <kbd>c</kbd>
+<kbd>1</kbd>, **X** `year`, **Y** all three.
+
+![Earthquakes of the past month, longitude against latitude: the Pacific Ring of Fire](../demos/screenshots/chart-quakes.png)
+
+Where does the earth shake? Around the Pacific. <kbd>c</kbd> <kbd>2</kbd> on
+`latitude`, **X** `longitude`. A rolling feed: your month draws its own points.
 
 ## Large tables
 

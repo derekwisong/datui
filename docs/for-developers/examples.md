@@ -46,7 +46,7 @@ screen.
 | [Copy](../user-guide/copying.md) | The Markdown copy, under tmux with `set-clipboard on` and `[clipboard] backend = "osc52"` | `tmux show-buffer` prints the table in the page |
 | [Export](../user-guide/exporting-data.md) | `goals.csv` | 381 lines, the three shown first |
 | [Views](../user-guide/views.md) | Save on 2024, apply on 2023; `--view` on 2022 | 366, 365 and 365 rows |
-| [Remote data](../user-guide/remote-data.md) | NOAA 2024, its element counts, Bitcoin 2024 | 38,465,374 rows; `PRCP` first; 12 months |
+| [Remote data](../user-guide/remote-data.md) | NOAA 2024, its element counts, Bitcoin 2024 | 38,466,379 rows; `PRCP` first; 12 months |
 | [Python](../user-guide/python-module.md) | The capture example, with the wheel built as in [Build Python bindings](python-bindings.md) | The three-row summary |
 
 Earthquakes change daily, and Bitcoin gains a partition a day: their pages

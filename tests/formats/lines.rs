@@ -501,7 +501,8 @@ fn go_to_a_row_waits_for_the_lines_to_be_indexed() {
 fn home_pauses_the_indexing_and_the_app_gone_stops_it() {
     let dir = tempfile::tempdir().unwrap();
     let lines = 1_500_000;
-    let (mut app, rx) = open_first_rows(large_log(dir.path(), lines));
+    let log = large_log(dir.path(), lines);
+    let (mut app, rx) = open_first_rows(log.clone());
     let held = app
         .data_table_state
         .as_ref()
@@ -525,8 +526,10 @@ fn home_pauses_the_indexing_and_the_app_gone_stops_it() {
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.num_rows_if_valid(), Some(lines));
     assert!(held.whole() && !held.indexing());
+    drop(app);
 
-    let (mut app, _rx) = open_first_rows(large_log(dir.path(), lines));
+    // The same file again: Windows refuses to rewrite a file while it is mapped.
+    let (mut app, _rx) = open_first_rows(log);
     let held = app
         .data_table_state
         .as_ref()

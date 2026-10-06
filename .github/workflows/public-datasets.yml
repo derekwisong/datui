@@ -1,4 +1,4 @@
-name: Public datasets
+name: Example datasets
 
 # The bundled `public` catalog points at data other organisations host.
 # datui hosts none of it, so nothing tells us when a publisher moves or retires a
@@ -97,7 +97,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          title="Public datasets check failed"
+          title="Example datasets check failed"
           existing=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number')
           body="The weekly check of the built-in public datasets failed: $RUN_URL
 

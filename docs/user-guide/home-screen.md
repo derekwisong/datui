@@ -8,8 +8,11 @@ data.
 datui
 ```
 
-<kbd>Ctrl</kbd>+<kbd>O</kbd> returns here from anywhere. Typing narrows the
-list; <kbd>Enter</kbd> does what the footer names for the row. Every key is
+<kbd>Ctrl</kbd>+<kbd>O</kbd> returns here from anywhere, on the dataset you
+left. A filter typed before comes back selected: typing replaces it, and
+<kbd>~</kbd> opens the path prompt. Typing narrows the list; <kbd>Esc</kbd> clears
+the filter and selects the first dataset; <kbd>Enter</kbd> does what the footer
+names for the row. Every key is
 in the [keyboard reference](../reference/keyboard-shortcuts.md#home-screen).
 
 ## Open a file or directory
@@ -19,17 +22,18 @@ in the [keyboard reference](../reference/keyboard-shortcuts.md#home-screen).
 3. To browse a directory rather than read it as one table, press <kbd>→</kbd>.
 
 To type a path or URL, press <kbd>~</kbd> with the filter empty. The list
-shows the directory being typed, narrowed by the name after the last `/`.
+shows the directory being typed, narrowed by the name after the last `/`, with
+the first name picked.
 
 | Key at the `~` prompt | Does |
 |---|---|
-| <kbd>Tab</kbd> | Completes the one name left, with `/` for a directory, or what the names share |
-| <kbd>↑</kbd> <kbd>↓</kbd> | Picks a name from the list |
-| <kbd>Enter</kbd> | Opens a file, or goes inside a directory as <kbd>→</kbd> does |
+| <kbd>Tab</kbd> | Completes the one name left, with `/` for a directory, or what the names share; a name picked further down, that name |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Picks a name from the list; <kbd>↑</kbd> from the first takes the path as typed |
+| <kbd>Enter</kbd> | Opens the picked name, or the path as typed: a file opens, a directory is gone inside as <kbd>→</kbd> does |
 | <kbd>Esc</kbd> | Closes the prompt |
 
 `s3://`, `gs://` and `az://` complete from names datui already knows (listed
-sources and prefixes, recents, the public catalog); nothing is asked of the
+sources and prefixes, recents, the example datasets); nothing is asked of the
 store, so `s3://noaa` <kbd>Tab</kbd> gives `s3://noaa-ghcn-pds/`.
 
 The footer names where the list is, how many rows the filter matches and the
@@ -49,7 +53,7 @@ then types). Letters type into the filter, so
 | `CLOUD` | [Cloud sources](#cloud-sources): stores found on this machine and configured ones |
 | `MY DATASETS` | Your [catalog](#catalogs), `catalog.toml`: what <kbd>Ctrl</kbd>+<kbd>D</kbd> added and what you wrote |
 | Other catalogs | Each `*.toml` in the config directory's `catalogs/`, then each file `catalogs` lists, under its label |
-| `PUBLIC DATASETS` | The bundled [public datasets](#public-datasets) |
+| `EXAMPLE DATASETS` | The [example datasets](#example-datasets) that come with datui |
 | `ELSEWHERE` | Directories your desktop recorded (freedesktop `recently-used.xbel`); starts folded |
 | `Found` | [Search](#search-below-the-current-directory) results, while you type |
 
@@ -122,6 +126,7 @@ and automounts.
 | Records | For a file a format spec reads as several record types: `2 types (spec)`, then each type and its column count (`add 5 · cancel 3`) |
 | `▲ footer unreadable` | A Parquet file whose footer could not be read; opening it will most likely fail too |
 | Enter, `→` | What <kbd>Enter</kbd> and <kbd>→</kbd> do on a directory, a door, a file of tables or a file of record types: `all partitions as one table`, `step in · first row opens all`, `its tables`, `every record` and `its record types` |
+| `COLUMNS` | What each column means, for a catalog dataset or bookmark with column notes, or a file a format spec documents: the catalog's description, unit and legend each over the spec's, as in the [Documentation view](#documentation-view), or `2 values` for a legend alone; `… 4 more` when the pane is short. <kbd>Ctrl</kbd>+<kbd>E</kbd> shows the whole page |
 | `ROWS` | The first eight rows of a local CSV, TSV, PSV, NDJSON, Arrow IPC or Parquet file, read when the row is selected. <kbd>Enter</kbd> opens the file on those rows, so they are read once. `[home] preview_max` sets the largest file read; `0` turns it off. Network shares and object stores are not read before opening |
 
 Below about 100 columns the pane hides, and the first rows show in a strip at
@@ -211,7 +216,7 @@ and old versions may show. How files combine is in
 
 A catalog is a file of named datasets, local and remote, shown as a section
 under its label: `catalog.toml` (`MY DATASETS`), each file in `catalogs/` or listed in `catalogs`, and
-`PUBLIC DATASETS`. [Catalogs](../reference/catalogs.md) has the keys.
+`EXAMPLE DATASETS`. [Catalogs](../reference/catalogs.md) has the keys.
 
 ```text
 ▾ MY DATASETS  5   catalog.toml  ─────────────────────────────────
@@ -264,18 +269,33 @@ only the spec notes, and its record types, stay.
 |---|---|
 | <kbd>↑</kbd> <kbd>↓</kbd>, <kbd>PgUp</kbd> <kbd>PgDn</kbd> | Move between lines |
 | <kbd>Enter</kbd> | Open or close a column's value legend |
+| <kbd>o</kbd> | Open the line's link in the browser, after asking |
 | <kbd>y</kbd> | Copy the line's link or value, whole |
 | <kbd>Esc</kbd> | Back to the list |
+
+<kbd>o</kbd> opens only the page's links (`homepage`, `documentation`,
+`url`), and only `http://` and `https://` ones, without a user name or
+password. It first asks `Open <URL>?` with the whole URL, a host that is not
+ASCII in its `xn--` form; <kbd>Enter</kbd> opens it, <kbd>Esc</kbd> does not.
+Over SSH, or on Linux and the BSDs without `DISPLAY` or `WAYLAND_DISPLAY`,
+the browser would not open in front of you, so <kbd>o</kbd> is not offered:
+<kbd>y</kbd> copies the link.
 
 <kbd>Ctrl</kbd>+<kbd>E</kbd> takes the place of readline's end of line: the
 filter has no cursor, and is edited at its end.
 
-### Public datasets
+### Example datasets
 
-`Public datasets` is the bundled catalog: data its publishers host, read with
-no login, listed after your own. datui ships none of the data;
-`datui catalog show public` prints the
-[catalog](../reference/catalogs.md#the-public-catalog).
+Don't want them? `[home] hide = ["examples"]` in `config.toml` hides them for
+good; <kbd>Delete</kbd> on the heading hides them until `datui cache clear`; an
+`examples.toml` of your own, in `catalogs/`, replaces them.
+
+`Example datasets` is the catalog that comes with datui: data its publishers
+host, read with no login, listed after your own. datui ships none of the data;
+`datui catalog show examples` prints the
+[catalog](../reference/catalogs.md#the-example-datasets). Selecting its heading
+shows how many datasets it lists, where it comes from, and how to hide it; a
+heading of your own catalog shows its file and its `[home] hide` id.
 
 | Dataset | Data | License |
 |---|---|---|
@@ -300,7 +320,7 @@ no login, listed after your own. datui ships none of the data;
   before you use the data.
 - NYC flights, NOAA daily weather, NYC yellow taxis and Earthquakes carry
   their publisher's documentation: the pane lists what the columns mean
-  under `DOCUMENTATION`, <kbd>Ctrl</kbd>+<kbd>E</kbd> shows the whole
+  under `COLUMNS`, <kbd>Ctrl</kbd>+<kbd>E</kbd> shows the whole
   [Documentation view](#documentation-view), and the
   [Info panel](dataset-info.md) and the [inspector](inspecting-rows.md)
   explain them once the data is open.
@@ -309,8 +329,9 @@ no login, listed after your own. datui ships none of the data;
   still steps inside.
 - A build without the `http` or `cloud` feature leaves out the rows it cannot
   open.
-- A catalog file named `public.toml`, in `catalogs/` or listed, replaces this one;
-  `[home] hide = ["public"]` hides it, and `["public/nyc-taxis"]` one entry.
+- A catalog file named `examples.toml`, in `catalogs/` or listed, replaces this one,
+  even after <kbd>Delete</kbd> hid it; `[home] hide = ["examples"]` hides either,
+  and `["examples/nyc-taxis"]` one entry. An empty `examples.toml` hides the section.
 
 The guides use them:
 
@@ -331,7 +352,7 @@ The guides use them:
 `CLOUD` lists a row per store: logins found on this machine and
 [connections](../reference/cloud-sources.md) you configure. For private
 storage, [sign in first](remote-data.md); for a first try with no login, use
-[Public datasets](#public-datasets).
+[Example datasets](#example-datasets).
 
 ```text
 ▾ CLOUD  5  ──────────────────────────────────────────────────────
@@ -421,7 +442,8 @@ does not answer reads `unavailable`; <kbd>Ctrl</kbd>+<kbd>R</kbd> tries again.
 
 The cache holds recent paths, how often and how lately each was opened, what
 was measured (counts, column names, size, modification time), query history,
-section folds, bucket listings and hidden cloud sources, never the data. Your
+section folds, bucket listings, hidden cloud sources and each terminal's last
+answer about its background, never the data. Your
 catalog is in the config directory, not the cache. Local facts are measured again when a file's size or time changes.
 
 | Command | Removes |

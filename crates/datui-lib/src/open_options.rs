@@ -169,6 +169,12 @@ pub struct OpenOptions {
     /// The format was guessed from the first bytes of text no format's signature
     /// claims, rather than named, so a note can say how to read it otherwise.
     pub format_guessed: bool,
+    /// What the read of several files found to say of them, for the dataset's notes.
+    /// Found by the scan and carried to the dataset as `left_out` is.
+    pub read_notes: Vec<crate::notes::Note>,
+    /// The columns the read gave a type and the frame before, carried to the dataset
+    /// as `left_out` is, for the count of the values that did not fit.
+    pub typing: crate::widgets::datatable::Typing,
     /// `--hex`: show the file's bytes in the hex view, whatever it holds.
     pub hex: bool,
     /// `--hex-width N`: the bytes a row of the hex view holds.
@@ -269,6 +275,8 @@ impl OpenOptions {
             delimited: None,
             read_mode: None,
             format_guessed: false,
+            read_notes: Vec::new(),
+            typing: Default::default(),
             hex: false,
             record_size: None,
             follow: false,
@@ -493,6 +501,10 @@ pub struct ReadReport {
     /// The format was guessed from the text's first bytes. See
     /// [`OpenOptions::format_guessed`].
     pub guessed: bool,
+    /// See [`OpenOptions::read_notes`].
+    pub read_notes: Vec<crate::notes::Note>,
+    /// See [`OpenOptions::typing`].
+    pub typing: crate::widgets::datatable::Typing,
 }
 
 /// A SQLite table opened in place, carried from the scan to the dataset.

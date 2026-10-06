@@ -194,7 +194,7 @@ datui abfss://release@overturemapswestus2.dfs.core.windows.net/
 | No login for that cloud | Reads unsigned |
 | A login | Signs with it. If refused, tries once more unsigned, and remembers for the session which worked (Azure refuses a public container to a login from another tenant) |
 
-The home screen's [Public datasets](home-screen.md#public-datasets) lists
+The home screen's [Example datasets](home-screen.md#example-datasets) lists
 public data with publishers and licenses. A
 [catalog](../reference/catalogs.md) of your own reads its datasets with no
 login, even on a machine that has one, with `auth = "anonymous"`. GBIF's
@@ -217,7 +217,7 @@ with `PAR1`.
 ### Examples on public data
 
 NOAA's daily weather for 2024 is one hive partition, `YEAR=2024`, with an
-`ELEMENT=` directory per measurement. On the home screen: **Public datasets**,
+`ELEMENT=` directory per measurement. On the home screen: **Example datasets**,
 <kbd>Enter</kbd> on **NOAA daily weather (GHCN-D)**, <kbd>→</kbd> on `by_year`,
 <kbd>Enter</kbd> on `YEAR=2024`. Or:
 
@@ -282,6 +282,17 @@ The file is downloaded to the temp directory (`--temp-dir`), then opened;
 `--format` names a format the URL does not. The copy is removed when datui
 exits, a quit mid-download included ([temporary files](open-files.md#temporary-files)).
 A model file's header is read by range instead ([Model files](../formats/model-files.md)).
+
+Every request datui makes, to a web server or a cloud store, sends
+`User-Agent: datui/VERSION (+https://github.com/derekwisong/datui)`: datui and
+its version, nothing about you or the machine. `http.user_agent` replaces it:
+
+```bash,template
+datui -c 'http.user_agent=<NAME/VERSION (CONTACT)>' <URL>
+```
+
+A file that is not there (404) or a host that does not answer says so on its home
+row, in place of the size, before you open it.
 
 ## What gets read
 

@@ -7,6 +7,7 @@
 //! always are, the app's own first frame is the first thing drawn.
 
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use color_eyre::Result;
@@ -15,7 +16,8 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
-use crate::{APP_NAME, AppConfig, Args, OpenOptions, RunInput, Theme, logging};
+use crate::config::ThemeMode;
+use crate::{APP_NAME, AppConfig, AppEvent, Args, OpenOptions, RunInput, Theme, logging};
 
 /// How long `run` waits for the settings before drawing a screen of its own. Under
 /// it, nobody sees the difference and the app's first frame is the first one.
@@ -52,6 +54,7 @@ pub(crate) fn read(input: RunInput, config: Option<AppConfig>) -> Result<Setting
         Some(config) => config,
         None => load_config(&input)?,
     };
+    crate::user_agent::configure(&config.http.user_agent);
     let (input, config) = match input {
         RunInput::Cli(args) => {
             let mut config = config;
@@ -258,10 +261,75 @@ pub(crate) fn draw_waiting(frame: &mut Frame, path: Option<&Path>) {
     );
 }
 
+/// The terminal's answer about its background, if it is in by the first frame: the
+/// one taken while the settings were read, else one already on `rx`. Never waits;
+/// everything else found on `rx` goes on `backlog`, in order.
+pub(crate) fn take_answer(
+    rx: &Receiver<AppEvent>,
+    answered: Option<ThemeMode>,
+    backlog: &mut Vec<AppEvent>,
+) -> Option<ThemeMode> {
+    let mut answered = answered;
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            AppEvent::TerminalBackground(mode) => answered = Some(mode),
+            event => backlog.push(event),
+        }
+    }
+    answered
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
+
+    /// A terminal that never answers holds nothing up: with the sender alive and
+    /// nothing sent, the first frame's palette is settled at once.
+    #[test]
+    fn a_silent_terminal_does_not_hold_the_first_frame() {
+        let (tx, rx) = std::sync::mpsc::channel::<AppEvent>();
+        let mut backlog = Vec::new();
+        let started = std::time::Instant::now();
+        assert_eq!(take_answer(&rx, None, &mut backlog), None);
+        assert!(started.elapsed() < Duration::from_millis(20));
+        assert!(backlog.is_empty());
+        drop(tx);
+    }
+
+    /// An answer already in is taken; keys around it keep their order.
+    #[test]
+    fn an_answer_already_in_is_taken() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let (tx, rx) = std::sync::mpsc::channel::<AppEvent>();
+        let key = |c| {
+            AppEvent::Terminal(Event::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )))
+        };
+        tx.send(key('j')).unwrap();
+        tx.send(AppEvent::TerminalBackground(ThemeMode::Light))
+            .unwrap();
+        tx.send(key('k')).unwrap();
+        let mut backlog = Vec::new();
+        assert_eq!(
+            take_answer(&rx, Some(ThemeMode::Dark), &mut backlog),
+            Some(ThemeMode::Light)
+        );
+        let typed: Vec<_> = backlog
+            .iter()
+            .map(|event| match event {
+                AppEvent::Terminal(Event::Key(key)) => key.code,
+                _ => KeyCode::Null,
+            })
+            .collect();
+        assert_eq!(typed, [KeyCode::Char('j'), KeyCode::Char('k')]);
+        assert_eq!(
+            take_answer(&rx, Some(ThemeMode::Dark), &mut Vec::new()),
+            Some(ThemeMode::Dark)
+        );
+    }
 
     /// `--mouse=false` leaves the mouse to the terminal over a config that takes it,
     /// `--mouse` takes it over one that does not, and no flag keeps the config's.

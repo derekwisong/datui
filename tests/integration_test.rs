@@ -53,6 +53,10 @@ mod remote_quality;
 #[cfg(feature = "sqlite")]
 #[path = "formats/sqlite.rs"]
 mod sqlite;
+#[path = "app/table_sample.rs"]
+mod table_sample;
+#[path = "formats/tables.rs"]
+mod tables;
 #[path = "formats/text_formats.rs"]
 mod text_formats;
 
@@ -814,6 +818,7 @@ fn chart_export_request(
             ..Default::default()
         },
         overwrite: datui::output_file::Overwrite::Forbid,
+        recipe: false,
     }
 }
 
@@ -853,6 +858,76 @@ fn test_chart_export_waits_for_the_current_selection_not_a_failed_one() {
         "no error reopened the modal"
     );
     assert!(app.chart_data_ready());
+}
+
+/// Enter on the chart's export dialog with no path says so on the dialog's status
+/// line, and typing a path takes the reason away.
+#[test]
+fn test_chart_export_with_a_blank_path_says_why() {
+    let (mut app, rx, tx) = open_chart_view("chart_export_blank_path_test.csv");
+    select_line(&mut app);
+    app.event(&AppEvent::Resize(80, 24));
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    press(&mut app, KeyCode::Char('e'));
+    assert!(app.chart_export_modal.active);
+    assert!(app.chart_export_modal.path_input.value().is_empty());
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    assert!(app.chart_export_modal.active, "the dialog stays");
+    assert_eq!(
+        app.chart_export_modal.error.as_deref(),
+        Some("Enter a file path.")
+    );
+    press(&mut app, KeyCode::Char('c'));
+    assert_eq!(app.chart_export_modal.error, None);
+}
+
+/// The footer offers `e Export` only where `e` exports: a chart whose rows say what
+/// to draw.
+#[test]
+fn test_chart_footer_offers_export_only_when_there_is_a_chart() {
+    let (mut app, rx, tx) = open_chart_view("chart_export_hint_test.csv");
+    select_line(&mut app);
+    app.event(&AppEvent::Resize(120, 40));
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let footer = |app: &mut App| {
+        draw_sized(app, (120, 40))
+            .lines()
+            .last()
+            .unwrap_or_default()
+            .to_string()
+    };
+    let drawn = footer(&mut app);
+    assert!(drawn.contains("Export"), "{drawn}");
+    app.chart_modal.spec.encoding.y.field = Vec::new();
+    assert!(!app.chart_modal.can_export());
+    let empty = footer(&mut app);
+    assert!(!empty.contains("Export"), "{empty}");
+    assert!(press(&mut app, KeyCode::Char('e')).is_none());
+    assert!(!app.chart_export_modal.active, "and e does nothing there");
+}
+
+/// The help over the `:` command line at 80x24 sits above the footer's prompt: its
+/// frame is whole, the prompt drawn under it.
+#[test]
+fn test_help_clears_the_command_line_at_80_by_24() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("help_over_strip.csv");
+    press(&mut app, KeyCode::Char(':'));
+    press(&mut app, KeyCode::F(1));
+    assert!(app.help_visible());
+    let screen = draw_sized(&mut app, (80, 24));
+    let rows: Vec<&str> = screen.lines().collect();
+    let bottom = rows
+        .iter()
+        .rposition(|row| row.contains('╰'))
+        .unwrap_or_else(|| panic!("the help's bottom border is drawn:\n{screen}"));
+    let prompt = rows
+        .iter()
+        .position(|row| row.trim_start().starts_with("sql:") || row.trim_start().starts_with("q:"))
+        .unwrap_or_else(|| panic!("the prompt is drawn:\n{screen}"));
+    assert!(
+        bottom < prompt,
+        "the frame ends above the prompt:\n{screen}"
+    );
 }
 
 /// A chart export uses the prepared data and writes the file off-thread; if the data is
@@ -916,13 +991,19 @@ fn test_chart_export_replaces_only_what_was_agreed() {
         std::fs::write(&path, "theirs").unwrap();
         let request = chart_export_request(&path, format);
         run_to_idle(&mut app, &rx, &tx, AppEvent::ChartExport(request.clone()));
+        // The form comes back with the reason on its status line, not a modal.
+        assert_eq!(app.error_message(), None, "{name}");
+        assert!(app.chart_export_modal.active, "{name}");
         assert!(
-            app.error_message().is_some_and(|m| m.contains("appeared")),
+            app.chart_export_modal
+                .error
+                .as_deref()
+                .is_some_and(|m| m.contains("appeared")),
             "{name}: the clash reaches the app"
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs", "{name}");
         press(&mut app, KeyCode::Esc);
-        assert_eq!(app.error_message(), None);
+        assert!(!app.chart_export_modal.active);
 
         let replace = ChartExportRequest {
             overwrite: Overwrite::Replace,
@@ -999,9 +1080,14 @@ fn quick_chart_picks_the_type_from_the_cursor_column() {
         let area = Rect::new(0, 0, 100, 30);
         let mut buf = Buffer::empty(area);
         Widget::render(&mut app, area, &mut buf);
-        assert!(
-            rendered_text(&buf).contains(&format!("suggested for {suggested}")),
-            "{x}"
+        let text = rendered_text(&buf);
+        assert!(text.contains(&format!("suggested for {suggested}")), "{x}");
+        // The first frame's plot is the chart the panel names, before its data lands:
+        // a histogram only where the panel says Histogram.
+        assert_eq!(
+            text.contains("count per bin"),
+            mark == Mark::Histogram,
+            "{x}: {text}"
         );
         press(&mut app, KeyCode::Esc);
         // Back to the first column.
@@ -1030,6 +1116,8 @@ fn shelves_dim_by_type() {
         ('7', Mark::Heatmap, Some("density")),
         ('3', Mark::Bar, None),
     ] {
+        // Off Rows, where digits type a sample size.
+        app.chart_modal.focus = ChartFocus::Type;
         press(&mut app, KeyCode::Char(key));
         assert_eq!(app.chart_modal.mark(), mark);
         let text = screen(&mut app);
@@ -1087,9 +1175,11 @@ fn chart_color_splits_and_the_value_picker_lists_by_rows() {
         let request = app.chart_names();
         request.expect("a line chart is prepared")
     };
-    // Nine carriers of 100 rows each: the first seven by rows (equal counts in
-    // the column's order).
-    assert_eq!(names(&app), ["AA", "B6", "DL", "EV", "F9", "MQ", "UA"]);
+    // Nine carriers of 100 rows each: by rows (equal counts in the column's
+    // order), as many as the terminal has colors to tell apart.
+    let carriers = ["AA", "B6", "DL", "EV", "F9", "MQ", "UA", "US", "WN"];
+    let cap = app.chart_modal.series_max();
+    assert_eq!(names(&app), carriers[..cap.min(9)]);
 
     // The value picker: every value with its rows.
     app.chart_modal.focus = ChartFocus::ColorValues;
@@ -1142,7 +1232,8 @@ fn aggregates_run_over_every_row() {
     press(&mut app, KeyCode::Char(' '));
     press(&mut app, KeyCode::Enter); // delay
     app.chart_modal.focus = ChartFocus::Aggregate;
-    press(&mut app, KeyCode::Right); // count -> sum
+    press(&mut app, KeyCode::Right); // count -> distinct
+    press(&mut app, KeyCode::Right); // -> sum
     press(&mut app, KeyCode::Right); // -> mean
     assert_eq!(app.chart_modal.aggregate(), Aggregate::Mean);
     pump_until_chart_ready(&mut app, &rx, &tx);
@@ -1154,6 +1245,70 @@ fn aggregates_run_over_every_row() {
     assert!(!text.contains("sample of"), "{text}");
     // F9 is carrier 8 of 9: its delays are 8 and 9, half each, a mean of 8.5.
     assert!(text.contains("F9") && text.contains("8.50"), "{text}");
+}
+
+/// Rows: a typed size, or Every row, is read on Enter and not before; while it
+/// waits the chart stays as drawn and the row says so.
+#[test]
+fn chart_rows_are_read_on_enter() {
+    use datui::chart_modal::{ChartFocus, Mark};
+    let (mut app, rx, tx) = open_flights("chart_rows_enter_test.parquet");
+    press(&mut app, KeyCode::Char('c'));
+    app.chart_modal.set_mark(Mark::Histogram);
+    app.chart_modal.spec.encoding.x.field = Some("delay".to_string());
+    app.chart_modal.row_limit = Some(100);
+    app.chart_modal.focus = ChartFocus::LimitRows;
+    app.event(&AppEvent::Resize(120, 30));
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let area = Rect::new(0, 0, 120, 30);
+    let screen = |app: &mut App| {
+        let mut buf = Buffer::empty(area);
+        Widget::render(app, area, &mut buf);
+        rendered_text(&buf)
+    };
+    assert!(screen(&mut app).contains("sample of 100 of 900 rows"));
+
+    // A size typed waits for Enter.
+    for c in "250".chars() {
+        press(&mut app, KeyCode::Char(c));
+    }
+    assert!(!app.chart_preparing(), "a pending size reads nothing");
+    assert_eq!(app.chart_modal.row_limit, Some(100));
+    let text = screen(&mut app);
+    assert!(text.contains("Sample 250"), "{text}");
+    assert!(text.contains("Enter to read"), "{text}");
+    assert!(text.contains("sample of 100 of 900 rows"), "{text}");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.chart_modal.row_limit, Some(250));
+    assert!(app.chart_preparing());
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let text = screen(&mut app);
+    assert!(text.contains("sample of 250 of 900 rows · seed "), "{text}");
+    assert!(text.contains("Sample 250"), "{text}");
+
+    // Every row is one key away, and read on Enter too.
+    press(&mut app, KeyCode::Right);
+    assert!(!app.chart_preparing(), "a pending switch reads nothing");
+    let text = screen(&mut app);
+    assert!(text.contains("Every row (900)"), "{text}");
+    assert!(text.contains("sample of 250 of 900 rows"), "{text}");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.chart_modal.row_limit, None);
+    pump_until_chart_ready(&mut app, &rx, &tx);
+    let text = screen(&mut app);
+    assert!(!text.contains("sample of"), "{text}");
+
+    // Esc puts a pending change back and leaves the chart open.
+    press(&mut app, KeyCode::Char('5'));
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.input_mode, InputMode::Chart);
+    assert_eq!(app.chart_modal.row_limit, None);
+    assert!(screen(&mut app).contains("Every row (900)"));
+    // A switch there and back holds nothing to undo: one Esc closes.
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.input_mode, InputMode::Normal);
 }
 
 /// The export dialog: the chart's legend setting carries over, a size preset sets
@@ -1178,7 +1333,17 @@ fn chart_export_dialog_presets_and_legend() {
         LegendPlace::Off,
         "legend off carries"
     );
-    assert_eq!(app.chart_export_modal.description_input.value(), "y");
+    // The description is how the chart was made; a plain line has none to say, and
+    // the figure names y at its axis.
+    assert_eq!(app.chart_export_modal.description_input.value(), "");
+    press(&mut app, KeyCode::Esc);
+    app.chart_modal.spec.encoding.y.aggregate = datui::chart_modal::Aggregate::Mean;
+    press(&mut app, KeyCode::Char('e'));
+    assert_eq!(
+        app.chart_export_modal.description_input.value(),
+        "Mean by x"
+    );
+    app.chart_modal.spec.encoding.y.aggregate = datui::chart_modal::Aggregate::None;
     // Size: Document -> Slide 16:9.
     datui::form::Form::focus(&mut app.chart_export_modal, ChartExportFocus::Size);
     press(&mut app, KeyCode::Left);
@@ -1527,6 +1692,45 @@ fn test_esc_cancels_a_distribution_analysis_in_flight() {
     assert_eq!(app.analysis_modal.selected_tool, None);
 }
 
+/// The Sample form's size is typed, in shorthand, and applied on Enter; a size it
+/// cannot read keeps the form open with why.
+#[test]
+fn the_sample_size_is_typed_in_shorthand() {
+    use datui::sample_modal::SampleField;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sizes.csv");
+    let mut csv = "x\n".to_string();
+    for x in 1..=20i64 {
+        csv.push_str(&format!("{x}\n"));
+    }
+    std::fs::write(&path, csv).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+
+    app.event(&key(KeyCode::Char('a')));
+    app.analysis_modal.sidebar_state.select(Some(0));
+    show_sample_form(&mut app);
+    let form = app.analysis_modal.sample_form.as_mut().unwrap();
+    assert!(datui::form::Form::focus(form, SampleField::Size));
+    for c in "zz".chars() {
+        app.event(&key(KeyCode::Char(c)));
+    }
+    app.event(&key(KeyCode::Enter));
+    let form = app.analysis_modal.sample_form.as_ref().expect("stays open");
+    assert!(form.error.as_deref().unwrap_or("").contains("50k"));
+    for _ in 0..2 {
+        app.event(&key(KeyCode::Backspace));
+    }
+    for c in "5k".chars() {
+        app.event(&key(KeyCode::Char(c)));
+    }
+    app.event(&key(KeyCode::Enter));
+    assert!(app.analysis_modal.sample_form.is_none());
+    assert_eq!(app.analysis_modal.sample.rows, 5_000);
+}
+
 /// `m` on the correlation matrix switches between Pearson and Spearman, named in the
 /// title, with nothing read again: y = x³ is a perfect rank relation but not a line.
 #[test]
@@ -1811,10 +2015,8 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         // The extra reads a full scan makes for the values a type conflict hides are
         // promised before anything runs, like every other read on this page.
         ("access", "Conflict values"),
-        ("confirm", "Source writes"),
     ] {
         app.analysis_modal.data_quality_show_access = popup == "access";
-        app.analysis_modal.data_quality_confirm_run = popup == "confirm";
         let area = Rect::new(0, 0, 120, 32);
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
@@ -1822,7 +2024,6 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         assert!(screen.contains(expected), "{popup} popup should not clip");
     }
     app.analysis_modal.data_quality_show_access = false;
-    app.analysis_modal.data_quality_confirm_run = false;
 
     app.analysis_modal.set_quality_page(QualityPage::Segments);
     app.event(&AppEvent::Key(KeyEvent::new(
@@ -2186,12 +2387,19 @@ fn declining_an_overwrite_keeps_the_export_form() {
 
     key(&mut app, KeyCode::Char('e'));
     assert!(app.export_modal.active);
+    // The form suggests a name; Backspace takes it away.
+    assert_eq!(app.export_modal.path_input.value(), "people-export.parquet");
+    key(&mut app, KeyCode::Backspace);
+    assert_eq!(app.export_modal.path_input.value(), "");
 
     // Enter on the empty form says why inline instead of doing nothing,
     // and typing is the correction that clears it.
     key(&mut app, KeyCode::Enter);
     assert!(app.export_modal.active, "an empty path raises no modal");
-    assert_eq!(app.export_modal.path_error, Some("Enter a file path."));
+    assert_eq!(
+        app.export_modal.path_error.as_deref(),
+        Some("Enter a file path.")
+    );
     key(&mut app, KeyCode::Char('x'));
     assert_eq!(app.export_modal.path_error, None);
     key(&mut app, KeyCode::Backspace);
@@ -2232,19 +2440,23 @@ fn declining_an_overwrite_keeps_the_export_form() {
     assert_eq!(app.input_mode, InputMode::Normal);
 }
 
-/// Selecting a tool runs it but leaves focus on the sidebar: focus moves only
-/// when the user presses Tab, never as a side effect of Enter or of results
-/// arriving. Reviewers kept landing in the wrong tool because it jumped.
+/// Enter on a tool always takes the cursor into its pane, whether it shows the
+/// Sample form, starts a run or shows a result; Tab and Shift+Tab cross between
+/// the pane and the tools, Esc steps back one level, and the results outlive a
+/// close on the same view.
 #[test]
-fn selecting_a_tool_keeps_the_sidebar_focus() {
-    use datui::analysis_modal::AnalysisFocus;
+fn enter_on_a_tool_enters_its_pane_and_esc_steps_back() {
+    use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
 
     let (mut app, rx, _tx) = open_query_filter_fixture("analysis_focus.csv");
+    let press = |app: &mut App, code: KeyCode| {
+        let mut next = app.event(&key(code));
+        while let Some(ev) = next {
+            next = app.event(&ev);
+        }
+    };
 
-    app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Char('a'),
-        KeyModifiers::NONE,
-    )));
+    press(&mut app, KeyCode::Char('a'));
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
 
     // Enter on Describe shows its Sample form in the pane, and the cursor goes
@@ -2259,39 +2471,100 @@ fn selecting_a_tool_keeps_the_sidebar_focus() {
         "the cursor lands on the first setting"
     );
     // Esc hands the cursor back to the list and leaves the form waiting; Enter
-    // there runs it as it stands.
-    app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Esc,
-        KeyModifiers::NONE,
-    )));
+    // there runs it as it stands, and the cursor goes with it into the pane.
+    press(&mut app, KeyCode::Esc);
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
     assert!(app.analysis_modal.sample_form.is_some());
-    let mut next = app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Enter,
-        KeyModifiers::NONE,
-    )));
-    while let Some(ev) = next {
-        next = app.event(&ev);
-    }
+    press(&mut app, KeyCode::Enter);
     drain_events(&mut app, &rx);
     assert!(app.analysis_modal.describe_results.is_some());
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
+
+    // Tab and Shift+Tab both cross to the other pane.
+    for code in [KeyCode::Tab, KeyCode::BackTab] {
+        press(&mut app, code);
+        assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar, "{code:?}");
+        press(&mut app, code);
+        assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main, "{code:?}");
+    }
+
+    // A tool picked once the sample has run starts at once, the cursor in its
+    // pane; a tool with a result shows it, the cursor in its pane too.
+    press(&mut app, KeyCode::Tab);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    drain_events(&mut app, &rx);
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::DistributionAnalysis)
+    );
+    assert!(app.analysis_modal.distribution_results.is_some());
+    assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
+    press(&mut app, KeyCode::Esc);
     assert_eq!(
         app.analysis_modal.focus,
         AnalysisFocus::Sidebar,
-        "running a tool must not move focus"
+        "Esc: the tools"
     );
-
-    // Tab is the one move: into the result, and back.
-    app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Tab,
-        KeyModifiers::NONE,
-    )));
+    assert!(app.analysis_modal.active, "Esc steps back one level");
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::Describe)
+    );
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
-    app.event(&AppEvent::Key(KeyEvent::new(
-        KeyCode::Tab,
-        KeyModifiers::NONE,
-    )));
+
+    // Esc from the tools closes; the results come back with the tool on screen.
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Esc);
+    assert!(!app.analysis_modal.active);
+    press(&mut app, KeyCode::Char('a'));
+    assert!(app.analysis_modal.active);
+    assert_eq!(
+        app.analysis_modal.selected_tool,
+        Some(AnalysisTool::Describe)
+    );
+    assert!(app.analysis_modal.describe_results.is_some());
+    assert!(app.analysis_modal.distribution_results.is_some());
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Sidebar);
+    assert_eq!(app.analysis_modal.sidebar_state.selected(), Some(0));
+
+    // Another view, other rows: the results are of the old one, and go.
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('r'));
+    drain_events(&mut app, &rx);
+    press(&mut app, KeyCode::Char('a'));
+    assert_eq!(app.analysis_modal.selected_tool, None);
+    assert!(app.analysis_modal.describe_results.is_none());
+    assert!(app.analysis_modal.distribution_results.is_none());
+}
+
+/// The correlation matrix opens on the first pair rather than a column against
+/// itself, and Home and End go to the first and last pairs of its own size.
+#[test]
+fn the_correlation_matrix_starts_on_a_pair() {
+    let (mut app, rx, _tx) = open_query_filter_fixture("analysis_pairs.csv");
+    let press = |app: &mut App, code: KeyCode| {
+        let mut next = app.event(&key(code));
+        while let Some(ev) = next {
+            next = app.event(&ev);
+        }
+    };
+    press(&mut app, KeyCode::Char('a'));
+    app.analysis_modal.sidebar_state.select(Some(2));
+    show_sample_form(&mut app);
+    press(&mut app, KeyCode::Enter);
+    drain_events(&mut app, &rx);
+    assert_eq!(app.analysis_modal.correlation_size(), 2, "a and c");
+    assert_eq!(app.analysis_modal.selected_correlation, Some((0, 1)));
+    press(&mut app, KeyCode::End);
+    assert_eq!(app.analysis_modal.selected_correlation, Some((1, 0)));
+    press(&mut app, KeyCode::Home);
+    assert_eq!(app.analysis_modal.selected_correlation, Some((0, 1)));
+    let screen = rows_at(&mut app, 120, 24).join("\n");
+    assert!(screen.contains("Enter Detail"), "{screen}");
 }
 
 /// On a local file, choosing Data Quality opens its Setup, and Enter there runs the
@@ -2506,7 +2779,7 @@ fn data_quality_reads_as_a_report() {
         }
         assert_eq!(app.analysis_modal.data_quality_page, page);
         assert!(
-            bar(&mut app).contains(&format!("Esc Back  {own}  {shared}")),
+            bar(&mut app).contains(&format!("{own}  {shared}  Esc Tools")),
             "{page:?}: {:?}",
             bar(&mut app)
         );
@@ -2575,7 +2848,7 @@ fn data_quality_reads_as_a_report() {
         KeyCode::Char('e'),
         KeyModifiers::NONE,
     )));
-    assert!(bar_now(&mut app).contains("Sample Form"));
+    assert!(bar_now(&mut app).contains("Space Sample"));
     for _ in 0..2 {
         app.event(&AppEvent::Key(KeyEvent::new(
             KeyCode::Down,
@@ -2610,7 +2883,10 @@ fn data_quality_reads_as_a_report() {
     let tab = AppEvent::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     app.event(&tab);
     let bar = bar_now(&mut app);
-    assert!(bar.contains("Select") && !bar.contains("Details"), "{bar}");
+    assert!(
+        bar.contains("Enter Open") && !bar.contains("Details"),
+        "{bar}"
+    );
     app.event(&tab);
     assert!(bar_now(&mut app).contains("Details"));
 
@@ -2914,6 +3190,7 @@ fn assert_glyph_slots(screen: &str) {
         g.updown_lr,
         g.null,
         g.scroll_thumb,
+        g.scroll_track,
         g.binary_stub,
     ]
     .concat();
@@ -3141,7 +3418,36 @@ fn full_scan_evidence_is_read_only_on_confirm() {
     app.analysis_modal.data_quality_plan.compute = datui::data_quality::QualityCompute::Full;
     assert!(press(&mut app, KeyCode::Enter).is_none());
     assert!(app.analysis_modal.data_quality_confirm_run);
+    // The one confirmation, with what the scan reads and writes and its own keys.
+    assert!(app.confirmation_modal.active);
+    assert_eq!(app.confirmation_modal.yes_label, "Run");
+    assert!(
+        app.confirmation_modal
+            .message
+            .contains("Source writes: none"),
+        "{}",
+        app.confirmation_modal.message
+    );
+    let asked = {
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buffer = Buffer::empty(area);
+        app.render(area, &mut buffer);
+        rendered_text(&buffer)
+    };
+    assert!(asked.contains("Run a full scan?"), "{asked}");
+    assert!(
+        asked.contains("Confirm") && asked.contains("Cancel"),
+        "its own footer: {asked}"
+    );
+    // Esc declines: nothing runs, and Enter on Setup asks again.
+    assert!(press(&mut app, KeyCode::Esc).is_none());
+    assert!(!app.confirmation_modal.active);
+    assert!(!app.analysis_modal.data_quality_confirm_run);
+    assert_nothing_started(&mut app, &rx);
+    assert!(press(&mut app, KeyCode::Enter).is_none());
+    assert!(app.confirmation_modal.active);
     let next = press(&mut app, KeyCode::Enter);
+    assert!(!app.confirmation_modal.active);
     let (finished, _) = drain_quality(&mut app, &rx, next);
     assert_eq!(finished, 1);
     let results = app.analysis_modal.data_quality_results.clone().unwrap();
@@ -3340,10 +3646,9 @@ fn one_sample_serves_every_analysis_tool() {
     show_sample_form(&mut app);
     let next = key(&mut app, KeyCode::Enter);
     run(&mut app, next);
-    key(&mut app, KeyCode::Tab);
 
     // The bar names the key at the baseline width, or the sample is a feature
-    // nobody finds.
+    // nobody finds: in the result, after the way out and Tab.
     let narrow = Rect::new(0, 0, 80, 24);
     let mut buffer = Buffer::empty(narrow);
     app.render(narrow, &mut buffer);
@@ -3833,7 +4138,10 @@ fn data_quality_reads_nothing_until_setup_runs() {
     assert!(!app.is_busy());
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Overview);
 
-    // Reopened, the unchanged report comes back from the session cache.
+    // Reopened, the unchanged report comes back from the session cache. Esc
+    // steps back to the tools, then closes.
+    press(&mut app, KeyCode::Esc);
+    assert!(app.analysis_modal.active);
     press(&mut app, KeyCode::Esc);
     assert!(!app.analysis_modal.active);
     press(&mut app, KeyCode::Char('a'));
@@ -8283,6 +8591,10 @@ fn export_as(
     });
     run_to_idle(app, rx, tx, start);
     assert_eq!(app.error_message(), None, "the export to {path:?} failed");
+    assert_eq!(
+        app.export_modal.path_error, None,
+        "the export to {path:?} failed"
+    );
 }
 
 /// Feed `first` to the app and pump until nothing is left to do.
@@ -8388,9 +8700,12 @@ fn test_a_file_that_appears_during_an_export_is_left_alone() {
     run_to_idle(&mut app, &rx, &tx, export);
 
     assert!(
-        app.error_message().is_some_and(|m| m.contains("appeared")),
-        "the failure reaches the app: {:?}",
-        app.error_message()
+        app.export_modal
+            .path_error
+            .as_deref()
+            .is_some_and(|m| m.contains("appeared")),
+        "the failure reaches the form: {:?}",
+        app.export_modal.path_error
     );
     assert!(
         !app.flash_message()
@@ -8400,6 +8715,61 @@ fn test_a_file_that_appears_during_an_export_is_left_alone() {
     assert!(!app.is_busy());
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "theirs");
     assert!(leftovers(dir.path(), &["out.csv"]).is_empty());
+}
+
+/// A write that fails brings the dialog back as it was: the typed path, the
+/// format and its options, with the reason on the dialog's status line instead
+/// of a modal over an empty form.
+#[test]
+fn test_a_failed_export_reopens_the_form_as_it_was() {
+    use datui::export_modal::ExportFormat;
+    let (mut app, rx, tx) = open_query_filter_fixture("export_reopens.csv");
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("missing").join("out.csv");
+
+    press(&mut app, KeyCode::Char('e'));
+    app.export_modal
+        .path_input
+        .set_value(target.display().to_string());
+    app.export_modal.sync_format_to_path();
+    app.export_modal.csv_include_header = false;
+    let export = press(&mut app, KeyCode::Enter).expect("the export starts");
+    assert!(!app.export_modal.active, "out of the way while it writes");
+    run_to_idle(&mut app, &rx, &tx, export);
+
+    assert_eq!(app.error_message(), None, "no modal");
+    assert!(app.export_modal.active);
+    assert_eq!(app.input_mode, datui::InputMode::Export);
+    assert_eq!(
+        app.export_modal.path_input.value(),
+        target.display().to_string()
+    );
+    assert_eq!(app.export_modal.selected_format, ExportFormat::Csv);
+    assert!(!app.export_modal.csv_include_header);
+    assert!(
+        app.export_modal
+            .path_error
+            .as_deref()
+            .is_some_and(|m| m.starts_with("Cannot write")),
+        "{:?}",
+        app.export_modal.path_error
+    );
+    // The fix is typed where the reason is read, and Enter writes.
+    std::fs::create_dir(dir.path().join("missing")).unwrap();
+    press(&mut app, KeyCode::Char('x'));
+    press(&mut app, KeyCode::Backspace);
+    assert_eq!(
+        app.export_modal.path_error, None,
+        "typing clears the reason"
+    );
+    let export = press(&mut app, KeyCode::Enter).expect("the export starts again");
+    run_to_idle(&mut app, &rx, &tx, export);
+    assert!(target.exists());
+    assert!(!app.export_modal.active);
+    assert!(
+        app.flash_message()
+            .is_some_and(|m| m.starts_with("Exported to "))
+    );
 }
 
 /// A view whose rows fail part way through, over an agreed overwrite, by both
@@ -8445,9 +8815,12 @@ fn test_a_failed_export_keeps_the_old_file() {
         run_to_idle(&mut app, &rx, &tx, AppEvent::Export(request));
 
         assert!(
-            app.error_message().is_some_and(|m| m.contains("injected")),
-            "{name}: the failure reaches the app: {:?}",
-            app.error_message()
+            app.export_modal
+                .path_error
+                .as_deref()
+                .is_some_and(|m| m.contains("injected")),
+            "{name}: the failure reaches the form: {:?}",
+            app.export_modal.path_error
         );
         assert!(!app.is_busy());
         assert!(
@@ -10356,8 +10729,28 @@ fn test_entering_home_clears_load_state_but_not_task_generation() {
 fn app_awaiting_open_confirmation() -> (App, mpsc::Receiver<AppEvent>) {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
-    // Refused immediately, so the size probe does not sit on its timeout.
-    let url = PathBuf::from("http://127.0.0.1:1/data.csv");
+    // HEAD refused at once, so the size probe answers unknown without its timeout. A
+    // refused connection would be no server at all, which ends the open.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = PathBuf::from(format!(
+        "http://{}/data.csv",
+        listener.local_addr().unwrap()
+    ));
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                head.push(byte[0]);
+            }
+            let _ = write!(
+                stream,
+                "HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+        }
+    });
     let mut next = app.event(&AppEvent::Open(vec![url], OpenOptions::default()));
     while let Some(ev) = next {
         if matches!(ev, AppEvent::Crash(_)) {
@@ -10944,7 +11337,12 @@ fn a_load_chosen_at_home_fails_at_home() {
     assert_eq!(app.input_mode, InputMode::Home);
     let mut buf = Buffer::empty(area);
     app.render(area, &mut buf);
-    assert!(rendered_text(&buf).contains("broken.parquet\": "));
+    // The message from the app, the dialog from the screen: a long temp path (Windows')
+    // wraps inside the name.
+    let message = app.error_message().expect("the failure is said");
+    assert!(message.contains("broken.parquet\": "), "{message}");
+    let text = rendered_text(&buf);
+    assert!(text.contains("Error") && text.contains("broken"), "{text}");
 
     // Nor is it a recent: recorded when a dataset installs, not when it is asked for.
     // The one that did load is, and recording is off-thread, so that is waited for.
@@ -17599,6 +17997,69 @@ fn copy_format(app: &mut App, format: datui::clipboard::CopyFormat) {
     assert_eq!(app.copy_modal.format, format);
 }
 
+/// The copy dialog keeps one size whatever its scope offers: stepping the scope
+/// moves no edge of the frame.
+#[test]
+fn test_copy_dialog_keeps_its_size_across_scopes() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("copy_fixed_height.csv");
+    press(&mut app, KeyCode::Char('y'));
+    assert!(app.copy_modal.active);
+    let mut frames = std::collections::HashSet::new();
+    for scope in datui::copy_modal::CopyScope::ALL {
+        copy_scope(&mut app, scope);
+        let rows = rows_at(&mut app, 80, 24);
+        frames.insert(common::frame_bottoms(&rows));
+    }
+    assert_eq!(frames.len(), 1, "one frame for every scope: {frames:?}");
+}
+
+/// The Columns list is a list: PgUp/PgDn page it, Home/End reach its ends, ↓
+/// stops at the last column, and the rows out of view are counted above and below.
+#[test]
+fn test_sort_filter_columns_list_pages_and_counts_both_ends() {
+    use datui::sort_filter_modal::SortFilterField;
+
+    let path = common::fixture_dir().join("columns_52.csv");
+    let header: Vec<String> = (0..52).map(|i| format!("col_{i}")).collect();
+    let row: Vec<String> = (0..52).map(|i| i.to_string()).collect();
+    std::fs::write(&path, format!("{}\n{}\n", header.join(","), row.join(","))).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx, common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path], OpenOptions::default());
+
+    open_columns_list(&mut app);
+    assert_eq!(app.sort_filter_modal.focus, SortFilterField::Column(0));
+    let g = datui::glyphs::get();
+    let screen = rows_at(&mut app, 80, 24).join("\n");
+    assert!(
+        screen.contains(&format!("{} ", g.ellipsis)),
+        "below counted: {screen}"
+    );
+
+    press(&mut app, KeyCode::End);
+    assert_eq!(app.sort_filter_modal.focus, SortFilterField::Column(51));
+    press(&mut app, KeyCode::Down);
+    assert_eq!(
+        app.sort_filter_modal.focus,
+        SortFilterField::Column(51),
+        "↓ stops at the last column"
+    );
+    let rows = rows_at(&mut app, 80, 24);
+    let cursor = rows.iter().position(|r| r.contains("col_51")).unwrap();
+    let above = rows.iter().position(|r| r.contains(" more")).unwrap();
+    assert!(above < cursor, "the count above: {}", rows.join("\n"));
+
+    press(&mut app, KeyCode::Home);
+    assert_eq!(app.sort_filter_modal.focus, SortFilterField::Column(0));
+    press(&mut app, KeyCode::PageDown);
+    let SortFilterField::Column(paged) = app.sort_filter_modal.focus else {
+        panic!("still in the list");
+    };
+    assert!(paged > 1, "a page: {paged}");
+    press(&mut app, KeyCode::PageUp);
+    assert_eq!(app.sort_filter_modal.focus, SortFilterField::Column(0));
+}
+
 /// An edit staged in the Sort & Filter modal and then canceled dies with the modal:
 /// reopening `s` rebuilds it from the table's applied state, so nothing arrives
 /// pre-staged and Apply commits nothing stale.
@@ -18307,6 +18768,39 @@ fn test_filter_editor_keyboard_flow() {
     assert_eq!(current_rows(&app), 100);
 }
 
+/// The filter row under edit gives the rail to its open picker's line, so one
+/// rail is on screen at every step; typing the value, with no picker, the row
+/// has it back.
+#[test]
+fn test_filter_editor_keeps_one_rail() {
+    let (mut app, _rx, _tx) = open_query_filter_fixture("filter_editor_one_rail.csv");
+    let rail = datui::glyphs::get().rail;
+    // Past the table's own rail, in its first column.
+    let rails = |screen: &str| {
+        screen
+            .lines()
+            .map(|line| {
+                line.chars()
+                    .skip(1)
+                    .collect::<String>()
+                    .matches(rail)
+                    .count()
+            })
+            .sum::<usize>()
+    };
+    start_new_filter(&mut app);
+    let column_step = draw_sized(&mut app, (80, 24));
+    assert_eq!(rails(&column_step), 1, "{column_step}");
+    type_text(&mut app, "na");
+    press(&mut app, KeyCode::Enter);
+    let operator_step = draw_sized(&mut app, (80, 24));
+    assert_eq!(rails(&operator_step), 1, "{operator_step}");
+    type_text(&mut app, "co");
+    press(&mut app, KeyCode::Enter);
+    let value_step = draw_sized(&mut app, (80, 24));
+    assert_eq!(rails(&value_step), 1, "{value_step}");
+}
+
 /// Ctrl+J applies mid-edit on every terminal, committing the row in progress,
 /// and the editor's footer names it.
 #[test]
@@ -18524,7 +19018,7 @@ fn test_export_enter_applies_from_any_row() {
     for ch in out.to_str().unwrap().chars() {
         press(&mut app, KeyCode::Char(ch));
     }
-    // Walk to the Include header checkbox: Path → Delimiter → Include header.
+    // Walk to the Header checkbox: Path → Delimiter → Header.
     press(&mut app, KeyCode::Tab);
     press(&mut app, KeyCode::Tab);
     assert_eq!(app.export_modal.focus, ExportFocus::CsvIncludeHeader);
@@ -18626,6 +19120,92 @@ fn every_dialog_moves_between_fields_with_the_arrows_on_open() {
     );
 }
 
+/// Export's Format is one row of its values: ← / → step along it and focus stays on
+/// it, ↓ goes to the next field the format shows, the fields follow the format, and
+/// a typed path's format extension follows too, where it names one.
+#[test]
+fn export_format_steps_along_its_row() {
+    use datui::export_modal::{ExportFocus, ExportFormat};
+    let (mut app, _rx, _tx) = open_query_filter_fixture("export_format_row.csv");
+    let format_row = |app: &mut App| {
+        let area = Rect::new(0, 0, 100, 24);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        let at = rows
+            .iter()
+            .position(|r| r.contains("Format:"))
+            .expect("a Format row");
+        (at, rows)
+    };
+
+    press(&mut app, KeyCode::Char('e'));
+    for ch in "flights.csv".chars() {
+        press(&mut app, KeyCode::Char(ch));
+    }
+    press(&mut app, KeyCode::Up);
+    assert_eq!(app.export_modal.focus, ExportFocus::FormatSelector);
+    let (at, rows) = format_row(&mut app);
+    for format in ExportFormat::ALL {
+        assert!(
+            rows[at].contains(format.as_str()),
+            "{format:?}: {}",
+            rows[at]
+        );
+    }
+
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.export_modal.selected_format, ExportFormat::Tsv);
+    assert_eq!(
+        app.export_modal.focus,
+        ExportFocus::FormatSelector,
+        "→ stays"
+    );
+    assert_eq!(app.export_modal.path_input.value(), "flights.tsv");
+    let (tsv_at, rows) = format_row(&mut app);
+    assert_eq!(tsv_at, at, "the Format row holds its place");
+    assert!(
+        !rows.iter().any(|r| r.contains("Delimiter:")),
+        "TSV says its own"
+    );
+
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.export_modal.selected_format, ExportFormat::Parquet);
+    assert_eq!(app.export_modal.path_input.value(), "flights.parquet");
+    let (parquet_at, rows) = format_row(&mut app);
+    assert_eq!(parquet_at, at);
+    for label in ["Header:", "Compression:"] {
+        assert!(!rows.iter().any(|r| r.contains(label)), "Parquet: {label}");
+    }
+    // ↓ is the path, and the next ↓ wraps past the fields Parquet does not take.
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.export_modal.focus, ExportFocus::PathInput);
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.export_modal.focus, ExportFocus::FormatSelector);
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Left);
+    assert_eq!(app.export_modal.selected_format, ExportFormat::Tsv);
+    press(&mut app, KeyCode::Up);
+    assert_eq!(
+        app.export_modal.focus,
+        ExportFocus::Compression,
+        "↑ wraps to the last field TSV shows"
+    );
+
+    // An extension of the user's own stays as typed.
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('e'));
+    for ch in "flights.dat".chars() {
+        press(&mut app, KeyCode::Char(ch));
+    }
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.export_modal.path_input.value(), "flights.dat");
+}
+
 /// Esc backs out one layer: an open picker first, then the dialog.
 #[test]
 fn esc_closes_the_picker_then_the_dialog() {
@@ -18644,6 +19224,31 @@ fn esc_closes_the_picker_then_the_dialog() {
     assert!(app.pivot_melt_modal.active, "the dialog survives");
     press(&mut app, KeyCode::Esc);
     assert!(!app.pivot_melt_modal.active);
+}
+
+/// A several-choice picker keeps its level: Enter keeps the toggles made in it, Esc
+/// undoes them, as Esc discards the innermost level everywhere.
+#[test]
+fn esc_in_a_toggle_picker_undoes_its_toggles() {
+    use datui::pivot_melt_modal::PivotMeltFocus;
+    let (mut app, _rx, _tx) = open_query_filter_fixture("forms_picker_toggles.csv");
+    press(&mut app, KeyCode::Char('p'));
+    press(&mut app, KeyCode::Down);
+    assert_eq!(app.pivot_melt_modal.focus, PivotMeltFocus::PivotIndex);
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Char(' '));
+    assert_eq!(app.pivot_melt_modal.index_columns.len(), 1, "toggled in");
+    press(&mut app, KeyCode::Esc);
+    assert!(app.pivot_melt_modal.picker.is_none());
+    assert!(
+        app.pivot_melt_modal.index_columns.is_empty(),
+        "Esc undid the toggle"
+    );
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Char(' '));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.pivot_melt_modal.picker.is_none());
+    assert_eq!(app.pivot_melt_modal.index_columns.len(), 1, "Enter kept it");
 }
 
 /// Enter submits from any field: on an incomplete pivot it re-accents the spec line
@@ -18679,7 +19284,8 @@ fn ctrl_p_recalls_the_last_export_path_and_up_moves_on() {
     ));
 
     press(&mut app, KeyCode::Char('e'));
-    assert_eq!(app.export_modal.path_input.value(), "");
+    let suggested = app.export_modal.path_input.value().to_string();
+    assert_eq!(suggested, "forms_export_history-export.csv");
     press(&mut app, KeyCode::Up);
     assert_eq!(
         app.export_modal.focus,
@@ -18688,7 +19294,7 @@ fn ctrl_p_recalls_the_last_export_path_and_up_moves_on() {
     );
     assert_eq!(
         app.export_modal.path_input.value(),
-        "",
+        suggested,
         "and recalls nothing"
     );
     press(&mut app, KeyCode::Down);
@@ -18705,7 +19311,7 @@ fn ctrl_p_recalls_the_last_export_path_and_up_moves_on() {
         KeyCode::Char('n'),
         KeyModifiers::CONTROL,
     )));
-    assert_eq!(app.export_modal.path_input.value(), "");
+    assert_eq!(app.export_modal.path_input.value(), suggested);
 }
 
 /// Sort & Filter lists what is in effect: a sort flips with Space, moves with
@@ -20729,6 +21335,67 @@ fn test_inspector_compares_rows_and_lists_only_the_differences() {
     let modal = &app.inspector_modal;
     let first = &modal.fields[modal.visible[0]].name;
     assert_eq!(first, "amount");
+}
+
+/// Esc backs out of Compare before it closes the inspector; Tab and Shift+Tab
+/// cross to the value without moving a field; Tab in a level with nothing in it
+/// stays on its list.
+#[test]
+fn test_inspector_esc_leaves_compare_first_and_tab_moves_nothing() {
+    use datui::inspector_modal::Focus;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (mut app, rx, tx) = open_orders_fixture(dir.path());
+    let none = KeyModifiers::NONE;
+    press_key(&mut app, KeyCode::Char(' '), none);
+    press_key(&mut app, KeyCode::Char('c'), none);
+    assert!(app.inspector_modal.compare);
+    let wide = rows_at(&mut app, 200, 24).join("\n");
+    assert!(wide.contains("Esc  No compare"), "{wide}");
+    press_key(&mut app, KeyCode::Esc, none);
+    assert!(!app.inspector_modal.compare, "Esc leaves Compare");
+    assert_eq!(app.input_mode, InputMode::Inspect, "and only Compare");
+    let wide = rows_at(&mut app, 200, 24).join("\n");
+    assert!(wide.contains("Y  Copy row"), "{wide}");
+    assert!(wide.contains("c  Compare"), "{wide}");
+    assert!(wide.contains("Esc  Close"), "{wide}");
+
+    // The panes are split by what they hold: crossing to the value moves no
+    // field of the list.
+    let line_of = |rows: &[String], name: &str| {
+        rows.iter()
+            .position(|row| row.contains(&format!(" {name} ")))
+            .unwrap_or_else(|| panic!("{name}: {}", rows.join("\n")))
+    };
+    let before = rows_at(&mut app, 120, 40);
+    for code in [KeyCode::Tab, KeyCode::BackTab] {
+        press_key(&mut app, code, none);
+        assert_eq!(app.inspector_modal.focus, Focus::Value, "{code:?}");
+        let after = rows_at(&mut app, 120, 40);
+        for name in ["customer_name", "region"] {
+            assert_eq!(line_of(&before, name), line_of(&after, name), "{code:?}");
+        }
+        press_key(&mut app, KeyCode::Esc, none);
+        assert_eq!(app.inspector_modal.focus, Focus::List);
+    }
+
+    // `{}` opens as JSON into a level with no items: no value to cross to.
+    press_key(&mut app, KeyCode::Char('l'), none);
+    pump_until_idle(&mut app, &rx, &tx);
+    while inspected_field(&app) != "payload_json" {
+        press_key(&mut app, KeyCode::Down, none);
+    }
+    press_key(&mut app, KeyCode::Enter, none);
+    pump_until_idle(&mut app, &rx, &tx);
+    rows_at(&mut app, 120, 40);
+    assert!(
+        app.inspector_modal.drill.is_some(),
+        "Enter opens the object"
+    );
+    for code in [KeyCode::Tab, KeyCode::BackTab] {
+        press_key(&mut app, code, none);
+        assert_eq!(app.inspector_modal.focus, Focus::List, "{code:?}");
+    }
 }
 
 /// #661: from 240 columns Compare shows the row before too: previous, this,
@@ -24023,7 +24690,10 @@ fn run_python_script(app: &App) -> Option<(String, String)> {
     }
     let state = app.data_table_state.as_ref().unwrap();
     let script = app.python_script(state);
-    let program = format!("{script}\nimport sys\nsys.stdout.write(df.collect().write_csv())\n");
+    // Bytes, not text: Windows' text stdout writes `\r\n` and encodes in its code page.
+    let program = format!(
+        "{script}\nimport sys\nsys.stdout.buffer.write(df.collect().write_csv().encode())\n"
+    );
     let output = std::process::Command::new(python)
         .arg("-c")
         .arg(&program)
@@ -24042,7 +24712,7 @@ fn run_python_script(app: &App) -> Option<(String, String)> {
 #[test]
 fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
     use datui::filter_modal::{FilterOperator, LogicalOperator};
-    use datui::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
+    use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
 
     type Build = Box<dyn Fn(&mut datui::widgets::datatable::DataTableState)>;
     let views: Vec<(&str, Build)> = vec![
@@ -24088,6 +24758,7 @@ fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
             "a weighted average by a computed key, distinct",
             Box::new(|s| s.query("select distinct qty wavg amount by r: region.upper".into())),
         ),
+        #[cfg(feature = "sql")]
         (
             "SQL grouped without an order",
             Box::new(|s| {
@@ -24139,10 +24810,11 @@ fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
                 .unwrap();
             }),
         ),
+        #[cfg(feature = "sql")]
         (
             "a melt, then SQL over it",
             Box::new(|s| {
-                s.melt(&MeltSpec {
+                s.melt(&datui::pivot_melt_modal::MeltSpec {
                     index: vec!["order_id".into()],
                     value_columns: vec!["amount".into(), "qty".into()],
                     variable_name: "measure".into(),
@@ -24168,6 +24840,7 @@ fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
                 s.sort_by(vec!["order_id".into()], vec![true]);
             }),
         ),
+        #[cfg(feature = "sql")]
         (
             "a drill into a group of a SQL grouping",
             Box::new(|s| {
@@ -24352,8 +25025,10 @@ fn test_copy_as_python_reads_one_hugging_face_split() {
             eprintln!("skipped: no .venv to run the scripts with");
             return;
         };
-        assert!(script.contains(read), "{script}");
-        assert!(!script.contains(not), "{script}");
+        // The path as written in Python, Windows' `\\` read as `/`.
+        let paths = script.replace("\\\\", "/");
+        assert!(paths.contains(read), "{script}");
+        assert!(!paths.contains(not), "{script}");
         assert_eq!(rows, view_csv(&app), "{script}");
     }
 }
@@ -24376,12 +25051,17 @@ fn test_copy_as_python_reads_streams_beside_ipc_files() {
         eprintln!("skipped: no .venv to run the scripts with");
         return;
     };
+    // Each file as the listing joined it, with the platform's separator.
+    let file = |name: &str| {
+        let path = PathBuf::from("tests/sample-data/arrow_mixed").join(name);
+        format!("{:?}", path.display().to_string())
+    };
     assert!(
-        script.contains("pl.scan_ipc(\"tests/sample-data/arrow_mixed/a.arrow\")"),
+        script.contains(&format!("pl.scan_ipc({})", file("a.arrow"))),
         "{script}"
     );
     assert!(
-        script.contains("pl.read_ipc_stream(\"tests/sample-data/arrow_mixed/b.arrow\")"),
+        script.contains(&format!("pl.read_ipc_stream({})", file("b.arrow"))),
         "{script}"
     );
     assert_eq!(rows, view_csv(&app), "{script}");
@@ -24630,6 +25310,7 @@ pl.DataFrame({
                     .unwrap();
             }),
         ),
+        #[cfg(feature = "sql")]
         (
             "SQL over lines, ending in a quoted name",
             Box::new(|s| {
@@ -24879,6 +25560,7 @@ fn copy_as_python_reads_a_directory_named_like_a_glob() {
 
 /// While a query's first rows are read, the table area says what the control bar
 /// does, in place of the rows it replaces; once they are in, they show.
+#[cfg(feature = "sql")]
 #[test]
 fn a_running_query_says_so_in_the_table() {
     let (mut app, rx, tx) = open_query_filter_fixture("running_query_in_place.csv");
@@ -25084,6 +25766,49 @@ fn test_terminal_background_switches_the_palette_under_auto() {
     assert!(!app.take_background_query());
 }
 
+/// The first frame is not held for the terminal. With nothing remembered it is drawn
+/// dark; an answer that differs, arriving after it, switches the palette and is
+/// remembered, so the next start draws its first frame in that palette. An
+/// explicit mode is drawn as set, whatever is remembered.
+#[test]
+fn test_first_frame_uses_the_terminals_last_answer() {
+    use datui::cache::CacheManager;
+    use datui::config::{AppConfig, ColorConfig, ConfigLayer, Theme, ThemeMode};
+    let hex = |s: &str| datui::ColorParser::new().parse(s).expect("color parses");
+    let dir = tempfile::tempdir().unwrap();
+    let start = |text: &str, answered: Option<ThemeMode>| {
+        let config = AppConfig::from_layers([ConfigLayer::parse(text).expect("layer parses")])
+            .expect("resolves");
+        let theme = Theme::from_config(&config.theme).expect("theme builds");
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new_with_config(tx, common::test_runtime(), theme, config);
+        app.use_cache(CacheManager::with_dir(dir.path().to_path_buf()));
+        app.settle_first_palette(answered);
+        app
+    };
+    let header = |app: &App| app.theme().get("table_header_bg");
+    let dark = hex(&ColorConfig::dark().table_header_bg);
+    let light = hex(&ColorConfig::light().table_header_bg);
+
+    // Answered dark at once, so `COLORFGBG` where the tests run does not matter.
+    let auto = "[theme]\nmode = \"auto\"\n";
+    let mut app = start(auto, Some(ThemeMode::Dark));
+    assert_eq!(header(&app), dark, "nothing remembered: dark");
+    app.event(&AppEvent::TerminalBackground(ThemeMode::Light));
+    assert_eq!(header(&app), light, "a late answer switches");
+
+    let app = start(auto, None);
+    assert_eq!(header(&app), light, "the last answer, before any new one");
+    let mut app = start(auto, Some(ThemeMode::Dark));
+    assert_eq!(header(&app), dark, "an answer already in wins");
+    app.event(&AppEvent::TerminalBackground(ThemeMode::Dark));
+    assert_eq!(header(&start(auto, None)), dark, "remembered again");
+
+    app.event(&AppEvent::TerminalBackground(ThemeMode::Light));
+    let pinned = start("[theme]\nmode = \"dark\"\n", None);
+    assert_eq!(header(&pinned), dark, "an explicit mode ignores it");
+}
+
 /// The terminal's answer switches between the two named themes, a theme file
 /// included, keeping `theme.colors` over each.
 #[test]
@@ -25137,5 +25862,308 @@ fn test_terminal_background_switches_between_named_themes() {
     assert!(
         said.contains("nope") && said.contains("night-market"),
         "{said}"
+    );
+}
+
+/// The view's frame, collected.
+fn view_frame(app: &App) -> DataFrame {
+    app.data_table_state
+        .as_ref()
+        .unwrap()
+        .lf()
+        .clone()
+        .collect()
+        .unwrap()
+}
+
+/// Type `text` into whatever has the keys, as typed.
+fn type_into(app: &mut App, text: &str) {
+    for c in text.chars() {
+        app.event(&key(KeyCode::Char(c)));
+    }
+}
+
+/// The Info panel's Schema tab, its cursor on `column`, and Enter: the type picker.
+fn retype_from_schema(app: &mut App, column: &str) {
+    // Back from a type, the picker leaves the panel open.
+    if app.input_mode != datui::InputMode::Info {
+        app.event(&key(KeyCode::Char('i')));
+    }
+    assert_eq!(
+        app.input_mode,
+        datui::InputMode::Info,
+        "{column}: the panel opens"
+    );
+    let at = app
+        .data_table_state
+        .as_ref()
+        .unwrap()
+        .schema()
+        .index_of(column)
+        .unwrap();
+    // The panel opens on Notes when there are notes; Schema is the first tab.
+    for _ in 0..8 {
+        if app.info_modal.active_tab == datui::widgets::info::InfoTab::Schema {
+            break;
+        }
+        app.event(&key(KeyCode::Left));
+    }
+    for _ in 0..8 {
+        app.event(&key(KeyCode::Up));
+    }
+    for _ in 0..at {
+        app.event(&key(KeyCode::Down));
+    }
+    app.event(&key(KeyCode::Enter));
+    assert_eq!(app.input_mode, datui::InputMode::Retype);
+}
+
+fn summaries(app: &App) -> Vec<String> {
+    app.data_table_state
+        .as_ref()
+        .unwrap()
+        .notes()
+        .into_iter()
+        .map(|n| n.summary)
+        .collect()
+}
+
+/// A column retyped from the Info panel: the view reads it as the type at once, a
+/// value that does not fit is null and counted in the Notes, the footer says so, and
+/// `as read` takes the type away again.
+#[test]
+fn a_column_retyped_in_the_table() {
+    let (mut app, rx, tx) = open_csv_with(
+        "retype_codes.csv",
+        "id,code,when\n1,10,03/04/2024\n2,x,04/04/2024\n3,30,05/04/2024\n",
+        OpenOptions {
+            parse_dates: false,
+            ..OpenOptions::default()
+        },
+    );
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(
+        view_frame(&app).column("code").unwrap().dtype(),
+        &DataType::String
+    );
+
+    retype_from_schema(&mut app, "code");
+    type_into(&mut app, "i64");
+    app.event(&key(KeyCode::Enter));
+    assert_eq!(app.input_mode, datui::InputMode::Info, "back to the panel");
+    pump_until(&mut app, &rx, &tx, |app| {
+        !app.is_busy() && !app.unfit_count_pending()
+    });
+    let df = view_frame(&app);
+    let code: Vec<Option<i64>> = df.column("code").unwrap().i64().unwrap().iter().collect();
+    assert_eq!(code, [Some(10), None, Some(30)]);
+    let notes = summaries(&app);
+    assert!(
+        notes.contains(&"code: 1 value not i64, read as null".to_string()),
+        "{notes:?}"
+    );
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(state.retyped_columns(), ["code"]);
+    let area = Rect::new(0, 0, 120, 30);
+    let mut buf = Buffer::empty(area);
+    app.event(&key(KeyCode::Esc));
+    app.render(area, &mut buf);
+    let shown = rendered_text(&buf);
+    assert!(shown.contains("typed code"), "the footer says so: {shown}");
+
+    // A date with the format that reads the column's first value.
+    retype_from_schema(&mut app, "when");
+    type_into(&mut app, "date");
+    app.event(&key(KeyCode::Enter));
+    app.event(&key(KeyCode::Enter));
+    pump_until_idle(&mut app, &rx, &tx);
+    let df = view_frame(&app);
+    assert_eq!(df.column("when").unwrap().dtype(), &DataType::Date);
+    assert_eq!(
+        df.column("when").unwrap().get(0).unwrap().to_string(),
+        "2024-04-03"
+    );
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(
+        state.column_type_of("when").unwrap().format.as_deref(),
+        Some("%d/%m/%Y")
+    );
+
+    // As read again.
+    retype_from_schema(&mut app, "code");
+    type_into(&mut app, "as read");
+    app.event(&key(KeyCode::Enter));
+    pump_until_idle(&mut app, &rx, &tx);
+    assert_eq!(
+        view_frame(&app).column("code").unwrap().dtype(),
+        &DataType::String
+    );
+    assert_eq!(
+        app.data_table_state.as_ref().unwrap().retyped_columns(),
+        ["when"]
+    );
+}
+
+/// A saved view keeps each retype as the inline table a spec's `[columns]` entry is,
+/// and puts it back on the next file; one whose column is gone is left out with a
+/// note. An export writes the type.
+#[test]
+fn a_retype_is_saved_in_a_view_and_exported() {
+    let name = "view_retype";
+    let next = common::fixture_dir().join(format!("{name}_next.csv"));
+    std::fs::write(&next, "id,code,gone\n4,40,c\n5,50,d\n").unwrap();
+    let (mut app, rx, tx) = open_csv_with(
+        &format!("{name}_first.csv"),
+        "id,code,gone\n1,10,a\n2,20,b\n",
+        OpenOptions::default(),
+    );
+    pump_until_idle(&mut app, &rx, &tx);
+    let ty = |name: &str, format: Option<&str>| {
+        datui::column_types::ColumnType::named(name, format.map(String::from)).unwrap()
+    };
+    {
+        let state = app.data_table_state.as_mut().unwrap();
+        state.set_column_type("code", Some(ty("u16", None)));
+        state.set_column_type("gone", Some(ty("str", None)));
+    }
+    pump_until_idle(&mut app, &rx, &tx);
+
+    let parquet = common::fixture_dir().join(format!("{name}.parquet"));
+    export_as(
+        &mut app,
+        &rx,
+        &tx,
+        &parquet,
+        datui::export_modal::ExportFormat::Parquet,
+        false,
+    );
+    let written = LazyFrame::scan_parquet(
+        PlRefPath::try_from_path(&parquet).unwrap(),
+        Default::default(),
+    )
+    .unwrap()
+    .collect()
+    .unwrap();
+    assert_eq!(written.column("code").unwrap().dtype(), &DataType::UInt16);
+
+    let view = app
+        .create_view_from_current_state(
+            name.to_string(),
+            None,
+            datui::view::MatchCriteria {
+                exact_path: Some(next.clone()),
+                relative_path: None,
+                path_pattern: None,
+                filename_pattern: None,
+                schema_columns: None,
+                schema_types: None,
+                table: None,
+            },
+        )
+        .unwrap();
+    let json = serde_json::to_string(&view.settings.columns).unwrap();
+    assert_eq!(
+        json,
+        r#"[{"name":"code","type":"u16"},{"name":"gone","type":"str"}]"#
+    );
+    assert_eq!(
+        view.settings.columns[0].to_toml(),
+        r#"code = { type = "u16" }"#
+    );
+
+    pump_open_until_loaded(&mut app, &rx, vec![next], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    app.event(&key(KeyCode::Char('V')));
+    pump_until_idle(&mut app, &rx, &tx);
+    let df = view_frame(&app);
+    assert_eq!(df.column("code").unwrap().dtype(), &DataType::UInt16);
+    assert_eq!(df.column("gone").unwrap().dtype(), &DataType::String);
+
+    // A step on a column this data does not have is left out, with a note.
+    let third = common::fixture_dir().join(format!("{name}_third.csv"));
+    std::fs::write(&third, "id,code\n6,60\n").unwrap();
+    pump_open_until_loaded(&mut app, &rx, vec![third], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_mut().unwrap();
+    let dropped = state.set_column_changes(&view.settings.columns);
+    assert_eq!(dropped, ["gone"]);
+    assert_eq!(state.retyped_columns(), ["code"]);
+    let notes = summaries(&app);
+    assert!(
+        notes.contains(&"view steps left out, no such column: gone".to_string()),
+        "{notes:?}"
+    );
+}
+
+/// "Combine into datetime" from the cell menu makes what a spec's derived column
+/// makes from the same columns, before the first of them.
+#[test]
+fn combine_into_datetime_matches_the_specs_column() {
+    let path = common::fixture_dir().join("combine_like_spec.csv");
+    std::fs::write(
+        &path,
+        "Lcl Date,Lcl Time,UTCOfst,v\n2024-03-01,10:00:00,-05:00,1\n2024-03-01,10:00:01,+0530,2\n,,,3\n",
+    )
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut app = App::new(tx.clone(), common::test_runtime());
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+    pump_until_idle(&mut app, &rx, &tx);
+
+    // The cursor is on Lcl Date; the menu's last line combines.
+    app.open_context_menu(ratatui::layout::Position { x: 2, y: 2 });
+    app.event(&key(KeyCode::Up));
+    app.event(&key(KeyCode::Enter));
+    assert_eq!(app.input_mode, datui::InputMode::Combine);
+    // Date, Time, then the UTC offset: Space picks it.
+    app.event(&key(KeyCode::Tab));
+    app.event(&key(KeyCode::Tab));
+    app.event(&key(KeyCode::Char(' ')));
+    type_into(&mut app, "UTC");
+    app.event(&key(KeyCode::Enter));
+    app.event(&key(KeyCode::Enter));
+    assert_eq!(app.input_mode, datui::InputMode::Normal);
+    pump_until_idle(&mut app, &rx, &tx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert_eq!(
+        &state.get_column_order()[..2],
+        ["datetime", "Lcl Date"],
+        "before its first source"
+    );
+    let made = view_frame(&app).column("datetime").unwrap().clone();
+
+    let spec = datui::formats::Spec::parse(
+        r#"
+name = "acme.combine"
+kind = "delimited"
+[columns]
+time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime" }
+"#,
+        None,
+    )
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut by_spec = App::new(tx.clone(), common::test_runtime());
+    by_spec.set_formats(datui::formats::Registry::of(vec![spec]));
+    pump_open_until_loaded(
+        &mut by_spec,
+        &rx,
+        vec![path],
+        OpenOptions {
+            spec_name: Some("acme.combine".into()),
+            ..OpenOptions::default()
+        },
+    );
+    assert!(
+        by_spec.error_message().is_none(),
+        "{:?}",
+        by_spec.error_message()
+    );
+    let derived = view_frame(&by_spec).column("time").unwrap().clone();
+    assert_eq!(made.dtype(), derived.dtype());
+    assert!(
+        made.as_materialized_series()
+            .equals_missing(derived.as_materialized_series()),
+        "{made:?} {derived:?}"
     );
 }

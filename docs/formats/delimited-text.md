@@ -82,6 +82,12 @@ datui --header-rows 3 log.csv
   `--infer-types=off`. With the flag, cells of spaces are null in text columns
   too, and `--null` matches a value without its padding.
 - A file with nothing after its header lines opens with its columns and no rows.
+- A run of NUL bytes at the end of a file ends it. Loggers that preallocate a
+  file at a fixed size leave one. A NUL inside the text is kept.
+- A byte that is not UTF-8 reads as `�` where it stands, rather than failing
+  the read.
+- In a directory, a file with no header (empty, blank, or only NULs) is
+  skipped, and the [Notes tab](../user-guide/dataset-info.md) names it.
 
 A [delimited format spec](format-specs.md#delimited-text) keeps these options
 for a family of files, with their units and metadata line, so they open with
@@ -101,7 +107,12 @@ this off.
 
 - A column whose values disagree, such as an offset on some and none on
   others, stays text.
-- A value past the rows read for types that does not parse is null.
+- A value past the rows read for types that does not parse is null. The
+  first time the Info panel opens, one pass counts them, and the Notes tab
+  says how many per column: `volts: 1 value not f64, read as null`.
+- A column with a number that starts with a zero another digit follows
+  (`02134`, `007`) stays text: a ZIP code or an ID. `0`, `0.5` and `-0.5` are
+  numbers.
 - JSON strings become dates or times, never numbers.
 - With `--infer-types=off`, Polars types the columns from the rows it reads,
   and a value it cannot parse fails the read.

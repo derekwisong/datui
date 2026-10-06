@@ -849,6 +849,10 @@ pub struct ShownCatalog {
     pub label: String,
     /// `catalog.toml`, a listed file, or the bundled catalog.
     pub origin: crate::catalog::Origin,
+    /// What the catalog says it is, for its heading's details.
+    pub description: String,
+    /// The file it was read from; none for the bundled one.
+    pub file: Option<PathBuf>,
     pub datasets: Vec<ShownDataset>,
     /// Left out for a mistake: the one line its section says instead of rows.
     pub broken: Option<String>,
@@ -880,6 +884,8 @@ impl ShownCatalog {
             id: catalog.id.clone(),
             label: catalog.label.clone(),
             origin: catalog.origin,
+            description: catalog.description.clone(),
+            file: catalog.file.clone(),
             datasets: catalog
                 .datasets
                 .iter()
@@ -928,6 +934,8 @@ impl ShownCatalog {
             id: broken.id.clone(),
             label: broken.id.clone(),
             origin: broken.origin,
+            description: String::new(),
+            file: None,
             datasets: Vec::new(),
             broken: Some(broken.callout()),
         }
@@ -939,13 +947,16 @@ impl ShownCatalog {
         match self.origin {
             crate::catalog::Origin::Mine => "catalog.toml",
             crate::catalog::Origin::Listed | crate::catalog::Origin::Folder => "catalog",
-            crate::catalog::Origin::Bundled => "built in",
+            crate::catalog::Origin::Bundled => BUNDLED_ORIGIN,
         }
     }
 }
 
+/// The chip on the bundled catalog's section.
+pub const BUNDLED_ORIGIN: &str = "comes with datui";
+
 /// The chips a catalog's section carries, and nothing else does.
-pub const CATALOG_ORIGINS: [&str; 3] = ["catalog.toml", "catalog", "built in"];
+pub const CATALOG_ORIGINS: [&str; 3] = ["catalog.toml", "catalog", BUNDLED_ORIGIN];
 
 /// Whether a section's origin chip says it is a catalog.
 pub fn is_catalog_origin(origin: &str) -> bool {
@@ -1299,6 +1310,10 @@ pub struct HomeState {
     pub sections: Vec<Section>,
     /// Fuzzy filter over every row in every section.
     pub filter: String,
+    /// The filter kept from before a dataset was opened, shown selected: the next
+    /// character typed replaces it, and `~` opens the path prompt, rather than both
+    /// adding to a search that is done. Any other key keeps it.
+    pub filter_selected: bool,
     /// The most search matches listed under `Found`: `[home.search] max_results`.
     pub search_limit: usize,
     /// The filter `Found`'s rows were scored for, and the score of each of its first
@@ -1418,6 +1433,9 @@ pub struct HomeState {
     pub catalogs: Vec<ShownCatalog>,
     /// HTTP(S) catalog files whose size was asked for this session (a HEAD).
     pub sized: std::collections::HashSet<PathBuf>,
+    /// HTTP(S) catalog files that HEAD settled cannot be had: not there, or no server
+    /// answered. Asked again on Ctrl+R.
+    pub web_gone: std::collections::HashMap<PathBuf, crate::error_display::HttpGone>,
     /// Local datasets of a catalog that the last listing found missing.
     pub missing: std::collections::HashSet<PathBuf>,
     /// When the current wait for a remote listing began, for the elapsed time on screen.
@@ -1553,6 +1571,7 @@ impl Default for HomeState {
             cloud: Vec::new(),
             catalogs: Vec::new(),
             sized: std::collections::HashSet::new(),
+            web_gone: Default::default(),
             missing: Default::default(),
             filter: String::new(),
             search_limit: crate::config::SearchConfig::default().max_results,
@@ -1567,6 +1586,7 @@ impl Default for HomeState {
             path_input: String::new(),
             path_listing: None,
             path_pick: None,
+            filter_selected: false,
             browsing: None,
             browse_start: None,
             status: None,
@@ -1641,6 +1661,43 @@ pub struct Listing {
     pub sections: Vec<Section>,
     /// Local datasets of a catalog that do not exist.
     pub missing: std::collections::HashSet<PathBuf>,
+}
+
+impl Listing {
+    /// Adds each row's own path to `visits` where its canonical path has visits. The
+    /// recents store keys them canonically, and a catalog spells a file as written:
+    /// `/var/…` for `/private/var/…` on macOS, a short name or `/` on Windows. Looked
+    /// up as written, an often-opened row went unlifted.
+    ///
+    /// Canonicalizing touches the filesystem, so this runs on the listing's worker,
+    /// and only for a local row named like a visited file.
+    pub fn alias_visits(
+        &self,
+        visits: &mut std::collections::HashMap<PathBuf, crate::cache::Visits>,
+    ) {
+        let names: std::collections::HashSet<std::ffi::OsString> = visits
+            .keys()
+            .filter_map(|p| p.file_name().map(|n| n.to_os_string()))
+            .collect();
+        let mut aliases = Vec::new();
+        for row in self.sections.iter().flat_map(|s| &s.rows) {
+            let path = &row.path;
+            if visits.contains_key(path)
+                || row.table.is_some()
+                || !path.file_name().is_some_and(|n| names.contains(n))
+                || is_network_path(path)
+            {
+                continue;
+            }
+            if let Some(v) = crate::canonical::canonicalize(path)
+                .ok()
+                .and_then(|canonical| visits.get(&canonical))
+            {
+                aliases.push((path.clone(), *v));
+            }
+        }
+        visits.extend(aliases);
+    }
 }
 
 /// Find out what a row is, and then what is in it.
@@ -3220,11 +3277,6 @@ impl HomeState {
             })
     }
 
-    /// The column notes of the catalog dataset `path` is, or is in.
-    pub fn codebook_at(&self, path: &Path) -> Option<std::sync::Arc<crate::codebook::Codebook>> {
-        codebook_for(&self.catalogs, path)
-    }
-
     /// What a catalog says an HTTP(S) file at `path` weighs, while nothing has measured
     /// it: shown as `~33 MB`.
     pub fn size_hint(&self, path: &Path) -> Option<u64> {
@@ -3952,6 +4004,13 @@ impl HomeState {
         matched.into_iter().map(|(n, _)| n).collect()
     }
 
+    /// Put the `~` prompt's pick on the first name that matches what is typed, or on
+    /// none when nothing does: the list always shows which name Enter and Tab take.
+    /// ↑ from the first takes the typed path as it is.
+    pub fn pick_first_path(&mut self) {
+        self.path_pick = (!self.path_candidates().is_empty()).then_some(0);
+    }
+
     /// The path the picked candidate names, with its separator when it is a directory.
     pub fn picked_path(&self) -> Option<String> {
         let pick = self.path_pick?;
@@ -4073,6 +4132,18 @@ impl HomeState {
     }
 
     /// Whether the highlighted row is a section header.
+    /// The catalog whose section heading is selected, if the selection is one.
+    pub fn selected_catalog(&self) -> Option<&ShownCatalog> {
+        if !self.selection_is_header() {
+            return None;
+        }
+        let section = self.sections.get(self.selected_section()?)?;
+        let origin = section.origin?;
+        self.catalogs
+            .iter()
+            .find(|c| c.label == section.title && c.origin_note() == origin)
+    }
+
     pub fn selection_is_header(&self) -> bool {
         matches!(self.visible().get(self.selected), Some(Row::Header { .. }))
     }
@@ -5365,6 +5436,30 @@ mod build_feature_tests {
         assert_eq!(web + stores, urls.len(), "{urls:?}");
         assert_eq!(web > 0, cfg!(feature = "http"), "{urls:?}");
         assert_eq!(stores > 0, cfg!(feature = "cloud"), "{urls:?}");
+    }
+
+    /// An empty `examples.toml` of the user's replaces the Example datasets with
+    /// nothing, and an empty catalog has no section: the section is gone.
+    #[test]
+    fn an_empty_examples_toml_hides_the_section() {
+        let mut config = crate::config::AppConfig::default();
+        // The examples are all HTTP or S3: a build that reads neither has none.
+        assert_eq!(
+            catalogs(&config)
+                .iter()
+                .any(|c| c.origin == crate::catalog::Origin::Bundled),
+            cfg!(any(feature = "http", feature = "cloud"))
+        );
+        config.read_catalogs = vec![
+            crate::catalog::parse(
+                "label = \"Mine\"\n",
+                crate::catalog::EXAMPLES,
+                crate::catalog::Origin::Folder,
+                None,
+            )
+            .unwrap(),
+        ];
+        assert!(catalogs(&config).is_empty(), "{:?}", catalogs(&config));
     }
 
     /// A catalog of the user's stays whole whatever the build: the user named it, and

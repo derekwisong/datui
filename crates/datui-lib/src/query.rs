@@ -483,7 +483,41 @@ impl CastTo {
     }
 }
 
+/// The most nodes an expression may grow to. `wavg`, `xbar` and `in` repeat an
+/// operand, so nesting them multiplies its size at every level: two dozen nested
+/// `wavg` were billions of nodes. Found by the `parse_query` fuzz target.
+const MAX_EXPR_NODES: usize = 10_000;
+
+/// Err when `copies` of `node` would pass [`MAX_EXPR_NODES`].
+fn check_copies(node: &Node, copies: usize) -> Result<(), String> {
+    if node.size().saturating_mul(copies) > MAX_EXPR_NODES {
+        return Err(
+            "Expression is too large: nested wavg, xbar or in repeat what they are \
+                    given. Simplify it or split it into steps."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 impl Node {
+    /// How many nodes the tree has.
+    fn size(&self) -> usize {
+        1 + match self {
+            Node::Col(_)
+            | Node::Num(_)
+            | Node::Int(_)
+            | Node::Str(_)
+            | Node::Bool(_)
+            | Node::Null
+            | Node::Date(_)
+            | Node::Timestamp { .. } => 0,
+            Node::Bin(_, a, b) | Node::Coalesce(a, b) | Node::Filter(a, b) => a.size() + b.size(),
+            Node::When(a, b, c) => a.size() + b.size() + c.size(),
+            Node::Op(a, _) | Node::Alias(a, _) => a.size(),
+        }
+    }
+
     fn op(self, op: Op) -> Node {
         Node::Op(Box::new(self), op)
     }
@@ -1112,6 +1146,11 @@ fn apply_infix(left_tokens: &[Token], op: &str, right_tokens: &[Token]) -> Resul
                 );
             }
             let left = parse_node(left_tokens)?;
+            // A column or literal repeated grows only as the list typed does; a larger
+            // left side repeated per item is what multiplies.
+            if left.size() > 1 {
+                check_copies(&left, items.len())?;
+            }
             // One `=` per value, so each value compares exactly as `x = value` would,
             // with the same literal casting (numbers, dates, timestamps).
             let conditions = items
@@ -1141,6 +1180,7 @@ fn apply_infix(left_tokens: &[Token], op: &str, right_tokens: &[Token]) -> Resul
             }
             let right = parse_node(right_tokens)?;
             let size = int_or_node(left_tokens)?;
+            check_copies(&size, 2)?;
             // floor_div floors toward negative infinity for both ints and floats,
             // which is what makes every value land in the bucket at or below it.
             Ok(right
@@ -1155,6 +1195,9 @@ fn apply_infix(left_tokens: &[Token], op: &str, right_tokens: &[Token]) -> Resul
         "wavg" => {
             let values = parse_node(right_tokens)?;
             let weights = parse_node(left_tokens)?;
+            // Below, weights appear five times and values three.
+            check_copies(&weights, 5)?;
+            check_copies(&values, 3)?;
             let weighted = weights.clone().bin(BinOp::Mul, values);
             // Only pairs with both a weight and a value count toward the total weight;
             // a null value would otherwise still pull the average toward zero.
@@ -3049,6 +3092,27 @@ mod tests {
     }
 
     #[test]
+    fn test_operators_that_repeat_an_operand_are_bounded() {
+        // Found by the `parse_query` fuzz target: each `wavg` repeats its operands, so a
+        // chain of them grew the expression threefold per link until memory ran out.
+        let chain = format!("select {}x", "w wavg ".repeat(30));
+        let err = parse_query(&chain).unwrap_err();
+        assert!(err.contains("Expression is too large"), "{err}");
+
+        let xbar = format!("select {}x{}", "(1 xbar ".repeat(40), ")".repeat(40));
+        assert!(parse_query(&xbar).is_err());
+
+        let inner = format!(
+            "select {}x{}",
+            "(".repeat(20),
+            " in [1, 2, 3, 4])".repeat(20)
+        );
+        assert!(parse_query(&inner).is_err());
+
+        assert!(parse_query("select w wavg x wavg y by g").is_ok());
+    }
+
+    #[test]
     fn test_deeply_nested_expression_is_rejected_not_crashed() {
         // Found by the `parse_query` fuzz target: the parser is recursive descent, so a
         // long enough chain of unary operators or parentheses recursed until the stack
@@ -3476,6 +3540,15 @@ mod tests {
         let q = format!("select where x in [{}]", items.join(", "));
         let df = df!("x" => &[5i64, 1999, 2000]).unwrap();
         assert_eq!(values(&eval(&q, &df), "x"), ["5", "1999"]);
+    }
+
+    #[test]
+    fn test_in_a_list_past_the_node_cap_on_a_column() {
+        // A pasted list of ids: the column is not what multiplies.
+        let items: Vec<String> = (0..12_000).map(|i| i.to_string()).collect();
+        let q = format!("select where x in [{}]", items.join(", "));
+        let df = df!("x" => &[5i64, 11_999, 12_000]).unwrap();
+        assert_eq!(values(&eval(&q, &df), "x"), ["5", "11999"]);
     }
 
     #[test]

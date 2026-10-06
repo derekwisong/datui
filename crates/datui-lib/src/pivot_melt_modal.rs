@@ -297,6 +297,16 @@ pub fn run_preview(
     })
 }
 
+/// What a toggle Picker may change, kept from when it opened.
+#[derive(Debug, Clone, Default)]
+struct PickerBefore {
+    index_columns: Vec<String>,
+    melt_index_columns: Vec<String>,
+    melt_explicit_list: Vec<String>,
+    pivot_column: Option<String>,
+    value_column: Option<String>,
+}
+
 pub struct PivotMeltModal {
     pub active: bool,
     /// The live preview of the staged spec.
@@ -311,6 +321,9 @@ pub struct PivotMeltModal {
 
     /// The one Picker, open for the focused row; None while the form has the keys.
     pub picker: Option<PickerState>,
+    /// The rows a toggle Picker changes, as they were when it opened: Esc puts them
+    /// back, Enter keeps the toggles.
+    picker_before: Option<PickerBefore>,
 
     /// Set when Enter was pressed on an incomplete form: the spec line that
     /// names the gap re-accents instead of a modal repeating it. Any other key
@@ -343,6 +356,7 @@ impl Default for PivotMeltModal {
             available_columns: Vec::new(),
             column_dtypes: HashMap::new(),
             picker: None,
+            picker_before: None,
             attention: false,
             index_columns: Vec::new(),
             pivot_column: None,
@@ -604,11 +618,32 @@ impl PivotMeltModal {
             state.select_original(i);
         }
         self.picker = Some(state);
+        self.picker_before = Some(PickerBefore {
+            index_columns: self.index_columns.clone(),
+            melt_index_columns: self.melt_index_columns.clone(),
+            melt_explicit_list: self.melt_explicit_list.clone(),
+            pivot_column: self.pivot_column.clone(),
+            value_column: self.value_column.clone(),
+        });
+    }
+
+    /// Esc in the Picker: it closes, and the toggles made since it opened go with
+    /// it (a pick-one row changed nothing yet).
+    pub fn picker_cancel(&mut self) {
+        self.picker = None;
+        if let Some(before) = self.picker_before.take() {
+            self.index_columns = before.index_columns;
+            self.melt_index_columns = before.melt_index_columns;
+            self.melt_explicit_list = before.melt_explicit_list;
+            self.pivot_column = before.pivot_column;
+            self.value_column = before.value_column;
+        }
     }
 
     /// Enter in the Picker: a pick-one row takes the cursor's item; a toggle
     /// row's choices are already staged. Either way the Picker closes.
     pub fn picker_choose(&mut self) {
+        self.picker_before = None;
         let Some(state) = self.picker.take() else {
             return;
         };

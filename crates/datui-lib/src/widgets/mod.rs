@@ -16,6 +16,7 @@ pub mod inspector;
 pub mod pivot_melt;
 pub mod quality_export;
 pub mod quality_intent;
+pub mod retype;
 pub mod sample_form;
 pub mod text_input;
 pub mod textarea;

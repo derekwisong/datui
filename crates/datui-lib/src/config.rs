@@ -146,7 +146,7 @@ impl ConfigManager {
         if !catalog.exists() {
             std::fs::write(&catalog, crate::catalog::MINE_TEMPLATE)?;
         }
-        // Where more catalogs go: the header's `> catalogs/public.toml` needs it there.
+        // Where more catalogs go: the header's `> catalogs/examples.toml` needs it there.
         self.ensure_subdir(crate::catalog::FOLDER)?;
         // Where theme files go: `datui theme show NAME` prints one to start from.
         self.ensure_subdir(crate::themes::FOLDER)?;
@@ -259,8 +259,10 @@ pub struct AppConfig {
     pub display: DisplayConfig,
     pub performance: PerformanceConfig,
     pub analysis: AnalysisConfig,
+    pub chart: ChartConfig,
     pub home: HomeConfig,
     pub cloud: CloudConfig,
+    pub http: HttpConfig,
     pub query: QueryConfig,
     pub views: ViewsConfig,
     pub clipboard: ClipboardConfig,
@@ -1321,6 +1323,9 @@ pub struct AnalysisConfig {
     /// The most a Data Quality full scan of a remote dataset may copy into the cache
     /// directory, to read the objects once instead of once per pass. 0 never copies.
     pub quality_local_copy: ByteSize,
+    /// The most memory a view's sample may take. Unset: the memory available now
+    /// decides, before the draw and as it runs. 0: no warning and no stop.
+    pub sample_memory_limit: Option<ByteSize>,
 }
 
 impl Default for AnalysisConfig {
@@ -1330,6 +1335,7 @@ impl Default for AnalysisConfig {
             chart_rows: DEFAULT_CHART_ROW_LIMIT,
             chart_grid: false,
             quality_local_copy: DEFAULT_QUALITY_LOCAL_COPY,
+            sample_memory_limit: None,
         }
     }
 }
@@ -1685,6 +1691,9 @@ pub struct ColorConfig {
     pub chart_5: String,
     pub chart_6: String,
     pub chart_7: String,
+    pub chart_8: String,
+    pub chart_9: String,
+    pub chart_10: String,
     /// The chart grid, a shade dimmer than `dimmed`.
     pub chart_grid: String,
     /// The one colour that means "this is the thing": focused titles, key chips, the
@@ -1705,6 +1714,14 @@ pub struct ColorConfig {
     pub hex_control: String,
     pub hex_high: String,
     pub hex_ff: String,
+}
+
+/// `[http]`: what every request datui makes says about it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HttpConfig {
+    /// The User-Agent header; empty sends [`crate::user_agent::DEFAULT`].
+    pub user_agent: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1770,6 +1787,23 @@ impl QueryMode {
         let modes = Self::available();
         let at = modes.iter().position(|&m| m == self).unwrap_or(0);
         modes[(at + 1) % modes.len()]
+    }
+}
+
+/// `[chart]`: charts exported to a file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChartConfig {
+    /// Whether an exported chart carries its recipe: the source, query, chart and
+    /// sample it was made from. The export dialog's Recipe row starts from it.
+    pub export_recipe: bool,
+}
+
+impl Default for ChartConfig {
+    fn default() -> Self {
+        Self {
+            export_recipe: true,
+        }
     }
 }
 
@@ -1847,8 +1881,10 @@ impl Default for AppConfig {
             display: DisplayConfig::default(),
             performance: PerformanceConfig::default(),
             analysis: AnalysisConfig::default(),
+            chart: ChartConfig::default(),
             home: HomeConfig::default(),
             cloud: CloudConfig::default(),
+            http: HttpConfig::default(),
             query: QueryConfig::default(),
             views: ViewsConfig::default(),
             clipboard: ClipboardConfig::default(),
@@ -1963,6 +1999,12 @@ impl ColorConfig {
             chart_5: "#7aa2f7".to_string(),
             chart_6: "#f7768e".to_string(),
             chart_7: "#ff9e64".to_string(),
+            // Tokyo Night's teal, a pink-magenta and a light yellow: apart from the
+            // seven by lightness as much as hue, so they stay apart under the common
+            // color-vision deficiencies.
+            chart_8: "#1abc9c".to_string(),
+            chart_9: "#ff5fd2".to_string(),
+            chart_10: "#f4ef8a".to_string(),
             // Dimmer than `dimmed`, and still blue rather than black on a 16-color
             // terminal, where black is the background.
             chart_grid: "#3d4785".to_string(),
@@ -2035,6 +2077,10 @@ impl ColorConfig {
             chart_5: "#007197".to_string(),
             chart_6: "#f52a65".to_string(),
             chart_7: "#b15c00".to_string(),
+            // A yellow does not read on white: a deep navy takes its place.
+            chart_8: "#118c74".to_string(),
+            chart_9: "#d1188c".to_string(),
+            chart_10: "#24357a".to_string(),
             // The theme's cyan halfway to the background: a grey this light is white
             // on a 16-color terminal, and the grid vanished into the background.
             chart_grid: "#70aabf".to_string(),
@@ -2230,6 +2276,20 @@ const COMBINED_KEYS: &[(&str, Combine)] = &[
     ("home.hide", Combine::Union),
 ];
 
+/// The line after a config file's mistake: how to get going again. An import that
+/// is not there is skipped, and `datui config init` writes a root file only where
+/// there is none.
+pub fn way_out(imported: bool, what: &str) -> String {
+    if imported {
+        format!("Fix that {what}, or move the file aside: a missing import is skipped.")
+    } else {
+        format!(
+            "Fix that {what}, or move the file aside to start from the defaults; \
+             `datui config init` then writes a fresh one."
+        )
+    }
+}
+
 impl ConfigLayer {
     /// A layer from TOML text. Types are checked here, so a mistake is reported
     /// against the file that holds it rather than after merging.
@@ -2286,8 +2346,9 @@ impl ConfigLayer {
         };
         let mut layer = Self::parse(&content).map_err(|e| {
             eyre!(
-                "Failed to parse config file at {named}: {}",
-                parse_reason(&e)
+                "Failed to parse config file at {named}: {}\n{}",
+                parse_reason(&e),
+                way_out(importer.is_some(), "line")
             )
         })?;
         // Serde passes over a key it does not know; a renamed or misspelled one would
@@ -2364,7 +2425,7 @@ const RETIRED_KEYS: &[(&str, &str)] = &[
     ),
     (
         "home.builtin_catalog",
-        "home.hide = [\"public\"] hides the public catalog",
+        "home.hide = [\"examples\"] hides the example datasets",
     ),
 ];
 
@@ -2599,12 +2660,15 @@ impl AppConfig {
         }
         // A name that hides nothing is likely a typo, but not worth refusing to start.
         for name in config.unknown_hidden() {
-            eprintln!("datui: warning: home.hide: no catalog or entry is named {name}");
+            eprintln!("datui: warning: home.hide: {}", Self::hides_nothing(&name));
         }
 
-        config
-            .validate()
-            .map_err(|e| eyre!("Invalid configuration in {place}: {e}"))?;
+        config.validate().map_err(|e| {
+            eyre!(
+                "Invalid configuration in {place}: {e}\n{}",
+                way_out(false, "setting")
+            )
+        })?;
 
         Ok(config)
     }
@@ -2726,11 +2790,11 @@ impl AppConfig {
     }
 
     /// Every catalog, hidden ones included: `catalog.toml`, the listed files in order,
-    /// then the bundled `public` catalog, unless a listed file named `public.toml`
+    /// then the bundled `examples` catalog, unless a listed file named `examples.toml`
     /// replaces it.
     pub fn catalogs(&self) -> Vec<crate::catalog::Catalog> {
         let mut all = self.read_catalogs.clone();
-        if !all.iter().any(|c| c.id == crate::catalog::PUBLIC) {
+        if !all.iter().any(|c| c.id == crate::catalog::EXAMPLES) {
             all.push(crate::catalog::bundled());
         }
         all
@@ -2756,6 +2820,23 @@ impl AppConfig {
     }
 
     /// The `[home] hide` names no catalog or entry has, each once.
+    /// Why `name` in `home.hide` hides nothing, with the fix when the name is the
+    /// bundled catalog's old id: `public` is now `examples`.
+    pub fn hides_nothing(name: &str) -> String {
+        let old = crate::catalog::OLD_EXAMPLES_ID;
+        let renamed = match name.split_once('/') {
+            None if name == old => Some(crate::catalog::EXAMPLES.to_string()),
+            Some((catalog, id)) if catalog == old => {
+                Some(format!("{}/{id}", crate::catalog::EXAMPLES))
+            }
+            _ => None,
+        };
+        match renamed {
+            Some(new) => format!("`{name}` is now `{new}`: hide = [\"{new}\"]"),
+            None => format!("no catalog or entry is named {name}"),
+        }
+    }
+
     pub fn unknown_hidden(&self) -> Vec<String> {
         let catalogs = self.catalogs();
         let mut out: Vec<String> = Vec::new();
@@ -2966,7 +3047,7 @@ impl AppConfig {
         if let Some(name) = self.home.hide.iter().find(|name| !hide_name(name)) {
             return Err(eyre!(
                 "home.hide: \"{name}\" is not a catalog id or catalog/id. Use the ids (mine, \
-                 public, a listed file's name; public/nyc-taxis for one entry), not the labels"
+                 examples, a listed file's name; examples/nyc-taxis for one entry), not the labels"
             ));
         }
 
@@ -2985,6 +3066,12 @@ impl AppConfig {
         }
         if self.clipboard.osc52_limit.bytes() == 0 {
             return Err(eyre!("[clipboard] osc52_limit must be greater than 0"));
+        }
+        if !crate::user_agent::is_valid(&self.http.user_agent) {
+            return Err(eyre!(
+                "[http] user_agent must be printable ASCII, got {:?}",
+                self.http.user_agent
+            ));
         }
 
         Ok(())
@@ -3235,6 +3322,9 @@ pub struct Theme {
     pub colors: HashMap<String, Color>,
 }
 
+/// The theme's chart series slots, `chart_1` to `chart_10`.
+pub const CHART_SERIES_SLOTS: usize = 10;
+
 impl Theme {
     /// Create a Theme from a ThemeConfig by parsing all color strings
     pub fn from_config(config: &ThemeConfig) -> Result<Self> {
@@ -3269,6 +3359,21 @@ impl Theme {
     /// Get a color by name, returns None if not found
     pub fn get_optional(&self, name: &str) -> Option<Color> {
         self.colors.get(name).copied()
+    }
+
+    /// The colors chart series are drawn in: `chart_1` to `chart_10` as this terminal
+    /// shows them, each once. Slots that come out the same (a theme that repeats a
+    /// color, a 16-color terminal, `NO_COLOR`) are one color, so two series never
+    /// share one: a chart draws at most this many.
+    pub fn series_colors(&self) -> Vec<Color> {
+        let mut colors: Vec<Color> = Vec::with_capacity(CHART_SERIES_SLOTS);
+        for i in 1..=CHART_SERIES_SLOTS {
+            let color = self.get(&format!("chart_{i}"));
+            if !colors.contains(&color) {
+                colors.push(color);
+            }
+        }
+        colors
     }
 
     /// Style of the row or item the cursor is on: the theme's tint, or reversed video

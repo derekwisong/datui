@@ -35,6 +35,10 @@ pub enum Context {
     Copy,
     Views,
     FormatPicker,
+    Retype,
+    Combine,
+    TablePicker,
+    Sample,
     Hex,
 }
 
@@ -279,7 +283,8 @@ pub const GLOBAL: Group = Group {
         k("? / F1", "Help", "This screen's keys (F1 in text fields)")
             .more("This screen's keys. In a text field ? types, and F1 opens the help")
             .run("F1"),
-        k("Ctrl+O", "Home", "The home screen; abandons a load"),
+        k("Ctrl+O", "Home", "The home screen; abandons a load")
+            .more("The home screen, on the dataset left, its filter kept and selected (typing replaces it); abandons a load"),
         k(
             "Ctrl+Q / Ctrl+C",
             "Quit",
@@ -342,7 +347,7 @@ pub const Q_SUMMARY: &[(&str, &str)] = &[
 /// The analysis tools' sample keys, the same on each.
 const SAMPLE_KEYS: &[Key] = &[
     k("s", "Sample", "Choose the sample every tool reads").more(
-        "Choose the sample every tool reads: which rows, how they are picked, how many, the seed",
+        "Choose the sample every tool reads: which rows, how they are picked, how many (typed, like 50000, 50k or 2m), the seed. Enter applies the form",
     ),
     k(
         "v",
@@ -406,8 +411,10 @@ pub const SCREENS: &[Screen] = &[
                     k("H / L", "Move column", "Move the cursor's column left or right")
                         .more("Move the cursor's column one place left or right, the cursor with it; a frozen column moves among the frozen ones. R puts the order back"),
                     k("p", "Pivot & Melt", "Pivot or melt"),
+                    k("S", "Sample", "Draw a sample into memory; the view works on it")
+                        .more("Draw a sample of the source into memory: the step under the query, filters and sort, which then run over it. The rows show as they arrive (Esc stops, keeping them); the footer says sample 100,000 of 36.8M. Analysis, charts and export read the sample. S again edits it; Method No sample, or R, takes it away"),
                     k("R", "Reset", "Clear query, filters, sort, layout, view")
-                        .more("Reset table: clear the query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view"),
+                        .more("Reset table: clear the sample, query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view"),
                 ],
             },
             Group {
@@ -445,6 +452,8 @@ pub const SCREENS: &[Screen] = &[
                         .more("Fit the cursor's column to the rows on screen; w puts it back to automatic width"),
                     k("b", "Format spec", "Read a binary file with another format spec")
                         .more("A binary file read through a format spec: read it again with another spec. Clears the query, filters and sort"),
+                    k("T", "Table", "Open another table of the file")
+                        .more("A file of several tables (a workbook's worksheets, a database's tables, a format spec's record types, a Hugging Face cache's splits): pick another to open in place of this one, as --table names it. Clears the query, filters and sort; a saved view for the table applies. On a file of one table, says so"),
                     k("t", "Follow", "Follow the file as it grows")
                         .more("Follow the file as it grows (CSV, TSV, PSV, NDJSON). Reads it again, so the query, filters and sort are cleared; while following, t pauses and resumes, and Esc stops"),
                 ],
@@ -455,7 +464,8 @@ pub const SCREENS: &[Screen] = &[
                     k("q", "Back", "Home when opened from there, else quit")
                         .more("Back to the home screen when the dataset was opened from it; otherwise quit"),
                     k("Q", "Quit", "Quit"),
-                    k("Esc", "Back", "Leave a drill-down, stop a find or a follow"),
+                    k("Esc", "Back", "Leave a drill-down; stop a find, sample, follow")
+                        .more("Leave a drill-down; stop a find, a sample being drawn (its rows so far stay) or a follow"),
                 ],
             },
             Group {
@@ -464,6 +474,12 @@ pub const SCREENS: &[Screen] = &[
                     k("Click", "Point", "The cursor to the cell; on a header, its column")
                         .no_run(),
                     k("Double-click", "Enter", "Enter on the row").no_run(),
+                    k("Double-click a header", "Sort", "Sort by it: up, down, off, as [ / ] do")
+                        .more("Double-click a column's header to sort by it, as [ and ] do: ascending, then descending, then back to no sort, replacing the sort in effect")
+                        .no_run(),
+                    k("Double-click a header's edge", "Fit", "Fit the column to the rows, as = does")
+                        .more("Double-click the gap right of a column's header to fit the column to the rows on screen, as = does; the column cursor moves to it, and nothing is sorted")
+                        .no_run(),
                     k("Wheel", "Scroll", "↑ / ↓, three rows a notch")
                         .more("↑ / ↓, three rows a notch; the same in help, the inspector and the sidebars")
                         .no_run(),
@@ -515,7 +531,7 @@ pub const SCREENS: &[Screen] = &[
                     k("Backspace", "Up", "Delete a filter character, or up a level")
                         .more("Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a catalog's remote dataset, back here)"),
                     k("Esc", "Back", "Path prompt, filter, directory, then the table")
-                        .more("Back out one layer: the path prompt, the filter, the directory (back to the row it was entered from), then to the open table"),
+                        .more("Back out one layer: the path prompt, the filter (onto the first dataset), the directory (back to the row it was entered from), then to the open table"),
                 ],
             },
             Group {
@@ -525,7 +541,7 @@ pub const SCREENS: &[Screen] = &[
                         .more("Narrow by name or column; fuzzy, so \"sal\" finds \"sales\". What you open often ranks first. Typing also searches below the directory you are inside and the listed bucket names; matches appear under \"Found\"")
                         .no_run(),
                     k("~", "Path", "Type a path or URL (on an empty filter)")
-                        .more("While the filter is empty: type a path or URL by hand. The list shows the directory being typed, narrowed by the name after the last /. The prompt is a plain editor: characters, Backspace, Ctrl+U clears, Tab completes the one name left or what the names share, ↑ / ↓ pick a name, Enter opens a file or goes inside a directory, Esc closes. s3://, gs:// and az:// complete from buckets and prefixes already known. With a filter typed, ~ types into it"),
+                        .more("While the filter is empty: type a path or URL by hand. The list shows the directory being typed, narrowed by the name after the last /. The prompt is a plain editor: characters, Backspace, Ctrl+U clears, The first name that matches is picked. Tab completes the one name left or what the names share, or a name picked further down; ↑ / ↓ pick a name, and ↑ from the first takes the path as typed; Enter opens the picked name or the typed path: a file opens, a directory is gone inside; Esc closes. s3://, gs:// and az:// complete from buckets and prefixes already known. With a filter typed, ~ types into it"),
                     k("Ctrl+U", "Clear", "Clear the filter or path input"),
                     k("Ctrl+R", "Refresh", "List again what is on screen"),
                 ],
@@ -541,8 +557,8 @@ pub const SCREENS: &[Screen] = &[
                         .more("Add the dataset or directory under the cursor to catalog.toml, listed under My datasets; on a row from catalog.toml, forget it. A heading stands for the directory it lists. Only catalog.toml is written; another catalog is hidden with home.hide"),
                     k("Ctrl+E", "Docs", "The row's documentation, full screen")
                         .more("Open the Documentation view of a catalog row, of a place inside one, or of a file whose format spec documents it: description, publisher, license, links, record types, columns with units and value legends, bookmarks. A catalog's description, link and column notes stand over the spec's. Ctrl+E here is not readline's end of line: the filter is edited at its end"),
-                    k("Delete", "Forget", "Forget a recent, a place, or a catalog.toml row")
-                        .more("Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source"),
+                    k("Delete", "Forget", "Forget a recent, place or catalog.toml row; hide")
+                        .more("Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source. On the Example datasets heading, hide them until datui cache clear, after confirming"),
                     k("Shift+Delete", "Forget all", "Forget every recent entry, after confirming"),
                 ],
             },
@@ -569,6 +585,8 @@ pub const SCREENS: &[Screen] = &[
                 k("g / G", "Ends", "The first or last line (Home / End too)"),
                 k("Enter / Space / →", "Values", "Open or close the column's value legend")
                     .more("Open or close the value legend of the column under the cursor: a catalog's values, or a spec's enum"),
+                k("o", "Open", "Open the line's link in the browser, after asking")
+                    .more("Open the link on the cursor's line in the system browser. Only http and https links open, and only after a question showing the whole URL (Enter opens, Esc does not). Off over SSH or without a display: y copies the link instead"),
                 k("y", "Copy", "Copy the line's link or value, whole")
                     .more("Copy the link or value on the cursor's line, whole, however it is cut on screen"),
                 k("Esc / q / ←", "Back", "Back to the home screen"),
@@ -672,7 +690,8 @@ pub const SCREENS: &[Screen] = &[
                     k("PgUp / PgDn", "Page", "A page of fields"),
                     k("← / → (h/l)", "Row", "Previous and next row")
                         .more("Previous and next row; the table's cursor moves with it"),
-                    k("Tab", "Value", "Into the value, to scroll and find in it"),
+                    k("Tab / Shift+Tab", "Value", "Into the value, to scroll and find in it")
+                        .more("Into the value, to scroll and find in it. Nothing moves: the panes are split by what they hold, not by where the cursor is"),
                     k("Enter", "Open", "Open a struct, list or JSON; read a field")
                         .more("On a group's row, its rows, as at the table. Else open a struct, a list, or text holding a JSON object or array; or read a field the table's rows do not hold (hidden and binary columns)"),
                     k("r", "Read", "On a group's row, read a field the rows lack")
@@ -685,7 +704,8 @@ pub const SCREENS: &[Screen] = &[
                     k("c", "Compare", "Compare with the next row, or the pinned one")
                         .more("Compare: a column for the next row, or the pinned one"),
                     k("m", "Pin", "Pin this row to compare others with; again to unpin"),
-                    k("Esc / Space", "Close", "Close; Esc clears a find first"),
+                    k("Esc / Space", "Close", "Close; Esc clears a find, then Compare, first")
+                        .more("Close. Esc backs out one level at a time: a find first, then Compare, then the inspector"),
                 ],
             },
             Group {
@@ -708,13 +728,15 @@ pub const SCREENS: &[Screen] = &[
                     k("/", "Find", "Find in the value; n and N go on")
                         .more("Find in the value; n and N go to the next and last place"),
                     k("e, w, y, o", "As fields", "As in the fields"),
-                    k("Esc / Tab", "Fields", "Back to the fields; Esc clears a find first"),
+                    k("Esc / Tab", "Fields", "Back to the fields; Esc clears a find first")
+                        .more("Back to the fields (Shift+Tab too); Esc clears a find first"),
                 ],
             },
             Group {
                 name: "Nested",
                 keys: &[
                     k("Enter / → (l)", "Open", "Open the focused item"),
+                    k("Tab / Shift+Tab", "Value", "Into the item's value; not in an empty level"),
                     k("Esc / ← (h)", "Up", "Up a level; at the row, Esc closes"),
                     k("y", "Copy", "Copy the item: text, or JSON indented")
                         .more("Copy the focused item: text as itself, a JSON object or array indented"),
@@ -737,8 +759,10 @@ pub const SCREENS: &[Screen] = &[
                     .more("Model, Audio, MIDI, Metadata and format tabs: scroll the list a page"),
                 k("Home / End", "Top, end", "The top or the end of the list")
                     .more("Model, Audio, MIDI, Metadata and format tabs: the top or the end of the list"),
-                k("Enter", "Take", "Notes: take the offer; Documentation: a legend")
-                    .more("Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor"),
+                k("Enter", "Take", "Schema: the type; Notes: the offer; a table: open it")
+                    .more("Schema tab: change the column's type, with the names and formats a format spec's type takes. Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor. Excel or SQLite tab: open the worksheet or table under the cursor in place of this one, as T does"),
+                k("o", "Open", "Documentation tab: open the line's link")
+                    .more("Documentation tab: open the link on the cursor's line in the system browser. Only http and https links open, and only after a question showing the whole URL. Off over SSH or without a display"),
                 k("y", "Copy", "Documentation tab: copy the line's link or value")
                     .more("Documentation tab: copy the link or value on the cursor's line, whole, however it is cut on screen"),
                 k("H", "Header", "Schema tab, CSV: first row as data or names")
@@ -822,6 +846,8 @@ pub const SCREENS: &[Screen] = &[
                     k("(type)", "Narrow", "Narrow the list, with the find field focused")
                         .more("Narrow the column list, when the find field is focused. ↓ from find goes to the list, on the table's column cursor")
                         .no_run(),
+                    k("PgUp / PgDn, Home / End", "Page", "A page of columns; the first or last")
+                        .more("A page of columns, or the first or last; ↓ stops at the last column"),
                     k("Space", "Sort", "Cycle the sort: none, ascending, descending")
                         .more("Cycle the column's sort: none → ascending → descending (← steps back). Each column carries its own direction"),
                     k("1-9", "Sort place", "Put the column at that place in the sort")
@@ -846,7 +872,9 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Filter editor",
                 keys: &[
-                    k("(type)", "Narrow", "Narrow the column or operator list").no_run(),
+                    k("(type)", "Narrow", "Narrow the column or operator list")
+                        .more("Narrow the column or operator list. The operators are those the column's type takes")
+                        .no_run(),
                     k("Enter", "Next", "Choose the step; from the value, save the row")
                         .more("Pick the column (type to narrow, Enter chooses), the operator the same way, then type the value and Enter saves the row. Tab, → and Space also choose at the column and operator steps; Shift+Tab steps back; ↑ / ↓ move in the lists"),
                     k("Esc", "Back", "End the edit, and only the edit"),
@@ -881,7 +909,8 @@ pub const SCREENS: &[Screen] = &[
                     k("↑ / ↓", "Move", "Move; typing narrows"),
                     k("Enter", "Choose", "Choose; on a several-choice row, done"),
                     k("Space", "Toggle", "Choose; toggle a column on a several-choice row"),
-                    k("Esc", "Back", "Back out of the picker, keeping toggles"),
+                    k("Esc", "Back", "Back out of the picker, undoing its toggles")
+                        .more("Back out of the picker; the toggles made since it opened are undone (Enter keeps them)"),
                 ],
             },
         ],
@@ -895,20 +924,23 @@ pub const SCREENS: &[Screen] = &[
                 name: "Shelves",
                 keys: &[
                     k("1-7", "Type", "Chart type, in order: Line to Heatmap")
-                        .more("Switch the chart type directly: Line, Scatter, Bar, Histogram, Box, KDE, Heatmap ([ / ] step). The shelves keep what the new type takes")
+                        .more("Switch the chart type directly: Line, Scatter, Bar, Histogram, Box, KDE, Heatmap ([ / ] step). The shelves keep what the new type takes. On Rows, digits type a sample size instead")
                         .run("1"),
                     k("[ / ]", "Type", "Previous or next chart type"),
                     k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous row")
                         .more("Next or previous row of the panel, wrapping (j/k too). A shelf the type does not use is dimmed and skipped"),
                     k("Space / Enter", "Act", "Open a shelf's picker, toggle, or step the row")
-                        .more("On X, Y or Color: open its picker. On the line under Color: pick the values that get a series, by rows. On an option: toggle it or take its next value. The panel applies as it changes, so Enter acts as Space does"),
+                        .more("On X, Y or Color: open its picker. On the line under Color: pick the values that get a series, by rows. On an option: toggle it or take its next value. The panel applies as it changes, so Enter acts as Space does, except on Rows: Space switches between Sample and Every row, and Enter reads what the row says"),
                     k("← / → (h/l)", "Change", "Step the type, bucket, aggregate or option")
-                        .more("Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, sum, mean, median, min, max), cumulative, bins, range, order or sample size; on a shelf that takes one column, the previous or next column; flip a toggle"),
-                    k("+ / -", "Adjust", "Bins, bandwidth or sample size"),
-                    k("PgUp / PgDn", "Step", "Adjust the sample size in bigger steps"),
+                        .more("Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, stdev, quantile, min, max, first, last) and a quantile's percentile, cumulative, bins, range or order; on Rows, switch between Sample and Every row (read on Enter); on a shelf that takes one column, the previous or next column; on the line under Color, turn Other (every value without a series) on or off; flip a toggle"),
+                    k("+ / -", "Adjust", "Bins or bandwidth"),
+                    k("0-9", "Size", "On Rows: type a sample size, like 50k or 2m")
+                        .more("On Rows: type a sample size, like 50000, 50,000, 50k, 250k or 2m. Backspace edits, Enter reads it, Esc puts the row back as it was. A size of at least the table's rows is Every row. Nothing is read until Enter or focus leaves the row")
+                        .no_run(),
                     k("g", "Grid", "Grid on or off")
                         .more("Grid on or off at the labeled ticks: Line, Scatter, Histogram, Box and KDE. [analysis] chart_grid sets where it starts"),
-                    k("Esc", "Back", "Back to the table"),
+                    k("Esc", "Back", "Back to the table")
+                        .more("Back to the table; on Rows with a change waiting, put the row back first"),
                 ],
             },
             Group {
@@ -927,7 +959,7 @@ pub const SCREENS: &[Screen] = &[
                 keys: &[
                     k("↑ / ↓", "Move", "Move; typing narrows"),
                     k("Enter / Space", "Choose", "Choose (Y, Color values: Space toggles one)")
-                        .more("Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 7)"),
+                        .more("Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 10, fewer on a terminal of fewer colors)"),
                     k("Tab / Shift+Tab", "Next", "Choose and move to the next or previous row"),
                     k("Esc", "Back", "Back out of the picker alone"),
                 ],
@@ -936,9 +968,9 @@ pub const SCREENS: &[Screen] = &[
                 name: "Export dialog",
                 keys: &[
                     k("Tab / Shift+Tab (↑ / ↓)", "Next", "Path, format, style, size, legend, words")
-                        .more("Next or previous field: Path, Format, Style, Size, Width, Height, Legend, Title, Description, Notes, Source, Byline"),
-                    k("← / →", "Change", "Step the format, style, size or legend")
-                        .more("Step the format (PNG, SVG, PDF), the style (Light, Dark, Transparent), the size (Slide 16:9, Document, Square, Single column, Double column, Custom) or the legend (line ends, a corner, off). Typing a width or height makes the size Custom"),
+                        .more("Next or previous field: Path, Format, Style, Size, Width, Height, Legend, the marks (Opacity and Point size for a scatter, Line width for a line, Y from zero for a line), Title, Description, Notes, Source, Byline, Recipe"),
+                    k("← / →", "Change", "Step the format, style, size, legend or marks")
+                        .more("Step the format (PNG, SVG, PDF), the style (Light, Dark, Transparent), the size (Slide 16:9, Document, Square, Single column, Double column, Custom), the legend (line ends, a corner, off), a scatter's point opacity (Auto, 100%, 50%, 20%) and size (Small, Medium, Large), a line's width (Thin, Normal, Bold), Y from zero, or the recipe (Include, Omit). Typing a width or height makes the size Custom"),
                     k("Ctrl+P / Ctrl+N", "History", "Earlier or later paths in the path field"),
                     k("Enter", "Export", "Export, from anywhere in the dialog")
                         .more("Export, from anywhere in the dialog. A path ending .png, .svg or .pdf takes that format; any other gets the format's extension after it. An existing file asks Overwrite / No, starting on No; ←/→ (h/l) or Tab pick, Enter confirms, and declining returns to the filled dialog"),
@@ -955,16 +987,16 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Explore",
                 keys: &[
-                    k("Tab", "Focus", "Between the results and the sidebar"),
+                    k("Tab / Shift+Tab", "Focus", "Between the results and the tools"),
                     k("↑ / ↓ (j/k)", "Move", "Rows, or the sidebar's tools"),
                     k("← / → (h/l)", "Scroll", "Scroll the statistics")
                         .more("Scroll the statistics; the header counts those out of view"),
                     k("Home / End", "First, last", "First or last row"),
                     k("PgUp / PgDn", "Page", "A page"),
-                    k("Enter", "Tool", "Run the sidebar's tool")
-                        .more("Select tool from sidebar (when sidebar focused). The first run on a dataset starts in the Sample form, where Enter runs it; later tools reuse that sample"),
-                    k("Esc", "Close", "Cancel a run; otherwise close")
-                        .more("Cancel a run in progress; otherwise close the analysis view"),
+                    k("Enter", "Open", "Open the sidebar's tool")
+                        .more("Open the sidebar's tool and move into its pane. The first run on a dataset starts in the Sample form, where Enter runs it; later tools reuse that sample. Results last until the view changes: closing and reopening shows them again"),
+                    k("Esc", "Back", "Cancel a run; the tools; then close")
+                        .more("Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view"),
                 ],
             },
             Group {
@@ -986,11 +1018,11 @@ pub const SCREENS: &[Screen] = &[
                         .more("Scroll the statistics; the header counts those out of view"),
                     k("Home / End", "First, last", "First or last row"),
                     k("PgUp / PgDn", "Page", "A page"),
-                    k("Tab", "Focus", "Between the results and the sidebar"),
+                    k("Tab / Shift+Tab", "Focus", "Between the results and the tools"),
                     k("Enter", "Detail", "Q-Q plot and histogram for the column")
-                        .more("Open detail view for selected column (shows Q-Q plot and histogram); with the sidebar focused, select a tool"),
-                    k("Esc", "Close", "Cancel a run; otherwise close")
-                        .more("Cancel a run in progress; otherwise close the analysis view"),
+                        .more("Open detail view for selected column (shows Q-Q plot and histogram); with the sidebar focused, open a tool"),
+                    k("Esc", "Back", "Cancel a run; the tools; then close")
+                        .more("Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view"),
                 ],
             },
             Group {
@@ -1007,6 +1039,7 @@ pub const SCREENS: &[Screen] = &[
             name: "Detail",
             keys: &[
                 k("↑ / ↓ (j/k)", "Family", "Compare the values with another family"),
+                k("Home / End", "First, last", "The first or last family"),
                 k("s", "Scale", "Histogram scale: linear or log"),
                 k("Esc", "Back", "Back to the distribution table"),
             ],
@@ -1020,18 +1053,18 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Explore",
                 keys: &[
-                    k("Tab", "Focus", "Between the matrix and the sidebar"),
+                    k("Tab / Shift+Tab", "Focus", "Between the matrix and the tools"),
                     k("↑ / ↓ (j/k)", "Move", "Matrix rows, or the sidebar's tools"),
                     k("← / → (h/l)", "Column", "Matrix columns"),
-                    k("Home / End", "Corners", "The first or last corner cell")
-                        .more("Jump to the first/last corner cell (the column resets too)"),
+                    k("Home / End", "Ends", "The first or last pair")
+                        .more("Jump to the first pair (the first row's second column) or the last (the last row's next-to-last column); the matrix opens on the first"),
                     k("PgUp / PgDn", "Page", "A page"),
                     k("Enter", "Detail", "The pair's detail (not on the diagonal)")
-                        .more("Open pair detail view (on a cell) or select tool (sidebar); does nothing on a diagonal cell"),
+                        .more("Open pair detail view (on a cell) or open a tool (sidebar); does nothing on a diagonal cell"),
                     k("m", "Method", "Pearson or Spearman, named in the title")
                         .more("Method: Pearson r or Spearman ρ, named in the title (both come from the one run, so it reads nothing)"),
-                    k("Esc", "Close", "Cancel a run; otherwise close")
-                        .more("Cancel a run in progress; otherwise close the analysis view"),
+                    k("Esc", "Back", "Cancel a run; the tools; then close")
+                        .more("Cancel a run in progress; otherwise from the matrix back to the tools, and from the tools close the analysis view"),
                 ],
             },
             Group {
@@ -1109,9 +1142,9 @@ pub const SCREENS: &[Screen] = &[
                     k("r", "Resample", "On a sample, run again with a new seed"),
                     k("x", "Export", "Export the report to JSON or Markdown")
                         .more("Export the report to JSON or Markdown; nothing is read"),
-                    k("Tab", "Focus", "Between the result and the tools"),
-                    k("Esc", "Back", "Back one level: all findings, then close")
-                        .more("Back one level: all findings again, then close"),
+                    k("Tab / Shift+Tab", "Focus", "Between the result and the tools"),
+                    k("Esc", "Back", "Back one level: all findings, the tools, close")
+                        .more("Back one level: all findings again, then the tools, then close"),
                 ],
             },
             Group {
@@ -1157,9 +1190,9 @@ pub const SCREENS: &[Screen] = &[
                     k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous field")
                         .more("Next or previous field, wrapping; the fields follow the format. The dialog opens on Path, and the arrows move from there"),
                     k("← / →", "Change", "Step the format or compression; move the cursor")
-                        .more("On Format or Compression: the previous or next value (h/l too). On Include header or Source file: toggle. In Path and Delimiter: move the cursor"),
+                        .more("On Format or Compression: the previous or next value, along the Format row (h/l too). On Header or Source file: toggle. In Path and Delimiter: move the cursor"),
                     k("Space", "Act", "Toggle a checkbox; next format or compression")
-                        .more("Toggle a checkbox (Include header, Source file); on Format or Compression, the next value, wrapping"),
+                        .more("Toggle a checkbox (Header, Source file); on Format or Compression, the next value, wrapping"),
                     k("Ctrl+P / Ctrl+N", "History", "Earlier or later paths in the path field")
                         .more("In the path field: the paths exported to before, earlier or later (↑ and ↓ move between fields)"),
                     k("Enter", "Export", "Export, from anywhere in the form")
@@ -1245,8 +1278,9 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Delete",
                 keys: &[
-                    k("Enter (d / D)", "Delete", "Delete"),
-                    k("Esc", "Cancel", "Cancel"),
+                    k("← / → (h/l)", "Pick", "Pick Delete or No (Tab too); it starts on No"),
+                    k("Enter", "Confirm", "Confirm the one picked"),
+                    k("Esc", "No", "Keep the view"),
                 ],
             },
         ],
@@ -1264,6 +1298,74 @@ pub const SCREENS: &[Screen] = &[
                     .more("Read the file again with the spec chosen. The query, filters and sort are cleared"),
                 k("Backspace", "Delete", "Delete a character (Ctrl+W a word, Ctrl+U all)"),
                 k("Esc", "Close", "Close and keep the format"),
+            ],
+        }],
+    },
+    Screen {
+        context: Context::Retype,
+        title: "Column type",
+        reached: "<kbd>Enter</kbd> on the Info panel's Schema tab, or Change type in the cell menu.",
+        groups: &[Group {
+            name: "Pick",
+            keys: &[
+                k("(type)", "Narrow", "Narrow the list; a format typed is the format").no_run()
+                    .more("Narrow the list to the names that contain it. In the format list, a strftime format typed that no line holds is the format"),
+                k("↑ / ↓", "Move", "Move"),
+                k("Enter", "Choose", "The type, or its format")
+                    .more("The type: the column reads as it at once, a value that does not fit null. A date, time or datetime asks its format next, each line showing what it makes of the column's first value. as read takes the type away"),
+                k("Backspace", "Delete", "Delete a character (Ctrl+W a word, Ctrl+U all)"),
+                k("Esc", "Back", "Back to the types, or close"),
+            ],
+        }],
+    },
+    Screen {
+        context: Context::Combine,
+        title: "Combine into datetime",
+        reached: "Combine into datetime in the cell menu, on a text, date or time column.",
+        groups: &[Group {
+            name: "Fields",
+            keys: &[
+                k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous field"),
+                k("Space", "Pick", "Pick a column, or step the kind"),
+                k("← / →", "Change", "Step the kind: datetime, date or time"),
+                k("Enter", "Make", "Make the column")
+                    .more("Make the column, before the first column it is made from, as a format spec's derived column is: a date and a time, and a UTC offset, make a datetime in UTC"),
+                k("Esc", "Cancel", "Cancel"),
+            ],
+        }],
+    },
+    Screen {
+        context: Context::TablePicker,
+        title: "Table picker",
+        reached: "<kbd>T</kbd> at a table of a file of several.",
+        groups: &[Group {
+            name: "Pick",
+            keys: &[
+                k("(type)", "Narrow", "Narrow to the names that contain it").no_run(),
+                k("↑ / ↓", "Move", "Move"),
+                k("Enter", "Open", "Open the table in place of this one")
+                    .more("Open the table chosen in place of this one. The query, filters and sort are cleared"),
+                k("Backspace", "Delete", "Delete a character (Ctrl+W a word, Ctrl+U all)"),
+                k("Esc", "Close", "Close and keep the table"),
+            ],
+        }],
+    },
+    Screen {
+        context: Context::Sample,
+        title: "Sample",
+        reached: "<kbd>S</kbd> at the table.",
+        groups: &[Group {
+            name: "Form",
+            keys: &[
+                k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous row"),
+                k("← / →", "Change", "Step Rows from, Method, Per value of")
+                    .more("Step Rows from, Method and Per value of; Method's No sample takes the view's sample away"),
+                k("(type)", "Edit", "Type a size (50k, 2m), a seed, rows, values")
+                    .more("Type into the focused row: the size (50000, 50k, 2m), the seed, a row range, partition values or file numbers")
+                    .no_run(),
+                k("Enter", "Draw", "Draw the sample; again past a memory warning")
+                    .more("Draw the sample: the table shows its rows as they arrive, and the query, filters and sort run over them. When the estimate is more than the memory available now (or analysis.sample_memory_limit), the form says so; Enter again draws anyway"),
+                k("Esc", "Cancel", "Close; the view's sample stays as it was"),
             ],
         }],
     },

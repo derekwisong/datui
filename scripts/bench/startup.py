@@ -69,6 +69,11 @@ DEVICE_REPLY = b"\x1b[?1;2c"
 # The cursor-position query some TUIs send at startup.
 CURSOR_QUERY = b"\x1b[6n"
 CURSOR_REPLY = b"\x1b[1;1R"
+# The background-color query (OSC 11) datui asks under theme.mode auto, answered as
+# most terminals do. Unanswered, startup holds the first frame for it, which would
+# time the wait rather than the load.
+BACKGROUND_QUERY = b"\x1b]11;?"
+BACKGROUND_REPLY = b"\x1b]11;rgb:0000/0000/0000\x1b\\"
 # datui asks before downloading an HTTP file; Yes has the focus. Matched without
 # spaces, which the terminal output draws as cursor moves.
 DOWNLOAD_QUESTION = b"Continuewithdownload"
@@ -249,6 +254,8 @@ def run_once(viewer: Viewer, path: str, root: Path, settle: float, timeout: floa
                 os.write(master, DEVICE_REPLY)
             if CURSOR_QUERY in tail:
                 os.write(master, CURSOR_REPLY)
+            if BACKGROUND_QUERY in tail:
+                os.write(master, BACKGROUND_REPLY)
             if not answered and DOWNLOAD_QUESTION in CSI.sub(b"", out).replace(b" ", b""):
                 os.write(master, b"\r")
                 answered = True

@@ -20,7 +20,7 @@ uses the Python packages in `scripts/requirements.txt`.
 
 | Path | Purpose |
 |---|---|
-| `demo/build.py` | Downloads and prepares public datasets as Parquet |
+| `demo/build.py` | Downloads and prepares public data as Parquet |
 | `demo/DATA-LICENSES.md` | Sources, licenses and transformations |
 | `demo/data/` | Inputs opened by the tapes |
 | `scripts/demos/NN-name.tape` | Keystrokes and recording settings |

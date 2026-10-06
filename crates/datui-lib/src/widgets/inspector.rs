@@ -952,18 +952,12 @@ pub struct Layout {
 
 /// Lay out `content` for `fields` listed and a value that needs `value_need`
 /// rows. Below [`WIDE`] the list sits above the value and takes the rows it
-/// needs, leaving the value what its lines need; with the focus on the value,
-/// the list keeps a few rows around the focused field. From [`WIDE`] the two
+/// needs, leaving the value what its lines need. The split follows what the
+/// panes hold, never where the focus is, so Tab moves nothing. From [`WIDE`] the two
 /// sit side by side, each at full height, the value as wide as
 /// [`value_pane_width`] says, and fields flow into as many columns of
 /// `list.min_col` cells as fit.
-pub fn layout(
-    content: Rect,
-    fields: usize,
-    value_need: usize,
-    focus: Focus,
-    list: ListShape,
-) -> Layout {
+pub fn layout(content: Rect, fields: usize, value_need: usize, list: ListShape) -> Layout {
     let line = |y: u16, x: u16, width: u16| Rect {
         x,
         y,
@@ -1005,9 +999,7 @@ pub fn layout(
     }
     let avail = h.saturating_sub(2);
     let fields = fields.max(1);
-    let list_h = if focus == Focus::Value {
-        fields.min(VALUE_MIN.max(avail / 5))
-    } else if fields + value_need.max(VALUE_MIN) <= avail {
+    let list_h = if fields + value_need.max(VALUE_MIN) <= avail {
         fields
     } else {
         // A long value takes up to half, and the rest goes to the list, but only
@@ -1204,7 +1196,7 @@ pub fn render(
     };
     // The value's width does not depend on what it needs; only the stacked
     // layout's heights do.
-    let probe = layout(content, modal.visible.len(), VALUE_MIN, modal.focus, shape);
+    let probe = layout(content, modal.visible.len(), VALUE_MIN, shape);
     let width = value_width(probe.value);
     let pane = match (&row, &focused) {
         (Some(row), Some(field)) => Some(field_pane(
@@ -1245,7 +1237,7 @@ pub fn render(
         .rows_needed(&pane.content, content.height as usize);
     let need = value_need + if note.is_empty() { 0 } else { note.len() + 1 };
 
-    let mut lay = layout(content, modal.visible.len(), need, modal.focus, shape);
+    let mut lay = layout(content, modal.visible.len(), need, shape);
     // The note follows the value, a blank row between, and never takes more than half
     // the pane: a long value scrolls above it.
     let note_rows = if note.is_empty() || lay.value.height < 3 {
@@ -1320,7 +1312,6 @@ pub fn render(
         SectionRule {
             title: "Fields",
             chip: Some(&chip),
-            focused: modal.focus == Focus::List && lay.wide,
         }
         .render(lay.list_rule, buf, ctx);
         rule_used = Some("Fields".len() + 1 + crate::glyphs::cell_width(&chip) + 3);
@@ -1563,17 +1554,22 @@ fn footer<'a>(
         (false, true) => "Nulls: hidden",
         (false, false) => "Nulls: shown",
     };
-    bar = bar
-        .hint_weighted("Y", "Row", 2)
-        .hint_weighted("c", if f.comparing { "No compare" } else { "Compare" }, 2)
-        .hint_weighted("f", filled, 1);
+    bar = bar.hint_weighted("Y", "Copy row", 2);
+    // Comparing, Esc is the way out of Compare, and says so.
+    if !modal.compare {
+        bar = bar.hint_weighted("c", "Compare", 2);
+    }
+    bar = bar.hint_weighted("f", filled, 1);
     if f.comparing {
         bar = bar.hint_weighted("m", "Pin", 1);
     }
-    let esc = if modal.filter.is_empty() {
-        "Close"
-    } else {
+    // Esc backs out a level at a time: the find, Compare, then the inspector.
+    let esc = if !modal.filter.is_empty() {
         "Clear"
+    } else if modal.compare {
+        "No compare"
+    } else {
+        "Close"
     };
     bar.hint_weighted("Esc", esc, 10)
 }
@@ -1866,7 +1862,6 @@ fn draw_value(
             SectionRule {
                 title: &name,
                 chip: facts.as_deref(),
-                focused,
             }
             .render(rule, buf, ctx);
             let used = name_w
@@ -2158,7 +2153,6 @@ fn render_drill(
         },
         len,
         need,
-        modal.focus,
         ListShape {
             fields: len,
             min_col: 1,
@@ -2233,7 +2227,6 @@ fn render_drill(
     SectionRule {
         title: shape.items_title(),
         chip: Some(&count),
-        focused: false,
     }
     .render(lay.list_rule, buf, ctx);
 
@@ -2880,52 +2873,47 @@ mod tests {
         };
         // 80x24: the Surface's content is 76x20, 18 rows past the two rules.
         let content = Rect::new(2, 1, 76, 20);
-        let l = layout(content, 14, 1, Focus::List, list(14, 40));
+        let l = layout(content, 14, 1, list(14, 40));
         assert!(!l.wide);
         assert_eq!(l.list.height, 14, "every field listed");
         assert_eq!(l.value.height, 4);
-        let l = layout(content, 214, 1, Focus::List, list(214, 40));
+        let l = layout(content, 214, 1, list(214, 40));
         assert_eq!(
             (l.list.height, l.value.height),
             (15, 3),
             "the value keeps three"
         );
-        let l = layout(content, 214, 40, Focus::List, list(214, 40));
+        let l = layout(content, 214, 40, list(214, 40));
         assert_eq!(l.value.height, 9, "a long value takes half");
-        let l = layout(content, 214, 40, Focus::Value, list(214, 40));
-        assert_eq!(l.list.height, 3, "reading, the list keeps a few rows");
         // Two fields and a long value: the list takes its two rows, the value the rest.
-        let l = layout(content, 2, 1_000, Focus::List, list(2, 40));
+        let l = layout(content, 2, 1_000, list(2, 40));
         assert_eq!((l.list.height, l.value.height), (2, 16));
         // 200x50: side by side. 214 fields take three columns and the value
         // narrows to its floor; a short row leaves the value its measure.
         let content = Rect::new(2, 1, 196, 46);
-        let l = layout(content, 214, 1, Focus::List, list(214, 44));
+        let l = layout(content, 214, 1, list(214, 44));
         assert!(l.wide);
         assert_eq!(l.value.height, 45);
         assert_eq!(l.cols, 3, "{l:?}");
         assert!(l.value.width as usize >= VALUE_FLOOR, "{l:?}");
         assert!(l.cols * l.list.height as usize >= 130);
-        let l = layout(content, 14, 1, Focus::List, list(14, 44));
+        let l = layout(content, 14, 1, list(14, 44));
         assert_eq!((l.cols, l.value.width), (1, 88), "{l:?}");
         // Narrowing the list (a find, hidden nulls) moves nothing: the pane is sized
         // from every field.
-        let narrowed = layout(content, 3, 1, Focus::List, list(214, 44));
-        assert_eq!(
-            narrowed.value,
-            layout(content, 214, 1, Focus::List, list(214, 44)).value
-        );
+        let narrowed = layout(content, 3, 1, list(214, 44));
+        assert_eq!(narrowed.value, layout(content, 214, 1, list(214, 44)).value);
         // 300x80: every one of 214 fields; a row with bytes gives the value a
         // 32-byte hex row.
         let content = Rect::new(2, 1, 296, 76);
-        let l = layout(content, 214, 1, Focus::List, list(214, 45));
+        let l = layout(content, 214, 1, list(214, 45));
         assert!(l.cols * l.list.height as usize >= 214, "{l:?}");
         assert_eq!(l.value.width as usize, MEASURE + 1);
         let bytes = ListShape {
             bytes: true,
             ..list(214, 45)
         };
-        let l = layout(content, 214, 1, Focus::List, bytes);
+        let l = layout(content, 214, 1, bytes);
         assert_eq!(l.value.width as usize, HEX_WIDE);
         assert_eq!(reader::hex_per_line(pane_width(l.value)), 32);
         assert!(l.cols * l.list.height as usize >= 214, "{l:?}");
@@ -2934,14 +2922,14 @@ mod tests {
             single: true,
             ..bytes
         };
-        let l = layout(content, 214, 1, Focus::List, compare);
+        let l = layout(content, 214, 1, compare);
         assert_eq!((l.cols, l.value.width as usize), (1, MEASURE + 1));
         // A short row keeps one column.
-        let l = layout(content, 14, 1, Focus::List, list(14, 45));
+        let l = layout(content, 14, 1, list(14, 45));
         assert_eq!(l.cols, 1);
         // 140 columns: side by side.
-        assert!(layout(Rect::new(2, 1, 136, 30), 14, 1, Focus::List, list(14, 45)).wide);
-        assert!(!layout(Rect::new(2, 1, 135, 30), 14, 1, Focus::List, list(14, 45)).wide);
+        assert!(layout(Rect::new(2, 1, 136, 30), 14, 1, list(14, 45)).wide);
+        assert!(!layout(Rect::new(2, 1, 135, 30), 14, 1, list(14, 45)).wide);
     }
 
     /// A long trail keeps the row and where the drill is now; the steps between

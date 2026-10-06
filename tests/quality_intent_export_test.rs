@@ -300,8 +300,10 @@ fn the_report_exports_without_reading_the_source() {
         next,
         Some(AppEvent::QualityReportExport(_, _, Overwrite::Forbid))
     ));
-    assert!(app.analysis_modal.data_quality_export.is_none());
+    // Up while the report is written, so a failed write can say why in it.
+    assert!(app.analysis_modal.data_quality_export.is_some());
     drain(&mut app, &rx, next);
+    assert!(app.analysis_modal.data_quality_export.is_none());
     assert!(
         app.flash_message()
             .unwrap()
@@ -363,7 +365,8 @@ fn the_report_exports_without_reading_the_source() {
     );
 
     // Nothing was there at Enter, so nothing may be replaced: a file that
-    // appears before the write is left alone, and the error says so.
+    // appears before the write is left alone, and the dialog, still holding the
+    // path, says why on its status line rather than in a modal.
     press(&mut app, KeyCode::Char('x'));
     let clash = dir.path().join("clash.json");
     let form = app.analysis_modal.data_quality_export.as_mut().unwrap();
@@ -371,10 +374,15 @@ fn the_report_exports_without_reading_the_source() {
     let next = press(&mut app, KeyCode::Enter);
     std::fs::write(&clash, "theirs").unwrap();
     drain(&mut app, &rx, next);
+    assert!(app.error_message().is_none(), "{:?}", app.error_message());
+    let form = app.analysis_modal.data_quality_export.as_ref().unwrap();
+    assert_eq!(form.path.value(), clash.display().to_string());
     assert!(
-        app.error_message().is_some_and(|m| m.contains("appeared")),
+        form.error
+            .as_deref()
+            .is_some_and(|m| m.contains("appeared")),
         "{:?}",
-        app.error_message()
+        form.error
     );
     assert_eq!(std::fs::read_to_string(&clash).unwrap(), "theirs");
     assert_eq!(

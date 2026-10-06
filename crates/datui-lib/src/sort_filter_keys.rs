@@ -2,7 +2,7 @@
 //! what each entry does with them, then the list keys (`[` `]` move, `d` removes,
 //! and the Columns tab's per-column keys).
 
-use crate::filter_modal::{FilterEditStep, FilterOperator};
+use crate::filter_modal::FilterEditStep;
 use crate::form::{Form, FormKey, PickerKey};
 use crate::sort_filter_modal::SortFilterField;
 use crate::widgets::column_widths::WidthChoice;
@@ -40,6 +40,24 @@ impl App {
         }
 
         let modal = &mut self.sort_filter_modal;
+        // The Columns list is a list: it pages, has ends, and ↓ stops at its last
+        // column rather than wrapping round the form.
+        if let SortFilterField::Column(i) = modal.focus {
+            let last = modal.sort.filtered_columns().len().saturating_sub(1);
+            let page = modal.sort.page_rows.max(1);
+            let to = match event.code {
+                KeyCode::Down | KeyCode::Char('j') if i >= last => Some(last),
+                KeyCode::PageDown => Some((i + page).min(last)),
+                KeyCode::PageUp => Some(i.saturating_sub(page)),
+                KeyCode::Home => Some(0),
+                KeyCode::End => Some(last),
+                _ => None,
+            };
+            if let Some(to) = to {
+                modal.focus(SortFilterField::Column(to));
+                return None;
+            }
+        }
         let from = modal.focus;
         let list_cursor = modal.sort.table_state.selected();
         match crate::form::key(modal, event) {
@@ -182,14 +200,14 @@ impl App {
                     FilterEditStep::Column => {
                         if editor.column.selected_original().is_some() {
                             editor.step = FilterEditStep::Operator;
+                            // The operators the chosen column's type takes.
+                            m.retarget_operators();
                         }
                     }
                     // A null test has no value to ask for: choosing it commits.
                     FilterEditStep::Operator
                         if editor
-                            .operator
-                            .selected_original()
-                            .and_then(|i| FilterOperator::iterator().nth(i))
+                            .selected_operator()
                             .is_some_and(|op| !op.takes_value()) =>
                     {
                         m.commit_editor();

@@ -411,6 +411,28 @@ mod tests {
         }
     }
 
+    /// The ten series slots are in every built-in, `theme show`, `config init`, and a
+    /// theme that extends one inherits them.
+    #[test]
+    fn ten_series_slots_everywhere() {
+        let lib = library(&[("dusk", "extends = \"day-market\"\nchart_9 = \"red\"\n")]);
+        let dusk = lib.resolve("dusk", ThemeMode::Dark).unwrap();
+        assert_eq!(dusk.chart_8, ColorConfig::light().chart_8);
+        assert_eq!(dusk.chart_9, "red");
+        for (name, colors) in [
+            (NIGHT_MARKET, ColorConfig::dark()),
+            (DAY_MARKET, ColorConfig::light()),
+        ] {
+            let shown = show(name, None, &colors);
+            for slot in ["chart_8", "chart_9", "chart_10"] {
+                assert!(shown.contains(&format!("\n{slot} = \"#")), "{shown}");
+            }
+        }
+        let init = crate::config::ConfigManager::with_dir(PathBuf::from("unused"))
+            .generate_default_config();
+        assert!(init.contains("chart_10 = \"#f4ef8a\""), "{init}");
+    }
+
     #[test]
     fn a_theme_fills_unset_slots_from_extends_or_the_mode() {
         let lib = library(&[

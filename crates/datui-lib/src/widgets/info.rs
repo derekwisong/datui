@@ -14,7 +14,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::Stylize;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Gauge, HighlightSpacing, Paragraph, Row, StatefulWidget, Table, Widget};
+use ratatui::widgets::{HighlightSpacing, Paragraph, Row, StatefulWidget, Table, Widget};
 
 use super::datatable::DataTableState;
 use crate::export_modal::ExportFormat;
@@ -456,6 +456,10 @@ pub struct InfoModal {
     pub detail_scroll: usize,
     /// The list lines a detail tab last had room for; set during render.
     pub detail_visible: usize,
+    /// The entry the cursor is on, in a detail tab whose list is the file's tables
+    /// (Excel's worksheets, SQLite's tables), where Enter opens one. The render clamps
+    /// it and keeps it in view.
+    pub detail_selected: usize,
 }
 
 impl InfoModal {
@@ -478,6 +482,7 @@ impl InfoModal {
         self.notes_selected_index = 0;
         self.notes_scroll_offset = 0;
         self.detail_scroll = 0;
+        self.detail_selected = 0;
     }
 
     pub fn close(&mut self) {
@@ -705,11 +710,12 @@ pub struct InfoContext<'a> {
 }
 
 impl<'a> InfoContext<'a> {
+    /// Where the column types came from, as the Schema rule's chip says it.
     pub fn schema_source(&self) -> &'static str {
         if self.declared_types {
-            "Known"
+            "types declared"
         } else {
-            "Inferred"
+            "types inferred"
         }
     }
 
@@ -959,7 +965,7 @@ impl<'a> DataTableInfo<'a> {
             Some(dataset) => dataset.origin.to_string(),
             // A model's, an audio file's or MIDI's columns are datui's own.
             None if self.state.format_detail().is_some_and(|d| d.own_columns) => {
-                "Known".to_string()
+                "types declared".to_string()
             }
             None => self.ctx.schema_source().to_string(),
         };
@@ -1005,11 +1011,11 @@ impl<'a> DataTableInfo<'a> {
         // The body always has the keys: the tabs switch from anywhere, so the
         // rule is accented and the row carries the rail.
         let body_focused = true;
-        let title = format!("Schema: {src}");
+        // A noun on the rule, and where its types came from in the chip, as every
+        // section rule says a fact about its section.
         SectionRule {
-            title: &title,
-            chip: None,
-            focused: body_focused,
+            title: "Schema",
+            chip: Some(&src),
         }
         .render(Rect { height: 1, ..area }, buf, self.theme);
         let inner = Rect {
@@ -1284,14 +1290,10 @@ impl<'a> DataTableInfo<'a> {
             .constraints([label_constraint, value_constraint])
             .split(row_area);
         Paragraph::new("Buffer (Rows):").render(row_chunks[0], buf);
+        // Values start in the value column, as every other row's do.
         if max_rows > 0 {
-            let ratio = (buf_rows as f64 / max_rows as f64).min(1.0);
             let label = format!("{} / {}", format_int(buf_rows), format_int(max_rows));
-            Gauge::default()
-                .gauge_style(Style::default().fg(self.theme.text_primary))
-                .ratio(ratio)
-                .label(Span::raw(label))
-                .render(row_chunks[1], buf);
+            Paragraph::new(label).render(row_chunks[1], buf);
         } else {
             Paragraph::new(format_int(buf_rows)).render(row_chunks[1], buf);
         }
@@ -1317,17 +1319,11 @@ impl<'a> DataTableInfo<'a> {
             .split(mb_area);
         Paragraph::new("Buffer (MB):").render(mb_chunks[0], buf);
         if max_mb > 0 {
-            let current_mb = buf_mb.unwrap_or(0);
-            let ratio = (current_mb as f64 / max_mb as f64).min(1.0);
             let label = match buf_mb {
                 Some(m) => format!("{:.1} / {} MiB", m as f64, max_mb),
                 None => crate::glyphs::get().dash.to_string(),
             };
-            Gauge::default()
-                .gauge_style(Style::default().fg(self.theme.text_primary))
-                .ratio(ratio)
-                .label(Span::raw(label))
-                .render(mb_chunks[1], buf);
+            Paragraph::new(label).render(mb_chunks[1], buf);
         } else {
             let value = buf_mb
                 .map(|m| format!("{:.1} MiB", m as f64))
@@ -1378,7 +1374,11 @@ impl<'a> DataTableInfo<'a> {
             return;
         }
         *y += 1;
-        Paragraph::new("Measurements").render(
+        SectionRule {
+            title: "Measurements",
+            chip: None,
+        }
+        .render(
             Rect {
                 y: *y,
                 width: area.width,
@@ -1386,6 +1386,7 @@ impl<'a> DataTableInfo<'a> {
                 ..area
             },
             buf,
+            self.theme,
         );
         *y += 1;
         for (label, line) in rows {
@@ -1474,7 +1475,8 @@ impl<'a> DataTableInfo<'a> {
             .map(|line| (line.clone(), Style::default()))
             .chain(detail.warnings.iter().map(|line| (line.clone(), warn)))
             .collect();
-        self.render_detail(area, buf, &lines, detail.list_title, &detail.list);
+        let pick = !detail.tables.is_empty();
+        self.render_detail_list(area, buf, &lines, detail.list_title, &detail.list, pick);
     }
 
     /// A detail tab's head lines, then a blank line, a rule titled `title` and the list
@@ -1487,6 +1489,20 @@ impl<'a> DataTableInfo<'a> {
         lines: &[(String, Style)],
         title: &str,
         list: &[(String, crate::model_files::MetaValue)],
+    ) {
+        self.render_detail_list(area, buf, lines, title, list, false);
+    }
+
+    /// [`Self::render_detail`]; with `pick`, the list has a cursor on one entry
+    /// (`detail_selected`), drawn with the rail, which the scroll follows.
+    fn render_detail_list(
+        &mut self,
+        area: Rect,
+        buf: &mut Buffer,
+        lines: &[(String, Style)],
+        title: &str,
+        list: &[(String, crate::model_files::MetaValue)],
+        pick: bool,
     ) {
         if area.height == 0 || area.width < 8 {
             return;
@@ -1521,7 +1537,6 @@ impl<'a> DataTableInfo<'a> {
         SectionRule {
             title,
             chip: Some(&count),
-            focused: true,
         }
         .render(
             Rect {
@@ -1534,26 +1549,65 @@ impl<'a> DataTableInfo<'a> {
         );
         y += 1;
 
-        let rows = metadata_lines(list, width);
+        // A list with a cursor keeps a column for its rail, so the cursor arriving
+        // moves nothing.
+        let gutter = u16::from(pick);
+        let rows = metadata_lines(list, width.saturating_sub(gutter as usize));
         let room = (bottom - y) as usize;
         let fits = rows.len() <= room;
         // The last row says what is out of view when not everything fits.
         let shown = if fits { room } else { room.saturating_sub(1) };
         self.modal.detail_visible = shown;
         let max_scroll = rows.len().saturating_sub(shown);
+        // The lines of the entry under the cursor: an entry's first line names it,
+        // the lines a long value wraps onto leave its key blank.
+        let picked = pick.then(|| {
+            let starts: Vec<usize> = (0..rows.len())
+                .filter(|&i| !rows[i].0.trim().is_empty())
+                .collect();
+            let at = self
+                .modal
+                .detail_selected
+                .min(starts.len().saturating_sub(1));
+            self.modal.detail_selected = at;
+            let start = starts.get(at).copied().unwrap_or(0);
+            let end = starts.get(at + 1).copied().unwrap_or(rows.len());
+            if start < self.modal.detail_scroll {
+                self.modal.detail_scroll = start;
+            } else if end > self.modal.detail_scroll + shown {
+                self.modal.detail_scroll = end.saturating_sub(shown).min(start);
+            }
+            start..end
+        });
         self.modal.detail_scroll = self.modal.detail_scroll.min(max_scroll);
         let first = self.modal.detail_scroll;
         let key_style = Style::default().fg(self.theme.text_secondary);
-        for (key, value) in rows.iter().skip(first).take(shown) {
+        let rail = crate::glyphs::get().rail;
+        for (i, (key, value)) in rows.iter().enumerate().skip(first).take(shown) {
+            let row = Rect {
+                y,
+                height: 1,
+                ..area
+            };
+            let on = picked.as_ref().is_some_and(|p| p.contains(&i));
+            let (key_style, value_style) = if on {
+                let hl = self.theme.highlight_style();
+                (key_style.patch(hl), Style::default().patch(hl))
+            } else {
+                (key_style, Style::default())
+            };
+            if on && picked.as_ref().is_some_and(|p| p.start == i) {
+                buf.set_string(row.x, row.y, rail, Style::default().fg(self.theme.accent));
+            }
             Paragraph::new(Line::from(vec![
                 Span::styled(key.clone(), key_style),
-                Span::raw(value.clone()),
+                Span::styled(value.clone(), value_style),
             ]))
             .render(
                 Rect {
-                    y,
-                    height: 1,
-                    ..area
+                    x: row.x + gutter,
+                    width: row.width.saturating_sub(gutter),
+                    ..row
                 },
                 buf,
             );
@@ -1899,14 +1953,31 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             InfoTab::Documentation => offered.documentation,
             _ => false,
         };
+        // A tab whose list is the file's tables has a cursor, and Enter opens one.
+        let tables = tab == InfoTab::Format
+            && offered.format
+            && self
+                .state
+                .format_detail()
+                .is_some_and(|d| !d.tables.is_empty());
         let mut footer = HintBar::from_ctx(ctx).hint_weighted(g.updown_lr, "Tabs", 3);
-        if scrolls {
+        if tables {
+            footer = footer
+                .hint_weighted("Enter", "Open", 2)
+                .hint_weighted(g.updown, "Move", 2);
+        } else if scrolls {
             footer = footer.hint_weighted(g.updown, "Scroll", 2);
         }
         if tab == InfoTab::Documentation && offered.documentation {
-            footer = footer
-                .hint_weighted("Enter", "Values", 1)
-                .hint_weighted("y", "Copy", 1);
+            footer = footer.hint_weighted("Enter", "Values", 1);
+            if self
+                .documentation
+                .as_deref()
+                .is_some_and(|d| d.offers_open())
+            {
+                footer = footer.hint_weighted("o", "Open", 1);
+            }
+            footer = footer.hint_weighted("y", "Copy", 1);
         }
         if tab == InfoTab::Schema && self.header_toggle {
             footer = footer.hint_weighted("H", "Header", -1);
@@ -2443,6 +2514,30 @@ mod tests {
             shown.contains("Total:") && shown.contains("3.88s"),
             "the total is a time: {shown}"
         );
+        // Every value starts in the one value column, the buffer's too.
+        for label in [
+            "File size:",
+            "Buffer (Rows):",
+            "Buffer (MB):",
+            "Listing:",
+            "Total:",
+        ] {
+            let line = shown
+                .lines()
+                .find(|l| l.starts_with(label))
+                .unwrap_or_else(|| panic!("{label} in {shown}"));
+            let cells: Vec<char> = line.chars().collect();
+            assert!(
+                cells[label.len()..17].iter().all(|c| *c == ' ') && cells[17] != ' ',
+                "{label} value at column 17: {line:?}"
+            );
+        }
+        assert!(
+            shown
+                .lines()
+                .any(|l| l.starts_with("Measurements ") && l.contains(crate::glyphs::get().rule_h)),
+            "the heading is a section rule: {shown}"
+        );
         assert!(
             !shown.contains("13,082"),
             "and not the two file counts added together, which is not the size of \
@@ -2727,8 +2822,9 @@ mod tests {
         };
 
         let (buf, text) = paint();
-        let (x, y) = find(&text, "Schema: Inferred");
-        assert_eq!(buf[(x, y)].fg, theme.accent_bright, "{text:#?}");
+        let (x, y) = find(&text, "Schema  types inferred");
+        // The rule's title in the plain accent: the rail marks focus, not the rule.
+        assert_eq!(buf[(x, y)].fg, theme.accent, "{text:#?}");
         let (_, id_row) = find(&text, " id ");
         assert!(text[id_row as usize].contains(g.rail), "{text:#?}");
         let (x, y) = find(&text, "Resources");

@@ -646,9 +646,9 @@ pub fn completions(shell: clap_complete::Shell) -> String {
 /// What `datui catalog` does.
 #[derive(Clone, Debug, Subcommand)]
 pub enum CatalogAction {
-    /// With NAME, print that catalog's file (public is the one datui ships); without, list the catalogs: id, label, datasets and file
+    /// With NAME, print that catalog's file (examples is the one datui ships); without, list the catalogs: id, label, datasets and file
     Show {
-        /// The catalog's id: mine (catalog.toml), public, or a listed file's name
+        /// The catalog's id: mine (catalog.toml), examples, or a listed file's name
         #[arg(value_name = "NAME")]
         name: Option<String>,
     },

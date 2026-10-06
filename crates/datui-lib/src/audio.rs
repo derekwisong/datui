@@ -1486,6 +1486,7 @@ pub fn detail(audio: &AudioSource) -> crate::text_formats::Detail {
         // particular to it is here.
         first: true,
         own_columns: true,
+        ..Default::default()
     }
 }
 

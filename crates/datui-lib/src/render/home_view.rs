@@ -68,8 +68,9 @@ fn truncate_start(text: &str, width: usize) -> String {
 /// broken. The same admission the label makes for a directory nothing has looked into.
 ///
 /// `hint` is what a catalog says the file weighs, shown as `~33 MB` until something
-/// has measured it.
-fn meta_columns(entry: &Entry, unmeasured: bool, hint: Option<u64>) -> String {
+/// has measured it. `gone` takes the size's place for a web file that cannot be had
+/// (`HTTP 404`, `no answer`): beside the name, where the choice to open it is made.
+fn meta_columns(entry: &Entry, unmeasured: bool, hint: Option<u64>, gone: Option<&str>) -> String {
     // A dataset too large to count still knows its width. Showing `? x 158` says more
     // than a blank, and the `?` is an admission rather than a guess.
     let times = glyphs::get().times;
@@ -88,10 +89,11 @@ fn meta_columns(entry: &Entry, unmeasured: bool, hint: Option<u64>) -> String {
         _ if unmeasured => glyphs::get().ellipsis.to_string(),
         _ => String::new(),
     };
-    let size = match (entry.size, hint) {
-        (Some(size), _) => discover::format_size(size),
-        (None, Some(hint)) => format!("~{}", discover::format_size(hint)),
-        (None, None) => String::new(),
+    let size = match (gone, entry.size, hint) {
+        (Some(gone), _, _) => gone.to_string(),
+        (None, Some(size), _) => discover::format_size(size),
+        (None, None, Some(hint)) => format!("~{}", discover::format_size(hint)),
+        (None, None, None) => String::new(),
     };
     let age = entry.modified.map(discover::format_age).unwrap_or_default();
     format!("{shape:>13}  {size:>9}  {age:>4}")
@@ -306,25 +308,8 @@ fn rows_block(
 
 /// `ROWS` on a rule, and how many of the columns the block shows when not all of them.
 fn rows_heading(shown: usize, total: usize, width: usize, ctx: &RenderContext) -> Line<'static> {
-    if shown >= total {
-        return pane_heading("ROWS", width, ctx);
-    }
-    let note = format!("{shown} of {total} columns");
-    let g = glyphs::get();
-    let used = "ROWS".len() + 2 + note.chars().count() + 1;
-    Line::from(vec![
-        Span::styled(
-            "ROWS",
-            Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled(note, Style::default().fg(ctx.dimmed)),
-        Span::raw(" "),
-        Span::styled(
-            g.rule_h.repeat(width.saturating_sub(used)),
-            Style::default().fg(ctx.column_separator),
-        ),
-    ])
+    let note = (shown < total).then(|| format!("{shown} of {total} columns"));
+    pane_heading_counted("ROWS", note.as_deref(), width, ctx)
 }
 
 /// Below this many rows the wordmark gives way to the one-line title bar.
@@ -460,7 +445,13 @@ fn render_prompt(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderCon
             .fg(ctx.keybind_hints)
             .add_modifier(Modifier::BOLD),
     )];
-    spans.push(Span::styled(value, Style::default().fg(ctx.text_primary)));
+    // A filter kept from before is shown selected: typing replaces it.
+    let value_style = if !home.path_input_active && home.filter_selected {
+        app.theme.text_selection_style()
+    } else {
+        Style::default().fg(ctx.text_primary)
+    };
+    spans.push(Span::styled(value, value_style));
     spans.push(Span::styled(
         g.cursor,
         Style::default().fg(ctx.keybind_hints),
@@ -755,6 +746,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                         looking: looking_glyph(app, entry),
                         indent: if *nested { NEST_INDENT } else { 0 },
                         size_hint: app.home.size_hint(&entry.path),
+                        gone: app.home.web_gone.get(&entry.path).map(|g| g.cell.as_str()),
                     },
                     &list,
                 ));
@@ -1124,6 +1116,8 @@ struct EntryNotes<'a> {
     indent: usize,
     /// What a catalog says the row's file weighs, until it is measured.
     size_hint: Option<u64>,
+    /// Why a web file cannot be had, in place of its size.
+    gone: Option<&'a str>,
 }
 
 /// Section headers carry the collapse marker and the provenance note, so the list
@@ -1443,6 +1437,7 @@ fn entry_line<'a>(
         looking,
         indent,
         size_hint,
+        gone,
     } = notes;
     let ListDraw {
         ctx,
@@ -1591,7 +1586,7 @@ fn entry_line<'a>(
             locality,
             Some(crate::locality::Locality::Object | crate::locality::Locality::Network)
         );
-    let meta = show_meta.then(|| meta_columns(entry, unmeasured, size_hint));
+    let meta = show_meta.then(|| meta_columns(entry, unmeasured, size_hint, gone));
     // A row with nothing to say in the meta columns (a public dataset, a directory not
     // looked into) gives them to its name rather than cutting it beside blank cells
     // (#648).
@@ -1909,75 +1904,93 @@ fn read_words(how: discover::HowRead) -> String {
 /// The same grammar as the list's section headers — a filled bar, not a box — so the
 /// two halves of the screen read as one program.
 fn pane_heading(text: &str, width: usize, ctx: &RenderContext) -> Line<'static> {
+    pane_heading_counted(text, None, width, ctx)
+}
+
+/// A pane heading with a flat chip after its title, as the list's sections carry
+/// their counts: `COLUMNS [20]`, `ROWS [5 of 20 columns]`. The title is always a
+/// noun, the count always in the chip.
+fn pane_heading_counted(
+    text: &str,
+    chip: Option<&str>,
+    width: usize,
+    ctx: &RenderContext,
+) -> Line<'static> {
     let g = glyphs::get();
     let label = text.to_string();
-    let rule_w = width.saturating_sub(label.chars().count() + 2);
-    Line::from(vec![
+    let mut used = label.chars().count() + 2;
+    let mut spans = vec![
         Span::styled(
             label,
             Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
-        Span::styled(
-            g.rule_h.repeat(rule_w),
-            Style::default().fg(ctx.column_separator),
-        ),
-    ])
+    ];
+    if let Some(chip) = chip {
+        let chip = format!(" {chip} ");
+        used += chip.chars().count() + 1;
+        spans.push(Span::styled(
+            chip,
+            Style::default().bg(ctx.controls_bg).fg(ctx.text_primary),
+        ));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled(
+        g.rule_h.repeat(width.saturating_sub(used)),
+        Style::default().fg(ctx.column_separator),
+    ));
+    Line::from(spans)
 }
 
-/// The most columns of a codebook the details pane lists a line each.
+/// The most column notes the details pane lists a line each.
 const CODEBOOK_ROWS: usize = 12;
 
-/// A catalog dataset's column notes in the details pane: each column and what it means,
-/// wrapped when the pane has `room` rows for all of it, else a line a column cut to the
-/// pane. The Info panel and the inspector say the rest.
-fn codebook_block(
-    book: &crate::codebook::Codebook,
+/// What a documented file's columns mean, in the details pane: each column and its
+/// note, wrapped when the pane has `room` rows for all of it, else a line a column cut
+/// to the pane. Ctrl+E shows the whole page.
+fn column_notes_block(
+    columns: &[(String, crate::catalog::ColumnNote)],
     width: usize,
     room: usize,
     ctx: &RenderContext,
 ) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(""), pane_heading("DOCUMENTATION", width, ctx)];
-    let key_w = key_column(book.columns.keys().map(String::as_str)).min(22);
+    let mut lines = vec![Line::from(""), pane_heading("COLUMNS", width, ctx)];
+    let key_w = key_column(columns.iter().map(|(name, _)| name.as_str())).min(22);
     let style = Style::default().fg(ctx.text_secondary);
-    let wrapped: Vec<Line<'static>> = book
-        .columns
+    // A column with only a legend (a spec's enum) says how long it is, as the page does.
+    let about = |note: &crate::catalog::ColumnNote| match note.about() {
+        about if about.is_empty() && !note.values.is_empty() => {
+            format!("{} values", note.values.len())
+        }
+        about => about,
+    };
+    let wrapped: Vec<Line<'static>> = columns
         .iter()
-        .flat_map(|(name, column)| fact_lines(name, column.about(), key_w, width, style, ctx))
+        .flat_map(|(name, note)| fact_lines(name, about(note), key_w, width, style, ctx))
         .collect();
-    // Where the whole page is: the legends and links the pane has no room for.
-    let more = Line::from(vec![
-        Span::styled("^E", Style::default().fg(ctx.keybind_hints)),
-        Span::styled(" Documentation", Style::default().fg(ctx.dimmed)),
-    ]);
-    if lines.len() + wrapped.len() < room {
+    if lines.len() + wrapped.len() <= room {
         lines.extend(wrapped);
-        lines.push(more);
         return lines;
     }
     let value_w = width.saturating_sub(key_w + 2);
-    let fits = room.saturating_sub(lines.len() + 2).clamp(1, CODEBOOK_ROWS);
-    for (name, column) in book.columns.iter().take(fits) {
+    // A row kept for the count of the rest.
+    let fits = room.saturating_sub(lines.len() + 1).clamp(1, CODEBOOK_ROWS);
+    for (name, note) in columns.iter().take(fits) {
         let name = glyphs::fit_cells(name, key_w, glyphs::get().ellipsis);
         lines.push(Line::from(vec![
             Span::styled(format!("{name:<key_w$}  "), Style::default().fg(ctx.dimmed)),
             Span::styled(
-                glyphs::fit_cells(&column.about(), value_w, glyphs::get().ellipsis).into_owned(),
+                glyphs::fit_cells(&about(note), value_w, glyphs::get().ellipsis).into_owned(),
                 style,
             ),
         ]));
     }
-    if book.columns.len() > fits {
+    if columns.len() > fits {
         lines.push(Line::from(Span::styled(
-            format!(
-                "{} {} more",
-                glyphs::get().ellipsis,
-                book.columns.len() - fits
-            ),
+            format!("{} {} more", glyphs::get().ellipsis, columns.len() - fits),
             Style::default().fg(ctx.dimmed),
         )));
     }
-    lines.push(more);
     lines
 }
 
@@ -2401,28 +2414,39 @@ fn preview_head_keyed(
 
 /// `path` in `width` columns, cut between its components so the file name stays:
 /// `~/…/formats/demo-mktdata.toml`. The first component stays when there is room for it;
-/// a name too long on its own keeps its end.
+/// a name too long on its own keeps its end. Cut at the platform's separators (`\`
+/// as well as `/` on Windows), each kept as the path spells it.
 fn elide_path(path: &str, width: usize) -> String {
     if glyphs::display_width(path) <= width {
         return path.to_string();
     }
     let ellipsis = glyphs::get().ellipsis;
-    let parts: Vec<&str> = path.split('/').collect();
-    let Some(last) = parts.last() else {
+    // Each separator, and where the component after it starts.
+    let seps: Vec<(char, usize)> = path
+        .char_indices()
+        .filter(|(_, c)| std::path::is_separator(*c))
+        .map(|(i, c)| (c, i + c.len_utf8()))
+        .collect();
+    let Some(&(first_sep, after_first)) = seps.first() else {
         return truncate_start(path, width);
     };
+    let first = &path[..after_first - first_sep.len_utf8()];
     // The most trailing components that fit after `first/…/`, then after `…/`.
-    let first = parts.first().copied().unwrap_or_default();
-    for head in [format!("{first}/{ellipsis}/"), format!("{ellipsis}/")] {
-        for keep in (1..parts.len().saturating_sub(1)).rev() {
-            let tail = parts[parts.len() - keep..].join("/");
-            let cut = format!("{head}{tail}");
+    for with_first in [true, false] {
+        for &(sep, start) in &seps[1..] {
+            let tail = &path[start..];
+            let cut = if with_first {
+                format!("{first}{first_sep}{ellipsis}{sep}{tail}")
+            } else {
+                format!("{ellipsis}{sep}{tail}")
+            };
             if glyphs::display_width(&cut) <= width {
                 return cut;
             }
         }
     }
-    truncate_start(last, width)
+    let (_, last) = seps[seps.len() - 1];
+    truncate_start(&path[last..], width)
 }
 
 /// Whether chips are drawn on the chrome tier: a UTF-8 terminal whose header tint
@@ -2528,6 +2552,57 @@ fn chip_fact_lines(
 /// The details pane for a cloud source: what it points at, how it logs in, and when
 /// its buckets were listed. When listing failed, the whole message, since the row only
 /// had room for a word of it.
+/// A catalog's heading: what the catalog is, where it comes from, and how to hide
+/// it. Delete hides only the catalog that comes with datui; any catalog hides for
+/// good by its id in `[home] hide`.
+fn catalog_details(
+    catalog: &crate::home::ShownCatalog,
+    width: usize,
+    ctx: &RenderContext,
+) -> Vec<Line<'static>> {
+    let plain = Style::default().fg(ctx.text_secondary);
+    let middot = glyphs::get().middot;
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            catalog.label.clone(),
+            Style::default()
+                .fg(ctx.text_primary)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        pane_heading("DETAILS", width, ctx),
+    ];
+    let bundled = catalog.origin == crate::catalog::Origin::Bundled;
+    let for_good = format!("[home] hide = [\"{}\"]", catalog.id);
+    let mut facts: Vec<(&str, String)> = vec![("datasets", catalog.datasets.len().to_string())];
+    match (&catalog.file, bundled) {
+        (_, true) => facts.push((
+            "source",
+            format!(
+                "{} {middot} datui catalog show {}",
+                crate::home::BUNDLED_ORIGIN,
+                catalog.id
+            ),
+        )),
+        (Some(file), false) => facts.push(("file", crate::home::display_path(file))),
+        (None, false) => {}
+    }
+    if !catalog.description.is_empty() {
+        facts.push(("about", catalog.description.clone()));
+    }
+    if bundled {
+        facts.push(("hide", "Del hides it until datui cache clear".to_string()));
+        facts.push(("", format!("{for_good} for good")));
+    } else {
+        facts.push(("hide", for_good));
+    }
+    let key_w = key_column(facts.iter().map(|(k, _)| *k));
+    for (key, value) in facts {
+        lines.extend(fact_lines(key, value, key_w, width, plain, ctx));
+    }
+    lines
+}
+
 fn source_details(
     entry: &Entry,
     source: &crate::home::CloudSource,
@@ -2626,6 +2701,12 @@ fn render_preview(
         .render(area, buf);
         return;
     }
+    if let Some(catalog) = app.home.selected_catalog() {
+        Paragraph::new(catalog_details(catalog, width, ctx))
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .render(area, buf);
+        return;
+    }
     let Some(entry) = app.home.selected_entry() else {
         return;
     };
@@ -2680,13 +2761,21 @@ fn render_preview(
             lines.extend(fact_lines(&key, value, key_w, width, style, ctx));
         }
     }
-    // What the columns of a catalog dataset mean.
-    if (app.home.catalog_dataset(&entry.path).is_some() || app.home.bookmark(&entry.path).is_some())
-        && let Some(book) = app.home.codebook_at(&entry.path)
-    {
-        let drawn: usize = lines.iter().map(|line| wrapped_rows(line, width)).sum();
-        let room = (area.height as usize).saturating_sub(drawn);
-        lines.extend(codebook_block(&book, width, room, ctx));
+    // What the columns mean, merged as the Documentation page merges them: the
+    // catalog's note over the format spec's. A file inside a catalog dataset gets no
+    // catalog notes here: they are the dataset's columns, which need not be the file's.
+    if let Some((_, mut doc)) = app.home_documented_row().filter(|(p, _)| *p == entry.path) {
+        if app.home.catalog_dataset(&entry.path).is_none()
+            && app.home.bookmark(&entry.path).is_none()
+        {
+            doc.catalog = None;
+        }
+        let columns = doc.columns();
+        if !columns.is_empty() {
+            let drawn: usize = lines.iter().map(|line| wrapped_rows(line, width)).sum();
+            let room = (area.height as usize).saturating_sub(drawn);
+            lines.extend(column_notes_block(&columns, width, room, ctx));
+        }
     }
 
     // ---- Rows --------------------------------------------------------------------
@@ -2707,8 +2796,9 @@ fn render_preview(
     lines.push(Line::from(""));
     match app.home_schema(&entry) {
         Some(schema) if !schema.is_empty() => {
-            lines.push(pane_heading(
-                &format!("{} COLUMNS", schema.len()),
+            lines.push(pane_heading_counted(
+                "COLUMNS",
+                Some(&crate::numfmt::group_chrome(schema.len())),
                 width,
                 ctx,
             ));
@@ -2750,6 +2840,7 @@ fn render_preview(
             // door will be there — and a user with a filter typed is the one most likely
             // to be lost.
             let door_in_there = !crate::home::holds_nothing_to_open(&entry.holds);
+            let web_gone = app.home.web_gone.get(&entry.path);
             let footer_unreadable = entry.kind == EntryKind::File
                 && entry.rows.is_none()
                 && discover::is_parquet_path(&entry.path)
@@ -2796,6 +2887,17 @@ fn render_preview(
                 // is the row a new user is most likely to be stuck on — the label says
                 // what is in there, Enter steps into it, and nothing until now said that
                 // the way to read the whole of it is one row further in.
+                // A web file a HEAD settled cannot be had: why, before Enter is pressed
+                // on it. A callout, as an unreadable footer is.
+                _ if web_gone.is_some() => {
+                    if let Some(gone) = web_gone {
+                        lines.push(Line::from(Span::styled(
+                            format!("{} {}", g.warning, gone.message),
+                            Style::default().fg(ctx.warning),
+                        )));
+                    }
+                    Vec::new()
+                }
                 EntryKind::Directory if door_in_there => {
                     vec![("Enter", step_in(INSIDE_AND_THE_DOOR))]
                 }
@@ -3583,7 +3685,7 @@ mod tests {
     fn a_directory_of_separate_tables_shows_its_width_without_a_question_mark() {
         let mut directory = row("/data/consolidated", EntryKind::Directory);
         directory.cols = Some(72);
-        let shape = meta_columns(&directory, false, None);
+        let shape = meta_columns(&directory, false, None, None);
         assert!(shape.contains("72 cols"), "{shape}");
         assert!(!shape.contains('?'), "{shape}");
         assert!(
@@ -3594,7 +3696,7 @@ mod tests {
         let mut big = row("/data/events", EntryKind::Hive);
         big.cols = Some(72);
         assert!(
-            meta_columns(&big, false, None).contains('?'),
+            meta_columns(&big, false, None, None).contains('?'),
             "a hive dataset still says ?"
         );
     }
@@ -3674,7 +3776,7 @@ mod tests {
         // Where the meta columns begin: everything drawn before them. It must not
         // depend on how long a row's label is, or the columns stop lining up.
         let offset_of_meta = |line: Line<'_>, entry: &Entry| -> usize {
-            let meta = meta_columns(entry, false, None);
+            let meta = meta_columns(entry, false, None, None);
             let at = line
                 .spans
                 .iter()
@@ -4049,7 +4151,7 @@ mod tests {
             .collect()
         };
         // Under a place, with nothing measured: the shape cell is an admission.
-        let meta = meta_columns(&entry, true, None);
+        let meta = meta_columns(&entry, true, None, None);
         assert!(text(&entry, NEST_INDENT).contains(&meta));
         assert!(meta.contains(g.ellipsis), "{meta:?}");
         // The same row in a directory listing, where the probe measures it, and a
@@ -4111,7 +4213,7 @@ mod tests {
             truncated: true,
             ..Default::default()
         };
-        let meta = meta_columns(&entry, false, None);
+        let meta = meta_columns(&entry, false, None, None);
         let meta_at = |indent: usize, width: usize| -> usize {
             let line = entry_line(
                 &entry,
@@ -4920,6 +5022,18 @@ mod tests {
         assert!(glyphs::display_width(&cut) <= 10, "{cut}");
     }
 
+    /// Windows' `\` separates components too, and is kept where the path has it.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_path_is_cut_at_its_backslashes() {
+        let e = glyphs::get().ellipsis;
+        let path = r"~\.config\datui\formats\demo-mktdata.toml";
+        assert_eq!(
+            elide_path(path, 30),
+            format!(r"~\{e}\formats\demo-mktdata.toml")
+        );
+    }
+
     fn spec_chips() -> Vec<MatchChip> {
         let spec = crate::formats::Spec::parse(
             r#"name = "acme.chips"
@@ -5102,5 +5216,71 @@ fields = [{ name = "x", type = "u1" }]
         let cut = texts(&variant_lines(&variants, 8, 30, 2, &ctx));
         assert_eq!(cut.len(), 2, "{cut:#?}");
         assert!(cut[1].trim_start().ends_with("more"), "{cut:#?}");
+    }
+
+    /// Every pane heading reads the same way: a noun on the rule, and any count
+    /// in a flat chip after it, as the list's sections carry theirs.
+    #[test]
+    fn pane_headings_put_counts_in_a_chip() {
+        let ctx = RenderContext::for_test();
+        let text = |line: &Line| {
+            line.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        let rows = rows_heading(5, 20, 40, &ctx);
+        assert!(
+            text(&rows).starts_with("ROWS  5 of 20 columns  "),
+            "{:?}",
+            text(&rows)
+        );
+        let chip = rows
+            .spans
+            .iter()
+            .find(|s| s.content.contains("5 of 20"))
+            .unwrap();
+        assert_eq!(chip.style.bg, Some(ctx.controls_bg));
+        assert!(text(&rows_heading(5, 5, 40, &ctx)).starts_with("ROWS "));
+        let columns = pane_heading_counted("COLUMNS", Some("1,200"), 40, &ctx);
+        assert!(
+            text(&columns).starts_with("COLUMNS  1,200  "),
+            "{:?}",
+            text(&columns)
+        );
+        assert_eq!(
+            text(&columns).chars().count(),
+            39,
+            "as wide as a heading without one"
+        );
+    }
+
+    /// The pane's column notes sit under COLUMNS, a line each, with no key hint among
+    /// them (the footer has `^E Docs`); cut to the pane, the rest are counted.
+    #[test]
+    fn column_notes_are_listed_under_columns_and_counted_when_cut() {
+        let ctx = RenderContext::for_test();
+        let columns: Vec<(String, crate::catalog::ColumnNote)> = (0..6)
+            .map(|i| {
+                let note = crate::catalog::ColumnNote {
+                    description: format!("Note {i}"),
+                    unit: if i == 0 { "USD".into() } else { String::new() },
+                    values: Vec::new(),
+                    ty: String::new(),
+                };
+                (format!("col{i}"), note)
+            })
+            .collect();
+        let whole = texts(&column_notes_block(&columns, 50, 20, &ctx));
+        assert!(whole[1].starts_with("COLUMNS "), "{whole:#?}");
+        assert_eq!(whole.len(), 2 + 6, "{whole:#?}");
+        assert!(whole[2].contains("col0") && whole[2].contains("Note 0 (USD)"));
+        assert!(!whole.iter().any(|l| l.contains("^E")), "{whole:#?}");
+
+        let cut = texts(&column_notes_block(&columns, 50, 6, &ctx));
+        assert_eq!(cut.len(), 6, "{cut:#?}");
+        let more = format!("{} 3 more", glyphs::get().ellipsis);
+        assert_eq!(cut.last(), Some(&more), "{cut:#?}");
+        assert!(!cut.iter().any(|l| l.contains("^E")), "{cut:#?}");
     }
 }

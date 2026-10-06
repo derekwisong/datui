@@ -104,6 +104,25 @@ pub fn str_value<'a>(value: &AnyValue<'a>) -> Cow<'a, str> {
     }
 }
 
+/// How the table previews a list cell: its first ten items, and how many there
+/// are when that is not all of them (`[a, b...] (12 items)`).
+pub fn list_preview(items: &Series) -> String {
+    const SHOWN: usize = 10;
+    let mut text = String::from("[");
+    for (i, item) in items.iter().take(SHOWN).enumerate() {
+        if i > 0 {
+            text.push_str(", ");
+        }
+        text.push_str(&str_value(&item));
+    }
+    if items.len() > SHOWN {
+        let _ = write!(text, "...] ({} items)", items.len());
+    } else {
+        text.push(']');
+    }
+    text
+}
+
 /// The text [`str_value`] gives a value Polars panics formatting: a date past
 /// the calendar, or a list or struct holding one. `None` for any other value,
 /// which Polars formats as usual.
@@ -1193,5 +1212,19 @@ mod tests {
         assert_eq!(copy_text(&nulls).unwrap(), "");
         let lists = Column::new("l".into(), [list(&[1.5, 2.0])]);
         assert_eq!(copy_text(&lists).unwrap(), "[1.5,2.0]");
+    }
+
+    /// The table's list preview: ten items, then how many there were.
+    #[test]
+    fn a_list_previews_ten_items_and_counts_the_rest() {
+        let few = Series::new("".into(), &["a", "b"]);
+        assert_eq!(list_preview(&few), "[a, b]");
+        let many = Series::new("".into(), (0..12).collect::<Vec<i32>>());
+        assert_eq!(
+            list_preview(&many),
+            "[0, 1, 2, 3, 4, 5, 6, 7, 8, 9...] (12 items)"
+        );
+        let ten = Series::new("".into(), (0..10).collect::<Vec<i32>>());
+        assert_eq!(list_preview(&ten), "[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]");
     }
 }

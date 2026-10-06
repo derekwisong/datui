@@ -186,6 +186,11 @@ pub const SECTIONS: &[Section] = &[
         intro: "Analysis, Data Quality and charts.",
     },
     Section {
+        name: "chart",
+        title: "Chart",
+        intro: "Charts exported to a file (`e` in the chart view).",
+    },
+    Section {
         name: "home",
         title: "Home",
         intro: "The home screen.",
@@ -199,6 +204,11 @@ pub const SECTIONS: &[Section] = &[
         name: "cloud",
         title: "Cloud",
         intro: "See [Cloud sources](cloud-sources.md) for `[[cloud.connections]]`.",
+    },
+    Section {
+        name: "http",
+        title: "HTTP",
+        intro: "Every request datui makes: HTTP(S) files, cloud stores and their sign-ins.",
     },
     Section {
         name: "query",
@@ -248,7 +258,7 @@ pub const SETTINGS: &[Setting] = &[
     s("import", List, Value("[]"), "Config files merged in before this one, in order; this file's own values win. Paths may be relative to this file, or use ~ and $VAR."),
     s("catalogs", Toml("list of path \\| { path, id, label }"), Value("[]"), "Catalog files elsewhere, listed on the home screen after catalog.toml and the config directory's catalogs/*.toml, each a section; see Catalogs. Each is a path, or { path, id, label } to give it another id or label. Paths may be relative to this file. Adds up across imports."),
     // [read]
-    s("read.infer_types", Toml("bool \\| list of columns"), Value("true"), "Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON.").flag("infer-types").kwarg("infer_types"),
+    s("read.infer_types", Toml("bool \\| list of columns"), Value("true"), "Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. A column with a leading zero (02134) stays text; a later value that does not parse is null, and the Notes tab counts them.").flag("infer-types").kwarg("infer_types"),
     s("read.parquet_schema", Choice(&["union", "first"]), Value("\"union\""), "A partitioned Parquet dataset's schema: union is every column any file has, from their footers; first lets Polars take one file's.").kwarg("parquet_schema"),
     s("read.decompress_in_memory", Bool, Value("false"), "Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file.").kwarg("decompress_in_memory"),
     s("read.temp_dir", Path, Unset("\"/tmp\""), "Directory for decompression temp files. Unset: the system's.").flag("temp-dir").kwarg("temp_dir"),
@@ -286,10 +296,12 @@ pub const SETTINGS: &[Setting] = &[
     s("analysis.chart_rows", Count, Value("10000"), "Rows a chart reads; a larger table is sampled across all of it."),
     s("analysis.chart_grid", Bool, Value("false"), "Start charts with a grid at the major ticks (g toggles)."),
     s("analysis.quality_local_copy", Size, Value("\"2GiB\""), "Most a Data Quality full scan of a remote dataset copies into the cache to read once; 0 never copies."),
+    s("analysis.sample_memory_limit", Size, Unset("\"8GiB\""), "Most memory a view's sample may take. Unset: the memory available now decides; 0 never warns or stops."),
+    s("chart.export_recipe", Bool, Value("true"), "Embed how an exported chart was made (source path, query, chart, sample) in its PNG, SVG or PDF. The export dialog's Recipe row starts from it."),
     // [home]
     s("home.desktop_recents", Bool, Value("true"), "Also list directories from the desktop's recently-used files; never the file names."),
     s("home.show_unreadable", Bool, Value("false"), "List files datui cannot read, dimmed (Ctrl+A toggles)."),
-    s("home.hide", List, Value("[]"), "Catalogs not shown, by id: mine (catalog.toml), public, or a listed file's name; one entry as catalog/id, such as public/nyc-taxis. Adds up across imports."),
+    s("home.hide", List, Value("[]"), "Catalogs not shown, by id: mine (catalog.toml), examples, or a listed file's name; one entry as catalog/id, such as examples/nyc-taxis. Adds up across imports."),
     s("home.preview_max", Size, Value("\"64MiB\""), "Largest local file whose first rows the home screen previews; 0 turns the preview off."),
     s("home.search.enabled", Bool, Value("true"), "Search below the working directory as you type."),
     s("home.search.max_depth", Count, Value("8"), "How many directories deep the search goes."),
@@ -308,6 +320,8 @@ pub const SETTINGS: &[Setting] = &[
     s("cloud.instance_identity", Bool, Value("false"), "Use the identity of the cloud VM datui runs on (EC2, GCE, Azure)."),
     s("cloud.discover", Toml("bool \\| \"all\" \\| \"none\" \\| list"), Unset("true"), "Logins found on this machine that become home-screen sources: all (unset), none, or kinds from s3, gcs, azure."),
     s("cloud.list_on_start", Bool, Value("false"), "List every source's buckets when the home screen opens, not when one is entered."),
+    // [http]
+    s("http.user_agent", Text, Value("\"\""), "The User-Agent header on every request. Empty sends datui/VERSION (+https://github.com/derekwisong/datui), which names datui and its version and nothing about you."),
     // [query]
     s("query.history_limit", Count, Value("1000"), "Queries remembered."),
     s("query.history", Bool, Value("true"), "Remember queries."),
@@ -323,7 +337,7 @@ pub const SETTINGS: &[Setting] = &[
     s("log.file", Path, Unset("\"~/datui.log\""), "Where the log goes. Unset: datui.log in the cache directory.").flag("log-file"),
     s("log.level", Choice(&["error", "warn", "info", "debug", "trace", "off"]), Unset("\"warn\""), "How much the log says (default warn). DATUI_LOG beats a config file's; -c and --log-level beat DATUI_LOG.").flag("log-level"),
     // [theme]
-    s("theme.mode", Choice(&["auto", "dark", "light"]), Unset("\"auto\""), "Which mode's theme to use: theme.dark or theme.light. auto asks the terminal for its background, then reads COLORFGBG, then falls back to dark; it asks again when the terminal regains focus."),
+    s("theme.mode", Choice(&["auto", "dark", "light"]), Unset("\"auto\""), "Which mode's theme to use: theme.dark or theme.light. auto follows the terminal's answer about its background, else its last answer, then COLORFGBG, then dark; it asks again when the terminal regains focus."),
     s("theme.dark", Text, Value("\"night-market\""), "The theme used when the terminal is dark: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to night-market, with a warning when dark is in use."),
     s("theme.light", Text, Value("\"day-market\""), "The theme used when the terminal is light: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to day-market, with a warning when light is in use."),
     color("theme.colors.chip_key", "#7dcfff", "#2e7de9", "Keys named in the footer, dialogs, the breadcrumb and the correlation matrix."),
@@ -369,6 +383,9 @@ pub const SETTINGS: &[Setting] = &[
     color("theme.colors.chart_5", "#7aa2f7", "#007197", "Chart series 5."),
     color("theme.colors.chart_6", "#f7768e", "#f52a65", "Chart series 6."),
     color("theme.colors.chart_7", "#ff9e64", "#b15c00", "Chart series 7."),
+    color("theme.colors.chart_8", "#1abc9c", "#118c74", "Chart series 8."),
+    color("theme.colors.chart_9", "#ff5fd2", "#d1188c", "Chart series 9."),
+    color("theme.colors.chart_10", "#f4ef8a", "#24357a", "Chart series 10."),
     color("theme.colors.chart_grid", "#3d4785", "#70aabf", "The chart grid, a shade dimmer than dimmed."),
     color("theme.colors.accent", "#7dcfff", "#2e7de9", "Key chips, focused titles and the selection rail."),
     color("theme.colors.accent_bright", "#a4daff", "#1a6cd0", "The section the cursor is in."),
@@ -530,6 +547,11 @@ pub const ENVIRONMENT: &[EnvVar] = &[
         &["COLORFGBG"],
         EnvGroup::Terminal,
         "With `theme.mode = \"auto\"`, says whether the background is light or dark, for a terminal that does not answer when asked",
+    ),
+    env(
+        &["TERM_PROGRAM"],
+        EnvGroup::Terminal,
+        "With `theme.mode = \"auto\"`, names the terminal whose last answer about its background picks the first frame's theme; `TERM` when unset",
     ),
     env(
         &["LC_ALL", "LC_CTYPE", "LANG"],

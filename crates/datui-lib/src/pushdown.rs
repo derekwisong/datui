@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use polars::prelude::{LazyFrame, PolarsResult};
+use polars::prelude::{Expr, LazyFrame, Operator, PolarsResult};
 
 use crate::filter_modal::FilterStatement;
 
@@ -53,4 +53,60 @@ pub trait Pushdown: Send + Sync {
 
     /// The source itself, for its tests.
     fn as_any(&self) -> &dyn std::any::Any;
+}
+
+/// What of a predicate Polars pushed into an anonymous scan the scan can evaluate.
+///
+/// A sort with a limit (a top-k) pushes a dynamic predicate, its running bound, into
+/// the scan as an `Expr::Display`, which panics when it is turned back into a plan
+/// (pola-rs/polars#28629; #28643 strips it for Python IO plugins only). The bound is
+/// a hint the top-k applies itself, so the terms holding it are dropped.
+pub(crate) fn evaluable(predicate: Option<Expr>) -> Option<Expr> {
+    fn terms(e: Expr, out: &mut Vec<Expr>) {
+        match e {
+            Expr::BinaryExpr {
+                left,
+                op: Operator::And | Operator::LogicalAnd,
+                right,
+            } => {
+                terms(Arc::unwrap_or_clone(left), out);
+                terms(Arc::unwrap_or_clone(right), out);
+            }
+            e => out.push(e),
+        }
+    }
+    let mut all = Vec::new();
+    terms(predicate?, &mut all);
+    all.into_iter()
+        .filter(|term| !term.into_iter().any(|e| matches!(e, Expr::Display { .. })))
+        .reduce(|left, right| left.and(right))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use polars::prelude::{col, lit};
+
+    fn bound() -> Expr {
+        Expr::Display {
+            inputs: vec![col("id")],
+            fmt_str: Box::new("dynamic_pred: 1".into()),
+        }
+    }
+
+    #[test]
+    fn a_top_k_bound_is_dropped_from_a_pushed_predicate() {
+        let kept = col("id").lt(lit(4));
+        assert_eq!(
+            evaluable(Some(kept.clone().and(bound()))),
+            Some(kept.clone())
+        );
+        assert_eq!(
+            evaluable(Some(bound().and(kept.clone()))),
+            Some(kept.clone())
+        );
+        assert_eq!(evaluable(Some(bound())), None);
+        assert_eq!(evaluable(Some(kept.clone())), Some(kept));
+        assert_eq!(evaluable(None), None);
+    }
 }

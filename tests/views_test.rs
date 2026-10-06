@@ -155,18 +155,27 @@ fn the_views_surface_saves_applies_and_deletes() {
     assert!(!app.view_modal.active);
     press(&mut app, KeyCode::Char('v'));
 
-    // Esc cancels the delete confirmation and only it; Enter confirms.
+    // Delete asks with the one confirmation, on No: Enter there and Esc each
+    // decline and close only it; Delete, then Enter, deletes.
     press(&mut app, KeyCode::Char('v'));
     press(&mut app, KeyCode::Char('d'));
-    assert!(app.view_modal.delete_confirm);
+    assert!(app.confirmation_modal.active);
+    assert!(!app.confirmation_modal.focus_yes, "a delete starts on No");
+    assert_eq!(app.confirmation_modal.yes_label, "Delete");
     press(&mut app, KeyCode::Esc);
-    assert!(!app.view_modal.delete_confirm);
+    assert!(!app.confirmation_modal.active);
     assert_eq!(app.view_modal.rows.len(), 1, "cancel deletes nothing");
     assert!(app.view_modal.active, "Esc closed only the confirmation");
-
     press(&mut app, KeyCode::Char('d'));
     press(&mut app, KeyCode::Enter);
-    assert!(app.view_modal.rows.is_empty(), "Enter confirms the delete");
+    assert!(!app.confirmation_modal.active);
+    assert_eq!(app.view_modal.rows.len(), 1, "Enter on No deletes nothing");
+
+    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Enter);
+    assert!(app.view_modal.rows.is_empty(), "Enter on Delete deletes");
+    assert!(app.view_modal.active, "the list stays open");
     press(&mut app, KeyCode::Esc);
     assert!(!app.view_modal.active);
 
@@ -206,6 +215,7 @@ fn the_views_surface_saves_applies_and_deletes() {
         "the description is saved whole"
     );
     press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Left); // from No to Delete
     press(&mut app, KeyCode::Enter);
     assert!(app.view_modal.rows.is_empty());
     press(&mut app, KeyCode::Esc);
@@ -252,6 +262,7 @@ fn the_views_surface_saves_applies_and_deletes() {
 
     // Leave no view behind.
     press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Left); // from No to Delete
     press(&mut app, KeyCode::Enter);
     assert!(app.view_modal.rows.is_empty());
     press(&mut app, KeyCode::Esc);
@@ -337,7 +348,205 @@ fn the_views_surface_saves_applies_and_deletes() {
 
     press(&mut app, KeyCode::Char('v'));
     press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Left); // from No to Delete
     press(&mut app, KeyCode::Enter);
     assert!(app.view_modal.rows.is_empty());
     press(&mut app, KeyCode::Esc);
+}
+
+/// A view keeps its sample's settings, never its rows: applied again, it draws the
+/// same rows from the seed, and lays its query over them.
+#[test]
+fn a_view_draws_its_sample_again_from_the_seed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sampled_view.parquet");
+    let mut df = df!(
+        "sv_id" => (0..20_000i64).collect::<Vec<_>>(),
+        "sv_group" => (0..20_000i64).map(|i| i % 5).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let path = path.canonicalize().unwrap();
+    let views = datui::view::ViewManager::new(&datui::config::ConfigManager::with_dir(
+        dir.path().join("config"),
+    ))
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let config = datui::AppConfig::default();
+    let theme = datui::Theme::from_config(&config.theme).unwrap();
+    let mut app = App::new_with_views(
+        tx.clone(),
+        common::test_runtime(),
+        theme,
+        config,
+        views.into(),
+    );
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+    drain_events(&mut app, &rx);
+
+    press(&mut app, KeyCode::Char('S'));
+    let form = app.sample_form.as_mut().unwrap();
+    form.size.set_value("700");
+    form.seed.set_value("31");
+    press(&mut app, KeyCode::Enter);
+    drain_events(&mut app, &rx);
+    app.event(&AppEvent::QQuery("select where sv_group = 2".to_string()));
+    drain_events(&mut app, &rx);
+    let ids = |app: &App| -> Vec<i64> {
+        let state = app.data_table_state.as_ref().unwrap();
+        state
+            .lf()
+            .clone()
+            .collect()
+            .unwrap()
+            .column("sv_id")
+            .unwrap()
+            .i64()
+            .unwrap()
+            .into_no_null_iter()
+            .collect()
+    };
+    let drawn = ids(&app);
+    assert!(!drawn.is_empty() && drawn.len() < 700, "{}", drawn.len());
+
+    // A chart of the view, with an option set: the view keeps it.
+    press(&mut app, KeyCode::Char('c'));
+    assert_eq!(app.input_mode, datui::InputMode::Chart);
+    app.chart_modal.hist_bins = 17;
+    press(&mut app, KeyCode::Esc);
+    drain_events(&mut app, &rx);
+
+    let criteria = datui::view::MatchCriteria {
+        exact_path: Some(path.clone()),
+        relative_path: None,
+        path_pattern: None,
+        filename_pattern: None,
+        schema_columns: None,
+        schema_types: None,
+        table: None,
+    };
+    let saved = app
+        .create_view_from_current_state("sampled".to_string(), None, criteria)
+        .unwrap();
+    let sample = saved.settings.sample.as_ref().expect("the sample is saved");
+    assert_eq!((sample.rows, sample.seed), (700, 31));
+    assert_eq!(
+        saved.settings.query.as_deref(),
+        Some("select where sv_group = 2")
+    );
+    let chart = saved.settings.chart.as_ref().expect("the chart is saved");
+    assert_eq!(chart.histogram_bins, 17);
+
+    // Back to the table as opened, then the view again.
+    if let Some(reset) = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('R'),
+        KeyModifiers::NONE,
+    ))) {
+        app.event(&reset);
+    }
+    drain_events(&mut app, &rx);
+    assert!(app.data_table_state.as_ref().unwrap().sampled().is_none());
+    app.chart_modal.hist_bins = 40;
+    press(&mut app, KeyCode::Char('V'));
+    drain_events(&mut app, &rx);
+    let state = app.data_table_state.as_ref().unwrap();
+    assert!(state.sampled().is_some(), "the view draws its sample");
+    assert_eq!(state.get_active_query(), "select where sv_group = 2");
+    assert_eq!(ids(&app), drawn, "the same rows, from the seed");
+
+    // The table, with the chart one key away: `c` draws the view's chart.
+    assert_eq!(app.input_mode, datui::InputMode::Normal);
+    assert!(app.chart_modal.restored);
+    press(&mut app, KeyCode::Char('c'));
+    assert_eq!(app.input_mode, datui::InputMode::Chart);
+    assert_eq!(app.chart_modal.spec, chart.spec);
+    assert_eq!(app.chart_modal.hist_bins, 17);
+}
+
+/// A sample drawn from the view's rows keeps the whole view it was drawn through: a
+/// row range of a sorted view is the first rows in that order, and applied again the
+/// view sorts the source the same way before it draws.
+#[test]
+fn a_view_keeps_the_sorted_view_its_row_range_was_drawn_through() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ranged_view.parquet");
+    let mut df = df!("rv_id" => (0..5_000i64).collect::<Vec<_>>()).unwrap();
+    ParquetWriter::new(File::create(&path).unwrap())
+        .finish(&mut df)
+        .unwrap();
+    let path = path.canonicalize().unwrap();
+    let views = datui::view::ViewManager::new(&datui::config::ConfigManager::with_dir(
+        dir.path().join("config"),
+    ))
+    .unwrap();
+    let (tx, rx) = mpsc::channel();
+    let config = datui::AppConfig::default();
+    let theme = datui::Theme::from_config(&config.theme).unwrap();
+    let mut app = App::new_with_views(tx, common::test_runtime(), theme, config, views.into());
+    pump_open_until_loaded(&mut app, &rx, vec![path.clone()], OpenOptions::default());
+    drain_events(&mut app, &rx);
+    app.data_table_state
+        .as_mut()
+        .unwrap()
+        .sort_by(vec!["rv_id".to_string()], vec![true]);
+    drain_events(&mut app, &rx);
+
+    press(&mut app, KeyCode::Char('S'));
+    let form = app.sample_form.as_mut().unwrap();
+    form.kind = datui::sample_modal::RowsKind::Range;
+    form.range_from.set_value("1");
+    form.range_to.set_value("200");
+    form.draft.method = datui::sampling::SampleMethod::FirstRows;
+    form.size.set_value("200");
+    press(&mut app, KeyCode::Enter);
+    drain_events(&mut app, &rx);
+    let ids = |app: &App| -> Vec<i64> {
+        let df = app
+            .data_table_state
+            .as_ref()
+            .unwrap()
+            .lf()
+            .clone()
+            .collect()
+            .unwrap();
+        df.column("rv_id")
+            .unwrap()
+            .i64()
+            .unwrap()
+            .into_no_null_iter()
+            .collect()
+    };
+    let drawn = ids(&app);
+    assert_eq!(drawn.first(), Some(&4_999), "the sorted view's first rows");
+    assert_eq!(drawn.len(), 200);
+
+    let criteria = datui::view::MatchCriteria {
+        exact_path: Some(path.clone()),
+        ..Default::default()
+    };
+    let saved = app
+        .create_view_from_current_state("ranged".to_string(), None, criteria)
+        .unwrap();
+    let through = saved.settings.sample.as_ref().unwrap().through.as_ref();
+    assert_eq!(
+        through.map(|t| t.sort_columns.clone()),
+        Some(vec!["rv_id".to_string()]),
+        "the sort it was drawn through is kept"
+    );
+    if let Some(reset) = app.event(&AppEvent::Key(KeyEvent::new(
+        KeyCode::Char('R'),
+        KeyModifiers::NONE,
+    ))) {
+        app.event(&reset);
+    }
+    drain_events(&mut app, &rx);
+    press(&mut app, KeyCode::Char('V'));
+    drain_events(&mut app, &rx);
+    assert_eq!(
+        ids(&app),
+        drawn,
+        "the same rows, drawn through the same sort"
+    );
 }

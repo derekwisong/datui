@@ -32,7 +32,7 @@ impl ExportFormat {
         Self::Avro,
     ];
 
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Csv => "CSV",
             Self::Tsv => "TSV",
@@ -173,9 +173,9 @@ pub struct ExportModal {
     // NDJSON options
     pub ndjson_compression: Option<CompressionFormat>,
     pub history_limit: usize,
-    /// Why the form cannot export yet, said inline on its own status line.
-    /// Set by Enter on an invalid form, cleared by typing in the path.
-    pub path_error: Option<&'static str>,
+    /// Why the form cannot export, or why its last write failed, said inline on
+    /// its own status line. Cleared by typing in the path.
+    pub path_error: Option<String>,
 }
 
 impl ExportModal {
@@ -224,6 +224,7 @@ impl ExportModal {
         self.active = false;
         self.focus = ExportFocus::FormatSelector;
         self.path_input.clear();
+        self.path_error = None;
     }
 
     /// Hide behind a child confirmation without discarding the form; `resume`
@@ -259,7 +260,15 @@ impl ExportModal {
     /// receives Parquet bytes from the picker side either. A path whose extension
     /// names no format is left alone. A compression suffix survives when the new
     /// format supports one and is dropped when it cannot.
+    /// Offer `stem` with the format's extension as the path: Enter takes it as it
+    /// stands, typing replaces it, and stepping the format carries it along.
+    pub fn suggest_path(&mut self, stem: &str) {
+        let path = format!("{stem}.{}", self.selected_format.extension());
+        self.path_input.suggest(path);
+    }
+
     pub fn sync_path_to_format(&mut self) {
+        let suggested = self.path_input.is_suggested();
         let value = self.path_input.value().trim().to_string();
         if value.is_empty() || ExportFormat::from_path(&value).is_none() {
             return;
@@ -288,7 +297,11 @@ impl ExportModal {
             ),
             None => format!("{base}.{}", self.selected_format.extension()),
         };
-        self.path_input.set_value(new_path);
+        if suggested {
+            self.path_input.suggest(new_path);
+        } else {
+            self.path_input.set_value(new_path);
+        }
     }
 
     /// Set the compression field the given format reads at export time.
@@ -404,6 +417,22 @@ impl Default for ExportModal {
 mod tests {
     use super::*;
 
+    /// The suggested name follows the format as it steps, and stays a suggestion:
+    /// typing still replaces it whole.
+    #[test]
+    fn a_suggested_path_follows_the_format() {
+        let mut modal = ExportModal::new();
+        modal.selected_format = ExportFormat::Csv;
+        modal.suggest_path("people-export");
+        assert_eq!(modal.path_input.value(), "people-export.csv");
+        modal.step_format(1);
+        assert_eq!(
+            modal.path_input.value(),
+            format!("people-export.{}", modal.selected_format.extension())
+        );
+        assert!(modal.path_input.is_suggested());
+    }
+
     #[test]
     fn from_path_reads_the_extension_and_looks_through_compression() {
         assert_eq!(ExportFormat::from_path("out.csv"), Some(ExportFormat::Csv));
@@ -486,6 +515,29 @@ mod tests {
         modal.path_input.set_value("out.csv");
         modal.sync_format_to_path();
         assert_eq!(modal.csv_compression, Some(CompressionFormat::Gzip));
+    }
+
+    /// A field the new format does not show never keeps focus: stepping the
+    /// format settles it on one that is shown.
+    #[test]
+    fn focus_stays_on_a_shown_field_as_the_format_steps() {
+        let mut modal = ExportModal::new();
+        for format in ExportFormat::ALL {
+            modal.selected_format = format;
+            for field in modal.focus_order() {
+                modal.selected_format = format;
+                crate::form::Form::set_focused(&mut modal, field);
+                for delta in [1, -1, 1, 1] {
+                    modal.step_format(delta);
+                    assert!(
+                        modal.focus_order().contains(&modal.focus),
+                        "{field:?} from {format:?} lands on {:?} at {:?}",
+                        modal.focus,
+                        modal.selected_format
+                    );
+                }
+            }
+        }
     }
 
     #[test]

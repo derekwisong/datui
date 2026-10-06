@@ -20,7 +20,8 @@ const FONT_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/IBMPlexSans-SemiBol
 const FONT_FAMILY: &str = "IBM Plex Sans";
 
 /// Export format for a chart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ChartExportFormat {
     Png,
     Svg,
@@ -54,7 +55,8 @@ impl ChartExportFormat {
 }
 
 /// The colors an export is drawn in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ExportStyle {
     /// White, with a print-safe palette that stays apart for color-blind readers.
     Light,
@@ -78,7 +80,8 @@ impl ExportStyle {
 
 /// A size an export is made at: pixels, and the resolution that makes them a
 /// physical size (a PDF's page, an SVG's inches, the text's points).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SizePreset {
     Slide,
     Document,
@@ -137,7 +140,8 @@ impl SizePreset {
 }
 
 /// Where the series are named.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LegendPlace {
     /// Each line named at its right end; a chart without lines takes a box at the
     /// top right.
@@ -167,6 +171,111 @@ impl LegendPlace {
             Self::BottomRight => "Bottom right",
             Self::BottomLeft => "Bottom left",
             Self::Off => "Off",
+        }
+    }
+}
+
+/// How opaque a scatter's points are.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PointOpacity {
+    /// Fainter as there are more points, so a dense cloud shows where it is densest.
+    #[default]
+    Auto,
+    Full,
+    Half,
+    Fifth,
+}
+
+impl PointOpacity {
+    pub const ALL: [Self; 4] = [Self::Auto, Self::Full, Self::Half, Self::Fifth];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::Full => "100%",
+            Self::Half => "50%",
+            Self::Fifth => "20%",
+        }
+    }
+
+    /// The fill opacity for a scatter of `points` points.
+    pub fn of(self, points: usize) -> f64 {
+        match self {
+            Self::Auto => auto_opacity(points),
+            Self::Full => 1.0,
+            Self::Half => 0.5,
+            Self::Fifth => 0.2,
+        }
+    }
+}
+
+/// Opaque up to 1,000 points, 0.15 from 100,000, and between them along the log of
+/// the count: each tenfold more points is drawn as much fainter.
+pub fn auto_opacity(points: usize) -> f64 {
+    const FAINTEST: f64 = 0.15;
+    let t = (((points.max(1) as f64).log10() - 3.0) / 2.0).clamp(0.0, 1.0);
+    1.0 + t * (FAINTEST - 1.0)
+}
+
+/// A scatter point's radius.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PointSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl PointSize {
+    pub const ALL: [Self; 3] = [Self::Small, Self::Medium, Self::Large];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Small => "Small",
+            Self::Medium => "Medium",
+            Self::Large => "Large",
+        }
+    }
+
+    /// The radius in points.
+    pub fn pt(self) -> f64 {
+        match self {
+            Self::Small => 1.6,
+            Self::Medium => 2.4,
+            Self::Large => 3.6,
+        }
+    }
+}
+
+/// A line chart's stroke.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineWidth {
+    Thin,
+    #[default]
+    Normal,
+    Bold,
+}
+
+impl LineWidth {
+    pub const ALL: [Self; 3] = [Self::Thin, Self::Normal, Self::Bold];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Thin => "Thin",
+            Self::Normal => "Normal",
+            Self::Bold => "Bold",
+        }
+    }
+
+    /// The width in points.
+    pub fn pt(self) -> f64 {
+        match self {
+            Self::Thin => 1.0,
+            Self::Normal => 1.5,
+            Self::Bold => 2.5,
         }
     }
 }
@@ -247,7 +356,11 @@ pub struct Palette {
     pub text: Rgb,
     pub text_secondary: Rgb,
     pub grid: Rgb,
-    pub series: [Rgb; 7],
+    /// The series colors, a color repeated in the theme given once: fewer than
+    /// [`SERIES`] when it repeats.
+    pub series: Vec<Rgb>,
+    /// Other: the rows of every value of a color without a series of its own.
+    pub other: Rgb,
     /// A heatmap's cells, from the fewest rows to the most.
     pub ramp: [Rgb; 7],
     /// Whether the background is dark: the ramp then starts dark.
@@ -257,8 +370,10 @@ pub struct Palette {
 /// The light style's series colors: a categorical order whose neighbors stay
 /// apart under the common color-vision deficiencies (checked with a CVD
 /// simulation: worst adjacent pair 9.1 ΔE). Three of them sit under 3:1 on white,
-/// so lines are named at their ends and bars carry a legend.
-const LIGHT_SERIES: [Rgb; 7] = [
+/// so lines are named at their ends and bars carry a legend. The last three (a
+/// teal, a plum, a dark olive) are 22 ΔE or more from every other, 11 under
+/// deuteranopia.
+const LIGHT_SERIES: [Rgb; SERIES] = [
     Rgb(0x2a, 0x78, 0xd6),
     Rgb(0xeb, 0x68, 0x34),
     Rgb(0x1b, 0xaf, 0x7a),
@@ -266,7 +381,13 @@ const LIGHT_SERIES: [Rgb; 7] = [
     Rgb(0xe8, 0x7b, 0xa4),
     Rgb(0x00, 0x83, 0x00),
     Rgb(0x4a, 0x3a, 0xa7),
+    Rgb(0x0f, 0x8a, 0x96),
+    Rgb(0x9c, 0x1f, 0x6e),
+    Rgb(0x5c, 0x4a, 0x00),
 ];
+
+/// Series colors a palette has: as many as the theme's chart slots.
+pub const SERIES: usize = 10;
 
 /// One blue, light to dark.
 const BLUE_RAMP: [Rgb; 7] = [
@@ -286,7 +407,8 @@ impl Palette {
             text: Rgb(0x1f, 0x24, 0x30),
             text_secondary: Rgb(0x5b, 0x61, 0x70),
             grid: Rgb(0xe3, 0xe5, 0xea),
-            series: LIGHT_SERIES,
+            series: LIGHT_SERIES.to_vec(),
+            other: Rgb(0xa8, 0xad, 0xb8),
             ramp: BLUE_RAMP,
             dark: false,
         }
@@ -324,6 +446,9 @@ impl Palette {
             Rgb(0x7a, 0xa2, 0xf7),
             Rgb(0xf7, 0x76, 0x8e),
             Rgb(0xff, 0x9e, 0x64),
+            Rgb(0x1a, 0xbc, 0x9c),
+            Rgb(0xff, 0x5f, 0xd2),
+            Rgb(0xf4, 0xef, 0x8a),
         ];
         let configured = [
             &colors.chart_1,
@@ -333,10 +458,17 @@ impl Palette {
             &colors.chart_5,
             &colors.chart_6,
             &colors.chart_7,
+            &colors.chart_8,
+            &colors.chart_9,
+            &colors.chart_10,
         ];
-        let mut series = defaults;
-        for (slot, value) in series.iter_mut().zip(configured) {
-            *slot = get(value, *slot);
+        // A color the theme gives two slots draws one series, as on screen.
+        let mut series: Vec<Rgb> = Vec::with_capacity(SERIES);
+        for (fallback, value) in defaults.into_iter().zip(configured) {
+            let color = get(value, fallback);
+            if !series.contains(&color) {
+                series.push(color);
+            }
         }
         let mut ramp = BLUE_RAMP;
         ramp.reverse();
@@ -346,6 +478,7 @@ impl Palette {
             text_secondary: get(&colors.text_secondary, Rgb(0x9a, 0xa5, 0xce)),
             grid: get(&colors.chart_grid, Rgb(0x3d, 0x47, 0x85)),
             series,
+            other: get(&colors.dimmed, Rgb(0x56, 0x5f, 0x89)),
             ramp,
             dark: true,
         }
@@ -373,6 +506,16 @@ pub struct ExportOptions {
     pub notes: String,
     pub source: String,
     pub byline: String,
+    pub point_opacity: PointOpacity,
+    pub point_size: PointSize,
+    pub line_width: LineWidth,
+    /// Whether a line chart's Y axis takes in zero; `None` leaves it as the chart
+    /// draws it. Bars always start at zero.
+    pub y_from_zero: Option<bool>,
+    /// How the chart was made, as a view's JSON, kept in the file's metadata: a PNG
+    /// `iTXt` chunk, an SVG `<metadata>` element, the PDF's document info. `None`
+    /// writes no datui metadata at all.
+    pub recipe: Option<String>,
 }
 
 impl Default for ExportOptions {
@@ -390,6 +533,11 @@ impl Default for ExportOptions {
             notes: String::new(),
             source: String::new(),
             byline: String::new(),
+            point_opacity: PointOpacity::default(),
+            point_size: PointSize::default(),
+            line_width: LineWidth::default(),
+            y_from_zero: None,
+            recipe: None,
         }
     }
 }
@@ -402,6 +550,9 @@ pub struct ChartExportRequest {
     pub options: ExportOptions,
     /// Whether an existing file may be replaced (asked before the export started).
     pub overwrite: crate::output_file::Overwrite,
+    /// Whether the file carries the chart's recipe, which the app writes in when the
+    /// export starts.
+    pub recipe: bool,
 }
 
 /// One axis: its title, what its numbers are, and whether they are dates.
@@ -421,6 +572,8 @@ pub struct Series {
     pub points: Vec<(f64, f64)>,
     /// Where a line starts again after a gap (see `chart_data::segments`).
     pub breaks: Vec<usize>,
+    /// Other: every value of a color without a series of its own.
+    pub other: bool,
 }
 
 /// What a figure plots.
@@ -475,11 +628,11 @@ pub fn render(
     format: ChartExportFormat,
 ) -> Result<Vec<u8>> {
     let tree = tree(&svg(figure, options)?)?;
+    let recipe = options.recipe.as_deref();
     Ok(match format {
         // usvg writes the size in pixels; the page's inches say how large it prints.
-        ChartExportFormat::Svg => tree
-            .to_string(&usvg::WriteOptions::default())
-            .replacen(
+        ChartExportFormat::Svg => with_svg_recipe(
+            tree.to_string(&usvg::WriteOptions::default()).replacen(
                 &format!("width=\"{}\" height=\"{}\"", options.width, options.height),
                 &format!(
                     "width=\"{:.3}in\" height=\"{:.3}in\" viewBox=\"0 0 {} {}\"",
@@ -489,8 +642,10 @@ pub fn render(
                     options.height,
                 ),
                 1,
-            )
-            .into_bytes(),
+            ),
+            recipe,
+        )
+        .into_bytes(),
         ChartExportFormat::Png => {
             let mut pixmap = tiny_skia::Pixmap::new(options.width, options.height)
                 .ok_or_else(|| color_eyre::eyre::eyre!("cannot draw a chart of that size"))?;
@@ -502,12 +657,102 @@ pub fn render(
             let png = pixmap
                 .encode_png()
                 .map_err(|e| color_eyre::eyre::eyre!("PNG: {e}"))?;
-            with_resolution(png, options.dpi)
+            let png = with_resolution(png, options.dpi);
+            match recipe {
+                Some(recipe) => with_png_recipe(png, recipe),
+                None => png,
+            }
         }
         ChartExportFormat::Pdf => {
-            crate::chart_pdf::write(&tree, options.width, options.height, options.dpi)?
+            crate::chart_pdf::write(&tree, (options.width, options.height), options.dpi, recipe)?
         }
     })
+}
+
+/// The key a recipe is kept under: a PNG chunk's keyword, the SVG element's name,
+/// the PDF's info entry.
+pub const RECIPE_KEY: &str = "datui-recipe";
+
+/// The namespace of the SVG recipe element.
+const RECIPE_NAMESPACE: &str = "https://derekwisong.github.io/datui/recipe";
+
+/// `png` with `recipe` in an `iTXt` chunk (UTF-8, uncompressed) before its end.
+fn with_png_recipe(mut png: Vec<u8>, recipe: &str) -> Vec<u8> {
+    // IEND is the last chunk: its length, type and checksum, no data.
+    const IEND: usize = 12;
+    if png.len() < IEND || &png[png.len() - 8..png.len() - 4] != b"IEND" {
+        return png;
+    }
+    let mut chunk = b"iTXt".to_vec();
+    chunk.extend_from_slice(RECIPE_KEY.as_bytes());
+    // The keyword's end, uncompressed, no language tag, no translated keyword.
+    chunk.extend_from_slice(&[0, 0, 0, 0, 0]);
+    chunk.extend_from_slice(recipe.as_bytes());
+    let crc = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC).checksum(&chunk);
+    let mut bytes = u32::try_from(chunk.len() - 4)
+        .unwrap_or(u32::MAX)
+        .to_be_bytes()
+        .to_vec();
+    bytes.extend_from_slice(&chunk);
+    bytes.extend_from_slice(&crc.to_be_bytes());
+    let end = png.len() - IEND;
+    png.splice(end..end, bytes);
+    png
+}
+
+/// `svg` with `recipe` in a `<metadata>` element, the root's first child.
+fn with_svg_recipe(svg: String, recipe: Option<&str>) -> String {
+    let Some(recipe) = recipe else {
+        return svg;
+    };
+    let Some(open) = svg
+        .find("<svg")
+        .and_then(|at| svg[at..].find('>').map(|end| at + end + 1))
+    else {
+        return svg;
+    };
+    let element = format!(
+        "<metadata><{RECIPE_KEY} xmlns=\"{RECIPE_NAMESPACE}\">{}</{RECIPE_KEY}></metadata>",
+        esc(recipe)
+    );
+    let mut out = svg;
+    out.insert_str(open, &element);
+    out
+}
+
+/// The recipe an exported chart carries, if it carries one.
+pub fn recipe_in(bytes: &[u8]) -> Option<String> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        let mut at = 8;
+        while at + 12 <= bytes.len() {
+            let len = u32::from_be_bytes(bytes[at..at + 4].try_into().ok()?) as usize;
+            let kind = &bytes[at + 4..at + 8];
+            let data = bytes.get(at + 8..at + 8 + len)?;
+            if kind == b"iTXt" && data.starts_with(RECIPE_KEY.as_bytes()) {
+                let text = data.get(RECIPE_KEY.len() + 5..)?;
+                return String::from_utf8(text.to_vec()).ok();
+            }
+            at += 12 + len;
+        }
+        return None;
+    }
+    if bytes.starts_with(b"%PDF") {
+        return crate::chart_pdf::recipe_in(bytes);
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    let open = format!("<{RECIPE_KEY} xmlns=\"{RECIPE_NAMESPACE}\">");
+    let start = text.find(&open)? + open.len();
+    let end = start + text[start..].find(&format!("</{RECIPE_KEY}>"))?;
+    Some(unescape(&text[start..end]))
+}
+
+/// Text from SVG, as [`esc`] wrote it.
+fn unescape(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 /// `png` with its resolution recorded (a `pHYs` chunk after `IHDR`), so a column
@@ -622,6 +867,10 @@ struct Canvas<'a> {
     pt: f64,
     /// Body text size in px.
     body: f64,
+    /// Where Other is among the series, drawn in the palette's `other`.
+    other: Option<usize>,
+    /// The width a line legend's swatch is drawn at, in px.
+    swatch_stroke: f64,
 }
 
 impl Canvas<'_> {
@@ -664,7 +913,7 @@ impl Canvas<'_> {
     fn polyline(&mut self, points: &[(f64, f64)], color: Rgb, width: f64) {
         if points.len() < 2 {
             if let Some(&(x, y)) = points.first() {
-                self.dot(x, y, width, color);
+                self.dot(x, y, width, color, 1.0);
             }
             return;
         }
@@ -680,14 +929,22 @@ impl Canvas<'_> {
         ));
     }
 
-    fn dot(&mut self, x: f64, y: f64, r: f64, color: Rgb) {
+    fn dot(&mut self, x: f64, y: f64, r: f64, color: Rgb, opacity: f64) {
+        let opacity = if opacity < 1.0 {
+            format!(" fill-opacity=\"{opacity:.2}\"")
+        } else {
+            String::new()
+        };
         self.out.push_str(&format!(
-            "<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"{r:.2}\" fill=\"{}\"/>\n",
+            "<circle cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"{r:.2}\" fill=\"{}\"{opacity}/>\n",
             color.hex()
         ));
     }
 
     fn color(&self, i: usize) -> Rgb {
+        if self.other == Some(i) {
+            return self.palette.other;
+        }
         self.palette.series[i % self.palette.series.len()]
     }
 }
@@ -811,6 +1068,8 @@ pub fn svg(figure: &Figure, options: &ExportOptions) -> Result<String> {
         palette,
         pt,
         body,
+        other: None,
+        swatch_stroke: 1.75 * pt,
     };
     let margin = (body * 2.0).min(w / 10.0);
     if let Some(bg) = palette.background {
@@ -905,13 +1164,30 @@ fn legend_names(figure: &Figure) -> Vec<String> {
     }
 }
 
+/// Where Other is among the figure's series: last, when it has one.
+fn other_at(figure: &Figure) -> Option<usize> {
+    let (other, n) = match &figure.plot {
+        Plot::Lines { series, .. } => return series.iter().position(|s| s.other),
+        Plot::Bars { data, .. } => (data.other, data.groups.len()),
+        Plot::Histogram { data, .. } => (data.other, data.groups.len()),
+        Plot::Kde { data, .. } => (data.other, data.series.len()),
+        Plot::Box { .. } | Plot::Heatmap { .. } => (false, 0),
+    };
+    (other && n > 0).then(|| n - 1)
+}
+
 /// The plot in `frame`: axes, grid, marks, and the legend.
 fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame: Area) {
     let names = legend_names(figure);
+    c.other = other_at(figure);
     let is_lines = matches!(
         figure.plot,
         Plot::Lines { scatter: false, .. } | Plot::Kde { .. }
     );
+    // A line's swatch is drawn a little heavier than its line, as the line is.
+    if matches!(figure.plot, Plot::Lines { scatter: false, .. }) {
+        c.swatch_stroke = 1.75 / 1.5 * options.line_width.pt() * c.pt;
+    }
     // A single series is named by the axis title; two or more get a legend.
     let legend = if names.len() < 2 {
         LegendPlace::Off
@@ -943,11 +1219,13 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                 .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
                     (a.min(p.0), b.max(p.0))
                 });
-            let (mut y_lo, y_hi) = all.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
+            let (y_lo, y_hi) = all.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
                 (a.min(p.1), b.max(p.1))
             });
-            if *y_from_zero {
+            let (mut y_lo, mut y_hi) = (y_lo, y_hi);
+            if options.y_from_zero.unwrap_or(*y_from_zero) {
                 y_lo = y_lo.min(0.0);
+                y_hi = y_hi.max(0.0);
             }
             let (sx, sy, plot) = axes(
                 c,
@@ -958,13 +1236,20 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                 y,
                 figure.grid,
             );
-            let width = 1.5 * c.pt;
+            let width = options.line_width.pt() * c.pt;
+            let radius = options.point_size.pt() * c.pt;
+            let opacity = options
+                .point_opacity
+                .of(series.iter().map(|s| s.points.len()).sum());
             let mut ends = Vec::new();
-            for (i, s) in series.iter().enumerate() {
+            // Other first, under the series drawn over it.
+            let mut order: Vec<(usize, &Series)> = series.iter().enumerate().collect();
+            order.sort_by_key(|(_, s)| !s.other);
+            for (i, s) in order {
                 let color = c.color(i);
                 if *scatter {
                     for &(px, py) in &s.points {
-                        c.dot(sx.at(px), sy.at(py), 2.4 * c.pt, color);
+                        c.dot(sx.at(px), sy.at(py), radius, color, opacity);
                     }
                 } else {
                     for run in segments(&s.points, &s.breaks) {
@@ -1201,7 +1486,7 @@ fn legend_row(
     for (i, name) in names.iter().enumerate() {
         let color = c.color(i);
         if lines {
-            c.line((x, middle), (x + swatch, middle), color, 1.75 * c.pt);
+            c.line((x, middle), (x + swatch, middle), color, c.swatch_stroke);
         } else {
             c.rect(x, middle - tick * 0.35, swatch, tick * 0.7, color, 1.0);
         }
@@ -1448,7 +1733,12 @@ fn legend_box(c: &mut Canvas<'_>, names: &[String], place: LegendPlace, frame: A
         let cy = y + tick * 0.3 + row * (i as f64 + 0.5);
         let color = c.color(i);
         if lines {
-            c.line((x + pad, cy), (x + pad + swatch, cy), color, 1.75 * c.pt);
+            c.line(
+                (x + pad, cy),
+                (x + pad + swatch, cy),
+                color,
+                c.swatch_stroke,
+            );
         } else {
             c.rect(x + pad, cy - tick * 0.35, swatch, tick * 0.7, color, 1.0);
         }
@@ -1621,7 +1911,7 @@ fn draw_bars(c: &mut Canvas<'_>, frame: Area, data: &BarData, value: &Axis, grid
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chart_data::{Bar, BoxPlotStats, HistogramBin, HistogramGroup, RowsRead};
+    use crate::chart_data::{Bar, BoxPlotStats, HistogramBin, HistogramGroup, OTHER, RowsRead};
 
     fn lines(names: &[&str]) -> Figure {
         Figure {
@@ -1633,6 +1923,7 @@ mod tests {
                         name: n.to_string(),
                         points: (0..10).map(|x| (x as f64, (x * (i + 1)) as f64)).collect(),
                         breaks: Vec::new(),
+                        other: *n == OTHER,
                     })
                     .collect(),
                 scatter: false,
@@ -1680,6 +1971,34 @@ mod tests {
         }
         assert!(svg.contains("fill=\"#2a78d6\""), "light palette: {svg}");
         assert!(svg.contains("fill=\"#ffffff\""), "a white background");
+        roxmltree_ok(&svg);
+    }
+
+    /// Other is the legend's last entry, in the palette's neutral color and not a
+    /// series color, and a scatter draws it under the rest.
+    #[test]
+    fn an_export_names_other_last_in_its_neutral_color() {
+        let mut figure = lines(&["AAPL", "MSFT", OTHER]);
+        if let Plot::Lines { scatter, .. } = &mut figure.plot {
+            *scatter = true;
+        }
+        let svg = svg(
+            &figure,
+            &ExportOptions {
+                legend: LegendPlace::TopRight,
+                ..options()
+            },
+        )
+        .unwrap();
+        let (aapl, other) = (svg.find(">AAPL<").unwrap(), svg.find(">Other<").unwrap());
+        assert!(aapl < other, "Other last: {svg}");
+        let grey = format!("fill=\"{}\"", Palette::light().other.hex());
+        let third = format!("fill=\"{}\"", Palette::light().series[2].hex());
+        assert!(svg.contains(&grey), "{svg}");
+        assert!(!svg.contains(&third), "Other takes no series color: {svg}");
+        // Its dots come before the first series' dots.
+        let blue = format!("fill=\"{}\"", Palette::light().series[0].hex());
+        assert!(svg.find(&grey).unwrap() < svg.find(&blue).unwrap(), "{svg}");
         roxmltree_ok(&svg);
     }
 
@@ -1734,6 +2053,30 @@ mod tests {
 
     /// The three formats come out as what they say: a PNG of the size asked, an
     /// SVG whose text is outlines, a PDF.
+    /// Ten series colors in every style; a theme that gives two slots one color
+    /// exports them as one, as the screen draws them.
+    #[test]
+    fn palettes_have_ten_series_and_a_repeat_counts_once() {
+        let mut colors = crate::config::ColorConfig::default();
+        assert_eq!(Palette::light().series.len(), SERIES);
+        assert_eq!(Palette::dark(&colors).series.len(), SERIES);
+        colors.chart_5 = colors.chart_1.clone();
+        let dark = Palette::dark(&colors);
+        assert_eq!(dark.series.len(), SERIES - 1);
+        assert_eq!(dark.series[4], Rgb(0xf7, 0x76, 0x8e), "chart_6 moves up");
+        // On screen too, whatever this terminal makes of the colors.
+        let theme = crate::config::Theme::from_config(&crate::config::ThemeConfig {
+            colors,
+            ..Default::default()
+        })
+        .unwrap();
+        let shown = theme.series_colors();
+        for (i, color) in shown.iter().enumerate() {
+            assert!(!shown[..i].contains(color), "{shown:?}");
+        }
+        assert!(shown.len() < SERIES, "{shown:?}");
+    }
+
     #[test]
     fn png_svg_and_pdf_are_what_they_say() {
         let figure = lines(&["AAPL", "MSFT"]);
@@ -1765,6 +2108,42 @@ mod tests {
         assert!(pdf.starts_with(b"%PDF-"));
         // 600 x 400 px at 96 dpi: 450 x 300 pt.
         assert!(String::from_utf8_lossy(&pdf).contains("/MediaBox [0 0 450 300]"));
+    }
+
+    /// Include writes the recipe into each format's own metadata, where a reader
+    /// finds it whole, and the file stays valid; Omit writes no datui metadata at all.
+    #[test]
+    fn the_recipe_rides_in_each_format_and_omit_writes_none() {
+        let figure = lines(&["AAPL", "MSFT"]);
+        let recipe = "{\"datui\": \"0.4.0\", \"settings\": {\"query\": \"select where a < 3 & b > \\\"x\\\"\"}, \"note\": \"Zürich\"}";
+        let with = ExportOptions {
+            width: 300,
+            height: 200,
+            dpi: 96.0,
+            recipe: Some(recipe.to_string()),
+            ..ExportOptions::default()
+        };
+        let without = ExportOptions {
+            recipe: None,
+            ..with.clone()
+        };
+        for format in ChartExportFormat::ALL {
+            let bytes = render(&figure, &with, format).unwrap();
+            assert_eq!(recipe_in(&bytes).as_deref(), Some(recipe), "{format:?}");
+            let bare = render(&figure, &without, format).unwrap();
+            assert_eq!(recipe_in(&bare), None, "{format:?}");
+            assert!(
+                !bare.windows(5).any(|w| w.eq_ignore_ascii_case(b"datui")),
+                "{format:?}: no datui metadata with Omit"
+            );
+        }
+        let png = render(&figure, &with, ChartExportFormat::Png).unwrap();
+        let decoded = resvg::tiny_skia::Pixmap::decode_png(&png).expect("a valid PNG");
+        assert_eq!((decoded.width(), decoded.height()), (300, 200));
+        let svg =
+            String::from_utf8(render(&figure, &with, ChartExportFormat::Svg).unwrap()).unwrap();
+        assert!(svg.contains("<metadata>"), "{svg}");
+        usvg::Tree::from_str(&svg, &usvg::Options::default()).expect("valid SVG");
     }
 
     #[test]
@@ -1810,7 +2189,8 @@ mod tests {
             rows,
             value_dtype: polars::prelude::DataType::Float64,
             counted: None,
-            groups: vec!["EWR".to_string(), "JFK".to_string()],
+            groups: vec!["EWR".to_string(), "Other".to_string()],
+            other: true,
             rows_note: None,
         };
         let histogram = HistogramData {
@@ -1831,6 +2211,7 @@ mod tests {
                     counts: vec![0.4, 0.3, 0.2, 0.1],
                 },
             ],
+            other: true,
             share: true,
             x_min: 0.0,
             x_max: 4.0,
@@ -1903,6 +2284,114 @@ mod tests {
             let svg = svg(&figure, &options).unwrap();
             roxmltree_ok(&svg);
         }
+    }
+
+    #[test]
+    fn auto_opacity_fades_with_the_points() {
+        assert_eq!(auto_opacity(0), 1.0);
+        assert_eq!(auto_opacity(1_000), 1.0);
+        assert!((auto_opacity(10_000) - 0.575).abs() < 1e-9);
+        assert!((auto_opacity(100_000) - 0.15).abs() < 1e-9);
+        assert!((auto_opacity(5_000_000) - 0.15).abs() < 1e-9);
+        assert!(auto_opacity(3_000) < 1.0 && auto_opacity(3_000) > auto_opacity(30_000));
+        assert_eq!(PointOpacity::Half.of(1), 0.5);
+    }
+
+    /// Each mark option changes what is drawn: the line's stroke and its legend
+    /// swatch, a point's radius and opacity, and where a line's Y axis starts.
+    #[test]
+    fn mark_options_change_the_marks() {
+        let pt = f64::from(options().dpi) / 72.0;
+        let stroke = |w: f64| format!("stroke-width=\"{:.2}\"", w * pt);
+        let figure = lines(&["AAPL", "MSFT"]);
+        let draw = |options: ExportOptions| svg(&figure, &options).unwrap();
+        let normal = draw(ExportOptions {
+            legend: LegendPlace::TopRight,
+            ..options()
+        });
+        let bold = draw(ExportOptions {
+            legend: LegendPlace::TopRight,
+            line_width: LineWidth::Bold,
+            ..options()
+        });
+        assert!(normal.contains(&stroke(1.5)) && !normal.contains(&stroke(2.5)));
+        assert!(bold.contains(&stroke(2.5)), "{bold}");
+        assert!(
+            normal.contains(&stroke(1.75)),
+            "the swatch, a little heavier"
+        );
+        assert!(
+            bold.contains(&stroke(1.75 / 1.5 * 2.5)),
+            "the swatch follows"
+        );
+
+        let mut scatter = lines(&["AAPL"]);
+        if let Plot::Lines {
+            scatter: is_scatter,
+            ..
+        } = &mut scatter.plot
+        {
+            *is_scatter = true;
+        }
+        let radius = |r: f64| format!("r=\"{:.2}\"", r * pt);
+        let dots = |options: ExportOptions| svg(&scatter, &options).unwrap();
+        let medium = dots(options());
+        assert!(medium.contains(&radius(2.4)), "{medium}");
+        assert!(
+            !medium.contains("fill-opacity=\"0.50\""),
+            "ten points: opaque"
+        );
+        let large_half = dots(ExportOptions {
+            point_size: PointSize::Large,
+            point_opacity: PointOpacity::Half,
+            ..options()
+        });
+        assert!(large_half.contains(&radius(3.6)), "{large_half}");
+        assert!(
+            large_half.contains("fill-opacity=\"0.50\"/>"),
+            "{large_half}"
+        );
+        assert!(
+            dots(ExportOptions {
+                point_size: PointSize::Small,
+                ..options()
+            })
+            .contains(&radius(1.6))
+        );
+        // The PDF, written from the same SVG, keeps the points' opacity.
+        let pdf = render(
+            &scatter,
+            &ExportOptions {
+                point_opacity: PointOpacity::Half,
+                ..options()
+            },
+            ChartExportFormat::Pdf,
+        )
+        .unwrap();
+        assert!(
+            String::from_utf8_lossy(&pdf).contains("/ca 0.5 "),
+            "the PDF's fill opacity"
+        );
+
+        // Y from zero: a line of 100 to 109 takes in 0 only when asked.
+        let mut high = lines(&["AAPL"]);
+        if let Plot::Lines { series, .. } = &mut high.plot {
+            series[0].points = (0..10).map(|x| (x as f64, 100.0 + x as f64)).collect();
+        }
+        let y_zero = "text-anchor=\"end\" fill=\"#5b6170\">0</text>";
+        let off = svg(&high, &options()).unwrap();
+        assert!(!off.contains(y_zero), "{off}");
+        let on = svg(
+            &high,
+            &ExportOptions {
+                y_from_zero: Some(true),
+                ..options()
+            },
+        )
+        .unwrap();
+        assert!(on.contains(y_zero), "{on}");
+
+        roxmltree_ok(&on);
     }
 
     #[test]

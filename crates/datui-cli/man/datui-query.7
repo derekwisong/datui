@@ -32,7 +32,7 @@ Accessors and dates
 name in ["Ann", "Bo"]  item like "*ham*"
 Membership and patterns
 .PP
-The grammar of q on the command line (\fB:\fR, then \fBq:\fR): a subset of the q language, evaluated right to left. Query data walks through it. Every example below runs on the public dataset its block names; open that dataset from \fBPublic datasets\fR on the home screen.
+The grammar of q on the command line (\fB:\fR, then \fBq:\fR): a subset of the q language, evaluated right to left. Query data walks through it. Every example below runs on the public dataset its block names; open that dataset from \fBExample datasets\fR on the home screen.
 .PP
 q and kdb+ are trademarks of KX Systems. datui is not affiliated with or endorsed by KX.
 .SH "STRUCTURE OF A QUERY"
@@ -620,7 +620,7 @@ select species, island, bill_ratio: (bill_length_mm % bill_depth_mm).round[2] wh
 .EE
 .RE
 .SH DATASETS
-The examples run on public datasets from the built-in catalog (Public datasets on the home screen). Open one, press \fB/\fR, and type the query.
+The examples run on the Example datasets that come with datui (on the home screen). Open one, press \fB/\fR, and type the query.
 .TP
 \fBflights\fR
 .EX
@@ -629,7 +629,7 @@ datui https://vincentarelbundock.github.io/Rdatasets/csv/nycflights13/flights.cs
 .TP
 \fBfootball\fR
 .EX
-datui https://raw.githubusercontent.com/footballcsv/england/master/2020s/2020\-21/eng.1.csv
+datui https://raw.githubusercontent.com/footballcsv/england/de3945297668d7114006a8ca1c4c3740010b111c/2020s/2020\-21/eng.1.csv
 .EE
 .TP
 \fBtaxis\fR
@@ -639,7 +639,7 @@ datui https://d37ci6vzurychx.cloudfront.net/trip\-data/yellow_tripdata_2025\-01.
 .TP
 \fBnames\fR
 .EX
-datui https://raw.githubusercontent.com/rfordatascience/tidytuesday/main/data/2022/2022\-03\-22/babynames.csv
+datui https://raw.githubusercontent.com/rfordatascience/tidytuesday/8bfa9d9a7279192cb41cab041f426f2aacefde91/data/2022/2022\-03\-22/babynames.csv
 .EE
 .TP
 \fBfood\fR

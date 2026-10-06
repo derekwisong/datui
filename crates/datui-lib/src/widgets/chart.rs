@@ -36,16 +36,11 @@ const LABEL_WIDTH: u16 = 13;
 const HEATMAP_TITLE_HEIGHT: u16 = 1;
 const HEATMAP_X_LABEL_HEIGHT: u16 = 2;
 
-/// The series colors, in order: one per palette slot.
-pub const SERIES_COLORS: [&str; 7] = [
-    "chart_1", "chart_2", "chart_3", "chart_4", "chart_5", "chart_6", "chart_7",
-];
-
-/// What the chart area shows: the plot, the notes under it about its input, or the
+/// What the chart area shows: the plot, the notes over it about its input, or the
 /// reason it could not be prepared.
 pub struct ChartView<'a> {
     pub data: ChartRenderData<'a>,
-    /// One line each, dimmed under the plot: a sample, values a range left out.
+    /// Dimmed at the right of the title row: a sample, values a range left out.
     pub notes: Vec<String>,
     /// Preparing the selection failed; shown in place of an empty plot.
     pub error: Option<&'a str>,
@@ -69,6 +64,8 @@ pub enum ChartRenderData<'a> {
         x_axis_kind: XAxisTemporalKind,
         x_bounds: Option<(f64, f64)>,
         numbers: PlotNumbers,
+        /// The last series is Other, drawn in `dimmed` under the rest.
+        other: bool,
     },
     Histogram {
         data: Option<&'a HistogramData>,
@@ -270,6 +267,14 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
     if modal.takes_aggregate() {
         // With cumulative on the rows run as a total and the aggregate waits.
         let value = match encoding.y.cumulative {
+            // First and last say which order the rows are read in.
+            Cumulative::Off if encoding.y.aggregate.follows_row_order() => {
+                let order = modal.row_order.as_deref().unwrap_or("row order");
+                vec![
+                    plain(encoding.y.aggregate.label(), ctx),
+                    quiet(format!(" {} by {order}", g.middot), ctx),
+                ]
+            }
             Cumulative::Off => vec![plain(encoding.y.aggregate.label(), ctx)],
             _ if encoding.y.aggregate == Aggregate::Count => vec![plain("running count", ctx)],
             how => vec![
@@ -281,6 +286,10 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
         };
         // A row of its own: unlabeled under Y, `none` read as a second Y column.
         lines.push(row("Aggregate", value, Some(ChartFocus::Aggregate), false));
+        if rows.contains(&ChartFocus::Quantile) {
+            let p = format!("p{}", encoding.y.quantile());
+            lines.push(sub(vec![plain(p, ctx)], Some(ChartFocus::Quantile), false));
+        }
     }
     lines.push(PanelLine::Blank);
 
@@ -333,7 +342,14 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
                 plain(if modal.show_legend { "auto" } else { "off" }, ctx),
             ),
             ChartFocus::Grid => ("Grid", on_off(modal.grid)),
-            ChartFocus::LimitRows => ("Rows", plain(rows_value(modal), ctx)),
+            ChartFocus::LimitRows => {
+                lines.push(row("Rows", rows_value(modal, ctx), Some(field), false));
+                // The row's keys, or what is waiting on them, while it has focus.
+                if modal.focus == field && !modal.plot_focus {
+                    lines.push(sub(rows_hint(modal, ctx), None, false));
+                }
+                continue;
+            }
             _ => continue,
         };
         lines.push(row(label, vec![value], Some(field), false));
@@ -344,17 +360,55 @@ fn panel_lines(modal: &ChartModal, schema: Option<&Schema>, ctx: &RenderContext)
     lines
 }
 
-/// The Rows option: how many rows a chart that samples reads.
-fn rows_value(modal: &ChartModal) -> String {
-    match modal.row_limit {
-        None => "every row".to_string(),
-        Some(_) => format!("sample {}", modal.row_limit_display()),
+/// The Rows option: how many rows a chart that samples reads, `Sample 10,000` or
+/// `Every row (36.8M)`; a size being typed shows as typed, with the cursor.
+fn rows_value(modal: &ChartModal, ctx: &RenderContext) -> Vec<Span<'static>> {
+    let shown = modal.rows_shown();
+    if let Some(typed) = shown.typed {
+        return vec![
+            plain(format!("Sample {typed}"), ctx),
+            Span::styled(crate::glyphs::get().cursor, Style::default().fg(ctx.accent)),
+        ];
     }
+    if shown.every {
+        let mut spans = vec![plain("Every row", ctx)];
+        if let Some(rows) = modal.view_rows {
+            spans.push(quiet(
+                format!(" ({})", crate::discover::format_rows(rows)),
+                ctx,
+            ));
+        }
+        return spans;
+    }
+    vec![plain(
+        format!("Sample {}", crate::numfmt::group_chrome(modal.sample_rows)),
+        ctx,
+    )]
 }
 
-/// The line under Color: which of the column's values have a series.
+/// Under the focused Rows row: why a typed size cannot be read, that a change
+/// waits for Enter, or the row's keys.
+fn rows_hint(modal: &ChartModal, ctx: &RenderContext) -> Vec<Span<'static>> {
+    let g = crate::glyphs::get();
+    if let Some(error) = modal.rows_shown().error {
+        return vec![Span::styled(error, Style::default().fg(ctx.warning))];
+    }
+    if modal.rows_pending() {
+        return vec![quiet("Enter to read", ctx)];
+    }
+    vec![quiet(
+        format!(
+            "{}/{} switch {} type a size",
+            g.arrow_left, g.arrow_right, g.middot
+        ),
+        ctx,
+    )]
+}
+
+/// The line under Color: which of the column's values have a series, and with
+/// Other on, how many values it gathers: `top 10 + 6 other`.
 fn color_values_line(modal: &ChartModal, ctx: &RenderContext) -> Vec<Span<'static>> {
-    let picked = modal.spec.encoding.color.values.len();
+    let picked = &modal.spec.encoding.color.values;
     let Some(counts) = modal
         .color_counts
         .as_ref()
@@ -364,19 +418,27 @@ fn color_values_line(modal: &ChartModal, ctx: &RenderContext) -> Vec<Span<'stati
     };
     let total = counts.values.len();
     let of = crate::numfmt::group_chrome(total);
-    if picked > 0 {
-        vec![
-            plain(format!("{picked} picked"), ctx),
-            quiet(format!(" of {of}"), ctx),
-        ]
-    } else if total <= crate::chart_modal::COLOR_MAX {
-        vec![plain(format!("all {total}"), ctx)]
+    let (drawn, rest) = if picked.is_empty() {
+        let drawn = total.min(modal.series_max());
+        (format!("top {drawn}"), total - drawn)
     } else {
-        vec![
-            plain(format!("top {}", crate::chart_modal::COLOR_MAX), ctx),
-            quiet(format!(" of {of} by rows"), ctx),
-        ]
+        let rest = counts
+            .values
+            .iter()
+            .filter(|(v, _)| !picked.contains(v))
+            .count();
+        (format!("{} picked", picked.len()), rest)
+    };
+    if picked.is_empty() && rest == 0 {
+        return vec![plain(format!("all {total}"), ctx)];
     }
+    // With Other every value is drawn: the rest is counted, not the whole.
+    if modal.shows_other() && rest > 0 {
+        let rest = crate::numfmt::group_chrome(rest);
+        return vec![plain(drawn, ctx), plain(format!(" + {rest} other"), ctx)];
+    }
+    let by_rows = if picked.is_empty() { " by rows" } else { "" };
+    vec![plain(drawn, ctx), quiet(format!(" of {of}{by_rows}"), ctx)]
 }
 
 /// The panel: its lines, with the blank ones given up first when the height runs
@@ -416,12 +478,7 @@ fn render_sidebar(
         };
         match line {
             PanelLine::Blank => {}
-            PanelLine::Rule(title) => SectionRule {
-                title,
-                chip: None,
-                focused: false,
-            }
-            .render(
+            PanelLine::Rule(title) => SectionRule { title, chip: None }.render(
                 Rect {
                     x: area.x + 1,
                     width: area.width - 1,
@@ -442,7 +499,11 @@ fn render_sidebar(
                 }
                 if focused {
                     focused_at = Some(row);
-                    buf.set_string(area.x, y, g.rail, Style::default().fg(ctx.accent));
+                    // An open picker's line has the one rail; the row keeps its
+                    // accent label.
+                    if modal.picker.is_none() {
+                        buf.set_string(area.x, y, g.rail, Style::default().fg(ctx.accent));
+                    }
                 }
                 let label_style = if *dimmed {
                     Style::default().fg(ctx.dimmed)
@@ -567,7 +628,7 @@ fn render_picker(
         && list.height > 1
     {
         Paragraph::new(quiet(
-            format!("default: top {} by rows", crate::chart_modal::COLOR_MAX),
+            format!("default: top {} by rows", modal.series_max()),
             ctx,
         ))
         .render(Rect { height: 1, ..list }, buf);
@@ -589,32 +650,40 @@ fn render_picker(
     picker.render(list, buf, ctx);
 }
 
-/// The plot's title line: what is charted, and how it was made of the rows.
+/// The fewest cells the notes are cut to; with less room they are left out.
+const NOTE_MIN: usize = 8;
+
+/// The plot's title row: how the chart was made of the rows at the left, what it
+/// says of the rows it read (a sample, values left out) at the right. The columns
+/// are named at their axes. The how keeps its room; the notes are cut to what is
+/// left, or left out when hardly any is. A row with nothing to say stays blank, so
+/// the plot does not move when it gets something.
 fn render_title(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     modal: &ChartModal,
+    notes: &[String],
     ctx: &RenderContext,
 ) {
-    let (main, sub) = modal.title();
-    // With nothing said of how, the title is the Y column(s) alone, which the y
-    // axis's title already names just under it. The row stays, so the plot does
-    // not move when a step gives the title something to say. An export keeps it.
-    if main.is_empty() || sub.is_empty() {
+    let g = crate::glyphs::get();
+    let width = area.width as usize;
+    let how = cut(&modal.how(), width, g);
+    buf.set_string(
+        area.x,
+        area.y,
+        &how,
+        Style::default().fg(ctx.text_secondary),
+    );
+    let used = how.width();
+    // Two cells of air after the how.
+    let room = width.saturating_sub(if used > 0 { used + 2 } else { 0 });
+    let notes = notes.join(&format!(" {} ", g.middot));
+    if notes.is_empty() || room < NOTE_MIN.min(notes.width()) {
         return;
     }
-    let g = crate::glyphs::get();
-    let mut spans = vec![Span::styled(
-        main,
-        Style::default()
-            .fg(ctx.text_primary)
-            .add_modifier(Modifier::BOLD),
-    )];
-    if !sub.is_empty() {
-        spans.push(quiet(format!(" {} ", g.middot), ctx));
-        spans.push(Span::styled(sub, Style::default().fg(ctx.text_secondary)));
-    }
-    Paragraph::new(Line::from(spans)).render(area, buf);
+    let notes = cut(&notes, room, g);
+    let x = area.right() - notes.width() as u16;
+    buf.set_string(x, area.y, &notes, Style::default().fg(ctx.dimmed));
 }
 
 /// Renders the chart view: the panel, a rule, and the plot under its title.
@@ -646,9 +715,14 @@ pub fn render_chart_view(
         width: plot_area.width.saturating_sub(1),
         ..plot_area
     };
-    let [title, mut chart_inner] =
+    let [title, chart_inner] =
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(plot_area);
-    render_title(title, buf, modal, ctx);
+    let notes: &[String] = if view.error.is_some() {
+        &[]
+    } else {
+        &view.notes
+    };
+    render_title(title, buf, modal, notes, ctx);
 
     modal.plot = None;
     if let Some(message) = view.error {
@@ -658,29 +732,6 @@ pub fn render_chart_view(
             .centered()
             .render(chart_inner, buf);
     } else {
-        // The notes sit under the plot, where the axis ends, wrapped rather than cut on
-        // a narrow canvas: the plot gives up the rows, never the notes, so the chart
-        // cannot look whole when it is not.
-        let lines: Vec<Line> = view
-            .notes
-            .iter()
-            .map(|note| Line::styled(note.as_str(), Style::default().fg(ctx.dimmed)))
-            .collect();
-        let wrapped: usize = lines
-            .iter()
-            .map(|line| crate::render::home_view::wrapped_rows(line, chart_inner.width as usize))
-            .sum();
-        let note_rows = (wrapped as u16).min(chart_inner.height / 2);
-        if note_rows > 0 {
-            let [plot, notes] =
-                Layout::vertical([Constraint::Fill(1), Constraint::Length(note_rows)])
-                    .areas(chart_inner);
-            Paragraph::new(lines)
-                .right_aligned()
-                .wrap(Wrap { trim: true })
-                .render(notes, buf);
-            chart_inner = plot;
-        }
         match view.working {
             Some(working) if !view.data.draws_plot() => {
                 working.render_centered(chart_inner, buf, ctx)
@@ -747,6 +798,7 @@ fn render_plot(
             x_axis_kind,
             x_bounds,
             numbers,
+            other,
         } => {
             let xy = XYData {
                 series,
@@ -756,6 +808,7 @@ fn render_plot(
                 x_axis_kind,
                 x_bounds,
                 numbers,
+                other,
             };
             return render_xy_chart(area, buf, modal, theme, xy, text_secondary, g);
         }
@@ -988,17 +1041,15 @@ fn render_grouped_bars(
 ) {
     let width = area.width as usize;
     let groups = data.groups.len();
-    let color = |i: usize| theme.get(SERIES_COLORS[i % SERIES_COLORS.len()]);
+    let other = other_at(data.other, groups);
+    let color = |i: usize| series_style(theme, i, other);
     // The legend: a swatch and a name per group.
     let mut names = vec![Span::styled(
         format!("{}  ", data.value_column),
         Style::default().fg(ctx.text_secondary),
     )];
     for (i, name) in data.groups.iter().enumerate().filter(|_| legend) {
-        names.push(Span::styled(
-            g.bar_eighths[7].repeat(2),
-            Style::default().fg(color(i)),
-        ));
+        names.push(Span::styled(g.bar_eighths[7].repeat(2), color(i)));
         names.push(Span::styled(
             format!(" {name}  "),
             Style::default().fg(ctx.text_primary),
@@ -1062,13 +1113,7 @@ fn render_grouped_bars(
                 let cells = cells.min(zero);
                 (bar_x + zero - cells, cells)
             };
-            put(
-                buf,
-                x,
-                y,
-                &g.bar_eighths[7].repeat(cells),
-                Style::default().fg(color(k)),
-            );
+            put(buf, x, y, &g.bar_eighths[7].repeat(cells), color(k));
         }
     }
     let hidden = total - shown;
@@ -1097,6 +1142,7 @@ struct XYData<'a> {
     x_axis_kind: XAxisTemporalKind,
     x_bounds: Option<(f64, f64)>,
     numbers: PlotNumbers,
+    other: bool,
 }
 
 /// One XY series with where its line breaks.
@@ -1126,7 +1172,9 @@ fn render_xy_chart(
         x_axis_kind,
         x_bounds,
         numbers,
+        other,
     } = xy;
+    let other_at = other.then(|| names.len().saturating_sub(1));
     let scatter = modal.mark() == Mark::Scatter;
     let graph_type = if scatter {
         GraphType::Scatter
@@ -1224,27 +1272,26 @@ fn render_xy_chart(
             };
 
             // A series is drawn as its runs between gaps, so a line never bridges a
-            // missing value; only the first run is named, which keeps one legend entry.
-            let name_width = legend_width(names_and_points.iter().map(|s| s.name));
+            // missing value.
+            // Other first, so the series drawn over it keep their colors.
             let datasets: Vec<Dataset> = names_and_points
                 .iter()
+                .filter(|s| Some(s.index) == other_at)
+                .chain(
+                    names_and_points
+                        .iter()
+                        .filter(|s| Some(s.index) != other_at),
+                )
                 .flat_map(|series| {
-                    let color = SERIES_COLORS[series.index % SERIES_COLORS.len()];
-                    let style = Style::default().fg(theme.get(color));
+                    let style = series_style(theme, series.index, other_at);
                     segments(series.points, series.breaks)
                         .into_iter()
-                        .enumerate()
-                        .map(move |(j, run)| {
-                            let dataset = Dataset::default()
+                        .map(move |run| {
+                            Dataset::default()
                                 .marker(marker)
                                 .graph_type(graph_type)
                                 .style(style)
-                                .data(run);
-                            if j == 0 {
-                                dataset.name(legend_name(series.name, name_width))
-                            } else {
-                                dataset
-                            }
+                                .data(run)
                         })
                 })
                 .collect();
@@ -1309,7 +1356,12 @@ fn render_xy_chart(
                 marker,
                 modal.grid,
             );
-            axes.legend = legend(show_legend, names_and_points.len(), name_width);
+            axes.legend = legend(
+                show_legend,
+                names_and_points
+                    .iter()
+                    .map(|s| (s.name, series_style(theme, s.index, other_at))),
+            );
             let x_bounds = [x_min_bounds, x_max_bounds];
             let sub = resolution(marker).0;
             // The crosshair's readout takes the rows under the plot while the plot
@@ -1329,6 +1381,7 @@ fn render_xy_chart(
                         &numbers.y,
                         values,
                         names,
+                        other_at,
                     );
                     crosshair::readout_lines(&entries, area.width as usize, g)
                 })
@@ -1367,6 +1420,7 @@ fn readout_entries(
     y: &AxisNumbers,
     series: &[Vec<(f64, f64)>],
     names: &[String],
+    other_at: Option<usize>,
 ) -> Vec<crosshair::Entry> {
     let value_style = Style::default().fg(theme.get("text_primary"));
     let x_title = if x_title.is_empty() { "x" } else { x_title };
@@ -1381,14 +1435,13 @@ fn readout_entries(
         .zip(names)
         .enumerate()
     {
-        let color = SERIES_COLORS[i % SERIES_COLORS.len()];
         let (value, value_style) = match value {
             Some(v) => (crosshair::format_number(v, y), value_style),
             None => (g.null.to_string(), Style::default().fg(theme.get("dimmed"))),
         };
         entries.push(crosshair::Entry {
             name: name.clone(),
-            name_style: Style::default().fg(theme.get(color)),
+            name_style: series_style(theme, i, other_at),
             value,
             value_style,
         });
@@ -1425,24 +1478,24 @@ fn x_axis<'a>(
 
 /// The legend, when it is on and there is more than one series to tell apart: the
 /// y title names a lone one.
-fn legend(show: bool, series: usize, name_width: usize) -> Option<Legend> {
-    (show && series > 1).then_some(Legend {
-        width: name_width as u16,
-        rows: series as u16,
-    })
+fn legend<'a>(show: bool, entries: impl Iterator<Item = (&'a str, Style)>) -> Option<Legend> {
+    let entries: Vec<(String, Style)> = entries.map(|(n, s)| (n.to_string(), s)).collect();
+    (show && entries.len() > 1).then_some(Legend { entries })
 }
 
-/// The widest of the legend's names, in cells.
-fn legend_width<'a>(names: impl Iterator<Item = &'a str>) -> usize {
-    names.map(UnicodeWidthStr::width).max().unwrap_or(0)
+/// The style series `i` draws in: its palette color, or `dimmed` for Other, the
+/// rows of every value without a series of its own.
+fn series_style(theme: &Theme, i: usize, other_at: Option<usize>) -> Style {
+    if other_at == Some(i) {
+        return Style::default().fg(theme.get("dimmed"));
+    }
+    let colors = theme.series_colors();
+    Style::default().fg(colors[i % colors.len()])
 }
 
-/// A legend name padded to the legend's width. ratatui writes each name over the
-/// plot without clearing the rest of its row, so marks showed through beside a
-/// short name.
-fn legend_name(name: &str, width: usize) -> String {
-    let pad = width.saturating_sub(UnicodeWidthStr::width(name));
-    format!("{name}{:pad$}", "")
+/// Where Other is among `n` series, when the last one is.
+fn other_at(other: bool, n: usize) -> Option<usize> {
+    (other && n > 0).then(|| n - 1)
 }
 
 /// A histogram: filled bars, or split by a color, each group's bins as a step
@@ -1523,22 +1576,29 @@ fn render_histogram_chart(
     );
     if !data.groups.is_empty() {
         let steps = step_outlines(data);
-        let name_width = legend_width(data.groups.iter().map(|s| s.name.as_str()));
-        let datasets: Vec<Dataset> = data
-            .groups
+        let other = other_at(data.other, steps.len());
+        // Other first, under the rest.
+        let mut datasets: Vec<(usize, Dataset)> = steps
             .iter()
-            .zip(&steps)
             .enumerate()
-            .map(|(i, (group, points))| {
-                Dataset::default()
-                    .name(legend_name(&group.name, name_width))
+            .map(|(i, points)| {
+                let dataset = Dataset::default()
                     .graph_type(GraphType::Line)
                     .marker(marker)
-                    .style(Style::default().fg(theme.get(SERIES_COLORS[i % SERIES_COLORS.len()])))
-                    .data(points)
+                    .style(series_style(theme, i, other))
+                    .data(points);
+                (i, dataset)
             })
             .collect();
-        axes.legend = legend(look.legend, data.groups.len(), name_width);
+        datasets.sort_by_key(|(i, _)| Some(*i) != other);
+        let datasets: Vec<Dataset> = datasets.into_iter().map(|(_, d)| d).collect();
+        axes.legend = legend(
+            look.legend,
+            data.groups
+                .iter()
+                .enumerate()
+                .map(|(i, group)| (group.name.as_str(), series_style(theme, i, other))),
+        );
         axes.render(Chart::new(datasets), area, buf, g);
         return;
     }
@@ -1617,21 +1677,23 @@ fn render_kde_chart(
         return;
     }
 
-    let name_width = legend_width(data.series.iter().map(|s| s.name.as_str()));
-    let datasets: Vec<Dataset> = data
+    let other = other_at(data.other, data.series.len());
+    let mut datasets: Vec<(usize, Dataset)> = data
         .series
         .iter()
         .enumerate()
         .map(|(i, s)| {
-            let style = Style::default().fg(theme.get(SERIES_COLORS[i % SERIES_COLORS.len()]));
-            Dataset::default()
-                .name(legend_name(&s.name, name_width))
+            let dataset = Dataset::default()
                 .graph_type(GraphType::Line)
                 .marker(g.plot.line)
-                .style(style)
-                .data(&s.points)
+                .style(series_style(theme, i, other))
+                .data(&s.points);
+            (i, dataset)
         })
         .collect();
+    // Other first, under the rest.
+    datasets.sort_by_key(|(i, _)| Some(*i) != other);
+    let datasets: Vec<Dataset> = datasets.into_iter().map(|(_, d)| d).collect();
 
     let x_title = modal.x().map(|x| modal.axis_title(x)).unwrap_or_default();
     let mut axes = plot_axes(
@@ -1641,7 +1703,13 @@ fn render_kde_chart(
         g.plot.line,
         modal.grid,
     );
-    axes.legend = legend(modal.show_legend, data.series.len(), name_width);
+    axes.legend = legend(
+        modal.show_legend,
+        data.series
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.name.as_str(), series_style(theme, i, other))),
+    );
     axes.render(Chart::new(datasets), area, buf, g);
 }
 
@@ -1669,7 +1737,7 @@ fn render_box_plot_chart(
     let cap_half = 0.2;
     for (i, stat) in data.stats.iter().enumerate() {
         let x = i as f64;
-        let style = Style::default().fg(theme.get(SERIES_COLORS[i % SERIES_COLORS.len()]));
+        let style = series_style(theme, i, None);
         segments.push(vec![
             (x - box_half, stat.q1),
             (x + box_half, stat.q1),
@@ -1757,10 +1825,11 @@ fn render_heatmap_chart(
             Constraint::Length(HEATMAP_X_LABEL_HEIGHT),
         ])
         .split(area);
-    let title = format!("{} vs {}", data.x_column, data.y_column);
-    Paragraph::new(title)
-        .style(Style::default().fg(theme.get("text_primary")))
-        .render(layout[0], buf);
+    // The axes' titles sit as every plot's do: Y over its labels, X at the right
+    // under its own.
+    let title_style = Style::default().fg(theme.get("text_primary"));
+    let y_title = cut(&data.y_column, layout[0].width as usize, g);
+    buf.set_string(layout[0].x, layout[0].y, &y_title, title_style);
 
     const Y_LABEL_MAX: u16 = 12;
     // Nice values up the side, one per few rows, each on the row its value falls in.
@@ -1833,20 +1902,9 @@ fn render_heatmap_chart(
         buf.set_string(x, x_label_area.y, label, label_style);
     }
     if x_label_area.height > 1 {
-        // Each title keeps half the row when both do not fit, a space between them.
-        let x_title = format!("X: {}", data.x_column);
-        let y_title = format!("Y: {}", data.y_column);
-        let width = x_label_area.width as usize;
-        let (x_title, y_title) = if x_title.width() + y_title.width() < width {
-            (x_title, y_title)
-        } else {
-            let half = width.saturating_sub(1) / 2;
-            (cut(&x_title, half, g), cut(&y_title, half, g))
-        };
-        let row = x_label_area.y + 1;
-        buf.set_string(x_label_area.x, row, &x_title, label_style);
-        let y_x = x_label_area.right() - y_title.width() as u16;
-        buf.set_string(y_x, row, &y_title, label_style);
+        let x_title = cut(&data.x_column, x_label_area.width as usize, g);
+        let x = x_label_area.right() - x_title.width() as u16;
+        buf.set_string(x, x_label_area.y + 1, &x_title, title_style);
     }
 }
 
@@ -1894,6 +1952,7 @@ mod tests {
                     names: names(),
                     x_axis_kind: XAxisTemporalKind::Numeric,
                     x_bounds: None,
+                    other: false,
                     numbers: PlotNumbers::default(),
                 },
                 notes: Vec::new(),
@@ -1938,8 +1997,62 @@ mod tests {
         assert!(text.contains("by row"), "the bucket under a date X: {text}");
         assert!(text.contains("Options"));
         assert!(line("Y from zero").contains("off"));
-        assert!(line("Rows").contains("sample 10,000"));
+        assert!(line("Rows").contains("Sample 10,000"));
         assert!(line("Aggregate").contains("none"));
+        assert!(
+            !text.contains("type a size"),
+            "the row's keys only under focus"
+        );
+
+        // Focused, the line under Rows names its keys; a change waits for Enter.
+        modal.focus = ChartFocus::LimitRows;
+        modal.view_rows = Some(36_800_000);
+        let under = |rows: &[String]| {
+            let at = rows
+                .iter()
+                .position(|r| r.contains("Sample") || r.contains("Every row"));
+            rows[at.unwrap() + 1].clone()
+        };
+        let rows = render_rows(&mut modal, 100, 30);
+        assert!(under(&rows).contains("switch · type a size"), "{rows:?}");
+        modal.step(ChartFocus::LimitRows, 1);
+        let rows = render_rows(&mut modal, 100, 30);
+        assert!(
+            rows.iter().any(|r| r.contains("Every row (36.8M)")),
+            "{rows:?}"
+        );
+        assert!(under(&rows).contains("Enter to read"), "{rows:?}");
+        modal.type_rows('5');
+        modal.type_rows('x');
+        modal.commit_rows();
+        let rows = render_rows(&mut modal, 100, 30);
+        assert!(rows.iter().any(|r| r.contains("Sample 5x")), "{rows:?}");
+        assert!(under(&rows).contains("not a size"), "{rows:?}");
+    }
+
+    /// With a row's picker open, the picker's line carries the one rail on
+    /// screen; closed, the row has it back.
+    #[test]
+    fn an_open_picker_has_the_only_rail() {
+        let g = crate::glyphs::get();
+        let rails = |rows: &[String]| {
+            rows.iter()
+                .map(|row| row.matches(g.rail).count())
+                .sum::<usize>()
+        };
+        let mut modal = open_modal();
+        modal.set_mark(Mark::Line);
+        modal.focus = ChartFocus::X;
+        assert_eq!(rails(&render_rows(&mut modal, 100, 30)), 1);
+        modal.open_picker();
+        assert!(modal.picker.is_some());
+        let rows = render_rows(&mut modal, 100, 30);
+        assert_eq!(rails(&rows), 1, "{rows:#?}");
+        let x = rows
+            .iter()
+            .find(|row| row.chars().skip(2).collect::<String>().starts_with("X "))
+            .expect("the X row");
+        assert!(!x.starts_with(g.rail), "the row gave the rail up: {x:?}");
     }
 
     /// The aggregate is a row of its own under Y, labeled, so `none` does not read
@@ -1971,6 +2084,7 @@ mod tests {
                     names: names(),
                     x_axis_kind: XAxisTemporalKind::Numeric,
                     x_bounds: None,
+                    other: false,
                     numbers: PlotNumbers::default(),
                 },
                 notes: Vec::new(),
@@ -1997,31 +2111,35 @@ mod tests {
         assert_eq!(buf[(2, row)].fg, ctx.accent, "the focused label");
     }
 
-    /// The title says how the rows were made; when it would only repeat the Y
-    /// column, which the y axis's title names under it, it is not drawn.
+    /// The title row says only how the rows were made; the Y column is named once,
+    /// at its axis. With nothing to say the row is blank.
     #[test]
-    fn the_title_does_not_repeat_the_y_axis() {
+    fn the_title_says_how_and_y_is_named_at_its_axis() {
         let mut modal = open_modal();
         modal.set_mark(Mark::Scatter);
         modal.spec.encoding.x.field = Some("volume".to_string());
         modal.spec.encoding.y.field = vec!["price".to_string()];
-        let rows = render_rows(&mut modal, 100, 30);
         let plot = |r: &String| -> String { r.chars().skip(SIDEBAR_WIDTH as usize + 1).collect() };
-        let named: Vec<String> = rows
-            .iter()
-            .map(plot)
-            .filter(|r| r.contains("price"))
-            .collect();
-        assert_eq!(named.len(), 1, "price once, the y axis's title: {named:#?}");
-        assert!(plot(&rows[0]).trim().is_empty(), "{:?}", rows[0]);
-
+        let check = |modal: &mut ChartModal, how: &str| {
+            let rows = render_rows(modal, 100, 30);
+            assert_eq!(plot(&rows[0]).trim(), how, "{:?}", rows[0]);
+            let named: Vec<String> = rows
+                .iter()
+                .map(plot)
+                .filter(|r| r.contains("price"))
+                .collect();
+            assert_eq!(named.len(), 1, "price once, at its axis: {named:#?}");
+            assert_eq!(named[0].trim(), "price", "{named:#?}");
+        };
+        check(&mut modal, "");
+        modal.spec.encoding.color.field = Some("carrier".to_string());
+        check(&mut modal, "colored by carrier");
+        modal.spec.encoding.color.field = None;
         modal.spec.encoding.y.aggregate = Aggregate::Mean;
-        let rows = render_rows(&mut modal, 100, 30);
-        let g = crate::glyphs::get();
-        assert_eq!(
-            plot(&rows[0]).trim(),
-            format!("price {} mean by volume", g.middot)
-        );
+        check(&mut modal, "mean by volume");
+        modal.set_mark(Mark::Line);
+        modal.spec.encoding.y.cumulative = Cumulative::Sum;
+        check(&mut modal, "by volume, running sum");
     }
 
     /// A shelf the type does not use stays, dimmed, with why.
@@ -2075,6 +2193,273 @@ mod tests {
         assert!(text.contains("same as X"), "{text}");
     }
 
+    /// The line under Color says how many values Other gathers while it is on: on by
+    /// default for a scatter, off for a line; ←/→ on the line turn it over.
+    #[test]
+    fn the_values_line_counts_other() {
+        let mut modal = open_modal();
+        modal.set_mark(Mark::Scatter);
+        modal.spec.encoding.x.field = Some("price".to_string());
+        modal.spec.encoding.y.field = vec!["volume".to_string()];
+        modal.spec.encoding.color.field = Some("carrier".to_string());
+        modal.color_counts = Some(crate::chart_modal::ColorCounts {
+            column: "carrier".to_string(),
+            values: (0..16)
+                .map(|i| (Some(format!("C{i}")), 100 - i as u64))
+                .collect(),
+        });
+        let line = |modal: &mut ChartModal| -> String {
+            let rows = render_rows(modal, 100, 30);
+            let at = rows.iter().position(|r| r.contains("Color")).unwrap();
+            rows[at + 1]
+                .chars()
+                .take(40)
+                .collect::<String>()
+                .trim()
+                .to_string()
+        };
+        assert_eq!(line(&mut modal), "top 10 + 6 other");
+        modal.step(ChartFocus::ColorValues, 1);
+        assert_eq!(line(&mut modal), "top 10 of 16 by rows");
+        modal.spec.encoding.color.other = None;
+        modal.set_mark(Mark::Line);
+        assert_eq!(line(&mut modal), "top 10 of 16 by rows");
+        modal.step(ChartFocus::ColorValues, -1);
+        assert_eq!(line(&mut modal), "top 10 + 6 other");
+        modal.spec.encoding.color.values = vec![Some("C3".to_string()), Some("C9".to_string())];
+        assert_eq!(line(&mut modal), "2 picked + 14 other");
+    }
+
+    /// A quantile's percentile sits on the line under Aggregate; first and last say
+    /// the order they read the rows in, the sort's own words when there is one, and
+    /// only then read the view sorted.
+    #[test]
+    fn the_aggregate_row_says_percentile_and_order() {
+        let mut modal = open_modal();
+        modal.set_mark(Mark::Line);
+        modal.spec.encoding.x.field = Some("volume".to_string());
+        modal.spec.encoding.y.field = vec!["price".to_string()];
+        let panel = |modal: &mut ChartModal| -> Vec<String> {
+            render_rows(modal, 100, 30)
+                .iter()
+                .map(|r| r.chars().take(40).collect::<String>().trim().to_string())
+                .collect()
+        };
+        let g = crate::glyphs::get();
+        modal.spec.encoding.y.aggregate = Aggregate::Quantile;
+        let rows = panel(&mut modal);
+        let at = rows
+            .iter()
+            .position(|r| r.starts_with("Aggregate"))
+            .unwrap();
+        assert_eq!(rows[at], "Aggregate    quantile");
+        assert_eq!(rows[at + 1], "p90");
+        modal.step(ChartFocus::Quantile, -1);
+        assert_eq!(panel(&mut modal)[at + 1], "p75");
+
+        modal.spec.encoding.y.aggregate = Aggregate::Last;
+        let rows = panel(&mut modal);
+        assert_eq!(
+            rows[at],
+            format!("Aggregate    last {} by row order", g.middot)
+        );
+        let request = crate::chart_jobs::ChartRequest::from_modal(&modal).unwrap();
+        assert!(!request.sorted);
+        modal.row_order = Some(format!("time {}", g.sort_asc));
+        let rows = panel(&mut modal);
+        assert_eq!(
+            rows[at],
+            format!("Aggregate    last {} by time {}", g.middot, g.sort_asc)
+        );
+        let request = crate::chart_jobs::ChartRequest::from_modal(&modal).unwrap();
+        assert!(request.sorted, "first and last read the view sorted");
+        modal.spec.encoding.y.aggregate = Aggregate::Mean;
+        let request = crate::chart_jobs::ChartRequest::from_modal(&modal).unwrap();
+        assert!(!request.sorted, "a mean needs no order");
+    }
+
+    /// Ten series take ten colors, each its own, and the legend names all ten.
+    #[test]
+    fn ten_series_take_ten_colors() {
+        let mut modal = open_modal();
+        modal.set_mark(Mark::Line);
+        modal.spec.encoding.x.field = Some("price".to_string());
+        modal.spec.encoding.y.field = vec!["volume".to_string()];
+        modal.show_legend = true;
+        let series: Vec<Vec<(f64, f64)>> = (0..10)
+            .map(|s| (0..5).map(|i| (i as f64, (i * 10 + s) as f64)).collect())
+            .collect();
+        let names: Vec<String> = (0..10).map(|i| format!("s{i}")).collect();
+        let ctx = RenderContext::for_test();
+        let theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        // Hex all the way, as a true-color terminal shows them.
+        let mut theme = theme;
+        let config = crate::config::ColorConfig::default();
+        let hex = [
+            &config.chart_1,
+            &config.chart_2,
+            &config.chart_3,
+            &config.chart_4,
+            &config.chart_5,
+            &config.chart_6,
+            &config.chart_7,
+            &config.chart_8,
+            &config.chart_9,
+            &config.chart_10,
+        ];
+        for (i, value) in hex.iter().enumerate() {
+            let channel = |at: usize| u8::from_str_radix(&value[at..at + 2], 16).unwrap();
+            let color = ratatui::style::Color::Rgb(channel(1), channel(3), channel(5));
+            theme.colors.insert(format!("chart_{}", i + 1), color);
+        }
+        assert_eq!(theme.series_colors().len(), 10);
+        let area = Rect::new(0, 0, 80, 30);
+        let mut buf = Buffer::empty(area);
+        render_plot(
+            area,
+            &mut buf,
+            &modal,
+            &theme,
+            &ctx,
+            ChartRenderData::XY {
+                series: Some(&series),
+                breaks: None,
+                values: None,
+                names: &names,
+                x_axis_kind: XAxisTemporalKind::Numeric,
+                x_bounds: None,
+                numbers: PlotNumbers::default(),
+                other: false,
+            },
+            crate::glyphs::unicode(),
+        );
+        let mut swatches = Vec::new();
+        for y in 0..area.height {
+            let row: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
+            if let Some(name) = names.iter().find(|n| row.contains(&format!("█ {n} "))) {
+                let x = (0..area.width)
+                    .find(|&x| buf[(x, y)].symbol() == "█")
+                    .unwrap();
+                swatches.push((name.clone(), buf[(x, y)].fg));
+            }
+        }
+        assert_eq!(swatches.len(), 10, "{swatches:?}");
+        let mut colors: Vec<_> = swatches.iter().map(|(_, c)| format!("{c:?}")).collect();
+        colors.dedup();
+        assert_eq!(colors.len(), 10, "{swatches:?}");
+    }
+
+    /// A 16-color terminal shows the ten slots as fewer colors: the chart draws one
+    /// series per color, and the line under Color says how many.
+    #[test]
+    fn sixteen_colors_cap_the_series() {
+        let sixteen = |hex: &str| {
+            let channel = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap();
+            crate::config::rgb_to_basic_ansi(channel(1), channel(3), channel(5))
+        };
+        let config = crate::config::ColorConfig::default();
+        let mut theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        for (i, value) in [
+            &config.chart_1,
+            &config.chart_2,
+            &config.chart_3,
+            &config.chart_4,
+            &config.chart_5,
+            &config.chart_6,
+            &config.chart_7,
+            &config.chart_8,
+            &config.chart_9,
+            &config.chart_10,
+        ]
+        .iter()
+        .enumerate()
+        {
+            theme
+                .colors
+                .insert(format!("chart_{}", i + 1), sixteen(value));
+        }
+        let colors = theme.series_colors();
+        assert!((2..10).contains(&colors.len()), "{colors:?}");
+        let mut modal = open_modal();
+        modal.series_cap = Some(colors.len());
+        modal.set_mark(Mark::Line);
+        modal.spec.encoding.x.field = Some("price".to_string());
+        modal.spec.encoding.y.field = vec!["volume".to_string()];
+        modal.spec.encoding.color.field = Some("carrier".to_string());
+        modal.color_counts = Some(crate::chart_modal::ColorCounts {
+            column: "carrier".to_string(),
+            values: (0..16)
+                .map(|i| (Some(format!("C{i}")), 100 - i as u64))
+                .collect(),
+        });
+        let rows = render_rows(&mut modal, 100, 30);
+        let at = rows.iter().position(|r| r.contains("Color")).unwrap();
+        assert!(
+            rows[at + 1].contains(&format!("top {} of 16 by rows", colors.len())),
+            "{}",
+            rows[at + 1]
+        );
+        let request = crate::chart_jobs::ChartRequest::from_modal(&modal).unwrap();
+        assert_eq!(request.series_cap, colors.len());
+    }
+
+    /// Other is the legend's last entry and is drawn in `dimmed`, under the series.
+    #[test]
+    fn other_is_the_legends_last_entry() {
+        let mut modal = open_modal();
+        modal.set_mark(Mark::Scatter);
+        modal.spec.encoding.x.field = Some("price".to_string());
+        modal.spec.encoding.y.field = vec!["volume".to_string()];
+        modal.show_legend = true;
+        let series: Vec<Vec<(f64, f64)>> = (0..3)
+            .map(|s| (0..5).map(|i| (i as f64, (i * 10 + s) as f64)).collect())
+            .collect();
+        let names: Vec<String> = ["UA", "B6", crate::chart_data::OTHER]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let ctx = RenderContext::for_test();
+        let theme =
+            crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
+        let area = Rect::new(0, 0, 60, 24);
+        let mut buf = Buffer::empty(area);
+        render_plot(
+            area,
+            &mut buf,
+            &modal,
+            &theme,
+            &ctx,
+            ChartRenderData::XY {
+                series: Some(&series),
+                breaks: None,
+                values: None,
+                names: &names,
+                x_axis_kind: XAxisTemporalKind::Numeric,
+                x_bounds: None,
+                numbers: PlotNumbers::default(),
+                other: true,
+            },
+            crate::glyphs::unicode(),
+        );
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        let at = |name: &str| {
+            rows.iter()
+                .position(|r| r.contains(&format!("█ {name}")))
+                .unwrap_or_else(|| panic!("{name}: {rows:#?}"))
+        };
+        assert_eq!(at("UA") + 1, at("B6"));
+        assert_eq!(at("B6") + 1, at("Other"));
+        let row = at("Other") as u16;
+        let swatch = (0..area.width)
+            .find(|&x| buf[(x, row)].symbol() == "█")
+            .unwrap();
+        assert_eq!(buf[(swatch, row)].fg, theme.get("dimmed"));
+    }
+
     /// The open Picker drops over the panel under its row, with a checkbox per item
     /// where it takes several, and each value's rows beside it.
     #[test]
@@ -2123,13 +2508,15 @@ mod tests {
             .collect()
     }
 
-    /// A sampled or clipped chart says so under the plot, even at 80x24.
+    /// A sampled or clipped chart says so at the right of the title row, at 80x24
+    /// too; the bottom right holds only the X axis's title.
     #[test]
-    fn notes_sit_under_the_plot() {
+    fn notes_sit_at_the_title_rows_right() {
         let mut modal = open_modal();
         modal.spec.encoding.x.field = Some("price".to_string());
         modal.spec.encoding.y.field = vec!["volume".to_string()];
         let series = vec![vec![(0.0, 1.0), (1.0, 2.0)]];
+        let note = "sample of 10,000 of 3.5M rows";
         let rows = render_view(
             &mut modal,
             ChartView {
@@ -2140,26 +2527,30 @@ mod tests {
                     names: names(),
                     x_axis_kind: XAxisTemporalKind::Numeric,
                     x_bounds: None,
+                    other: false,
                     numbers: PlotNumbers::default(),
                 },
-                notes: vec!["sample of 10,000 of 3.5M rows".to_string()],
+                notes: vec![note.to_string()],
                 error: None,
                 working: None,
                 schema: None,
             },
-            80,
+            120,
             24,
         );
+        assert!(rows[0].trim_end().ends_with(note), "{:?}", rows[0]);
+        assert!(rows[23].trim_end().ends_with("price"), "{:?}", rows[23]);
+        let canvas = |r: &String| r.chars().skip(42).collect::<String>();
         assert!(
-            rows[23].contains("sample of 10,000 of 3.5M rows"),
-            "{:?}",
-            rows[23]
+            rows[1..].iter().all(|r| !canvas(r).contains("sample")),
+            "{rows:#?}"
         );
     }
 
-    /// On a canvas narrower than a note, the note wraps; nothing of it is cut.
+    /// On a narrow canvas the how keeps its room and the notes are cut to the rest,
+    /// with the ellipsis.
     #[test]
-    fn notes_wrap_on_a_narrow_canvas() {
+    fn notes_give_way_to_the_how() {
         let mut modal = open_modal();
         modal.set_mark(Mark::Histogram);
         let notes = [
@@ -2178,18 +2569,19 @@ mod tests {
                 working: None,
                 schema: None,
             },
-            60,
+            100,
             20,
         );
-        // The canvas is the right half; read its last rows as one line of words.
-        let text = rows[14..]
-            .iter()
-            .map(|r| r.chars().skip(32).collect::<String>().trim().to_string())
-            .collect::<Vec<_>>()
-            .join(" ");
-        for note in notes {
-            assert!(text.contains(note), "{note:?} whole in {text:?}");
-        }
+        let g = crate::glyphs::get();
+        let title = rows[0].chars().skip(42).collect::<String>();
+        assert!(title.starts_with("count per bin  "), "{title:?}");
+        assert!(title.contains("sample of 1,000,000"), "{title:?}");
+        assert!(title.trim_end().ends_with(g.ellipsis), "{title:?}");
+        let canvas = |r: &String| r.chars().skip(42).collect::<String>();
+        assert!(
+            rows[1..].iter().all(|r| !canvas(r).contains("sample")),
+            "{rows:#?}"
+        );
     }
 
     /// A failed preparation shows its message where the plot would be.
@@ -2206,6 +2598,7 @@ mod tests {
                     names: names(),
                     x_axis_kind: XAxisTemporalKind::Numeric,
                     x_bounds: None,
+                    other: false,
                     numbers: PlotNumbers::default(),
                 },
                 notes: Vec::new(),
@@ -2238,6 +2631,7 @@ mod tests {
                         names: names(),
                         x_axis_kind: XAxisTemporalKind::Numeric,
                         x_bounds: None,
+                        other: false,
                         numbers: PlotNumbers::default(),
                     },
                     notes: Vec::new(),
@@ -2281,6 +2675,7 @@ mod tests {
             value_dtype: polars::prelude::DataType::Float64,
             counted: None,
             groups: Vec::new(),
+            other: false,
             rows_note: None,
         }
     }
@@ -2469,6 +2864,7 @@ mod tests {
         let histogram = HistogramData {
             column: "price".to_string(),
             groups: Vec::new(),
+            other: false,
             share: false,
             bins: (0..10)
                 .map(|i| HistogramBin {
@@ -2483,6 +2879,7 @@ mod tests {
             clipped: None,
         };
         let kde = KdeData {
+            other: false,
             series: vec![KdeSeries {
                 name: "price".to_string(),
                 points: (0..=100)
@@ -2523,6 +2920,7 @@ mod tests {
                             names: names(),
                             x_axis_kind: XAxisTemporalKind::Date,
                             x_bounds: None,
+                            other: false,
                             numbers: PlotNumbers::default(),
                         },
                         "date",
@@ -2538,6 +2936,7 @@ mod tests {
                             names: names(),
                             x_axis_kind: XAxisTemporalKind::Numeric,
                             x_bounds: None,
+                            other: false,
                             numbers: PlotNumbers::default(),
                         },
                         "volume",
@@ -2602,6 +3001,7 @@ mod tests {
         modal.show_legend = false;
 
         let kde = KdeData {
+            other: false,
             series: vec![KdeSeries {
                 name: "price".to_string(),
                 points: (0..=100)
@@ -2638,6 +3038,7 @@ mod tests {
             names: names(),
             x_axis_kind: XAxisTemporalKind::Numeric,
             x_bounds: None,
+            other: false,
             numbers: PlotNumbers {
                 x: AxisNumbers::default(),
                 y: AxisNumbers {
@@ -2646,11 +3047,20 @@ mod tests {
                 },
             },
         };
+        // 12,000 to 12,600 fits in steps of 200, not out to 13,000 in steps of 500.
         let text = plot_text_with(&ctx, &modal, xy(), g, Rect::new(0, 0, 40, 12));
-        assert_eq!(y_labels(&text), ["13.000", "12.500", "12.000"], "{text}");
+        assert_eq!(
+            y_labels(&text),
+            ["12.600", "12.400", "12.200", "12.000"],
+            "{text}"
+        );
         // Too narrow for those: the short form, each in the same unit and places.
         let text = plot_text_with(&ctx, &modal, xy(), g, Rect::new(0, 0, 16, 12));
-        assert_eq!(y_labels(&text), ["13,0k", "12,5k", "12,0k"], "{text}");
+        assert_eq!(
+            y_labels(&text),
+            ["12,6k", "12,4k", "12,2k", "12,0k"],
+            "{text}"
+        );
     }
 
     /// A heatmap's y labels in one format; an integer column's middle label is left
@@ -2748,6 +3158,7 @@ mod tests {
         let histogram = HistogramData {
             column: "passengers".to_string(),
             groups: Vec::new(),
+            other: false,
             share: false,
             bins: (0..7)
                 .map(|i| HistogramBin {
@@ -2784,6 +3195,7 @@ mod tests {
             names: names(),
             x_axis_kind: XAxisTemporalKind::Numeric,
             x_bounds: None,
+            other: false,
             numbers,
         };
         let numbers = PlotNumbers {
@@ -2800,7 +3212,7 @@ mod tests {
     }
 
     /// Under the ASCII set every plot draws ASCII only, and still draws: its marks,
-    /// its bars, its axes and its legend frame. The Unicode set keeps its own.
+    /// its bars, its axes and its legend. The Unicode set keeps its own.
     #[test]
     fn every_plot_is_ascii_under_the_ascii_set() {
         use crate::chart_data::{BoxPlotStats, HistogramBin, KdeSeries};
@@ -2830,16 +3242,17 @@ mod tests {
             names: names(),
             x_axis_kind: XAxisTemporalKind::Numeric,
             x_bounds: None,
+            other: false,
             numbers: PlotNumbers::default(),
         };
         for (chart_type, mark) in [(Mark::Line, '*'), (Mark::Scatter, 'o')] {
             modal.spec.mark = chart_type;
             let text = plot_text(&modal, xy(Some(&series)), ascii);
             check(chart_type.label(), &text, &[mark]);
-            // The legend's frame, top right under the y title's row.
-            assert!(text.lines().nth(1).unwrap().ends_with('+'), "{text}");
+            // The legend's swatches, ASCII too.
+            assert!(text.contains("# price"), "{text}");
             let text = plot_text(&modal, xy(Some(&series)), unicode);
-            assert!(text.contains('└') && text.contains('┐'), "{text}");
+            assert!(text.contains("█ price"), "{text}");
         }
         // Axes before the data is in.
         check("placeholder", &plot_text(&modal, xy(None), ascii), &[]);
@@ -2847,6 +3260,7 @@ mod tests {
         let histogram = HistogramData {
             column: "price".to_string(),
             groups: Vec::new(),
+            other: false,
             share: false,
             bins: (0..10)
                 .map(|i| HistogramBin {
@@ -2891,6 +3305,7 @@ mod tests {
         check("box plot", &plot_text(&modal, data, ascii), &['o']);
 
         let kde = KdeData {
+            other: false,
             series: vec![KdeSeries {
                 name: "price".to_string(),
                 points: (0..=100)
@@ -2918,8 +3333,8 @@ mod tests {
         assert!(text.is_ascii() && text.contains('#'), "bars:\n{text}");
     }
 
-    /// The legend reads clean over a full plot: a short name's row is blank past
-    /// the name, not the marks behind it.
+    /// The legend reads clean over a full plot, with no frame: a short name's row is
+    /// blank past the name, not the marks behind it.
     #[test]
     fn the_legend_hides_the_plot_behind_it() {
         let mut modal = open_modal();
@@ -2943,26 +3358,22 @@ mod tests {
                     names: names(),
                     x_axis_kind: XAxisTemporalKind::Numeric,
                     x_bounds: None,
+                    other: false,
                     numbers: PlotNumbers::default(),
                 },
                 g,
             );
-            let rows: Vec<Vec<char>> = text.lines().map(|l| l.chars().collect()).collect();
-            let corner = g.plot.axis.top_left.chars().next().unwrap();
-            // The frame's first row is under the y title's: its corner is the one a
-            // rule runs right from, not the axis's tick mark.
-            let rule = g.plot.axis.horizontal.chars().next().unwrap();
-            let left = rows[1]
-                .windows(2)
-                .position(|w| w[0] == corner && w[1] == rule)
-                .expect(&text);
-            let interior = |y: usize| {
-                rows[y][left + 1..rows[y].len() - 1]
-                    .iter()
-                    .collect::<String>()
-            };
-            assert_eq!(interior(2), "price ", "{text}");
-            assert_eq!(interior(3), "volume", "{text}");
+            let swatch = g.bar_eighths[7];
+            let price = format!(" {swatch} price  ");
+            let volume = format!(" {swatch} volume ");
+            let lines: Vec<&str> = text.lines().collect();
+            let at = lines
+                .iter()
+                .position(|l| l.contains(&price))
+                .unwrap_or_else(|| panic!("{text}"));
+            assert!(lines[at + 1].contains(&volume), "{text}");
+            let corner = g.plot.axis.top_left;
+            assert!(!lines[at - 1].contains(corner), "no frame: {text}");
         }
     }
 
@@ -2984,6 +3395,7 @@ mod tests {
             names: names(),
             x_axis_kind: XAxisTemporalKind::Date,
             x_bounds: None,
+            other: false,
             numbers: PlotNumbers::default(),
         }
     }
@@ -3159,6 +3571,7 @@ mod tests {
                 names: names(),
                 x_axis_kind: XAxisTemporalKind::Numeric,
                 x_bounds: None,
+                other: false,
                 numbers: PlotNumbers::default(),
             };
             render_plot(area, &mut buf, &modal, &theme, &ctx, data, g);
@@ -3224,6 +3637,7 @@ mod tests {
                 names: names(),
                 x_axis_kind: XAxisTemporalKind::Date,
                 x_bounds: None,
+                other: false,
                 numbers: PlotNumbers::default(),
             };
             let place = render_plot(area, &mut buf, modal, &theme, &ctx, data, g);
@@ -3288,6 +3702,7 @@ mod tests {
                 names: names(),
                 x_axis_kind: XAxisTemporalKind::Numeric,
                 x_bounds: None,
+                other: false,
                 numbers: PlotNumbers::default(),
             };
             plot_text_in(&modal, data, g, Rect::new(0, 0, 60, 20))
@@ -3313,6 +3728,7 @@ mod tests {
         let histogram = HistogramData {
             column: "price".to_string(),
             groups: Vec::new(),
+            other: false,
             share: false,
             bins: (0..4)
                 .map(|i| HistogramBin {

@@ -165,6 +165,10 @@ spec matches opens as it does without specs; a local file no reader takes
 either opens in the [hex view](../user-guide/hex-view.md), where <kbd>B</kbd> reads it with a
 spec and <kbd>r</kbd> lines the bytes up in records while you write one.
 
+<kbd>T</kbd> on a file of several record types lists the whole file, then each
+type with its column count, and opens the one picked (`day.itch/add`), clearing
+the query, filters and sort.
+
 <kbd>b</kbd> on the table picks another spec and reads the file again with it,
 clearing the query, filters and sort. The list starts with the spec the file
 was read with, then the others that matched it the same way, then every other
@@ -245,7 +249,7 @@ plus `match`, `kind`, the layout keys, `[columns]`, `description` and
 | `metadata_line` | A line of `key="value"` or `key=value` pairs, separated by commas, for the Info panel. It must not be data: above the last header line, within `skip_lines`, or a comment line |
 | `null_values` | A value, or a list, read as null: `"NA"`, or `"COL=-999"` for one column |
 | `skip_lines` | Lines to pass over before the header |
-| `[columns]` | Derived columns, below, and what columns mean: `description` and `unit` |
+| `[columns]` | Column types and derived columns, below, and what columns mean: `description` and `unit` |
 
 Lines count from 1 at the top of the file. Each option the spec sets replaces
 the config's; a flag typed on the command line (`--delimiter`,
@@ -268,6 +272,62 @@ not. A column a query computes has no unit, even under the name of one that had.
 The Info panel's **Metadata** tab lists the metadata line's pairs, under its
 leading item when it has one (`device_info`). A line that is not pairs is shown
 as it is. For a directory, the first file's line is shown.
+
+### Column types
+
+A column of the file takes a `type`, beside its `unit` and `description`:
+
+**`typed.toml`**
+
+```toml,file=typed.toml
+name = "acme.typed-log"
+kind = "delimited"
+match = { magic = "#device_info" }
+comment = "#"
+skip_initial_space = true
+header_rows = { name = 3, unit = 2 }
+metadata_line = 1
+
+[columns]
+"Lcl Date" = { type = "date", format = "%Y-%m-%d" }
+Latitude = { type = "f64", description = "GPS latitude" }
+bus1volts = { type = "f64", unit = "V" }
+```
+
+**`typed.csv`**
+
+```csv,file=typed.csv
+#device_info, log_version="1.03"
+#yyyy-mm-dd, degrees, volts
+  Lcl Date,     Latitude, bus1volts
+2024-03-01,    40.100000,      25.0
+2024-03-01,             ,      n/a
+```
+
+```bash
+datui formats check ./typed.toml typed.csv
+```
+
+| `type` | Reads |
+|---|---|
+| `str` | Text as it is, never typed by `read.infer_types`: `02134` keeps its zero |
+| `bool` | `true`/`false` or `1`/`0`, in any case |
+| `i8` `i16` `i32` `i64` | Signed integers |
+| `u8` `u16` `u32` `u64` | Unsigned integers |
+| `f32` `f64` | Decimals. `f32` keeps about 7 significant digits |
+| `date` `time` `datetime` | With `format`, a strftime format; without, the format is inferred |
+| `duration` | `1d`, `2h30m`, `-1w2d` |
+
+Use `i64` and `f64` unless a narrower type is wanted for an export or to hold
+values to a range. A value is trimmed first, and one that does not fit the type,
+or is out of an integer type's range, is null. The first time the Info panel
+opens, one pass counts them, and the Notes tab says how many per column:
+`RPM: 2 values out of range for u8, read as null`. A typed column the file does
+not have is a note, not an error, since the files of a family differ. A typed
+column is the same type in every file read together, and `read.infer_types`
+leaves it alone. `type` beside `from` or `as` is refused: a derived column
+takes its type from `as`. The same types, and the derived columns, are on hand
+in the table: [Column types](../user-guide/dataset-info.md#column-types).
 
 ### Derived columns
 
@@ -293,9 +353,52 @@ column, and its unit. There is no expression language: anything more is a
 ### Matching
 
 A delimited spec matches a file whose name says no format datui reads, or says
-`.csv`, `.tsv` or `.psv`, compressed or not. A directory is read through the
-spec its first file matches. <kbd>H</kbd> on the Info panel's Schema tab reads
-the file without a header, and without its derived columns.
+`.csv`, `.tsv` or `.psv`, compressed or not. A directory, or a glob such as
+`'logs/log_*.csv'`, is read through the spec its first file with text matches.
+<kbd>H</kbd> on the Info panel's Schema tab reads the file without a header,
+and without its derived columns.
+
+### Several files
+
+Files read together through a spec are matched by column name, so logs from
+different writer versions stack:
+
+| When | Then |
+|---|---|
+| A file lacks a column | The column is null in its rows |
+| A column is blank in the first rows a file's types are inferred from | It takes the type the other files give it. A value further on that is not of that type stops the read, naming the file and the column |
+| One file's column holds integers and another's decimals | The column is `f64` |
+| A file's column holds text where another's holds numbers | The column is text |
+| Files give a column different units | The first file's unit; a note lists the units seen |
+
+The Notes tab lists the columns not every file has. Columns keep the order
+the files first have them in.
+
+## Garmin TXi logs
+
+Garmin and TXi are trademarks of Garmin Ltd. or its subsidiaries; datui is not
+affiliated with or endorsed by Garmin.
+
+The repository's `contrib/formats/garmin-txi.toml` reads the data logs a Garmin
+TXi writes: the airframe line as metadata, the units line, `time` in UTC, and
+each column typed. Copy it into `~/.config/datui/formats/` to open the logs, or
+a directory of them, with no flags. A twin fills the `E2` columns and a single
+leaves them blank. A log written before a GPS fix has blank date and GPS cells.
+
+**`garmin-log.csv`**
+
+```csv,file=garmin-log.csv
+#airframe_info, log_version="1.03", airframe_name="Example 182", tail_number="N12345", system_id="0000EXAMPLE", unit="GDU1",
+#yyy-mm-dd, hh:mm:ss,   hh:mm,  ident,      degrees,      degrees,  ft msl,     kt,    rpm,   deg F,   deg F,  bool,      #
+  Lcl Date, Lcl Time, UTCOfst, AtvWpt,     Latitude,    Longitude,  AltMSL,    IAS, E1 RPM, E1 CHT1, E1 EGT1, OnGrnd, LogIdx
+          ,         ,        ,       ,             ,             ,        ,    0.0,  980.0,   210.0,  1105.0,      1,      1
+2024-05-04, 09:12:01,  -04:00,   KXYZ,   41.0000000,  -74.0000000,   350.0,    0.0, 1000.0,   215.0,  1120.0,      1,      2
+2024-05-04, 09:12:02,  -04:00,   KXYZ,   41.0000100,  -74.0000100,   350.0,   12.5, 1800.0,   230.0,  1250.0,      0,      3
+```
+
+```bash
+datui formats check contrib/formats/garmin-txi.toml garmin-log.csv
+```
 
 ## Checks
 

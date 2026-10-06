@@ -597,7 +597,7 @@ fn managed_identity_token(scope: &str, env: &Environment<'_>) -> Result<String, 
             ("Metadata", "true".to_string()),
         )
     };
-    let mut response = ureq::Agent::config_builder()
+    let mut response = crate::user_agent::ureq_config()
         .timeout_global(Some(Duration::from_secs(5)))
         .http_status_as_error(false)
         .build()
@@ -1099,7 +1099,11 @@ fn build(
 ) -> Result<object_store::azure::MicrosoftAzure, String> {
     let mut builder = object_store::azure::MicrosoftAzureBuilder::new()
         .with_account(account)
-        .with_container_name(container);
+        .with_container_name(container)
+        .with_config(
+            object_store::azure::AzureConfigKey::Client(crate::user_agent::CLIENT_KEY),
+            crate::user_agent::get(),
+        );
     if settings.use_emulator {
         builder = builder.with_use_emulator(true);
     }

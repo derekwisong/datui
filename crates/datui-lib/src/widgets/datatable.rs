@@ -1,4 +1,5 @@
 use color_eyre::Result;
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::{fs, fs::File, path::Path, path::PathBuf};
@@ -268,6 +269,10 @@ pub struct DataTableState {
     active_query: String,
     /// Last executed SQL (Sql tab).
     active_sql_query: String,
+    /// The leading columns the SQL in effect orders by, as named in its result, and
+    /// whether each runs descending: the header's sort marks while the sidebar sorts
+    /// nothing. Empty for an ORDER BY of an expression.
+    query_order: Vec<(String, bool)>,
     /// Last executed fuzzy search (Fuzzy tab).
     active_fuzzy_query: String,
     column_order: Vec<String>,   // Order of columns for display
@@ -432,6 +437,26 @@ pub struct DataTableState {
     /// What the open did to the rows its reader gave, as Python method calls: names
     /// trimmed, text columns typed.
     read_python: Vec<String>,
+    /// What the read of several files has to say of them: files passed over, columns
+    /// not every file has. Carried to the dataset's notes.
+    read_notes: Vec<crate::notes::Note>,
+    /// Each column's unit, from the first of several files read through a spec that
+    /// has the column; `None` when the first file's header said them all.
+    read_units: Option<Vec<(String, String)>>,
+    /// The columns the read gave a type, and the frame before it did.
+    typing: Typing,
+    /// The notes on the values the types made null, once counted.
+    unfit_notes: Option<Vec<crate::notes::Note>>,
+    /// The view's own column types and columns made from others, in the order asked:
+    /// a step of `lf`, before the filters, as a spec's `[columns]` would say them.
+    column_changes: Vec<crate::column_types::ColumnChange>,
+    /// Bumped with every change to `column_changes`, so a count of what they made null
+    /// answers for the changes it was asked about.
+    changes_version: u64,
+    /// The notes on the values the view's types made null: for the version counted.
+    changes_unfit: Option<(u64, Vec<crate::notes::Note>)>,
+    /// Steps of a saved view whose columns this data does not have.
+    changes_dropped: Vec<crate::notes::Note>,
     /// How `reshaped_lf` was built, while there is one: what SQL runs over.
     reshape_steps: Option<Vec<Step>>,
     /// Which loaded column each column of the base is (see [`Lineage`]).
@@ -464,6 +489,104 @@ pub struct DataTableState {
     /// the count generation they hold for. The next count reads on from the last; a
     /// filtered window from the one before it.
     follow_known: Option<(u64, Vec<(usize, usize)>)>,
+    /// The sample this view's rows are, and the view it was drawn from, while the
+    /// view has one: the step between the source and the query.
+    sampled: Option<Box<Sampled>>,
+}
+
+/// A view's sample: the step between the source and the query. The view's frames
+/// scan [`Self::frame`], the chunks kept so far, which grows as the draw goes on.
+pub struct Sampled {
+    /// The view the sample was drawn from, as it stood: what clearing the sample
+    /// returns to.
+    source: Box<DataTableState>,
+    sample: crate::sampling::Sample,
+    rows: Arc<crate::table_sample::SampleRows>,
+    /// The frame the view's plans scan: the chunks taken so far, on their buffers.
+    frame: Arc<DataFrame>,
+    /// Drawn from the view's query or filters, which the sample then stands for,
+    /// rather than from the source under them.
+    through: bool,
+    /// What the draw read, once it ended; `None` while it runs.
+    drawn: Option<crate::table_sample::Drawn>,
+    /// How a random sample of a stream is drawn, which a view keeps.
+    path: Option<crate::table_sample::DrawPath>,
+}
+
+impl Sampled {
+    pub fn sample(&self) -> &crate::sampling::Sample {
+        &self.sample
+    }
+
+    /// The view the sample was drawn from.
+    pub fn source(&self) -> &DataTableState {
+        &self.source
+    }
+
+    /// Whether the sample was drawn from the view's query or filters.
+    pub fn through(&self) -> bool {
+        self.through
+    }
+
+    /// Whether these are the rows `rows` holds: the sample a draw fills.
+    pub(crate) fn holds(&self, rows: &Arc<crate::table_sample::SampleRows>) -> bool {
+        Arc::ptr_eq(&self.rows, rows)
+    }
+
+    /// Whether rows are still arriving.
+    pub fn drawing(&self) -> bool {
+        self.drawn.is_none()
+    }
+
+    pub fn drawn(&self) -> Option<&crate::table_sample::Drawn> {
+        self.drawn.as_ref()
+    }
+
+    /// How a random sample of a stream is drawn: what draws the same rows again.
+    pub fn path(&self) -> Option<crate::table_sample::DrawPath> {
+        self.path
+    }
+
+    /// The frame the view's plans scan.
+    #[cfg(test)]
+    pub(crate) fn frame(&self) -> &DataFrame {
+        &self.frame
+    }
+
+    /// Rows the view has taken of the sample.
+    pub fn rows(&self) -> usize {
+        self.frame.height()
+    }
+
+    /// Bytes the sample's rows take.
+    pub fn bytes(&self) -> usize {
+        self.rows.bytes()
+    }
+
+    /// Why memory stopped the draw, if it did.
+    pub fn stopped(&self) -> Option<String> {
+        self.rows.stopped()
+    }
+
+    /// The footer's segment: `sample 100,000 of 36.8M`, `sample 1,234+` while it is
+    /// drawn, `sample about 100,000 of 36.8M` when kept row by row by chance.
+    pub fn label(&self) -> String {
+        let rows = crate::numfmt::group_chrome(self.rows());
+        let Some(drawn) = &self.drawn else {
+            return format!("sample {rows}+");
+        };
+        let about = if drawn.about { "about " } else { "" };
+        let cut = if drawn.cut { ", stopped" } else { "" };
+        match drawn.total {
+            Some(total) if total > self.rows() => {
+                format!(
+                    "sample {about}{rows} of {}{cut}",
+                    crate::discover::format_rows(total)
+                )
+            }
+            _ => format!("sample {rows}{cut}"),
+        }
+    }
 }
 
 /// What string-column inference may turn a column into, besides Time.
@@ -678,6 +801,7 @@ pub struct ViewRollback {
     sort_ascending: bool,
     active_query: String,
     active_sql_query: String,
+    query_order: Vec<(String, bool)>,
     active_fuzzy_query: String,
     column_order: Vec<String>,
     locked_columns_count: usize,
@@ -702,6 +826,9 @@ pub struct ViewRollback {
     notes: Vec<crate::notes::Note>,
     notes_seen: bool,
     view_notes: Vec<crate::notes::Note>,
+    column_changes: Vec<crate::column_types::ColumnChange>,
+    changes_version: u64,
+    changes_dropped: Vec<crate::notes::Note>,
     observed_bytes_per_row: Option<usize>,
     buffered_start_row: usize,
     buffered_end_row: usize,
@@ -1020,6 +1147,8 @@ pub struct OpenFacts {
     pub indexing: Option<Arc<crate::lines::Lines>>,
     /// The lines of several files, which `#` numbers by their line in their own file.
     pub numbering: Option<Arc<crate::lines::Lines>>,
+    /// The columns the read gave a type, for the count of what did not fit.
+    pub typing: Typing,
 }
 
 /// The footers' account of a dataset of many files.
@@ -1196,6 +1325,53 @@ fn sort_options(descending: Vec<bool>) -> SortMultipleOptions {
         .with_order_descending_multi(descending)
         .with_nulls_last_multi(vec![true; n])
         .with_maintain_order(true)
+}
+
+/// The columns a SQL statement's plan orders its result by, leading ones first, and
+/// whether each runs descending: down from the top through what keeps the order (a
+/// LIMIT, a projection of plain columns) to the sort. Stops at the first key that
+/// is an expression rather than a column; empty when no sort is on top.
+#[cfg(feature = "sql")]
+fn ordered_by(plan: &polars::lazy::dsl::DslPlan) -> Vec<(String, bool)> {
+    use polars::lazy::dsl::DslPlan;
+    let mut node = plan;
+    loop {
+        node = match node {
+            DslPlan::Slice { input, .. }
+            | DslPlan::Filter { input, .. }
+            | DslPlan::Cache { input, .. } => input,
+            DslPlan::IR { dsl, .. } => dsl,
+            DslPlan::Select { expr, input, .. }
+                if expr.iter().all(|e| matches!(e, Expr::Column(_))) =>
+            {
+                input
+            }
+            DslPlan::Sort {
+                by_column,
+                sort_options,
+                ..
+            } => {
+                let descending = &sort_options.descending;
+                return by_column
+                    .iter()
+                    .map_while(|e| match e {
+                        Expr::Column(name) => Some(name.to_string()),
+                        _ => None,
+                    })
+                    .enumerate()
+                    .map(|(i, name)| {
+                        let down = descending
+                            .get(i)
+                            .or(descending.first())
+                            .copied()
+                            .unwrap_or(false);
+                        (name, down)
+                    })
+                    .collect();
+            }
+            _ => return Vec::new(),
+        };
+    }
 }
 
 /// `plan` giving its rows in one order on every read. Each page is its own read of
@@ -1487,6 +1663,14 @@ fn asks_of_subquery_values(e: &Expr, names: &[PlSmallStr]) -> bool {
             matches!(input.as_slice(), [set, Expr::Literal(item)] if values(set) && item.is_null())
         }
         _ => false,
+    }
+}
+
+/// The in-memory frame `lf` scans, when it is a scan of one.
+fn scanned_frame(lf: &LazyFrame) -> Option<Arc<DataFrame>> {
+    match &lf.logical_plan {
+        polars::lazy::dsl::DslPlan::DataFrameScan { df, .. } => Some(df.clone()),
+        _ => None,
     }
 }
 
@@ -1978,6 +2162,7 @@ impl DataTableState {
             reveal_cursor: false,
             active_query: String::new(),
             active_sql_query: String::new(),
+            query_order: Vec::new(),
             active_fuzzy_query: String::new(),
             column_order,
             locked_columns_count: 0,
@@ -2046,6 +2231,14 @@ impl DataTableState {
             reshape_source: None,
             base_steps: Vec::new(),
             read_python: Vec::new(),
+            read_notes: Vec::new(),
+            read_units: None,
+            typing: Typing::default(),
+            unfit_notes: None,
+            column_changes: Vec::new(),
+            changes_version: 0,
+            changes_unfit: None,
+            changes_dropped: Vec::new(),
             reshape_steps: None,
             lineage: None,
             reshape_lineage: None,
@@ -2059,6 +2252,7 @@ impl DataTableState {
             needs_recollect: false,
             follow: None,
             follow_known: None,
+            sampled: None,
         })
     }
 
@@ -2146,6 +2340,7 @@ impl DataTableState {
             reveal_cursor: false,
             active_query: String::new(),
             active_sql_query: String::new(),
+            query_order: Vec::new(),
             active_fuzzy_query: String::new(),
             column_order,
             locked_columns_count: 0,
@@ -2216,6 +2411,14 @@ impl DataTableState {
             reshape_source: None,
             base_steps: Vec::new(),
             read_python: Vec::new(),
+            read_notes: Vec::new(),
+            read_units: None,
+            typing: Typing::default(),
+            unfit_notes: None,
+            column_changes: Vec::new(),
+            changes_version: 0,
+            changes_unfit: None,
+            changes_dropped: Vec::new(),
             reshape_steps: None,
             lineage: None,
             reshape_lineage: None,
@@ -2229,6 +2432,7 @@ impl DataTableState {
             needs_recollect: false,
             follow: None,
             follow_known: None,
+            sampled: None,
         })
     }
 
@@ -2266,8 +2470,10 @@ impl DataTableState {
             units,
             indexing,
             numbering,
+            typing,
         } = facts;
         self.numbering = numbering;
+        self.typing = typing;
         debug_assert!(
             self.is_pristine(),
             "an open's facts are for the data as loaded"
@@ -2382,6 +2588,8 @@ impl DataTableState {
         // Rows of the new shape are measured afresh; the old width would plan the
         // window of a wide frame from a narrow one, or the reverse.
         self.observed_bytes_per_row = None;
+        // A new frame is in no order a query named; `sql_query` names it after.
+        self.query_order = Vec::new();
         // A column may keep its name and type and hold other values now.
         self.widths.relearn();
         self.base_lf = lf.clone();
@@ -2414,6 +2622,7 @@ impl DataTableState {
     /// sort, not drilled, the first `locked_columns_count` columns frozen, the buffer
     /// dropped and the cursor at the top left.
     fn reset_view_state(&mut self, locked_columns_count: usize) {
+        self.forget_column_changes();
         self.active_query.clear();
         self.active_sql_query.clear();
         self.active_fuzzy_query.clear();
@@ -2498,6 +2707,12 @@ impl DataTableState {
         self.suppress_error_display = false;
         self.last_pivot_spec = None;
         self.last_melt_spec = None;
+    }
+
+    /// Back to the data as loaded with nothing applied, for a view's steps to be laid
+    /// on again. Reads nothing.
+    pub(crate) fn reset_view_for_replay(&mut self) {
+        self.return_to_root();
     }
 
     /// Back to the table as opened: the data as loaded, nothing applied, and every
@@ -3655,6 +3870,9 @@ impl DataTableState {
             .with_truncate_ragged_lines(options.follow)
             .with_try_parse_dates(options.csv_try_parse_dates())
             .with_null_values(null_values.cloned())
+            // One byte that is not UTF-8 is a U+FFFD where it stands, not a file that
+            // cannot be read past it.
+            .with_encoding(CsvEncoding::LossyUtf8)
     }
 
     /// [`Self::configure_csv_reader`] for the in-memory readers, which take options
@@ -3694,6 +3912,7 @@ impl DataTableState {
                 )
                 .with_try_parse_dates(options.csv_try_parse_dates())
                 .with_null_values(null_values.cloned())
+                .with_encoding(CsvEncoding::LossyUtf8)
         })
     }
 
@@ -3716,9 +3935,7 @@ impl DataTableState {
         header: Option<&[String]>,
     ) -> Result<Option<NullValues>> {
         Self::build_null_values_with(options, header, || {
-            let reader = LazyCsvReader::new(PlRefPath::try_from_path(path)?)
-                .with_glob(crate::source::expands_as_glob(path));
-            Self::csv_schema_for_null_values(reader, options)
+            Self::csv_schema_for_null_values(Self::csv_reader_of(path)?, options)
         })
     }
 
@@ -3798,6 +4015,21 @@ impl DataTableState {
         )?))
     }
 
+    /// A lazy CSV reader of the file at `path`, by its path; or, when the file ends in
+    /// a run of NULs, of its text before them, mapped and read in place.
+    pub(crate) fn csv_reader_of(path: &Path) -> Result<LazyCsvReader> {
+        let glob = crate::source::expands_as_glob(path);
+        if !glob
+            && path.is_file()
+            && let Ok(Some(text)) = crate::nul_tail::text_buffer(path)
+        {
+            return Ok(LazyCsvReader::new_with_sources(
+                polars::lazy::dsl::ScanSources::Buffers(Arc::from([text])),
+            ));
+        }
+        Ok(LazyCsvReader::new(PlRefPath::try_from_path(path)?).with_glob(glob))
+    }
+
     /// [`Self::csv_header_names`] for a file on disk, compressed with `compression`
     /// or not.
     pub(crate) fn csv_header_names_of(
@@ -3813,7 +4045,13 @@ impl DataTableState {
         path: &Path,
         compression: Option<CompressionFormat>,
     ) -> std::io::Result<Box<dyn std::io::BufRead>> {
-        let file = BufReader::new(File::open(path)?);
+        let file = File::open(path)?;
+        if compression.is_none()
+            && let Some(len) = crate::nul_tail::text_len(&file)?
+        {
+            return Ok(Box::new(BufReader::new(file.take(len))));
+        }
+        let file = BufReader::new(file);
         Ok(match compression {
             None => Box::new(file),
             Some(CompressionFormat::Gzip) => {
@@ -3840,9 +4078,10 @@ impl DataTableState {
         options: &OpenOptions,
         header: Option<&[String]>,
         read: &mut Vec<String>,
+        typing: &mut Typing,
     ) -> Result<LazyFrame> {
         let lf = Self::name_csv_columns(lf, header, Some(read))?;
-        Self::finish_csv_values(lf, options, read)
+        Self::finish_csv_values(lf, options, read, typing)
     }
 
     /// [`crate::csv_dialect::name_columns`], with the renames as Python in `read`.
@@ -3875,20 +4114,153 @@ impl DataTableState {
         mut lf: LazyFrame,
         options: &OpenOptions,
         read: &mut Vec<String>,
+        typing: &mut Typing,
     ) -> Result<LazyFrame> {
         if options.skip_initial_space {
             lf = crate::csv_dialect::skip_initial_space(lf, |column| {
                 Self::csv_null_values_for(options, column)
             })?;
         }
-        lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options, read)?;
-        // Read without a header (`H`), the columns have no names to derive from.
-        if let Some(spec_read) = &options.delimited
-            && options.has_header != Some(false)
-        {
-            lf = spec_read.delimited().derive(lf)?;
+        // Read without a header (`H`), the columns have no names to derive from, or to
+        // type by. Derived columns read the file's text, before any column is typed.
+        let spec = options
+            .delimited
+            .as_ref()
+            .filter(|_| options.has_header != Some(false))
+            .map(|read| read.delimited());
+        if let Some(spec) = spec {
+            lf = spec.derive(lf)?;
+            lf = Self::declare_types(lf, &spec.types, typing)?;
         }
+        let typed: Vec<String> = typing.typed.iter().map(|t| t.column.clone()).collect();
+        lf = Self::apply_parse_strings_to_csv_lazyframe(lf, options, read, &typed, typing)?;
         Self::apply_skip_tail_rows_csv(lf, options)
+    }
+
+    /// `lf` with each column `types` names read as its type, lazily; `typing` records
+    /// them and the frame before, for the count of the values that did not fit, and a
+    /// note names the ones the frame does not have.
+    fn declare_types(
+        mut lf: LazyFrame,
+        types: &[(String, crate::column_types::ColumnType)],
+        typing: &mut Typing,
+    ) -> Result<LazyFrame> {
+        if types.is_empty() {
+            return Ok(lf);
+        }
+        let schema = lf.collect_schema()?;
+        let mut exprs = Vec::with_capacity(types.len());
+        let mut missing = Vec::new();
+        for (name, ty) in types {
+            match schema.get(name.as_str()) {
+                Some(from) => {
+                    exprs.push(ty.expr(name, from).alias(name.as_str()));
+                    typing.typed.push(crate::column_types::Typed {
+                        column: name.clone(),
+                        ty: ty.clone(),
+                        from: from.clone(),
+                    });
+                }
+                None => missing.push(name.as_str()),
+            }
+        }
+        if !missing.is_empty() {
+            typing.notes.push(crate::notes::Note {
+                summary: format!(
+                    "typed in the spec, not in the file: {}",
+                    crate::notes::some_names(&missing)
+                ),
+                scope: "the spec's [columns]".to_string(),
+                read_as_text: None,
+                passed_over: None,
+            });
+        }
+        if exprs.is_empty() {
+            return Ok(lf);
+        }
+        typing.source = Some(lf.clone());
+        Ok(lf.with_columns(exprs))
+    }
+
+    /// `reader`, the scan of the file at `path`, reading some columns as text: those a
+    /// spec gives a type, which [`Self::declare_types`] types, a value that does not fit
+    /// null rather than a failed read; and, while `read.infer_types` types text, those
+    /// whose first rows hold a number with a leading zero (`02134`), which Polars would
+    /// read as an integer and lose. `window` is those rows when the read has them;
+    /// otherwise they are read, up to the rows a scan infers its types from.
+    pub(crate) fn scan_some_as_text(
+        reader: LazyCsvReader,
+        options: &OpenOptions,
+        header: Option<&[String]>,
+        path: &Path,
+        window: Option<&[Vec<String>]>,
+        text: &mut Vec<String>,
+    ) -> Result<LazyCsvReader> {
+        if options.has_header == Some(false) {
+            return Ok(reader);
+        }
+        let names: Vec<String> = options
+            .delimited
+            .as_ref()
+            .map(|read| {
+                read.delimited()
+                    .types
+                    .iter()
+                    .map(|(name, _)| name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let zeros: Vec<usize> = match &options.parse_strings {
+            None => Vec::new(),
+            Some(_) => {
+                let read;
+                let window = match window {
+                    Some(window) => window,
+                    None => {
+                        read = crate::spec_union::head_window(path, options).unwrap_or_default();
+                        &read
+                    }
+                };
+                let width = window.iter().map(Vec::len).max().unwrap_or(0);
+                (0..width)
+                    .filter(|&at| {
+                        window.iter().any(|row| {
+                            row.get(at)
+                                .is_some_and(|v| crate::column_types::has_leading_zero(v))
+                        })
+                    })
+                    .collect()
+            }
+        };
+        if names.is_empty() && zeros.is_empty() {
+            return Ok(reader);
+        }
+        let header = header.map(<[String]>::to_vec);
+        let target = options.parse_strings.clone();
+        let read_as_text = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let said = read_as_text.clone();
+        let reader = reader.with_schema_modify(move |mut schema| {
+            let raw: Vec<PlSmallStr> = schema.iter_names().cloned().collect();
+            let shown = crate::csv_dialect::shown_names(&raw, header.as_deref());
+            for (at, (raw, shown)) in raw.iter().zip(&shown).enumerate() {
+                let inferred = match &target {
+                    Some(ParseStringsTarget::All) => true,
+                    Some(ParseStringsTarget::Columns(columns)) => columns.contains(shown),
+                    None => false,
+                };
+                if names.contains(shown) || (inferred && zeros.contains(&at)) {
+                    schema.with_column(raw.clone(), DataType::String);
+                    if let Ok(mut said) = said.lock() {
+                        said.push(raw.to_string());
+                    }
+                }
+            }
+            Ok(schema)
+        })?;
+        if let Ok(mut read) = read_as_text.lock() {
+            text.append(&mut read);
+        }
+        Ok(reader)
     }
 
     /// If options.skip_tail_rows is set, run a count query and slice the LazyFrame to drop that many rows from the end. Used for CSV with trailing garbage/footer.
@@ -3915,48 +4287,21 @@ impl DataTableState {
         Ok(lf.slice(0, keep))
     }
 
-    /// Try to detect a date format from a sample string (first format that parses).
-    /// Returns None if no format matches, so we can avoid passing format: None to Polars (which can error).
+    /// The first date format `sample` reads in. `None` when none does, so Polars is
+    /// never handed `format: None`, which can fail.
     fn infer_date_format_from_sample(sample: &str) -> Option<&'static str> {
-        const DATE_FMTS: &[&str] = &[
-            "%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y%m%d", "%d-%m-%Y", "%d/%m/%Y", "%d.%m.%Y",
-            "%m-%d-%Y", "%m/%d/%Y",
-        ];
-        DATE_FMTS
-            .iter()
-            .find(|fmt| NaiveDate::parse_from_str(sample, fmt).is_ok())
+        crate::column_types::formats_reading(&DataType::Date, sample)
+            .first()
             .copied()
     }
 
-    /// Try to detect a datetime format from a sample string.
     fn infer_datetime_format_from_sample(sample: &str) -> Option<&'static str> {
-        const DATETIME_FMTS: &[&str] = &[
-            // ISO 8601 with an offset. `%#z` takes `Z`, `+05:00`, `-0500` and `+05`;
-            // a format with an offset makes Polars read the column into UTC.
-            "%Y-%m-%dT%H:%M:%S%.f%#z",
-            "%Y-%m-%d %H:%M:%S%.f%#z",
-            "%Y-%m-%dT%H:%M%#z",
-            "%Y-%m-%dT%H:%M:%S%.f",
-            "%Y-%m-%dT%H:%M:%S",
-            "%Y-%m-%dT%H:%M",
-            "%Y-%m-%d %H:%M:%S%.f",
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%d %H:%M",
-            "%Y-%m-%d",
-            "%d-%m-%YT%H:%M:%S%.f",
-            "%d-%m-%YT%H:%M:%S",
-            "%d-%m-%Y %H:%M:%S%.f",
-            "%d-%m-%Y %H:%M:%S",
-            "%d/%m/%YT%H:%M:%S%.f",
-            "%d/%m/%YT%H:%M:%S",
-            "%d/%m/%Y %H:%M:%S",
-            "%Y%m%dT%H%M%S%.f",
-            "%Y%m%d %H%M%S",
-        ];
-        DATETIME_FMTS
-            .iter()
-            .find(|fmt| NaiveDateTime::parse_from_str(sample, fmt).is_ok())
-            .copied()
+        crate::column_types::formats_reading(
+            &DataType::Datetime(TimeUnit::Microseconds, None),
+            sample,
+        )
+        .first()
+        .copied()
     }
 
     /// Parse a string ChunkedArray into a Duration ChunkedArray (nanoseconds). Uses Polars duration
@@ -3977,18 +4322,9 @@ impl DataTableState {
         int_ca.into_duration(TimeUnit::Nanoseconds)
     }
 
-    /// Try to detect a time format from a sample string (HH:MM:SS, HH:MM, with optional fractional seconds).
     fn infer_time_format_from_sample(sample: &str) -> Option<&'static str> {
-        const TIME_FMTS: &[&str] = &[
-            "%H:%M:%S%.9f",
-            "%H:%M:%S%.6f",
-            "%H:%M:%S%.3f",
-            "%H:%M:%S",
-            "%H:%M",
-        ];
-        TIME_FMTS
-            .iter()
-            .find(|fmt| NaiveTime::parse_from_str(sample, fmt).is_ok())
+        crate::column_types::formats_reading(&DataType::Time, sample)
+            .first()
             .copied()
     }
 
@@ -3998,11 +4334,15 @@ impl DataTableState {
         lf: LazyFrame,
         options: &OpenOptions,
         read: &mut Vec<String>,
+        except: &[String],
+        typing: &mut Typing,
     ) -> Result<LazyFrame> {
         let Some(target) = &options.parse_strings else {
             return Ok(lf);
         };
-        Self::type_string_columns(
+        let before = lf.clone();
+        let mut typed = Vec::new();
+        let lf = Self::type_string_columns(
             lf,
             target,
             options.parse_strings_sample_rows,
@@ -4011,7 +4351,16 @@ impl DataTableState {
                 numbers: true,
             },
             read,
-        )
+            except,
+            &mut typed,
+        )?;
+        // The columns it typed are counted as the spec's are, over the frame before
+        // either: the spec's typing leaves these columns as they were read.
+        if !typed.is_empty() {
+            typing.source.get_or_insert(before);
+            typing.typed.extend(typed);
+        }
+        Ok(lf)
     }
 
     /// Dates and timestamps a JSON file holds as strings, typed the way a CSV's are.
@@ -4034,6 +4383,8 @@ impl DataTableState {
                 numbers: false,
             },
             read,
+            &[],
+            &mut Vec::new(),
         )
     }
 
@@ -4099,11 +4450,15 @@ impl DataTableState {
         sample_rows: usize,
         types: StringTypes,
         read: &mut Vec<String>,
+        except: &[String],
+        typed: &mut Vec<crate::column_types::Typed>,
     ) -> Result<LazyFrame> {
         // The scan already inferred the schema; the sample below is the one read.
         let schema = lf.clone().collect_schema()?;
         let string_cols: Vec<String> = schema
             .iter()
+            // A column given a type keeps it.
+            .filter(|(name, _)| !except.iter().any(|e| e == name.as_str()))
             .filter(|(_name, dtype)| **dtype == DataType::String)
             .map(|(name, _)| name.to_string())
             .collect();
@@ -4159,6 +4514,11 @@ impl DataTableState {
                         let first_val: Option<&str> = str_ca
                             .iter()
                             .find_map(|o: Option<&str>| o.filter(|s: &&str| !s.is_empty()));
+                        // `02134`, `007`: a ZIP code or an ID, not a number.
+                        let zeros = str_ca
+                            .iter()
+                            .flatten()
+                            .any(crate::column_types::has_leading_zero);
                         let (mut t, mut date_fmt, mut datetime_fmt, mut time_fmt) = match str_ca
                             .as_date(None, true)
                         {
@@ -4214,7 +4574,7 @@ impl DataTableState {
                                     (InferredType::String, None, None, None)
                                 };
                         }
-                        if matches!(t, InferredType::String) && types.numbers {
+                        if matches!(t, InferredType::String) && types.numbers && !zeros {
                             (t, date_fmt, datetime_fmt, time_fmt) =
                                 match s.strict_cast(&DataType::Int64) {
                                     Ok(as_int) if accept_type(as_int.null_count()) => {
@@ -4223,7 +4583,7 @@ impl DataTableState {
                                     _ => (InferredType::String, None, None, None),
                                 };
                         }
-                        if matches!(t, InferredType::String) && types.numbers {
+                        if matches!(t, InferredType::String) && types.numbers && !zeros {
                             (t, date_fmt, datetime_fmt, time_fmt) =
                                 match s.strict_cast(&DataType::Float64) {
                                     Ok(as_float) if accept_type(as_float.null_count()) => {
@@ -4239,10 +4599,6 @@ impl DataTableState {
             let base = col(PlSmallStr::from(col_name.as_str()))
                 .str()
                 .strip_chars(whitespace_pat.clone());
-            // Treat blank as null in the applied pipeline so blanks become null in the result.
-            let base_with_nulls = when(base.clone().eq(lit(PlSmallStr::from_static(""))))
-                .then(Null {}.lit())
-                .otherwise(base.clone());
             let trimmed = format!(
                 "pl.col({}).str.strip_chars(\" \\t\\n\\r\")",
                 py_str(col_name)
@@ -4254,7 +4610,7 @@ impl DataTableState {
             };
             python.push(match &inferred {
                 InferredType::Date => format!(
-                    "{blank_null}.str.to_date({}strict=False, exact=False)",
+                    "{blank_null}.str.to_date({}strict=False)",
                     format_arg(&date_fmt)
                 ),
                 InferredType::Datetime => format!(
@@ -4277,67 +4633,35 @@ impl DataTableState {
                 InferredType::String if types.numbers => trimmed.clone(),
                 InferredType::String => String::new(),
             });
-            let expr = match inferred {
-                InferredType::Date => {
-                    let opts = StrptimeOptions {
-                        format: date_fmt.as_deref().map(PlSmallStr::from),
-                        strict: false,
-                        exact: false,
-                        cache: true,
-                    };
-                    base_with_nulls
-                        .clone()
-                        .str()
-                        .to_date(opts)
-                        .alias(PlSmallStr::from(col_name.as_str()))
-                }
-                InferredType::Datetime => Self::datetime_from_str(
-                    base_with_nulls.clone(),
-                    datetime_fmt.as_deref().unwrap_or_default(),
-                )
-                .alias(name),
-                InferredType::Time => {
-                    let opts = StrptimeOptions {
-                        format: time_fmt.as_deref().map(PlSmallStr::from),
-                        strict: false,
-                        exact: true,
-                        cache: true,
-                    };
-                    base_with_nulls
-                        .clone()
-                        .str()
-                        .to_time(opts)
-                        .alias(PlSmallStr::from(col_name.as_str()))
-                }
-                // No strptime for Duration in Polars; parse via map using Duration::try_parse.
-                InferredType::Duration => base_with_nulls
-                    .clone()
-                    .map(
-                        |c: Column| {
-                            let str_ca = c.str()?;
-                            let duration_ca = Self::string_chunked_to_duration_ns(str_ca);
-                            Ok(duration_ca.into_column())
-                        },
-                        |_schema: &Schema, field: &Field| {
-                            Ok(Field::new(
-                                field.name().clone(),
-                                DataType::Duration(TimeUnit::Nanoseconds),
-                            ))
-                        },
-                    )
-                    .alias(PlSmallStr::from(col_name.as_str())),
-                InferredType::Int64 => base_with_nulls
-                    .clone()
-                    .cast(DataType::Int64)
-                    .alias(PlSmallStr::from(col_name.as_str())),
-                InferredType::Float64 => base_with_nulls
-                    .cast(DataType::Float64)
-                    .alias(PlSmallStr::from(col_name.as_str())),
+            // The one way a column is given a type: the spec's and the table's too.
+            let ty = |dtype: DataType, format: Option<String>| crate::column_types::ColumnType {
+                dtype,
+                format,
+            };
+            let ty = match inferred {
+                InferredType::Date => ty(DataType::Date, date_fmt),
+                InferredType::Datetime => ty(
+                    DataType::Datetime(TimeUnit::Microseconds, None),
+                    datetime_fmt,
+                ),
+                InferredType::Time => ty(DataType::Time, time_fmt),
+                InferredType::Duration => ty(DataType::Duration(TimeUnit::Nanoseconds), None),
+                InferredType::Int64 => ty(DataType::Int64, None),
+                InferredType::Float64 => ty(DataType::Float64, None),
                 // Trimmed where every column is text; left as read where the
                 // writer chose a string.
-                InferredType::String if types.numbers => base.alias(name),
+                InferredType::String if types.numbers => {
+                    exprs.push(base.alias(name));
+                    continue;
+                }
                 InferredType::String => continue,
             };
+            let expr = ty.expr(col_name, &DataType::String).alias(name);
+            typed.push(crate::column_types::Typed {
+                column: col_name.clone(),
+                ty,
+                from: DataType::String,
+            });
             exprs.push(expr);
         }
         let python: Vec<String> = python.into_iter().filter(|p| !p.is_empty()).collect();
@@ -4431,6 +4755,7 @@ impl DataTableState {
                         } else {
                             xz2::read::XzDecoder::new(file).read_to_end(&mut decompressed)?;
                         }
+                        crate::nul_tail::trim(&mut decompressed);
                         let header = Self::csv_header_names(options, || {
                             Ok(std::io::Cursor::new(decompressed.as_slice()))
                         })?;
@@ -4455,7 +4780,14 @@ impl DataTableState {
                     }
                 };
                 let mut read = Vec::new();
-                let lf = Self::finish_csv_frame(df.lazy(), options, header.as_deref(), &mut read)?;
+                let mut typing = Typing::default();
+                let lf = Self::finish_csv_frame(
+                    df.lazy(),
+                    options,
+                    header.as_deref(),
+                    &mut read,
+                    &mut typing,
+                )?;
                 let mut state = Self::new(
                     lf,
                     options.pages_lookahead,
@@ -4467,6 +4799,7 @@ impl DataTableState {
                 state.row_numbers = options.row_numbers;
                 state.row_start_index = options.row_start_index;
                 state.read_python = read;
+                state.take_typing(typing);
                 Ok(state)
             } else {
                 // Decompress to temp file, then lazy scan
@@ -4531,11 +4864,20 @@ impl DataTableState {
     fn scan_csv_file(path: &Path, options: &OpenOptions) -> Result<Self> {
         let header = Self::csv_header_names_of(options, path, None)?;
         let nv = Self::build_null_values_for_csv(options, path, header.as_deref())?;
-        let reader = LazyCsvReader::new(PlRefPath::try_from_path(path)?)
-            .with_glob(crate::source::expands_as_glob(path));
-        let lf = Self::configure_csv_reader(reader, options, nv.as_ref()).finish()?;
+        let reader = Self::csv_reader_of(path)?;
+        let reader = Self::configure_csv_reader(reader, options, nv.as_ref());
+        let mut typing = Typing::default();
+        let lf = Self::scan_some_as_text(
+            reader,
+            options,
+            header.as_deref(),
+            path,
+            None,
+            &mut typing.text,
+        )?
+        .finish()?;
         let mut read = Vec::new();
-        let lf = Self::finish_csv_frame(lf, options, header.as_deref(), &mut read)?;
+        let lf = Self::finish_csv_frame(lf, options, header.as_deref(), &mut read, &mut typing)?;
         let mut state = Self::new(
             lf,
             options.pages_lookahead,
@@ -4547,6 +4889,7 @@ impl DataTableState {
         state.row_numbers = options.row_numbers;
         state.row_start_index = options.row_start_index;
         state.read_python = read;
+        state.take_typing(typing);
         Ok(state)
     }
 
@@ -4587,20 +4930,99 @@ impl DataTableState {
         let mut lazy_frames = Vec::with_capacity(paths.len());
         // Python reads the files as one scan: the first file's renames stand for all.
         let mut read = Vec::new();
-        for (i, p) in paths.iter().enumerate() {
+        // Files with nothing in them: no header, so no columns to stack.
+        let mut no_header: Vec<&Path> = Vec::new();
+        // Read through a spec, each file's header pass reads its units and the lines its
+        // types are inferred from too, for lining the files up by name.
+        let spec = options.delimited.as_ref().map(|read| read.delimited());
+        let mut heads = Vec::new();
+        let mut read_text = Vec::new();
+        for p in paths {
             let p = p.as_ref();
-            let header = Self::csv_header_names_of(options, p, None)?;
-            let nv = Self::build_null_values_for_csv(options, p, header.as_deref())?;
-            let reader = LazyCsvReader::new(PlRefPath::try_from_path(p)?)
-                .with_glob(crate::source::expands_as_glob(p));
-            let lf = Self::configure_csv_reader(reader, options, nv.as_ref()).finish()?;
-            let record = (i == 0).then_some(&mut read);
-            lazy_frames.push(Self::name_csv_columns(lf, header.as_deref(), record)?);
+            let in_file = |e: color_eyre::Report| crate::error_display::in_file(p, e);
+            let head_read = match spec {
+                Some(spec) => crate::spec_union::read_head(p, options, spec).map(Some),
+                None => Ok(None),
+            };
+            let head = match head_read {
+                Err(e) if crate::csv_dialect::is_blank_file(&e) => {
+                    no_header.push(p);
+                    continue;
+                }
+                head => head.map_err(in_file)?,
+            };
+            let header = match &head {
+                Some(head) => head.names.clone(),
+                None => match Self::csv_header_names_of(options, p, None) {
+                    Err(e) if crate::csv_dialect::is_blank_file(&e) => {
+                        no_header.push(p);
+                        continue;
+                    }
+                    header => header.map_err(in_file)?,
+                },
+            };
+            let nv =
+                Self::build_null_values_for_csv(options, p, header.as_deref()).map_err(in_file)?;
+            let reader = Self::csv_reader_of(p).map_err(in_file)?;
+            let reader = Self::configure_csv_reader(reader, options, nv.as_ref());
+            let window = head.as_ref().map(|head| head.window.as_slice());
+            // Python reads the files as one scan: the first file's columns stand for all.
+            let mut text = Vec::new();
+            let lf =
+                Self::scan_some_as_text(reader, options, header.as_deref(), p, window, &mut text)
+                    .map_err(in_file)?
+                    .finish()
+                    .map_err(|e| in_file(e.into()))?;
+            if lazy_frames.is_empty() {
+                read_text = text;
+            }
+            let record = lazy_frames.is_empty().then_some(&mut read);
+            // Polars reads the header line itself: a file with none has no columns, or
+            // one with a blank name.
+            if header.is_none() {
+                let raw = lf.clone().collect_schema();
+                let headless = match &raw {
+                    Err(PolarsError::NoData(_)) => true,
+                    Ok(schema) => {
+                        schema.is_empty()
+                            || (schema.len() == 1
+                                && schema.iter_names().all(|n| n.trim().is_empty()))
+                    }
+                    Err(_) => false,
+                };
+                if headless && Self::is_blank_text(p) {
+                    no_header.push(p);
+                    continue;
+                }
+            }
+            let named = Self::name_csv_columns(lf, header.as_deref(), record).map_err(in_file)?;
+            lazy_frames.push(named);
+            heads.extend(head);
         }
+        if lazy_frames.is_empty() {
+            return Err(color_eyre::eyre::eyre!(
+                "none of these {} files has a header: each is empty, or blank",
+                paths.len()
+            ));
+        }
+        let mut notes: Vec<crate::notes::Note> =
+            crate::notes::no_header(&no_header).into_iter().collect();
+        let mut units = None;
+        if spec.is_some() && lazy_frames.len() > 1 {
+            let lined = crate::spec_union::line_up(lazy_frames, &heads, options)?;
+            lazy_frames = lined.frames;
+            notes.extend(lined.notes);
+            units = Some(lined.units);
+        }
+        let mut typing = Typing {
+            text: read_text,
+            ..Typing::default()
+        };
         let lf = Self::finish_csv_values(
             polars::prelude::concat(lazy_frames.as_slice(), Self::union_of_files())?,
             options,
             &mut read,
+            &mut typing,
         )?;
         let mut state = Self::new(
             lf,
@@ -4613,7 +5035,20 @@ impl DataTableState {
         state.row_numbers = options.row_numbers;
         state.row_start_index = options.row_start_index;
         state.read_python = read;
+        state.read_notes = notes;
+        state.read_units = units;
+        state.take_typing(typing);
         Ok(state)
+    }
+
+    /// Whether the text of the file at `path`, to its NUL padding, is no more than
+    /// white space. Read up to a bound: past it, the file holds something.
+    fn is_blank_text(path: &Path) -> bool {
+        const MOST: u64 = 64 << 10;
+        let mut text = Vec::new();
+        Self::text_source(path, None)
+            .and_then(|source| source.take(MOST + 1).read_to_end(&mut text))
+            .is_ok_and(|n| n as u64 <= MOST && text.iter().all(u8::is_ascii_whitespace))
     }
 
     pub fn from_json(path: &Path, options: &OpenOptions) -> Result<Self> {
@@ -5571,6 +6006,140 @@ impl DataTableState {
     /// the cheap Parquet-footer count source: once `lf` carries a filter/query/group, the
     /// row count no longer equals the sum of file footers.
     ///
+    /// A view of `sample`, drawn from `source` into `rows`, whose rows have the
+    /// columns of `schema`. It starts empty and takes rows with
+    /// [`Self::sample_grew`]. `through` when the sample was drawn from the view's
+    /// query or filters, rather than the source under them.
+    pub(crate) fn sampled_from(
+        source: DataTableState,
+        sample: crate::sampling::Sample,
+        schema: &Schema,
+        rows: Arc<crate::table_sample::SampleRows>,
+        through: bool,
+        path: Option<crate::table_sample::DrawPath>,
+    ) -> Result<Self> {
+        let mut view = source.sample_view(DataFrame::empty_with_schema(schema))?;
+        let frame = scanned_frame(&view.original_lf)
+            .ok_or_else(|| color_eyre::eyre::eyre!("a sample's frame has no rows to scan"))?;
+        view.sampled = Some(Box::new(Sampled {
+            source: Box::new(source),
+            sample,
+            rows,
+            frame,
+            through,
+            drawn: None,
+            path,
+        }));
+        Ok(view)
+    }
+
+    /// The view's sample, while it has one.
+    pub fn sampled(&self) -> Option<&Sampled> {
+        self.sampled.as_deref()
+    }
+
+    /// The view the sample was drawn from, or this one when it has none: where a new
+    /// sample is drawn from.
+    pub fn unsampled(&self) -> &DataTableState {
+        self.sampled
+            .as_ref()
+            .map_or(self, |sampled| sampled.source.as_ref())
+    }
+
+    /// The view the sample was drawn from, putting the sample down; `self` when it
+    /// has none.
+    pub(crate) fn into_unsampled(mut self) -> DataTableState {
+        match self.sampled.take() {
+            Some(sampled) => *sampled.source,
+            None => self,
+        }
+    }
+
+    /// Take the chunks the draw kept since the last call: every frame reads them, so
+    /// the query, filters and sort run over them too. `None` when there were none;
+    /// otherwise whether the rows on hand still stand. The view stays where it is,
+    /// and the rows on hand stand while nothing reorders them, since the new rows
+    /// come after them.
+    pub(crate) fn sample_grew(&mut self) -> Option<bool> {
+        let sampled = self.sampled.as_ref()?;
+        let chunks = sampled.rows.take_new();
+        if chunks.is_empty() {
+            return None;
+        }
+        // On the same buffers: each column takes the chunks' arrays, nothing copied.
+        let mut frame = (*sampled.frame).clone();
+        for chunk in &chunks {
+            frame.vstack_mut(chunk).ok()?;
+        }
+        Some(self.rebind_sample(Arc::new(frame), false))
+    }
+
+    /// The draw ended, having read what `drawn` says: the rows go into the order the
+    /// source holds them, once.
+    pub(crate) fn sample_drawn(&mut self, drawn: crate::table_sample::Drawn) {
+        let Some(sampled) = self.sampled.as_mut() else {
+            return;
+        };
+        // One chunk per column from here: the many the draw left would slow every
+        // read, and the chunks are let go so the rows are held once.
+        let ordered = sampled.rows.take_in_source_order().ok().flatten();
+        // A seeded read of one file needs no path; it was not one, then.
+        sampled.path = drawn.path;
+        sampled.drawn = Some(drawn);
+        if let Some(frame) = ordered {
+            self.rebind_sample(Arc::new(frame), true);
+        }
+    }
+
+    /// Every frame scans `frame` in place of the sample's last one. `reordered` when
+    /// the rows already shown changed places. Returns whether the rows on hand stand.
+    fn rebind_sample(&mut self, frame: Arc<DataFrame>, reordered: bool) -> bool {
+        let Some(old) = self.sampled.as_ref().map(|sampled| sampled.frame.clone()) else {
+            return false;
+        };
+        let rows_stand = !reordered
+            && self.sort_columns.is_empty()
+            && self.sort_ascending
+            && self.scan_is_the_root();
+        let rows = frame.height();
+        self.each_frame(|lf| crate::table_sample::rebind(&mut lf.logical_plan, &old, &frame));
+        if let Some(sampled) = self.sampled.as_mut() {
+            sampled.frame = frame;
+        }
+        self.invalidate_num_rows();
+        if self.is_pristine() {
+            self.set_num_rows(rows);
+        } else if self.scan_is_the_root() {
+            self.pristine_rows = Some(rows);
+        }
+        if !rows_stand {
+            self.drop_buffer();
+        }
+        self.needs_recollect = true;
+        rows_stand
+    }
+
+    /// Bytes a row of a sample of this view takes: of the source's columns when it
+    /// is drawn from the source, of the view's when from the view, every column of
+    /// either, shown or not.
+    pub(crate) fn sample_row_bytes(&self, from_source: bool) -> usize {
+        let schema = if from_source {
+            &self.original_schema
+        } else {
+            &self.schema
+        };
+        let columns: Vec<String> = schema
+            .iter_names()
+            .filter(|name| name.as_str() != crate::schema_union::DRIFT_COLUMN)
+            .map(|name| name.to_string())
+            .collect();
+        // What the table measured, when it measured these columns.
+        if !from_source && columns.len() == self.column_order.len() {
+            return self.bytes_per_row();
+        }
+        estimate_bytes_per_row(schema, &columns, &self.column_bytes)
+    }
+
     /// Draws from the shared counter rather than incrementing, so a mutation here can
     /// never land on the value a later dataset is about to be seeded with.
     pub(crate) fn invalidate_num_rows(&mut self) {
@@ -5605,7 +6174,8 @@ impl DataTableState {
     }
 
     fn is_pristine(&self) -> bool {
-        self.filters.is_empty()
+        self.column_changes.is_empty()
+            && self.filters.is_empty()
             && self.sort_columns.is_empty()
             && self.sort_ascending
             && self.active_query.is_empty()
@@ -6331,6 +6901,13 @@ impl DataTableState {
         if let Some(pushdown) = &self.pushdown {
             notes.extend(pushdown.notes());
         }
+        notes.extend(self.unfit_notes.iter().flatten().cloned());
+        notes.extend(self.changes_dropped.iter().cloned());
+        if let Some((version, unfit)) = &self.changes_unfit
+            && *version == self.changes_version
+        {
+            notes.extend(unfit.iter().cloned());
+        }
         notes
     }
 
@@ -6532,6 +7109,12 @@ impl DataTableState {
         // reader the user most wants to know about.
         !self.notes.is_empty()
             || !self.open_notes.is_empty()
+            || self.unfit_notes.as_ref().is_some_and(|n| !n.is_empty())
+            || !self.changes_dropped.is_empty()
+            || self
+                .changes_unfit
+                .as_ref()
+                .is_some_and(|(v, n)| *v == self.changes_version && !n.is_empty())
             || self
                 .pushdown
                 .as_ref()
@@ -7194,19 +7777,7 @@ impl DataTableState {
                     return;
                 }
             };
-            self.locked_df = if self.has_list_columns() {
-                match self.format_grouped_dataframe(locked_df) {
-                    Ok(formatted_df) => Some(formatted_df),
-                    Err(e) => {
-                        self.error = Some(PolarsError::ComputeError(
-                            crate::error_display::user_message_from_report(&e, None).into(),
-                        ));
-                        return;
-                    }
-                }
-            } else {
-                Some(locked_df)
-            };
+            self.locked_df = Some(locked_df);
         } else {
             self.locked_df = None;
         }
@@ -7227,19 +7798,7 @@ impl DataTableState {
                     return;
                 }
             };
-            self.df = if self.has_list_columns() {
-                match self.format_grouped_dataframe(scroll_df) {
-                    Ok(formatted_df) => Some(formatted_df),
-                    Err(e) => {
-                        self.error = Some(PolarsError::ComputeError(
-                            crate::error_display::user_message_from_report(&e, None).into(),
-                        ));
-                        return;
-                    }
-                }
-            } else {
-                Some(scroll_df)
-            };
+            self.df = Some(scroll_df);
         }
         if self.error.is_some() {
             self.error = None;
@@ -7275,11 +7834,7 @@ impl DataTableState {
                 .map(|s| s.as_str())
                 .collect();
             if let Ok(locked_df) = full_df.select(locked_names) {
-                self.locked_df = if self.has_list_columns() {
-                    self.format_grouped_dataframe(locked_df).ok()
-                } else {
-                    Some(locked_df)
-                };
+                self.locked_df = Some(locked_df);
             }
         } else {
             self.locked_df = None;
@@ -7295,11 +7850,7 @@ impl DataTableState {
             self.df = None;
         } else {
             if let Ok(scroll_df) = full_df.select(scroll_names) {
-                self.df = if self.has_list_columns() {
-                    self.format_grouped_dataframe(scroll_df).ok()
-                } else {
-                    Some(scroll_df)
-                };
+                self.df = Some(scroll_df);
             }
         }
     }
@@ -7374,41 +7925,6 @@ impl DataTableState {
         // The displayed portion [start_row, start_row + visible_rows) is a subset
         // We'll slice the displayed portion when rendering based on offset
         // No action needed here - the buffer is stored, slicing happens at render time
-    }
-
-    fn format_grouped_dataframe(&self, df: DataFrame) -> Result<DataFrame> {
-        let schema = df.schema();
-        let mut new_series = Vec::new();
-
-        for (col_name, dtype) in schema.iter() {
-            let col = df.column(col_name)?;
-            if matches!(dtype, DataType::List(_)) {
-                let string_series: Series = col
-                    .list()?
-                    .amortized_iter()
-                    .map(|opt_list| {
-                        opt_list.map(|list_series| {
-                            let list_series = list_series.as_ref();
-                            let values: Vec<String> = list_series
-                                .iter()
-                                .take(10)
-                                .map(|v| crate::exact::str_value(&v).to_string())
-                                .collect();
-                            if list_series.len() > 10 {
-                                format!("[{}...] ({} items)", values.join(", "), list_series.len())
-                            } else {
-                                format!("[{}]", values.join(", "))
-                            }
-                        })
-                    })
-                    .collect();
-                new_series.push(string_series.with_name(col_name.as_str().into()).into());
-            } else {
-                new_series.push(col.clone());
-            }
-        }
-
-        Ok(DataFrame::new_infer_height(new_series)?)
     }
 
     /// Returns true if a buffer collect is needed after the scroll.
@@ -8008,12 +8524,7 @@ impl DataTableState {
     /// them. For fitting a column that may be scrolled out of view.
     fn page_column(&self, name: &str, offset: usize, len: usize) -> Option<DataFrame> {
         let column = self.buffered_df.as_ref()?.select([name]).ok()?;
-        let page = visible_slice(&column, offset, len)?;
-        if self.has_list_columns() {
-            self.format_grouped_dataframe(page).ok()
-        } else {
-            Some(page)
-        }
+        visible_slice(&column, offset, len)
     }
 
     // Getter methods for view creation
@@ -8065,6 +8576,16 @@ impl DataTableState {
         &self.sort_descending
     }
 
+    /// The header's sort marks: the sidebar's sort, or else the ORDER BY of the SQL
+    /// in effect, while its own rows are on screen (not a group drilled into).
+    pub fn header_sort(&self) -> (Vec<String>, Vec<bool>) {
+        if self.sort_columns.is_empty() && self.grouped.is_none() {
+            self.query_order.iter().cloned().unzip()
+        } else {
+            (self.sort_columns.clone(), self.sort_descending.clone())
+        }
+    }
+
     /// The pivot/melt result in effect, for a snapshot that may need to put it back.
     pub fn reshaped_lf_clone(&self) -> Option<LazyFrame> {
         self.reshaped_lf.clone()
@@ -8079,7 +8600,9 @@ impl DataTableState {
     /// from this state would carry nothing — and, matching by schema, it
     /// would shadow real views in the apply gate as a well-used no-op.
     pub fn is_at_defaults(&self) -> bool {
-        self.active_query.is_empty()
+        self.sampled.is_none()
+            && self.column_changes.is_empty()
+            && self.active_query.is_empty()
             && self.active_sql_query.is_empty()
             && self.active_fuzzy_query.is_empty()
             && self.filters.is_empty()
@@ -8139,6 +8662,7 @@ impl DataTableState {
             sort_ascending: self.sort_ascending,
             active_query: self.active_query.clone(),
             active_sql_query: self.active_sql_query.clone(),
+            query_order: self.query_order.clone(),
             active_fuzzy_query: self.active_fuzzy_query.clone(),
             column_order: self.column_order.clone(),
             locked_columns_count: self.locked_columns_count,
@@ -8162,6 +8686,9 @@ impl DataTableState {
             notes: self.notes.clone(),
             notes_seen: self.notes_seen,
             view_notes: self.view_notes.clone(),
+            column_changes: self.column_changes.clone(),
+            changes_version: self.changes_version,
+            changes_dropped: self.changes_dropped.clone(),
             observed_bytes_per_row: self.observed_bytes_per_row,
             buffered_start_row: self.buffered_start_row,
             buffered_end_row: self.buffered_end_row,
@@ -8203,6 +8730,7 @@ impl DataTableState {
         self.sort_ascending = saved.sort_ascending;
         self.active_query = saved.active_query;
         self.active_sql_query = saved.active_sql_query;
+        self.query_order = saved.query_order;
         self.active_fuzzy_query = saved.active_fuzzy_query;
         self.column_order = saved.column_order;
         self.locked_columns_count = saved.locked_columns_count;
@@ -8227,6 +8755,9 @@ impl DataTableState {
         self.drift_column_present = saved.drift_column_present;
         self.view_numbered = saved.view_numbered;
         self.drift_groups = saved.drift_groups;
+        self.column_changes = saved.column_changes;
+        self.changes_version = saved.changes_version;
+        self.changes_dropped = saved.changes_dropped;
         self.notes = saved.notes;
         self.notes_seen = saved.notes_seen;
         self.view_notes = saved.view_notes;
@@ -8585,7 +9116,7 @@ impl DataTableState {
         self.group_source.is_some()
     }
 
-    /// Whether any column holds lists, which the table draws as text.
+    /// Whether any column holds lists.
     fn has_list_columns(&self) -> bool {
         self.schema
             .iter()
@@ -8659,6 +9190,7 @@ impl DataTableState {
             let text = match value {
                 AnyValue::Null => continue,
                 AnyValue::String(text) => text.to_string(),
+                AnyValue::List(items) => crate::exact::list_preview(&items),
                 // Drawn on the UI thread: Polars' display panics on a date past
                 // the calendar.
                 value => {
@@ -9480,9 +10012,352 @@ impl DataTableState {
         &self.read_python
     }
 
+    /// See the field: the notes the read made, for the open to carry to the dataset.
+    pub fn read_notes(&self) -> &[crate::notes::Note] {
+        &self.read_notes
+    }
+
+    /// See the field.
+    pub fn read_units(&self) -> Option<&[(String, String)]> {
+        self.read_units.as_deref()
+    }
+
+    /// The read's typing: its notes go with the read's, its columns are counted later.
+    fn take_typing(&mut self, mut typing: Typing) {
+        self.read_notes.append(&mut typing.notes);
+        self.typing = typing;
+    }
+
+    /// See [`Self::take_typing`]: what the scan hands the open, for the dataset.
+    pub(crate) fn typing(&self) -> &Typing {
+        &self.typing
+    }
+
+    /// What is left to count of the values the read's types made null: the frame
+    /// before the types, and the columns. `None` once counted, or with nothing typed.
+    pub(crate) fn unfit_to_count(&self) -> Option<(LazyFrame, Vec<crate::column_types::Typed>)> {
+        if self.unfit_notes.is_some() || self.typing.typed.is_empty() {
+            return None;
+        }
+        Some((self.typing.source.clone()?, self.typing.typed.clone()))
+    }
+
+    /// The view's column types and made columns, in the order asked.
+    pub fn column_changes(&self) -> &[crate::column_types::ColumnChange] {
+        &self.column_changes
+    }
+
+    /// The columns the view gave a type: the type row draws them in the accent.
+    pub fn retyped_columns(&self) -> Vec<String> {
+        self.column_changes
+            .iter()
+            .filter(|c| matches!(c.change, crate::column_types::Change::Typed(_)))
+            .map(|c| c.name.clone())
+            .collect()
+    }
+
+    /// `column`'s type before the view's: as the read gave it, or as the view made it.
+    pub fn type_as_read(&self, column: &str) -> Option<DataType> {
+        let base = self.base_lf.clone().collect_schema().ok()?;
+        base.get(column)
+            .or_else(|| self.schema.get(column))
+            .cloned()
+    }
+
+    /// Up to `n` of `column`'s values as read that are not blank, as text: from the
+    /// rows on hand, or from the first rows when the view has typed the column.
+    pub fn values_on_screen(&self, column: &str, n: usize) -> Vec<String> {
+        let from_buffer = self.column_type_of(column).is_none();
+        let df = if from_buffer {
+            self.buffered_df.clone()
+        } else {
+            self.base_lf
+                .clone()
+                .select([col(column)])
+                .limit(n as IdxSize * 10)
+                .collect()
+                .ok()
+        };
+        let Some(values) = df.and_then(|df| df.column(column).ok().cloned()) else {
+            return Vec::new();
+        };
+        let Ok(text) = values.cast(&DataType::String) else {
+            return Vec::new();
+        };
+        let Ok(text) = text.str().cloned() else {
+            return Vec::new();
+        };
+        text.iter()
+            .flatten()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .take(n)
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The type the view gives `column`, if it gives one.
+    pub fn column_type_of(&self, column: &str) -> Option<&crate::column_types::ColumnType> {
+        self.column_changes.iter().find_map(|c| match &c.change {
+            crate::column_types::Change::Typed(ty) if c.name == column => Some(ty),
+            _ => None,
+        })
+    }
+
+    /// `column` as `ty`, or as read again with `None`. The view's own type wins over
+    /// what the read gave the column. Lazy: the next rows read are typed.
+    pub fn set_column_type(&mut self, column: &str, ty: Option<crate::column_types::ColumnType>) {
+        use crate::column_types::{Change, ColumnChange};
+        self.column_changes
+            .retain(|c| !(c.name == column && matches!(c.change, Change::Typed(_))));
+        if let Some(ty) = ty {
+            self.column_changes.push(ColumnChange {
+                name: column.to_string(),
+                change: Change::Typed(ty),
+            });
+        }
+        self.column_changes_changed();
+    }
+
+    /// A column made from others, as a spec's derived column is, before the first
+    /// column it is made from, which stays. Its name may not be taken.
+    pub fn add_made_column(
+        &mut self,
+        derived: crate::column_types::Derived,
+    ) -> std::result::Result<(), String> {
+        use crate::column_types::{Change, ColumnChange};
+        if self.schema.contains(&derived.name) {
+            return Err(format!("a column is named {} already", derived.name));
+        }
+        for from in &derived.from {
+            if !self.schema.contains(from) {
+                return Err(format!("no column {from}"));
+            }
+        }
+        let first = derived.from[0].clone();
+        let at = self
+            .column_order
+            .iter()
+            .position(|c| *c == first)
+            .unwrap_or(self.column_order.len());
+        self.column_order.insert(at, derived.name.clone());
+        self.column_changes.push(ColumnChange {
+            name: derived.name,
+            change: Change::Made {
+                from: derived.from,
+                kind: derived.kind.name().to_string(),
+                format: derived.format,
+            },
+        });
+        self.column_changes_changed();
+        Ok(())
+    }
+
+    /// A saved view's column changes, in place of the view's own. A change whose column
+    /// this data does not have is left out, with a note; the names left out are
+    /// returned.
+    pub fn set_column_changes(
+        &mut self,
+        changes: &[crate::column_types::ColumnChange],
+    ) -> Vec<String> {
+        self.column_changes = Vec::new();
+        let base = self
+            .base_lf
+            .clone()
+            .collect_schema()
+            .unwrap_or_else(|_| self.schema.clone());
+        let mut known: Vec<String> = base.iter_names().map(|n| n.to_string()).collect();
+        let mut dropped = Vec::new();
+        for change in changes {
+            let fits = match &change.change {
+                crate::column_types::Change::Typed(_) => known.contains(&change.name),
+                crate::column_types::Change::Made { from, .. } => {
+                    from.iter().all(|f| known.contains(f)) && change.derived().is_some()
+                }
+            };
+            if fits {
+                if !known.contains(&change.name) {
+                    known.push(change.name.clone());
+                }
+                self.column_changes.push(change.clone());
+            } else {
+                dropped.push(change.name.clone());
+            }
+        }
+        self.changes_dropped = if dropped.is_empty() {
+            Vec::new()
+        } else {
+            vec![crate::notes::Note {
+                summary: format!(
+                    "view steps left out, no such column: {}",
+                    crate::notes::some_names(&dropped)
+                ),
+                scope: "the view's column types".to_string(),
+                read_as_text: None,
+                passed_over: None,
+            }]
+        };
+        // The made columns go before their first source, as they did when made.
+        for change in &self.column_changes {
+            if let crate::column_types::Change::Made { from, .. } = &change.change
+                && !self.column_order.contains(&change.name)
+            {
+                let at = self
+                    .column_order
+                    .iter()
+                    .position(|c| *c == from[0])
+                    .unwrap_or(self.column_order.len());
+                self.column_order.insert(at, change.name.clone());
+            }
+        }
+        self.column_changes_changed();
+        dropped
+    }
+
+    /// Drop the view's column changes and their notes, as a new pipeline root does.
+    fn forget_column_changes(&mut self) {
+        if self.column_changes.is_empty() && self.changes_dropped.is_empty() {
+            return;
+        }
+        self.column_changes.clear();
+        self.changes_dropped.clear();
+        self.changes_version += 1;
+        self.changes_unfit = None;
+    }
+
+    /// After the column changes change: the schema shows them, a made column gone
+    /// leaves the column order, and the rows are read again.
+    fn column_changes_changed(&mut self) {
+        self.changes_version += 1;
+        let (changed, _) = self.with_column_changes(self.base_lf.clone());
+        if let Ok(schema) = changed.clone().collect_schema() {
+            self.schema = schema;
+        }
+        let schema = self.schema.clone();
+        self.column_order.retain(|c| schema.contains(c));
+        for name in schema.iter_names() {
+            if !self.column_order.iter().any(|c| c == name.as_str()) {
+                self.column_order.push(name.to_string());
+            }
+        }
+        self.widths.relearn();
+        self.drop_buffer();
+        self.apply_transformations();
+    }
+
+    /// `lf` with the view's column changes, in order, and what the count of the values
+    /// they made null needs: the frame with only the made columns, and the typed
+    /// columns with the types they had there. A change whose column is not in `lf` is
+    /// passed over.
+    fn with_column_changes(
+        &self,
+        mut lf: LazyFrame,
+    ) -> (
+        LazyFrame,
+        Option<(LazyFrame, Vec<crate::column_types::Typed>)>,
+    ) {
+        use crate::column_types::Change;
+        if self.column_changes.is_empty() {
+            return (lf, None);
+        }
+        let Ok(schema) = lf.collect_schema() else {
+            return (lf, None);
+        };
+        let mut schema = (*schema).clone();
+        let mut made = lf.clone();
+        let mut typed = Vec::new();
+        for change in &self.column_changes {
+            let name = PlSmallStr::from(change.name.as_str());
+            match &change.change {
+                Change::Typed(ty) => {
+                    let Some(from) = schema.get(&name).cloned() else {
+                        continue;
+                    };
+                    lf = lf.with_column(ty.expr(&change.name, &from).alias(name.clone()));
+                    typed.push(crate::column_types::Typed {
+                        column: change.name.clone(),
+                        ty: ty.clone(),
+                        from,
+                    });
+                    schema.with_column(name, ty.dtype.clone());
+                }
+                Change::Made { from, .. } => {
+                    let Some(derived) = change.derived() else {
+                        continue;
+                    };
+                    if !from.iter().all(|f| schema.contains(f.as_str())) {
+                        continue;
+                    }
+                    lf = lf.with_column(derived.expr().alias(name.clone()));
+                    made = made.with_column(derived.expr().alias(name.clone()));
+                    schema.with_column(name, DataType::Null);
+                }
+            }
+        }
+        let count = (!typed.is_empty()).then_some((made, typed));
+        (lf, count)
+    }
+
+    /// What is left to count of the values the view's column types made null: the
+    /// frame, the columns and the version of the changes it is for.
+    pub(crate) fn changes_unfit_to_count(
+        &self,
+    ) -> Option<(LazyFrame, Vec<crate::column_types::Typed>, u64)> {
+        if self
+            .changes_unfit
+            .as_ref()
+            .is_some_and(|(version, _)| *version == self.changes_version)
+        {
+            return None;
+        }
+        let (_, count) = self.with_column_changes(self.base_lf.clone());
+        let (source, typed) = count?;
+        Some((source, typed, self.changes_version))
+    }
+
+    /// The counts for the view's column types at `version`, as notes.
+    pub(crate) fn changes_unfit_counted(
+        &mut self,
+        version: u64,
+        unfit: &[crate::column_types::Unfit],
+    ) {
+        if version == self.changes_version {
+            // Something new to say: the `i` chip lights again.
+            if !unfit.is_empty() {
+                self.notes_seen = false;
+            }
+            self.changes_unfit = Some((
+                version,
+                crate::column_types::unfit_notes(unfit, "the view's column types"),
+            ));
+        }
+    }
+
+    /// The counts of the values the types made null, as notes.
+    pub(crate) fn unfit_counted(&mut self, unfit: &[crate::column_types::Unfit]) {
+        if !unfit.is_empty() {
+            self.notes_seen = false;
+        }
+        self.unfit_notes = Some(crate::column_types::unfit_notes(
+            unfit,
+            "counted over every row",
+        ));
+    }
+
     /// How `lf` was built: the base's steps, then the filters and the sort.
     fn view_steps(&self) -> Vec<Step> {
         let mut steps = self.base_steps.clone();
+        if !self.column_changes.is_empty() {
+            let said: Vec<String> = self
+                .column_changes
+                .iter()
+                .map(crate::column_types::ColumnChange::to_toml)
+                .collect();
+            steps.push(Step::Unreproducible(format!(
+                "datui typed columns as a format spec would: {}",
+                said.join("; ")
+            )));
+        }
         if !self.filters.is_empty() {
             let typed = self.typed_filters();
             let durations: Vec<String> = typed
@@ -9555,12 +10430,12 @@ impl DataTableState {
             self.view_notes = Vec::new();
             self.view_numbered = false;
             self.invalidate_num_rows();
-            self.lf = view.lf;
+            self.lf = self.with_column_changes(view.lf).0;
             self.restore_footer_count();
             self.collect();
             return;
         }
-        let mut lf = self.base_lf.clone();
+        let mut lf = self.with_column_changes(self.base_lf.clone()).0;
         self.view_numbered = self.row_numbers && self.wants_view_numbers();
         if self.view_numbered {
             lf = lf.with_row_index(crate::schema_union::DRIFT_COLUMN, None);
@@ -9925,6 +10800,9 @@ impl DataTableState {
                     // over a union's inputs: the nodes stable_order orders and the
                     // filter count_subquery_values_once rewrites keep their shape.
                     crate::past_calendar::guard_plan(&mut result_lf.logical_plan);
+                    // Read before datui orders the plan stably or by group keys: the
+                    // marks say what the statement asked for.
+                    let order = ordered_by(&result_lf.logical_plan);
                     let mut schema = match result_lf.clone().collect_schema() {
                         Ok(s) => s,
                         Err(e) => {
@@ -9983,7 +10861,12 @@ impl DataTableState {
                         sql: trimmed.to_string(),
                         ordered_by,
                     });
+                    let query_order = order
+                        .into_iter()
+                        .take_while(|(name, _)| schema.contains(name))
+                        .collect();
                     self.install_query_result(result_lf, schema, ActiveQuery::Sql(sql), 0, steps);
+                    self.query_order = query_order;
                     self.lineage = lineage;
                     self.install_sql_group_source(group_source.map(|(source, _)| source));
                 }
@@ -10234,6 +11117,8 @@ pub struct DataTable {
     /// Each column's unit from a delimited spec's unit row, for the type row: set at
     /// render.
     units: Vec<(String, String)>,
+    /// The columns the view gave a type: their type row is in the accent.
+    retyped: Vec<String>,
 }
 
 impl Default for DataTable {
@@ -10274,6 +11159,7 @@ impl Default for DataTable {
             match_cells: None,
             drawn_from: 0,
             units: Vec::new(),
+            retyped: Vec::new(),
         }
     }
 }
@@ -10288,36 +11174,25 @@ pub(crate) fn row_count_lf(lf: &LazyFrame) -> LazyFrame {
     lf.clone().select([len().cast(DataType::UInt64)])
 }
 
-/// The short name of a column's type, as the type row and the schema pane spell it.
-///
-/// Polars' own `Display` says `Datetime(Microseconds, None)`; the row under the header
-/// has room for one word.
-pub fn dtype_label(dtype: &DataType) -> String {
-    match dtype {
-        DataType::String => "str".to_string(),
-        DataType::Boolean => "bool".to_string(),
-        DataType::Int8 => "i8".to_string(),
-        DataType::Int16 => "i16".to_string(),
-        DataType::Int32 => "i32".to_string(),
-        DataType::Int64 => "i64".to_string(),
-        DataType::UInt8 => "u8".to_string(),
-        DataType::UInt16 => "u16".to_string(),
-        DataType::UInt32 => "u32".to_string(),
-        DataType::UInt64 => "u64".to_string(),
-        DataType::Float32 => "f32".to_string(),
-        DataType::Float64 => "f64".to_string(),
-        DataType::Date => "date".to_string(),
-        DataType::Datetime(_, _) => "datetime".to_string(),
-        DataType::Time => "time".to_string(),
-        DataType::Duration(_) => "duration".to_string(),
-        DataType::Binary => "binary".to_string(),
-        DataType::Null => "null".to_string(),
-        DataType::List(inner) => format!("list[{}]", dtype_label(inner)),
-        DataType::Struct(_) => "struct".to_string(),
-        other if other.is_categorical() => "cat".to_string(),
-        other if other.is_enum() => "enum".to_string(),
-        other if other.is_decimal() => "decimal".to_string(),
-        other => other.to_string().to_ascii_lowercase(),
+pub use crate::column_types::dtype_label;
+
+/// The columns a read gave a type, the frame before it did, and its notes.
+#[derive(Clone, Default)]
+pub struct Typing {
+    pub(crate) source: Option<LazyFrame>,
+    pub(crate) typed: Vec<crate::column_types::Typed>,
+    pub(crate) notes: Vec<crate::notes::Note>,
+    /// The columns the scan read as text, by the names it read them under, for Copy
+    /// as Python's `schema_overrides`.
+    pub(crate) text: Vec<String>,
+}
+
+impl std::fmt::Debug for Typing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Typing")
+            .field("typed", &self.typed)
+            .field("notes", &self.notes)
+            .finish_non_exhaustive()
     }
 }
 
@@ -11012,7 +11887,12 @@ impl DataTable {
                 cells.push(SliceCell::Null(glyph));
                 continue;
             }
-            let text = numfmt::format_any_value(&col_fmt, &value, scratch);
+            // A list is previewed here, for the cells on screen only: the buffer keeps
+            // it a list, as formatting a whole row group's lists stalled every scroll.
+            let text = match &value {
+                AnyValue::List(items) => Cow::Owned(crate::exact::list_preview(items)),
+                value => numfmt::format_any_value(&col_fmt, value, scratch),
+            };
             // A break or a tab would vanish from a cell and run the text together.
             // Only a cell's start can be drawn: measuring a huge value whole would
             // cost every frame what the value costs.
@@ -11201,6 +12081,8 @@ impl DataTable {
                 let mut lines = vec![cell_line(heading, name_w, col.right_align)];
                 if let Some(label) = &col.type_label {
                     let type_style = match col.colour {
+                        // A type the view gave, not the read: it shows.
+                        _ if self.retyped.contains(&col.name) => Style::default().fg(self.accent),
                         Some(c) => Style::default().fg(c),
                         None => Style::default().fg(self.dimmed),
                     };
@@ -11533,10 +12415,10 @@ impl StatefulWidget for DataTable {
     fn render(mut self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         // The view's own sort, not the grouped original's: it is what ordered the
         // rows being drawn, so the header marks can never disagree with them.
-        self.sort_columns = state.view_sort_columns().to_vec();
-        self.sort_descending = state.view_sort_descending().to_vec();
+        (self.sort_columns, self.sort_descending) = state.header_sort();
         self.current_column = state.current_column().map(str::to_string);
         self.units = state.units();
+        self.retyped = state.retyped_columns();
         // One column on the left is the rail: blank on every row but the one the
         // cursor is on, where it carries the accent. It also holds the "columns off to
         // the left" hint in the header, so no header name ever gets a character
@@ -11669,6 +12551,11 @@ impl StatefulWidget for DataTable {
             let mut leading_gap = false;
             if let Some(locked) = locked_slice {
                 let asked = state.locked_columns_count();
+                // The rule runs down the header and the rows on screen, and stops
+                // under the last: below it is no table to divide.
+                let rule_bottom = (area.y + header_h)
+                    .saturating_add(locked.height().min(rows_room) as u16)
+                    .min(area.bottom());
                 let mut fitted = self.fit_frozen_columns(
                     &locked,
                     locked.height().min(rows_room),
@@ -11711,7 +12598,7 @@ impl StatefulWidget for DataTable {
                     } else {
                         self.glyphs.rule
                     };
-                    for y in area.y..area.y + area.height {
+                    for y in area.y..rule_bottom {
                         let cell = &mut buf[(separator_x, y)];
                         cell.set_symbol(rule);
                         cell.set_style(Style::default().fg(self.separator_fg));
@@ -12414,6 +13301,8 @@ mod tests {
                 target,
                 1_000,
                 types,
+                &mut Vec::new(),
+                &[],
                 &mut Vec::new(),
             )
             .unwrap()
@@ -13982,6 +14871,61 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The ORDER BY of the SQL in effect is state, so it leaves its mark: the sort
+    /// mark on each column it orders by, as named in the result, until the sidebar
+    /// sorts or another query runs (#688, item 13).
+    #[cfg(feature = "sql")]
+    #[test]
+    fn a_sql_order_by_marks_the_header_until_the_sidebar_sorts() {
+        let df = df!("k" => [1i64, 2, 3], "v" => [3i64, 2, 1]).unwrap();
+        let marks = |sql: &str| {
+            let mut state =
+                DataTableState::from_lazyframe(df.clone().lazy(), &OpenOptions::default()).unwrap();
+            state.sql_query(sql.to_string());
+            assert!(state.error.is_none(), "{sql}: {:?}", state.error);
+            state.header_sort()
+        };
+        let owned = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            marks("SELECT v, k FROM df ORDER BY k DESC"),
+            (owned(&["k"]), vec![true])
+        );
+        assert_eq!(
+            marks("SELECT * FROM df ORDER BY k DESC, v LIMIT 2"),
+            (owned(&["k", "v"]), vec![true, false])
+        );
+        assert_eq!(
+            marks("SELECT v AS w, k FROM df ORDER BY w"),
+            (owned(&["w"]), vec![false]),
+            "named as in the result"
+        );
+        assert_eq!(
+            marks("SELECT k, SUM(v) AS s FROM df GROUP BY k ORDER BY s DESC"),
+            (owned(&["s"]), vec![true])
+        );
+        // An expression, or a column the result leaves out, leaves no mark.
+        assert_eq!(marks("SELECT * FROM df ORDER BY k + 1"), (vec![], vec![]));
+        assert_eq!(marks("SELECT v FROM df ORDER BY k"), (vec![], vec![]));
+        assert_eq!(marks("SELECT * FROM df"), (vec![], vec![]));
+
+        // On the header, and the sidebar's sort replaces it.
+        let mut state =
+            DataTableState::from_lazyframe(df.clone().lazy(), &OpenOptions::default()).unwrap();
+        state.sql_query("SELECT * FROM df ORDER BY k DESC".to_string());
+        state.collect();
+        let area = Rect::new(0, 0, 30, 6);
+        let mut buf = Buffer::empty(area);
+        DataTable::default().render(area, &mut buf, &mut state);
+        let header = row_string(&buf, area, 0);
+        let g = crate::glyphs::get();
+        assert!(header.contains(&format!("k{}", g.sort_desc)), "{header:?}");
+        state.sort_by(vec!["v".to_string()], vec![false]);
+        assert_eq!(state.header_sort(), (owned(&["v"]), vec![false]));
+        // A new query names its own order, or none.
+        state.sql_query("SELECT * FROM df".to_string());
+        assert_eq!(state.header_sort(), (vec![], vec![]));
     }
 
     /// A SQL ORDER BY keeps tied rows in order, as the sidebar's sort does: the page
@@ -17841,6 +18785,40 @@ mod tests {
         assert_eq!(buf[(sep + 1, 2)].bg, Color::Indexed(236));
     }
 
+    /// The frozen separator runs down the header and the rows, and stops under the
+    /// last: a grouped view of seven rows had it running down the empty screen.
+    #[test]
+    fn the_frozen_separator_stops_at_the_last_row() {
+        let lf = df!(
+            "carrier" => &["AA", "UA", "9E"],
+            "delay" => &[-9.9f64, 3.5, 12.25],
+        )
+        .unwrap()
+        .lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.visible_rows = 3;
+        state.set_locked_columns(1);
+        state.table_state.select(Some(0));
+        let area = Rect::new(0, 0, 30, 10);
+        let mut buf = Buffer::empty(area);
+        DataTable::default().render(area, &mut buf, &mut state);
+        let rule = crate::glyphs::get().rule;
+        let sep = (0..area.width)
+            .find(|&x| buf[(x, 0)].symbol() == rule)
+            .expect("a separator");
+        let ruled: Vec<u16> = (0..area.height)
+            .filter(|&y| buf[(sep, y)].symbol() == rule)
+            .collect();
+        let last = ruled.last().copied().unwrap();
+        assert_eq!(
+            ruled,
+            (0..=last).collect::<Vec<_>>(),
+            "unbroken to the last row"
+        );
+        let header = DataTable::default().header_height();
+        assert_eq!(last, header + 2, "under the third row, no further");
+    }
+
     /// A frozen column whose type is wider than its name and values still gets its
     /// whole width and the gap before the separator. The width pass left the type row
     /// out, so `id` over `i64` ran onto the line (`i64│`) and a one-letter string
@@ -17872,6 +18850,72 @@ mod tests {
         assert!(rows[0].contains(&format!(" id k   {rule}")), "{rows:#?}");
         assert!(rows[1].contains(&format!("i64 str {rule}")), "{rows:#?}");
         assert!(rows[2].contains(&format!("  1 x   {rule}")), "{rows:#?}");
+    }
+
+    fn list_state() -> DataTableState {
+        let many: Vec<String> = (0..12).map(|i| format!("t{i}")).collect();
+        let tags = Series::new(
+            "tags".into(),
+            &[
+                Series::new("".into(), &["a", "b"]),
+                Series::new("".into(), many),
+            ],
+        );
+        let id = Series::new("id".into(), &[1i64, 2]);
+        let more = Series::new(
+            "more".into(),
+            &[
+                Series::new("".into(), &["x"]),
+                Series::new("".into(), &["y"]),
+            ],
+        );
+        let lf = DataFrame::new_infer_height(vec![id.into(), tags.into(), more.into()])
+            .unwrap()
+            .lazy();
+        let mut state = DataTableState::new(lf, None, None, None, None, true).unwrap();
+        state.visible_rows = 2;
+        state.collect();
+        state
+    }
+
+    /// A list cell reads as it did when the buffer held lists as text, and the type
+    /// row names the list once the rows have landed, not `str`.
+    #[test]
+    fn a_list_column_draws_its_items_under_its_list_type() {
+        let mut state = list_state();
+        let area = Rect::new(0, 0, 80, 4);
+        let mut buf = Buffer::empty(area);
+        DataTable {
+            dtype_row: true,
+            ..DataTable::default()
+        }
+        .render(area, &mut buf, &mut state);
+        let rows: Vec<String> = (0..area.height)
+            .map(|y| row_string(&buf, area, y))
+            .collect();
+        assert!(rows[1].contains("list[str]"), "{rows:#?}");
+        assert!(!rows[1].contains(" str "), "{rows:#?}");
+        assert!(rows[2].contains("[a, b]"), "{rows:#?}");
+        // The column's width cap cuts the rest; `exact` tests the whole preview.
+        assert!(
+            rows[3].contains("[t0, t1, t2, t3, t4, t5, t6, t7"),
+            "{rows:#?}"
+        );
+    }
+
+    /// The display frames keep lists as lists, frozen or scrolling, through a
+    /// sideways scroll: a step re-cuts the buffer and formats nothing; only the
+    /// cells drawn are formatted.
+    #[test]
+    fn a_sideways_scroll_keeps_lists_in_the_display_frames() {
+        let mut state = list_state();
+        state.set_locked_columns(2);
+        state.scroll_right();
+        let is_list = |df: &DataFrame, name: &str| {
+            matches!(df.column(name).unwrap().dtype(), DataType::List(_))
+        };
+        assert!(is_list(state.locked_df.as_ref().unwrap(), "tags"));
+        assert!(is_list(state.df.as_ref().unwrap(), "more"));
     }
 
     /// A page over columns not drawn yet waits for the draw, which measures them from

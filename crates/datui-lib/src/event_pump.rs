@@ -358,6 +358,11 @@ impl EventPump {
         {
             return Act::HoldAs(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         }
+        // A sample being drawn holds only what needs every row: moving, finding and
+        // inspecting the rows on hand act at once, the find line and inspector too.
+        if self.app.is_busy() && !queued && self.app.key_acts_while_sampling(key) {
+            return Act::Now;
+        }
         // Busy, nothing queued yet, at the plain table view: the harmless view keys act
         // (quit, the column cursor, help); a bare Enter that would drill, or Esc, confirms
         // nothing and is dropped; everything else is type-ahead and waits. Once anything
@@ -1387,6 +1392,42 @@ mod tests {
         assert_eq!(cell(&p), (Some(0), Some("name".to_string())));
     }
 
+    /// A dialog's footer chips press their keys as the status footer's do: Esc
+    /// Cancel closes the export form, and over a question only its own chips take
+    /// clicks.
+    #[test]
+    fn a_dialog_s_footer_chips_press_their_keys() {
+        let (mut p, _dir) = loaded_pump();
+        p.send(AppEvent::Terminal(Event::Key(plain(KeyCode::Char('e')))))
+            .unwrap();
+        settle(&mut p);
+        assert!(p.app.export_modal.active);
+        let cancel = on_screen(&mut p.app, "Cancel");
+        assert!(p.terminal_mouse(click(cancel)).unwrap());
+        settle(&mut p);
+        assert!(!p.app.export_modal.active, "Esc Cancel closed the form");
+
+        // A question: its Cancel chip answers it; a click beside it does nothing.
+        p.app.confirmation_modal.show("Delete it?".to_string());
+        p.terminal_mouse(click((0, 2))).unwrap();
+        settle(&mut p);
+        assert!(p.app.confirmation_modal.active, "outside the question");
+        let cancel = on_screen(&mut p.app, "Cancel");
+        p.terminal_mouse(click(cancel)).unwrap();
+        settle(&mut p);
+        assert!(!p.app.confirmation_modal.active, "its Esc chip answered it");
+
+        // Help's own footer: Esc Close.
+        p.send(AppEvent::Terminal(Event::Key(plain(KeyCode::Char('?')))))
+            .unwrap();
+        settle(&mut p);
+        assert!(p.app.help_visible());
+        let close = on_screen(&mut p.app, "Close");
+        p.terminal_mouse(click(close)).unwrap();
+        settle(&mut p);
+        assert!(!p.app.help_visible(), "help's Close chip closed it");
+    }
+
     /// Mouse events reach the app through the channel, in order with the keys typed
     /// around them, as `run()` reads them.
     #[test]
@@ -1587,9 +1628,9 @@ mod tests {
         }
     }
 
-    /// #455: an export whose worker dies ends: the reason on screen, the keyboard
-    /// back, nothing of its own left set, no file and the generation free. The
-    /// next export writes its file.
+    /// #455: an export whose worker dies ends: the reason on the export dialog's
+    /// status line, the keyboard back, nothing of its own left set, no file and
+    /// the generation free. The next export writes its file.
     #[test]
     fn an_export_whose_worker_dies_ends_and_the_next_one_writes() {
         let (mut p, dir) = loaded_pump();
@@ -1602,18 +1643,17 @@ mod tests {
         p.send(AppEvent::Export(csv_export(&out))).unwrap();
 
         let deadline = std::time::Instant::now() + Duration::from_secs(300);
-        while !p.app.error_modal.active {
+        while p.app.export_modal.path_error.is_none() {
             assert!(
                 std::time::Instant::now() < deadline,
                 "the export never ended"
             );
             p.wait_and_drain(Duration::from_millis(50)).unwrap();
         }
-        assert!(
-            p.app.error_modal.message.contains("worker died"),
-            "{}",
-            p.app.error_modal.message
-        );
+        let reason = p.app.export_modal.path_error.clone().unwrap_or_default();
+        assert!(reason.contains("worker died"), "{reason}");
+        assert!(p.app.export_modal.active);
+        assert!(!p.app.error_modal.active);
         assert!(!p.app.is_busy());
         assert!(p.app.status_message.is_none());
         assert!(p.app.nothing_loading());
@@ -1624,10 +1664,11 @@ mod tests {
         );
 
         p.terminal_key(plain(KeyCode::Esc)).unwrap();
-        assert!(!p.app.error_modal.active);
+        assert!(!p.app.export_modal.active);
         p.send(AppEvent::Export(csv_export(&out))).unwrap();
         settle(&mut p);
         assert!(!p.app.error_modal.active, "{}", p.app.error_modal.message);
+        assert_eq!(p.app.export_modal.path_error, None);
         assert!(out.exists(), "the next export writes its file");
         assert!(p.app.nothing_loading());
     }
@@ -1951,7 +1992,8 @@ mod tests {
     }
 
     /// Ctrl+T typed at a spinner waits its turn like the letters around it: the
-    /// prompt opens, switches mode, and the text lands in the mode switched to.
+    /// prompt opens, switches mode, and the text lands in the mode switched to. A
+    /// build without SQL has one language, so the chord leaves the line on q.
     #[test]
     fn a_mode_chord_typed_while_busy_switches_before_the_text() {
         let (mut p, _dir) = loaded_pump();
@@ -1970,7 +2012,9 @@ mod tests {
             crate::QueryMode::Q => &p.app.query_input,
         };
         assert_eq!(typed.value(), "ada");
-        assert_eq!(p.app.query_input.value(), "");
+        if mode != crate::QueryMode::Q {
+            assert_eq!(p.app.query_input.value(), "");
+        }
     }
 
     /// A key that arrives behind the event that ended the busy state is handled after
@@ -3039,6 +3083,7 @@ mod tests {
     fn long_flash(app: &mut App) {
         app.flash = Some(crate::Flash {
             message: "guard".to_string(),
+            path_from: None,
             expires: Instant::now() + Duration::from_secs(120),
         });
     }
@@ -3382,7 +3427,7 @@ mod tests {
             // home_test covers its keys.
         ];
         // What needs a state the fixture does not have, or would leave the test.
-        let exempt: &[(Context, &str)] = &[
+        let mut exempt: Vec<(Context, &str)> = vec![
             // Only where the row count is an estimate.
             (Context::Info, "c"),
             // Only on a file read through a format spec.
@@ -3412,6 +3457,7 @@ mod tests {
             (Context::Info, "Enter"),
             // The Documentation tab: a dataset no catalog lists has none.
             (Context::Info, "y"),
+            (Context::Info, "o"),
             // A sample, a followed file, a number column.
             (Context::ValueCounts, "a"),
             (Context::ValueCounts, "c"),
@@ -3426,9 +3472,7 @@ mod tests {
             // A range: Enter in the help presses its first.
             (Context::SortFilter, "1-9"),
             (Context::Chart, "1-7"),
-            // The Sample size row and the number rows; columns picked; a followed
-            // file.
-            (Context::Chart, "PgUp / PgDn"),
+            // The number rows; columns picked; a followed file.
             (Context::Chart, "+ / -"),
             (Context::Chart, "x"),
             (Context::Chart, "e"),
@@ -3440,6 +3484,10 @@ mod tests {
             (Context::Views, "d"),
             (Context::Views, "i"),
         ];
+        // One language to switch between without SQL.
+        if crate::QueryMode::available().len() < 2 {
+            exempt.push((Context::Query, "Ctrl+T"));
+        }
         let mut ignored = Vec::new();
         for (context, open, groups) in &screens {
             let screen = keys::screen(*context);
@@ -3451,13 +3499,22 @@ mod tests {
                     if exempt.contains(&(*context, key.keys)) {
                         continue;
                     }
-                    let (mut p, _dir) = long_wide_pump();
+                    let (mut p, dir) = long_wide_pump();
                     for k in open {
                         p.terminal_key(*k).unwrap();
                         settle(&mut p);
                         paint(&mut p);
                     }
                     assert_eq!(p.app.keys_context(), *context, "opened {}", screen.title);
+                    // The suggested name is relative: an Enter would write it into the
+                    // crate directory.
+                    if *context == Context::Export {
+                        let out = dir.path().join("out.csv");
+                        p.app
+                            .export_modal
+                            .path_input
+                            .set_value(out.display().to_string());
+                    }
                     // The entry's keys in turn, the first at least: `← / →` at the
                     // first column is taken by its →.
                     let mut presses = keys::chords(key.keys);
@@ -3670,7 +3727,7 @@ mod tests {
 
     /// In the export dialog a click on a row focuses it and acts as Space: a
     /// checkbox flips, a choice steps, a text field only takes the cursor. A click on
-    /// a format in the list chooses it.
+    /// a format on its row chooses it.
     #[test]
     fn a_click_focuses_a_form_row_and_acts_on_it() {
         use crate::export_modal::{ExportFocus, ExportFormat};
@@ -3680,7 +3737,7 @@ mod tests {
         assert_eq!(p.app.export_modal.selected_format, ExportFormat::Csv);
         let header = p.app.export_modal.csv_include_header;
 
-        let at = on_screen(&mut p.app, "Include header:");
+        let at = on_screen(&mut p.app, "Header:");
         assert!(p.terminal_mouse(click(at)).unwrap());
         assert_eq!(p.app.export_modal.focus, ExportFocus::CsvIncludeHeader);
         assert_eq!(p.app.export_modal.csv_include_header, !header, "toggled");
@@ -3858,6 +3915,75 @@ mod tests {
         assert_eq!(choice(&p), before);
     }
 
+    /// Press and let go at `at`, after a frame painted, as a click on what is drawn.
+    fn click_and_release(p: &mut EventPump, at: (u16, u16)) {
+        rendered(&mut p.app);
+        p.app.frame_painted();
+        p.terminal_mouse(click(at)).unwrap();
+        p.terminal_mouse(release(at)).unwrap();
+        settle(p);
+    }
+
+    /// The sort in effect: its columns and directions.
+    fn sorted(p: &EventPump) -> (Vec<String>, Vec<bool>) {
+        let state = p.app.data_table_state.as_ref().unwrap();
+        let columns = state.view_sort_columns().to_vec();
+        let descending = state.view_sort_descending().to_vec();
+        (
+            columns.clone(),
+            descending[..columns.len().min(descending.len())].to_vec(),
+        )
+    }
+
+    /// A double click on a header sorts by its column as `[` and `]` do: ascending,
+    /// descending, then off. One click only moves the column cursor.
+    #[test]
+    fn a_double_click_on_a_header_cycles_its_sort() {
+        let (mut p, _dir) = loaded_pump();
+        let (age, _, y) = header_of(&mut p, "age");
+        let at = (age + 1, y);
+        click_and_release(&mut p, at);
+        assert_eq!(cell(&p).1.as_deref(), Some("age"));
+        assert_eq!(sorted(&p), (vec![], vec![]), "one click only moves");
+
+        click_and_release(&mut p, at);
+        assert_eq!(sorted(&p), (vec!["age".to_string()], vec![false]));
+        assert_eq!(order(&p), ["name", "age"], "a sort moves no column");
+
+        click_and_release(&mut p, at);
+        click_and_release(&mut p, at);
+        assert_eq!(sorted(&p), (vec!["age".to_string()], vec![true]));
+
+        click_and_release(&mut p, at);
+        click_and_release(&mut p, at);
+        assert_eq!(sorted(&p), (vec![], vec![]), "the third takes it away");
+    }
+
+    /// A double click on the gap after a header fits the column, as `=` does, and
+    /// sorts nothing.
+    #[test]
+    fn a_double_click_on_a_header_edge_fits_the_column() {
+        use crate::widgets::column_widths::WidthChoice;
+        let (mut p, _dir) = loaded_pump();
+        let (_, to, y) = header_of(&mut p, "name");
+        // The cursor elsewhere, to see it come to the column fitted.
+        let (age, _, _) = header_of(&mut p, "age");
+        click_and_release(&mut p, (age + 1, y));
+        click_and_release(&mut p, (to, y));
+        let state = p.app.data_table_state.as_ref().unwrap();
+        assert_ne!(
+            state.width_choice("name"),
+            WidthChoice::Fit,
+            "one press only"
+        );
+        click_and_release(&mut p, (to, y));
+        let state = p.app.data_table_state.as_ref().unwrap();
+        assert_eq!(state.width_choice("name"), WidthChoice::Fit);
+        assert_eq!(sorted(&p), (vec![], vec![]), "never a sort");
+        assert_eq!(cell(&p).1.as_deref(), Some("name"));
+        assert_eq!(order(&p), ["name", "age"]);
+    }
+
     /// A key handled marks the frame on screen out of date, so a click read after it
     /// waits for the frame that shows what the key did, a replayed key included.
     #[test]
@@ -3952,7 +4078,7 @@ mod tests {
         let (mut p, _dir) = loaded_pump();
         p.terminal_key(plain(KeyCode::Char('e'))).unwrap();
         let header = p.app.export_modal.csv_include_header;
-        let at = on_screen(&mut p.app, "Include header:");
+        let at = on_screen(&mut p.app, "Header:");
         p.terminal_mouse(right_click(at)).unwrap();
         assert_eq!(p.app.export_modal.focus, ExportFocus::CsvIncludeHeader);
         assert_eq!(p.app.export_modal.csv_include_header, header, "not toggled");
@@ -4006,7 +4132,7 @@ mod tests {
         p.terminal_mouse(right_click(alan)).unwrap();
         p.app.busy = true;
         assert!(p.terminal_key(plain(KeyCode::Down)).unwrap());
-        assert_eq!(p.app.context_menu.map(|m| m.selected), Some(1));
+        assert_eq!(p.app.context_menu.as_ref().map(|m| m.selected), Some(1));
         assert!(p.terminal_key(plain(KeyCode::Esc)).unwrap());
         assert!(p.app.context_menu.is_none());
         assert!(held(&p).is_empty());

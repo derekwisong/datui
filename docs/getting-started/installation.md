@@ -143,7 +143,7 @@ cargo build --release --locked --no-default-features --features sql,streaming
 | `sqlite` | SQLite databases fail to open |
 | `streaming` | No Polars streaming engine: an export reads the whole view first, and a Data Quality read runs to its end on <kbd>Esc</kbd> |
 
-Public datasets lists only what the build can open.
+Example datasets lists only what the build can open.
 
 ## Manual pages
 

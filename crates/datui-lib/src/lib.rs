@@ -56,6 +56,7 @@ mod chart_jobs;
 mod chart_keys;
 pub mod chart_modal;
 mod chart_pdf;
+mod chart_recipe;
 pub mod cli;
 pub mod clipboard;
 #[cfg(feature = "cloud")]
@@ -70,6 +71,7 @@ mod cloud_hive;
 #[cfg(feature = "cloud")]
 pub mod cloud_sources;
 pub mod codebook;
+pub mod column_types;
 pub mod commands;
 pub mod config;
 pub mod config_command;
@@ -128,8 +130,10 @@ pub mod ipc_stream;
 mod jobs;
 pub mod journal;
 pub mod lines;
+pub mod link_open;
 mod loading;
 pub mod local_copy;
+pub(crate) mod local_glob;
 pub mod locality;
 pub mod logging;
 pub mod measurements;
@@ -138,6 +142,7 @@ pub mod midi;
 pub mod model_files;
 pub mod nested_json;
 pub mod notes;
+pub mod nul_tail;
 pub mod numfmt;
 pub mod numpy;
 mod open_options;
@@ -156,11 +161,15 @@ pub mod quality_report;
 pub mod quality_trends;
 #[cfg(any(feature = "http", feature = "cloud"))]
 mod remote_model;
+mod retype_keys;
+pub mod retype_modal;
 pub mod row_index;
 #[cfg(feature = "cloud")]
 pub mod s3_tools;
+mod sample_keys;
 pub mod sample_modal;
 pub mod sampling;
+pub mod table_sample;
 // Public so the fuzz targets in `fuzz/` can reach `parse_query`. The parser is
 // hand-written and runs on whatever the user types, so it is fuzzed directly.
 pub mod query;
@@ -176,6 +185,7 @@ mod sort_filter_keys;
 pub mod sort_filter_modal;
 pub mod sort_modal;
 pub mod source;
+pub(crate) mod spec_union;
 mod sql_assist;
 pub mod sqlite;
 // Public so the fuzz target `sql_group_plan` can reach `plan`, which reads every SQL
@@ -185,6 +195,7 @@ pub mod sql_group;
 pub mod startup;
 pub mod statistics;
 pub mod stdin;
+pub mod table_switch;
 pub mod tee;
 mod terminal;
 mod terminal_color;
@@ -194,6 +205,7 @@ pub mod themes;
 pub mod typed_value;
 pub mod ulog;
 mod unfinished;
+pub mod user_agent;
 pub mod value_counts;
 pub mod value_counts_modal;
 pub mod vcd;
@@ -358,6 +370,11 @@ pub enum AppEvent {
         path: PathBuf,
         measured: crate::home::Measured,
     },
+    /// What a HEAD settled about an HTTP(S) file on home: it cannot be had.
+    HomeWebGone {
+        path: PathBuf,
+        gone: crate::error_display::HttpGone,
+    },
     /// What the rows on screen turned out to be. The same payload as
     /// [`AppEvent::HomeMeasured`] and folded in the same way: a kind is one of the
     /// things a look into a row produces.
@@ -473,6 +490,9 @@ pub enum AppEvent {
         header: bool,
     },
     ChartExport(ChartExportRequest),
+    /// A documentation link the user confirmed, checked by `link_open::checked_url`:
+    /// start the browser on it.
+    OpenLink(String),
     /// Deferred: run the chart export once its phase is drawn.
     DoChartExport(ChartExportRequest),
     Collect,
@@ -672,7 +692,8 @@ impl App {
             Some(home::Row::Header { .. }) => return WhatEnter::FoldsSection,
             Some(home::Row::More { .. }) => return WhatEnter::ShowsMore,
             Some(home::Row::Hidden { .. }) => return WhatEnter::ShowsHidden,
-            None => return WhatEnter::Explains,
+            // "No match.": nothing to open and nothing to say about it.
+            None => return WhatEnter::Nothing,
             // The door reads the directory it names whatever that directory is labelled —
             // the lake tables included, which is the one row that reads them at all.
             Some(home::Row::Door { .. }) => return WhatEnter::OpensDirectory,
@@ -749,12 +770,21 @@ pub enum InputMode {
     GoToColumn,
     /// The format picker over a table read through a spec: read it with another.
     PickFormat,
+    /// A column's type, picked over the table: from the Info panel's Schema tab or
+    /// the cell menu.
+    Retype,
+    /// A datetime made from columns, as a spec's derived column.
+    Combine,
+    /// The table picker over a table of a file of several: open another.
+    PickTable,
     Info,
     Chart,
     /// Value Counts: how often each value of one column occurs in the view.
     ValueCounts,
     /// The hex view: a file's bytes.
     Hex,
+    /// The Sample form over the table (`S`).
+    Sample,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -881,8 +911,53 @@ fn active_query_settings(
     }
 }
 
+/// The steps `state` shows, as a saved view keeps them: the query, filters, sort,
+/// columns and reshape.
+pub(crate) fn view_settings_of(state: &DataTableState) -> view::ViewSettings {
+    let (query, sql_query, fuzzy_query) = active_query_settings(
+        state.get_active_query(),
+        state.get_active_sql_query(),
+        state.get_active_fuzzy_query(),
+    );
+    view::ViewSettings {
+        chart: None,
+        sample: saved_sample_of(state),
+        query,
+        sql_query,
+        fuzzy_query,
+        filters: state.get_filters().to_vec(),
+        sort_columns: state.get_sort_columns().to_vec(),
+        sort_descending: state.get_sort_descending().to_vec(),
+        sort_ascending: state.get_sort_ascending(),
+        column_order: state.get_column_order().to_vec(),
+        locked_columns_count: state.locked_columns_count(),
+        pivot: state.last_pivot_spec().cloned(),
+        melt: state.last_melt_spec().cloned(),
+        reshape_source: state.reshape_source().cloned(),
+        columns: state.column_changes().to_vec(),
+    }
+}
+
+/// The sample `state` is, as a view keeps it: with the query and filters it was
+/// drawn through, when it was drawn from the view's rows.
+fn saved_sample_of(state: &DataTableState) -> Option<view::SavedSample> {
+    let sampled = state.sampled()?;
+    // The whole view it was drawn through: column types, a reshape and a sort pick
+    // its rows as much as a query does.
+    let through = sampled.through().then(|| view::ViewSettings {
+        sample: None,
+        chart: None,
+        ..view_settings_of(sampled.source())
+    });
+    Some(view::SavedSample::of(
+        sampled.sample(),
+        sampled.path(),
+        through,
+    ))
+}
+
 /// How far planning a view's steps got.
-enum Replayed {
+pub(crate) enum Replayed {
     /// Every step is planned; the view's rows are still to be read.
     Planned,
     /// Stopped at the pivot, which has to be read before the steps after it can be
@@ -957,6 +1032,11 @@ pub struct App {
     home_search_generation: u64,
     /// Set while the confirmation modal is asking about forgetting every recent.
     pending_clear_recents: bool,
+    /// The checked link the confirmation modal is asking about opening.
+    pending_link: Option<String>,
+    /// Whether a browser opened here opens in front of the user: `o` on a
+    /// documentation link is offered only then (`link_open::local_desktop`).
+    pub local_desktop: bool,
     /// The place whose recents the confirmation modal is asking about forgetting.
     pending_forget_place: Option<PathBuf>,
     /// Why the last open failed, shown on the home screen when the error is dismissed
@@ -1059,6 +1139,16 @@ pub struct App {
     /// Taken on the first install, so datasets opened later are not re-dressed.
     startup_view: Option<String>,
     pub analysis_modal: AnalysisModal,
+    /// The Sample form over the table (`S`): the view's sample, the step under its
+    /// query.
+    pub sample_form: Option<sample_modal::SampleForm>,
+    /// Where the memory available now is read from, which a sample is checked
+    /// against. The system's, unless a test says otherwise.
+    memory_probe: table_sample::MemoryProbe,
+    /// How each random sample of a stream was drawn on this dataset, by what it was
+    /// drawn from: drawn again, the same seed keeps the same rows whether or not the
+    /// count has come in since.
+    sample_paths: Vec<(String, table_sample::DrawPath)>,
     /// Reports, newest first, within [`QUALITY_MEMORY_BUDGET`].
     quality_cache: Vec<QualityCacheEntry>,
     /// See [`KeptQualitySample`]. Newest first, within [`QUALITY_MEMORY_BUDGET`].
@@ -1101,6 +1191,15 @@ pub struct App {
     export_counts: Option<polars::prelude::DataFrame>,
     /// The specs `b` offers for the dataset on screen.
     pub format_picker: crate::widgets::ui::PickerState,
+    /// The type picker, while it is open.
+    pub retype: Option<retype_modal::RetypeModal>,
+    /// The combine form, while it is open.
+    pub combine: Option<retype_modal::CombineModal>,
+    /// The type picker or the combine form go back to the Info panel, not the table.
+    pub(crate) retype_from_info: bool,
+    /// The tables `T` offers: the picker's lines, and what each opens.
+    pub table_picker: crate::widgets::ui::PickerState,
+    pub table_choices: Option<table_switch::Tables>,
     /// The hex view (`InputMode::Hex`), kept while it is up.
     pub hex: Option<hex_view::HexView>,
     /// Bumped per hex view opened, so a find's answer for another is dropped.
@@ -1119,6 +1218,9 @@ pub struct App {
     /// `busy`: the sidebar stays live while the data is computed, and the newest
     /// selection is prepared once this one lands.
     chart_inflight: Option<ChartInflight>,
+    /// The selection the chart last asked for, and, when it stepped the aggregate of
+    /// the one before, until when it waits for the next step before it is prepared.
+    chart_asked: Option<(ChartRequest, Option<std::time::Instant>)>,
     /// The result of the background chart preparation, like `pending_collect_result`:
     /// the data stays out of the event.
     pending_chart_result: ChartResultSlot,
@@ -1130,6 +1232,10 @@ pub struct App {
     pub confirmation_modal: ConfirmationModal,
     /// An export waiting on the overwrite confirmation.
     pending_export: Option<ExportRequest>,
+    /// The saved view `d` asked to delete, by id, while the confirmation is up.
+    pending_delete_view: Option<String>,
+    /// Delete on the Example datasets heading asked to hide them.
+    pending_hide_examples: bool,
     pending_chart_export: Option<ChartExportRequest>,
     /// A Data Quality report export waiting on the overwrite confirmation.
     pending_quality_export: Option<(PathBuf, crate::quality_export::ReportFormat)>,
@@ -1802,7 +1908,8 @@ impl App {
                             "Overwrite",
                         );
                     } else {
-                        self.analysis_modal.data_quality_export = None;
+                        // The dialog stays up while the report is written: a failed
+                        // write says why on its status line, the path still there.
                         return Some(AppEvent::QualityReportExport(
                             path,
                             format,
@@ -2754,6 +2861,32 @@ impl App {
     fn run_sample_form(&mut self) -> Option<AppEvent> {
         let quality =
             self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality);
+        // The view's sample: it is drawn again, and the tool runs on it once it is.
+        if self.analysis_modal.sample_form.as_ref()?.view {
+            let memory = self.memory_check();
+            let form = self.analysis_modal.sample_form.as_mut()?;
+            return match Self::submit_view_sample(form, memory) {
+                sample_keys::Submitted::Stays => None,
+                sample_keys::Submitted::Clear => {
+                    self.analysis_modal.sample_form = None;
+                    self.clear_table_sample();
+                    if quality {
+                        None
+                    } else {
+                        self.start_analysis_run()
+                    }
+                }
+                sample_keys::Submitted::Draw { sample, anyway } => {
+                    self.analysis_modal.sample_form = None;
+                    self.apply_table_sample(sample, None, anyway, !quality);
+                    if !quality {
+                        self.analysis_modal.computing =
+                            Some(AnalysisProgress::new("Drawing the sample"));
+                    }
+                    None
+                }
+            };
+        }
         let finished = self.analysis_modal.sample_form.as_mut()?.finish();
         match finished {
             Ok(sample) if quality => {
@@ -2794,6 +2927,25 @@ impl App {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
+        // A view with a sample: the form edits it, and the rows come from the view it
+        // was drawn from.
+        let (sample, view) = match state.sampled() {
+            Some(sampled) => (sampled.sample().clone(), true),
+            None => (sample.clone(), false),
+        };
+        let context = self.sample_context(state.unsampled());
+        let mut form = sample_modal::SampleForm::new(&sample, context, &self.theme);
+        form.inline = inline;
+        form.view = view;
+        form.bytes_per_row = Some(state.unsampled().sample_row_bytes(false));
+        form.source_bytes_per_row = Some(state.unsampled().sample_row_bytes(true));
+        self.analysis_modal.sample_form = Some(form);
+        self.sync_sample_form_focus();
+    }
+
+    /// What the Sample form offers for `state`'s rows: its partitions, files, time
+    /// columns and the columns an equal-per-value sample can split by.
+    pub(crate) fn sample_context(&self, state: &DataTableState) -> sample_modal::SampleContext {
         let mut partition_columns = state.partition_columns().unwrap_or_default().to_vec();
         let mut partition_values = Vec::new();
         // A directory whose files agree opens as one scan and names no partition
@@ -2841,7 +2993,7 @@ impl App {
                 }
             }
         }
-        let context = sample_modal::SampleContext {
+        sample_modal::SampleContext {
             view_rows: state.num_rows_if_valid(),
             filtered: state.changes_rows(),
             files: state.quality_source_file_names().to_vec(),
@@ -2849,11 +3001,7 @@ impl App {
             partition_values,
             time_columns: state.quality_temporal_columns(&data_quality::QualityScope::WholeSource),
             value_columns,
-        };
-        let mut form = sample_modal::SampleForm::new(sample, context, &self.theme);
-        form.inline = inline;
-        self.analysis_modal.sample_form = Some(form);
-        self.sync_sample_form_focus();
+        }
     }
 
     fn sample_form_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
@@ -2869,7 +3017,10 @@ impl App {
             }
             FormKey::Cancel => self.analysis_modal.sample_form = None,
             FormKey::Submit => return self.run_sample_form(),
-            FormKey::Step(_, delta) => form.adjust(delta > 0),
+            FormKey::Step(_, delta) => {
+                form.adjust(delta > 0);
+                form.edited();
+            }
             FormKey::Text(sample_modal::SampleField::Files)
                 if matches!(event.code, KeyCode::PageDown | KeyCode::PageUp) =>
             {
@@ -2885,7 +3036,7 @@ impl App {
                 if let Some(input) = form.input_mut(form.field) {
                     let _ = input.handle_key(event, None);
                 }
-                form.error = None;
+                form.edited();
             }
             FormKey::Act(_) | FormKey::Moved | FormKey::Other => {}
         }
@@ -3068,6 +3219,24 @@ impl App {
         }
     }
 
+    /// The confirmation a full scan asks: what it reads, what it fetches from a
+    /// remote source, and that it writes nothing there.
+    fn quality_full_scan_question(&self, plan: &data_quality::DataQualityPlan) -> String {
+        let mut lines = vec![
+            "Run a full scan?".to_string(),
+            String::new(),
+            "Reads: every eligible row, up to the whole source".to_string(),
+        ];
+        if let data_quality::CopyPlan::Fetch { bytes, .. } = self.quality_copy_plan(plan) {
+            lines.push(format!(
+                "Fetch: {} once, to a local copy",
+                crate::widgets::info::format_bytes(bytes)
+            ));
+        }
+        lines.push("Source writes: none".to_string());
+        lines.join("\n")
+    }
+
     /// What stops Setup from running as it stands, said on its own line: a time
     /// window on text that has no format to read it with.
     fn quality_setup_problem(&self) -> Option<String> {
@@ -3115,9 +3284,11 @@ impl App {
                 .is_some_and(|last| last.same_measurement(plan)))
             || self.quality_cached(plan);
         if plan.requires_confirmation() && !here && !self.analysis_modal.data_quality_confirm_run {
-            // The prompt is answered with Enter, which only the main pane hears.
+            // Asked with the one confirmation; its Yes comes back here.
+            let message = self.quality_full_scan_question(plan);
             self.analysis_modal.data_quality_confirm_run = true;
-            self.analysis_modal.focus = analysis_modal::AnalysisFocus::Main;
+            self.confirmation_modal.show(message);
+            self.confirmation_modal.yes_label = "Run";
             return None;
         }
         self.analysis_modal.data_quality_confirm_run = false;
@@ -3675,6 +3846,11 @@ impl App {
         self.flash = Some(Flash::new(message));
     }
 
+    /// A completion flash that ends in the path written: `Exported to …/out.csv`.
+    fn flash_path(&mut self, prefix: &str, path: &std::path::Path) {
+        self.flash = Some(Flash::path(prefix, path));
+    }
+
     /// The completion flash on the control bar, if one is showing.
     pub fn flash_message(&self) -> Option<&str> {
         self.flash.as_ref().map(|f| f.message.as_str())
@@ -3913,6 +4089,8 @@ impl App {
             && key.code == KeyCode::Esc;
         let cancel_view = key.code == KeyCode::Esc && self.view_applying();
         let cancel_find = key.code == KeyCode::Esc && self.finding();
+        let stop_sample =
+            key.code == KeyCode::Esc && self.sample_drawing() && self.in_normal_table_view();
         // The help reads nothing, so it can always be closed, a load's screen included.
         let close_help = self.help.is_open()
             && matches!(key.code, KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('?'));
@@ -3922,6 +4100,7 @@ impl App {
             || cancel_pivot
             || cancel_view
             || cancel_find
+            || stop_sample
             || leave_quality_evidence
             || self.confirmation_modal.active
             || self.input_mode == InputMode::Home
@@ -3966,6 +4145,9 @@ impl App {
     /// the `h` in a typed `/hello` never scrolls.
     pub fn key_acts_while_busy(&self, key: &KeyEvent) -> bool {
         if self.hard_escape_while_busy(key) || self.menu_takes(key) {
+            return true;
+        }
+        if self.key_acts_while_sampling(key) {
             return true;
         }
         if !self.in_normal_table_view() {
@@ -4098,7 +4280,21 @@ impl App {
 
     /// Open the context menu at `at`, over the cell the cursor was just put on.
     pub fn open_context_menu(&mut self, at: ratatui::layout::Position) {
-        self.context_menu = Some(context_menu::ContextMenu::new(at));
+        // A datetime is made from text, a date or a time.
+        let combine = self
+            .data_table_state
+            .as_ref()
+            .and_then(|state| {
+                let column = state.current_column()?;
+                state.schema().get(column).cloned()
+            })
+            .is_some_and(|dtype| {
+                matches!(dtype, DataType::String | DataType::Date | DataType::Time)
+            });
+        self.context_menu = Some(context_menu::ContextMenu::with(
+            at,
+            context_menu::column_items(combine),
+        ));
     }
 
     /// Close the context menu, if it is open.
@@ -4109,10 +4305,15 @@ impl App {
     /// The line `i` of the open menu, chosen: the menu closes and its key is
     /// pressed, offered as typed.
     pub fn choose_from_menu(&mut self, i: usize) -> Option<AppEvent> {
-        self.context_menu.take()?;
-        context_menu::ITEMS
-            .get(i)
-            .map(|item| AppEvent::Press(item.key_event()))
+        let menu = self.context_menu.take()?;
+        match menu.chosen(i)? {
+            context_menu::MenuKey::Run(key) => Some(AppEvent::Press(key)),
+            context_menu::MenuKey::Do(action) => {
+                self.menu_action(action);
+                None
+            }
+            _ => None,
+        }
     }
 
     /// A header dropped on another column: the order with `column` moved to where
@@ -4160,7 +4361,16 @@ impl App {
             InputMode::Inspect => self.inspector_modal.finding,
             // The Picker narrows by typing, so it types.
             InputMode::GoToColumn => true,
-            InputMode::PickFormat => true,
+            InputMode::PickFormat | InputMode::Retype => true,
+            InputMode::Combine => self
+                .combine
+                .as_ref()
+                .is_some_and(|c| c.picker.is_some() || c.focus == retype_modal::CombineField::Name),
+            InputMode::PickTable => true,
+            InputMode::Sample => self
+                .sample_form
+                .as_ref()
+                .is_some_and(|form| form.field.is_text()),
             // The whole inline editor types (pickers narrow, the value edits), as
             // do the add-sort Picker and the Columns tab's find.
             InputMode::SortFilter => self.sort_filter_modal.typing(),
@@ -5048,6 +5258,9 @@ impl App {
         // is that dataset's view. So was a view waiting on its pivot.
         self.query_running = None;
         self.jobs.supersede(|job| matches!(job, Job::ViewPivot(_)));
+        // A sample being drawn was the last dataset's, and so were its paths.
+        self.put_down_sample_draw();
+        self.sample_paths.clear();
         // Whatever chart state survived belongs to the dataset being replaced.
         self.reset_chart_state();
         self.debug.schema_load = debug_label;
@@ -5142,6 +5355,7 @@ impl App {
         // A panel still up says what it says about the dataset on screen.
         if self.info_modal.active {
             self.read_file_facts();
+            self.count_unfit();
         }
         // The dataset is on screen now; whatever it still has to learn about itself is
         // read behind it.
@@ -5851,6 +6065,10 @@ impl App {
         }
 
         let theme_problem = app_config.theme.fallbacks.first().cloned();
+        let chart_export_modal = ChartExportModal {
+            recipe: app_config.chart.export_recipe,
+            ..ChartExportModal::new()
+        };
         let mut app = App {
             path: None,
             data_table_state: None,
@@ -5873,6 +6091,10 @@ impl App {
             home_schema_inflight: Vec::new(),
             last_load_error: None,
             pending_clear_recents: false,
+            pending_link: None,
+            local_desktop: link_open::local_desktop(link_open::Platform::current(), |name| {
+                std::env::var(name).ok()
+            }),
             pending_forget_place: None,
             home_schema_cache: HashMap::new(),
             home_previews: crate::home_preview::Previews::default(),
@@ -5927,6 +6149,9 @@ impl App {
             opened_from_home: false,
             startup_view: None,
             analysis_modal: AnalysisModal::with_sample_rows(app_config.analysis.sample_rows),
+            sample_form: None,
+            memory_probe: std::sync::Arc::new(table_sample::available_memory),
+            sample_paths: Vec::new(),
             quality_cache: Vec::new(),
             quality_samples: Vec::new(),
             quality_released: Vec::new(),
@@ -5938,7 +6163,7 @@ impl App {
             quality_evidence_return: None,
             quality_evidence_label: None,
             chart_modal: ChartModal::new(),
-            chart_export_modal: ChartExportModal::new(),
+            chart_export_modal,
             export_modal: ExportModal::new(),
             copy_modal: copy_modal::CopyModal::new(),
             inspector_modal: inspector_modal::InspectorModal::new(),
@@ -5950,16 +6175,24 @@ impl App {
             hex_serial: 0,
             export_counts: None,
             format_picker: crate::widgets::ui::PickerState::default(),
+            retype: None,
+            combine: None,
+            retype_from_info: false,
+            table_picker: crate::widgets::ui::PickerState::default(),
+            table_choices: None,
             clipboard: None,
             pending_copy: None,
             chart_cache: ChartCache::default(),
             chart_inflight: None,
+            chart_asked: None,
             pending_chart_result: Arc::new(Mutex::new(None)),
             chart_export_waiting: None,
             error_modal: ErrorModal::new(),
             flash: None,
             confirmation_modal: ConfirmationModal::new(),
             pending_export: None,
+            pending_delete_view: None,
+            pending_hide_examples: false,
             pending_chart_export: None,
             pending_quality_export: None,
             help: help::Help::default(),
@@ -6825,8 +7058,12 @@ impl App {
             self.home.unreachable.remove(&dir);
             self.home.cut_short.remove(&dir);
         }
-        // A peek that failed is asked again: Ctrl+R is the request to try.
+        // A peek that failed is asked again: Ctrl+R is the request to try. So is a web
+        // file that was not there.
         self.home.peek_failed.clear();
+        for path in std::mem::take(&mut self.home.web_gone).into_keys() {
+            self.home.sized.remove(&path);
+        }
         self.home.status = None;
         self.home_refresh();
     }
@@ -6950,6 +7187,13 @@ impl App {
 
         self.move_remembered_places();
         self.home.catalogs = home::catalogs(&self.app_config);
+        // Hidden with Delete on its heading: the catalog that comes with datui only,
+        // never a user's own `examples.toml`.
+        if self.cache.examples_hidden() {
+            self.home
+                .catalogs
+                .retain(|c| c.origin != crate::catalog::Origin::Bundled);
+        }
         let mut request = home::ListingRequest {
             // Filled in on the worker, from the cache and the desktop's recents: files
             // all the same, and the first frame does not wait on a file.
@@ -6990,6 +7234,8 @@ impl App {
                     request.desktop_dirs = home::desktop_recent_dirs();
                 }
                 let listing = home::build_listing(&request);
+                let mut visits = visits;
+                listing.alias_visits(&mut visits);
                 // A record shown is a record used: the ones eviction keeps.
                 let shown: Vec<PathBuf> = listing
                     .sections
@@ -7094,8 +7340,16 @@ impl App {
         let tx = self.events.clone();
         let cache = self.cache.clone();
         self.runtime.spawn_blocking(move || {
-            let Ok(Some(size)) = Self::fetch_remote_size_http(&entry.path.to_string_lossy()) else {
-                return;
+            let size = match Self::fetch_remote_size_http(&entry.path.to_string_lossy()) {
+                Ok(Some(size)) => size,
+                Ok(None) => return,
+                Err(gone) => {
+                    let _ = tx.send(AppEvent::HomeWebGone {
+                        path: entry.path,
+                        gone,
+                    });
+                    return;
+                }
             };
             let key = home::index_key(&entry.path);
             let mut facts = cache.dataset_facts(&key).unwrap_or_default();
@@ -7234,6 +7488,9 @@ impl App {
             state.stop_following();
         }
         self.home.status = None;
+        // The search that found the dataset comes back, selected: the next character
+        // typed starts a new one, and `~` opens the path prompt.
+        self.home.filter_selected = !self.home.filter.is_empty();
         self.home.folds_owed = true;
         self.home_refresh();
         if let Some(open_path) = self.path.clone() {
@@ -7268,8 +7525,8 @@ impl App {
         if !self.home.filter.is_empty() {
             self.home.filter.clear();
             self.home.sync_search_section();
-            self.home.selected = 0;
-            self.home.clamp_selection();
+            // On a dataset, as at launch, not on the first section's header.
+            self.home.select_first_entry();
             return None;
         }
         if self.home.browsing.is_some() {
@@ -7304,6 +7561,24 @@ impl App {
     /// forgetting it there would either do nothing or imply a deletion datui is not
     /// going to perform.
     fn home_forget_selected(&mut self) {
+        // A catalog's heading: Delete hides the one that comes with datui, until the
+        // cache is cleared. A catalog of the user's is hidden by its id in the config.
+        if let Some(catalog) = self.home.selected_catalog() {
+            if catalog.origin == crate::catalog::Origin::Bundled {
+                let message = format!(
+                    "Hide {}? It comes back after datui cache clear.",
+                    catalog.label
+                );
+                self.pending_hide_examples = true;
+                self.confirmation_modal.show_destructive(message, "Hide");
+            } else {
+                self.home.status = Some(format!(
+                    "[home] hide = [\"{}\"] in config.toml hides it",
+                    catalog.id
+                ));
+            }
+            return;
+        }
         // A place row stands for every recent under it. Forgetting them all is one
         // keystroke from forgetting one, so it asks first, the way Shift+Delete does.
         if let Some(home::Row::Place { path, held, .. }) = self.home.selected_row() {
@@ -7596,6 +7871,7 @@ impl App {
             name,
         ) {
             self.info_documentation.open(doc, None);
+            self.info_documentation.links_open = self.local_desktop;
         }
     }
 
@@ -7619,6 +7895,7 @@ impl App {
             })
             .and_then(|e| e.size);
         self.documentation.open(doc, measured);
+        self.documentation.links_open = self.local_desktop;
     }
 
     /// What Ctrl+E documents for the row under the cursor, with the row's path: the
@@ -7667,6 +7944,14 @@ impl App {
 
     /// What Ctrl+D does on the row under the cursor, as the footer names it: add it to
     /// `catalog.toml`, or forget it from there; `None` on a row it cannot add.
+    /// Whether Delete on the selected row hides a catalog: the heading of the one
+    /// that comes with datui.
+    pub(crate) fn home_hides_catalog(&self) -> bool {
+        self.home
+            .selected_catalog()
+            .is_some_and(|c| c.origin == crate::catalog::Origin::Bundled)
+    }
+
     pub(crate) fn home_catalog_action(&self) -> Option<&'static str> {
         let (location, _) = self.home_row_for_catalog()?;
         Some(if self.mine_entry_at(&location).is_some() {
@@ -7691,6 +7976,10 @@ impl App {
                 self.documentation.toggle_legend();
             }
             KeyCode::Char('y') => self.copy_documentation_line(),
+            KeyCode::Char('o') => {
+                let link = self.documentation.link();
+                self.ask_to_open_link(link);
+            }
             // The view takes no text, so ? is help here, as at the table.
             KeyCode::Char('?') => self.open_help_overlay(),
             _ => {}
@@ -7702,6 +7991,27 @@ impl App {
         match self.documentation.copy_text() {
             Some(text) => self.copy_documentation_text(text),
             None => self.flash_note("Nothing to copy on this line".to_string()),
+        }
+    }
+
+    /// `o` on a Documentation page: ask, with the whole URL, before the browser
+    /// opens it. Nothing on a line without a link; a status line where no local
+    /// browser would show it, or the link is not http or https.
+    pub(crate) fn ask_to_open_link(&mut self, link: Option<String>) {
+        let Some(link) = link else {
+            return;
+        };
+        if !self.local_desktop {
+            self.flash_note("o opens links on a local desktop; y copies it".to_string());
+            return;
+        }
+        match link_open::checked_url(&link) {
+            Ok(url) => {
+                self.confirmation_modal
+                    .show_choice(format!("Open {url}?"), "Open", "Cancel");
+                self.pending_link = Some(url);
+            }
+            Err(why) => self.flash_note(format!("Not opened: {why}; y copies it")),
         }
     }
 
@@ -8563,6 +8873,15 @@ impl App {
         self.home_refresh();
     }
 
+    /// What an open the home screen starts reads with: the config's read and CSV
+    /// settings, as an open named on the command line has them under its flags.
+    fn open_defaults(&self) -> OpenOptions {
+        match crate::cli::parse_args(["datui"]) {
+            Ok(args) => OpenOptions::from_args_and_config(&args, &self.app_config),
+            Err(_) => OpenOptions::default(),
+        }
+    }
+
     /// Load a path from the home screen.
     ///
     /// The recent entry is recorded by the `Open` handler, which every open goes
@@ -8608,7 +8927,7 @@ impl App {
             read_as_plain_files_of: lake,
             format,
             left_out,
-            ..OpenOptions::default()
+            ..self.open_defaults()
         };
         self.input_mode = InputMode::Normal;
         // Chosen here, so a failure is reported here.
@@ -8723,13 +9042,14 @@ impl App {
                     self.home.status = None;
                 }
                 KeyCode::Char('u') if ctrl => self.home.path_input.clear(),
-                // The picked name, or what the names listed agree on. Before the
-                // listing is in, completion reads the directory on a worker.
+                // What the names listed agree on, as a shell completes, or a name
+                // picked further down with ↓. Before the listing is in, completion
+                // reads the directory on a worker.
                 KeyCode::Tab => {
-                    let completed = self
-                        .home
-                        .picked_path()
-                        .or_else(|| self.home.path_completion());
+                    let completed = match self.home.path_pick {
+                        Some(i) if i > 0 => self.home.picked_path(),
+                        _ => self.home.path_completion(),
+                    };
                     let listed = self
                         .home
                         .path_listing
@@ -8747,13 +9067,31 @@ impl App {
                 }
                 _ => {}
             }
-            // Whatever changed what is typed takes the pick away, and a new directory
-            // is listed.
-            if !matches!(event.code, KeyCode::Up | KeyCode::Down) {
-                self.home.path_pick = None;
-            }
+            // Whatever changed what is typed puts the pick back on the first name
+            // that matches, and a new directory is listed.
             self.list_the_typed_directory();
+            if !matches!(event.code, KeyCode::Up | KeyCode::Down) {
+                self.home.pick_first_path();
+            }
             return None;
+        }
+
+        // A filter kept from before is selected: a character, Backspace or Delete
+        // replaces it, as a selection in any field; any other key keeps it.
+        if std::mem::take(&mut self.home.filter_selected) {
+            let replaces = match event.code {
+                KeyCode::Char(_) => !ctrl,
+                KeyCode::Backspace => true,
+                _ => false,
+            };
+            if replaces {
+                self.home.filter.clear();
+                self.home.sync_search_section();
+                self.home.select_first_entry();
+                if event.code == KeyCode::Backspace {
+                    return None;
+                }
+            }
         }
 
         // Every plain character types into the filter, so no letter or bracket is
@@ -8895,6 +9233,7 @@ impl App {
                 self.home.path_listing = None;
                 self.home.path_pick = None;
                 self.list_the_typed_directory();
+                self.home.pick_first_path();
             }
             // The one printable that is a key, and only before typing starts: a
             // filter beginning with a literal `?` matches nothing anyway, and this
@@ -9023,13 +9362,12 @@ impl App {
         ]
         .into_iter()
         .filter_map(|(key, value)| value.map(|v| (key, v)))
+        .chain([(
+            AmazonS3ConfigKey::Client(crate::user_agent::CLIENT_KEY),
+            crate::user_agent::get(),
+        )])
         .collect();
-        let opts = CloudOptions::default();
-        if configs.is_empty() {
-            opts
-        } else {
-            opts.with_aws(configs)
-        }
+        CloudOptions::default().with_aws(configs)
     }
 
     /// The bucket and key of an `s3://bucket/key` or `gs://bucket/key` URL. The key
@@ -9104,14 +9442,19 @@ impl App {
     /// this one.
     #[cfg(feature = "http")]
     fn http_agent(total: std::time::Duration) -> ureq::Agent {
-        ureq::Agent::config_builder()
+        crate::user_agent::ureq_config()
             .timeout_global(Some(total))
             .build()
             .into()
     }
 
+    /// What a HEAD says an HTTP(S) file weighs: `None` when it does not say. An error
+    /// only when the answer settles that the file cannot be had (a 404, no server); a
+    /// server that refuses HEAD may still send the file.
     #[cfg(feature = "http")]
-    fn fetch_remote_size_http(url: &str) -> Result<Option<u64>> {
+    fn fetch_remote_size_http(
+        url: &str,
+    ) -> std::result::Result<Option<u64>, crate::error_display::HttpGone> {
         let agent = Self::http_agent(std::time::Duration::from_secs(15));
         // ureq asks for gzip by default and strips Content-Length from a compressed
         // answer, so a server that compresses (GitHub Pages does) reports no size.
@@ -9122,7 +9465,7 @@ impl App {
                 .get("Content-Length")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<u64>().ok())),
-            Err(_) => Ok(None),
+            Err(e) => crate::error_display::http_gone(url, &e).map_or(Ok(None), Err),
         }
     }
 
@@ -9163,18 +9506,11 @@ impl App {
         let url = url.to_string();
         let open = move || {
             let agent = Self::http_agent(std::time::Duration::from_secs(300));
+            // ureq answers a 4xx or 5xx with an error, so every failure is said here.
             let response = agent
                 .get(&url)
                 .call()
-                .map_err(|e| format!("Download failed. Check the URL and your connection: {e}"))?;
-            let status = response.status();
-            if status.is_client_error() || status.is_server_error() {
-                return Err(format!(
-                    "Server returned {} {}. Check the URL.",
-                    status.as_u16(),
-                    status.canonical_reason().unwrap_or("Unknown")
-                ));
-            }
+                .map_err(|e| crate::error_display::http_message(&url, &e))?;
             // No length: ureq hands back a compressed answer decompressed, and the
             // Content-Length it came with is the wire's, not the file's.
             Ok((response.into_body().into_reader(), None))
@@ -9302,6 +9638,8 @@ impl App {
             delimited: None,
             table: None,
             guessed: false,
+            read_notes: Vec::new(),
+            typing: Default::default(),
         };
         // A followed file reads every row it can and counts the rest: a row
         // that does not fit the schema never stops the follow.
@@ -9373,6 +9711,8 @@ impl App {
             tail,
             table: report.table.or_else(|| options.table.clone()),
             format_guessed: options.format_guessed || report.guessed,
+            read_notes: report.read_notes,
+            typing: report.typing,
             ..options
         };
         // The spec's dialect stays with the dataset, so a read again (`H`,
@@ -9559,7 +9899,10 @@ impl App {
                     let size = match &pending {
                         #[cfg(feature = "http")]
                         loading::PendingDownload::Http { url, .. } => {
-                            Self::fetch_remote_size_http(url).unwrap_or(None)
+                            // A file that is not there, or a host that does not
+                            // answer, ends the open here, not after a question
+                            // about downloading it.
+                            Self::fetch_remote_size_http(url).map_err(|gone| gone.message)?
                         }
                         #[cfg(feature = "cloud")]
                         loading::PendingDownload::S3 { url, .. }
@@ -10405,6 +10748,8 @@ impl App {
             facts.open_notes.extend(read.notes());
             facts.delimited = Some(read.clone());
         }
+        facts.open_notes.extend(options.read_notes.iter().cloned());
+        facts.typing = options.typing.clone();
         facts.read_mode = options.read_mode;
         facts.read_as = options.format;
         // The display path of a downloaded object is its URL too; only a scan that
@@ -10502,32 +10847,46 @@ impl App {
         let text = path.to_string_lossy();
         let resolved = crate::cloud_sources::resolve_for_open(&text, cloud)
             .map_err(|e| color_eyre::eyre::eyre!(e))?;
+        use object_store::azure::AzureConfigKey;
+        use polars::io::cloud::GoogleConfigKey;
+        let gcs_agent = (
+            GoogleConfigKey::Client(crate::user_agent::CLIENT_KEY),
+            crate::user_agent::get(),
+        );
         let options = match resolved.kind {
             crate::cloud_browse::ProviderKind::S3 => Self::build_s3_cloud_options(&resolved.s3),
             crate::cloud_browse::ProviderKind::Gcs
                 if resolved.signing == crate::cloud_sources::Signing::Unsigned =>
             {
                 CloudOptions::default()
-                    .with_gcp([(polars::io::cloud::GoogleConfigKey::SkipSignature, "true")])
+                    .with_gcp([(GoogleConfigKey::SkipSignature, "true".into()), gcs_agent])
             }
             crate::cloud_browse::ProviderKind::Gcs => match &resolved.gcloud {
                 // The token comes from `gcloud` whenever Polars asks, so a long scan
                 // outlives the one fetched here.
                 Some((configuration, _)) => CloudOptions::default()
+                    .with_gcp([gcs_agent])
                     .with_credential_provider(Some(crate::gcloud::polars_provider(configuration))),
                 None => match &resolved.google_credentials {
-                    Some(file) => CloudOptions::default().with_gcp([(
-                        polars::io::cloud::GoogleConfigKey::ApplicationCredentials,
-                        file.to_string_lossy().into_owned(),
-                    )]),
-                    None => CloudOptions::default(),
+                    Some(file) => CloudOptions::default().with_gcp([
+                        (
+                            GoogleConfigKey::ApplicationCredentials,
+                            file.to_string_lossy().into_owned(),
+                        ),
+                        gcs_agent,
+                    ]),
+                    None => CloudOptions::default().with_gcp([gcs_agent]),
                 },
             },
             crate::cloud_browse::ProviderKind::Azure => {
                 let (account, _, _) = source::azure_parts(&resolved.url)
                     .ok_or_else(|| color_eyre::eyre::eyre!("not an Azure URL"))?;
-                CloudOptions::default()
-                    .with_azure(crate::azure::polars_options(&account, &resolved.azure))
+                let mut azure = crate::azure::polars_options(&account, &resolved.azure);
+                azure.push((
+                    AzureConfigKey::Client(crate::user_agent::CLIENT_KEY),
+                    crate::user_agent::get(),
+                ));
+                CloudOptions::default().with_azure(azure)
             }
         };
         Ok((resolved.url, options))
@@ -11126,7 +11485,7 @@ impl App {
         if options.delimited.is_none()
             && options.format.is_none()
             && found.separator().is_some()
-            && let Some(first) = files.first()
+            && let Some(first) = files.iter().find(|f| !crate::nul_tail::holds_nothing(f))
             && let Some(choice) = Self::delimited_spec_of(first, options, formats)?
         {
             let nested = OpenOptions {
@@ -11137,6 +11496,8 @@ impl App {
             };
             return Self::read_with_delimited_spec(files, &nested, report, formats, choice);
         }
+        // A spec's read says how its files differ itself, from their own header lines.
+        report.files_disagree = Self::files_disagree(files, options, found);
         let nested = OpenOptions {
             hive: false,
             format: Some(options.format.unwrap_or(found)),
@@ -11209,6 +11570,28 @@ impl App {
                 file: one.clone(),
                 asked: true,
             });
+        }
+
+        // A glob of local files the first of which a delimited spec reads: read through
+        // the spec, file by file, as a directory of them is. Polars' own scan of the
+        // glob would read the spec's header lines as data.
+        if let [pattern] = paths
+            && !options.hive
+            && options.delimited.is_none()
+            && options.format.is_none()
+            && source::expands_as_glob(pattern)
+        {
+            let files = crate::local_glob::expand(pattern);
+            if let Some(first) = files.iter().find(|f| !crate::nul_tail::holds_nothing(f))
+                && let Some(choice) = Self::delimited_spec_of(first, options, formats)?
+            {
+                let format = FileFormat::from_path(first).filter(|f| f.separator().is_some());
+                let nested = OpenOptions {
+                    format: format.or(Some(FileFormat::Csv)),
+                    ..options.clone()
+                };
+                return Self::read_with_delimited_spec(&files, &nested, report, formats, choice);
+            }
         }
 
         // A format spec: one asked for, or one whose glob or magic the path matches. A
@@ -11318,7 +11701,6 @@ impl App {
                             let format = options.format.unwrap_or(found);
                             let files =
                                 Self::hugging_face_split(path, format, files, options, report)?;
-                            report.files_disagree = Self::files_disagree(&files, options, found);
                             return Self::read_directory_files(
                                 &files, options, found, report, formats,
                             );
@@ -11336,7 +11718,6 @@ impl App {
                             let format = options.format.unwrap_or(found);
                             let files =
                                 Self::hugging_face_split(path, format, files, options, report)?;
-                            report.files_disagree = Self::files_disagree(&files, options, found);
                             let lf = Self::read_directory_files(
                                 &files, options, found, report, formats,
                             )?;
@@ -11697,25 +12078,8 @@ impl App {
             // description and matching alone — it must not overwrite what
             // the view carries with whatever the table happens to show.
             if editing_the_active_view && let Some(state) = &self.data_table_state {
-                let (query, sql_query, fuzzy_query) = active_query_settings(
-                    state.get_active_query(),
-                    state.get_active_sql_query(),
-                    state.get_active_fuzzy_query(),
-                );
-                view.settings = view::ViewSettings {
-                    query,
-                    sql_query,
-                    fuzzy_query,
-                    filters: state.get_filters().to_vec(),
-                    sort_columns: state.get_sort_columns().to_vec(),
-                    sort_descending: state.get_sort_descending().to_vec(),
-                    sort_ascending: state.get_sort_ascending(),
-                    column_order: state.get_column_order().to_vec(),
-                    locked_columns_count: state.locked_columns_count(),
-                    pivot: state.last_pivot_spec().cloned(),
-                    melt: state.last_melt_spec().cloned(),
-                    reshape_source: state.reshape_source().cloned(),
-                };
+                view.settings = view_settings_of(state);
+                view.settings.chart = self.saved_chart();
             }
             match self.view_manager.update_view(&view) {
                 Ok(()) => true,
@@ -11878,6 +12242,10 @@ impl App {
             InputMode::Inspect => Context::Inspector,
             InputMode::GoToColumn => Context::GoToColumn,
             InputMode::PickFormat => Context::FormatPicker,
+            InputMode::Retype => Context::Retype,
+            InputMode::Combine => Context::Combine,
+            InputMode::PickTable => Context::TablePicker,
+            InputMode::Sample => Context::Sample,
             InputMode::Info => Context::Info,
             InputMode::Chart => Context::Chart,
             InputMode::Home if self.documentation.is_open() => Context::Documentation,
@@ -11936,6 +12304,11 @@ impl App {
                 context_menu::MenuKey::Run(key) => {
                     self.context_menu = None;
                     return Some(AppEvent::Press(key));
+                }
+                context_menu::MenuKey::Do(action) => {
+                    self.context_menu = None;
+                    self.menu_action(action);
+                    return None;
                 }
                 context_menu::MenuKey::Other => self.context_menu = None,
             }
@@ -12021,13 +12394,13 @@ impl App {
                     // Toggle between Yes and No
                     self.confirmation_modal.focus_yes = !self.confirmation_modal.focus_yes;
                 }
-                // ←→ carry the choice, so ↑↓ scroll a long question; the
+                // ←→ carry the choice, so ↑↓ (k/j) scroll a long question; the
                 // render clamps the offset.
-                KeyCode::Up => {
+                KeyCode::Up | KeyCode::Char('k') => {
                     self.confirmation_modal.scroll =
                         self.confirmation_modal.scroll.saturating_sub(1);
                 }
-                KeyCode::Down => {
+                KeyCode::Down | KeyCode::Char('j') => {
                     self.confirmation_modal.scroll =
                         self.confirmation_modal.scroll.saturating_add(1);
                 }
@@ -12050,12 +12423,38 @@ impl App {
                             };
                             return self.apply_sample(sample);
                         }
+                        if let Some(url) = self.pending_link.take() {
+                            self.confirmation_modal.hide();
+                            return Some(AppEvent::OpenLink(url));
+                        }
                         if self.pending_clear_recents {
                             self.pending_clear_recents = false;
                             self.confirmation_modal.hide();
                             self.cache.clear_recents();
                             self.home_refresh();
                             self.home.status = None;
+                            return None;
+                        }
+                        // A full scan agreed to: Setup runs, past the question.
+                        if self.analysis_modal.data_quality_confirm_run {
+                            self.confirmation_modal.hide();
+                            let event = self.run_quality_setup();
+                            // Asked once: a run that waits or is refused asks again.
+                            self.analysis_modal.data_quality_confirm_run = false;
+                            return event;
+                        }
+                        if std::mem::take(&mut self.pending_hide_examples) {
+                            self.confirmation_modal.hide();
+                            self.cache.hide_examples();
+                            self.home_refresh();
+                            self.home.select_first_entry();
+                            return None;
+                        }
+                        if let Some(id) = self.pending_delete_view.take() {
+                            self.confirmation_modal.hide();
+                            if self.view_manager.delete_view(&id).is_ok() {
+                                self.refresh_view_list();
+                            }
                             return None;
                         }
                         if let Some(place) = self.pending_forget_place.take() {
@@ -12070,7 +12469,6 @@ impl App {
                         // file it asked about, and only through that answer.
                         if let Some((path, format)) = self.pending_quality_export.take() {
                             self.confirmation_modal.hide();
-                            self.analysis_modal.data_quality_export = None;
                             return Some(AppEvent::QualityReportExport(
                                 path,
                                 format,
@@ -12105,8 +12503,14 @@ impl App {
                         }
                     } else {
                         self.pending_clear_recents = false;
+                        self.pending_link = None;
                         self.pending_read_all = false;
                         self.pending_forget_place = None;
+                        self.pending_delete_view = None;
+                        self.pending_hide_examples = false;
+                        // Declining the full read leaves the draft staged, and the
+                        // sample and report as they were.
+                        self.analysis_modal.data_quality_confirm_run = false;
                         // Declining an overwrite returns to the filled form:
                         // the typed path, format and options survive the No.
                         if self.pending_chart_export.take().is_some() {
@@ -12130,8 +12534,12 @@ impl App {
                     // Disarmed on every exit from the modal, so a declined confirmation
                     // cannot fire against whatever the *next* one is asking about.
                     self.pending_clear_recents = false;
+                    self.pending_link = None;
                     self.pending_read_all = false;
                     self.pending_forget_place = None;
+                    self.pending_delete_view = None;
+                    self.pending_hide_examples = false;
+                    self.analysis_modal.data_quality_confirm_run = false;
                     // Staying: the recording goes on, and so does the view.
                     self.pending_leave = None;
                     // Declining an overwrite returns to the filled form: the
@@ -12256,6 +12664,10 @@ impl App {
             return self.export_key(event);
         }
 
+        if self.input_mode == InputMode::Sample {
+            return self.table_sample_form_key(event);
+        }
+
         if self.input_mode == InputMode::Inspect {
             return self.inspector_key(event);
         }
@@ -12275,6 +12687,18 @@ impl App {
 
         if self.input_mode == InputMode::PickFormat {
             return self.format_picker_key(event);
+        }
+
+        if self.input_mode == InputMode::Retype {
+            return self.retype_key(event);
+        }
+
+        if self.input_mode == InputMode::Combine {
+            return self.combine_key(event);
+        }
+
+        if self.input_mode == InputMode::PickTable {
+            return self.table_picker_key(event);
         }
 
         if self.input_mode == InputMode::Copy {
@@ -12431,6 +12855,11 @@ impl App {
                 // The find is the nearest layer: its mark goes first, then a drill.
                 if self.find_shown() {
                     self.find.active = None;
+                    return None;
+                }
+                // A sample being drawn stops, keeping the rows so far.
+                if self.sample_drawing() {
+                    self.stop_sample_draw();
                     return None;
                 }
                 let mut from_counts = false;
@@ -12664,8 +13093,17 @@ impl App {
                     } else {
                         self.info_modal.open();
                     }
+                    // A list of the file's tables starts its cursor on the one open.
+                    if let Some(detail) = state.format_detail()
+                        && let Some(at) = detail.list.iter().position(|(key, _)| {
+                            detail.table.as_ref() == Some(key) && detail.tables.contains(key)
+                        })
+                    {
+                        self.info_modal.detail_selected = at;
+                    }
                     self.input_mode = InputMode::Info;
                     self.read_file_facts();
+                    self.count_unfit();
                 }
                 None
             }
@@ -12696,6 +13134,12 @@ impl App {
             }
             KeyCode::Char('v') => {
                 self.open_view_list();
+                None
+            }
+            KeyCode::Char('S') => {
+                if self.input_mode == InputMode::Normal {
+                    self.open_table_sample_form();
+                }
                 None
             }
             KeyCode::Char('s') => {
@@ -12731,13 +13175,22 @@ impl App {
                     && self.input_mode == InputMode::Normal
                     && self.quality_evidence_return.is_none()
                 {
-                    self.analysis_modal.open();
+                    // The results a close put down come back on the view they are of.
+                    let view = self.data_table_state.as_ref().map(|s| s.len_generation());
+                    self.analysis_modal.open(view);
                     // The sample outlives a close, but its scope names this
                     // dataset's rows: another dataset starts from its current view.
                     if self.analysis_modal.sample_dataset != Some(self.dataset_generation) {
                         self.analysis_modal.sample.scope = data_quality::QualityScope::CurrentView;
                         self.analysis_modal.sample_dataset = Some(self.dataset_generation);
                     }
+                    // A view with a sample: every tool reads it, whole.
+                    let sampled = self
+                        .data_table_state
+                        .as_ref()
+                        .is_some_and(|state| state.sampled().is_some());
+                    self.analysis_modal.follow_view_sample(sampled);
+                    self.sync_quality_plan();
                 }
                 None
             }
@@ -12782,6 +13235,9 @@ impl App {
                         })
                         .map(|(name, _)| name.to_string())
                         .collect();
+                    self.chart_modal.series_cap = Some(self.theme.series_colors().len());
+                    self.chart_modal.row_order = self.view_state().sort;
+                    let sampled = state.sampled().is_some();
                     self.chart_modal.open(
                         ChartColumns {
                             numeric: &numeric_columns,
@@ -12794,6 +13250,13 @@ impl App {
                         self.app_config.analysis.chart_grid,
                         self.dataset_generation,
                     );
+                    // A view's sample is read whole: the chart has no sample of its own.
+                    if sampled {
+                        self.chart_modal.row_limit = None;
+                    } else if self.chart_modal.view_sampled {
+                        self.chart_modal.row_limit = Some(self.chart_modal.sample_rows);
+                    }
+                    self.chart_modal.view_sampled = sampled;
                     self.chart_cache.clear();
                     self.input_mode = InputMode::Chart;
                 }
@@ -12807,12 +13270,16 @@ impl App {
             }
             KeyCode::Char('e') => {
                 if self.data_table_state.is_some() && self.input_mode == InputMode::Normal {
+                    self.export_counts = None;
                     self.export_modal.open(
                         self.original_file_format,
                         self.history_limit,
                         &self.theme,
                         self.original_file_delimiter,
                     );
+                    // A name to start from, beside the source's rather than on it.
+                    let stem = self.dataset_stem();
+                    self.export_modal.suggest_path(&format!("{stem}-export"));
                     if let Some(state) = self.data_table_state.as_ref() {
                         self.export_modal.offer_source_file = state.can_name_source_files();
                         self.export_modal.nested_columns = state
@@ -12847,6 +13314,12 @@ impl App {
             KeyCode::Char('b') if event.is_press() => {
                 if self.input_mode == InputMode::Normal {
                     self.open_format_picker();
+                }
+                None
+            }
+            KeyCode::Char('T') if event.is_press() => {
+                if self.input_mode == InputMode::Normal {
+                    self.open_table_picker();
                 }
                 None
             }
@@ -12932,8 +13405,17 @@ impl App {
         match self.chart_inflight.as_ref() {
             Some(inflight) if !inflight.stale => true,
             Some(_) => self.chart_request_pending(),
-            None => false,
+            None => self.chart_settling(),
         }
+    }
+
+    /// Whether the selection on screen is a step through the aggregates still waiting
+    /// for the next step.
+    fn chart_settling(&self) -> bool {
+        self.chart_asked
+            .as_ref()
+            .and_then(|(_, until)| *until)
+            .is_some_and(|until| std::time::Instant::now() < until)
     }
 
     /// Whether the chart view wants data it does not have and cannot be told it will
@@ -12955,6 +13437,7 @@ impl App {
     /// dataset changes or is left for the home screen.
     fn reset_chart_state(&mut self) {
         self.chart_cache.clear();
+        self.chart_asked = None;
         if let Some(inflight) = self.chart_inflight.as_mut() {
             inflight.stale = true;
             inflight
@@ -13022,9 +13505,15 @@ impl App {
     /// selection is picked up when that one lands). Runs after every event, so a change
     /// of column or option is noticed as soon as it is made and render only ever draws.
     fn ensure_chart_data(&mut self) {
+        const CHART_AGGREGATE_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
         if self.input_mode != InputMode::Chart || !self.chart_modal.active {
             return;
         }
+        // What Every row costs, as the table counted it.
+        self.chart_modal.view_rows = self
+            .data_table_state
+            .as_ref()
+            .and_then(|state| state.num_rows_if_valid());
         let request = ChartRequest::from_modal(&self.chart_modal);
         if let Some(inflight) = self.chart_inflight.as_ref()
             && !request
@@ -13040,6 +13529,22 @@ impl App {
         let Some(request) = request else {
             return;
         };
+        // Stepping none, count, distinct, sum, mean grouped every row at each step, and
+        // drew each: a step waits a moment for the next, and only where it stops is
+        // prepared. A Wake when the wait ends prepares it.
+        let settle = match self.chart_asked.take() {
+            Some((asked, until)) if asked == request => until,
+            Some((asked, _)) if request.steps_aggregate_from(&asked) => {
+                let tx = self.events.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(CHART_AGGREGATE_SETTLE);
+                    let _ = tx.send(AppEvent::Wake);
+                });
+                Some(std::time::Instant::now() + CHART_AGGREGATE_SETTLE)
+            }
+            _ => None,
+        };
+        self.chart_asked = Some((request.clone(), settle));
         if self.chart_cache.get(&request).is_some() {
             self.chart_cache.touch(&request, self.chart_modal.log_scale);
             // A cached chart's colors were counted with it.
@@ -13055,7 +13560,7 @@ impl App {
             }
             return;
         }
-        if self.chart_inflight.is_some() {
+        if self.chart_inflight.is_some() || self.chart_settling() {
             return;
         }
         let Some(state) = self.data_table_state.as_ref() else {
@@ -13063,7 +13568,12 @@ impl App {
         };
         // Unsorted: the rows a chart draws do not depend on the table's order, a line
         // is drawn in X order anyway, and a sort would make a sampled read read it all.
-        let lf = state.analysis_lf();
+        // First and last are the order's: they read the view as sorted.
+        let lf = if request.sorted {
+            state.lf().clone()
+        } else {
+            state.analysis_lf()
+        };
         let schema = state.schema().clone();
         let dataset = Some(state.len_generation());
         let sampling = chart_data::ChartSampling {
@@ -13220,6 +13730,10 @@ impl App {
                 self.home.apply_measurements();
                 None
             }
+            AppEvent::HomeWebGone { path, gone } => {
+                self.home.web_gone.insert(path.clone(), gone.clone());
+                None
+            }
             AppEvent::HomeClassified { measured, done } => {
                 // Kept even when the listing has been rebuilt since it was asked for. A
                 // probe or a cloud peek landing rebuilds it, and a Recent section full of
@@ -13250,6 +13764,9 @@ impl App {
                     && home::typed_dir(&self.home.path_input) == listing.dir
                 {
                     self.home.path_listing = Some((**listing).clone());
+                    if self.home.path_pick.is_none() {
+                        self.home.pick_first_path();
+                    }
                 }
                 None
             }
@@ -13272,6 +13789,7 @@ impl App {
                         self.flash_note(format!("{candidates} matches"));
                     }
                     self.home.path_input = completed.clone();
+                    self.home.pick_first_path();
                 }
                 None
             }
@@ -14224,6 +14742,18 @@ impl App {
                 None
             }
             AppEvent::Reset => {
+                // The sample is a step of the view: a reset takes it away too.
+                if self
+                    .data_table_state
+                    .as_ref()
+                    .is_some_and(|state| state.sampled().is_some())
+                {
+                    self.put_down_sample_draw();
+                    if let Some(state) = self.data_table_state.take() {
+                        self.data_table_state = Some(state.into_unsampled());
+                    }
+                    self.sample_changed();
+                }
                 if let Some(state) = &mut self.data_table_state {
                     state.deferred(|s| s.reset());
                 }
@@ -14289,7 +14819,7 @@ impl App {
                     Some("Writing the report..."),
                     move |_| {
                         crate::quality_export::write(&path, &results, &plan, format, overwrite)
-                            .map_err(|error| Self::format_export_error(&error, &path))?;
+                            .map_err(|error| Self::format_export_error(&error))?;
                         Ok(Answer::QualityReportWritten(path))
                     },
                 );
@@ -14396,7 +14926,8 @@ impl App {
                     self.busy = false;
                     return None;
                 };
-                let frame = match self.export_counts.take() {
+                // Cloned, not taken: a failed write reopens the dialog on the same counts.
+                let frame = match self.export_counts.clone() {
                     Some(counts) => crate::widgets::datatable::ExportFrame::of(
                         polars::prelude::IntoLazy::lazy(counts),
                     ),
@@ -14428,10 +14959,18 @@ impl App {
                         .into_lazy()
                         .map_err(color_eyre::eyre::Report::from)
                         .and_then(|lf| crate::export::run(lf, &request, streaming, written))
-                        .map_err(|e| Self::format_export_error(&e, &request.path))?;
+                        .map_err(|e| Self::format_export_error(&e))?;
                     // Success is reported only once the file is committed.
                     Ok(Answer::Exported(request.path))
                 });
+                None
+            }
+            AppEvent::OpenLink(url) => {
+                // Started, not waited on; a browser that will not start is a line,
+                // not an error to acknowledge.
+                if link_open::open(url).is_err() {
+                    self.flash_note("Couldn't open the link; y copies it".to_string());
+                }
                 None
             }
             AppEvent::CopyTable { format, header } => {
@@ -14484,7 +15023,7 @@ impl App {
                 None
             }
             AppEvent::TerminalBackground(mode) => {
-                self.follow_terminal_background(*mode);
+                self.terminal_answered(*mode);
                 None
             }
             AppEvent::TerminalFocused => {
@@ -14537,8 +15076,10 @@ impl App {
             use chart_modal::Aggregate;
             let aggregate = spec.encoding.y.aggregate;
             let numbers = match aggregate {
-                Aggregate::Count => chart_data::AxisNumbers::count(&self.number_format),
-                Aggregate::Mean | Aggregate::Median => self.axes_numbers(ys).fractional(),
+                Aggregate::Count | Aggregate::Distinct => {
+                    chart_data::AxisNumbers::count(&self.number_format)
+                }
+                a if a.is_fractional() => self.axes_numbers(ys).fractional(),
                 _ => self.axes_numbers(ys),
             };
             let names = if aggregate == Aggregate::Count {
@@ -14548,7 +15089,7 @@ impl App {
             };
             let title = match aggregate {
                 Aggregate::None | Aggregate::Count => names,
-                aggregate => format!("{} {names}", aggregate.label()),
+                _ => format!("{} {names}", spec.encoding.y.aggregate_name()),
             };
             Axis {
                 title,
@@ -14567,15 +15108,18 @@ impl App {
                 } else {
                     cache.series.clone()
                 };
+                let last = cache.names.len().saturating_sub(1);
                 let series: Vec<Series> = points
                     .into_iter()
                     .zip(&cache.names)
                     .zip(&cache.breaks)
-                    .filter(|((points, _), _)| !points.is_empty())
-                    .map(|((points, name), breaks)| Series {
+                    .enumerate()
+                    .filter(|(_, ((points, _), _))| !points.is_empty())
+                    .map(|(i, ((points, name), breaks))| Series {
                         name: name.clone(),
                         points,
                         breaks: breaks.clone(),
+                        other: cache.other && i == last,
                     })
                     .collect();
                 if series.is_empty() {
@@ -14687,14 +15231,22 @@ impl App {
         };
         Ok(Some(Figure {
             plot,
-            chart_notes: prepared.notes(),
+            // The file always has the middle dot; the terminal may be ASCII.
+            chart_notes: self.chart_notes_of(prepared, "·"),
             grid: modal.grid,
         }))
     }
 
     /// Write the chart from the prepared data off-thread, or park the export until that
     /// data is ready. `busy` was set by `ChartExport` and stays set until the export ends.
-    fn start_chart_export(&mut self, request: ChartExportRequest) {
+    fn start_chart_export(&mut self, mut request: ChartExportRequest) {
+        // How the chart was made, from the view and chart as they are now; none
+        // when the dialog says Omit.
+        request.options.recipe = if request.recipe {
+            self.chart_recipe()
+        } else {
+            None
+        };
         match self.build_chart_figure() {
             Ok(Some(figure)) => {
                 self.chart_export_waiting = None;
@@ -14708,17 +15260,18 @@ impl App {
                         format,
                         options,
                         overwrite,
+                        ..
                     } = request;
                     ChartExportJob { figure, options }
                         .write(&path, format, overwrite)
-                        .map_err(|e| Self::format_export_error(&e, &path))?;
+                        .map_err(|e| Self::format_export_error(&e))?;
                     Ok(Answer::ChartExported)
                 });
             }
             // Still being prepared; `BackgroundChartReady` comes back here.
             Ok(None) => self.chart_export_waiting = Some(request),
             Err(e) => {
-                let message = Self::format_export_error(&e, &request.path);
+                let message = Self::format_export_error(&e);
                 self.finish_chart_export(&request.path, request.format, Err(message));
             }
         }
@@ -14736,12 +15289,13 @@ impl App {
         self.busy = false;
         match result {
             Ok(()) => {
-                self.flash_note(format!("Chart exported to {}", path.display()));
+                self.flash_path("Chart exported to ", path);
                 self.chart_export_modal.close();
             }
+            // The form comes back as it was, the reason on its status line.
             Err(message) => {
-                self.error_modal.show(message);
                 self.chart_export_modal.reopen_with_path(path, format);
+                self.chart_export_modal.error = Some(message);
             }
         }
     }
@@ -14903,11 +15457,22 @@ impl App {
         let sort_columns = state.view_sort_columns().to_vec();
         let sort_descending = state.view_sort_descending().to_vec();
         let headers: Vec<String> = state.schema().iter_names().map(|s| s.to_string()).collect();
+        let schema = state.schema().clone();
         let order = state.headers();
         let locked = state.locked_columns_count();
 
         let modal = &mut self.sort_filter_modal;
+        modal.filter.applied = filters.clone();
         modal.filter.statements = filters;
+        modal.filter.operands = order
+            .iter()
+            .map(|name| {
+                schema
+                    .get(name)
+                    .map(crate::filter_modal::Operand::of)
+                    .unwrap_or_default()
+            })
+            .collect();
         modal.filter.available_columns = order.clone();
         // The cursor starts on the add row; the editor never survives a resync.
         modal.filter.cursor = modal.filter.statements.len();
@@ -15092,6 +15657,9 @@ impl App {
 
     fn apply_view_with(&mut self, view: &SavedView, why: Option<view::MatchReason>) -> Result<()> {
         self.jobs.supersede(|job| matches!(job, Job::ViewPivot(_)));
+        if let Some(saved) = &view.settings.sample {
+            return self.apply_sampled_view(view, saved, why);
+        }
         let Some(state) = self.data_table_state.as_mut() else {
             return Ok(());
         };
@@ -15134,6 +15702,7 @@ impl App {
                 .or_log("record a view's use");
         }
         let previous = self.active_view_id.replace(view.id.clone());
+        self.restore_view_chart(view.settings.chart.as_ref());
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
@@ -15280,6 +15849,8 @@ impl App {
             }
             Progress::Finding { rows } => self.find_progress(*rows),
             Progress::HexFinding { read, total } => self.hex_find_progress(*read, *total),
+            Progress::SampleBegun(schema) => self.sample_begun(schema),
+            Progress::SampleGrew => self.sample_grew(),
         }
     }
 
@@ -15464,7 +16035,7 @@ impl App {
             }
             Answer::Correlations(results) => {
                 if current {
-                    self.analysis_modal.correlation_results = Some(results);
+                    self.analysis_modal.install_correlations(results);
                     self.analysis_modal.computing = None;
                 }
                 None
@@ -15496,6 +16067,7 @@ impl App {
                 }
                 None
             }
+            Answer::SampleDrawn(drawn) => self.sample_drawn(job, current, drawn),
             Answer::Sample { df, label } => {
                 if current {
                     self.analysis_modal.computing = None;
@@ -15645,9 +16217,12 @@ impl App {
                 None
             }
             Answer::Exported(path) => {
+                // Written: the dialog held for a failure is done with.
+                self.export_modal.close();
+                self.export_counts = None;
                 if current {
                     self.export_progress = None;
-                    self.flash_note(format!("Exported to {}", path.display()));
+                    self.flash_path("Exported to ", &path);
                 }
                 None
             }
@@ -15659,8 +16234,9 @@ impl App {
                 None
             }
             Answer::QualityReportWritten(path) => {
+                self.analysis_modal.data_quality_export = None;
                 if current {
-                    self.flash_note(format!("Report written to {}", path.display()));
+                    self.flash_path("Report written to ", &path);
                 }
                 None
             }
@@ -15677,6 +16253,26 @@ impl App {
             Answer::FileFacts(facts) => {
                 if let Job::FileFacts { dataset } = job {
                     self.file_facts_landed(dataset, facts);
+                }
+                None
+            }
+            Answer::UnfitCounted(unfit) => {
+                // Every value fitting says nothing in the Notes; the log says it ran.
+                let columns: Vec<&str> = unfit.iter().map(|u| u.column.as_str()).collect();
+                let said = if columns.is_empty() {
+                    "none".to_string()
+                } else {
+                    columns.join(", ")
+                };
+                log::debug!(target: "datui", "values column types made null, by column: {said}");
+                if let Job::UnfitCount { dataset, version } = job
+                    && dataset == self.dataset_generation
+                    && let Some(state) = self.data_table_state.as_mut()
+                {
+                    match version {
+                        None => state.unfit_counted(&unfit),
+                        Some(version) => state.changes_unfit_counted(version, &unfit),
+                    }
                 }
                 None
             }
@@ -15747,10 +16343,20 @@ impl App {
                     self.error_modal.show(message.to_string());
                 }
             }
+            Job::SampleDraw(_) => self.sample_draw_failed(job, current, message),
             // The form stays up with its spec, to be fixed.
-            Job::Pivot | Job::Copy | Job::QualityReport => {
+            Job::Pivot | Job::Copy => {
                 if current {
                     self.error_modal.show(message.to_string());
+                }
+            }
+            // The dialog is still up, the reason on its status line under the path.
+            Job::QualityReport => {
+                if current {
+                    match self.analysis_modal.data_quality_export.as_mut() {
+                        Some(form) => form.error = Some(message.to_string()),
+                        None => self.error_modal.show(message.to_string()),
+                    }
                 }
             }
             Job::ViewPivot(_) => {
@@ -15843,10 +16449,17 @@ impl App {
                     }
                 }
             }
+            // The form comes back as it was, the reason on its status line, to fix
+            // the path and press Enter again.
             Job::Export => {
                 if current {
                     self.export_progress = None;
-                    self.error_modal.show(message.to_string());
+                    self.export_modal.resume();
+                    self.export_modal.path_error = Some(message.to_string());
+                    self.input_mode = InputMode::Export;
+                } else {
+                    self.export_modal.close();
+                    self.export_counts = None;
                 }
             }
             Job::ChartExport { path, format } => {
@@ -15887,6 +16500,10 @@ impl App {
                     message.to_string()
                 };
                 self.file_facts_landed(*dataset, FileFacts::Failed(why));
+            }
+            // The note is left unsaid; the log has why.
+            Job::UnfitCount { .. } => {
+                log::warn!(target: "datui", "counting values that did not fit their type failed: {message}");
             }
         }
     }
@@ -15935,6 +16552,52 @@ impl App {
         self.spawn_job(Job::FileFacts { dataset }, None, move |_| {
             Ok(Answer::FileFacts(read(&path, facts)?))
         });
+    }
+
+    /// Count, behind the Info panel, the values the read's column types made null, for
+    /// the Notes: one pass over the frame before the types, the first time the panel
+    /// opens on a dataset with typed columns.
+    fn count_unfit(&mut self) {
+        let dataset = self.dataset_generation;
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        let read = state
+            .unfit_to_count()
+            .map(|(source, typed)| (source, typed, None));
+        let view = state
+            .changes_unfit_to_count()
+            .map(|(source, typed, version)| (source, typed, Some(version)));
+        let streaming = self.app_config.performance.streaming;
+        for (source, typed, version) in [read, view].into_iter().flatten() {
+            let running = self
+                .jobs
+                .current(|job| {
+                    matches!(job, Job::UnfitCount { dataset: d, version: v }
+                        if *d == dataset && *v == version)
+                })
+                .is_some();
+            if running {
+                continue;
+            }
+            self.spawn_job(Job::UnfitCount { dataset, version }, None, move |_| {
+                let counted = crate::statistics::collect_lazy(
+                    crate::column_types::unfit_frame(source, &typed),
+                    streaming,
+                )
+                .map_err(|e| crate::error_display::user_message_from_polars(&e))?;
+                Ok(Answer::UnfitCounted(crate::column_types::unfit_counts(
+                    &counted, &typed,
+                )))
+            });
+        }
+    }
+
+    /// Whether the values the read's column types made null are being counted.
+    pub fn unfit_count_pending(&self) -> bool {
+        self.jobs
+            .current(|job| matches!(job, Job::UnfitCount { .. }))
+            .is_some()
     }
 
     /// Whether the open dataset's file facts are being read.
@@ -16184,6 +16847,10 @@ impl App {
             settings.query.as_deref(),
             settings.fuzzy_query.as_deref(),
         )?;
+        // Before the filters, which may compare in the types it gives.
+        if !settings.columns.is_empty() {
+            state.set_column_changes(&settings.columns);
+        }
         Self::replay_filters_and_sort(
             state,
             &settings.filters,
@@ -16264,7 +16931,9 @@ impl App {
     }
 
     /// What the error modal says when writing an export, report or chart fails.
-    fn format_export_error(error: &color_eyre::eyre::Report, path: &Path) -> String {
+    /// Why an export did not write, for the dialog's status line, which sits under
+    /// the path it is about.
+    fn format_export_error(error: &color_eyre::eyre::Report) -> String {
         use std::io::{self, ErrorKind};
 
         for cause in error.chain() {
@@ -16281,7 +16950,7 @@ impl App {
                     (None, ErrorKind::IsADirectory) => "it is a directory.".to_string(),
                     (None, _) => crate::error_display::user_message_from_io(io_err, None),
                 };
-                return format!("Cannot write to {}: {}", path.display(), msg);
+                return format!("Cannot write: {msg}");
             }
             if let Some(pe) = cause.downcast_ref::<polars::prelude::PolarsError>() {
                 let msg = crate::error_display::user_message_from_polars(pe);
@@ -16815,6 +17484,8 @@ impl App {
             &self.theme,
             self.original_file_delimiter,
         );
+        let stem = self.dataset_stem();
+        self.export_modal.suggest_path(&format!("{stem}-counts"));
         self.export_modal.offer_source_file = false;
         self.export_modal.nested_columns = false;
         self.export_modal.avro_renames = table
@@ -16936,6 +17607,87 @@ impl App {
         None
     }
 
+    /// The tables of the source on screen, from what its open holds; `None` for a
+    /// source of one.
+    pub fn sibling_tables(&self) -> Option<table_switch::Tables> {
+        let state = self.data_table_state.as_ref()?;
+        let (paths, options) = self.opened.as_ref()?;
+        table_switch::of(state, paths, options)
+    }
+
+    /// Whether the source on screen has another table for `T` to open.
+    pub fn offers_other_tables(&self) -> bool {
+        match (self.data_table_state.as_ref(), self.opened.as_ref()) {
+            (Some(state), Some((paths, options))) => table_switch::several(state, paths, options),
+            _ => false,
+        }
+    }
+
+    /// `T` at the table: the source's tables, the one on screen marked, to open
+    /// another. A source of one says so.
+    fn open_table_picker(&mut self) {
+        let Some(tables) = self.sibling_tables().filter(table_switch::Tables::several) else {
+            self.flash_note("Only one table here".to_string());
+            return;
+        };
+        let labels = tables.tables.iter().map(|t| t.label.clone()).collect();
+        self.table_picker = crate::widgets::ui::PickerState::new(labels);
+        if let Some(at) = tables.current {
+            self.table_picker.select_original(at);
+        }
+        self.table_choices = Some(tables);
+        self.input_mode = InputMode::PickTable;
+    }
+
+    /// The table picker owns the keys: type to narrow, ↑↓ move, Enter opens the table
+    /// chosen, Esc closes.
+    fn table_picker_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+        match event.code {
+            KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
+                self.table_choices = None;
+            }
+            KeyCode::Enter => {
+                let index = self.table_picker.selected_original()?;
+                let tables = self.table_choices.take()?;
+                self.input_mode = InputMode::Normal;
+                if tables.current == Some(index) {
+                    return None;
+                }
+                let table = tables.tables.get(index)?.table.clone();
+                return self.switch_table(table);
+            }
+            KeyCode::Up => self.table_picker.move_up(),
+            KeyCode::Down => self.table_picker.move_down(),
+            KeyCode::Backspace => self.table_picker.backspace(),
+            KeyCode::Char(c) => self.table_picker.filter_key(c, event.modifiers),
+            _ => {}
+        }
+        None
+    }
+
+    /// Open `table` of the file on screen in its place (`None`: the whole file), as
+    /// `--table` or home's row for it would: the query, filters and sort go with the
+    /// table they were on, recents record it, and a view for it applies.
+    pub(crate) fn switch_table(&mut self, table: Option<String>) -> Option<AppEvent> {
+        let (paths, options) = self.opened.clone()?;
+        let shown = match &table {
+            Some(name) => crate::members::place(&paths[0], name),
+            None => paths[0].clone(),
+        };
+        let options = OpenOptions {
+            table,
+            // `--view` was for the first open; a view for this table applies as on
+            // any open.
+            view: None,
+            prepared: None,
+            ..options
+        };
+        self.set_loading_phase("Scanning input", 10);
+        self.name_what_is_loading(shown);
+        Some(AppEvent::Open(paths, options))
+    }
+
     fn close_inspector(&mut self) {
         self.inspector_modal.close();
         self.input_mode = InputMode::Normal;
@@ -17054,7 +17806,13 @@ impl App {
         self.refresh_inspector_list();
         let modal = &mut self.inspector_modal;
         match event.code {
+            // Esc backs out one level at a time: the find, then Compare, then the
+            // inspector.
             KeyCode::Esc if !modal.filter.is_empty() => modal.clear_find(),
+            KeyCode::Esc if modal.compare => {
+                modal.compare = false;
+                modal.filled_only = false;
+            }
             KeyCode::Esc | KeyCode::Char(' ') => self.close_inspector(),
             KeyCode::Down | KeyCode::Char('j') => modal.next_field(),
             KeyCode::Up | KeyCode::Char('k') => modal.prev_field(),
@@ -17062,7 +17820,8 @@ impl App {
             KeyCode::End => modal.last_field(),
             KeyCode::PageDown => modal.page_fields(1),
             KeyCode::PageUp => modal.page_fields(-1),
-            KeyCode::Tab => {
+            // Two panes: Tab and Shift+Tab both cross to the value.
+            KeyCode::Tab | KeyCode::BackTab => {
                 if modal.focused().is_some() {
                     modal.focus = inspector_modal::Focus::Value;
                 }
@@ -17234,7 +17993,15 @@ impl App {
             KeyCode::End => modal.last_field(),
             KeyCode::PageDown => modal.page_fields(1),
             KeyCode::PageUp => modal.page_fields(-1),
-            KeyCode::Tab => modal.focus = inspector_modal::Focus::Value,
+            // A level with nothing in it has no value to cross to.
+            KeyCode::Tab | KeyCode::BackTab
+                if modal
+                    .drill
+                    .as_ref()
+                    .is_some_and(|drill| drill.level().focused().is_some()) =>
+            {
+                modal.focus = inspector_modal::Focus::Value;
+            }
             KeyCode::Char('e') => self.inspector_view(),
             KeyCode::Char('w') => self.inspector_wrap(),
             KeyCode::Char('y') => self.copy_drilled_item(),
@@ -17467,6 +18234,7 @@ impl App {
         match built {
             Ok(built) => {
                 self.theme = built;
+                self.chart_modal.series_cap = Some(self.theme.series_colors().len());
                 self.app_config.theme = next;
                 // The prompts live as long as the app and keep the colors they were
                 // given; a dialog's fields take the theme each time it opens.
@@ -17481,6 +18249,29 @@ impl App {
             // The configured colors parsed at startup, so this is not expected; the
             // palette in use stays.
             Err(e) => log::warn!("cannot switch to the {mode:?} palette: {e}"),
+        }
+    }
+
+    /// The terminal said what its background is: follow it under `auto`, and remember
+    /// it for the next start's first frame.
+    fn terminal_answered(&mut self, mode: ThemeMode) {
+        if self.app_config.theme.follow {
+            self.cache
+                .remember_terminal_mode(&terminal_color::terminal_key(), mode);
+        }
+        self.follow_terminal_background(mode);
+    }
+
+    /// Settle the palette of the first frame under `auto`, without waiting for the
+    /// terminal: its answer when `answered` has it, else what this terminal answered
+    /// last time. An answer that comes later switches palettes if it differs.
+    pub fn settle_first_palette(&mut self, answered: Option<ThemeMode>) {
+        if let Some(mode) = answered {
+            self.terminal_answered(mode);
+        } else if self.app_config.theme.follow
+            && let Some(mode) = self.cache.terminal_mode(&terminal_color::terminal_key())
+        {
+            self.follow_terminal_background(mode);
         }
     }
 
@@ -17995,28 +18786,14 @@ impl App {
         description: Option<String>,
         match_criteria: view::MatchCriteria,
     ) -> Result<view::SavedView> {
-        let settings = if let Some(state) = &self.data_table_state {
-            let (query, sql_query, fuzzy_query) = active_query_settings(
-                state.get_active_query(),
-                state.get_active_sql_query(),
-                state.get_active_fuzzy_query(),
-            );
-            view::ViewSettings {
-                query,
-                sql_query,
-                fuzzy_query,
-                filters: state.get_filters().to_vec(),
-                sort_columns: state.get_sort_columns().to_vec(),
-                sort_descending: state.get_sort_descending().to_vec(),
-                sort_ascending: state.get_sort_ascending(),
-                column_order: state.get_column_order().to_vec(),
-                locked_columns_count: state.locked_columns_count(),
-                pivot: state.last_pivot_spec().cloned(),
-                melt: state.last_melt_spec().cloned(),
-                reshape_source: state.reshape_source().cloned(),
-            }
-        } else {
-            view::ViewSettings {
+        let settings = match &self.data_table_state {
+            Some(state) => view::ViewSettings {
+                chart: self.saved_chart(),
+                ..view_settings_of(state)
+            },
+            None => view::ViewSettings {
+                chart: None,
+                sample: None,
                 query: None,
                 sql_query: None,
                 fuzzy_query: None,
@@ -18029,7 +18806,8 @@ impl App {
                 pivot: None,
                 melt: None,
                 reshape_source: None,
-            }
+                columns: Vec::new(),
+            },
         };
 
         self.view_manager
@@ -18317,7 +19095,7 @@ impl Widget for &mut App {
             self.render_drop_mark(buf, &ctx);
         }
         if self.menu_showing()
-            && let Some(menu) = self.context_menu
+            && let Some(menu) = self.context_menu.clone()
         {
             menu.render(main_area, buf, &ctx);
         }
@@ -18337,7 +19115,9 @@ impl Widget for &mut App {
         }
         self.close_help_left_behind();
         if self.help.is_open() {
-            crate::render::help::render_help(area, buf, &mut self.help, &ctx);
+            // Over the view, never the footer: its rule, and the lines it grows by
+            // for a prompt or progress, are drawn after and would cut the frame.
+            crate::render::help::render_help(app_layout.main_view, buf, &mut self.help, &ctx);
         }
 
         let footer = self.footer(main_view_content, progress_rows > 0);
@@ -18853,10 +19633,9 @@ fn run_impl(
     // Asked before the settings are read, so the answer is usually in by the time they
     // are; under an explicit `theme.mode` it is read and dropped. The reader takes it
     // off the input stream, so nothing waits here.
-    let asked_at = (terminal_color::supported()
+    let asked = terminal_color::supported()
         && config.as_ref().is_none_or(|c| c.theme.follow)
-        && terminal_color::ask(&mut std::io::stdout()))
-    .then(std::time::Instant::now);
+        && terminal_color::ask(&mut std::io::stdout());
     let mut background = None;
     let (tx, rx) = mpsc::channel::<AppEvent>();
     {
@@ -18955,21 +19734,11 @@ fn run_impl(
         }
     };
 
-    // Under `auto`, the first frame waits a moment for the terminal's answer, so it is
-    // drawn in the palette it ends up in. What arrives meanwhile is handled after.
-    if let Some(asked_at) = asked_at.filter(|_| config.theme.follow && background.is_none()) {
-        let until = asked_at + terminal_color::STARTUP_WAIT;
-        while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
-            match rx.recv_timeout(left) {
-                Ok(AppEvent::TerminalBackground(mode)) => {
-                    background = Some(mode);
-                    break;
-                }
-                Ok(event) => backlog.push(event),
-                Err(_) => break,
-            }
-        }
-    }
+    // The first frame is not held for the terminal's answer: one that is already in
+    // is used, else this terminal's last one (see `App::settle_first_palette`).
+    let background = (asked && config.theme.follow)
+        .then(|| startup::take_answer(&rx, background, &mut backlog))
+        .flatten();
     if config.theme.follow && terminal_color::supported() {
         follow_focus(&mut std::io::stdout());
     }
@@ -18983,9 +19752,7 @@ fn run_impl(
     pointer::capture(config.display.mouse, &mut std::io::stdout());
 
     let mut app = App::new_with_views(tx.clone(), rt_handle, theme, config, views);
-    if let Some(mode) = background {
-        app.follow_terminal_background(mode);
-    }
+    app.settle_first_palette(background);
     if let Some(out) = passed {
         app.pass_stdout_to(out);
     }

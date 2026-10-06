@@ -49,6 +49,9 @@ pub fn render_confirmation_modal(
     modal: &mut crate::ConfirmationModal,
     ctx: &RenderContext,
 ) {
+    // A question owns the screen: a click outside it does nothing, and its own
+    // footer keys, drawn after, take theirs.
+    crate::pointer::record(area, crate::pointer::Hit::Modal);
     let g = crate::glyphs::get();
     let footer = confirmation_keys()
         .into_iter()
@@ -83,9 +86,7 @@ pub fn render_confirmation_modal(
     let choice = |label: &str, focused: bool| -> Vec<Span<'static>> {
         let rail = if focused { g.rail } else { " " };
         let style = if focused {
-            Style::default()
-                .fg(ctx.accent_bright)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(ctx.text_secondary)
         };
@@ -107,9 +108,9 @@ pub fn render_error_modal(
     modal: &mut crate::ErrorModal,
     ctx: &RenderContext,
 ) {
-    let footer = HintBar::from_ctx(ctx)
-        .hint("Enter", "OK")
-        .hint("Esc", "Close");
+    crate::pointer::record(area, crate::pointer::Hit::Modal);
+    // One way out, named once: Esc closes it too, as every dialog.
+    let footer = HintBar::from_ctx(ctx).hint("Enter", "Close");
     let popup = message_popup(area, &modal.message, 0, 64);
     let content = Surface::new("Error")
         .footer(&footer)
@@ -368,7 +369,15 @@ mod tests {
         assert_eq!(frames, 1, "one frame, no inner boxes: {rows:#?}");
         let text = rows.join("\n");
         assert!(text.contains("Select at least one index column."));
-        assert!(text.contains("Enter") && text.contains("OK") && text.contains("Esc"));
+        let footer = rows
+            .iter()
+            .find(|row| row.contains("Enter"))
+            .expect("the footer");
+        assert!(footer.contains("Close"), "{footer:?}");
+        assert!(
+            !footer.contains("OK") && !footer.contains("Esc"),
+            "{footer:?}"
+        );
     }
 
     /// The focused choice carries the rail; there is nothing to Tab onto.
@@ -395,6 +404,13 @@ mod tests {
             "the rail is on Yes by default: {choice_row:?}"
         );
         assert!(text.contains("Confirm") && text.contains("Cancel"));
+        // The chosen label is in the accent, as focus is everywhere: never the
+        // brighter one.
+        let y = rows.iter().position(|r| r == choice_row).unwrap() as u16;
+        let x = (0..area.width)
+            .find(|&x| buf[(x, y)].symbol() == "Y")
+            .unwrap();
+        assert_eq!(buf[(x, y)].fg, ctx.accent);
 
         // Switching focus moves the rail, not the labels.
         modal.focus_yes = false;

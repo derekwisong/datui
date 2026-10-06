@@ -106,7 +106,7 @@ fn hex_asks_for_any_file_and_record_size_lines_records_up() {
     let s = screen(&mut app, 80, 24);
     assert!(s.contains("00000000  61 2c 62 0a"), "{s}");
     assert!(s.contains("00000004  31 2c 32 0a"), "{s}");
-    assert!(s.contains("4 a row (fixed)"), "{s}");
+    assert!(s.contains("4 bytes/row (fixed)"), "{s}");
 }
 
 #[test]
@@ -320,7 +320,7 @@ fn an_empty_file_and_a_one_byte_file_open() {
 }
 
 #[test]
-fn the_info_panel_shows_the_file_as_hex_and_esc_comes_back() {
+fn the_info_panel_shows_the_file_as_hex_and_esc_comes_back_to_it() {
     let path = write("hex_info.csv", b"a,b\n1,2\n3,4\n");
     let (mut app, rx, _tx) = fresh();
     open(&mut app, &rx, path, OpenOptions::default());
@@ -332,13 +332,17 @@ fn the_info_panel_shows_the_file_as_hex_and_esc_comes_back() {
     press(&mut app, KeyCode::Char('x'));
     drain_events(&mut app, &rx);
     assert_eq!(app.input_mode, InputMode::Hex);
-    assert_eq!(app.hex_view().unwrap().origin, Origin::Table);
+    assert_eq!(app.hex_view().unwrap().origin, Origin::Info);
     let s = screen(&mut app, 100, 30);
     assert!(s.contains("61 2c 62 0a"), "{s}");
     assert!(s.contains("Back"), "Esc says where it goes: {s}");
+    // Esc goes back where x was pressed: the panel, then the table.
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.input_mode, InputMode::Info);
+    assert!(app.info_modal.active);
+    assert!(app.hex.is_none());
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.input_mode, InputMode::Normal);
-    assert!(app.hex.is_none());
     assert!(app.data_table_state.is_some(), "the table is still there");
 }
 

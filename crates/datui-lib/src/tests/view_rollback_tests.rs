@@ -1172,6 +1172,8 @@ fn a_failed_view_rolls_back_what_a_grouped_row_drills_into() {
 fn blank_view(app: &mut App, name: &str) -> SavedView {
     let mut view = pivot_view(app, name);
     view.settings = view::ViewSettings {
+        chart: None,
+        sample: None,
         query: None,
         sql_query: None,
         fuzzy_query: None,
@@ -1184,6 +1186,7 @@ fn blank_view(app: &mut App, name: &str) -> SavedView {
         pivot: None,
         melt: None,
         reshape_source: None,
+        columns: Vec::new(),
     };
     view
 }

@@ -13,6 +13,7 @@ A dataset opens in the table. <kbd>?</kbd> lists its keys;
 | <kbd>:</kbd> | A row by number |
 | <kbd>[</kbd> <kbd>]</kbd> | Sort by the cursor's column, ascending or descending |
 | <kbd>/</kbd> | [Find](finding.md) |
+| <kbd>S</kbd> | [Sample](sampling.md) the table into memory; the view works on the sample |
 
 Only the table's own keys act there: a letter with <kbd>Ctrl</kbd> or
 <kbd>Alt</kbd> held does nothing, beyond the paging keys above.
@@ -29,6 +30,7 @@ what is in effect, in pipeline order, with the cursor's place at the right:
 | Part | Says |
 |---|---|
 | `weather/daily.parquet` | The dataset: its file and the directory it is in |
+| `sample 100,000 of 36.8M` | The view is a [sample](sampling.md), under the query; `1,234+` while it is drawn |
 | `query` | A query is in effect; <kbd>:</kbd> shows its text |
 | `prcp > 0 · date ▼` | The filters, then the sort; `2 filters · sorted` where the line is short |
 | `41,208 / 1,204,331` | The cursor's row of the view's rows, led by `col 3/40` when the table is wider than the screen |
@@ -52,6 +54,24 @@ find reading past the rows on hand (`rows 1,200,000 / 3,475,226` with a bar and
 
 <kbd>:</kbd> opens the [command line](querying-data.md); digits alone make it
 `row:`, and <kbd>Enter</kbd> goes there (`0` is the top).
+
+## Another table of the file
+
+<kbd>T</kbd> lists the other tables of the file on screen; <kbd>Enter</kbd>
+opens the one picked in place of this one, as `--table` would.
+
+| The file | Lists | Each row says |
+|---|---|---|
+| An Excel workbook | Its worksheets, hidden ones included | The range and size: `A1:C13, 13 × 3` |
+| A SQLite database | Its tables and views | Its kind, its columns, and the rows `ANALYZE` stored |
+| A file a format spec reads as several record types | The whole file, then each type | Its columns |
+| A Hugging Face cache | Its splits | `split` |
+
+The one open is marked `opened`. Type to narrow, <kbd>↑</kbd> <kbd>↓</kbd> to
+move, <kbd>Esc</kbd> to keep the table. The query, filters and sort stay with
+the table they were on; recents record the new table, and a saved view for it
+applies. The footer offers <kbd>T</kbd> only on a file of several tables; on
+any other, <kbd>T</kbd> says `Only one table here`.
 
 ## Row numbers
 
@@ -125,6 +145,7 @@ keys typed meanwhile are held and replayed in order once the work is done.
 | An <kbd>Enter</kbd> that would inspect | Held as <kbd>Space</kbd> |
 | <kbd>Esc</kbd> while a view is applied | Stops it; the table stays as it was |
 | <kbd>Esc</kbd> while a find reads | Stops it and the <kbd>n</kbd> <kbd>N</kbd> typed behind it; the cursor stays put |
+| While a [sample](sampling.md) is drawn: moving, find, <kbd>Space</kbd>, <kbd>i</kbd>, and the find line, inspector and Info panel | Act at once; <kbd>Esc</kbd> stops the sample |
 | Anything else | Held |
 
 At most 32 keys are held, and held keys are dropped with the screen they were

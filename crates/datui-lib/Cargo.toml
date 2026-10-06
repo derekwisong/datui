@@ -42,6 +42,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 supports-color = "3.0"
 toml = "1.1"
+# A documentation link is parsed before the browser sees it (link_open.rs).
+url = "2.5.8"
 bzip2 = "0.6"
 # static: liblzma compiled in, so a release binary needs no liblzma.so.5 on the
 # host; bzip2, flate2 and zstd already build their C code in.
@@ -107,6 +109,12 @@ rustc-demangle = "0.1.24"
 log = "0.4"
 # Where `polars_warn!` goes (`set_warning_function`); Polars' own error crate.
 polars-error = "0.55"
+# The bytes a scan reads in place (`ScanSources::Buffers`): a NUL-padded file up to
+# its text. Already in the tree through Polars.
+polars-buffer = "0.55"
+# The memory available now, which a sample's size is checked against. Already in the
+# tree through Polars, with the same features.
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 toml_edit = { version = "0.25.15", default-features = false, features = ["parse", "display"] }
 
 # Pointing fd 2 at the log while the TUI owns the terminal. Already in the tree.

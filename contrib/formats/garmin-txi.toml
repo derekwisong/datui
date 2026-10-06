@@ -1,0 +1,183 @@
+# Garmin TXi data logs (written against a TXi; G3X Touch and G1000 logs are
+# similar and may need column notes adjusted).
+# Garmin and TXi are trademarks of Garmin Ltd. or its subsidiaries.
+# datui is not affiliated with or endorsed by Garmin.
+#
+# To use it, copy this file into your formats directory, ~/.config/datui/formats/,
+# and open a log or a directory of them: datui path/to/logs/
+
+name = "garmin.txi-log"
+kind = "delimited"
+description = "Garmin TXi data log: one row a second of flight, engine (EIS) and navigation data"
+match = { magic = "#airframe_info" }
+# Line 1 is the airframe's key="value" pairs, line 2 the units, line 3 the names.
+comment = "#"
+skip_initial_space = true
+header_rows = { name = 3, unit = 2 }
+metadata_line = 1
+
+[columns]
+time = { from = ["Lcl Date", "Lcl Time", "UTCOfst"], as = "datetime", description = "Sample time in UTC, from the local date, time and offset" }
+"Lcl Date" = { type = "date", format = "%Y-%m-%d", description = "Local date" }
+"Lcl Time" = { type = "time", format = "%H:%M:%S", description = "Local time" }
+UTCOfst = { type = "str", description = "Local time's offset from UTC" }
+
+# Flight and navigation
+AtvWpt = { type = "str", description = "Active waypoint" }
+Latitude = { type = "f64", description = "GPS latitude" }
+Longitude = { type = "f64", description = "GPS longitude" }
+AltB = { type = "f64", description = "Baro-corrected altitude" }
+BaroA = { type = "f64", description = "Altimeter setting" }
+AltMSL = { type = "f64", description = "Altitude above mean sea level" }
+AltGPS = { type = "f64", description = "GPS altitude above the WGS84 ellipsoid" }
+AltPress = { type = "f64", description = "Pressure altitude" }
+OAT = { type = "f64", description = "Outside air temperature" }
+"EIS OAT" = { type = "f64", description = "Outside air temperature from the engine monitor" }
+IAS = { type = "f64", description = "Indicated airspeed" }
+TAS = { type = "f64", description = "True airspeed" }
+GndSpd = { type = "f64", description = "GPS ground speed" }
+VSpd = { type = "f64", description = "Vertical speed" }
+VSpdG = { type = "f64", description = "GPS vertical speed" }
+Pitch = { type = "f64", description = "Pitch attitude" }
+Roll = { type = "f64", description = "Roll attitude" }
+LatAc = { type = "f64", description = "Lateral acceleration" }
+NormAc = { type = "f64", description = "Normal (vertical) acceleration" }
+LonAc = { type = "f64", description = "Longitudinal acceleration" }
+HDG = { type = "f64", description = "Magnetic heading" }
+TRK = { type = "f64", description = "GPS ground track" }
+MagVar = { type = "f64", description = "Magnetic variation" }
+CRS = { type = "f64", description = "Selected course" }
+NAV1 = { type = "f64", description = "NAV 1 frequency" }
+NAV2 = { type = "f64", description = "NAV 2 frequency" }
+HSIS = { type = "str" }
+HCDI = { type = "f64", description = "Horizontal course deviation" }
+VCDI = { type = "f64", description = "Vertical course deviation" }
+WndSpd = { type = "f64", description = "Computed wind speed" }
+WndDr = { type = "f64", description = "Computed wind direction" }
+WptDst = { type = "f64", description = "Distance to the active waypoint" }
+WptBrg = { type = "f64", description = "Bearing to the active waypoint" }
+AfcsOn = { type = "bool", description = "Autopilot engaged" }
+RollM = { type = "str" }
+PitchM = { type = "str" }
+RollC = { type = "f64" }
+PitchC = { type = "f64" }
+GPSfix = { type = "str", description = "GPS fix quality" }
+HAL = { type = "f64" }
+VAL = { type = "f64" }
+HPLwas = { type = "f64" }
+HPLfd = { type = "f64" }
+VPLwas = { type = "f64" }
+OnGrnd = { type = "bool", description = "Aircraft on the ground" }
+WoW = { type = "bool", description = "Weight on wheels" }
+"Rudder Trim" = { type = "f64", description = "Rudder trim position" }
+
+# Electrical and fuel
+bus1volts = { type = "f64", description = "Bus 1 voltage" }
+bus2volts = { type = "f64", description = "Bus 2 voltage" }
+alt1amps = { type = "f64", description = "Alternator 1 current" }
+alt2amps = { type = "f64", description = "Alternator 2 current" }
+volt1 = { type = "f64", description = "Voltage 1" }
+volt2 = { type = "f64", description = "Voltage 2" }
+amp1 = { type = "f64", description = "Current 1" }
+amp2 = { type = "f64", description = "Current 2" }
+FQtyL = { type = "f64", description = "Left tank fuel quantity" }
+FQtyR = { type = "f64", description = "Right tank fuel quantity" }
+FQtyC = { type = "f64", description = "Center tank fuel quantity" }
+FQtyAux1 = { type = "f64", description = "Auxiliary tank 1 fuel quantity" }
+FQtyAux2 = { type = "f64", description = "Auxiliary tank 2 fuel quantity" }
+FQtyAuxC = { type = "f64", description = "Center auxiliary tank fuel quantity" }
+FQtyLlbs = { type = "f64", description = "Left tank fuel weight" }
+FQtyRlbs = { type = "f64", description = "Right tank fuel weight" }
+FQtyClbs = { type = "f64", description = "Center tank fuel weight" }
+FQtyA1lbs = { type = "f64", description = "Auxiliary tank 1 fuel weight" }
+FQtyA2lbs = { type = "f64", description = "Auxiliary tank 2 fuel weight" }
+FQtyAuxClbs = { type = "f64", description = "Center auxiliary tank fuel weight" }
+"Fuel Slct L" = { type = "bool", description = "Left tank selected" }
+"Fuel Slct R" = { type = "bool", description = "Right tank selected" }
+"Vac1 Press" = { type = "f64", description = "Vacuum 1 (suction) pressure" }
+"Vac2 Press" = { type = "f64", description = "Vacuum 2 (suction) pressure" }
+
+# Engine 1. A twin fills both engines' columns; a single leaves E2 blank.
+"E1 FFlow" = { type = "f64", description = "Engine 1 fuel flow" }
+"E1 FPres" = { type = "f64", description = "Engine 1 fuel pressure" }
+"E1 OilT" = { type = "f64", description = "Engine 1 oil temperature" }
+"E1 OilP" = { type = "f64", description = "Engine 1 oil pressure" }
+"E1 MAP" = { type = "f64", description = "Engine 1 manifold pressure" }
+"E1 RPM" = { type = "f64", description = "Engine 1 speed" }
+"E1 %Pwr" = { type = "f64", description = "Engine 1 percent of rated power" }
+"E1 CHT1" = { type = "f64", description = "Engine 1 cylinder 1 head temperature" }
+"E1 CHT2" = { type = "f64", description = "Engine 1 cylinder 2 head temperature" }
+"E1 CHT3" = { type = "f64", description = "Engine 1 cylinder 3 head temperature" }
+"E1 CHT4" = { type = "f64", description = "Engine 1 cylinder 4 head temperature" }
+"E1 CHT5" = { type = "f64", description = "Engine 1 cylinder 5 head temperature" }
+"E1 CHT6" = { type = "f64", description = "Engine 1 cylinder 6 head temperature" }
+"E1 CHT CLD" = { type = "f64", description = "Engine 1 CHT cooling rate; shock cooling shows as a large negative value" }
+"E1 EGT1" = { type = "f64", description = "Engine 1 cylinder 1 exhaust gas temperature" }
+"E1 EGT2" = { type = "f64", description = "Engine 1 cylinder 2 exhaust gas temperature" }
+"E1 EGT3" = { type = "f64", description = "Engine 1 cylinder 3 exhaust gas temperature" }
+"E1 EGT4" = { type = "f64", description = "Engine 1 cylinder 4 exhaust gas temperature" }
+"E1 EGT5" = { type = "f64", description = "Engine 1 cylinder 5 exhaust gas temperature" }
+"E1 EGT6" = { type = "f64", description = "Engine 1 cylinder 6 exhaust gas temperature" }
+"E1 TIT1" = { type = "f64", description = "Engine 1 turbine inlet temperature" }
+"E1 CarbT" = { type = "f64", description = "Engine 1 carburetor temperature" }
+"E1 IAT" = { type = "f64", description = "Engine 1 induction air temperature" }
+"E1 CDT" = { type = "f64", description = "Engine 1 compressor discharge temperature" }
+"E1 PEGT" = { type = "f64" }
+"E1 Torq" = { type = "f64", description = "Engine 1 torque" }
+"E1 Torq %" = { type = "f64", description = "Engine 1 torque, percent" }
+"E1 Torq ft lbs" = { type = "f64", description = "Engine 1 torque" }
+"E1 NP" = { type = "f64", description = "Engine 1 propeller speed" }
+"E1 NP %" = { type = "f64", description = "Engine 1 propeller speed, percent" }
+"E1 NG RPM" = { type = "f64", description = "Engine 1 gas generator speed" }
+"E1 NG" = { type = "f64", description = "Engine 1 gas generator speed, percent" }
+"E1 ITT" = { type = "f64", description = "Engine 1 interstage turbine temperature" }
+"E1 InrtSep" = { type = "bool", description = "Engine 1 inertial separator" }
+"E1 Bleed" = { type = "bool" }
+"E1 Ignition" = { type = "bool" }
+"E1 Start" = { type = "bool" }
+"E1 Beta" = { type = "bool" }
+
+# Engine 2. A twin fills both engines' columns; a single leaves E2 blank.
+"E2 FFlow" = { type = "f64", description = "Engine 2 fuel flow" }
+"E2 FPres" = { type = "f64", description = "Engine 2 fuel pressure" }
+"E2 OilT" = { type = "f64", description = "Engine 2 oil temperature" }
+"E2 OilP" = { type = "f64", description = "Engine 2 oil pressure" }
+"E2 MAP" = { type = "f64", description = "Engine 2 manifold pressure" }
+"E2 RPM" = { type = "f64", description = "Engine 2 speed" }
+"E2 %Pwr" = { type = "f64", description = "Engine 2 percent of rated power" }
+"E2 CHT1" = { type = "f64", description = "Engine 2 cylinder 1 head temperature" }
+"E2 CHT2" = { type = "f64", description = "Engine 2 cylinder 2 head temperature" }
+"E2 CHT3" = { type = "f64", description = "Engine 2 cylinder 3 head temperature" }
+"E2 CHT4" = { type = "f64", description = "Engine 2 cylinder 4 head temperature" }
+"E2 CHT5" = { type = "f64", description = "Engine 2 cylinder 5 head temperature" }
+"E2 CHT6" = { type = "f64", description = "Engine 2 cylinder 6 head temperature" }
+"E2 CHT CLD" = { type = "f64", description = "Engine 2 CHT cooling rate; shock cooling shows as a large negative value" }
+"E2 EGT1" = { type = "f64", description = "Engine 2 cylinder 1 exhaust gas temperature" }
+"E2 EGT2" = { type = "f64", description = "Engine 2 cylinder 2 exhaust gas temperature" }
+"E2 EGT3" = { type = "f64", description = "Engine 2 cylinder 3 exhaust gas temperature" }
+"E2 EGT4" = { type = "f64", description = "Engine 2 cylinder 4 exhaust gas temperature" }
+"E2 EGT5" = { type = "f64", description = "Engine 2 cylinder 5 exhaust gas temperature" }
+"E2 EGT6" = { type = "f64", description = "Engine 2 cylinder 6 exhaust gas temperature" }
+"E2 TIT1" = { type = "f64", description = "Engine 2 turbine inlet temperature" }
+"E2 CarbT" = { type = "f64", description = "Engine 2 carburetor temperature" }
+"E2 IAT" = { type = "f64", description = "Engine 2 induction air temperature" }
+"E2 CDT" = { type = "f64", description = "Engine 2 compressor discharge temperature" }
+"E2 PEGT" = { type = "f64" }
+"E2 Torq" = { type = "f64", description = "Engine 2 torque" }
+"E2 Torq %" = { type = "f64", description = "Engine 2 torque, percent" }
+"E2 Torq ft lbs" = { type = "f64", description = "Engine 2 torque" }
+"E2 NP" = { type = "f64", description = "Engine 2 propeller speed" }
+"E2 NP %" = { type = "f64", description = "Engine 2 propeller speed, percent" }
+"E2 NG RPM" = { type = "f64", description = "Engine 2 gas generator speed" }
+"E2 NG" = { type = "f64", description = "Engine 2 gas generator speed, percent" }
+"E2 ITT" = { type = "f64", description = "Engine 2 interstage turbine temperature" }
+"E2 InrtSep" = { type = "bool", description = "Engine 2 inertial separator" }
+"E2 Bleed" = { type = "bool" }
+"E2 Ignition" = { type = "bool" }
+"E2 Start" = { type = "bool" }
+"E2 Beta" = { type = "bool" }
+
+# The log
+LogIdx = { type = "i64", description = "Row index within the log" }
+SysTime = { type = "f64", description = "System time" }
+LogCheck = { type = "str", description = "Checksum of the row" }

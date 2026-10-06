@@ -32,7 +32,8 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
             .hint_weighted("Tab", "Next", 1)
             .hint_weighted("Esc", "Cancel", 4)
     };
-    let footer = if !editing && modal.sort.has_unapplied_changes {
+    let staged = modal.sort.has_unapplied_changes || modal.filter.has_unapplied_changes();
+    let footer = if !editing && staged {
         // Staged edits give the apply chip a quiet accent: something is waiting.
         footer.accent("Enter")
     } else {
@@ -179,10 +180,6 @@ fn render_in_effect(
         return;
     }
     let entries = modal.sort.sort_entries();
-    let sort_focused = matches!(
-        modal.focus,
-        SortFilterField::Sort(_) | SortFilterField::AddSort
-    );
     let filter_focused = matches!(
         modal.focus,
         SortFilterField::Filter(_) | SortFilterField::AddFilter
@@ -192,7 +189,6 @@ fn render_in_effect(
     SectionRule {
         title: "Sort",
         chip: (!entries.is_empty()).then_some(count.as_str()),
-        focused: sort_focused,
     }
     .render(Rect { height: 1, ..area }, buf, ctx);
 
@@ -306,7 +302,6 @@ fn render_in_effect(
     SectionRule {
         title: "Filters",
         chip: (!modal.filter.statements.is_empty()).then_some(count.as_str()),
-        focused: filter_focused,
     }
     .render(
         Rect {
@@ -410,24 +405,40 @@ fn render_columns_tab(
         ..area
     };
     let filtered = modal.sort.filtered_columns();
-    let selected = modal.sort.table_state.selected().unwrap_or(0);
+    let selected = modal
+        .sort
+        .table_state
+        .selected()
+        .unwrap_or(0)
+        .min(filtered.len().saturating_sub(1));
     let height = list_area.height as usize;
-    let offset = selected.saturating_sub(height.saturating_sub(1));
-    let below = filtered.len().saturating_sub(offset + height);
-    for row in 0..height.min(filtered.len().saturating_sub(offset)) {
-        let i = offset + row;
+    let window = column_window(selected, filtered.len(), height);
+    let mut more = |row: usize, count: usize| {
+        let row_area = Rect {
+            y: list_area.y + row as u16,
+            height: 1,
+            ..list_area
+        };
+        Paragraph::new(format!("  {} {count} more", g.ellipsis))
+            .style(Style::default().fg(ctx.dimmed))
+            .render(row_area, buf);
+    };
+    if window.above > 0 {
+        more(0, window.above);
+    }
+    if window.below > 0 {
+        more(height - 1, window.below);
+    }
+    let lead = usize::from(window.above > 0);
+    for k in 0..window.shown {
+        let i = window.first + k;
+        let row = lead + k;
         let row_area = Rect {
             y: list_area.y + row as u16,
             height: 1,
             ..list_area
         };
         let is_cursor = i == selected;
-        if row + 1 == height && below > 0 && !is_cursor {
-            Paragraph::new(format!("  {} {} more", g.ellipsis, below + 1))
-                .style(Style::default().fg(ctx.dimmed))
-                .render(row_area, buf);
-            break;
-        }
         crate::pointer::record_field::<SortFilterModal>(row_area, SortFilterField::Column(i));
         let (_, column) = &filtered[i];
         let lock = if column.is_locked {
@@ -496,6 +507,60 @@ fn render_columns_tab(
             Style::default()
         })
         .render(row_area, buf);
+    }
+    modal.sort.page_rows = window.shown.max(1);
+}
+
+/// Which of `total` columns a list `rows` tall shows around `selected`.
+#[derive(Debug, PartialEq, Eq)]
+struct ColumnWindow {
+    /// The first column shown, and how many.
+    first: usize,
+    shown: usize,
+    /// Columns out of view above and below, each counted on a row of its own.
+    above: usize,
+    below: usize,
+}
+
+/// The window keeps the cursor in view and never on a count: a list longer than
+/// its rows gives its first row to what is above and its last to what is below,
+/// whenever there is any.
+fn column_window(selected: usize, total: usize, rows: usize) -> ColumnWindow {
+    if total <= rows || rows < 3 {
+        let first = selected.saturating_sub(rows.saturating_sub(1));
+        return ColumnWindow {
+            first,
+            shown: total.saturating_sub(first).min(rows),
+            above: 0,
+            below: 0,
+        };
+    }
+    // At the top: the last row counts what is below.
+    if selected < rows - 1 {
+        return ColumnWindow {
+            first: 0,
+            shown: rows - 1,
+            above: 0,
+            below: total - (rows - 1),
+        };
+    }
+    // At the bottom: the first row counts what is above.
+    if selected >= total - (rows - 1) {
+        let first = total - (rows - 1);
+        return ColumnWindow {
+            first,
+            shown: rows - 1,
+            above: first,
+            below: 0,
+        };
+    }
+    // Between: both ends count, the cursor on the last row between them.
+    let first = selected + 1 - (rows - 2);
+    ColumnWindow {
+        first,
+        shown: rows - 2,
+        above: first,
+        below: total - (first + rows - 2),
     }
 }
 
@@ -566,14 +631,19 @@ fn render_filters(
                 format!("{}{}", editor.operator.filter, g.cursor)
             } else {
                 editor
-                    .operator
-                    .selected_original()
-                    .and_then(|i| crate::filter_modal::FilterOperator::iterator().nth(i))
+                    .selected_operator()
                     .map(|op| op.as_str().to_string())
                     .unwrap_or_default()
             };
+            // The open picker's line has the one rail; typing the value, there is
+            // no picker and the row keeps it.
+            let rail = if step == FilterEditStep::Value {
+                g.rail
+            } else {
+                " "
+            };
             let mut spans = vec![
-                Span::styled(g.rail, Style::default().fg(ctx.accent)),
+                Span::styled(rail, Style::default().fg(ctx.accent)),
                 Span::styled(
                     format!("{:<w$} ", column_text, w = col_w),
                     seg_style(step == FilterEditStep::Column),
@@ -681,6 +751,30 @@ fn render_filters(
 
 #[cfg(test)]
 mod tests {
+    /// A long Columns list counts what is out of view at either end, on rows of
+    /// their own, and the cursor is always shown.
+    #[test]
+    fn the_columns_list_counts_both_ends() {
+        use super::{ColumnWindow, column_window};
+        let w = |first, shown, above, below| ColumnWindow {
+            first,
+            shown,
+            above,
+            below,
+        };
+        assert_eq!(column_window(0, 52, 10), w(0, 9, 0, 43));
+        assert_eq!(column_window(8, 52, 10), w(0, 9, 0, 43));
+        assert_eq!(column_window(9, 52, 10), w(2, 8, 2, 42));
+        assert_eq!(column_window(51, 52, 10), w(43, 9, 43, 0));
+        assert_eq!(column_window(3, 5, 10), w(0, 5, 0, 0));
+        for selected in 0..52 {
+            let window = column_window(selected, 52, 10);
+            assert!(window.first <= selected && selected < window.first + window.shown);
+            assert_eq!(window.above + window.shown + window.below, 52, "{selected}");
+            let rows = window.shown + usize::from(window.above > 0) + usize::from(window.below > 0);
+            assert!(rows <= 10, "{selected}");
+        }
+    }
     use super::*;
     use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     use crate::sort_modal::SortColumn;
@@ -748,6 +842,30 @@ mod tests {
         assert!(at("protein") > at("Filters"));
         assert!(at("add filter") > at("protein"));
         assert!(rows.iter().any(|r| r.contains("Flip")), "{rows:#?}");
+    }
+
+    /// A staged filter waits for Enter as a staged sort does: the apply chip's
+    /// label takes the accent until the filters match those in effect.
+    #[test]
+    fn a_staged_filter_accents_apply() {
+        let ctx = RenderContext::for_test();
+        let apply_fg = |m: &mut SortFilterModal| {
+            let area = Rect::new(0, 0, 40, 20);
+            let mut buf = Buffer::empty(area);
+            render(area, &mut buf, m, &ctx);
+            let y = area.height - 2;
+            let x = (0..area.width - 5)
+                .find(|&x| (x..x + 5).map(|x| buf[(x, y)].symbol()).collect::<String>() == "Apply")
+                .expect("the apply chip");
+            buf[(x, y)].fg
+        };
+        let mut m = modal();
+        m.filter.applied = m.filter.statements.clone();
+        assert_ne!(apply_fg(&mut m), ctx.accent, "nothing staged");
+        m.filter.statements[0].value = "50".to_string();
+        assert_eq!(apply_fg(&mut m), ctx.accent, "a filter staged");
+        m.filter.statements = m.filter.applied.clone();
+        assert_ne!(apply_fg(&mut m), ctx.accent, "back as applied");
     }
 
     /// The add-sort Picker drops in under its row, at any size without a panic.

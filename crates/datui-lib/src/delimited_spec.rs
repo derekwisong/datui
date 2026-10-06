@@ -34,35 +34,7 @@ impl HeaderRows {
     }
 }
 
-/// What a derived column is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DerivedKind {
-    /// From a date and a time, or one text column, with an optional UTC offset.
-    Datetime,
-    Date,
-    Time,
-}
-
-impl DerivedKind {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Datetime => "datetime",
-            Self::Date => "date",
-            Self::Time => "time",
-        }
-    }
-}
-
-/// A column built from others: `time = { from = ["Date", "Time", "Offset"], as = "datetime" }`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Derived {
-    pub name: String,
-    pub from: Vec<String>,
-    pub kind: DerivedKind,
-    /// A strftime format for the text the `from` columns make, joined with a space.
-    /// Inferred from the values when not given.
-    pub format: Option<String>,
-}
+pub use crate::column_types::{Derived, DerivedKind};
 
 /// A delimited spec's reading options. Each one left out keeps what the command line
 /// or the config says.
@@ -77,6 +49,8 @@ pub struct Delimited {
     pub null_values: Vec<String>,
     pub skip_lines: Option<usize>,
     pub columns: Vec<Derived>,
+    /// Columns of the file read as a declared type, by name.
+    pub types: Vec<(String, crate::column_types::ColumnType)>,
 }
 
 /// The `key="value"` line at the top of a file.
@@ -232,7 +206,7 @@ impl Delimited {
     }
 
     /// The lines [`Self::facts`] reads, 1-based.
-    fn head_lines(&self) -> Vec<usize> {
+    pub fn head_lines(&self) -> Vec<usize> {
         let mut lines: Vec<usize> = self
             .header_rows
             .iter()
@@ -257,6 +231,18 @@ impl Delimited {
             return Ok(HeadFacts::default());
         }
         let lines = crate::csv_dialect::named_lines(source, &wanted)?;
+        Ok(self.facts_of(&wanted, &lines, separator, join))
+    }
+
+    /// [`Self::facts`] from `lines`, the lines `wanted` names as
+    /// [`crate::csv_dialect::named_lines`] read them; a line not among them is blank.
+    pub fn facts_of(
+        &self,
+        wanted: &[usize],
+        lines: &[Vec<u8>],
+        separator: u8,
+        join: &str,
+    ) -> HeadFacts {
         let line = |n: usize| -> &[u8] {
             wanted
                 .iter()
@@ -308,7 +294,7 @@ impl Delimited {
             let text = comment.and_then(|c| text.strip_prefix(c)).unwrap_or(text);
             parse_metadata(text)
         });
-        Ok(HeadFacts { units, metadata })
+        HeadFacts { units, metadata }
     }
 
     /// `lf` with the derived columns, each before the first column it is made from.
@@ -352,24 +338,37 @@ pub fn read_facts(
     paths: &[std::path::PathBuf],
     options: &crate::OpenOptions,
 ) -> color_eyre::Result<DelimitedRead> {
-    let Some(file) = paths.first() else {
-        return Ok(read.clone());
-    };
-    let compression = options
-        .compression
-        .or_else(|| crate::CompressionFormat::from_extension(file));
-    let source = crate::widgets::datatable::DataTableState::text_source(file, compression)
-        .map_err(|e| crate::error_display::in_file(file, e.into()))?;
     let separator = options.separator_or(
         options
             .format
             .and_then(crate::FileFormat::separator)
             .unwrap_or(b','),
     );
-    let HeadFacts { units, metadata } = read
-        .delimited()
-        .facts(source, separator, &options.header_join)
-        .map_err(|e| crate::error_display::in_file(file, e))?;
+    let facts_of = |file: &std::path::Path| -> color_eyre::Result<HeadFacts> {
+        let compression = options
+            .compression
+            .or_else(|| crate::CompressionFormat::from_extension(file));
+        let source = crate::widgets::datatable::DataTableState::text_source(file, compression)
+            .map_err(|e| crate::error_display::in_file(file, e.into()))?;
+        read.delimited()
+            .facts(source, separator, &options.header_join)
+            .map_err(|e| crate::error_display::in_file(file, e))
+    };
+    // From the first file with a header: of several, one with nothing in it is
+    // passed over by the read too.
+    let mut found = None;
+    for file in paths {
+        match facts_of(file) {
+            Err(e) if paths.len() > 1 && crate::csv_dialect::is_blank_file(&e) => continue,
+            facts => {
+                found = Some((file, facts?));
+                break;
+            }
+        }
+    }
+    let Some((file, HeadFacts { units, metadata })) = found else {
+        return Ok(read.clone());
+    };
     Ok(DelimitedRead {
         units,
         metadata,
@@ -405,6 +404,13 @@ pub fn check(
             derived.kind.name(),
             derived.from.join(", ")
         ));
+    }
+    for (name, ty) in &delimited.types {
+        let format = ty
+            .format
+            .as_ref()
+            .map_or_else(String::new, |f| format!(", format {f:?}"));
+        out.push_str(&format!("  {name}: {}{format}\n", ty.name()));
     }
     let typed = typed_summary(base);
     if !typed.is_empty() {
@@ -525,57 +531,6 @@ impl Delimited {
             "CSV with a header line".to_string()
         } else {
             said.join(", ")
-        }
-    }
-}
-
-/// An offset such as `-05:00`, `+0530`, `-5` or `05:00:00`: its sign, hours and minutes.
-const OFFSET: &str = r"^\s*([+-])?(\d{1,2})(?::?(\d{2}))?(?::\d{2})?\s*$";
-
-impl Derived {
-    fn expr(&self) -> Expr {
-        let text = |name: &str| col(name).cast(DataType::String);
-        let options = StrptimeOptions {
-            format: self.format.as_deref().map(PlSmallStr::from),
-            strict: false,
-            exact: true,
-            cache: true,
-        };
-        match self.kind {
-            DerivedKind::Date => text(&self.from[0]).str().to_date(options),
-            DerivedKind::Time => text(&self.from[0]).str().to_time(options),
-            DerivedKind::Datetime => {
-                let stamp = match self.from.as_slice() {
-                    [one] => text(one),
-                    // A null in either is a null stamp.
-                    [date, time, ..] => text(date) + lit(" ") + text(time),
-                    [] => unreachable!("a derived column has a source"),
-                };
-                let local = stamp.str().to_datetime(
-                    Some(TimeUnit::Microseconds),
-                    None,
-                    options,
-                    lit("raise"),
-                );
-                let Some(offset) = self.from.get(2) else {
-                    return local;
-                };
-                // Local time less its offset from UTC is UTC.
-                let part = |group| text(offset).str().extract(lit(OFFSET), group);
-                let sign = when(part(1).eq(lit("-")))
-                    .then(lit(-1i64))
-                    .otherwise(lit(1i64));
-                let minutes = sign
-                    * (part(2).cast(DataType::Int64) * lit(60i64)
-                        + part(3).cast(DataType::Int64).fill_null(lit(0i64)));
-                let shift =
-                    (minutes * lit(60_000_000i64)).cast(DataType::Duration(TimeUnit::Microseconds));
-                (local - shift).dt().replace_time_zone(
-                    Some(polars::prelude::TimeZone::UTC),
-                    lit("raise"),
-                    NonExistent::Raise,
-                )
-            }
         }
     }
 }

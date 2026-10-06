@@ -5,12 +5,15 @@ filtered and sorted.
 
 ## Export a CSV
 
-1. Open **Premier League (2020-21)** from **Public datasets** and run the
+1. Open **Premier League (2020-21)** from **Example datasets** and run the
    [goals query](querying-data.md#dates-and-messy-text).
-2. Press <kbd>e</kbd> and type `goals.csv` in **Path**.
+2. Press <kbd>e</kbd> and type `goals.csv` in **Path**. The field starts
+   with a suggested name, the dataset's with `-export`; typing replaces it,
+   and <kbd>Enter</kbd> takes it as it stands.
 3. Press <kbd>Enter</kbd>. If the file exists, confirm whether to overwrite it.
 
-The status line says `Exported to goals.csv`. The file holds a header and 380
+The status line says `Exported to goals.csv`; a long path is cut from its
+start, so the file name stays. The file holds a header and 380
 matches, in the query's order:
 
 ```text
@@ -26,14 +29,18 @@ result alone is a datetime and exports as `2020-10-04T00:00:00.000000`.
 The file contains all matching rows and displayed columns, not just the page
 on screen. Numbers use their raw values, without display formatting.
 
+A view with a [sample](sampling.md) writes the sample's rows: <kbd>S</kbd> on a
+remote table, then <kbd>e</kbd> to `sample.parquet`, keeps a local sample of it.
+The export waits until the sample is drawn.
+
 | Format | Extension | Options |
 |---|---|---|
-| CSV | `.csv` | Delimiter, include header |
-| TSV | `.tsv` | Include header; the delimiter is a tab |
-| PSV | `.psv` | Include header; the delimiter is a pipe |
+| CSV | `.csv` | Delimiter, header, compression |
+| TSV | `.tsv` | Header, compression; the delimiter is a tab |
+| PSV | `.psv` | Header, compression; the delimiter is a pipe |
 | Parquet | `.parquet` | |
-| JSON | `.json` | One array |
-| NDJSON | `.jsonl`, `.ndjson` | One object per line |
+| JSON | `.json` | Compression; one array |
+| NDJSON | `.jsonl`, `.ndjson` | Compression; one object per line |
 | Arrow IPC | `.arrow`, `.ipc`, `.feather` | |
 | Avro | `.avro` | |
 
@@ -155,8 +162,13 @@ path intact. The chart's export dialog asks the same way.
 
 The CSV **Delimiter** starts as `--delimiter` when given, else a comma. Only
 its first ASCII character counts, and <kbd>Tab</kbd> moves focus, so a tab
-cannot be typed there: pick TSV. On a narrow terminal the dialog stacks into
-one column, format first; <kbd>←</kbd> <kbd>→</kbd> still change it.
+cannot be typed there: pick TSV.
+
+**Format** lists the formats on its row, the chosen one highlighted, and
+the rows under it are the chosen format's options: they come and go as
+<kbd>←</kbd> <kbd>→</kbd> step the format. Where the row is too narrow for
+them all, it shows the chosen one alone, `‹ TSV ›`. A click on a format
+chooses it.
 
 ## Overwriting
 
@@ -167,7 +179,7 @@ the compressed file's end, is written and synced to disk. The status line says
 
 | Case | Result |
 |---|---|
-| The export fails | The old file keeps its bytes and permissions; a new export leaves no file. The hidden file is removed |
+| The export fails | The old file keeps its bytes and permissions; a new export leaves no file. The hidden file is removed. The dialog comes back as you left it, the reason under the fields: fix the path and press <kbd>Enter</kbd> |
 | You confirmed the overwrite | The file is replaced whole. On Linux and macOS it keeps its permission bits |
 | A file appears at the path after you pressed <kbd>Enter</kbd> without being asked | It is left alone and the export fails |
 | The file is read-only or you may not write it, or the path is a directory, a pipe or a device | The export fails before anything is written |

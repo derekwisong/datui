@@ -43,7 +43,9 @@ pub fn render(
         Some(request) if computing => app.chart_cache.standing_in(request),
         _ => outcome.and_then(|o| o.as_ref().ok()),
     };
-    let notes = prepared.map(ChartPrepared::notes).unwrap_or_default();
+    let notes = prepared
+        .map(|p| app.chart_notes_of(p, crate::glyphs::get().middot))
+        .unwrap_or_default();
     let aggregating = request.as_ref().is_some_and(ChartRequest::aggregates);
 
     // Axis numbers print as the table prints their columns; whole ones tick whole.
@@ -60,9 +62,11 @@ pub fn render(
     let y_numbers = || {
         use crate::chart_modal::Aggregate;
         match spec.encoding.y.aggregate {
-            Aggregate::Count => chart_data::AxisNumbers::count(&ctx.number_format),
+            Aggregate::Count | Aggregate::Distinct => {
+                chart_data::AxisNumbers::count(&ctx.number_format)
+            }
             // A mean or median of whole numbers is not whole.
-            Aggregate::Mean | Aggregate::Median => columns(&spec.encoding.y.field).fractional(),
+            a if a.is_fractional() => columns(&spec.encoding.y.field).fractional(),
             _ => columns(&spec.encoding.y.field),
         }
     };
@@ -84,6 +88,7 @@ pub fn render(
             names: &c.names,
             x_axis_kind: c.x_axis_kind,
             x_bounds: None,
+            other: c.other,
             numbers: xy_numbers(),
         },
         (Mark::Line | Mark::Scatter, Some(ChartPrepared::XRange(c))) => ChartRenderData::XY {
@@ -93,6 +98,7 @@ pub fn render(
             names: NO_NAMES,
             x_axis_kind: c.x_axis_kind,
             x_bounds: Some((c.x_min, c.x_max)),
+            other: false,
             numbers: xy_numbers(),
         },
         // Still on its way: empty axes, typed from the schema so the labels are right.
@@ -108,6 +114,7 @@ pub fn render(
                 names: NO_NAMES,
                 x_axis_kind,
                 x_bounds: None,
+                other: false,
                 numbers: xy_numbers(),
             }
         }
@@ -192,7 +199,8 @@ pub fn render(
         // A commitment, so a compact centered dialog, never scaling with the
         // terminal; it scrolls inside its frame on a short one.
         let modal_width = (chart_area.width * 3 / 4).min(66);
-        let modal_height = widgets::chart_export_modal::HEIGHT.min(chart_area.height);
+        let modal_height =
+            widgets::chart_export_modal::height(&app.chart_export_modal).min(chart_area.height);
         let modal_x = chart_area.x + chart_area.width.saturating_sub(modal_width) / 2;
         let modal_y = chart_area.y + chart_area.height.saturating_sub(modal_height) / 2;
         let modal_area = Rect {

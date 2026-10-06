@@ -155,8 +155,10 @@ pub fn class(b: u8) -> ByteClass {
 pub enum Origin {
     /// The home screen: Esc and `q` go back there.
     Home,
-    /// The Info panel over a table: Esc goes back to the table.
+    /// The table: Esc goes back to it.
     Table,
+    /// The Info panel over a table: Esc goes back to the panel, as it was.
+    Info,
     /// The command line: `q` quits.
     Launch,
 }

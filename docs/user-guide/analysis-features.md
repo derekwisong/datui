@@ -3,9 +3,12 @@
 <kbd>a</kbd> opens Analysis: Describe, Distribution, Correlation Matrix and
 Data Quality, over a sample of the table.
 
-A list of tools sits on the right; <kbd>Tab</kbd> moves focus between the list and the
-result, <kbd>↑</kbd> <kbd>↓</kbd> pick a tool, <kbd>Enter</kbd> runs it.
-<kbd>Esc</kbd> returns to the table.
+A list of tools sits on the right: <kbd>↑</kbd> <kbd>↓</kbd> pick a tool and
+<kbd>Enter</kbd> opens it, moving into its pane. <kbd>Tab</kbd> or
+<kbd>Shift+Tab</kbd> moves between the list and the result. <kbd>Esc</kbd> in the
+result goes back to the list, and <kbd>Esc</kbd> there returns to the table.
+Results last while the table shows the same rows: <kbd>a</kbd> again shows them as
+you left them.
 
 Analysis runs on the data as you see it, after any query and filters, unless
 the [sample](#sampling) is set to read the source.
@@ -159,7 +162,7 @@ read: `Describe · sample of 100,000 of 36,839,175 rows · source year=2020..202
 | Rows from | **All rows** (the table as shown, with its count), **The source, unfiltered** (only when a filter or query changes the rows), **Partitions**, **Files**, **Row range**, **Time range**; a choice appears only when the table has it |
 | Method | **Random** (default), **Equal per value**, **First rows**, **Every row** |
 | Per value of | For Equal per value: the column to split by; partition columns come first |
-| Sample size | 1,000 to 1,000,000 rows, or rows per value for Equal per value; the default is `[analysis] sample_rows` |
+| Sample size | Rows, or rows per value for Equal per value, typed over the one shown: `50000`, `50,000`, `50k`, `250k`, `2m`. Read on <kbd>Enter</kbd>; a size that is not one says why. The default is `[analysis] sample_rows` |
 | Random seed | For Random and Equal per value: any whole number, typed over the one shown; the same seed reads the same rows, so `0` or `1` is a sample anyone can repeat. <kbd>r</kbd> draws a new one |
 
 Each kind of rows brings its own settings, with what it needs to know:
@@ -199,6 +202,11 @@ The sort is left out of an analysis read: no statistic depends on it. While a
 cancelled run is still finishing, no tool starts another read: <kbd>a</kbd>,
 <kbd>r</kbd>, <kbd>v</kbd> and a new run wait. Data Quality reads the same
 sample, at the same size, as every other tool.
+
+A view with its own [sample](sampling.md) (<kbd>S</kbd> at the table) is read
+whole by every tool: the header says `Reads the view's sample 100,000 of
+3.48M`, and <kbd>s</kbd> edits the view's sample, drawing it again before the
+tool runs; **Every row** there takes it away.
 
 The sample's starting size is [`analysis.sample_rows`](../reference/settings.md#analysis);
 `0` starts at every row. For one run, `--sample-rows N`:

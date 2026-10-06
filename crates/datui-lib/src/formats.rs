@@ -1307,7 +1307,7 @@ impl Reader<'_> {
                 let keys = self.entries(
                     entry,
                     &what,
-                    &["from", "as", "format", "description", "unit"],
+                    &["from", "as", "format", "description", "unit", "type"],
                 )?;
                 if name.trim().is_empty() {
                     return Err(self.error(&key.span(), "columns: a column needs a name"));
@@ -1319,14 +1319,42 @@ impl Reader<'_> {
                         .transpose()
                         .map(Option::unwrap_or_default)
                 };
+                // A column of the file read as a type: `{ type = "date", format = ... }`.
+                let typed = match keys.get("type") {
+                    Some(t) => {
+                        if let Some(k) = ["from", "as"].iter().find(|k| keys.contains_key(*k)) {
+                            return Err(self.error(
+                                &keys[k].span(),
+                                format!(
+                                    "{what}: a derived column takes `as` for its type, not `type`"
+                                ),
+                            ));
+                        }
+                        let type_name = self.string(t, &format!("{what}.type"))?;
+                        let format = keys
+                            .get("format")
+                            .map(|f| self.string(f, &format!("{what}.format")))
+                            .transpose()?;
+                        let ty = crate::column_types::ColumnType::named(&type_name, format)
+                            .map_err(|e| self.error(&t.span(), format!("{what}.type: {e}")))?;
+                        Some(ty)
+                    }
+                    None => None,
+                };
                 let note = ColumnNote {
                     description: said("description")?,
                     unit: said("unit")?,
                     values: Vec::new(),
+                    ty: typed.as_ref().map(|t| t.name()).unwrap_or_default(),
                 };
-                let documented = !(note.description.is_empty() && note.unit.is_empty());
+                let documented =
+                    !(note.description.is_empty() && note.unit.is_empty() && note.ty.is_empty());
                 if documented {
                     notes.push((key.span().start, name.to_string(), note));
+                }
+                if let Some(ty) = typed {
+                    spec.types.push((name.to_string(), ty));
+                    continue;
                 }
                 let derived = ["from", "as", "format"]
                     .iter()
@@ -3750,6 +3778,7 @@ fn field_note(field: &Field) -> Option<(String, ColumnNote)> {
         description: field.description.clone().unwrap_or_default(),
         unit: field.unit.clone().unwrap_or_default(),
         values: Vec::new(),
+        ty: String::new(),
     };
     (note != ColumnNote::default()).then_some((name, note))
 }
@@ -3808,6 +3837,7 @@ impl Spec {
                     Meaning::Enum(labels) => legend(labels),
                     _ => Vec::new(),
                 },
+                ty: String::new(),
             };
             // A flattened field is filed under each column it makes.
             for name in own_names(field) {
@@ -7449,6 +7479,7 @@ volts = { unit = "V" }
                         description: "Air temperature".into(),
                         unit: "deg F".into(),
                         values: Vec::new(),
+                        ty: String::new(),
                     }
                 ),
                 (
@@ -7471,6 +7502,18 @@ volts = { unit = "V" }
                 "unknown key `values` in columns.t",
             ),
             ("t = { format = \"%Y\" }", "columns.t: missing `from`"),
+            (
+                "t = { from = \"d\", as = \"date\", type = \"date\" }",
+                "columns.t: a derived column takes `as` for its type, not `type`",
+            ),
+            (
+                "t = { type = \"int\" }",
+                "columns.t.type: unknown type \"int\"; expected one of str, bool, i8",
+            ),
+            (
+                "t = { type = \"i64\", format = \"%Y\" }",
+                "columns.t.type: format is for date, time and datetime, not i64",
+            ),
         ] {
             let e = error_of(&format!(
                 "name = \"a.b\"\nkind = \"delimited\"\n[columns]\n{entry}\n"

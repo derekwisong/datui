@@ -10,7 +10,7 @@ table's cursor goes with them.
 
 ## Which carrier flies most
 
-Open **NYC flights (2013)** from **Public datasets** on the home screen, press
+Open **NYC flights (2013)** from **Example datasets** on the home screen, press
 <kbd>g</kbd>, type `carrier`, <kbd>Enter</kbd>, then <kbd>F</kbd>:
 
 ```text

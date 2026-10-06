@@ -35,9 +35,6 @@ pub fn render(
         ViewModalMode::Create | ViewModalMode::Edit => render_form(area, buf, modal, ctx),
     }
 
-    if modal.delete_confirm {
-        render_delete_confirm(area, buf, modal, ctx);
-    }
     if modal.score_details.is_some() {
         render_score_details(area, buf, modal, ctx);
     }
@@ -95,13 +92,21 @@ fn render_list(
     ctx: &RenderContext,
 ) {
     let g = crate::glyphs::get();
-    let footer = HintBar::from_ctx(ctx)
-        .hint_weighted("Enter", "Apply", 5)
-        .hint_weighted("s", "Save", 4)
-        .hint_weighted("e", "Edit", 2)
-        .hint_weighted("d", "Delete", 3)
-        .hint_weighted("i", "Score", 1)
-        .hint_weighted("Esc", "Close", 6);
+    // Only keys that act: with no view saved there is nothing to apply, edit,
+    // delete or score.
+    let footer = if modal.rows.is_empty() {
+        HintBar::from_ctx(ctx)
+            .hint_weighted("s", "Save", 4)
+            .hint_weighted("Esc", "Close", 6)
+    } else {
+        HintBar::from_ctx(ctx)
+            .hint_weighted("Enter", "Apply", 5)
+            .hint_weighted("s", "Save", 4)
+            .hint_weighted("e", "Edit", 2)
+            .hint_weighted("d", "Delete", 3)
+            .hint_weighted("i", "Score", 1)
+            .hint_weighted("Esc", "Close", 6)
+    };
     let content = Surface::new("Views").footer(&footer).render(area, buf, ctx);
     if content.height < 2 || content.width < 10 {
         return;
@@ -110,7 +115,8 @@ fn render_list(
     // The list's own status line, directly above the footer: a refusal is
     // said where the key was pressed, and the next key clears it.
     if let Some(status) = &modal.status {
-        Paragraph::new(status.as_str())
+        // Cut with a mark, never silently.
+        Paragraph::new(fit(status, usize::from(content.width)))
             .style(Style::default().fg(ctx.warning))
             .render(
                 Rect {
@@ -147,7 +153,7 @@ fn render_list(
         name = NAME_WIDTH,
         reason = REASON_WIDTH,
     );
-    Paragraph::new(header)
+    Paragraph::new(fit(&header, usize::from(content.width)))
         .style(Style::default().fg(ctx.text_secondary))
         .render(
             Rect {
@@ -352,7 +358,6 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &Render
     SectionRule {
         title: "Matching",
         chip: Some(&chip),
-        focused: matching_focused,
     }
     .render(
         Rect {
@@ -426,25 +431,6 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &Render
     }
 }
 
-fn render_delete_confirm(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &RenderContext) {
-    let Some(view) = modal.selected_view() else {
-        return;
-    };
-    let message = format!("Delete \"{}\"? This cannot be undone.", view.name);
-    const WIDTH: u16 = 52;
-    const HEIGHT: u16 = 6;
-    let confirm_area = centered_rect_fixed(area, WIDTH, HEIGHT);
-    let footer = HintBar::from_ctx(ctx)
-        .hint_weighted("Enter", "Delete", 1)
-        .hint_weighted("Esc", "Cancel", 2);
-    let content = Surface::new("Delete View")
-        .footer(&footer)
-        .render(confirm_area, buf, ctx);
-    Paragraph::new(message)
-        .wrap(ratatui::widgets::Wrap { trim: false })
-        .render(content, buf);
-}
-
 fn render_score_details(area: Rect, buf: &mut Buffer, modal: &mut ViewModal, ctx: &RenderContext) {
     let Some((title, body)) = &modal.score_details else {
         return;
@@ -488,6 +474,8 @@ mod tests {
                 table: None,
             },
             settings: ViewSettings {
+                chart: None,
+                sample: None,
                 query: None,
                 sql_query: None,
                 fuzzy_query: None,
@@ -500,6 +488,7 @@ mod tests {
                 pivot: None,
                 melt: None,
                 reshape_source: None,
+                columns: Vec::new(),
             },
         }
     }
@@ -535,6 +524,38 @@ mod tests {
                     .collect::<String>()
             })
             .collect()
+    }
+
+    /// With nothing saved the footer offers only what acts, and a status or
+    /// header too long for the sidebar is cut with a mark, never silently.
+    #[test]
+    fn the_list_offers_only_what_acts_and_cuts_with_a_mark() {
+        let g = crate::glyphs::get();
+        let mut modal = ViewModal::new();
+        modal.active = true;
+        let rows = render_to_rows(&mut modal, 40, 12);
+        let text = rows.join("\n");
+        assert!(!text.contains("Apply"), "{text}");
+        assert!(!text.contains("Delete"), "{text}");
+        assert!(text.contains("Save") && text.contains("Close"), "{text}");
+
+        let mut modal = list_modal();
+        modal.status = Some(
+            "Nothing to save yet: set a query, filter, sort, column layout, or pivot/melt first."
+                .into(),
+        );
+        let rows = render_to_rows(&mut modal, 40, 12);
+        let status = rows
+            .iter()
+            .find(|r| r.contains("Nothing to save"))
+            .expect("the status line");
+        assert!(status.contains(g.ellipsis), "{status:?}");
+        let header = rows
+            .iter()
+            .find(|r| r.contains("Name"))
+            .expect("the header");
+        assert!(header.contains(g.ellipsis), "{header:?}");
+        assert!(rows.iter().any(|r| r.contains("Apply")));
     }
 
     /// One border, the rows inside it, the reason annotation on the row whose
@@ -628,18 +649,6 @@ mod tests {
             .find(|line| line.contains("Table:"))
             .expect("the table row");
         assert!(table_row.contains("orders"), "{table_row:?}");
-    }
-
-    /// The delete confirmation is a small Surface with its keys in the
-    /// footer — no bordered buttons.
-    #[test]
-    fn delete_confirm_is_chips_not_buttons() {
-        let mut modal = list_modal();
-        modal.delete_confirm = true;
-        let text = render_to_rows(&mut modal, 80, 20).join("\n");
-        assert!(text.contains("Delete View"));
-        assert!(text.contains("salary review"));
-        assert!(text.contains("Cancel") && text.contains("Delete"));
     }
 
     #[test]

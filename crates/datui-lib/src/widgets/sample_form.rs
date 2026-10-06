@@ -107,6 +107,28 @@ pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ct
                     dimmed,
                 )));
             }
+            SampleField::Size => {
+                let per = if matches!(
+                    form.draft.method,
+                    crate::sampling::SampleMethod::PerPartition { .. }
+                ) {
+                    "Rows per value"
+                } else {
+                    "Rows"
+                };
+                // The cost, when the table has measured its rows; the forms a size
+                // takes otherwise.
+                let said = match (form.rows_expected(), form.estimate()) {
+                    (Some(rows), Some(bytes)) => format!(
+                        "{} rows {} ~{}",
+                        crate::numfmt::group_chrome(rows),
+                        g.middot,
+                        crate::widgets::info::format_bytes(bytes)
+                    ),
+                    _ => format!("{per}, like 50000, 50k or 2m"),
+                };
+                items.push(Item::Context(Line::styled(said, dimmed)));
+            }
             _ => {}
         }
     }

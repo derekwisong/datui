@@ -178,6 +178,10 @@ pub(crate) struct ChartRequest {
     pub(crate) envelope: bool,
     /// Only an X is picked: its range gives the empty axes their bounds.
     pub(crate) x_only: bool,
+    /// Most series drawn: one per distinct series color on this terminal.
+    pub(crate) series_cap: usize,
+    /// First or last over a sorted view: the rows are read in its order.
+    pub(crate) sorted: bool,
 }
 
 impl ChartRequest {
@@ -188,6 +192,16 @@ impl ChartRequest {
             order: other.order,
             ..self.clone()
         } == *other
+    }
+
+    /// Whether this is `last` with another aggregate: a step through the aggregates.
+    pub(crate) fn steps_aggregate_from(&self, last: &Self) -> bool {
+        let mut spec = self.spec.clone();
+        if spec.encoding.y.aggregate == last.spec.encoding.y.aggregate {
+            return false;
+        }
+        spec.encoding.y.aggregate = last.spec.encoding.y.aggregate;
+        spec == last.spec
     }
 
     /// Whether `other` is the same chart of the same columns, whatever its options.
@@ -217,8 +231,14 @@ impl ChartRequest {
         // Leave out what this chart does not read, so a change to it asks for nothing.
         // Whether color splits the chart is read from the spec charted, a Y the
         // picker previews included.
+        // No more series than there are colors to tell them apart.
+        let series_cap = modal.series_max();
+        spec.encoding.y.field.truncate(series_cap);
+        spec.encoding.color.values.truncate(series_cap);
         let colored = ChartModal::colored_in(&spec);
-        if !colored {
+        if colored {
+            spec.encoding.color.other = Some(ChartModal::shows_other_in(&spec));
+        } else {
             spec.encoding.color = Default::default();
         }
         if x_only {
@@ -253,7 +273,11 @@ impl ChartRequest {
             row_limit: if aggregates { None } else { modal.row_limit },
             envelope: mark == Mark::Line && !aggregates && !colored,
             x_only,
+            sorted: aggregates
+                && spec.encoding.y.aggregate.follows_row_order()
+                && modal.row_order.is_some(),
             spec,
+            series_cap,
         })
     }
 
@@ -280,13 +304,26 @@ impl ChartRequest {
             .as_deref()
             .map(|c| chart_data::value_rows(lf, c, sampling).map(|rows| (c, rows)))
             .transpose()?;
-        let groups = counts
+        let groups = counts.as_ref().map(|(_, rows)| {
+            chart_data::color_groups(rows, &encoding.color.values, self.series_cap)
+        });
+        // Some value without a series of its own: Other takes its rows, or they are
+        // left out and the note says the rows are the groups'.
+        let left_out = counts
             .as_ref()
-            .map(|(_, rows)| chart_data::color_groups(rows, &encoding.color.values));
+            .zip(groups.as_ref())
+            .is_some_and(|((_, rows), groups)| {
+                rows.values.iter().any(|(v, _)| !groups.contains(v))
+            });
+        let other = encoding.color.other == Some(true) && left_out;
         let split = counts
             .as_ref()
             .zip(groups.as_ref())
-            .map(|((column, _), groups)| ColorSplit { column, groups });
+            .map(|((column, _), groups)| ColorSplit {
+                column,
+                groups,
+                other,
+            });
         let picker = counts.as_ref().map(|(column, rows)| ColorCounts {
             column: column.to_string(),
             values: rows.values.clone(),
@@ -308,6 +345,7 @@ impl ChartRequest {
                             time_unit: encoding.x.time_unit,
                             ys: &encoding.y.field,
                             aggregate,
+                            quantile: encoding.y.quantile(),
                             cumulative: encoding.y.cumulative,
                             color: split,
                         },
@@ -330,9 +368,11 @@ impl ChartRequest {
                         breaks: r.breaks,
                         x_axis_kind: r.x_axis_kind,
                         rows: r.rows,
+                        other: false,
                     }
                 };
                 ChartPrepared::XY(ChartCacheXY {
+                    other: grouped.other,
                     x_column: x.to_string(),
                     names: grouped.names,
                     series: grouped.series,
@@ -344,7 +384,7 @@ impl ChartRequest {
                         rows_note(
                             grouped.rows.total_rows,
                             sampling.known_total == Some(grouped.rows.total_rows),
-                            split.is_some(),
+                            left_out && !other,
                         )
                     }),
                 })
@@ -356,6 +396,7 @@ impl ChartRequest {
                         category: x,
                         value: first_y,
                         aggregate: encoding.y.aggregate,
+                        quantile: encoding.y.quantile(),
                         color: split,
                         order: self.order,
                         cap: chart_data::BAR_CAP,
@@ -363,7 +404,7 @@ impl ChartRequest {
                     sampling,
                 )?;
                 // Every category is a bar, a null one too: uncolored, it is every row.
-                data.rows_note = Some(rows_note(data.rows.total_rows, true, split.is_some()));
+                data.rows_note = Some(rows_note(data.rows.total_rows, true, left_out && !other));
                 ChartPrepared::Bar(data)
             }
             Mark::Bar => ChartPrepared::Bar(chart_data::prepare_bar_data(
@@ -391,13 +432,14 @@ impl ChartRequest {
                     // One box per category: the largest by rows.
                     Some(by) => {
                         let rows = chart_data::value_rows(lf, by, sampling)?;
-                        let groups = chart_data::color_groups(&rows, &[]);
+                        let groups = chart_data::color_groups(&rows, &[], self.series_cap);
                         let mut data = chart_data::prepare_box_by(
                             lf,
                             y,
                             ColorSplit {
                                 column: by,
                                 groups: &groups,
+                                other: false,
                             },
                             self.range,
                             sampling,
@@ -461,12 +503,13 @@ pub(crate) enum ChartPrepared {
 }
 
 impl ChartPrepared {
-    /// What the chart says under the plot about the rows and values it drew.
-    pub(crate) fn notes(&self) -> Vec<String> {
+    /// What the chart says under the plot about the rows and values it drew;
+    /// `middot` joins a sample's seed on.
+    pub(crate) fn notes(&self, middot: &str) -> Vec<String> {
         let rows_of = |rows: usize| crate::discover::format_rows(rows);
         match self {
             Self::Bar(d) => {
-                let mut notes = chart_data::chart_notes(&d.rows, None);
+                let mut notes = chart_data::chart_notes(&d.rows, None, middot);
                 if let Some(note) = &d.rows_note {
                     notes.push(note.clone());
                 } else if let Some(rows) = d.counted {
@@ -491,22 +534,22 @@ impl ChartPrepared {
                 notes
             }
             Self::XY(c) if c.rows_note.is_some() => c.rows_note.iter().cloned().collect(),
-            Self::XY(c) => chart_data::chart_notes(&c.rows, None),
-            Self::XRange(c) => chart_data::chart_notes(&c.rows, None),
-            Self::Histogram(d) => chart_data::chart_notes(&d.rows, d.clipped.as_ref()),
+            Self::XY(c) => chart_data::chart_notes(&c.rows, None, middot),
+            Self::XRange(c) => chart_data::chart_notes(&c.rows, None, middot),
+            Self::Histogram(d) => chart_data::chart_notes(&d.rows, d.clipped.as_ref(), middot),
             Self::BoxPlot(d) => {
-                let mut notes = chart_data::chart_notes(&d.rows, d.clipped.as_ref());
+                let mut notes = chart_data::chart_notes(&d.rows, d.clipped.as_ref(), middot);
                 if d.of > 0 {
                     notes.push(format!(
                         "the {} largest of {} categories",
-                        crate::chart_modal::COLOR_MAX,
+                        d.stats.len(),
                         numfmt::group_chrome(d.of)
                     ));
                 }
                 notes
             }
-            Self::Kde(d) => chart_data::chart_notes(&d.rows, d.clipped.as_ref()),
-            Self::Heatmap(d) => chart_data::chart_notes(&d.rows, None),
+            Self::Kde(d) => chart_data::chart_notes(&d.rows, d.clipped.as_ref(), middot),
+            Self::Heatmap(d) => chart_data::chart_notes(&d.rows, None, middot),
         }
     }
 }
@@ -544,9 +587,10 @@ pub(crate) struct ChartCacheXY {
     pub(crate) series_log: Option<Vec<Vec<(f64, f64)>>>,
     pub(crate) x_axis_kind: chart_data::XAxisTemporalKind,
     pub(crate) rows: chart_data::RowsRead,
-    /// How Y was made of the rows, when it was aggregated over all of them.
-    /// What an aggregate over every row read, said under the plot.
+    /// What an aggregate over every row read, said in the title row.
     pub(crate) rows_note: Option<String>,
+    /// The last series is Other.
+    pub(crate) other: bool,
 }
 
 /// What an aggregate read, under the plot: every row of the view (`all 336,776

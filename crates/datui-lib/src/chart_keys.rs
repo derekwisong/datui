@@ -10,11 +10,20 @@ use crate::output_file::Overwrite;
 use crate::widgets::crosshair::{self, Move};
 use crate::{App, AppEvent, InputMode, home};
 use crate::{ChartPrepared, ChartRequest};
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 impl App {
     /// Keys in the chart view.
     pub(crate) fn chart_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+        let out = self.chart_key_inner(event);
+        // A Rows change is read once focus leaves the row, however it left.
+        if self.chart_modal.focus != ChartFocus::LimitRows || self.chart_modal.plot_focus {
+            self.chart_modal.leave_rows();
+        }
+        out
+    }
+
+    fn chart_key_inner(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         if !event.is_press() {
             return None;
         }
@@ -64,6 +73,13 @@ impl App {
                 KeyCode::Char('1'..='7' | '[' | ']' | 'g' | 'e' | 't' | '?') => {}
                 _ => return None,
             }
+        }
+
+        if self.chart_modal.focus == ChartFocus::LimitRows
+            && !self.chart_modal.plot_focus
+            && self.chart_rows_key(event)
+        {
+            return None;
         }
 
         // The panel is a form, but one that applies as it changes: Enter acts on the
@@ -120,15 +136,43 @@ impl App {
             KeyCode::Char('?') => self.open_help_overlay(),
             KeyCode::Char('+') | KeyCode::Char('=') => self.chart_modal.adjust_number_row(1),
             KeyCode::Char('-') => self.chart_modal.adjust_number_row(-1),
-            KeyCode::PageUp if self.chart_modal.focus == ChartFocus::LimitRows => {
-                self.chart_modal.adjust_row_limit_page(1);
-            }
-            KeyCode::PageDown if self.chart_modal.focus == ChartFocus::LimitRows => {
-                self.chart_modal.adjust_row_limit_page(-1);
-            }
             _ => {}
         }
         None
+    }
+
+    /// The Rows row's own keys: digits type a sample size (`50k`, `2m`), Backspace
+    /// edits it, Enter reads the row, and Esc puts a pending change back rather than
+    /// closing the chart. Returns whether the key was the row's.
+    fn chart_rows_key(&mut self, event: &KeyEvent) -> bool {
+        let plain = !event
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let modal = &mut self.chart_modal;
+        let typing = modal.typing_rows();
+        match event.code {
+            KeyCode::Char(c)
+                if plain
+                    && (c.is_ascii_digit()
+                        || (typing && matches!(c, 'k' | 'K' | 'm' | 'M' | ',' | '_' | '.'))) =>
+            {
+                modal.type_rows(c);
+            }
+            KeyCode::Backspace if typing => modal.backspace_rows(),
+            KeyCode::Esc if modal.rows_draft.is_some() => {
+                // A draft back where it started holds nothing to undo: Esc closes.
+                let pending = modal.rows_pending();
+                modal.discard_rows();
+                if !pending {
+                    return false;
+                }
+            }
+            KeyCode::Enter => {
+                modal.commit_rows();
+            }
+            _ => return false,
+        }
+        true
     }
 
     /// Space (or Enter) on a panel row: a shelf opens its Picker, a toggle flips, a
@@ -141,15 +185,10 @@ impl App {
         }
     }
 
-    /// Open the export dialog, its words started from the chart: what it is, and
-    /// where its data comes from.
+    /// Open the export dialog, its words started from the chart: how it was made of
+    /// the rows, and where its data comes from. The figure names Y at its axis.
     fn open_chart_export(&mut self) {
-        let (main, sub) = self.chart_modal.title();
-        let description = if sub.is_empty() {
-            main
-        } else {
-            format!("{main}, {sub}")
-        };
+        let description = sentence_case(&self.chart_modal.how());
         self.chart_export_modal.open(
             &self.theme,
             self.history_limit,
@@ -161,6 +200,8 @@ impl App {
                     .map(|(_, entry)| entry.credit())
                     .unwrap_or_default(),
                 legend: self.chart_modal.show_legend,
+                mark: self.chart_modal.mark(),
+                y_from_zero: self.chart_modal.y_starts_at_zero,
             },
         );
     }
@@ -188,6 +229,10 @@ impl App {
                         | KeyCode::End => true,
                         _ => false,
                     };
+                if field == ChartExportFocus::PathInput {
+                    // Typing is the correction the message asked for.
+                    self.chart_export_modal.error = None;
+                }
                 if allowed && let Some(input) = self.chart_export_modal.focused_input_mut() {
                     let _ = input.handle_key(event, Some(&self.cache));
                     if size {
@@ -201,11 +246,12 @@ impl App {
     }
 
     /// Enter, from any field of the chart's export dialog: build the export from the
-    /// state every row already echoes. A blank path exports nothing.
+    /// state every row already echoes. A blank path says so inline.
     fn submit_chart_export(&mut self) -> Option<AppEvent> {
         let modal = &self.chart_export_modal;
         let path_str = modal.path_input.value().trim();
         if path_str.is_empty() {
+            self.chart_export_modal.error = Some("Enter a file path.".to_string());
             crate::form::Form::focus(&mut self.chart_export_modal, ChartExportFocus::PathInput);
             return None;
         }
@@ -227,6 +273,7 @@ impl App {
             }
         };
         let (width, height) = modal.export_dimensions();
+        let recipe = modal.recipe;
         let options = crate::chart_export::ExportOptions {
             width,
             height,
@@ -241,6 +288,12 @@ impl App {
             notes: modal.notes_input.value().trim().to_string(),
             source: modal.source_input.value().trim().to_string(),
             byline: modal.byline_input.value().trim().to_string(),
+            point_opacity: modal.point_opacity,
+            point_size: modal.point_size,
+            line_width: modal.line_width,
+            y_from_zero: modal.y_from_zero_option(),
+            // Written in when the export starts, from the chart as it is then.
+            recipe: None,
         };
         self.chart_export_modal
             .path_input
@@ -252,6 +305,7 @@ impl App {
             format,
             options,
             overwrite: Overwrite::Forbid,
+            recipe,
         };
         if request.path.exists() {
             self.pending_chart_export = Some(request);
@@ -308,6 +362,15 @@ impl App {
         if at.is_some() {
             self.chart_modal.cursor_x = at;
         }
+    }
+}
+
+/// `phrase` with its first letter capitalized, to start a sentence.
+fn sentence_case(phrase: &str) -> String {
+    let mut chars = phrase.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
     }
 }
 

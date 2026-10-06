@@ -184,18 +184,9 @@ pub fn render(
     }
 
     if app.export_modal.active {
-        // A commitment, so a compact centered dialog: the format list plus a
-        // row per option, never scaling with the terminal.
-        let modal_width = (area.width * 3 / 4).min(66);
-        let modal_height = 13.min(area.height);
-        let modal_x = (area.width.saturating_sub(modal_width)) / 2;
-        let modal_y = (area.height.saturating_sub(modal_height)) / 2;
-        let modal_area = Rect {
-            x: modal_x,
-            y: modal_y,
-            width: modal_width,
-            height: modal_height,
-        };
+        // A commitment, so a compact centered dialog that never scales with
+        // the terminal.
+        let modal_area = export::dialog_area(area);
         export::render_export_modal(modal_area, buf, &mut app.export_modal, ctx);
     }
 
@@ -229,15 +220,60 @@ pub fn render(
         );
     }
 
+    if app.input_mode == crate::InputMode::Retype
+        && let Some(modal) = &app.retype
+    {
+        crate::widgets::retype::render_retype(area, buf, modal, ctx);
+    }
+
+    if app.input_mode == crate::InputMode::Combine
+        && let Some(modal) = &app.combine
+    {
+        crate::widgets::retype::render_combine(area, buf, modal, ctx);
+    }
+
+    if app.input_mode == crate::InputMode::Sample
+        && let Some(form) = &app.sample_form
+    {
+        // A dialog over the table: what it covers takes no clicks.
+        crate::pointer::record(data_area, crate::pointer::Hit::Modal);
+        crate::widgets::sample_form::render(form, true, data_area, buf, ctx);
+    }
+
+    if app.input_mode == crate::InputMode::PickTable
+        && let Some(tables) = app.table_choices.as_ref()
+    {
+        let details: Vec<String> = tables
+            .tables
+            .iter()
+            .enumerate()
+            .map(
+                |(i, t)| match (tables.current == Some(i), t.detail.is_empty()) {
+                    (true, true) => "opened".to_string(),
+                    (true, false) => format!("{}, opened", t.detail),
+                    (false, _) => t.detail.clone(),
+                },
+            )
+            .collect();
+        render_picker_with(
+            data_area,
+            buf,
+            &app.table_picker,
+            ("Table", "Open", "No table matches"),
+            Some(&details),
+            ctx,
+        );
+    }
+
     if app.copy_modal.active {
         // A commitment like export: compact and centered. The dialog holds
-        // its rows, the spec and the footer; an open Picker earns the room
-        // it drops into.
+        // the most rows any scope offers, so stepping the scope moves nothing,
+        // the spec and the footer; an open Picker earns the room it drops into.
         let modal_width = (area.width * 3 / 4).min(46);
         let wanted = if app.copy_modal.picker.is_some() {
             15
         } else {
-            app.copy_modal.row_order().len() as u16 + 6
+            crate::copy_modal::CopyModal::MOST_ROWS + 6
         };
         let modal_height = wanted.min(area.height);
         let modal_area = Rect {
@@ -314,17 +350,36 @@ pub(crate) fn render_picker(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     picker: &crate::widgets::ui::PickerState,
+    words: (&str, &str, &str),
+    ctx: &RenderContext,
+) {
+    render_picker_with(area, buf, picker, words, None, ctx);
+}
+
+/// [`render_picker`], with a note beside each item, by its index among all of them.
+pub(crate) fn render_picker_with(
+    area: Rect,
+    buf: &mut ratatui::buffer::Buffer,
+    picker: &crate::widgets::ui::PickerState,
     (title, enter, none): (&str, &str, &str),
+    details: Option<&[String]>,
     ctx: &RenderContext,
 ) {
     use ratatui::text::{Line, Span};
     let all = picker.items();
     let widest = all
         .iter()
-        .map(|item| crate::glyphs::display_width(item))
+        .enumerate()
+        .map(|(i, item)| {
+            let note = details
+                .and_then(|d| d.get(i))
+                .map_or(0, |d| crate::glyphs::display_width(d) + 2);
+            crate::glyphs::display_width(item) + note
+        })
         .max()
         .unwrap_or(0) as u16;
-    let width = (widest + 6).clamp(30, 48).min(area.width);
+    let most = if details.is_some() { 64 } else { 48 };
+    let width = (widest + 6).clamp(30, most).min(area.width);
     // Frame, filter line, the blank above the footer, footer, and up to ten names.
     let height = (all.len().max(1) as u16 + 5).min(15).min(area.height);
     let items = picker.filtered();
@@ -360,7 +415,15 @@ pub(crate) fn render_picker(
             .render(Rect { height: 1, ..list }, buf);
         return;
     }
-    crate::widgets::ui::Picker::from_state(picker, true).render(list, buf, ctx);
+    let mut list_widget = crate::widgets::ui::Picker::from_state(picker, true);
+    if let Some(details) = details {
+        let shown = items
+            .iter()
+            .map(|(i, _)| details.get(*i).cloned().unwrap_or_default())
+            .collect();
+        list_widget = list_widget.details(shown);
+    }
+    list_widget.render(list, buf, ctx);
 }
 
 #[cfg(test)]

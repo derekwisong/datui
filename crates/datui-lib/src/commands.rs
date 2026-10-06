@@ -235,6 +235,8 @@ mod tests {
                 table: None,
             };
             let settings = crate::view::ViewSettings {
+                chart: None,
+                sample: None,
                 query: None,
                 sql_query: None,
                 fuzzy_query: None,
@@ -247,6 +249,7 @@ mod tests {
                 pivot: None,
                 melt: None,
                 reshape_source: None,
+                columns: Vec::new(),
             };
             manager
                 .create_view(name.to_string(), None, criteria, settings)

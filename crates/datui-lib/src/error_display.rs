@@ -155,21 +155,82 @@ pub fn store_message(err: &object_store::Error) -> String {
     }
 }
 
-/// What an HTTP request for a file came to, when it failed: the server's answer, or
-/// why there was none.
+/// What an HTTP request for `url` came to, when it failed: the server's answer, or
+/// that there was none, naming the host either way.
 #[cfg(any(feature = "http", feature = "cloud"))]
-pub fn http_message(err: &ureq::Error) -> String {
+pub fn http_message(url: &str, err: &ureq::Error) -> String {
+    let host = url_host(url);
     match err {
-        ureq::Error::StatusCode(404) => "No file there (404). Check the URL.".to_string(),
-        ureq::Error::StatusCode(code @ (401 | 403)) => {
-            format!("The server refused it ({code}). Check the URL and its access.")
+        ureq::Error::StatusCode(code @ (404 | 410)) => {
+            format!("The server at {host} returned {code}: the file may have moved.")
         }
-        ureq::Error::StatusCode(code) => format!("The server answered {code}."),
+        ureq::Error::StatusCode(code @ (401 | 403)) => {
+            format!("The server at {host} refused it ({code}). Check the URL and its access.")
+        }
+        ureq::Error::StatusCode(code @ 500..=599) => {
+            format!("The server at {host} returned {code}: try again later.")
+        }
+        ureq::Error::StatusCode(code) => format!("The server at {host} returned {code}."),
+        _ if http_unanswered(err) => format!("No answer from {host}."),
         e => format!(
             "Could not read it: {}.",
             e.to_string().trim_end_matches('.')
         ),
     }
+}
+
+/// An HTTP(S) file a request settled cannot be had.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpGone {
+    /// What its home row says in place of a size: `HTTP 404`, or `no answer`.
+    pub cell: String,
+    /// The sentence: [`http_message`].
+    pub message: String,
+}
+
+/// `err` as [`HttpGone`] when it settles that `url` cannot be had: the file is not
+/// there, or no server answered. `None` for what an open might still get past, such as
+/// a refused HEAD or a server error.
+#[cfg(any(feature = "http", feature = "cloud"))]
+pub fn http_gone(url: &str, err: &ureq::Error) -> Option<HttpGone> {
+    let cell = match err {
+        ureq::Error::StatusCode(code @ (404 | 410)) => format!("HTTP {code}"),
+        _ if http_unanswered(err) => "no answer".to_string(),
+        _ => return None,
+    };
+    Some(HttpGone {
+        cell,
+        message: http_message(url, err),
+    })
+}
+
+/// No server answered: its name did not resolve, nothing listened, or it said nothing
+/// in time.
+#[cfg(any(feature = "http", feature = "cloud"))]
+fn http_unanswered(err: &ureq::Error) -> bool {
+    matches!(
+        err,
+        ureq::Error::HostNotFound
+            | ureq::Error::ConnectionFailed
+            | ureq::Error::Timeout(_)
+            | ureq::Error::Io(_)
+    )
+}
+
+/// The host of `url` for a message, with its port when it names one; the URL itself
+/// when it has no host.
+#[cfg(any(feature = "http", feature = "cloud"))]
+fn url_host(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| {
+            let host = u.host_str()?.to_string();
+            Some(match u.port() {
+                Some(port) => format!("{host}:{port}"),
+                None => host,
+            })
+        })
+        .unwrap_or_else(|| url.to_string())
 }
 
 /// `err`, from reading `path`, named by it ([`FileError`]) unless it already is.

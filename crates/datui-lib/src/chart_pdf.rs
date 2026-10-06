@@ -9,8 +9,14 @@ use color_eyre::Result;
 use resvg::tiny_skia::{PathSegment, Point, Transform};
 use resvg::usvg;
 
-/// The PDF of `tree`, a figure `width` by `height` px at `dpi`.
-pub fn write(tree: &usvg::Tree, width: u32, height: u32, dpi: f32) -> Result<Vec<u8>> {
+/// The PDF of `tree`, a figure `width` by `height` px at `dpi`, with `recipe` in its
+/// document info. Without one, the file has no document info at all.
+pub fn write(
+    tree: &usvg::Tree,
+    (width, height): (u32, u32),
+    dpi: f32,
+    recipe: Option<&str>,
+) -> Result<Vec<u8>> {
     let scale = 72.0 / f64::from(dpi);
     let (w_pt, h_pt) = (f64::from(width) * scale, f64::from(height) * scale);
     let mut page = Page::default();
@@ -65,19 +71,56 @@ pub fn write(tree: &usvg::Tree, width: u32, height: u32, dpi: f32) -> Result<Vec
     body.extend_from_slice(&stream);
     body.extend_from_slice(b"\nendstream");
     object(&mut out, &body);
-    object(&mut out, b"<< /Producer (datui) >>");
+    if let Some(recipe) = recipe {
+        object(
+            &mut out,
+            format!(
+                "<< /Producer (datui) /{} {} >>",
+                INFO_KEY,
+                text_string(recipe)
+            )
+            .as_bytes(),
+        );
+    }
     let xref = out.len();
     let mut table = format!("xref\n0 {}\n0000000000 65535 f \n", offsets.len() + 1);
     for offset in &offsets {
         writeln!(table, "{offset:010} 00000 n ")?;
     }
+    let info = if recipe.is_some() { " /Info 5 0 R" } else { "" };
     write!(
         table,
-        "trailer\n<< /Size {} /Root 1 0 R /Info 5 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+        "trailer\n<< /Size {} /Root 1 0 R{info} >>\nstartxref\n{xref}\n%%EOF\n",
         offsets.len() + 1
     )?;
     out.extend_from_slice(table.as_bytes());
     Ok(out)
+}
+
+/// The document info entry a recipe is kept under.
+const INFO_KEY: &str = "DatuiRecipe";
+
+/// `text` as a PDF text string: UTF-16BE behind its byte-order mark, in hex, which
+/// holds any character and needs no escapes.
+fn text_string(text: &str) -> String {
+    let mut out = String::from("<FEFF");
+    for unit in text.encode_utf16() {
+        let _ = write!(out, "{unit:04X}");
+    }
+    out.push('>');
+    out
+}
+
+/// The recipe a PDF this wrote carries, if it carries one.
+pub fn recipe_in(bytes: &[u8]) -> Option<String> {
+    let key = format!("/{INFO_KEY} <FEFF");
+    let at = bytes.windows(key.len()).position(|w| w == key.as_bytes())? + key.len();
+    let end = at + bytes[at..].iter().position(|b| *b == b'>')?;
+    let hex = std::str::from_utf8(&bytes[at..end]).ok()?;
+    let units = (0..hex.len() / 4)
+        .map(|i| u16::from_str_radix(&hex[i * 4..i * 4 + 4], 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    String::from_utf16(&units).ok()
 }
 
 /// A number as PDF writes it: short, and never in exponent form.
@@ -281,7 +324,7 @@ mod tests {
             <polyline points="0,0 100,100 200,50" fill="none" stroke="#eb6834" stroke-width="2"/>
         </svg>"##;
         let tree = usvg::Tree::from_str(svg, &usvg::Options::default()).unwrap();
-        let pdf = write(&tree, 300, 200, 144.0).unwrap();
+        let pdf = write(&tree, (300, 200), 144.0, Some("{}")).unwrap();
         let text = String::from_utf8_lossy(&pdf);
         assert!(pdf.starts_with(b"%PDF-1.4"));
         assert!(text.contains("/MediaBox [0 0 150 100]"), "{text}");

@@ -104,16 +104,7 @@ fn layered(over: &ColumnNote, under: &ColumnNote) -> ColumnNote {
         } else {
             over.values.clone()
         },
-    }
-}
-
-/// A note as one line: `description (unit)`.
-fn note_text(note: &ColumnNote) -> String {
-    match (note.description.is_empty(), note.unit.is_empty()) {
-        (false, false) => format!("{} ({})", note.description, note.unit),
-        (false, true) => note.description.clone(),
-        (true, false) => note.unit.clone(),
-        (true, true) => String::new(),
+        ty: pick(&over.ty, &under.ty),
     }
 }
 
@@ -127,7 +118,7 @@ fn field_section(out: &mut Vec<DocLine>, title: &'static str, fields: &[(String,
     for (name, note) in fields {
         out.push(DocLine::Column {
             name: name.clone(),
-            about: note_text(note),
+            about: note.about(),
             values: 0,
         });
     }
@@ -260,7 +251,7 @@ pub fn lines(doc: &Documented, expanded: &HashSet<String>, measured: Option<u64>
         for (name, note) in &columns {
             out.push(DocLine::Column {
                 name: name.clone(),
-                about: note_text(note),
+                about: note.about(),
                 values: note.values.len(),
             });
             if expanded.contains(name) {
@@ -346,6 +337,8 @@ pub struct DocState {
     pub expanded: HashSet<String>,
     /// Rows the last frame had room for, for paging.
     pub view_height: usize,
+    /// Whether `o` opens a link here: set by the app when it opens the page.
+    pub links_open: bool,
 }
 
 impl DocState {
@@ -430,6 +423,20 @@ impl DocState {
             self.cursor = at;
         }
         true
+    }
+
+    /// The link on the cursor's line, as the page has it: what `o` offers to open.
+    /// Only a Link line's; a value or a bookmark is never opened.
+    pub fn link(&self) -> Option<String> {
+        match self.lines().get(self.cursor) {
+            Some(DocLine::Link(_, url)) => Some(url.clone()),
+            _ => None,
+        }
+    }
+
+    /// Whether the footer offers `o`: on a link, where a browser would show it.
+    pub fn offers_open(&self) -> bool {
+        self.links_open && self.link().is_some()
     }
 
     /// What `y` copies at the cursor.
@@ -702,7 +709,6 @@ pub fn render_page(state: &mut DocState, area: Rect, buf: &mut Buffer, ctx: &Ren
         SectionRule {
             title,
             chip: Some(&chip),
-            focused: false,
         }
         .render(
             Rect {
@@ -731,6 +737,9 @@ pub fn render_view(state: &mut DocState, area: Rect, buf: &mut Buffer, ctx: &Ren
         }
         _ => {}
     }
+    if state.offers_open() {
+        footer = footer.hint("o", "Open");
+    }
     footer = footer.hint("y", "Copy").hint("Esc", "Back");
     let title = format!("Documentation {} {title}", glyphs::get().trail);
     let inner = Surface::new(&title).footer(&footer).render(area, buf, ctx);
@@ -753,7 +762,7 @@ mod tests {
 
     fn page(entry: Arc<Dataset>) -> Documented {
         Documented {
-            catalog: Some(("Public datasets".into(), entry)),
+            catalog: Some(("Example datasets".into(), entry)),
             ..Documented::default()
         }
     }
@@ -942,6 +951,32 @@ temp = { description = "Air temperature", unit = "deg F" }
         }));
     }
 
+    /// A declared type stands beside the unit, as the type row pairs them.
+    #[test]
+    fn a_typed_column_shows_its_type_beside_its_unit() {
+        let doc = spec_page(
+            r#"
+name = "acme.log"
+kind = "delimited"
+
+[columns]
+Latitude = { type = "f64", unit = "deg", description = "GPS latitude" }
+LogIdx = { type = "i64" }
+"#,
+        );
+        let lines = lines(&doc, &HashSet::new(), None);
+        assert!(lines.contains(&DocLine::Column {
+            name: "Latitude".into(),
+            about: "f64 · deg  GPS latitude".into(),
+            values: 0,
+        }));
+        assert!(lines.contains(&DocLine::Column {
+            name: "LogIdx".into(),
+            about: "i64".into(),
+            values: 0,
+        }));
+    }
+
     #[test]
     fn a_catalogs_word_stands_over_the_specs() {
         let catalog = crate::catalog::parse(
@@ -1017,6 +1052,7 @@ columns.venue = { description = "Where it traded" }
             description: "Side".into(),
             unit: "flag".into(),
             values: vec![("1".into(), "BUY".into())],
+            ty: String::new(),
         };
         assert_eq!(
             layered(&over, &under),

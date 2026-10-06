@@ -51,6 +51,7 @@ import argparse
 import html
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -354,12 +355,52 @@ def environment(work: Path, real: str | None) -> dict[str, str]:
         env.pop(xdg, None)
     env.pop("DATUI_FORMATS_PATH", None)
     env.pop("DATUI_DOC_EXPECT", None)
+    env["DATUI_DOC_STATUS"] = str(work / ".datui-status")
     return env
+
+
+def datui_succeeded(work: Path) -> bool:
+    """Whether datui ran in the block, through the shim, and every run exited 0."""
+    try:
+        said = (work / ".datui-status").read_text(encoding="utf-8").split()
+    except OSError:
+        return False
+    return bool(said) and all(s == "0" for s in said)
+
+
+# 128 + SIGPIPE: a producer still writing when the pipe it writes to closed.
+SIGPIPE_EXIT = 141
+
+
+def last_statement_line(body: str) -> int:
+    """The 1-based line of the body's last statement's start, past comments, blanks
+    and backslash continuations."""
+    lines = body.splitlines()
+    i = len(lines) - 1
+    while i >= 0 and (not lines[i].strip() or lines[i].lstrip().startswith("#")):
+        i -= 1
+    while i > 0 and lines[i - 1].rstrip().endswith("\\"):
+        i -= 1
+    return i + 1
+
+
+def failed_on_last_statement(work: Path, body: str, prelude_lines: int) -> bool:
+    """Whether the ERR trap fired on the block's last statement: a SIGPIPE there
+    ends a block whose every line ran."""
+    try:
+        line = int((work / ".doc-err-line").read_text(encoding="utf-8").split()[-1])
+    except (OSError, ValueError, IndexError):
+        return False
+    return line - prelude_lines >= last_statement_line(body)
 
 
 def run_block(b: Block, work: Path, real: str | None, timeout: float) -> str | None:
     """Run one block in `work`; the failure, or None."""
     env = environment(work, real)
+    (work / ".datui-status").unlink(missing_ok=True)
+    # The contributed specs a page shows, where a checkout of the repository has them.
+    if (ROOT / "contrib").is_dir():
+        shutil.copytree(ROOT / "contrib", work / "contrib", dirs_exist_ok=True)
     for f in b.files:
         (work / f.values["file"]).write_text(f.body, encoding="utf-8")
     if "expect" in b.values:
@@ -368,6 +409,8 @@ def run_block(b: Block, work: Path, real: str | None, timeout: float) -> str | N
         # An interactive block's producer is stopped by a closed pipe: its status is
         # not the block's.
         prelude = "set -eu\n" if "interactive" in b.attrs else "set -euo pipefail\n"
+        # Where a failure stopped the block, for the SIGPIPE rule below.
+        prelude += f"trap 'echo $LINENO > {shlex.quote(str(work / '.doc-err-line'))}' ERR\n"
         cmd = ["bash", "-c", prelude + b.body]
     elif b.lang == "toml" and "spec" in b.attrs:
         (work / "spec.toml").write_text(b.body, encoding="utf-8")
@@ -399,6 +442,17 @@ def run_block(b: Block, work: Path, real: str | None, timeout: float) -> str | N
     except subprocess.TimeoutExpired:
         return f"timed out after {timeout:.0f}s"
     said = (proc.stdout + proc.stderr).strip()
+    # Rows show as they arrive, so datui can be done while the producer still writes
+    # (`journalctl | datui`); quit, it closes the pipe, as `less` does, and pipefail
+    # reports the producer's SIGPIPE. That is the block's success when datui's is
+    # and nothing after it was skipped.
+    if (
+        proc.returncode == SIGPIPE_EXIT
+        and b.lang in ("bash", "sh")
+        and datui_succeeded(work)
+        and failed_on_last_statement(work, b.body, prelude.count("\n"))
+    ):
+        return None
     if proc.returncode != 0:
         return f"exit {proc.returncode}: {said[-2000:]}"
     if b.lang == "toml" and "warning" in proc.stderr:

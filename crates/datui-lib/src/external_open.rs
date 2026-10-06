@@ -107,22 +107,36 @@ pub fn run(program: &Program, path: &Path) -> std::io::Result<()> {
     let Some((first, rest)) = argv.split_first() else {
         return Err(std::io::Error::other("no program to open the value with"));
     };
-    let mut command = std::process::Command::new(first);
-    command.args(rest).arg(path);
-    if wait {
-        let status = command.status()?;
-        if !status.success() {
-            return Err(std::io::Error::other(format!(
-                "{first} exited with {status}"
-            )));
-        }
-    } else {
-        command
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()?;
+    if !wait {
+        let mut argv: Vec<&std::ffi::OsStr> = argv.iter().map(|a| a.as_ref()).collect();
+        argv.push(path.as_os_str());
+        return start(&argv);
     }
+    let status = std::process::Command::new(first)
+        .args(rest)
+        .arg(path)
+        .status()?;
+    if !status.success() {
+        return Err(std::io::Error::other(format!(
+            "{first} exited with {status}"
+        )));
+    }
+    Ok(())
+}
+
+/// Start `argv` as a program, no shell between, and return without waiting: it
+/// opens a window of its own. A thread reaps it when it exits.
+pub fn start<S: AsRef<std::ffi::OsStr>>(argv: &[S]) -> std::io::Result<()> {
+    let Some((first, rest)) = argv.split_first() else {
+        return Err(std::io::Error::other("no program to open with"));
+    };
+    let mut child = std::process::Command::new(first)
+        .args(rest)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    std::thread::spawn(move || child.wait());
     Ok(())
 }
 

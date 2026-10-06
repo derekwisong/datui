@@ -4506,8 +4506,8 @@ fn test_catalogs_are_sections_of_named_datasets() {
             ),
             // The same place as `Weather`: the catalog listed first names it.
             shown_catalog(
-                "public",
-                "Public datasets",
+                "examples",
+                "Example datasets",
                 datui::catalog::Origin::Bundled,
                 &[("Overture Maps", &overture), ("NOAA", &noaa)],
             ),
@@ -4524,7 +4524,7 @@ fn test_catalogs_are_sections_of_named_datasets() {
     };
     let mine = section("My datasets");
     assert_eq!(mine.origin, Some("catalog.toml"));
-    assert_eq!(section("Public datasets").origin, Some("built in"));
+    assert_eq!(section("Example datasets").origin, Some("comes with datui"));
     let rows: Vec<(&str, EntryKind)> = mine
         .rows
         .iter()
@@ -4544,7 +4544,10 @@ fn test_catalogs_are_sections_of_named_datasets() {
     let titles: Vec<&str> = home.sections.iter().map(|s| s.title.as_str()).collect();
     let (mine_at, public_at) = (
         titles.iter().position(|t| *t == "My datasets").unwrap(),
-        titles.iter().position(|t| *t == "Public datasets").unwrap(),
+        titles
+            .iter()
+            .position(|t| *t == "Example datasets")
+            .unwrap(),
     );
     assert!(
         mine_at < public_at,
@@ -5628,7 +5631,7 @@ mod coming_back {
     /// shared cache mid-test moved the rows a test was coming back to (#658).
     pub(super) fn home_app(mut config: datui::config::AppConfig) -> (App, Receiver<AppEvent>) {
         config.home.desktop_recents = false;
-        config.home.hide = vec!["public".to_string()];
+        config.home.hide = vec!["examples".to_string()];
         // Whatever this machine is logged in to is not part of the test.
         config.cloud.discover = Some(datui::config::CloudDiscover::None);
         let (tx, rx) = std::sync::mpsc::channel();
@@ -6915,6 +6918,106 @@ mod landing {
         assert!(app.data_table_state.is_some(), "the directory opened");
     }
 
+    /// Esc on a filter clears it and selects the first dataset, as at launch, not
+    /// the first section's header.
+    #[test]
+    fn esc_after_a_filter_selects_the_first_entry() {
+        let tmp = TempDir::new().unwrap();
+        fixtures(tmp.path());
+        let (mut app, _rx) = home_over(tmp.path());
+        for c in "same".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        assert!(press(&mut app, KeyCode::Esc).is_none());
+        assert!(app.home.filter.is_empty());
+        assert!(
+            !app.home.selection_is_header(),
+            "{:?}",
+            app.home.selected_row()
+        );
+        assert!(app.home.selected_entry().is_some());
+    }
+
+    /// "No match." offers no Enter: there is nothing to open or explain.
+    #[test]
+    fn no_match_offers_no_enter() {
+        let tmp = TempDir::new().unwrap();
+        fixtures(tmp.path());
+        let (mut app, _rx) = home_over(tmp.path());
+        for c in "zqzqzq".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        assert_eq!(app.what_enter_does(), datui::WhatEnter::Nothing);
+        let area = ratatui::layout::Rect::new(0, 0, 100, 20);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        ratatui::widgets::Widget::render(&mut app, area, &mut buf);
+        let bar: String = (0..area.width)
+            .map(|x| buf[(x, area.height - 1)].symbol())
+            .collect();
+        assert!(!bar.contains("About"), "{bar}");
+    }
+
+    /// Back home with Ctrl+O, the filter that found the dataset is kept, selected,
+    /// on the dataset's row: `~` opens the path prompt rather than typing into it,
+    /// a character starts a new filter, and an arrow keeps it.
+    #[test]
+    fn ctrl_o_selects_the_old_filter() {
+        let tmp = TempDir::new().unwrap();
+        fixtures(tmp.path());
+        let same = tmp.path().join("same_schema");
+        let (mut app, rx) = home_over(tmp.path());
+        for c in "same_schema".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        select(&mut app, &same);
+        enter_and_load(&mut app, &rx);
+        app.event(&AppEvent::Key(crossterm::event::KeyEvent::new(
+            KeyCode::Char('o'),
+            crossterm::event::KeyModifiers::CONTROL,
+        )));
+        let back_home = |app: &mut App| {
+            app.event(&AppEvent::Key(crossterm::event::KeyEvent::new(
+                KeyCode::Char('o'),
+                crossterm::event::KeyModifiers::CONTROL,
+            )));
+            assert_eq!(app.input_mode, datui::InputMode::Home);
+            assert_eq!(app.home.filter, "same_schema");
+            assert!(app.home.filter_selected);
+        };
+        assert_eq!(app.input_mode, datui::InputMode::Home);
+        assert_eq!(app.home.filter, "same_schema");
+        assert!(app.home.filter_selected);
+        assert_eq!(
+            app.home.selected_entry().map(|e| e.path),
+            Some(same.clone())
+        );
+        press(&mut app, KeyCode::Char('~'));
+        assert!(app.home.path_input_active, "~ opens the prompt");
+        assert!(app.home.filter.is_empty());
+        press(&mut app, KeyCode::Esc);
+
+        // A character starts a new filter.
+        app.home.filter = "same_schema".to_string();
+        app.home.sync_search_section();
+        select(&mut app, &same);
+        enter_and_load(&mut app, &rx);
+        back_home(&mut app);
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.home.filter, "d");
+        assert!(!app.home.filter_selected);
+
+        // An arrow keeps it, and typing then adds to it.
+        app.home.filter = "same_schema".to_string();
+        app.home.sync_search_section();
+        select(&mut app, &same);
+        enter_and_load(&mut app, &rx);
+        back_home(&mut app);
+        press(&mut app, KeyCode::Down);
+        assert!(!app.home.filter_selected);
+        press(&mut app, KeyCode::Char('x'));
+        assert_eq!(app.home.filter, "same_schemax");
+    }
+
     #[test]
     fn a_hive_table_lands_on_its_row_and_opens_with_its_partition_columns() {
         let tmp = TempDir::new().unwrap();
@@ -7684,7 +7787,7 @@ fields = [{ name = "x", type = "u1" }]
 fn a_variant_spec_files_pane_shows_chips_and_variants_at_any_width() {
     common::isolate_cache();
     let formats = TempDir::new().unwrap();
-    let dir = formats.path().join(".config/datui/formats");
+    let dir = formats.path().join(".config").join("datui").join("formats");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("demo-mktdata.toml"), DEMO_MKTDATA).unwrap();
     let registry = datui::formats::Registry::load(std::slice::from_ref(&dir));
@@ -7753,9 +7856,16 @@ fn a_variant_spec_files_pane_shows_chips_and_variants_at_any_width() {
         // The spec's path: one line, the name kept, the middle cut where it must be.
         let spec: Vec<&String> = pane.iter().filter(|l| l.starts_with("spec ")).collect();
         assert_eq!(spec.len(), 1, "{shown}");
-        assert!(spec[0].ends_with("/demo-mktdata.toml"), "{shown}");
+        let sep = std::path::MAIN_SEPARATOR;
+        assert!(
+            spec[0].ends_with(&format!("{sep}demo-mktdata.toml")),
+            "{shown}"
+        );
         if pane_w == 40 {
-            assert!(spec[0].contains(&format!("/{ellipsis}/")), "{shown}");
+            assert!(
+                spec[0].contains(&format!("{sep}{ellipsis}{sep}")),
+                "{shown}"
+            );
         }
         let at = pane.iter().position(|l| l.starts_with("spec ")).unwrap();
         assert!(
@@ -8176,17 +8286,19 @@ mod first_rows {
 }
 
 // ---------------------------------------------------------------------------
-// The public catalog: rows that say what they are, one key away (#547 M5, D12)
+// The example datasets: rows that say what they are, one key away (#547 M5, D12)
 // ---------------------------------------------------------------------------
 
 mod catalog {
     use super::coming_back::{press, settle};
     use crossterm::event::KeyCode;
     use datui::home::Row;
-    use datui::{App, AppEvent, UnaskedDownload};
+    use datui::{App, AppEvent};
     use std::sync::mpsc::Receiver;
     use tempfile::TempDir;
 
+    // For the examples, which this build opens only with HTTP or cloud reading.
+    #[cfg(any(feature = "http", feature = "cloud"))]
     fn app_with_catalog(config: datui::config::AppConfig) -> (App, Receiver<AppEvent>, TempDir) {
         let mut config = config;
         config.home.desktop_recents = false;
@@ -8207,6 +8319,161 @@ mod catalog {
         (app, rx, cache)
     }
 
+    /// The home screen over `config`, on the cache in `dir`: a second one on the
+    /// same directory is the next run.
+    fn app_on_cache(
+        config: datui::config::AppConfig,
+        dir: &std::path::Path,
+    ) -> (App, Receiver<AppEvent>) {
+        let mut config = config;
+        config.home.desktop_recents = false;
+        config.cloud.discover = Some(datui::config::CloudDiscover::None);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new_with_config(
+            tx,
+            crate::common::test_runtime(),
+            datui::Theme {
+                colors: std::collections::HashMap::new(),
+            },
+            config,
+        );
+        app.use_cache(datui::CacheManager::with_dir(dir.to_path_buf()));
+        app.enter_home();
+        settle(&mut app, &rx, |_| true);
+        (app, rx)
+    }
+
+    fn titles(app: &App) -> Vec<String> {
+        app.home.sections.iter().map(|s| s.title.clone()).collect()
+    }
+
+    /// Put the selection on the heading of the section titled `title`.
+    fn select_heading(app: &mut App, title: &str) {
+        let index = app
+            .home
+            .visible()
+            .iter()
+            .position(|row| {
+                matches!(row, Row::Header { section, .. }
+                    if app.home.sections[*section].title == title)
+            })
+            .unwrap_or_else(|| panic!("a heading {title}: {:?}", titles(app)));
+        app.home.selected = index;
+    }
+
+    /// The Example datasets heading says what they are, where they come from, and
+    /// both ways to hide them; Delete there asks first, on No, hides them until the
+    /// cache is cleared, across a restart, and says `Del Hide` in the footer.
+    // The examples this build opens: none without HTTP or cloud reading.
+    #[cfg(any(feature = "http", feature = "cloud"))]
+    #[test]
+    fn delete_on_the_example_heading_hides_them_until_cache_clear() {
+        let cache = TempDir::new().unwrap();
+        let (mut app, rx) = app_on_cache(Default::default(), cache.path());
+        select_heading(&mut app, "Example datasets");
+        let text = screen(&mut app, 220, 40).join("\n");
+        for want in [
+            "datasets",
+            "comes with datui",
+            "datui catalog show examples",
+            "Del hides it until datui cache clear",
+            "[home] hide = [\"examples\"] for good",
+        ] {
+            assert!(text.contains(want), "{want}:\n{text}");
+        }
+        let footer = screen(&mut app, 120, 40).last().cloned().unwrap();
+        assert!(
+            footer.contains("Del") && footer.contains("Hide"),
+            "{footer}"
+        );
+
+        press(&mut app, KeyCode::Delete);
+        assert!(app.confirmation_modal.active);
+        assert!(!app.confirmation_modal.focus_yes, "starts on No");
+        assert!(
+            app.confirmation_modal
+                .message
+                .contains("Hide Example datasets? It comes back after datui cache clear."),
+            "{}",
+            app.confirmation_modal.message
+        );
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            titles(&app).iter().any(|t| t == "Example datasets"),
+            "No keeps them"
+        );
+        press(&mut app, KeyCode::Delete);
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Enter);
+        settle(&mut app, &rx, |_| true);
+        assert!(!titles(&app).iter().any(|t| t == "Example datasets"));
+
+        let (next_run, _rx) = app_on_cache(Default::default(), cache.path());
+        assert!(
+            !titles(&next_run).iter().any(|t| t == "Example datasets"),
+            "hidden in the next run too"
+        );
+        datui::CacheManager::with_dir(cache.path().to_path_buf())
+            .clear_all()
+            .unwrap();
+        let (cleared, _rx) = app_on_cache(Default::default(), cache.path());
+        assert!(titles(&cleared).iter().any(|t| t == "Example datasets"));
+    }
+
+    /// Delete hides the catalog that comes with datui, not the id: an
+    /// `examples.toml` of the user's shows after it, and its heading, as any of the
+    /// user's, offers no Delete, only the config's hide by id, which hides either.
+    #[test]
+    fn a_users_examples_toml_shows_after_delete_hid_the_bundled_one() {
+        let cache = TempDir::new().unwrap();
+        datui::CacheManager::with_dir(cache.path().to_path_buf()).hide_examples();
+        let mut config = datui::config::AppConfig::default();
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("examples.toml");
+        std::fs::write(
+            &file,
+            "label = \"Our examples\"\ndescription = \"The team's\"\n[sales]\nname = \"Sales\"\npath = \"/tmp/sales.csv\"\n",
+        )
+        .unwrap();
+        config.read_catalogs = vec![
+            datui::catalog::parse(
+                &std::fs::read_to_string(&file).unwrap(),
+                "examples",
+                datui::catalog::Origin::Listed,
+                Some(&file),
+            )
+            .unwrap(),
+        ];
+        let (mut app, _rx) = app_on_cache(config.clone(), cache.path());
+        assert!(
+            titles(&app).iter().any(|t| t == "Our examples"),
+            "{:?}",
+            titles(&app)
+        );
+        select_heading(&mut app, "Our examples");
+        let rows = screen(&mut app, 220, 40);
+        let text = rows.join("\n");
+        assert!(text.contains("examples.toml"), "the file:\n{text}");
+        assert!(text.contains("The team's"), "{text}");
+        assert!(text.contains("[home] hide = [\"examples\"]"), "{text}");
+        assert!(
+            !rows.last().unwrap().contains("Del"),
+            "{}",
+            rows.last().unwrap()
+        );
+        press(&mut app, KeyCode::Delete);
+        assert!(
+            !app.confirmation_modal.active,
+            "no Delete on a user's heading"
+        );
+        assert!(titles(&app).iter().any(|t| t == "Our examples"));
+
+        config.home.hide = vec!["examples".to_string()];
+        let (hidden, _rx) = app_on_cache(config, cache.path());
+        assert!(!titles(&hidden).iter().any(|t| t == "Our examples"));
+    }
+
+    #[cfg(any(feature = "http", feature = "cloud"))]
     fn select_named(app: &mut App, name: &str) {
         let index = app
             .home
@@ -8229,6 +8496,8 @@ mod catalog {
 
     /// A built-in web file's row says its format and what it weighs before anything is
     /// fetched, at 80 and at 200 columns.
+    // An HTTP example.
+    #[cfg(feature = "http")]
     #[test]
     fn catalog_rows_say_their_format_and_size() {
         let (mut app, _rx, _cache) = app_with_catalog(datui::config::AppConfig::default());
@@ -8247,6 +8516,8 @@ mod catalog {
 
     /// Enter on a small built-in web file asks for its download without a question;
     /// the same URL typed at `~` keeps the question.
+    // An HTTP example.
+    #[cfg(feature = "http")]
     #[test]
     fn a_small_builtin_file_opens_without_a_question_and_a_typed_url_asks() {
         let (mut app, _rx, _cache) = app_with_catalog(datui::config::AppConfig::default());
@@ -8255,7 +8526,7 @@ mod catalog {
             panic!("Enter opens it");
         };
         let unasked = options.download_unasked.expect("downloaded unasked");
-        assert_eq!(unasked.limit, UnaskedDownload::LIMIT);
+        assert_eq!(unasked.limit, datui::UnaskedDownload::LIMIT);
         assert!(unasked.covers(None), "its listed size is under the limit");
         let url = paths[0].to_string_lossy().into_owned();
 
@@ -8272,6 +8543,8 @@ mod catalog {
 
     /// On screen, a local directory of directories, a hive table and a public dataset
     /// directory read in one grammar: `name/  label` (#547 M7).
+    // An S3 example.
+    #[cfg(feature = "cloud")]
     #[test]
     fn rows_read_name_slash_two_spaces_label_on_screen() {
         let tmp = TempDir::new().unwrap();
@@ -8326,8 +8599,8 @@ mod catalog {
         let listing = build_listing(&ListingRequest {
             recents: vec![url.clone()],
             catalogs: vec![crate::shown_catalog(
-                "public",
-                "Public datasets",
+                "examples",
+                "Example datasets",
                 datui::catalog::Origin::Bundled,
                 &[("Palmer penguins", &url)],
             )],
@@ -8376,8 +8649,19 @@ mod frecency {
         last: &str,
     ) -> (App, std::sync::mpsc::Receiver<AppEvent>, PathBuf, PathBuf) {
         let dir = tmp.path().join("data");
-        let often = super::touch(&dir, often);
-        let last = super::touch(&dir, last);
+        opened_in(tmp, &dir, often, last)
+    }
+
+    /// As [`opened`], the catalog naming the files through `dir`.
+    fn opened_in(
+        tmp: &TempDir,
+        dir: &std::path::Path,
+        often: &str,
+        last: &str,
+    ) -> (App, std::sync::mpsc::Receiver<AppEvent>, PathBuf, PathBuf) {
+        let data = tmp.path().join("data");
+        let often = super::touch(&data, often);
+        let last = super::touch(&data, last);
         let cache = CacheManager::with_dir(tmp.path().join("cache"));
         for path in [&often, &often, &often, &last] {
             assert_eq!(
@@ -8386,11 +8670,11 @@ mod frecency {
             );
         }
         let mut config = datui::config::AppConfig {
-            read_catalogs: vec![crate::dir_catalog(&dir)],
+            read_catalogs: vec![crate::dir_catalog(dir)],
             ..Default::default()
         };
         config.home.desktop_recents = false;
-        config.home.hide = vec!["public".to_string()];
+        config.home.hide = vec!["examples".to_string()];
         config.cloud.discover = Some(datui::config::CloudDiscover::None);
         let (tx, rx) = std::sync::mpsc::channel();
         let mut app = App::new_with_config(
@@ -8404,7 +8688,7 @@ mod frecency {
         app.use_cache(cache);
         app.enter_home();
         settle(&mut app, &rx, |app| !app.home.newest_recent.is_none());
-        let canonical = |p: &PathBuf| std::fs::canonicalize(p).unwrap();
+        let canonical = |p: &PathBuf| datui::canonical::canonicalize(p).unwrap();
         (app, rx, canonical(&often), canonical(&last))
     }
 
@@ -8437,30 +8721,54 @@ mod frecency {
 
     /// Of two files `sales` matches equally, the one opened most is first, in a
     /// catalog's section too, where the name would otherwise put the other first.
+    /// The catalog spells the paths as written, not as the recents keep them
+    /// (`/var` for `/private/var` on macOS), so they are compared by name.
     #[test]
     fn a_match_opened_most_comes_first() {
         let tmp = TempDir::new().unwrap();
-        let (mut app, _rx, often, last) = opened(&tmp, "sales_q2.csv", "sales_q1.csv");
+        let (app, _rx, often, last) = opened(&tmp, "sales_q2.csv", "sales_q1.csv");
+        assert_eq!(sales_in_catalog(app), [name(&often), name(&last)]);
+    }
+
+    /// The same through a catalog that names the files by a link to their directory,
+    /// as macOS's `/var` is one to `/private/var`: the recents keep the path the link
+    /// leads to, and the row is still lifted.
+    #[cfg(unix)]
+    #[test]
+    fn a_match_named_through_a_link_is_lifted_too() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("data")).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(tmp.path().join("data"), &link).unwrap();
+        let (app, _rx, often, last) = opened_in(&tmp, &link, "sales_q2.csv", "sales_q1.csv");
+        assert_eq!(sales_in_catalog(app), [name(&often), name(&last)]);
+    }
+
+    fn name(path: &std::path::Path) -> String {
+        path.file_name().unwrap().to_string_lossy().into_owned()
+    }
+
+    /// The catalog's rows `sales` matches, by name: the catalog spells their paths as
+    /// written, not as the recents keep them.
+    fn sales_in_catalog(mut app: App) -> Vec<String> {
         for c in "sales".chars() {
             app.event(&AppEvent::Key(KeyEvent::new(
                 KeyCode::Char(c),
                 KeyModifiers::NONE,
             )));
         }
-        let in_dir: Vec<PathBuf> = app
-            .home
+        app.home
             .visible()
             .iter()
             .filter_map(|row| match row {
                 Row::Entry { section, entry, .. }
                     if app.home.sections[*section].title == "My datasets" =>
                 {
-                    Some(entry.path.clone())
+                    Some(entry.name.clone())
                 }
                 _ => None,
             })
-            .collect();
-        assert_eq!(in_dir, [often, last]);
+            .collect()
     }
 
     /// Visits are counted per open and kept only for what is still recent.
@@ -8474,8 +8782,8 @@ mod frecency {
             cache.push_recent(path);
         }
         let visits = cache.load_visits();
-        let a = std::fs::canonicalize(&a).unwrap();
-        let b = std::fs::canonicalize(&b).unwrap();
+        let a = datui::canonical::canonicalize(&a).unwrap();
+        let b = datui::canonical::canonicalize(&b).unwrap();
         assert_eq!(visits[&a].count, 2);
         assert_eq!(visits[&b].count, 1);
         let ranked = datui::cache::by_frecency(cache.load_recents(), &visits);
@@ -8595,6 +8903,26 @@ mod path_prompt {
         );
     }
 
+    /// The first name that matches is picked as the list lands and stays picked
+    /// after Tab completes it, so the list always shows what Enter takes; ↑ from
+    /// the first takes the path as typed.
+    #[test]
+    fn the_first_candidate_is_picked_and_kept_after_tab() {
+        let tmp = project();
+        let (mut app, rx) = home_app(datui::config::AppConfig::default());
+        press(&mut app, KeyCode::Char('~'));
+        type_text(&mut app, &format!("{}/su", tmp.path().display()));
+        listed(&mut app, &rx);
+        assert_eq!(app.home.path_pick, Some(0));
+        let summary = format!("{}/summary.csv", tmp.path().display());
+        assert_eq!(app.home.picked_path().as_deref(), Some(summary.as_str()));
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.home.path_input, summary);
+        assert_eq!(app.home.path_pick, Some(0), "the pick stays after Tab");
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.home.path_pick, None, "the path as typed");
+    }
+
     /// One candidate left: Tab completes it whole, a directory with its separator, so
     /// the next Tab is inside it.
     #[test]
@@ -8631,8 +8959,10 @@ mod path_prompt {
         );
     }
 
-    /// A bucket completes from what datui already knows of it, the public catalog
+    /// A bucket completes from what datui already knows of it, the example datasets
     /// included, with nothing asked of the store: `s3://noaa` + Tab is the bucket.
+    // An S3 example.
+    #[cfg(feature = "cloud")]
     #[test]
     fn a_bucket_completes_from_what_is_known() {
         let mut config = datui::config::AppConfig::default();
@@ -8662,5 +8992,155 @@ mod path_prompt {
             .map(|n| n.name.clone())
             .collect();
         assert_eq!(names, ["parquet"]);
+    }
+}
+
+/// A file a delimited spec reads opens the same from the home screen as from the
+/// command line: each dialect key the spec sets, and the config's typing of text
+/// columns, reach both opens.
+#[test]
+fn a_spec_file_opens_the_same_from_home_and_the_command_line() {
+    use polars::prelude::DataType;
+    common::isolate_cache();
+    let padded =
+        "#log, a=\"1\"\n#u1, u2, u3\n  id,   volts,   name\n  1,    25.1,   x\n  2,    25.2,   y\n";
+    // One spec a key: the key, and a file the key changes the read of.
+    let cases: [(&str, &str, &str); 7] = [
+        (
+            "skip_initial_space",
+            "skip_initial_space = true\nheader_rows = 3\ncomment = \"#\"",
+            padded,
+        ),
+        (
+            "delimiter",
+            "delimiter = \";\"\ncomment = \"#\"",
+            "#log\nid;volts\n1;25.1\n2;25.2\n",
+        ),
+        (
+            "comment",
+            "comment = \"#\"",
+            "#log\nid,volts\n#note\n1,25.1\n2,25.2\n",
+        ),
+        (
+            "header_rows",
+            "header_rows = { name = 3, unit = 2 }\ncomment = \"#\"",
+            padded,
+        ),
+        (
+            "header_join",
+            "header_rows = [3, 2]\nheader_join = \"_\"\ncomment = \"#\"",
+            padded,
+        ),
+        (
+            "skip_lines",
+            "skip_lines = 2",
+            "#log\njunk\nid,volts\n1,25.1\n2,25.2\n",
+        ),
+        (
+            "null_values",
+            "null_values = \"NA\"\ncomment = \"#\"",
+            "#log\nid,volts\n1,25.1\n2,NA\n",
+        ),
+    ];
+    for (key, dialect, text) in cases {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("run.csv");
+        fs::write(&file, text).unwrap();
+        let spec_text = format!(
+            "name = \"acme.{key}\"\nkind = \"delimited\"\nmatch = {{ magic = \"#log\" }}\n{dialect}\n"
+        );
+        let spec = datui::formats::Spec::parse(&spec_text, None).unwrap();
+        let registry = || datui::formats::Registry::of(vec![spec.clone()]);
+        let mut config = datui::config::AppConfig::default();
+        config.home.desktop_recents = false;
+        config.cloud.hide = ["s3-default", "gcs-default", "az", "azure-env"]
+            .map(String::from)
+            .to_vec();
+
+        // As `datui run.csv` opens it: the options the command line and config give.
+        let args = datui::cli::parse_args(["datui", file.to_str().unwrap()]).unwrap();
+        let named = datui::OpenOptions::from_args_and_config(&args, &config);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = datui::App::new_with_config(
+            tx,
+            common::test_runtime(),
+            datui::Theme {
+                colors: std::collections::HashMap::new(),
+            },
+            config.clone(),
+        );
+        app.set_formats(registry());
+        common::pump_open_until_loaded(&mut app, &rx, vec![file.clone()], named);
+        assert!(
+            app.error_message().is_none(),
+            "{key}: {:?}",
+            app.error_message()
+        );
+        let from_cli = app
+            .data_table_state
+            .as_ref()
+            .unwrap()
+            .lf()
+            .clone()
+            .collect()
+            .unwrap();
+
+        // Enter on its row at home.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = datui::App::new_with_config(
+            tx,
+            common::test_runtime(),
+            datui::Theme {
+                colors: std::collections::HashMap::new(),
+            },
+            config,
+        );
+        app.set_formats(registry());
+        app.home.browsing = Some(tmp.path().to_path_buf());
+        app.enter_home();
+        listed(&mut app, &rx, |app| {
+            visible_names(&app.home).contains(&"run.csv".to_string())
+        });
+        let index = app
+            .home
+            .visible()
+            .iter()
+            .position(|r| matches!(r, Row::Entry { entry, .. } if entry.name == "run.csv"))
+            .unwrap();
+        let delta = index as isize - app.home.selected as isize;
+        app.home.move_selection(delta);
+        let Some(datui::AppEvent::Open(paths, options)) =
+            app.event(&datui::AppEvent::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE,
+            )))
+        else {
+            panic!("{key}: Enter on the file opens it");
+        };
+        common::pump_open_until_loaded(&mut app, &rx, paths, options);
+        assert!(
+            app.error_message().is_none(),
+            "{key}: {:?}",
+            app.error_message()
+        );
+        let from_home = app
+            .data_table_state
+            .as_ref()
+            .unwrap()
+            .lf()
+            .clone()
+            .collect()
+            .unwrap();
+
+        assert_eq!(from_home.schema(), from_cli.schema(), "{key}");
+        assert!(
+            from_home.equals_missing(&from_cli),
+            "{key}: {from_home} {from_cli}"
+        );
+        assert_eq!(
+            from_home.columns()[1].dtype(),
+            &DataType::Float64,
+            "{key}: volts is a number: {from_home}"
+        );
     }
 }

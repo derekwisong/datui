@@ -250,7 +250,7 @@ fn render_form(area: Rect, buf: &mut Buffer, modal: &mut PivotMeltModal, ctx: &R
             focused: modal.focus == row,
             label_width: LABEL_WIDTH,
         }
-        .render(row_area, buf, ctx);
+        .render_picking(row_area, buf, ctx, modal.picker.is_some());
         crate::pointer::record_field::<PivotMeltModal>(row_area, row);
         y += 1;
     }
@@ -382,7 +382,6 @@ fn render_preview(area: Rect, buf: &mut Buffer, modal: &PivotMeltModal, ctx: &Re
     SectionRule {
         title: "Preview",
         chip: None,
-        focused: false,
     }
     .render(Rect { height: 1, ..area }, buf, ctx);
 
@@ -874,6 +873,11 @@ mod tests {
         m.picker_toggle(); // dept in
         let rows = render_rows(&mut m, 120, 24);
         let body = rows.join("\n");
+        assert_eq!(
+            body.matches(g.rail).count(),
+            1,
+            "the picker's line has the one rail, not its row too: {body}"
+        );
         assert!(body.contains(&format!("{} dept", g.checkbox_on)), "{body}");
         assert!(
             body.contains(&format!("{} region", g.checkbox_off)),

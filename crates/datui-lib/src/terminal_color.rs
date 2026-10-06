@@ -9,8 +9,11 @@
 //! ([`armed`]) and takes it off the stream ([`ReplyScanner`]) instead of letting it
 //! reach the app as keystrokes.
 //!
-//! Nothing here waits on the terminal. A terminal that does not answer sends
-//! nothing, and the question lapses after [`ARMED_FOR`].
+//! Nothing here waits on the terminal, startup included: the first frame is drawn
+//! in the palette this terminal's last answer picked (kept in the cache under
+//! [`terminal_key`]), and the answer, when it comes, switches palettes if it
+//! differs. A terminal that does not answer sends nothing, and the question lapses
+//! after [`ARMED_FOR`].
 //!
 //! DEC mode 2031 (the terminal reporting a scheme change as `CSI ? 997 ; n`) is not
 //! enabled: Crossterm 0.29 takes any `CSI ?` sequence that ends in neither `u` nor
@@ -35,10 +38,6 @@ pub(crate) const QUERY: &[u8] = b"\x1b]11;?\x1b\\";
 /// that look like a reply are keys. Generous for a slow SSH link; a terminal that
 /// answers does so in milliseconds.
 pub(crate) const ARMED_FOR: Duration = Duration::from_secs(3);
-
-/// How long startup holds the first frame for an answer, so it is drawn in the
-/// right palette. A terminal that does not answer costs this once.
-pub(crate) const STARTUP_WAIT: Duration = Duration::from_millis(100);
 
 /// How long the reader holds the start of what may be a reply for the rest of it.
 /// A reply arrives in one write, so its keys are already queued when its first is
@@ -72,13 +71,24 @@ pub(crate) fn disarm() {
 /// Windows the console delivers a reply as key events, an Esc among them, which
 /// would reach the app as a keypress, so the question is never asked there.
 pub(crate) fn supported() -> bool {
-    if !cfg!(unix) || !io::stdout().is_terminal() {
-        return false;
-    }
-    match std::env::var("TERM") {
-        Ok(term) => !term.is_empty() && term != "linux" && term != "dumb",
-        Err(_) => false,
-    }
+    can_ask(
+        cfg!(unix),
+        io::stdout().is_terminal(),
+        std::env::var("TERM").ok().as_deref(),
+    )
+}
+
+fn can_ask(unix: bool, tty: bool, term: Option<&str>) -> bool {
+    unix && tty && term.is_some_and(|term| !term.is_empty() && term != "linux" && term != "dumb")
+}
+
+/// Which terminal this is, as far as is cheap to tell: `TERM_PROGRAM` when set,
+/// else `TERM`. Its last answer is remembered under this.
+pub(crate) fn terminal_key() -> String {
+    let var = |name| std::env::var(name).ok().filter(|v: &String| !v.is_empty());
+    var("TERM_PROGRAM")
+        .or_else(|| var("TERM"))
+        .unwrap_or_default()
 }
 
 /// Ask the terminal for its background, unless a question is already out. Returns
@@ -486,6 +496,18 @@ mod tests {
         events.push(Event::Resize(80, 24));
         let want: Vec<_> = events.iter().cloned().map(Scanned::Event).collect();
         assert_eq!(scan(events, true), want);
+    }
+
+    /// Only a Unix terminal on standard output that takes OSC is asked: never when
+    /// standard output is a pipe or a file.
+    #[test]
+    fn only_a_terminal_is_asked() {
+        assert!(can_ask(true, true, Some("xterm-256color")));
+        assert!(!can_ask(true, false, Some("xterm-256color")), "not a tty");
+        assert!(!can_ask(false, true, Some("xterm-256color")), "Windows");
+        for term in [None, Some(""), Some("linux"), Some("dumb")] {
+            assert!(!can_ask(true, true, term), "{term:?}");
+        }
     }
 
     #[test]

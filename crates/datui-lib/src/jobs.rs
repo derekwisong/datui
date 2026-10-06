@@ -65,6 +65,7 @@ pub enum JobKind {
     Rows,
     Analysis,
     SampleRows,
+    SampleDraw,
     Pivot,
     ViewPivot,
     ReshapePreview,
@@ -83,6 +84,7 @@ pub enum JobKind {
     ValueCounts,
     HexOpen,
     HexFind,
+    UnfitCount,
 }
 
 /// One started operation. Issued when it starts, carried by its worker, and handed
@@ -131,6 +133,8 @@ pub(crate) enum Job {
     Analysis(AnalysisRun),
     /// The sample, or the rows behind a finding, read to show as a table.
     SampleRows,
+    /// The view's sample, drawn into memory as the table shows it.
+    SampleDraw(Box<SampleDraw>),
     /// A pivot from the Pivot & Melt builder.
     Pivot,
     /// A view's pivot, read before the view's rows: the view it is for, and why it
@@ -182,6 +186,10 @@ pub(crate) enum Job {
     },
     /// A find reading the hex view's file.
     HexFind(crate::hex_view::HexFindRun),
+    /// Counting the values the read's column types made null, for the Notes: judged
+    /// by the `dataset_generation` it was asked for, as the file facts are.
+    /// `version` is the view's column changes counted; `None` for the read's types.
+    UnfitCount { dataset: u64, version: Option<u64> },
 }
 
 /// A look at a path chosen on the home screen. Every key acts on the home screen even
@@ -200,6 +208,42 @@ pub(crate) struct Classify {
     pub(crate) browsing: Option<PathBuf>,
     /// A path typed at `~` rather than a row already listed.
     pub(crate) jump: bool,
+}
+
+/// A view's sample being drawn. Judged by its rows rather than the generation: the
+/// table pages, finds and inspects while it is drawn, and each of those may move the
+/// generation on. The view it lands in is the one whose sample holds `rows`.
+#[derive(Clone)]
+pub(crate) struct SampleDraw {
+    pub(crate) sample: crate::sampling::Sample,
+    pub(crate) rows: Arc<crate::table_sample::SampleRows>,
+    /// Stops the draw; the rows so far stay.
+    pub(crate) watch: crate::sampling::ReadWatch,
+    /// Drawn from the view's query or filters rather than the source under them.
+    pub(crate) through: bool,
+    /// The steps laid on the sample once its view is built: the query, filters,
+    /// sort and columns of the view it was drawn from, or of the view being applied.
+    pub(crate) replay: Option<crate::view::ViewSettings>,
+    /// Analysis asked for it, and runs its tool once it is drawn.
+    pub(crate) then_analyze: bool,
+    /// How a random sample of a stream is drawn, decided before it starts.
+    pub(crate) path: Option<crate::table_sample::DrawPath>,
+    /// What the draw is remembered by, for drawing it the same way again.
+    pub(crate) path_key: String,
+    /// The columns of the rows drawn, once they are cut to their scope. The view
+    /// becomes the sample's when its first rows land, not before: until then the
+    /// view it replaces stays, and stays if no row comes.
+    pub(crate) schema: Option<polars::prelude::SchemaRef>,
+}
+
+impl std::fmt::Debug for SampleDraw {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SampleDraw")
+            .field("sample", &self.sample)
+            .field("through", &self.through)
+            .field("then_analyze", &self.then_analyze)
+            .finish_non_exhaustive()
+    }
 }
 
 /// An Analysis tool's run.
@@ -221,6 +265,7 @@ impl Job {
             Job::Rows(_) | Job::OwedRows { .. } => JobKind::Rows,
             Job::Analysis(_) => JobKind::Analysis,
             Job::SampleRows => JobKind::SampleRows,
+            Job::SampleDraw(_) => JobKind::SampleDraw,
             Job::Pivot => JobKind::Pivot,
             Job::ViewPivot(_) => JobKind::ViewPivot,
             Job::ReshapePreview { .. } => JobKind::ReshapePreview,
@@ -239,6 +284,7 @@ impl Job {
             Job::ValueCounts => JobKind::ValueCounts,
             Job::HexOpen { .. } => JobKind::HexOpen,
             Job::HexFind(_) => JobKind::HexFind,
+            Job::UnfitCount { .. } => JobKind::UnfitCount,
         }
     }
 
@@ -271,10 +317,12 @@ impl Job {
         !matches!(
             self,
             Job::Rows(_)
+                | Job::SampleDraw(_)
                 | Job::OwedRows { .. }
                 | Job::OpenNamed(_)
                 | Job::LookAtDirectory { .. }
                 | Job::FileFacts { .. }
+                | Job::UnfitCount { .. }
                 | Job::ReshapePreview { .. }
         )
     }
@@ -287,6 +335,8 @@ impl Job {
         !matches!(
             self,
             Job::FileFacts { .. }
+                | Job::SampleDraw(_)
+                | Job::UnfitCount { .. }
                 | Job::ChartExport { .. }
                 | Job::OwedRows { .. }
                 | Job::ReshapePreview { .. }
@@ -340,6 +390,8 @@ pub(crate) enum Answer {
     },
     /// [`Job::SampleRows`]: rows to show as a table.
     Sample { df: DataFrame, label: String },
+    /// [`Job::SampleDraw`]: the draw ended; its rows are in the job's chunks.
+    SampleDrawn(crate::table_sample::Drawn),
     /// [`Job::Pivot`]: the pivot.
     Pivoted {
         spec: crate::pivot_melt_modal::PivotSpec,
@@ -387,6 +439,8 @@ pub(crate) enum Answer {
     HexOpened(Box<crate::hex_view::HexSource>),
     /// [`Job::HexFind`]: where the pattern is, if anywhere.
     HexFound(crate::hex_view::HexHit),
+    /// [`Job::UnfitCount`]: the columns whose types made values null.
+    UnfitCounted(Vec<crate::column_types::Unfit>),
     /// A test's answer, which says when it is dropped.
     #[cfg(test)]
     Probe(Arc<()>),
@@ -446,6 +500,10 @@ pub enum Progress {
     Finding { rows: usize },
     /// A find in the hex view has read `read` of the file's `total` bytes.
     HexFinding { read: u64, total: u64 },
+    /// A sample's rows are cut to its scope, with these columns: its view can be built.
+    SampleBegun(polars::prelude::SchemaRef),
+    /// A sample kept another chunk.
+    SampleGrew,
 }
 
 /// A job whose outcome has been taken: what it was, whether its answer is still

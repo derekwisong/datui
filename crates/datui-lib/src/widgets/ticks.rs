@@ -68,6 +68,22 @@ pub fn widen(lo: f64, hi: f64, step: f64) -> [f64; 2] {
     [wlo, whi]
 }
 
+/// [`widen`], except that an end a whole tick would leave more than three quarters of
+/// a step empty stops at the coarsest minor tick past the data instead. A mean a hair
+/// under zero widened a step-10 axis down to -10, a fifth of the plot holding nothing.
+pub fn widen_snug(lo: f64, hi: f64, step: f64, whole: bool) -> [f64; 2] {
+    let [wlo, whi] = widen(lo, hi, step);
+    let Some(&minor) = minor_steps(step, whole).last() else {
+        return [wlo, whi];
+    };
+    let [mlo, mhi] = widen(lo, hi, minor);
+    let most = step * 0.75;
+    [
+        if lo - wlo > most { mlo } else { wlo },
+        if whi - hi > most { mhi } else { whi },
+    ]
+}
+
 /// A finer step that ticks between those of `step`, 1-2-5 as well: tenths of a
 /// 1-step, fifths, halves; halves or quarters of a 2-step; fifths of a 5-step.
 /// Finest first.
@@ -334,6 +350,19 @@ mod tests {
         assert_eq!(nice_steps(0.0, 1.0, 0.15, false), [0.2, 0.5, 1.0]);
         assert_eq!(nice_steps(0.0, 7.0, 0.01, true), [1.0, 2.0, 5.0, 10.0]);
         assert!(nice_steps(3.0, 3.0, 0.1, false).is_empty());
+    }
+
+    /// A y axis fits its data: the per-origin means of departure delay by hour run
+    /// from -0.39 to 31.09, and a whole step either side made that -10 to 40. Ends
+    /// close to a tick still end on it, and an axis from zero starts at zero.
+    #[test]
+    fn a_y_axis_stops_short_of_a_step_it_would_leave_empty() {
+        assert_eq!(widen_snug(-0.39, 31.09, 10.0, false), [-5.0, 35.0]);
+        assert_eq!(widen_snug(0.69, 24.78, 5.0, false), [0.0, 25.0]);
+        assert_eq!(widen_snug(0.0, 31.09, 10.0, false), [0.0, 35.0]);
+        assert_eq!(widen_snug(3.0, 97.0, 20.0, false), [0.0, 100.0]);
+        assert_eq!(widen_snug(3.0, 10.0, 5.0, true), [0.0, 10.0]);
+        assert_eq!(widen_snug(5.0, 5.0, 1.0, true), [5.0, 6.0]);
     }
 
     /// Multiples land on clean values, never 0.30000000000000004 or -0.

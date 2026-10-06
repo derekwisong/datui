@@ -42,7 +42,10 @@ impl Harness {
         drop(file);
 
         let (tx, rx): (Sender<AppEvent>, Receiver<AppEvent>) = mpsc::channel();
-        let app = App::new(tx, crate::tests::test_runtime());
+        let mut app = App::new(tx, crate::tests::test_runtime());
+        // A cache of its own: the process-wide test cache is shared by tests running
+        // at once, and one test's `:2` turned up as another's newest query.
+        app.cache = crate::cache::CacheManager::with_dir(dir.path().join("cache"));
         let mut harness = Harness { app, rx, _dir: dir };
         harness.run(AppEvent::Open(vec![path], OpenOptions::default()));
         assert!(

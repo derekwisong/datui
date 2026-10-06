@@ -54,7 +54,7 @@ for when the documentation lists it. In NOAA's weather data, `AWDR` under
 | Key | Action |
 |---|---|
 | <kbd>←</kbd> <kbd>→</kbd> or <kbd>h</kbd> <kbd>l</kbd> | Previous and next row; the table's cursor moves with it |
-| <kbd>Tab</kbd> | Into the value ([below](#read-a-long-value)) |
+| <kbd>Tab</kbd> <kbd>Shift+Tab</kbd> | Into the value ([below](#read-a-long-value)) |
 | <kbd>Enter</kbd> | Open a struct, a list or JSON text ([below](#drill-down-into-nested-values)), read a field the table's rows do not hold, or on a group's row drill down |
 | <kbd>y</kbd> <kbd>Y</kbd> | Copy the value; copy the row as JSON ([below](#copy-a-field-or-the-row)) |
 | <kbd>e</kbd> <kbd>w</kbd> | The value's next [view](#views); word or hard wrap |
@@ -67,8 +67,9 @@ every key.
 
 ## Read a long value
 
-<kbd>Tab</kbd> moves the focus, and the `▎` rail, into the value. The list
-keeps a few rows around the focused field, and the value takes the rest.
+<kbd>Tab</kbd> or <kbd>Shift+Tab</kbd> moves the focus, and the `▎` rail, into
+the value. Nothing moves: the list and the value are split by what they hold, so
+a long value already has its room.
 
 | Key | Action |
 |---|---|
@@ -123,7 +124,8 @@ order (previous, this, next), each named over its column, and the title says
 
 <kbd>m</kbd> pins the current row: Compare then shows it beside each row you
 move to with <kbd>←</kbd> <kbd>→</kbd>, and the title says `compare with pinned 3`.
-<kbd>m</kbd> on the pinned row lets it go.
+<kbd>m</kbd> on the pinned row lets it go. <kbd>Esc</kbd> or <kbd>c</kbd>
+leaves Compare; the next <kbd>Esc</kbd> closes the inspector.
 
 ## Drill down into nested values
 

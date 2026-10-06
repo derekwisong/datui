@@ -54,7 +54,7 @@ fn read_from(
     match source::input_source(url) {
         #[cfg(feature = "http")]
         InputSource::Http(url) => {
-            let agent: ureq::Agent = ureq::Agent::config_builder()
+            let agent: ureq::Agent = crate::user_agent::ureq_config()
                 .timeout_global(Some(std::time::Duration::from_secs(120)))
                 .build()
                 .into();
@@ -103,7 +103,7 @@ pub(crate) fn fetch_small(
         #[cfg(feature = "http")]
         InputSource::Http(url) => {
             use std::io::Read;
-            let agent: ureq::Agent = ureq::Agent::config_builder()
+            let agent: ureq::Agent = crate::user_agent::ureq_config()
                 .timeout_global(Some(std::time::Duration::from_secs(60)))
                 .build()
                 .into();
@@ -119,7 +119,7 @@ pub(crate) fn fetch_small(
                 .get(&url)
                 .header("Accept-Encoding", "identity")
                 .call()
-                .map_err(|e| file_message(named, &crate::error_display::http_message(&e)))?;
+                .map_err(|e| file_message(named, &crate::error_display::http_message(&url, &e)))?;
             let mut body = Vec::new();
             response
                 .into_body()
@@ -240,7 +240,7 @@ impl RangeSource for Http {
             .header("Range", format!("bytes={start}-{}", end.saturating_sub(1)))
             .header("Accept-Encoding", "identity")
             .call()
-            .map_err(|e| failed(&crate::error_display::http_message(&e)))?;
+            .map_err(|e| failed(&crate::error_display::http_message(&self.url, &e)))?;
         let landed = response.get_uri().to_string();
         let header = |name: &str| {
             response
@@ -569,7 +569,7 @@ mod tests {
     }
 
     fn agent() -> ureq::Agent {
-        ureq::Agent::config_builder()
+        crate::user_agent::ureq_config()
             .timeout_global(Some(std::time::Duration::from_secs(10)))
             .build()
             .into()
@@ -682,7 +682,12 @@ mod tests {
         };
         let gguf = FileFormat::Gguf;
         for (name, format, file, says) in [
-            ("missing.gguf", gguf, "missing.gguf", "No file there (404)"),
+            (
+                "missing.gguf",
+                gguf,
+                "missing.gguf",
+                "returned 404: the file may have moved",
+            ),
             ("denied.gguf", gguf, "denied.gguf", "refused it (403)"),
             (
                 "elsewhere.gguf",

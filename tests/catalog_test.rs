@@ -228,7 +228,7 @@ connection = "onprem"
     let titles = section_titles(&app);
     assert!(
         titles.iter().position(|t| t == "My datasets")
-            < titles.iter().position(|t| t == "Public datasets"),
+            < titles.iter().position(|t| t == "Example datasets"),
         "the bundled catalog follows: {titles:?}"
     );
     assert!(app.home.cloud.is_empty(), "no catalog is a cloud row");
@@ -343,7 +343,7 @@ fn catalogs_are_listed_replaced_or_hidden() {
     )
     .unwrap();
     std::fs::write(
-        team.join("public.toml"),
+        team.join("examples.toml"),
         format!(
             "label = \"Curated\"\n[mine]\nname = \"Mine\"\npath = \"{}\"\n",
             toml_path(&local)
@@ -360,7 +360,7 @@ fn catalogs_are_listed_replaced_or_hidden() {
 
     let default = listed("");
     assert!(
-        default.iter().any(|t| t == "Public datasets"),
+        default.iter().any(|t| t == "Example datasets"),
         "{default:?}"
     );
     assert!(
@@ -370,29 +370,31 @@ fn catalogs_are_listed_replaced_or_hidden() {
 
     let teamed = listed(&format!("catalogs = [\"{}\"]\n", at("acme.toml")));
     let acme = teamed.iter().position(|t| t == "Acme");
-    let public = teamed.iter().position(|t| t == "Public datasets");
+    let public = teamed.iter().position(|t| t == "Example datasets");
     assert!(acme.is_some() && acme < public, "{teamed:?}");
 
-    let replaced = listed(&format!("catalogs = [\"{}\"]\n", at("public.toml")));
+    let replaced = listed(&format!("catalogs = [\"{}\"]\n", at("examples.toml")));
     assert!(replaced.iter().any(|t| t == "Curated"), "{replaced:?}");
     assert!(
-        !replaced.iter().any(|t| t == "Public datasets"),
+        !replaced.iter().any(|t| t == "Example datasets"),
         "replaced whole: {replaced:?}"
     );
 
     let hidden = listed(&format!(
-        "catalogs = [\"{}\"]\n[home]\nhide = [\"public\", \"acme\"]\n",
+        "catalogs = [\"{}\"]\n[home]\nhide = [\"examples\", \"acme\"]\n",
         at("acme.toml")
     ));
     assert!(
-        !hidden.iter().any(|t| t == "Acme" || t == "Public datasets"),
+        !hidden
+            .iter()
+            .any(|t| t == "Acme" || t == "Example datasets"),
         "{hidden:?}"
     );
 
     // A missing listed file is skipped; a broken one names its line.
     let skipped = listed(&format!("catalogs = [\"{}\"]\n", at("nowhere.toml")));
     assert!(
-        skipped.iter().any(|t| t == "Public datasets"),
+        skipped.iter().any(|t| t == "Example datasets"),
         "{skipped:?}"
     );
     std::fs::write(team.join("broken.toml"), "[a]\nname = \"A\"\n").unwrap();
@@ -556,10 +558,12 @@ bookmarks."Daily highs, 2024" = "by_year/YEAR=2024/ELEMENT=TMAX/"
         "the bookmark sits under its dataset: {rows:?}"
     );
 
-    // The details pane says what the columns mean, and where that comes from.
+    // The details pane says what the columns mean, and where that comes from; the
+    // footer, not the pane, offers the whole page.
     select(&mut app, "Weather");
     let shown = screen(&mut app);
-    assert!(shown.contains("DOCUMENTATION"), "{shown}");
+    assert!(shown.contains("COLUMNS"), "{shown}");
+    assert!(!shown.contains("^E Documentation"), "{shown}");
     assert!(shown.contains("Quality flag"), "{shown}");
     assert!(shown.contains("https://example.com/readme.txt"), "{shown}");
 
@@ -936,4 +940,186 @@ columns.shares = {{ unit = "lots" }}
     for unsaid in ["Order entry capture", "orders.pdf", "Limit price"] {
         assert!(!text.contains(unsaid), "{unsaid} in\n{text}");
     }
+}
+
+/// The details pane lists a documented file's column notes under COLUMNS: a file a
+/// format spec reads shows the spec's, and one a catalog lists too shows the two
+/// merged as the Documentation page merges them.
+#[test]
+fn the_details_pane_shows_a_spec_files_column_notes() {
+    let (_formats, registry, data) = orders_files();
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("catalog.toml"),
+        format!(
+            r#"label = "Mine"
+
+[lab]
+name = "Lab orders"
+path = "{}"
+columns.price = {{ description = "Price the lab quotes" }}
+columns.shares = {{ unit = "lots" }}
+"#,
+            toml_path(&data.path().join("lab.ord"))
+        ),
+    )
+    .unwrap();
+    let (mut app, rx) = app_with_specs(dir.path(), registry.clone());
+    app.home.browsing = Some(data.path().to_path_buf());
+    app.enter_home();
+    pump(&mut app, &rx, |app| spec_row_listed(app, "day.ord"));
+
+    // The spec alone: its notes.
+    select(&mut app, "day.ord");
+    let shown = screen(&mut app);
+    for said in [
+        "COLUMNS",
+        "Limit price (USD)",
+        "side    2 values",
+        "Shares executed",
+    ] {
+        assert!(shown.contains(said), "{said} in\n{shown}");
+    }
+    assert!(!shown.contains("^E Documentation"), "{shown}");
+
+    // The catalog over the spec, field by field.
+    let (mut app, rx) = app_with_specs(dir.path(), registry);
+    app.enter_home();
+    pump(&mut app, &rx, |app| spec_row_listed(app, "Lab orders"));
+    select(&mut app, "Lab orders");
+    let shown = screen(&mut app);
+    for said in [
+        "COLUMNS",
+        "Price the lab quotes (USD)",
+        "Shares executed (lots)",
+    ] {
+        assert!(shown.contains(said), "{said} in\n{shown}");
+    }
+    assert!(!shown.contains("Limit price"), "{shown}");
+}
+
+/// `o` on a documentation link asks with the whole URL, as the browser will get it,
+/// and Enter hands it on; nothing happens on other lines, a link that is not http or
+/// https says so, and where no local browser would show it, `o` says that instead.
+/// Enter's `OpenLink` is never handled here, so no browser starts.
+#[test]
+fn o_opens_a_documentation_link_after_asking() {
+    let data = tempfile::TempDir::new().unwrap();
+    let csv = data.path().join("a.csv");
+    std::fs::write(&csv, "x\n1\n").unwrap();
+    let other = data.path().join("b.csv");
+    std::fs::write(&other, "x\n2\n").unwrap();
+    let long = format!("https://bücher.example/{}?q=1&r=^2", "docs/".repeat(30));
+    let (mut app, rx, _dir) = home_with_mine(&format!(
+        r#"label = "Mine"
+
+[linked]
+name = "Linked"
+path = "{csv}"
+homepage = "http://example.org/x"
+documentation = "{long}"
+
+[odd]
+name = "Odd"
+path = "{other}"
+homepage = "https://user:pw@example.com/"
+"#,
+        csv = toml_path(&csv),
+        other = toml_path(&other),
+    ));
+    pump(&mut app, &rx, |app| {
+        app.home.sections.iter().any(|s| s.title == "Mine")
+    });
+    // The page's own chips: the line holding Copy and Back.
+    let chips = |app: &mut App| {
+        screen(app)
+            .lines()
+            .find(|l| l.contains("Copy") && l.contains("Back"))
+            .expect("the page's footer")
+            .to_string()
+    };
+    let to_link = |app: &mut App, label: &str| {
+        drive(app, key(KeyCode::Char('g')));
+        for _ in 0..40 {
+            let lines = app.documentation.lines();
+            if matches!(lines.get(app.documentation.cursor),
+                Some(datui::widgets::documentation::DocLine::Link(l, _)) if *l == label)
+            {
+                return;
+            }
+            drive(app, key(KeyCode::Char('j')));
+        }
+        panic!("no {label} link");
+    };
+
+    // No local desktop: no `o` in the footer, and `o` says why.
+    app.local_desktop = false;
+    select(&mut app, "Linked");
+    drive(&mut app, ctrl('e'));
+    to_link(&mut app, "documentation");
+    let line = chips(&mut app);
+    assert!(!line.contains("Open"), "{line}");
+    drive(&mut app, key(KeyCode::Char('o')));
+    assert!(!app.confirmation_modal.active);
+    assert_eq!(
+        app.flash_message(),
+        Some("o opens links on a local desktop; y copies it")
+    );
+    drive(&mut app, key(KeyCode::Esc));
+
+    app.local_desktop = true;
+    select(&mut app, "Linked");
+    drive(&mut app, ctrl('e'));
+    // The first line is the description, not a link: `o` does nothing there.
+    assert!(app.documentation.link().is_none());
+    assert!(!chips(&mut app).contains("Open"));
+    drive(&mut app, key(KeyCode::Char('o')));
+    assert!(!app.confirmation_modal.active);
+    assert_eq!(app.flash_message(), None);
+
+    to_link(&mut app, "documentation");
+    let line = chips(&mut app);
+    assert!(line.find("Open") < line.find("Copy"), "{line}");
+    assert!(line.contains("Open"), "{line}");
+    drive(&mut app, key(KeyCode::Char('o')));
+    assert!(app.confirmation_modal.active);
+    let url = format!(
+        "https://xn--bcher-kva.example/{}?q=1&r=^2",
+        "docs/".repeat(30)
+    );
+    assert_eq!(app.confirmation_modal.message, format!("Open {url}?"));
+    // Wrapped in the dialog, never cut: every character is on screen.
+    let shown: String = screen(&mut app)
+        .chars()
+        .filter(|c| !c.is_whitespace() && !"│╭╮╰╯─".contains(*c))
+        .collect();
+    assert!(shown.contains(&format!("Open{url}?")), "{shown}");
+    // Enter hands the checked URL on; the run loop starts the browser.
+    let next = app.event(&key(KeyCode::Enter));
+    match next {
+        Some(AppEvent::OpenLink(sent)) => assert_eq!(sent, url),
+        _ => panic!("Enter on Open hands the link on"),
+    }
+    assert!(!app.confirmation_modal.active);
+
+    // http asks the same way; Esc declines and nothing is pending after.
+    to_link(&mut app, "homepage");
+    drive(&mut app, key(KeyCode::Char('o')));
+    assert_eq!(app.confirmation_modal.message, "Open http://example.org/x?");
+    drive(&mut app, key(KeyCode::Esc));
+    assert!(!app.confirmation_modal.active);
+    assert!(app.documentation.is_open(), "Esc closed only the question");
+    drive(&mut app, key(KeyCode::Esc));
+
+    // A link with a password in it is never offered to the browser. (Catalogs
+    // already refuse another scheme here.)
+    select(&mut app, "Odd");
+    drive(&mut app, ctrl('e'));
+    to_link(&mut app, "homepage");
+    drive(&mut app, key(KeyCode::Char('o')));
+    assert!(!app.confirmation_modal.active);
+    assert_eq!(
+        app.flash_message(),
+        Some("Not opened: a user name or password; y copies it")
+    );
 }

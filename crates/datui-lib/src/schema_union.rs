@@ -633,8 +633,7 @@ pub fn column_schema_of(
     format: crate::FileFormat,
     as_read: &ReadAs,
 ) -> Option<Vec<(String, DataType)>> {
-    use polars::prelude::{LazyCsvReader, LazyFileListReader, LazyJsonLineReader};
-    let pl_path = PlRefPath::try_from_path(path).ok()?;
+    use polars::prelude::{LazyFileListReader, LazyJsonLineReader};
     let lf = match format.descriptor().lines {
         Some(crate::cli::Lines::Delimited(_)) => {
             // Read the way the open will read it. Where the header is and how far the
@@ -646,7 +645,7 @@ pub fn column_schema_of(
             )
             .ok()?;
             let reader = crate::widgets::datatable::DataTableState::configure_csv_reader(
-                LazyCsvReader::new(pl_path).with_glob(crate::source::expands_as_glob(path)),
+                crate::widgets::datatable::DataTableState::csv_reader_of(path).ok()?,
                 &options,
                 None,
             );

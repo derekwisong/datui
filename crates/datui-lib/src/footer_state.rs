@@ -20,6 +20,7 @@ impl App {
             help: crate::render::main_view::help_key(self, content),
             spinner,
             message: self.flash.as_ref().map(|f| f.message.clone()),
+            message_path: self.flash.as_ref().and_then(|f| f.path_from),
             ..Footer::default()
         };
         // A progress line says what the work is doing, with numbers; the status line
@@ -65,6 +66,22 @@ impl App {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
+        // The sample, in its place in the pipeline: over the source, or over the
+        // query or filters it was drawn through.
+        if let Some(sampled) = state.sampled() {
+            let source = sampled.source();
+            if sampled.through() {
+                if !source.get_active_query().trim().is_empty()
+                    || !source.get_active_sql_query().trim().is_empty()
+                    || !source.get_active_fuzzy_query().trim().is_empty()
+                {
+                    footer.stages.push(QUERY_STAGE.to_string());
+                } else {
+                    footer.stages.push("filtered".to_string());
+                }
+            }
+            footer.stages.push(sampled.label());
+        }
         if !state.get_active_query().trim().is_empty()
             || !state.get_active_sql_query().trim().is_empty()
             || !state.get_active_fuzzy_query().trim().is_empty()
@@ -109,9 +126,12 @@ impl App {
         let unknown = !pending
             && !state.is_num_rows_valid()
             && self.len_count_failed == Some(state.len_generation());
+        // A pipe still being read, or a sample still being drawn: what is here is
+        // a part of what is coming.
         let arriving = state
             .follow()
-            .is_some_and(|follow| follow.is_pipe() && follow.live());
+            .is_some_and(|follow| follow.is_pipe() && follow.live())
+            || state.sampled().is_some_and(|sampled| sampled.drawing());
         let estimate = self.row_estimate();
         let total = if let Some(estimate) = estimate {
             // Until it is counted, which the progress line says while it is.
@@ -143,7 +163,7 @@ impl App {
     }
 
     /// The filters and sort in effect, as the footer writes them.
-    fn view_state(&self) -> ViewState {
+    pub(crate) fn view_state(&self) -> ViewState {
         let Some(state) = self.data_table_state.as_ref() else {
             return ViewState::default();
         };
@@ -178,7 +198,11 @@ impl App {
         } else {
             None
         };
-        ViewState { filters, sort }
+        ViewState {
+            typed: state.retyped_columns(),
+            filters,
+            sort,
+        }
     }
 
     /// The home screen: where the list is, how many rows the filter matched, and the
@@ -242,10 +266,49 @@ impl App {
             Some(parent) if !parent.ends_with(':') => format!("{parent}/{name}"),
             _ => name,
         };
-        if let Some(table) = self.view_table() {
+        // A table opened at its place (`shop.db/orders`) is named by the path already.
+        if let Some(table) = self.view_table()
+            && path
+                .file_name()
+                .is_none_or(|n| n.to_string_lossy() != table)
+        {
             label = format!("{label}/{table}");
         }
         Some(label)
+    }
+
+    /// The dataset's name as a file stem, for a name an export suggests:
+    /// `daily` for `weather/daily.csv.gz`, `shop_orders` for a table in `shop.db`.
+    pub(crate) fn dataset_stem(&self) -> String {
+        if self.reads_stdin() {
+            return "stdin".to_string();
+        }
+        let Some(name) = self
+            .path
+            .as_deref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+        else {
+            return "data".to_string();
+        };
+        // The compression's extension, then the format's.
+        let mut stem = name.as_str();
+        for _ in 0..2 {
+            if let Some((rest, _)) = stem.rsplit_once('.')
+                && !rest.is_empty()
+            {
+                stem = rest;
+            }
+        }
+        let mut stem = stem.to_string();
+        if let Some(table) = self.view_table()
+            && table != name
+        {
+            stem = format!("{stem}_{table}");
+        }
+        stem.chars()
+            .map(|c| if c == '/' || c == '\\' { '_' } else { c })
+            .collect()
     }
 
     /// What the background work is doing, in words: the open in flight, an export,
@@ -351,6 +414,26 @@ impl App {
                     read as u64,
                     state.num_rows_if_valid().map(|n| n as u64),
                 )],
+                stoppable: true,
+            });
+        }
+        // A sample being drawn: the rows kept of those asked for, and the rows read.
+        if let Some(draw) = self.sample_draw() {
+            let mut counts = vec![ProgressCount::of(
+                "kept",
+                draw.rows.rows() as u64,
+                matches!(
+                    draw.sample.method,
+                    crate::sampling::SampleMethod::Spread
+                        | crate::sampling::SampleMethod::FirstRows
+                )
+                .then_some(draw.sample.rows as u64),
+            )];
+            if let Some(read) = draw.watch.rows_seen() {
+                counts.push(ProgressCount::of("read", read as u64, None));
+            }
+            return Some(ProgressLine {
+                counts,
                 stoppable: true,
             });
         }

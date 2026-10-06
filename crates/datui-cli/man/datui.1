@@ -91,7 +91,7 @@ Ignore the spaces after a delimiter, so padded numbers are numbers and a cell of
 Values read as null: VAL in every column, COL=VAL in column COL only. \-\-null is repeatable and replaces this list. [config: csv.null_values].
 .TP
 \fB\-\-infer\-types\fR[=\fICOLS|off\fR]
-Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. [config: read.infer_types].
+Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. A column with a leading zero (02134) stays text; a later value that does not parse is null, and the Notes tab counts them. [config: read.infer_types].
 .TP
 \fB\-\-infer\-rows\fR \fIN\fR
 Rows read to infer column types. [config: csv.infer_rows].
@@ -207,6 +207,9 @@ How many colors the terminal draws: 24-bit, 256 or 16. Theme colors are brought 
 \fBCOLORFGBG\fR
 With \fBtheme.mode = "auto"\fR, says whether the background is light or dark, for a terminal that does not answer when asked.
 .TP
+\fBTERM_PROGRAM\fR
+With \fBtheme.mode = "auto"\fR, names the terminal whose last answer about its background picks the first frame's theme; \fBTERM\fR when unset.
+.TP
 \fBLC_ALL\fR, \fBLC_CTYPE\fR, \fBLANG\fR
 With \fBdisplay.unicode = "auto"\fR, the first one set says whether the terminal takes UTF-8; when it does not, glyphs are ASCII.
 .TP
@@ -266,7 +269,7 @@ The config file: see datui-config(5). \fBdatui config path\fR prints the files r
 Your catalog, which Ctrl+D on the home screen adds to: see datui-catalog(1).
 .TP
 \fICONFIG\fR/catalogs/
-More catalogs, one *.toml each, named by its file; public.toml replaces the bundled one.
+More catalogs, one *.toml each, named by its file; examples.toml replaces the bundled one.
 .TP
 \fICONFIG\fR/views/
 Saved views: see datui-views(1).
@@ -286,7 +289,7 @@ What the home screen has measured of datasets and listed of cloud sources, so it
 \fICACHE\fR/datui.log
 The log, unless \fBlog.file\fR names another.
 .SH EXAMPLES
-Open the home screen. Public datasets lists the built-in catalog.
+Open the home screen. Example datasets lists the catalog that comes with datui.
 .PP
 .RS 4
 .EX
@@ -402,7 +405,7 @@ Print the catalog datui ships, the worked example of the format.
 .PP
 .RS 4
 .EX
-datui catalog show public
+datui catalog show examples
 .EE
 .RE
 .SH "SEE ALSO"

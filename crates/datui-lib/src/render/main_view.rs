@@ -95,8 +95,17 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
                     }
                 };
             }
+            if app.input_mode == crate::InputMode::Sample
+                && let Some(form) = &app.sample_form
+            {
+                return sample_form_hints(form);
+            }
             // A wait the user can stop: Esc stops it, over the form that started it.
-            if app.pivot_computing() || app.finding() || app.view_applying() {
+            if app.pivot_computing()
+                || app.finding()
+                || app.view_applying()
+                || (app.sample_drawing() && app.in_normal_table_view())
+            {
                 return vec![Hint::new("Esc", "Stop")];
             }
             // The builder is a takeover with no footer of its own.
@@ -139,9 +148,17 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
                 keys.push(registry_hint(Context::Table, "Enter"));
             }
             let state = app.data_table_state.as_ref();
+            // A view's chart waits: `c` draws it.
+            if app.chart_modal.restored {
+                keys.push(registry_hint(Context::Table, "c"));
+            }
             // Read through a format spec: `b` reads it with another.
             if state.and_then(|s| s.format_read()).is_some() {
                 keys.push(registry_hint(Context::Table, "b"));
+            }
+            // A file of several tables: `T` opens another.
+            if app.offers_other_tables() {
+                keys.push(registry_hint(Context::Table, "T"));
             }
             if app.app_config.display.notes_accent && state.is_some_and(|s| s.notes_unseen()) {
                 let mut notes = Hint::new("i", "Notes");
@@ -171,9 +188,16 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
             // moving the selection never moves the footer.
             let enter = Some(enter_label(app.what_enter_does())).filter(|l| !l.is_empty());
             let docs = registry_hint(Context::Home, "Ctrl+E");
+            // The bundled catalog's heading has nothing for ^D; its slot offers
+            // Delete, the same width: `Del Hide ` for `^D Forget`.
+            let catalog = if app.home_hides_catalog() {
+                Hint::new("Del", format!("{:<w$}", "Hide", w = CATALOG_SLOT - 1))
+            } else {
+                slot("^D", app.home_catalog_action(), CATALOG_SLOT)
+            };
             vec![
                 slot("Enter", enter, ENTER_SLOT),
-                slot("^D", app.home_catalog_action(), CATALOG_SLOT),
+                catalog,
                 slot(
                     "^E",
                     app.home_documented_row()
@@ -184,6 +208,27 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
             ]
         }
     }
+}
+
+/// The table's Sample form: what Enter does as the form stands, then the keys the
+/// focused row takes.
+fn sample_form_hints(form: &crate::sample_modal::SampleForm) -> Vec<Hint> {
+    let g = crate::glyphs::get();
+    let enter = if form.no_sample() {
+        "Clear"
+    } else if form.anyway {
+        "Draw anyway"
+    } else {
+        "Draw"
+    };
+    let mut keys = vec![Hint::new("Enter", enter), Hint::new(g.updown, "Row")];
+    if form.field.is_text() {
+        keys.push(Hint::new("type", "Edit"));
+    } else {
+        keys.push(Hint::new(g.updown_lr, "Change"));
+    }
+    keys.push(Hint::new("Esc", "Cancel"));
+    keys
 }
 
 /// A screen's keys with what `t` does there, first, while a followed file has rows
@@ -219,8 +264,13 @@ fn screen_hints(keys: Vec<(&'static str, &'static str)>) -> Vec<Hint> {
 /// The key that opens help, as the footer offers it: `?`, or F1 where `?` types (a
 /// prompt, a filter typed on the home screen).
 pub fn help_key(app: &crate::App, content: MainViewContent) -> Option<&'static str> {
-    // Help waits, with every other key, while a pivot is computed at its form.
-    if app.help_visible() || app.pivot_computing() {
+    // Help waits, with every other key, while a pivot is computed at its form; a
+    // question or an error answers first, and offers its own keys.
+    if app.help_visible()
+        || app.pivot_computing()
+        || app.confirmation_modal.active
+        || app.error_modal.active
+    {
         return None;
     }
     let types = match content {
@@ -288,14 +338,14 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
     match modal.view {
         AnalysisView::DistributionDetail => {
             return vec![
-                ("Esc", "Back"),
                 (g.updown, "Distribution"),
                 ("s", "Scale"),
                 ("?", "Help"),
+                ("Esc", "Back"),
             ];
         }
         AnalysisView::CorrelationDetail => {
-            return vec![("Esc", "Back"), ("m", "Method"), ("?", "Help")];
+            return vec![("m", "Method"), ("?", "Help"), ("Esc", "Back")];
         }
         AnalysisView::Main => {}
     }
@@ -341,14 +391,23 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
     if modal.computing.is_some() {
         return vec![("Esc", "Cancel")];
     }
-    // Only keys that act right now. The bar is cut from the right, so the way out
-    // leads, then what the focused pane is for, then the shared sample: the bar
-    // keeps its leading chips, and a sample it never names is a feature nobody
-    // finds.
-    let mut pairs = vec![("Esc", "Back")];
+    // Only keys that act right now, in the one chip order: primary first, the way
+    // out last. The footer shows the first three with Esc kept, so what the
+    // focused pane is for leads, then Tab, which is how the other pane is
+    // reached; the shared sample after.
+    let in_pane = modal.focus == crate::analysis_modal::AnalysisFocus::Main;
+    let esc = (
+        "Esc",
+        if in_pane && modal.selected_tool.is_some() {
+            "Tools"
+        } else {
+            "Close"
+        },
+    );
+    let mut pairs = Vec::new();
     let mut rest = Vec::new();
-    if modal.focus == crate::analysis_modal::AnalysisFocus::Sidebar {
-        pairs.push(("Enter", "Select"));
+    if !in_pane {
+        pairs.push(("Enter", "Open"));
         rest.push((g.updown, "Tools"));
     } else if let Some(tool) = modal.selected_tool {
         // Enter opens a detail only where the tool has one: a column's
@@ -364,7 +423,7 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
             pairs.push(("Enter", "Detail"));
         }
         if matches!(tool, AnalysisTool::CorrelationMatrix) {
-            pairs.push(("m", "Method"));
+            rest.push(("m", "Method"));
         }
         rest.push((g.updown, "Rows"));
         // Describe and Distribution scroll only when the statistics do not all fit.
@@ -377,7 +436,7 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
         }
     }
     if modal.selected_tool.is_some() {
-        rest.push(("Tab", "Focus"));
+        pairs.push(("Tab", if in_pane { "Tools" } else { "Result" }));
         pairs.push(("s", "Sample"));
         pairs.push(("v", "View Rows"));
     }
@@ -393,6 +452,7 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
         pairs.push(("a", "All Rows"));
     }
     pairs.push(("?", "Help"));
+    pairs.push(esc);
     pairs
 }
 
@@ -407,9 +467,6 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
     }
     if modal.data_quality_show_access {
         return vec![("Enter", "Close"), ("Esc", "Close")];
-    }
-    if modal.data_quality_confirm_run {
-        return vec![("Enter", "Run"), ("Esc", "Cancel")];
     }
     if modal.data_quality_evidence_read.is_some() {
         return vec![("Enter", "Read"), ("Esc", "Cancel")];
@@ -520,21 +577,21 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
     // are the list's, not the page's. Sample stays second, as on every tool's bar.
     if modal.focus == crate::analysis_modal::AnalysisFocus::Sidebar {
         return vec![
-            ("Esc", "Back"),
+            ("Enter", "Open"),
+            ("Tab", "Result"),
             ("s", "Sample"),
-            ("Enter", "Select"),
             (g.updown, "Tools"),
-            ("Tab", "Focus"),
             ("?", "Help"),
+            ("Esc", "Close"),
         ];
     }
     if modal.data_quality_page == QualityPage::Setup {
         return setup_control_keys(app);
     }
-    // One shape on every page: the way out, then what this page is for, then the
-    // keys every page shares in one order, then the rest of this page's. The bar is
-    // cut by position, so the page's own action and the sample, which every tool's
-    // bar names, are what survive 80 columns; the tabs on screen name the pages.
+    // One shape on every page: what this page is for, then the keys every page
+    // shares in one order (Setup first: the plan is what a report is read
+    // against), then the rest of this page's, Tab, and the way out last. The
+    // footer keeps the first three with Esc; the tabs on screen name the pages.
     let page = modal.data_quality_page;
     let results = modal.data_quality_results.as_ref();
     // Column and metric pick what the segments show; with nothing split they would
@@ -598,10 +655,23 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         _ => {}
     }
     let mut own = own.into_iter();
-    // A narrowed list is the first thing Esc undoes.
+    // A narrowed list is the first thing Esc undoes; a drill-in goes back to its
+    // page, and a page to the tools.
     let narrowed = page == QualityPage::Overview && modal.data_quality_findings.narrowed();
-    let mut keys = vec![("Esc", if narrowed { "All Findings" } else { "Back" })];
-    keys.extend(own.next());
+    let top = matches!(
+        page,
+        QualityPage::Overview
+            | QualityPage::Columns
+            | QualityPage::Segments
+            | QualityPage::Trends
+            | QualityPage::Intervals
+    );
+    let esc = match (narrowed, top) {
+        (true, _) => "All Findings",
+        (false, true) => "Tools",
+        (false, false) => "Back",
+    };
+    let mut keys: Vec<(&'static str, &'static str)> = own.next().into_iter().collect();
     keys.extend([
         ("e", "Setup"),
         ("s", "Sample"),
@@ -612,7 +682,7 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
         keys.push(("x", "Export"));
     }
     keys.extend(own);
-    keys.extend([("Tab", "Focus"), ("?", "Help")]);
+    keys.extend([("Tab", "Focus"), ("?", "Help"), ("Esc", esc)]);
     keys
 }
 
@@ -637,29 +707,30 @@ fn trend_keys(modal: &crate::analysis_modal::AnalysisModal) -> Vec<(&'static str
     keys
 }
 
-/// Setup's keys: the way out and Run first, then what the row under the cursor
-/// takes. Enter is Run here and nowhere else; the lists and forms Setup opens say
+/// Setup's keys: Run first, then what the row under the cursor takes, and the
+/// way out last. Enter is Run here and nowhere else; the lists and forms Setup opens say
 /// Choose, Done or Apply. While a cancelled read finishes, Run is not offered, and
 /// Setup's own line says why.
 fn setup_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
     use crate::analysis_modal::SetupRow;
     let g = crate::glyphs::get();
     let modal = &app.analysis_modal;
-    let mut keys = vec![(
+    let esc = (
         "Esc",
         if modal.setup_edited() {
             "Discard"
         } else {
             "Back"
         },
-    )];
+    );
+    let mut keys = Vec::new();
     if app.cancelled_analysis_running().is_none() {
         keys.push(("Enter", "Run"));
     }
     let row = modal.setup_row();
     let choices = !modal.data_quality_plan.interval_pairs().is_empty();
     match row {
-        SetupRow::Sample => keys.push(("Space", "Sample Form")),
+        SetupRow::Sample => keys.push(("Space", "Sample")),
         SetupRow::TextAsTime => keys.push(("Space", "Choose")),
         SetupRow::TimeRoles if !app.quality_time_candidates().is_empty() => {
             keys.push(("Space", "Time Roles"));
@@ -701,6 +772,7 @@ fn setup_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
         ));
     }
     keys.push(("?", "Help"));
+    keys.push(esc);
     keys
 }
 
@@ -776,7 +848,10 @@ fn hex_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
         keys.push(("B", "Format"));
     }
     keys.push(("?", "Help"));
-    if view.origin == crate::hex_view::Origin::Table {
+    if matches!(
+        view.origin,
+        crate::hex_view::Origin::Table | crate::hex_view::Origin::Info
+    ) {
         keys.push(("Esc", "Back"));
     }
     keys.push(("q", app.hex_q_label()));
@@ -876,6 +951,14 @@ fn chart_hints(app: &crate::App) -> Vec<Hint> {
     }
     use crate::chart_modal::ChartFocus;
     let focus = modal.focus;
+    // A Rows change waits for Enter; Esc puts it back.
+    if focus == ChartFocus::LimitRows && modal.rows_pending() {
+        return vec![
+            Hint::new("Enter", "Read"),
+            Hint::new(g.updown_lr, "Switch"),
+            Hint::new("Esc", "Undo"),
+        ];
+    }
     let row = if modal.picker_for(focus).is_some() {
         Hint::new("Space", "Pick")
     } else if modal.is_toggle_row(focus) {
@@ -887,7 +970,9 @@ fn chart_hints(app: &crate::App) -> Vec<Hint> {
                 ChartFocus::Type => "Type",
                 ChartFocus::TimeUnit => "Bucket",
                 ChartFocus::Aggregate => "Aggregate",
-                ChartFocus::Bins | ChartFocus::Bandwidth | ChartFocus::LimitRows => "Adjust",
+                ChartFocus::Quantile => "Percentile",
+                ChartFocus::Bins | ChartFocus::Bandwidth => "Adjust",
+                ChartFocus::LimitRows => "Switch",
                 ChartFocus::Order => "Order",
                 ChartFocus::Range => "Range",
                 ChartFocus::Cumulative => "Cumulative",
@@ -899,7 +984,10 @@ fn chart_hints(app: &crate::App) -> Vec<Hint> {
     if modal.has_crosshair() {
         keys.push(registry_hint(Context::Chart, "x"));
     }
-    keys.push(registry_hint(Context::Chart, "e"));
+    // Offered where `e` acts: a chart whose rows say what to draw.
+    if app.data_table_state.is_some() && modal.can_export() {
+        keys.push(registry_hint(Context::Chart, "e"));
+    }
     if keys.len() < 3 {
         keys.push(registry_hint(Context::Chart, "Esc"));
     }
@@ -908,6 +996,25 @@ fn chart_hints(app: &crate::App) -> Vec<Hint> {
 
 #[cfg(test)]
 mod tests {
+
+    /// `?` does nothing under a question or an error, so the footer does not
+    /// offer it there.
+    #[test]
+    fn no_help_key_under_a_question_or_an_error() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = crate::App::new(tx, crate::tests::test_runtime());
+        app.input_mode = crate::InputMode::Normal;
+        let content = super::MainViewContent::Datatable;
+        assert_eq!(super::help_key(&app, content), Some("?"));
+        app.confirmation_modal
+            .show("Overwrite out.csv?".to_string());
+        assert_eq!(super::help_key(&app, content), None);
+        app.confirmation_modal.hide();
+        app.error_modal.show("Cannot read it.".to_string());
+        assert_eq!(super::help_key(&app, content), None);
+        app.error_modal.hide();
+        assert_eq!(super::help_key(&app, content), Some("?"));
+    }
 
     /// Every Data Quality page's bar offers Esc: the overview was the one
     /// screen without a way out.
@@ -968,7 +1075,8 @@ mod tests {
         };
 
         app.analysis_modal.focus = AnalysisFocus::Sidebar;
-        assert_eq!(label(&app, "Enter"), Some("Select"));
+        assert_eq!(label(&app, "Enter"), Some("Open"));
+        assert_eq!(label(&app, "Esc"), Some("Close"));
         assert!(!has(&app, "Tab"), "no tool, nothing beside the list");
 
         app.analysis_modal.selected_tool = Some(AnalysisTool::Describe);
@@ -981,6 +1089,27 @@ mod tests {
 
         app.analysis_modal.selected_tool = Some(AnalysisTool::DistributionAnalysis);
         assert_eq!(label(&app, "Enter"), Some("Detail"));
+        assert_eq!(
+            label(&app, "Esc"),
+            Some("Tools"),
+            "Esc goes back to the tools"
+        );
+        // The footer shows a screen's first three keys: Tab is one of them, from
+        // either pane.
+        let shown = |app: &crate::App| {
+            super::screen_hints(super::analysis_control_keys(app))
+                .iter()
+                .map(|hint| hint.key.to_string())
+                .collect::<Vec<_>>()
+        };
+        // One chip order: primary first, Esc last.
+        assert_eq!(shown(&app), ["Enter", "Tab", "Esc"]);
+        app.analysis_modal.focus = AnalysisFocus::Sidebar;
+        assert_eq!(shown(&app), ["Enter", "Tab", "Esc"]);
+        let keys = super::analysis_control_keys(&app);
+        assert_eq!(keys.last().map(|(k, _)| *k), Some("Esc"));
+        assert_eq!(label(&app, "Tab"), Some("Result"));
+        app.analysis_modal.focus = AnalysisFocus::Main;
 
         app.analysis_modal.selected_tool = Some(AnalysisTool::CorrelationMatrix);
         app.analysis_modal.selected_correlation = Some((1, 1));

@@ -65,11 +65,11 @@ pub fn draw(
     let g = crate::glyphs::get();
     let prompt = prompt_rows(view).min(area.height.saturating_sub(3));
     let body_height = area.height - 2 - prompt;
-    // Without room beside the bytes, an open inspector takes the rows under them, all
-    // but a few: the cursor's row stays on screen above it.
+    // Without room beside the bytes, an open inspector takes the rows under them, up
+    // to half: the bytes keep the other half, and what does not fit is counted.
     let below = if !view.panel_fits(area.width) && view.inspector_open && !view.is_empty() {
         let lines = readings(view.slice(view.cursor, crate::hex_view::INSPECTED)).len() as u16 + 2;
-        lines.min(body_height.saturating_sub(4))
+        lines.min(body_height / 2)
     } else {
         0
     };
@@ -190,7 +190,7 @@ fn header(area: Rect, buf: &mut Buffer, view: &HexView, geometry: &Geometry, ctx
     } else {
         "auto"
     };
-    text.push_str(&format!(" {dot} {} a row ({fixed})", geometry.per_row));
+    text.push_str(&format!(" {dot} {} bytes/row ({fixed})", geometry.per_row));
     if geometry.shown < geometry.per_row {
         text.push_str(&format!(
             ", {} to {} shown",
@@ -217,7 +217,8 @@ fn column_numbers(
         .bg(ctx.table_header_bg)
         .fg(ctx.table_header);
     buf.set_style(area, style);
-    let label = if view.decimal { "offset" } else { "offset h" };
+    // Hex is the default and needs no mark; decimal offsets say so.
+    let label = if view.decimal { "decimal" } else { "offset" };
     let label = format!("{label:<width$}", width = geometry.digits);
     buf.set_stringn(area.x, area.y, &label, area.width as usize, style);
     let hex_start = area.x as usize + geometry.digits + 2;
@@ -345,7 +346,6 @@ fn inspector(area: Rect, buf: &mut Buffer, view: &HexView, ctx: &RenderContext) 
     crate::widgets::ui::SectionRule {
         title: &title,
         chip: None,
-        focused: false,
     }
     .render(Rect { height: 1, ..area }, buf, ctx);
     let label_w = 9usize;
@@ -365,8 +365,23 @@ fn inspector(area: Rect, buf: &mut Buffer, view: &HexView, ctx: &RenderContext) 
     }
     let readings = readings(view.slice(view.cursor, crate::hex_view::INSPECTED));
     let fit = |text: &str, w: usize| crate::glyphs::fit_cells(text, w, g.ellipsis).into_owned();
-    for reading in &readings {
-        if y >= bottom {
+    let marked = usize::from(view.selection().is_some());
+    for (i, reading) in readings.iter().enumerate() {
+        // Short of room, the last row counts the readings left rather than
+        // half-drawing one.
+        let left = readings.len() - i;
+        let room = usize::from(bottom.saturating_sub(y)).saturating_sub(marked);
+        if room < left && room <= 1 {
+            if room == 1 {
+                buf.set_stringn(
+                    area.x,
+                    y,
+                    format!("{} {left} more", g.ellipsis),
+                    area.width as usize,
+                    Style::default().fg(ctx.dimmed),
+                );
+                y += 1;
+            }
             break;
         }
         buf.set_stringn(
@@ -602,8 +617,8 @@ mod tests {
         let mut v = view(sample());
         let s = screen(&mut v, 60, 20);
         assert!(s[0].starts_with("Hex"), "{s:?}");
-        assert!(s[0].contains("8 a row"), "{s:?}");
-        assert!(s[1].starts_with("offset h"), "{s:?}");
+        assert!(s[0].contains("8 bytes/row"), "{s:?}");
+        assert!(s[1].starts_with("offset"), "{s:?}");
         assert_eq!(
             s[2], "00000000  50 41 52 31  20 68 65 6c  PAR1 hel",
             "{s:?}"
@@ -624,7 +639,7 @@ mod tests {
         let mut v = view(sample());
         let s = screen(&mut v, 80, 24);
         let g = crate::glyphs::get();
-        assert!(s[0].contains("16 a row"), "{s:?}");
+        assert!(s[0].contains("16 bytes/row"), "{s:?}");
         assert_eq!(
             s[3],
             format!(
@@ -635,11 +650,28 @@ mod tests {
         assert!(s[1].contains("00 01 02 03  04 05 06 07   08"), "{s:?}");
     }
 
+    /// At 80×24 the inspector under the bytes takes at most half the rows: the
+    /// bytes keep the rest, and the readings that do not fit are counted.
+    #[test]
+    fn the_inspector_under_the_bytes_counts_what_does_not_fit() {
+        let mut v = view((0..=255u8).cycle().take(4096).collect());
+        v.inspector_open = true;
+        let s = screen(&mut v, 80, 24);
+        let rows = s.iter().filter(|l| l.starts_with("00000")).count();
+        assert!(rows >= 8, "the bytes keep half: {s:#?}");
+        let more = format!("{} ", crate::glyphs::get().ellipsis);
+        assert!(
+            s.iter()
+                .any(|l| l.starts_with(&more) && l.contains(" more")),
+            "{s:#?}"
+        );
+    }
+
     #[test]
     fn wide_screens_carry_the_inspector_beside_the_bytes() {
         let mut v = view(sample());
         let s = screen(&mut v, 140, 40);
-        assert!(s[0].contains("16 a row"), "{s:?}");
+        assert!(s[0].contains("16 bytes/row"), "{s:?}");
         assert!(s[1].contains("At 0x0"), "{s:?}");
         assert!(
             s.iter()
@@ -647,7 +679,7 @@ mod tests {
             "{s:?}"
         );
         let s = screen(&mut v, 250, 60);
-        assert!(s[0].contains("32 a row"), "{s:?}");
+        assert!(s[0].contains("32 bytes/row"), "{s:?}");
         assert!(
             s.iter()
                 .any(|l| l.contains("text") && l.contains("PAR1 hello, world")),
@@ -655,7 +687,7 @@ mod tests {
         );
         v.inspector = false;
         let s = screen(&mut v, 320, 60);
-        assert!(s[0].contains("64 a row"), "{s:?}");
+        assert!(s[0].contains("64 bytes/row"), "{s:?}");
     }
 
     #[test]
@@ -685,7 +717,7 @@ mod tests {
         v.record_size = Some(100);
         v.go(99);
         let s = screen(&mut v, 80, 24);
-        assert!(s[0].contains("100 a row (fixed)"), "{s:?}");
+        assert!(s[0].contains("100 bytes/row (fixed)"), "{s:?}");
         assert!(s[0].contains("to 99 shown"), "{s:?}");
     }
 

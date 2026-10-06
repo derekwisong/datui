@@ -45,6 +45,11 @@ pub struct Detail {
     /// Whether the columns are datui's own rather than the file's, as the Schema tab
     /// says of where they came from.
     pub own_columns: bool,
+    /// The keys of `list` that are tables of the file, which `T` at the table and
+    /// Enter on the tab open: a workbook's worksheets, a database's tables.
+    pub tables: Vec<String>,
+    /// The one of `tables` on screen.
+    pub table: Option<String>,
 }
 
 /// The name of `format`'s tab of the Info panel, as its descriptor says it: a reader

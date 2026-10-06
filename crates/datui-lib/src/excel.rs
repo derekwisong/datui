@@ -174,6 +174,7 @@ pub fn detail<RS: std::io::Read + std::io::Seek>(
 ) -> Detail {
     let meta: Vec<calamine::Sheet> = workbook.sheets_metadata().to_vec();
     let mut list = Vec::with_capacity(meta.len());
+    let mut tables = Vec::new();
     let mut hidden = 0u64;
     let mut charts = 0u64;
     for sheet in &meta {
@@ -185,6 +186,9 @@ pub fn detail<RS: std::io::Read + std::io::Seek>(
             calamine::SheetType::MacroSheet => Some("macro sheet"),
             calamine::SheetType::Vba => Some("VBA module"),
         };
+        if other.is_none() {
+            tables.push(sheet.name.clone());
+        }
         if let Some(other) = other {
             charts += 1;
             said.push(other.to_string());
@@ -219,6 +223,8 @@ pub fn detail<RS: std::io::Read + std::io::Seek>(
         lines: vec![first, format!("Opened: {opened}")],
         list_title: "Worksheets",
         list,
+        tables,
+        table: Some(opened.to_string()),
         ..Default::default()
     }
 }

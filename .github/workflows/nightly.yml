@@ -726,7 +726,9 @@ jobs:
   features:
     name: Feature combinations
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The combinations take about 36 minutes and the build without default
+    # features about 10 more.
+    timeout-minutes: 75
     env:
       CARGO_INCREMENTAL: "0"
     steps:

@@ -60,25 +60,31 @@ mod time_serde {
     }
 }
 
+/// Every field but the settings may be left out, so an exported chart's recipe, which
+/// carries only the settings, reads as a view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedView {
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub name: String,
     pub description: Option<String>,
-    #[serde(with = "time_serde")]
+    #[serde(with = "time_serde", default = "SystemTime::now")]
     pub created: SystemTime,
     #[serde(with = "time_serde::option")]
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub last_used: Option<SystemTime>,
+    #[serde(default)]
     pub usage_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_matched_file: Option<PathBuf>,
+    #[serde(default)]
     pub match_criteria: MatchCriteria,
     pub settings: ViewSettings,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MatchCriteria {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exact_path: Option<PathBuf>,
@@ -160,6 +166,154 @@ pub struct ViewSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub reshape_source: Option<ReshapeSource>,
+    /// Column types and columns made from others, as a spec's `[columns]` entries:
+    /// `{ "name": "zip", "type": "str" }`. Applied after the query, before the filters.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns: Vec<crate::column_types::ColumnChange>,
+    /// The view's sample: drawn again from its seed when the view is applied, under
+    /// the query, filters and sort above. Its settings only, never its rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample: Option<SavedSample>,
+    /// The chart drawn of the view, and how it was last exported: `c` brings it back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chart: Option<SavedChart>,
+}
+
+/// A view's chart: what is charted, and the options it is drawn with.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedChart {
+    /// The type, X, Y with its aggregate, and Color, as Vega-Lite names them.
+    #[serde(flatten)]
+    pub spec: crate::chart_modal::ChartSpec,
+    pub histogram_bins: usize,
+    pub heatmap_bins: usize,
+    /// The KDE's bandwidth, as a factor of its rule of thumb.
+    pub bandwidth: f64,
+    pub range: crate::chart_data::ValueRange,
+    pub bar_order: crate::chart_data::BarOrder,
+    /// A histogram's bars as each group's share of its rows.
+    pub share: bool,
+    pub y_starts_at_zero: bool,
+    pub log_scale: bool,
+    pub legend: bool,
+    pub grid: bool,
+    /// Rows the chart reads when the view has no sample of its own: up to this many,
+    /// spread across the table. `None` reads every row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows: Option<usize>,
+    /// The seed the chart's own sample is drawn with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    /// How the chart was last exported: everything but where.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub export: Option<SavedChartExport>,
+}
+
+/// A chart export's settings, as a view keeps them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedChartExport {
+    pub format: crate::chart_export::ChartExportFormat,
+    pub style: crate::chart_export::ExportStyle,
+    pub size: crate::chart_export::SizePreset,
+    pub width: u32,
+    pub height: u32,
+    pub dpi: f32,
+    pub legend: crate::chart_export::LegendPlace,
+    pub point_opacity: crate::chart_export::PointOpacity,
+    pub point_size: crate::chart_export::PointSize,
+    pub line_width: crate::chart_export::LineWidth,
+    pub y_from_zero: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notes: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub byline: String,
+    /// Whether the file carries its recipe.
+    pub recipe: bool,
+}
+
+/// A view's sample as a view keeps it: which rows, how they are picked, how many,
+/// and the seed that draws the same ones again.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedSample {
+    /// Which rows, as the Sample form's scope command says them: `view`, `source`,
+    /// `rows 1..5000`, `files 1,3`, `partition year=2024`, `time date=2024-01..2024-02`.
+    pub scope: String,
+    /// `random`, `per value`, `first rows` or `every row`.
+    pub method: String,
+    /// The column an equal-per-value sample splits by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per: Option<String>,
+    /// Rows to keep: in all, or per value.
+    pub rows: usize,
+    pub seed: u64,
+    /// How a random sample of a stream was drawn: a reservoir, or row by row with
+    /// chance `rows / of`. Drawn the same way again, the same seed keeps the same
+    /// rows, whatever is counted by then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<crate::table_sample::DrawPath>,
+    /// The view the sample was drawn through, when it was drawn from a view's rows
+    /// rather than the source: its query, filters, sort, column types and reshape,
+    /// replayed before the sample is drawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub through: Option<Box<ViewSettings>>,
+}
+
+impl SavedSample {
+    /// `sample` as a view keeps it, drawn `through` the view given, the way `path`
+    /// says.
+    pub fn of(
+        sample: &crate::sampling::Sample,
+        path: Option<crate::table_sample::DrawPath>,
+        through: Option<ViewSettings>,
+    ) -> Self {
+        use crate::sampling::SampleMethod;
+        let (method, per) = match &sample.method {
+            SampleMethod::Spread => ("random", None),
+            SampleMethod::PerPartition { column } => ("per value", Some(column.clone())),
+            SampleMethod::FirstRows => ("first rows", None),
+            SampleMethod::EveryRow => ("every row", None),
+        };
+        Self {
+            scope: sample.scope.command(),
+            method: method.to_string(),
+            per,
+            rows: sample.rows,
+            seed: sample.seed,
+            path,
+            through: through.map(Box::new),
+        }
+    }
+
+    /// The sample this draws, or why it cannot be read.
+    pub fn sample(&self) -> Result<crate::sampling::Sample> {
+        use crate::sampling::SampleMethod;
+        let method = match (self.method.as_str(), &self.per) {
+            ("random", _) => SampleMethod::Spread,
+            ("per value", Some(column)) => SampleMethod::PerPartition {
+                column: column.clone(),
+            },
+            ("first rows", _) => SampleMethod::FirstRows,
+            ("every row", _) => SampleMethod::EveryRow,
+            (other, _) => {
+                return Err(color_eyre::eyre::eyre!(
+                    "the view's sample has no method {other:?}; it is random, per value \
+                     (with per), first rows or every row"
+                ));
+            }
+        };
+        Ok(crate::sampling::Sample {
+            scope: crate::data_quality::QualityScope::parse_command(&self.scope)?,
+            method,
+            rows: self.rows.max(1),
+            seed: self.seed,
+        })
+    }
 }
 
 impl ViewSettings {
@@ -1093,6 +1247,8 @@ mod tests {
             last_matched_file: None,
             match_criteria: criteria,
             settings: ViewSettings {
+                chart: None,
+                sample: None,
                 query: None,
                 sql_query: None,
                 fuzzy_query: None,
@@ -1105,6 +1261,7 @@ mod tests {
                 pivot: None,
                 melt: None,
                 reshape_source: None,
+                columns: Vec::new(),
             },
         }
     }

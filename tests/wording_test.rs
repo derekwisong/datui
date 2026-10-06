@@ -44,6 +44,9 @@ const RETIRED: &[(&str, &str)] = &[
     ("fuzzy search", "Text query"),
     ("locate", "find"),
     ("go to line", "go to row"),
+    // The catalog that comes with datui (0.4.0); "public" alone stays, for public data.
+    ("public datasets", "Example datasets"),
+    ("public catalog", "Example datasets"),
     // One concept for named datasets (0.4.0).
     ("color scheme", "theme"),
     ("collection", "catalog"),

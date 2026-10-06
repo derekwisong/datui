@@ -86,6 +86,43 @@ impl FilterOperator {
     }
 }
 
+/// What a column holds, as far as the operators that read it go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Operand {
+    /// Text: every operator reads it.
+    Text,
+    /// Numbers, dates and times: compared, never searched as text.
+    Ordered,
+    /// True or false: equal or not, or null.
+    Boolean,
+    /// Anything else (lists, structs, bytes): no operator is ruled out.
+    #[default]
+    Any,
+}
+
+impl Operand {
+    pub fn of(dtype: &polars::prelude::DataType) -> Self {
+        use polars::prelude::DataType;
+        match dtype {
+            DataType::String => Self::Text,
+            DataType::Boolean => Self::Boolean,
+            d if d.is_categorical() || d.is_enum() => Self::Text,
+            d if d.is_numeric() || d.is_temporal() => Self::Ordered,
+            _ => Self::Any,
+        }
+    }
+
+    /// Whether the operator picker offers `op` for a column of this kind.
+    pub fn offers(self, op: FilterOperator) -> bool {
+        use FilterOperator::*;
+        match self {
+            Self::Text | Self::Any => true,
+            Self::Ordered => !matches!(op, Contains | NotContains | Has | HasRegex | HasFuzzy),
+            Self::Boolean => matches!(op, Eq | NotEq | IsNull | IsNotNull),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Copy, serde::Serialize, serde::Deserialize)]
 pub enum LogicalOperator {
     And,
@@ -168,8 +205,34 @@ pub struct FilterEditor {
     pub step: FilterEditStep,
     pub column: PickerState,
     pub operator: PickerState,
+    /// The operators the operator picker lists, in its order: those the column's
+    /// type takes.
+    pub operators: Vec<FilterOperator>,
     pub value: TextInput,
     pub logical: LogicalOperator,
+}
+
+impl FilterEditor {
+    /// The operator chosen in the picker.
+    pub fn selected_operator(&self) -> Option<FilterOperator> {
+        self.operator
+            .selected_original()
+            .and_then(|i| self.operators.get(i))
+            .copied()
+    }
+
+    /// List `operators` in the operator picker, keeping the choice where it is
+    /// still offered.
+    fn set_operators(&mut self, operators: Vec<FilterOperator>) {
+        let chosen = self.selected_operator();
+        let mut picker =
+            PickerState::new(operators.iter().map(|op| op.as_str().to_string()).collect());
+        if let Some(i) = chosen.and_then(|op| operators.iter().position(|o| *o == op)) {
+            picker.select_original(i);
+        }
+        self.operator = picker;
+        self.operators = operators;
+    }
 }
 
 #[derive(Default)]
@@ -182,6 +245,10 @@ pub struct FilterModal {
     pub editor: Option<FilterEditor>,
     /// The table's column cursor, where a new filter's column starts.
     pub current_column: Option<String>,
+    /// The statements in effect on the table when the sidebar opened.
+    pub applied: Vec<FilterStatement>,
+    /// What each of `available_columns` holds, in the same order.
+    pub operands: Vec<Operand>,
 }
 
 impl FilterModal {
@@ -189,10 +256,40 @@ impl FilterModal {
         Self::default()
     }
 
-    fn operator_names() -> Vec<String> {
+    /// The operators column choice `i` takes: by its type, and only a find's over
+    /// any column shown.
+    pub fn operators_for(&self, i: usize) -> Vec<FilterOperator> {
+        let operand = self.operands.get(i).copied().unwrap_or_default();
         FilterOperator::iterator()
-            .map(|op| op.as_str().to_string())
+            .filter(|op| {
+                if i >= self.available_columns.len() {
+                    op.is_find()
+                } else {
+                    operand.offers(*op)
+                }
+            })
             .collect()
+    }
+
+    /// After the column step: the operator picker lists what the chosen column
+    /// takes.
+    pub fn retarget_operators(&mut self) {
+        let Some(column) = self
+            .editor
+            .as_ref()
+            .and_then(|editor| editor.column.selected_original())
+        else {
+            return;
+        };
+        let operators = self.operators_for(column);
+        if let Some(editor) = self.editor.as_mut() {
+            editor.set_operators(operators);
+        }
+    }
+
+    /// Whether the statements staged differ from those in effect.
+    pub fn has_unapplied_changes(&self) -> bool {
+        self.statements != self.applied
     }
 
     /// Rows the cursor can rest on: every statement plus the add row.
@@ -252,12 +349,11 @@ impl FilterModal {
             return;
         }
         let mut column = PickerState::new(self.column_choices());
-        let mut operator = PickerState::new(Self::operator_names());
         let mut value = TextInput::new()
             .with_history_limit(history_limit)
             .with_theme(theme);
         value.set_focused(false);
-        let (editing, logical) = if self.on_add_row() {
+        let (editing, logical, operator) = if self.on_add_row() {
             if let Some(i) = self
                 .current_column
                 .as_ref()
@@ -265,7 +361,7 @@ impl FilterModal {
             {
                 column.select_original(i);
             }
-            (None, LogicalOperator::And)
+            (None, LogicalOperator::And, None)
         } else {
             let statement = &self.statements[self.cursor];
             // A find kept over every column comes back as "any column shown".
@@ -279,17 +375,35 @@ impl FilterModal {
             if let Some(i) = at {
                 column.select_original(i);
             }
-            if let Some(i) = FilterOperator::iterator().position(|op| op == statement.operator) {
-                operator.select_original(i);
-            }
             value.set_value(&statement.value);
-            (Some(self.cursor), statement.logical_op)
+            (
+                Some(self.cursor),
+                statement.logical_op,
+                Some(statement.operator),
+            )
         };
+        // The column's operators, and the statement's own even where its type
+        // would not offer it (a find kept on a number).
+        let mut operators = column
+            .selected_original()
+            .map(|i| self.operators_for(i))
+            .unwrap_or_else(|| FilterOperator::iterator().collect());
+        if let Some(op) = operator
+            && !operators.contains(&op)
+        {
+            operators.push(op);
+        }
+        let mut picker =
+            PickerState::new(operators.iter().map(|op| op.as_str().to_string()).collect());
+        if let Some(i) = operator.and_then(|op| operators.iter().position(|o| *o == op)) {
+            picker.select_original(i);
+        }
         self.editor = Some(FilterEditor {
             editing,
             step: FilterEditStep::Column,
             column,
-            operator,
+            operator: picker,
+            operators,
             value,
             logical,
         });
@@ -309,11 +423,7 @@ impl FilterModal {
         let Some(column_idx) = editor.column.selected_original() else {
             return;
         };
-        let operator = editor
-            .operator
-            .selected_original()
-            .and_then(|i| FilterOperator::iterator().nth(i))
-            .unwrap_or(FilterOperator::Eq);
+        let operator = editor.selected_operator().unwrap_or(FilterOperator::Eq);
         let column = self.column_at(column_idx);
         if column == ANY_COLUMN && !operator.is_find() {
             editor.step = FilterEditStep::Operator;
@@ -436,14 +546,85 @@ mod tests {
         assert_eq!(m.statements[0].operator, FilterOperator::HasFuzzy);
         assert_eq!(m.statements[0].value, "chicken");
 
-        // `=` over every column means nothing: the edit waits on the operator.
+        // `=` over every column means nothing: only a find's operators are
+        // offered, and one that is not waits on the operator.
         m.cursor = 0;
         m.open_editor(&theme(), 10);
-        m.editor.as_mut().unwrap().operator.select_original(0);
+        let editor = m.editor.as_mut().unwrap();
+        assert!(editor.operators.iter().all(FilterOperator::is_find));
+        editor.operators[0] = FilterOperator::Eq;
+        editor.operator.select_original(0);
         m.commit_editor();
         let editor = m.editor.as_ref().expect("still editing");
         assert_eq!(editor.step, FilterEditStep::Operator);
         assert_eq!(m.statements[0].operator, FilterOperator::HasFuzzy);
+    }
+
+    /// The operator picker lists what the column's type takes: no text search on
+    /// a number, only equality and nulls on a flag, and a find's operators over
+    /// any column shown. A statement keeps its own operator even where its type
+    /// would not offer it.
+    #[test]
+    fn operators_follow_the_columns_type() {
+        let mut m = modal();
+        m.available_columns.push("active".into());
+        m.operands = vec![
+            Operand::Ordered,
+            Operand::Text,
+            Operand::Text,
+            Operand::Boolean,
+        ];
+        m.current_column = Some("salary".into());
+        m.open_editor(&theme(), 10);
+        let offered = |m: &FilterModal| m.editor.as_ref().unwrap().operators.clone();
+        assert!(offered(&m).contains(&FilterOperator::GtEq));
+        assert!(!offered(&m).contains(&FilterOperator::Contains));
+        // Another column chosen: its operators, the choice kept where it can be.
+        {
+            let editor = m.editor.as_mut().unwrap();
+            let eq = editor
+                .operators
+                .iter()
+                .position(|op| *op == FilterOperator::Eq);
+            editor.operator.select_original(eq.unwrap());
+            editor.column.select_original(1);
+        }
+        m.retarget_operators();
+        assert!(offered(&m).contains(&FilterOperator::Contains));
+        assert_eq!(
+            m.editor.as_ref().unwrap().selected_operator(),
+            Some(FilterOperator::Eq)
+        );
+        m.editor.as_mut().unwrap().column.select_original(3);
+        m.retarget_operators();
+        assert_eq!(
+            offered(&m),
+            [
+                FilterOperator::Eq,
+                FilterOperator::NotEq,
+                FilterOperator::IsNull,
+                FilterOperator::IsNotNull
+            ]
+        );
+        m.editor.as_mut().unwrap().column.select_original(4);
+        m.retarget_operators();
+        assert!(offered(&m).iter().all(FilterOperator::is_find));
+        m.cancel_editor();
+
+        // A find kept on a number edits with its own operator still there.
+        m.statements = vec![FilterStatement {
+            columns: Vec::new(),
+            column: "salary".into(),
+            operator: FilterOperator::Has,
+            value: "12".into(),
+            logical_op: LogicalOperator::And,
+        }];
+        m.cursor = 0;
+        m.open_editor(&theme(), 10);
+        assert_eq!(
+            m.editor.as_ref().unwrap().selected_operator(),
+            Some(FilterOperator::Has)
+        );
     }
 
     #[test]

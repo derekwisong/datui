@@ -34,7 +34,7 @@ lives, imports, the theme and troubleshooting.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `read.infer_types` | bool \| list of columns | `true` | `--infer-types` | Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. |
+| `read.infer_types` | bool \| list of columns | `true` | `--infer-types` | Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. A column with a leading zero (02134) stays text; a later value that does not parse is null, and the Notes tab counts them. |
 | `read.parquet_schema` | union \| first | `"union"` |  | A partitioned Parquet dataset's schema: union is every column any file has, from their footers; first lets Polars take one file's. |
 | `read.decompress_in_memory` | bool | `false` |  | Decompress a compressed CSV, TSV or PSV into memory instead of to a temp file. |
 | `read.temp_dir` | path | unset | `--temp-dir` | Directory for decompression temp files. Unset: the system's. |
@@ -96,6 +96,15 @@ lives, imports, the theme and troubleshooting.
 | `analysis.chart_rows` | integer | `10000` |  | Rows a chart reads; a larger table is sampled across all of it. |
 | `analysis.chart_grid` | bool | `false` |  | Start charts with a grid at the major ticks (g toggles). |
 | `analysis.quality_local_copy` | size | `"2GiB"` |  | Most a Data Quality full scan of a remote dataset copies into the cache to read once; 0 never copies. |
+| `analysis.sample_memory_limit` | size | unset |  | Most memory a view's sample may take. Unset: the memory available now decides; 0 never warns or stops. |
+
+## Chart
+
+`[chart]` Charts exported to a file (`e` in the chart view).
+
+| Key | Type | Default | Flag | Description |
+|---|---|---|---|---|
+| `chart.export_recipe` | bool | `true` |  | Embed how an exported chart was made (source path, query, chart, sample) in its PNG, SVG or PDF. The export dialog's Recipe row starts from it. |
 
 ## Home
 
@@ -105,7 +114,7 @@ lives, imports, the theme and troubleshooting.
 |---|---|---|---|---|
 | `home.desktop_recents` | bool | `true` |  | Also list directories from the desktop's recently-used files; never the file names. |
 | `home.show_unreadable` | bool | `false` |  | List files datui cannot read, dimmed (Ctrl+A toggles). |
-| `home.hide` | list | `[]` |  | Catalogs not shown, by id: mine (catalog.toml), public, or a listed file's name; one entry as catalog/id, such as public/nyc-taxis. Adds up across imports. |
+| `home.hide` | list | `[]` |  | Catalogs not shown, by id: mine (catalog.toml), examples, or a listed file's name; one entry as catalog/id, such as examples/nyc-taxis. Adds up across imports. |
 | `home.preview_max` | size | `"64MiB"` |  | Largest local file whose first rows the home screen previews; 0 turns the preview off. |
 
 ## Home search
@@ -137,6 +146,14 @@ lives, imports, the theme and troubleshooting.
 | `cloud.instance_identity` | bool | `false` |  | Use the identity of the cloud VM datui runs on (EC2, GCE, Azure). |
 | `cloud.discover` | bool \| "all" \| "none" \| list | unset |  | Logins found on this machine that become home-screen sources: all (unset), none, or kinds from s3, gcs, azure. |
 | `cloud.list_on_start` | bool | `false` |  | List every source's buckets when the home screen opens, not when one is entered. |
+
+## HTTP
+
+`[http]` Every request datui makes: HTTP(S) files, cloud stores and their sign-ins.
+
+| Key | Type | Default | Flag | Description |
+|---|---|---|---|---|
+| `http.user_agent` | string | `""` |  | The User-Agent header on every request. Empty sends datui/VERSION (+https://github.com/derekwisong/datui), which names datui and its version and nothing about you. |
 
 ## Query
 
@@ -188,7 +205,7 @@ lives, imports, the theme and troubleshooting.
 
 | Key | Type | Default | Flag | Description |
 |---|---|---|---|---|
-| `theme.mode` | auto \| dark \| light | unset |  | Which mode's theme to use: theme.dark or theme.light. auto asks the terminal for its background, then reads COLORFGBG, then falls back to dark; it asks again when the terminal regains focus. |
+| `theme.mode` | auto \| dark \| light | unset |  | Which mode's theme to use: theme.dark or theme.light. auto follows the terminal's answer about its background, else its last answer, then COLORFGBG, then dark; it asks again when the terminal regains focus. |
 | `theme.dark` | string | `"night-market"` |  | The theme used when the terminal is dark: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to night-market, with a warning when dark is in use. |
 | `theme.light` | string | `"day-market"` |  | The theme used when the terminal is light: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to day-market, with a warning when light is in use. |
 
@@ -241,6 +258,9 @@ lives, imports, the theme and troubleshooting.
 | `theme.colors.chart_5` | `#7aa2f7` | `#007197` | Chart series 5. |
 | `theme.colors.chart_6` | `#f7768e` | `#f52a65` | Chart series 6. |
 | `theme.colors.chart_7` | `#ff9e64` | `#b15c00` | Chart series 7. |
+| `theme.colors.chart_8` | `#1abc9c` | `#118c74` | Chart series 8. |
+| `theme.colors.chart_9` | `#ff5fd2` | `#d1188c` | Chart series 9. |
+| `theme.colors.chart_10` | `#f4ef8a` | `#24357a` | Chart series 10. |
 | `theme.colors.chart_grid` | `#3d4785` | `#70aabf` | The chart grid, a shade dimmer than dimmed. |
 | `theme.colors.accent` | `#7dcfff` | `#2e7de9` | Key chips, focused titles and the selection rail. |
 | `theme.colors.accent_bright` | `#a4daff` | `#1a6cd0` | The section the cursor is in. |

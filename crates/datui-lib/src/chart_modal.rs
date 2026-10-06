@@ -136,38 +136,114 @@ pub enum Aggregate {
     #[default]
     None,
     Count,
+    /// The distinct values of Y: `nunique` of the query language, nulls left out.
+    Distinct,
     Sum,
     Mean,
     Median,
+    /// The sample standard deviation (one degree of freedom); a group of one row
+    /// has none.
+    Stdev,
+    /// A percentile of Y, linearly interpolated: [`YEncoding::quantile`].
+    Quantile,
     Min,
     Max,
+    /// The first and last Y of each group in the view's row order: its sort, or the
+    /// order the rows were read in.
+    First,
+    Last,
 }
 
 impl Aggregate {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 12] = [
         Self::None,
         Self::Count,
+        Self::Distinct,
         Self::Sum,
         Self::Mean,
         Self::Median,
+        Self::Stdev,
+        Self::Quantile,
         Self::Min,
         Self::Max,
+        Self::First,
+        Self::Last,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::None => "none",
             Self::Count => "count",
+            Self::Distinct => "distinct",
             Self::Sum => "sum",
             Self::Mean => "mean",
             Self::Median => "median",
+            Self::Stdev => "stdev",
+            Self::Quantile => "quantile",
             Self::Min => "min",
             Self::Max => "max",
+            Self::First => "first",
+            Self::Last => "last",
         }
     }
 
-    pub fn vega_lite(self) -> Option<&'static str> {
-        (self != Self::None).then(|| self.label())
+    /// How it reads in a title or a column name: a quantile as its percentile,
+    /// `p90`.
+    pub fn named(self, quantile: u8) -> String {
+        match self {
+            Self::Quantile => format!("p{quantile}"),
+            other => other.label().to_string(),
+        }
+    }
+
+    /// The Vega-Lite aggregate. A quantile is one only at the quartiles and the
+    /// median; first and last have none, and are left out.
+    pub fn vega_lite(self, quantile: u8) -> Option<&'static str> {
+        match self {
+            Self::None | Self::First | Self::Last => None,
+            Self::Quantile => match quantile {
+                25 => Some("q1"),
+                50 => Some("median"),
+                75 => Some("q3"),
+                _ => None,
+            },
+            other => Some(other.label()),
+        }
+    }
+
+    /// Whether it reads the rows in the view's order.
+    pub fn follows_row_order(self) -> bool {
+        matches!(self, Self::First | Self::Last)
+    }
+
+    /// Whether every value it makes may have a fraction, whatever Y is.
+    pub fn is_fractional(self) -> bool {
+        matches!(
+            self,
+            Self::Mean | Self::Median | Self::Stdev | Self::Quantile
+        )
+    }
+
+    /// Whether Y may be any column, not only a number: a count of its distinct
+    /// values is a number whatever they are.
+    pub fn takes_any_y(self) -> bool {
+        self == Self::Distinct
+    }
+
+    /// Whether cumulative can run with it: the rows run as a total, which for a
+    /// count, sum, mean, median, min or max is what was asked. A running sum of
+    /// distinct counts is not the distinct count so far, nor one of deviations,
+    /// percentiles or first and last values anything: those take none.
+    pub fn runs_cumulative(self) -> bool {
+        matches!(
+            self,
+            Self::Count | Self::Sum | Self::Mean | Self::Median | Self::Min | Self::Max
+        )
+    }
+
+    /// Whether every value it makes is a whole number, whatever Y is.
+    pub fn is_count(self) -> bool {
+        matches!(self, Self::Count | Self::Distinct)
     }
 }
 
@@ -210,6 +286,27 @@ pub struct YEncoding {
     pub field: Vec<String>,
     pub aggregate: Aggregate,
     pub cumulative: Cumulative,
+    /// The percentile a quantile takes; unset, [`QUANTILE_DEFAULT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub percentile: Option<u8>,
+}
+
+/// The percentiles the quantile steps through.
+pub const QUANTILES: [u8; 8] = [1, 5, 10, 25, 75, 90, 95, 99];
+
+/// The percentile a quantile starts at.
+pub const QUANTILE_DEFAULT: u8 = 90;
+
+impl YEncoding {
+    /// The percentile a quantile takes.
+    pub fn quantile(&self) -> u8 {
+        self.percentile.unwrap_or(QUANTILE_DEFAULT)
+    }
+
+    /// The aggregate as a title or a column name says it: `mean`, `p90`.
+    pub fn aggregate_name(&self) -> String {
+        self.aggregate.named(self.quantile())
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -219,6 +316,10 @@ pub struct ColorEncoding {
     /// The values given a series each, in color order. Empty: the largest
     /// [`COLOR_MAX`] by rows. `None` is the rows with no value.
     pub values: Vec<Option<String>>,
+    /// Whether every other value's rows make one more series, Other. Unset: on for a
+    /// scatter, off otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other: Option<bool>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -249,7 +350,12 @@ impl ChartSpec {
         if let Some(field) = self.encoding.y.field.first() {
             y.insert("field".into(), field.clone().into());
         }
-        if let Some(aggregate) = self.encoding.y.aggregate.vega_lite() {
+        if let Some(aggregate) = self
+            .encoding
+            .y
+            .aggregate
+            .vega_lite(self.encoding.y.quantile())
+        {
             y.insert("aggregate".into(), aggregate.into());
         }
         let mut encoding = serde_json::Map::new();
@@ -262,11 +368,13 @@ impl ChartSpec {
     }
 }
 
-/// Series a color splits a chart into, at most: one per palette color.
-pub const COLOR_MAX: usize = 7;
+/// Series a color splits a chart into, at most: one per palette color
+/// (`chart_1` to `chart_10`). A terminal of fewer colors draws fewer:
+/// [`ChartModal::series_max`].
+pub const COLOR_MAX: usize = 10;
 
 /// Most Y columns a line or scatter chart draws at once.
-pub const Y_SERIES_MAX: usize = 7;
+pub const Y_SERIES_MAX: usize = COLOR_MAX;
 
 /// Default histogram bin count.
 pub const HISTOGRAM_DEFAULT_BINS: usize = 40;
@@ -283,18 +391,20 @@ pub const KDE_BANDWIDTH_MIN: f64 = 0.2;
 pub const KDE_BANDWIDTH_MAX: f64 = 5.0;
 pub const KDE_BANDWIDTH_STEP: f64 = 0.1;
 
-/// Chart sample size bounds (the Rows row). Down to 0, which is every row (None).
-pub const CHART_ROW_LIMIT_MIN: usize = 0;
-/// Maximum applicable limit (Polars slice takes u32).
+/// The largest sample size (Polars slice takes u32).
 pub const CHART_ROW_LIMIT_MAX: usize = u32::MAX as usize;
-/// PgUp/PgDown step for the sample size.
-pub const CHART_ROW_LIMIT_PAGE_STEP: usize = 100_000;
-/// Default numeric limit when switching from every row with + or PgUp.
-pub const DEFAULT_CHART_ROW_LIMIT: usize = 10_000;
-/// Below this limit, +/- step is CHART_ROW_LIMIT_STEP_SMALL; at or above, CHART_ROW_LIMIT_STEP_LARGE.
-pub const CHART_ROW_LIMIT_STEP_THRESHOLD: usize = 20_000;
-pub const CHART_ROW_LIMIT_STEP_SMALL: i32 = 1_000;
-pub const CHART_ROW_LIMIT_STEP_LARGE: i32 = 5_000;
+
+/// A change to the Rows row not yet read: ←/→ or a typed size waits for Enter, or
+/// for focus to leave the row, so the chart reads once rather than per key.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RowsDraft {
+    /// Every row rather than a sample.
+    pub every: bool,
+    /// The sample size being typed, as typed (`50k`).
+    pub typed: Option<String>,
+    /// Why the typed size cannot be read, until it is edited.
+    pub error: Option<&'static str>,
+}
 
 /// One row of the panel: a shelf, the line under it, or an option.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -314,6 +424,8 @@ pub enum ChartFocus {
     Y,
     /// Under Y: the aggregate.
     Aggregate,
+    /// Under the aggregate, a quantile's percentile.
+    Quantile,
     /// The Color shelf's column.
     Color,
     /// Under Color: which values get a series.
@@ -371,15 +483,17 @@ pub enum PickerFor {
 /// The item a Picker offers for "nothing": no Color, no category on a box plot.
 pub const NONE_ITEM: &str = "none";
 
-fn format_usize_with_commas(n: usize) -> String {
-    crate::numfmt::group_chrome(n)
-}
-
 /// Chart view state: the spec, the options, and the panel's focus.
 #[derive(Default)]
 pub struct ChartModal {
     pub active: bool,
     pub spec: ChartSpec,
+    /// The distinct colors the series slots come out as on this terminal
+    /// (`Theme::series_colors`); `None` before the app says, read as [`COLOR_MAX`].
+    pub series_cap: Option<usize>,
+    /// The view's sort as the footer writes it (`time ▲`), which first and last
+    /// read the rows in; `None` for the order they were read in.
+    pub row_order: Option<String>,
     /// The cursor column's type when `c` chose the chart (`f64`), shown under Type
     /// until the type is changed.
     pub suggested: Option<String>,
@@ -397,8 +511,20 @@ pub struct ChartModal {
     pub value_range: ValueRange,
     pub bar_order: BarOrder,
     /// Rows a chart that samples reads: up to this many, spread across the table.
-    /// None = every row.
+    /// None = every row. What the chart reads; the Rows row edits `rows_draft`.
     pub row_limit: Option<usize>,
+    /// The sample size Sample returns to, kept while Every row is chosen.
+    pub sample_rows: usize,
+    /// The Rows row's pending change, if any.
+    pub rows_draft: Option<RowsDraft>,
+    /// The view's row count when the table knows it, for Every row's cost.
+    pub view_rows: Option<usize>,
+    /// The view is a sample, held in memory: the chart reads all of it, and has no
+    /// Rows row of its own.
+    pub view_sampled: bool,
+    /// A saved view put its chart here: `c` brings it back, whichever column the
+    /// cursor is on.
+    pub restored: bool,
     pub focus: ChartFocus,
     /// The one Picker, open for the focused row; None while the form has the keys.
     pub picker: Option<PickerState>,
@@ -433,6 +559,12 @@ pub struct ChartModal {
 impl ChartModal {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Most series a chart draws: one per distinct series color, up to [`COLOR_MAX`].
+    /// A 16-color terminal draws fewer rather than two in one color.
+    pub fn series_max(&self) -> usize {
+        self.series_cap.unwrap_or(COLOR_MAX).clamp(1, COLOR_MAX)
     }
 
     /// An axis title for `column`: its name, and its unit when it has one.
@@ -482,8 +614,10 @@ impl ChartModal {
         self.numeric_candidates = columns.numeric.to_vec();
         self.category_candidates = columns.category.to_vec();
         self.plot_focus = false;
+        self.rows_draft = None;
         let opened_on = cursor.map(|(name, _)| name.to_string());
-        if self.dataset == Some(dataset) && self.opened_on == opened_on {
+        let restored = std::mem::take(&mut self.restored);
+        if self.dataset == Some(dataset) && (self.opened_on == opened_on || restored) {
             self.keep_existing_choices();
             self.settle();
             self.focus = ChartFocus::Type;
@@ -508,6 +642,9 @@ impl ChartModal {
                 Some(n.clamp(1, CHART_ROW_LIMIT_MAX))
             }
         });
+        self.sample_rows = self
+            .row_limit
+            .unwrap_or(crate::config::DEFAULT_CHART_ROW_LIMIT);
         self.hist_bins = HISTOGRAM_DEFAULT_BINS;
         self.kde_bandwidth_factor = 1.0;
         self.heatmap_bins = HEATMAP_DEFAULT_BINS;
@@ -516,6 +653,59 @@ impl ChartModal {
             self.suggest(name, dtype);
         }
         self.focus = ChartFocus::Type;
+    }
+
+    /// Put a saved view's chart in place for `dataset`: the next `c` draws it.
+    pub fn restore(&mut self, saved: &crate::view::SavedChart, dataset: u64) {
+        self.spec = saved.spec.clone();
+        self.hist_bins = saved.histogram_bins.max(1);
+        self.heatmap_bins = saved.heatmap_bins.max(1);
+        self.kde_bandwidth_factor = saved.bandwidth;
+        self.value_range = saved.range;
+        self.bar_order = saved.bar_order;
+        self.share = saved.share;
+        self.y_starts_at_zero = saved.y_starts_at_zero;
+        self.log_scale = saved.log_scale;
+        self.show_legend = saved.legend;
+        self.grid = saved.grid;
+        self.row_limit = saved.rows;
+        if let Some(rows) = saved.rows {
+            self.sample_rows = rows;
+        }
+        self.suggested = None;
+        self.color_counts = None;
+        self.cursor_x = None;
+        self.dataset = Some(dataset);
+        self.restored = true;
+    }
+
+    /// The chart as a view keeps it, with `seed`, the one its own sample is drawn
+    /// with, and `export`, how it was last exported.
+    pub fn saved(
+        &self,
+        seed: u64,
+        export: Option<crate::view::SavedChartExport>,
+    ) -> crate::view::SavedChart {
+        crate::view::SavedChart {
+            spec: self.spec.clone(),
+            histogram_bins: self.hist_bins,
+            heatmap_bins: self.heatmap_bins,
+            bandwidth: self.kde_bandwidth_factor,
+            range: self.value_range,
+            bar_order: self.bar_order,
+            share: self.share,
+            y_starts_at_zero: self.y_starts_at_zero,
+            log_scale: self.log_scale,
+            legend: self.show_legend,
+            grid: self.grid,
+            rows: if self.view_sampled {
+                None
+            } else {
+                self.row_limit
+            },
+            seed: (!self.view_sampled && self.row_limit.is_some()).then_some(seed),
+            export,
+        }
     }
 
     /// Show Me: the chart a column's type suggests. A number: its histogram. A
@@ -552,6 +742,7 @@ impl ChartModal {
         self.active = false;
         self.close_picker();
         self.plot_focus = false;
+        self.rows_draft = None;
     }
 
     pub fn close_picker(&mut self) {
@@ -619,6 +810,23 @@ impl ChartModal {
                 Mark::Bar | Mark::Box => self.category_candidates.clone(),
                 Mark::Histogram | Mark::Kde | Mark::Heatmap => self.numeric_candidates.clone(),
             },
+            // A distinct count takes any column; the rest a number.
+            PickerFor::Y
+                if self.spec.encoding.y.aggregate.takes_any_y() && self.takes_aggregate() =>
+            {
+                let mut all = self.numeric_candidates.clone();
+                for c in self
+                    .temporal_candidates
+                    .iter()
+                    .chain(&self.category_candidates)
+                {
+                    if !all.contains(c) {
+                        all.push(c.clone());
+                    }
+                }
+                all.retain(|c| Some(c) != x);
+                all
+            }
             // The X column against itself is only a diagonal.
             PickerFor::Y => self
                 .numeric_candidates
@@ -688,6 +896,21 @@ impl ChartModal {
         Self::colored_in(&self.spec)
     }
 
+    /// Whether a colored `spec` draws Other: as set, or on for a scatter, whose
+    /// cloud keeps its shape with every point drawn.
+    pub fn shows_other_in(spec: &ChartSpec) -> bool {
+        Self::colored_in(spec)
+            && spec
+                .encoding
+                .color
+                .other
+                .unwrap_or(spec.mark == Mark::Scatter)
+    }
+
+    pub fn shows_other(&self) -> bool {
+        Self::shows_other_in(&self.spec)
+    }
+
     /// The panel's rows for the chart on screen, in Tab order. A dimmed shelf is
     /// left out: focus passes over it.
     pub fn row_order(&self) -> Vec<ChartFocus> {
@@ -705,6 +928,9 @@ impl ChartModal {
         }
         if self.takes_aggregate() {
             rows.push(Aggregate);
+            if self.aggregate() == self::Aggregate::Quantile {
+                rows.push(Quantile);
+            }
         }
         if self.color_use() == ShelfUse::Used {
             rows.push(Color);
@@ -715,7 +941,7 @@ impl ChartModal {
         // Options.
         match mark {
             Mark::Line | Mark::Scatter => {
-                if self.aggregates() {
+                if self.aggregates() && self.aggregate().runs_cumulative() {
                     rows.push(Cumulative);
                 }
                 rows.extend([YStartsAtZero, LogScale, ShowLegend, Grid]);
@@ -726,7 +952,7 @@ impl ChartModal {
             Mark::Box => rows.extend([Range, Grid]),
             Mark::Heatmap => rows.push(Bins),
         }
-        if !self.aggregates() {
+        if !self.aggregates() && !self.view_sampled {
             rows.push(LimitRows);
         }
         rows
@@ -840,7 +1066,7 @@ impl ChartModal {
         if !matches!(mark, Mark::Line | Mark::Scatter | Mark::Bar) {
             encoding.y.aggregate = Aggregate::None;
         }
-        if encoding.y.aggregate == Aggregate::None || !mark.is_xy() {
+        if !encoding.y.aggregate.runs_cumulative() || !mark.is_xy() {
             encoding.y.cumulative = Cumulative::Off;
         }
     }
@@ -1054,10 +1280,11 @@ impl ChartModal {
                 else {
                     return;
                 };
+                let most = Y_SERIES_MAX.min(self.series_max());
                 let field = &mut self.spec.encoding.y.field;
                 if let Some(pos) = field.iter().position(|c| *c == item) {
                     field.remove(pos);
-                } else if field.len() < Y_SERIES_MAX {
+                } else if field.len() < most {
                     field.push(item);
                 }
             }
@@ -1065,10 +1292,11 @@ impl ChartModal {
                 let Some(value) = self.color_value_at(i) else {
                     return;
                 };
+                let most = self.series_max();
                 let values = &mut self.spec.encoding.color.values;
                 if let Some(pos) = values.iter().position(|v| *v == value) {
                     values.remove(pos);
-                } else if values.len() < COLOR_MAX {
+                } else if values.len() < most {
                     values.push(value);
                 }
             }
@@ -1161,6 +1389,10 @@ impl ChartModal {
                 let y = &mut self.spec.encoding.y;
                 y.cumulative = crate::form::step_value(&Cumulative::ALL, y.cumulative, delta);
             }
+            ChartFocus::Quantile => {
+                let y = &mut self.spec.encoding.y;
+                y.percentile = Some(crate::form::step_value(&QUANTILES, y.quantile(), delta));
+            }
             ChartFocus::Y if self.spec.mark == Mark::Histogram => self.share = !self.share,
             ChartFocus::Order => {
                 self.bar_order = crate::form::step_value(&BarOrder::ALL, self.bar_order, delta);
@@ -1173,11 +1405,15 @@ impl ChartModal {
             ChartFocus::Bandwidth => {
                 self.adjust_kde_bandwidth_factor(f64::from(delta) * KDE_BANDWIDTH_STEP)
             }
-            ChartFocus::LimitRows => self.adjust_row_limit(delta.into()),
+            ChartFocus::LimitRows => self.toggle_rows(),
             ChartFocus::YStartsAtZero => self.y_starts_at_zero = !self.y_starts_at_zero,
             ChartFocus::LogScale => self.log_scale = !self.log_scale,
             ChartFocus::ShowLegend => self.show_legend = !self.show_legend,
             ChartFocus::Grid => self.grid = !self.grid,
+            // The values line: Space picks them, ←/→ turn Other on or off.
+            ChartFocus::ColorValues => {
+                self.spec.encoding.color.other = Some(!self.shows_other());
+            }
             focus => {
                 if self.picker_for(focus).is_some() {
                     self.step_picker_row(delta);
@@ -1186,6 +1422,7 @@ impl ChartModal {
         }
         if !self.row_order().contains(&self.focus) {
             self.focus = ChartFocus::Type;
+            self.leave_rows();
         }
     }
 
@@ -1227,60 +1464,117 @@ impl ChartModal {
             ChartFocus::Bandwidth => {
                 self.adjust_kde_bandwidth_factor(delta as f64 * KDE_BANDWIDTH_STEP)
             }
-            ChartFocus::LimitRows => self.adjust_row_limit(delta),
             _ => {}
         }
     }
 
-    /// Display string for the sample size: "every row" or a number with commas.
-    pub fn row_limit_display(&self) -> String {
-        match self.row_limit {
-            None => "every row".to_string(),
-            Some(n) => format_usize_with_commas(n),
+    // ----- The Rows row -----
+
+    /// What the Rows row shows: the pending change, or what the chart reads.
+    pub fn rows_shown(&self) -> RowsDraft {
+        self.rows_draft.clone().unwrap_or(RowsDraft {
+            every: self.row_limit.is_none(),
+            ..RowsDraft::default()
+        })
+    }
+
+    /// Whether the Rows row holds a change the chart has not read.
+    pub fn rows_pending(&self) -> bool {
+        self.rows_draft
+            .as_ref()
+            .is_some_and(|draft| draft.typed.is_some() || draft.every != self.row_limit.is_none())
+    }
+
+    /// ←/→ or Space on Rows: Sample or Every row, pending until Enter. A size being
+    /// typed is taken first; one that cannot be read stays to be fixed.
+    pub fn toggle_rows(&mut self) {
+        if !self.take_typed_size() {
+            return;
+        }
+        let mut draft = self.rows_shown();
+        draft.every = !draft.every;
+        self.rows_draft = Some(draft);
+    }
+
+    /// A key typed on Rows: part of a sample size (`50k`). Typing chooses Sample.
+    pub fn type_rows(&mut self, c: char) {
+        let mut draft = self.rows_shown();
+        draft.every = false;
+        draft.error = None;
+        draft.typed.get_or_insert_with(String::new).push(c);
+        self.rows_draft = Some(draft);
+    }
+
+    /// Whether a size is being typed on Rows.
+    pub fn typing_rows(&self) -> bool {
+        self.rows_draft.as_ref().is_some_and(|d| d.typed.is_some())
+    }
+
+    /// Backspace on Rows: one character of the typed size off.
+    pub fn backspace_rows(&mut self) {
+        if let Some(draft) = self.rows_draft.as_mut()
+            && let Some(typed) = draft.typed.as_mut()
+        {
+            typed.pop();
+            draft.error = None;
+            if typed.is_empty() {
+                draft.typed = None;
+            }
         }
     }
 
-    /// Adjust row limit by delta (+/-). Step size depends on current value. None = every row.
-    pub fn adjust_row_limit(&mut self, delta: i32) {
-        let current = match self.row_limit {
-            None if delta > 0 => {
-                self.row_limit = Some(DEFAULT_CHART_ROW_LIMIT);
-                return;
-            }
-            None => return,
-            Some(n) => n,
-        };
-        let step = if current < CHART_ROW_LIMIT_STEP_THRESHOLD {
-            CHART_ROW_LIMIT_STEP_SMALL as usize
-        } else {
-            CHART_ROW_LIMIT_STEP_LARGE as usize
-        };
-        let next = match delta.cmp(&0) {
-            std::cmp::Ordering::Greater => current.saturating_add(step).min(CHART_ROW_LIMIT_MAX),
-            std::cmp::Ordering::Less => current.saturating_sub(step),
-            std::cmp::Ordering::Equal => current,
-        };
-        self.row_limit = if next == 0 { None } else { Some(next) };
+    /// Esc on Rows with a change pending: put back what the chart reads.
+    pub fn discard_rows(&mut self) {
+        self.rows_draft = None;
     }
 
-    /// Adjust row limit by 100,000 (PgUp / PgDown). None = every row.
-    pub fn adjust_row_limit_page(&mut self, delta: i32) {
-        let current = match self.row_limit {
-            None if delta > 0 => {
-                self.row_limit = Some(DEFAULT_CHART_ROW_LIMIT);
-                return;
+    /// Resolve a typed size into the draft's sample size. False, with the reason on
+    /// the row, when it cannot be read.
+    fn take_typed_size(&mut self) -> bool {
+        let Some(draft) = self.rows_draft.as_mut() else {
+            return true;
+        };
+        let Some(typed) = draft.typed.take() else {
+            return true;
+        };
+        match crate::sampling::parse_size(&typed) {
+            Ok(rows) => {
+                let rows = rows.min(CHART_ROW_LIMIT_MAX);
+                // A sample of at least every row is every row.
+                if self.view_rows.is_some_and(|total| rows >= total) {
+                    draft.every = true;
+                } else {
+                    draft.every = false;
+                    self.sample_rows = rows;
+                }
+                true
             }
-            None => return,
-            Some(n) => n,
-        };
-        let next = match delta.cmp(&0) {
-            std::cmp::Ordering::Greater => current
-                .saturating_add(CHART_ROW_LIMIT_PAGE_STEP)
-                .min(CHART_ROW_LIMIT_MAX),
-            std::cmp::Ordering::Less => current.saturating_sub(CHART_ROW_LIMIT_PAGE_STEP),
-            std::cmp::Ordering::Equal => current,
-        };
-        self.row_limit = if next == 0 { None } else { Some(next) };
+            Err(e) => {
+                draft.error = Some(e.short());
+                draft.typed = Some(typed);
+                false
+            }
+        }
+    }
+
+    /// Enter on Rows: read what it says. False when a typed size cannot be read,
+    /// which stays on the row with why.
+    pub fn commit_rows(&mut self) -> bool {
+        if !self.take_typed_size() {
+            return false;
+        }
+        if let Some(draft) = self.rows_draft.take() {
+            self.row_limit = (!draft.every).then_some(self.sample_rows);
+        }
+        true
+    }
+
+    /// Focus left the Rows row: what it says is read, and a size that cannot be
+    /// is dropped.
+    pub fn leave_rows(&mut self) {
+        if !self.commit_rows() {
+            self.rows_draft = None;
+        }
     }
 
     /// Whether the spec names everything its chart needs.
@@ -1301,77 +1595,53 @@ impl ChartModal {
         Self::is_complete(&self.effective_spec())
     }
 
-    /// What the chart says it is: the measure, and how it was made of the rows.
-    /// `(arr_delay, "mean by month, cumulative, by symbol")`.
-    pub fn title(&self) -> (String, String) {
+    /// How the chart was made of the rows, as a phrase that stands alone: `mean by
+    /// month, running sum, colored by carrier`; empty when there is nothing to say.
+    /// The columns charted are named at their axes, not here.
+    pub fn how(&self) -> String {
         let spec = self.effective_spec();
         let encoding = &spec.encoding;
         let x = encoding.x.field.clone().unwrap_or_default();
-        let y = encoding.y.field.join(", ");
         let mut parts: Vec<String> = Vec::new();
-        let by_color = self
-            .colored()
-            .then(|| format!("by {}", self.color().unwrap()));
-        let main = match spec.mark {
-            Mark::Histogram => {
-                parts.push(if self.share {
-                    "share per bin".to_string()
-                } else {
-                    "count per bin".to_string()
-                });
-                x
-            }
-            Mark::Kde => {
-                parts.push("density".to_string());
-                x
-            }
-            Mark::Box => {
-                if !x.is_empty() {
-                    parts.push(format!("by {x}"));
-                }
-                y
-            }
-            Mark::Heatmap => {
-                parts.push(format!("against {x}"));
-                y
-            }
+        match spec.mark {
+            Mark::Histogram => parts.push(if self.share {
+                "share per bin".to_string()
+            } else {
+                "count per bin".to_string()
+            }),
+            // The y axis already says density.
+            Mark::Kde => {}
+            Mark::Box if !x.is_empty() => parts.push(format!("one box per {x}")),
+            Mark::Box => {}
+            Mark::Heatmap => parts.push("rows per cell".to_string()),
             Mark::Line | Mark::Scatter | Mark::Bar => {
                 let aggregate = encoding.y.aggregate;
-                let main = if aggregate == Aggregate::Count {
-                    "rows".to_string()
-                } else {
-                    y
-                };
                 let mut how = String::new();
                 // Cumulative runs over the rows, not the aggregate.
-                if !matches!(aggregate, Aggregate::None | Aggregate::Count)
-                    && encoding.y.cumulative == Cumulative::Off
-                {
-                    how.push_str(aggregate.label());
+                if aggregate != Aggregate::None && encoding.y.cumulative == Cumulative::Off {
+                    how.push_str(&encoding.y.aggregate_name());
                     how.push(' ');
                 }
                 let unit = encoding.x.time_unit;
                 if unit != TimeUnit::None {
                     how.push_str(&format!("by {}", unit.label()));
-                } else if aggregate != Aggregate::None || spec.mark == Mark::Bar {
+                } else if aggregate != Aggregate::None {
                     how.push_str(&format!("by {x}"));
                 }
                 if !how.trim().is_empty() {
                     parts.push(how.trim().to_string());
                 }
-                if encoding.y.cumulative != Cumulative::Off {
-                    parts.push(match encoding.y.cumulative {
-                        Cumulative::Compound => "compounded".to_string(),
-                        _ => "cumulative".to_string(),
-                    });
+                match encoding.y.cumulative {
+                    Cumulative::Off => {}
+                    Cumulative::Sum => parts.push("running sum".to_string()),
+                    Cumulative::Compound => parts.push("compounded".to_string()),
                 }
-                main
             }
-        };
-        if let Some(by) = by_color {
-            parts.push(by);
         }
-        (main, parts.join(", "))
+        if self.colored() {
+            parts.push(format!("colored by {}", self.color().unwrap()));
+        }
+        parts.join(", ")
     }
 }
 
@@ -1401,6 +1671,9 @@ impl crate::form::Form for ChartModal {
     }
 
     fn set_focused(&mut self, field: ChartFocus) {
+        if field != ChartFocus::LimitRows {
+            self.leave_rows();
+        }
         self.focus = field;
     }
 }
@@ -1553,10 +1826,21 @@ mod tests {
         assert!(modal.row_order().contains(&Bins));
     }
 
+    /// Step the aggregate row by one until it reads `to`.
+    fn step_to(modal: &mut ChartModal, to: Aggregate, delta: i8) {
+        for _ in 0..Aggregate::ALL.len() {
+            if modal.aggregate() == to {
+                return;
+            }
+            modal.step(ChartFocus::Aggregate, delta);
+        }
+        assert_eq!(modal.aggregate(), to);
+    }
+
     #[test]
     fn the_aggregate_steps_through_every_one() {
         let mut modal = open_on(Some(("date", &DataType::Date)));
-        let labels: Vec<&str> = (0..7)
+        let labels: Vec<&str> = (0..Aggregate::ALL.len())
             .map(|_| {
                 modal.step(ChartFocus::Aggregate, 1);
                 modal.aggregate().label()
@@ -1564,10 +1848,13 @@ mod tests {
             .collect();
         assert_eq!(
             labels,
-            ["count", "sum", "mean", "median", "min", "max", "none"]
+            [
+                "count", "distinct", "sum", "mean", "median", "stdev", "quantile", "min", "max",
+                "first", "last", "none"
+            ]
         );
         modal.step(ChartFocus::Aggregate, -1);
-        assert_eq!(modal.aggregate(), Aggregate::Max);
+        assert_eq!(modal.aggregate(), Aggregate::Last);
     }
 
     #[test]
@@ -1578,8 +1865,7 @@ mod tests {
         assert_eq!(modal.spec.encoding.y.cumulative, Cumulative::Sum);
         modal.step(ChartFocus::Cumulative, 1);
         assert_eq!(modal.spec.encoding.y.cumulative, Cumulative::Compound);
-        modal.step(ChartFocus::Aggregate, -2);
-        assert_eq!(modal.aggregate(), Aggregate::None);
+        step_to(&mut modal, Aggregate::None, -1);
         assert_eq!(modal.spec.encoding.y.cumulative, Cumulative::Off);
     }
 
@@ -1601,14 +1887,14 @@ mod tests {
         assert!(modal.picker.is_none());
         modal.color_counts = Some(ColorCounts {
             column: "carrier".to_string(),
-            values: (0..10)
+            values: (0..COLOR_MAX + 2)
                 .map(|i| (Some(format!("C{i}")), 100 - i as u64))
                 .chain([(None, 1)])
                 .collect(),
         });
         modal.open_picker();
         assert_eq!(modal.picker_details[0], "100");
-        for _ in 0..9 {
+        for _ in 0..COLOR_MAX + 2 {
             modal.picker_toggle();
             modal.picker.as_mut().unwrap().move_down();
         }
@@ -1657,13 +1943,101 @@ mod tests {
         modal.step(ChartFocus::TimeUnit, 3);
         modal.spec.encoding.y.cumulative = Cumulative::Sum;
         modal.spec.encoding.color.field = Some("carrier".to_string());
-        assert_eq!(
-            modal.title(),
-            (
-                "delay".to_string(),
-                "by month, cumulative, by carrier".to_string()
-            )
-        );
+        assert_eq!(modal.how(), "by month, running sum, colored by carrier");
+    }
+
+    /// Distinct takes any Y, strings too, and reads `distinct by month`; leaving it
+    /// for an aggregate of numbers lets a string Y go, as a sum never had one. It
+    /// takes no cumulative.
+    #[test]
+    fn distinct_takes_any_y_and_no_cumulative() {
+        let mut modal = open_on(Some(("date", &DataType::Date)));
+        step_to(&mut modal, Aggregate::Distinct, 1);
+        modal.focus = ChartFocus::Y;
+        modal.open_picker();
+        let items = modal.picker.as_ref().unwrap().items().to_vec();
+        assert!(items.contains(&"carrier".to_string()), "{items:?}");
+        modal.close_picker();
+        modal.spec.encoding.y.field = vec!["carrier".to_string()];
+        modal.step(ChartFocus::TimeUnit, 2);
+        assert_eq!(modal.how(), "distinct by month");
+        assert!(!modal.row_order().contains(&ChartFocus::Cumulative));
+        modal.spec.encoding.y.cumulative = Cumulative::Sum;
+        modal.step(ChartFocus::Aggregate, 0);
+        assert_eq!(modal.spec.encoding.y.cumulative, Cumulative::Off);
+        // Over to sum: a string is no number to add.
+        modal.step(ChartFocus::Aggregate, 1);
+        assert_eq!(modal.aggregate(), Aggregate::Sum);
+        assert!(modal.spec.encoding.y.field.is_empty());
+        assert_eq!(Aggregate::Distinct.vega_lite(90), Some("distinct"));
+    }
+
+    /// A quantile's percentile is the line under Aggregate: ←/→ step it, the title
+    /// says `p95 by month`, and Vega-Lite names the quartiles. Stdev, quantile,
+    /// first and last take no cumulative.
+    #[test]
+    fn a_quantile_steps_its_percentile() {
+        let mut modal = open_on(Some(("date", &DataType::Date)));
+        step_to(&mut modal, Aggregate::Quantile, 1);
+        modal.step(ChartFocus::TimeUnit, 2);
+        assert_eq!(modal.spec.encoding.x.time_unit, TimeUnit::Month);
+        let rows = modal.row_order();
+        let at = rows
+            .iter()
+            .position(|r| *r == ChartFocus::Aggregate)
+            .unwrap();
+        assert_eq!(rows[at + 1], ChartFocus::Quantile);
+        assert_eq!(modal.how(), "p90 by month");
+        modal.step(ChartFocus::Quantile, 1);
+        assert_eq!(modal.spec.encoding.y.quantile(), 95);
+        assert_eq!(modal.how(), "p95 by month");
+        modal.step(ChartFocus::Quantile, 1);
+        modal.step(ChartFocus::Quantile, 1);
+        assert_eq!(modal.spec.encoding.y.quantile(), 1, "wraps");
+        assert_eq!(Aggregate::Quantile.vega_lite(25), Some("q1"));
+        assert_eq!(Aggregate::Quantile.vega_lite(75), Some("q3"));
+        assert_eq!(Aggregate::Quantile.vega_lite(90), None);
+        assert_eq!(Aggregate::Last.vega_lite(90), None);
+        for aggregate in [
+            Aggregate::Stdev,
+            Aggregate::Quantile,
+            Aggregate::First,
+            Aggregate::Last,
+        ] {
+            modal.spec.encoding.y.aggregate = aggregate;
+            assert!(!modal.row_order().contains(&ChartFocus::Cumulative));
+        }
+        modal.spec.encoding.y.aggregate = Aggregate::Last;
+        assert!(!modal.row_order().contains(&ChartFocus::Quantile));
+        assert_eq!(modal.how(), "last by month");
+    }
+
+    /// Each type's phrase reads alone and never names the Y column, which its axis
+    /// names.
+    #[test]
+    fn the_how_names_no_y_column() {
+        let mut modal = open_on(Some(("date", &DataType::Date)));
+        modal.step(ChartFocus::TimeUnit, 3);
+        assert_eq!(modal.how(), "mean by month");
+        modal.set_mark(Mark::Scatter);
+        modal.spec.encoding.x.time_unit = TimeUnit::None;
+        modal.spec.encoding.y.aggregate = Aggregate::None;
+        assert_eq!(modal.how(), "");
+        modal.spec.encoding.color.field = Some("carrier".to_string());
+        assert_eq!(modal.how(), "colored by carrier");
+        modal.spec.encoding.color.field = None;
+        modal.spec.encoding.y.aggregate = Aggregate::Mean;
+        assert_eq!(modal.how(), "mean by date");
+        modal.set_mark(Mark::Histogram);
+        assert_eq!(modal.how(), "count per bin");
+        modal.set_mark(Mark::Kde);
+        assert_eq!(modal.how(), "");
+        modal.set_mark(Mark::Heatmap);
+        assert_eq!(modal.how(), "rows per cell");
+        for mark in Mark::ALL {
+            modal.set_mark(mark);
+            assert!(!modal.how().contains("delay"), "{mark:?}: {}", modal.how());
+        }
     }
 
     /// Reopening from the same column on the same dataset keeps the chart; another
@@ -1722,9 +2096,65 @@ mod tests {
         modal.focus = ChartFocus::Bins;
         modal.adjust_number_row(-1);
         assert_eq!(modal.heatmap_bins, HEATMAP_DEFAULT_BINS - 1);
+    }
+
+    /// Rows: ←/→ switch between a sample and every row, a typed size edits the
+    /// sample, and nothing reaches what the chart reads until Enter or focus leaves.
+    #[test]
+    fn rows_change_is_read_on_enter() {
+        let mut modal = open_on(Some(("delay", &DataType::Float64)));
+        modal.view_rows = Some(36_800_000);
         modal.focus = ChartFocus::LimitRows;
-        modal.adjust_number_row(-1);
-        assert_eq!(modal.row_limit, Some(9_000));
+        assert_eq!(modal.row_limit, Some(10_000));
+        modal.step(ChartFocus::LimitRows, 1);
+        assert!(modal.rows_shown().every && modal.rows_pending());
+        assert_eq!(modal.row_limit, Some(10_000), "pending until Enter");
+        modal.step(ChartFocus::LimitRows, -1);
+        assert!(!modal.rows_pending(), "back where it was");
+        modal.step(ChartFocus::LimitRows, 1);
+        assert!(modal.commit_rows());
+        assert_eq!(modal.row_limit, None);
+
+        // Typing a size chooses Sample; Backspace edits; Esc puts it back.
+        for c in "250kx".chars() {
+            modal.type_rows(c);
+        }
+        modal.backspace_rows();
+        assert_eq!(modal.rows_shown().typed.as_deref(), Some("250k"));
+        assert!(!modal.rows_shown().every);
+        modal.discard_rows();
+        assert_eq!(modal.row_limit, None);
+        assert!(modal.rows_shown().every);
+
+        for c in "250k".chars() {
+            modal.type_rows(c);
+        }
+        assert!(modal.commit_rows());
+        assert_eq!(modal.row_limit, Some(250_000));
+        assert_eq!(modal.rows_draft, None);
+
+        // A size it cannot read stays on the row with why, and changes nothing.
+        modal.type_rows('0');
+        assert!(!modal.commit_rows());
+        assert!(modal.rows_shown().error.is_some());
+        assert_eq!(modal.row_limit, Some(250_000));
+        modal.backspace_rows();
+        modal.type_rows('2');
+        modal.type_rows('m');
+        // Leaving the row reads it.
+        crate::form::Form::focus(&mut modal, ChartFocus::Type);
+        assert_eq!(modal.row_limit, Some(2_000_000));
+
+        // At least every row is Every row; Sample remembers its size.
+        modal.focus = ChartFocus::LimitRows;
+        for c in "40m".chars() {
+            modal.type_rows(c);
+        }
+        assert!(modal.commit_rows());
+        assert_eq!(modal.row_limit, None);
+        modal.step(ChartFocus::LimitRows, 1);
+        assert!(modal.commit_rows());
+        assert_eq!(modal.row_limit, Some(2_000_000));
     }
 
     /// A bucket goes with its aggregate: none takes the bucket away. A time of day
@@ -1735,8 +2165,7 @@ mod tests {
         modal.step(ChartFocus::TimeUnit, 3);
         assert_eq!(modal.spec.encoding.x.time_unit, TimeUnit::Month);
         modal.spec.encoding.y.aggregate = Aggregate::Sum;
-        modal.step(ChartFocus::Aggregate, -2);
-        assert_eq!(modal.aggregate(), Aggregate::None);
+        step_to(&mut modal, Aggregate::None, -1);
         assert_eq!(modal.spec.encoding.x.time_unit, TimeUnit::None);
 
         let numeric = s(&["delay"]);
@@ -1764,8 +2193,9 @@ mod tests {
     fn an_aggregate_on_a_date_starts_by_the_day() {
         let mut modal = open_on(Some(("date", &DataType::Date)));
         assert_eq!(modal.spec.encoding.x.time_unit, TimeUnit::None);
-        modal.step(ChartFocus::Aggregate, 3);
-        assert_eq!(modal.aggregate(), Aggregate::Mean);
+        modal.step(ChartFocus::Aggregate, 1);
+        assert_eq!(modal.spec.encoding.x.time_unit, TimeUnit::Day);
+        step_to(&mut modal, Aggregate::Mean, 1);
         assert_eq!(modal.spec.encoding.x.time_unit, TimeUnit::Day);
         modal.step(ChartFocus::TimeUnit, -1);
         assert_eq!(

@@ -19,7 +19,7 @@ draws them. Each change to the form runs the preview again in the background;
 
 ## Pivot
 
-Open **US baby names (1880-2017)** from **Public datasets**: 1.9 million rows
+Open **US baby names (1880-2017)** from **Example datasets**: 1.9 million rows
 of `year`, `sex`, `name`, `n` and `prop`. Keep three girls' names:
 
 ```sql,dataset=names,network,rows=376
@@ -138,7 +138,7 @@ opens on its first row, Pivot or Melt.
 | <kbd>Space</kbd> | On a choice, its next value; on a column row, open its picker (type to narrow) |
 | <kbd>↑</kbd> <kbd>↓</kbd> in the picker | Move; <kbd>Space</kbd> chooses, or toggles where several can be chosen |
 | <kbd>Enter</kbd> | In the picker, choose; otherwise apply, from anywhere |
-| <kbd>Esc</kbd> | Stop a pivot being computed and keep the builder; close the picker alone, keeping the toggles made in it; otherwise close without applying |
+| <kbd>Esc</kbd> | Stop a pivot being computed and keep the builder; close the picker alone, undoing the toggles made since it opened (<kbd>Enter</kbd> keeps them); otherwise close without applying |
 | <kbd>?</kbd> | Help |
 
 ## Views

@@ -59,7 +59,6 @@ pub struct ViewModal {
     /// from the dataset on save, kept from the view on edit.
     pub table: Option<String>,
     pub editing_view_id: Option<String>, // None while creating
-    pub delete_confirm: bool,
     pub name_error: Option<String>,
     /// A refusal or note for the list's own status line, above the footer:
     /// said where the key was pressed, not in a modal. The next key clears it.
@@ -241,7 +240,6 @@ impl ViewModal {
     pub fn close(&mut self) {
         self.exit_form();
         self.active = false;
-        self.delete_confirm = false;
         self.score_details = None;
     }
 }

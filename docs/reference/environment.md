@@ -23,6 +23,7 @@ The variables datui reads.
 | `NO_COLOR` | Set to anything: no colors, the terminal's own for everything |
 | `COLORTERM`, `TERM`, `FORCE_COLOR` | How many colors the terminal draws: 24-bit, 256 or 16. Theme colors are brought down to fit |
 | `COLORFGBG` | With `theme.mode = "auto"`, says whether the background is light or dark, for a terminal that does not answer when asked |
+| `TERM_PROGRAM` | With `theme.mode = "auto"`, names the terminal whose last answer about its background picks the first frame's theme; `TERM` when unset |
 | `LC_ALL`, `LC_CTYPE`, `LANG` | With `display.unicode = "auto"`, the first one set says whether the terminal takes UTF-8; when it does not, glyphs are ASCII |
 | `WT_SESSION`, `TERM_PROGRAM` | Windows only: Windows Terminal, or VS Code's terminal (`TERM_PROGRAM=vscode`), draws Unicode glyphs whatever the code page |
 

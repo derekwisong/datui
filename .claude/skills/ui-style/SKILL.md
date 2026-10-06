@@ -46,9 +46,9 @@ These are checkable, and CI or review should treat a violation as a defect:
 
 ## Color
 
-- One accent (`accent`, `accent_bright`): keys in chips, focused titles and
-  labels, the selection rail, the active tab. If two things on one screen
-  compete for the accent, one of them is wrong.
+- One accent (`accent`): keys in chips, focused titles and labels, the
+  selection rail, the active tab. If two things on one screen compete for
+  the accent, one of them is wrong. `accent_bright` never marks focus.
 - Three chrome tiers a few shades apart: `controls_bg`, `table_header_bg`,
   `table_alternate_row`. Backgrounds never carry meaning beyond these.
 - Column names take their type's color; nulls are `∅` in `dimmed`.
@@ -112,6 +112,14 @@ how the wrong aggregation gets exported. The selection carries the rail and
 the tint while the list is focused, and only the accent when it is not:
 inside one Surface the rail means focus, and Tab visibly moves it.
 
+**Confirm** — one question, one component: `confirmation_modal`
+(`render/overlays.rs`), with a `pending_*` field naming what Yes does. The
+choices are named (`Overwrite`, `Delete`, `Run`), the rail marks the one
+Enter takes, and a destructive one opens on No (`show_destructive`). Its own
+footer (`Enter Confirm  ←→ Switch  Esc Cancel`); ↑↓ and j/k scroll a long
+question. Never a feature's own popup with its own keys. The error modal is
+its sibling: the message and `Enter Close`, nothing else.
+
 **HintBar** — the chip row of every Surface footer. Primary action first,
 Esc last; only keys that work right now.
 
@@ -150,7 +158,8 @@ rule in `table_column_separator`, then one line with no fill.
   each landed).
 
 **Section rule** — the home screen's `TITLE ── count` line. The way to
-divide space inside a Surface without borders.
+divide space inside a Surface without borders. A rule never signals focus:
+same weight and color whether focus is in its section or not.
 
 **Plot axes** — `widgets/axes.rs`, shared by the chart view and the
 Distribution plots. Ticks at round values (1-2-5 steps, calendar boundaries
@@ -160,9 +169,15 @@ Tick marks and the grid are `PlotMarks` slots with ASCII twins. The grid is
 off until asked for, sits under the series in `chart_grid` (a shade under
 `dimmed`, and a color rather than a grey so 16 colors keep it off the
 background), and never takes a cell a series drew in; a legend names two or
-more series from the emptiest corner. The line and scatter crosshair (`x`, or
+more series, unframed (a swatch and a name on the cleared background), where it
+covers the fewest marks. The line and scatter crosshair (`x`, or
 a click) takes the keys from the panel: its line is in the accent, under the
-series, and its readout sits under the plot.
+series, and its readout sits under the plot. Over the plot one title row,
+always kept: how the chart is made (`mean by month, colored by carrier`) in
+`text_secondary`, and at its right what the chart read (`sample of 10,000 of
+337k rows`) in `dimmed`, cut first. A column is named at its axis (Y over the
+y labels, X at the right under the x labels), never in the title; the export
+is laid out the same way.
 
 **Shelves** — the chart panel (`widgets/chart.rs`): the same rows for every
 chart type, `label  value` with the line under a shelf (bucket, order, bins,
@@ -196,6 +211,13 @@ across shapes.
 One signal: the focused element carries the accent (title, label, or rail).
 Focus never silently jumps (the analysis screen's jump-to-results is a
 defect, not a pattern). Selection that is not focused stays visible, dimmed.
+
+- **One rail on screen.** A FormRow whose picker is open gives its rail to
+  the picker's current line (`FormRow::render_picking`) and keeps its accent
+  label; an inline editor does the same while its picker is open.
+- **Rules never signal focus**: no heavy rule, no brighter title.
+- **No `accent_bright` for focus**: the confirm choice, a focused label and a
+  focused title all use `accent`.
 
 ### Forms: one set of keys
 
@@ -239,8 +261,8 @@ The mouse is a shortcut to keys, never a second interface (`pointer.rs`).
   records its rect while drawing (`pointer::record`, `record_field::<Form>`,
   `record_spans` for tab lines); nothing recomputes layout for hit-testing.
   A new form row calls `record_field` beside its `FormRow::render`; a list
-  from `PickerState` records itself, and an inline value list uses
-  `Picker::on_click(Clicks::Step(field))`.
+  from `PickerState` records itself, and a short choice's values side by
+  side (`FormValue::Options` with `clicks`) record a click per value.
 - **Forms:** click = focus + Space (checkbox flips, choice steps, picker
   opens, button runs, text takes the cursor); right click on a choice = ←,
   on anything else focus only. A **list row** (a sort, a filter, a column in
@@ -287,8 +309,12 @@ the user must do about the information, never by which feature sent it:
    own status line inside the Surface, `warning` at most. Enter on an
    invalid form re-accents that line; it never raises a modal.
 4. **Only a failure that stops the user gets a modal** — a load that
-   failed, an export that could not write, an auth that was refused.
-   Acknowledge to continue. The modal is a Surface like any other.
+   failed, an auth that was refused. Acknowledge to continue. The modal is
+   a Surface like any other.
+5. **A failed write keeps its form.** An export that could not write brings
+   its dialog back as it was, every value intact, the reason on the status
+   line: the fix is typed where the reason is read. The form is suspended
+   while it writes, never closed until the write lands.
 
 One flash component serves every screen: the home status line is the same
 component, not a sibling, so duration, clearing and styling cannot drift.
@@ -413,3 +439,6 @@ strings: run `cargo run -p datui-cli --bin gen_docs -- write`.
 - A filter box that silently filters other lists than the one it sits on.
 - `Modifier::REVERSED` as a tab highlight in one screen and BOLD in another.
 - A dataset mutated with nothing on screen saying so.
+- A feature's own confirmation popup, or one that acts on Enter at once.
+- Two rails on screen: a row's and its open picker's.
+- A heavy or brighter section rule to say where focus is.

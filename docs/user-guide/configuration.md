@@ -50,7 +50,7 @@ your [catalog](../reference/catalogs.md), `catalog.toml`, which
 | Row buffers and the streaming engine | [Performance](../reference/settings.md#performance) |
 | Analysis sample size or chart rows | [Analysis](../reference/settings.md#analysis) |
 | The home screen and its search | [Home](../reference/settings.md#home) · [Home search](../reference/settings.md#home-search) |
-| Named datasets and directories, local or remote, and the public catalog | [Catalogs](../reference/catalogs.md) |
+| Named datasets and directories, local or remote, and the example datasets | [Catalogs](../reference/catalogs.md) |
 | Cloud accounts and connections | [Cloud connections](../reference/cloud-sources.md) |
 | Clipboard over SSH | [Clipboard](../reference/settings.md#clipboard) |
 | Colors and symbols | [Colors](#colors) · [Glyph overrides](#glyph-overrides) |
@@ -223,13 +223,19 @@ header fill, row stripes, borders and dim text sit a few shades off the
 terminal's background, so a dark theme's shades are unreadable on a light
 background.
 
-`auto` decides in this order:
+`auto` asks the terminal for its background color (OSC 11) at startup and
+does not wait for the answer. The first frame uses, in this order:
 
 | Source | When |
 |---|---|
-| The terminal's answer to a background color query (OSC 11) | The terminal answers within 100 ms of startup; light when black text reads better on it than white |
-| `COLORFGBG` | The terminal does not answer, and sets it |
-| `dark` | Neither |
+| The terminal's answer | It is in before the first frame; light when black text reads better on it than white |
+| The last answer from this terminal | One was given before; remembered in the cache by `TERM_PROGRAM`, else `TERM` |
+| `COLORFGBG` | The terminal sets it |
+| `dark` | None of these |
+
+An answer that arrives after the first frame switches the theme if it differs.
+On a light terminal seen for the first time, that is one dark frame before the
+light theme.
 
 Under `auto` the theme follows the terminal: when its window comes back into
 focus, datui asks again and switches between `theme.dark` and `theme.light` if
@@ -237,8 +243,9 @@ the scheme changed. That takes a
 terminal that reports focus; in tmux, turn on `set -g focus-events on`.
 
 The question is not asked on Windows, on the Linux console (`TERM=linux`), or
-when standard output is not a terminal. A terminal that does not answer is
-left at `COLORFGBG` or `dark`: set `mode` there.
+when standard output is not a terminal. A terminal that does not answer
+costs nothing at startup and is left at `COLORFGBG` or `dark`: set `mode`
+there.
 
 ## Colors
 
@@ -417,7 +424,9 @@ warning on stderr. Name it `datui.override.toml`: a file named `datui.toml`
 | `Invalid color value for 'accent': Unknown color name` | A typo in a name. Names ignore case; hex needs six digits; indexed is `indexed(0)` to `indexed(255)` |
 | Colors look wrong | The terminal may not take true color, so hex is approximated; try names or `indexed(...)`. Everything monochrome: `NO_COLOR` is set |
 | Header or chip text cut off or garbled in VS Code's terminal or on `xterm-256color` | Some terminals mishandle a background color on those rows; set them to the terminal's own, below |
+| The config file does not parse | The error names the file, line and reason, then the way out: fix that line, or move the file aside to start from the defaults, after which `datui config init` writes a fresh one. A broken import is named by its own path; moved aside, it is skipped |
 | Start over | `datui config init --force` rewrites the file with the defaults; with no file, datui runs on them |
+| Odd home-screen state: recents, folded sections, a hidden source | `datui cache clear` resets the cache: recents, folds, remembered places, hidden sources and Example datasets, measurements and histories; never your data or config, and not the log. A cache line that cannot be read is skipped and logged in `datui.log` ([The log](#the-log)) |
 
 ```toml
 [theme.colors]

@@ -489,7 +489,7 @@ fn path_tail(path: &[Vec<u8>]) -> (Option<&[u8]>, Option<&[u8]>) {
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 pub(crate) fn http_agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
+    crate::user_agent::ureq_config()
         .timeout_global(Some(REQUEST_TIMEOUT))
         .build()
         .into()
@@ -517,7 +517,10 @@ pub fn s3_builder(bucket: &str, settings: &S3Settings) -> object_store::aws::Ama
     } else {
         object_store::aws::AmazonS3Builder::new()
     };
-    let mut builder = builder.with_bucket_name(bucket);
+    let mut builder = builder.with_bucket_name(bucket).with_config(
+        object_store::aws::AmazonS3ConfigKey::Client(crate::user_agent::CLIENT_KEY),
+        crate::user_agent::get(),
+    );
     if settings.skip_signature {
         builder = builder.with_skip_signature(true);
     }
@@ -642,6 +645,10 @@ fn gcs_store(
     };
     builder
         .with_bucket_name(bucket)
+        .with_config(
+            object_store::gcp::GoogleConfigKey::Client(crate::user_agent::CLIENT_KEY),
+            crate::user_agent::get(),
+        )
         .build()
         .map_err(|e| format!("Google Cloud Storage is not configured: {e}"))
 }
@@ -1710,7 +1717,7 @@ pub fn s3_bucket_region(bucket: &str) -> Option<String> {
 /// A client for one short request whose status is the answer: errors are statuses,
 /// redirects are not followed.
 fn probe_agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
+    crate::user_agent::ureq_config()
         .timeout_global(Some(std::time::Duration::from_secs(10)))
         .http_status_as_error(false)
         .max_redirects(0)
@@ -1980,6 +1987,10 @@ async fn google_bearer(source: &Source) -> Result<String, String> {
     };
     let store = builder
         .with_bucket_name("datui-credential-probe")
+        .with_config(
+            object_store::gcp::GoogleConfigKey::Client(crate::user_agent::CLIENT_KEY),
+            crate::user_agent::get(),
+        )
         .build()
         .map_err(|e| format!("Google Cloud Storage is not configured: {e}"))?;
     store

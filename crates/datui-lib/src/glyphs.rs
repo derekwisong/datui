@@ -112,6 +112,10 @@ pub struct Glyphs {
     pub arrow_right: &'static str,
     /// Between the steps of a location trail: `cloud › Azure › datui-test`.
     pub trail: &'static str,
+    /// Either side of a choice shown alone because its values do not fit on its
+    /// row: `‹ TSV ›`, which ←/→ step. One column wide in both sets.
+    pub choice_prev: &'static str,
+    pub choice_next: &'static str,
     /// After a column's name in a column list: hidden from the table. One column
     /// wide in both sets, like the header marks.
     pub hidden_mark: &'static str,
@@ -136,6 +140,8 @@ pub struct Glyphs {
     pub warning: &'static str,
     /// Scrollbar thumb, drawn down the right edge of an overlay.
     pub scroll_thumb: &'static str,
+    /// The scrollbar's track, above and below the thumb: a lighter shade of it.
+    pub scroll_track: &'static str,
     /// Stands in for a value that is bytes, not text.
     pub binary_stub: &'static str,
     /// In a one-line preview of text, where the value has a line break, a tab, or
@@ -358,6 +364,8 @@ const UNICODE: Glyphs = Glyphs {
     arrow_left: "←",
     arrow_right: "→",
     trail: "›",
+    choice_prev: "‹",
+    choice_next: "›",
     hidden_mark: "⊘",
     diff_mark: "Δ",
     checkbox_on: "■",
@@ -374,6 +382,7 @@ const UNICODE: Glyphs = Glyphs {
     // shape, from a codepoint all three floor fonts carry.
     warning: "▲",
     scroll_thumb: "█",
+    scroll_track: "░",
     binary_stub: "‹binary›",
     // Latin-1, which every floor font carries; the arrows and control pictures
     // (↵ ⇥ ␊) are missing from Liberation Mono and Noto Sans Mono.
@@ -441,6 +450,8 @@ const ASCII: Glyphs = Glyphs {
     arrow_left: "<",
     arrow_right: ">",
     trail: ">",
+    choice_prev: "<",
+    choice_next: ">",
     hidden_mark: "x",
     diff_mark: "*",
     checkbox_on: "[x]",
@@ -454,6 +465,7 @@ const ASCII: Glyphs = Glyphs {
     check: "+",
     warning: "!",
     scroll_thumb: "#",
+    scroll_track: "|",
     binary_stub: "<binary>",
     // vim's `list` marks: `$` ends a line, `>` is a tab.
     newline_mark: "$",
@@ -563,6 +575,8 @@ macro_rules! with_string_slots {
             arrow_left,
             arrow_right,
             trail,
+            choice_prev,
+            choice_next,
             hidden_mark,
             diff_mark,
             checkbox_on,
@@ -575,6 +589,7 @@ macro_rules! with_string_slots {
             check,
             warning,
             scroll_thumb,
+            scroll_track,
             binary_stub,
             newline_mark,
             tab_mark,

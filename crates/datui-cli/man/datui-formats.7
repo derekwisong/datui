@@ -720,6 +720,8 @@ match = { glob = "*.l2", magic = "L2FD", where = { "header.version" = 3 } }
 .PP
 When two specs match the same way, the first on the search path reads the file. The bar shows \fB2 formats match\fR, and the Notes tab names the others. A file no spec matches opens as it does without specs; a local file no reader takes either opens in the hex view, where \fBB\fR reads it with a spec and \fBr\fR lines the bytes up in records while you write one.
 .PP
+\fBT\fR on a file of several record types lists the whole file, then each type with its column count, and opens the one picked (\fBday.itch/add\fR), clearing the query, filters and sort.
+.PP
 \fBb\fR on the table picks another spec and reads the file again with it, clearing the query, filters and sort. The list starts with the spec the file was read with, then the others that matched it the same way, then every other spec on the search path for a file (or for a directory of column files). The Notes tab of \fBi\fR says which spec read the file and why (\fBmatched by magic L2FD \(pc version 3\fR), the header's values, and any bytes left out.
 .PP
 The home screen and its search name a file the same way. A file whose name says nothing (no extension, or \fB.bin\fR) is matched by magic and \fBwhere\fR against the first 4 KiB the listing reads from it anyway, up to 256 files a directory; nothing more is read. Its row reads the spec's name, and its details:
@@ -813,7 +815,7 @@ A value, or a list, read as null: \fB"NA"\fR, or \fB"COL=\-999"\fR for one colum
 Lines to pass over before the header
 .TP
 \fB[columns]\fR
-Derived columns, below, and what columns mean: \fBdescription\fR and \fBunit\fR
+Column types and derived columns, below, and what columns mean: \fBdescription\fR and \fBunit\fR
 .PP
 Lines count from 1 at the top of the file. Each option the spec sets replaces the config's; a flag typed on the command line (\fB\-\-delimiter\fR, \fB\-\-comment\fR, \fB\-\-skip\-initial\-space\fR, \fB\-\-header\-rows\fR, \fB\-\-skip\-lines\fR) wins over the spec. The options the spec does not set keep theirs. \fBdatui \-\-delimiter ';' formats check SPEC FILE\fR reads the file as an open with those flags would, and names the flags that override the spec. The header lines and the metadata line are the only lines read apart from the CSV reader.
 .PP
@@ -824,6 +826,70 @@ A unit sits beside its column's type on the table's type row (\fBf64 \(pc deg F\
 \fBMetadata\fR
 .PP
 The Info panel's \fBMetadata\fR tab lists the metadata line's pairs, under its leading item when it has one (\fBdevice_info\fR). A line that is not pairs is shown as it is. For a directory, the first file's line is shown.
+.PP
+\fBColumn types\fR
+.PP
+A column of the file takes a \fBtype\fR, beside its \fBunit\fR and \fBdescription\fR:
+.PP
+\fB\fBtyped.toml\fR\fR
+.PP
+.RS 4
+.EX
+name = "acme.typed\-log"
+kind = "delimited"
+match = { magic = "#device_info" }
+comment = "#"
+skip_initial_space = true
+header_rows = { name = 3, unit = 2 }
+metadata_line = 1
+
+[columns]
+"Lcl Date" = { type = "date", format = "%Y\-%m\-%d" }
+Latitude = { type = "f64", description = "GPS latitude" }
+bus1volts = { type = "f64", unit = "V" }
+.EE
+.RE
+.PP
+\fB\fBtyped.csv\fR\fR
+.PP
+.RS 4
+.EX
+#device_info, log_version="1.03"
+#yyyy\-mm\-dd, degrees, volts
+  Lcl Date,     Latitude, bus1volts
+2024\-03\-01,    40.100000,      25.0
+2024\-03\-01,             ,      n/a
+.EE
+.RE
+.PP
+.RS 4
+.EX
+datui formats check ./typed.toml typed.csv
+.EE
+.RE
+.TP
+\fBstr\fR
+Text as it is, never typed by \fBread.infer_types\fR: \fB02134\fR keeps its zero
+.TP
+\fBbool\fR
+\fBtrue\fR/\fBfalse\fR or \fB1\fR/\fB0\fR, in any case
+.TP
+\fBi8\fR \fBi16\fR \fBi32\fR \fBi64\fR
+Signed integers
+.TP
+\fBu8\fR \fBu16\fR \fBu32\fR \fBu64\fR
+Unsigned integers
+.TP
+\fBf32\fR \fBf64\fR
+Decimals. \fBf32\fR keeps about 7 significant digits
+.TP
+\fBdate\fR \fBtime\fR \fBdatetime\fR
+With \fBformat\fR, a strftime format; without, the format is inferred
+.TP
+\fBduration\fR
+\fB1d\fR, \fB2h30m\fR, \fB\-1w2d\fR
+.PP
+Use \fBi64\fR and \fBf64\fR unless a narrower type is wanted for an export or to hold values to a range. A value is trimmed first, and one that does not fit the type, or is out of an integer type's range, is null. The first time the Info panel opens, one pass counts them, and the Notes tab says how many per column: \fBRPM: 2 values out of range for u8, read as null\fR. A typed column the file does not have is a note, not an error, since the files of a family differ. A typed column is the same type in every file read together, and \fBread.infer_types\fR leaves it alone. \fBtype\fR beside \fBfrom\fR or \fBas\fR is refused: a derived column takes its type from \fBas\fR. The same types, and the derived columns, are on hand in the table: Column types.
 .PP
 \fBDerived columns\fR
 .TP
@@ -848,7 +914,51 @@ A column of the file takes \fBdescription\fR and \fBunit\fR alone (\fBbus1volts 
 .PP
 \fBMatching\fR
 .PP
-A delimited spec matches a file whose name says no format datui reads, or says \fB.csv\fR, \fB.tsv\fR or \fB.psv\fR, compressed or not. A directory is read through the spec its first file matches. \fBH\fR on the Info panel's Schema tab reads the file without a header, and without its derived columns.
+A delimited spec matches a file whose name says no format datui reads, or says \fB.csv\fR, \fB.tsv\fR or \fB.psv\fR, compressed or not. A directory, or a glob such as \fB'logs/log_*.csv'\fR, is read through the spec its first file with text matches. \fBH\fR on the Info panel's Schema tab reads the file without a header, and without its derived columns.
+.PP
+\fBSeveral files\fR
+.PP
+Files read together through a spec are matched by column name, so logs from different writer versions stack:
+.TP
+A file lacks a column
+The column is null in its rows
+.TP
+A column is blank in the first rows a file's types are inferred from
+It takes the type the other files give it. A value further on that is not of that type stops the read, naming the file and the column
+.TP
+One file's column holds integers and another's decimals
+The column is \fBf64\fR
+.TP
+A file's column holds text where another's holds numbers
+The column is text
+.TP
+Files give a column different units
+The first file's unit; a note lists the units seen
+.PP
+The Notes tab lists the columns not every file has. Columns keep the order the files first have them in.
+.SS "Garmin TXi logs"
+Garmin and TXi are trademarks of Garmin Ltd. or its subsidiaries; datui is not affiliated with or endorsed by Garmin.
+.PP
+The repository's \fBcontrib/\:formats/\:garmin\-txi.\:toml\fR reads the data logs a Garmin TXi writes: the airframe line as metadata, the units line, \fBtime\fR in UTC, and each column typed. Copy it into \fB~/.config/datui/formats/\fR to open the logs, or a directory of them, with no flags. A twin fills the \fBE2\fR columns and a single leaves them blank. A log written before a GPS fix has blank date and GPS cells.
+.PP
+\fB\fBgarmin\-log.csv\fR\fR
+.PP
+.RS 4
+.EX
+#airframe_info, log_version="1.03", airframe_name="Example 182", tail_number="N12345", system_id="0000EXAMPLE", unit="GDU1",
+#yyy\-mm\-dd, hh:mm:ss,   hh:mm,  ident,      degrees,      degrees,  ft msl,     kt,    rpm,   deg F,   deg F,  bool,      #
+  Lcl Date, Lcl Time, UTCOfst, AtvWpt,     Latitude,    Longitude,  AltMSL,    IAS, E1 RPM, E1 CHT1, E1 EGT1, OnGrnd, LogIdx
+          ,         ,        ,       ,             ,             ,        ,    0.0,  980.0,   210.0,  1105.0,      1,      1
+2024\-05\-04, 09:12:01,  \-04:00,   KXYZ,   41.0000000,  \-74.0000000,   350.0,    0.0, 1000.0,   215.0,  1120.0,      1,      2
+2024\-05\-04, 09:12:02,  \-04:00,   KXYZ,   41.0000100,  \-74.0000100,   350.0,   12.5, 1800.0,   230.0,  1250.0,      0,      3
+.EE
+.RE
+.PP
+.RS 4
+.EX
+datui formats check contrib/formats/garmin\-txi.toml garmin\-log.csv
+.EE
+.RE
 .SS "Checks"
 .TP
 A field, size or key the spec gets wrong
@@ -1185,7 +1295,7 @@ Says: Its codes and labels are the column's value legend
 .PP
 A flattened field's note goes to each of its columns, \fBbid_0\fR, \fBbid_1\fR and on. Named \fB[header]\fR and \fB[footer]\fR fields with a \fBdescription\fR or \fBunit\fR are listed in sections of their own.
 .PP
-A delimited spec takes \fBdescription\fR and \fBunit\fR in \fB[columns]\fR, for a column of the file or a derived one: \fBtemp = { description = "Air temperature", unit = "deg F" }\fR.
+A delimited spec takes \fBdescription\fR and \fBunit\fR in \fB[columns]\fR, for a column of the file or a derived one: \fBtemp = { description = "Air temperature", unit = "deg F" }\fR. A column's declared \fBtype\fR shows beside its unit: \fBLatitude  f64 \(pc deg  GPS latitude\fR.
 .PP
 Each text is trimmed, and an empty one is refused. Where a catalog lists the same file, its description and its \fBdocumentation\fR link stand over the spec's. Where both note a column, each of the catalog's \fBdescription\fR, \fBunit\fR and \fBvalues\fR stands over the spec's when the catalog gives it, and the spec's fills the rest. The spec's other notes and its record types stay.
 .SS "Footer"

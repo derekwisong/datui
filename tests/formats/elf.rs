@@ -119,8 +119,8 @@ fn an_elf_file_is_known_by_its_first_bytes() {
     assert_eq!(frame(&app).height(), 6);
 }
 
-/// A program built with `cc`, when there is one: its globals land in the sections and
-/// regions their declarations say.
+/// A program built with `cc`, when there is one that builds ELF: its globals land in
+/// the sections and regions their declarations say.
 #[test]
 fn a_program_built_with_cc() {
     let dir = common::fixture_dir().join(format!("elf-cc-{}", std::process::id()));
@@ -144,6 +144,11 @@ fn a_program_built_with_cc() {
         .status();
     if !built.is_ok_and(|s| s.success()) {
         eprintln!("no working cc: the hand-written fixture covers ELF reading");
+        return;
+    }
+    // macOS's cc writes Mach-O, and a Windows one PE.
+    if !std::fs::read(&binary).is_ok_and(|bytes| bytes.starts_with(b"\x7fELF")) {
+        eprintln!("cc builds no ELF here: the hand-written fixture covers ELF reading");
         return;
     }
     let df = frame(&open_with(binary, OpenOptions::default()));

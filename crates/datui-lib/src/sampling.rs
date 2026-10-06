@@ -16,8 +16,67 @@ use std::collections::HashMap;
 /// The default sample size, before `[analysis] sample_rows` says otherwise.
 pub const DEFAULT_SAMPLE_ROWS: usize = 100_000;
 
-/// The sizes the Sample form steps through with ←/→.
-pub const SAMPLE_SIZES: [usize; 6] = [1_000, 10_000, 50_000, 100_000, 500_000, 1_000_000];
+/// Why a typed sample size cannot be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SizeError {
+    NotASize,
+    Zero,
+}
+
+impl SizeError {
+    /// A few words, for a row with little room.
+    pub fn short(self) -> &'static str {
+        match self {
+            Self::NotASize => "not a size (50k, 2m)",
+            Self::Zero => "at least 1 row",
+        }
+    }
+}
+
+impl std::fmt::Display for SizeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NotASize => "Sample size is a number of rows, like 50000, 50k or 2m",
+            Self::Zero => "Sample size is at least 1 row",
+        })
+    }
+}
+
+/// A typed sample size: `50000`, `50,000`, `50_000`, `50k`, `2m`, `2.5M`. A size of
+/// no rows is refused; past `usize` it saturates and the caller clamps.
+pub fn parse_size(text: &str) -> Result<usize, SizeError> {
+    let refuse = || SizeError::NotASize;
+    let cleaned: String = text
+        .trim()
+        .chars()
+        .filter(|c| !matches!(c, ',' | '_'))
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let (number, scale) = match cleaned.strip_suffix('k') {
+        Some(n) => (n, 1e3),
+        None => match cleaned.strip_suffix('m') {
+            Some(n) => (n, 1e6),
+            None => (cleaned.as_str(), 1.0),
+        },
+    };
+    if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return Err(refuse());
+    }
+    let rows = if scale == 1.0 {
+        // Whole digits: exact, however long.
+        if number.contains('.') {
+            return Err(refuse());
+        }
+        number.parse::<usize>().unwrap_or(usize::MAX)
+    } else {
+        let value: f64 = number.parse().map_err(|_| refuse())?;
+        (value * scale).round() as usize
+    };
+    if rows == 0 {
+        return Err(SizeError::Zero);
+    }
+    Ok(rows)
+}
 
 /// A per-partition sample keeps at most this many partitions and rows in memory. Past
 /// the rows it keeps fewer of each value; past the partitions it is refused, which a
@@ -134,9 +193,54 @@ pub struct ReadWatch {
     /// Whether anything has counted rows yet: a read that cannot observe its batches
     /// has no count to show, which is not a count of zero.
     counted: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Judges the rows a sampler holds, in bytes, as it reads: the reason to stop
+    /// when they would not fit.
+    held: Option<HeldCheck>,
+    /// Why the held rows stopped the read, once they did.
+    memory: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+}
+
+/// What [`ReadWatch::hold`] asks of the bytes a sampler holds and the rows they are.
+pub type HeldJudge = dyn Fn(u64, usize) -> Option<String> + Send + Sync;
+
+#[derive(Clone)]
+struct HeldCheck(std::sync::Arc<HeldJudge>);
+
+impl std::fmt::Debug for HeldCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HeldCheck")
+    }
 }
 
 impl ReadWatch {
+    /// A watch whose sampler stops, keeping what it holds, once `judge` says the
+    /// bytes it holds will not fit.
+    pub(crate) fn judging_held(judge: std::sync::Arc<HeldJudge>) -> Self {
+        Self {
+            held: Some(HeldCheck(judge)),
+            ..Self::default()
+        }
+    }
+
+    /// A sampler holds `bytes` in `rows` rows now: past what fits, the read stops.
+    pub(crate) fn hold(&self, bytes: u64, rows: usize) {
+        let Some(HeldCheck(judge)) = &self.held else {
+            return;
+        };
+        if let Some(reason) = judge(bytes, rows) {
+            *self.memory.lock().unwrap_or_else(|e| e.into_inner()) = Some(reason);
+            self.stop();
+        }
+    }
+
+    /// Why memory stopped the read, if it did: its rows so far are kept.
+    pub(crate) fn memory_stopped(&self) -> Option<String> {
+        self.memory
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     pub fn stop(&self) {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -169,9 +273,10 @@ impl ReadWatch {
         counted.then_some(rows)
     }
 
-    /// Stopped: the read's partial rows are not a sample, so it fails instead.
+    /// Stopped: the read's partial rows are not a sample, so it fails instead. Not
+    /// when memory stopped it: what it holds is kept.
     pub(crate) fn check(&self) -> Result<()> {
-        if self.stopped() {
+        if self.stopped() && self.memory_stopped().is_none() {
             Err(Report::msg(CANCELLED))
         } else {
             Ok(())
@@ -250,6 +355,23 @@ impl Sample {
             )
         } else {
             format!("{how} {middot} {}", self.scope.label())
+        }
+    }
+
+    /// The summary, against the `rows` the scope is known to hold: a sample of at
+    /// least that many reads every one of them, and says so, `all 1,000 rows`,
+    /// rather than promising 100,000 from a table of 1,000.
+    pub fn summary_within(&self, rows: Option<usize>) -> String {
+        match (rows, &self.method) {
+            (Some(n), SampleMethod::Spread | SampleMethod::FirstRows) if n <= self.rows => {
+                let middot = crate::glyphs::get().middot;
+                format!(
+                    "all {} rows {middot} {}",
+                    numfmt::group_chrome(n),
+                    self.scope.label()
+                )
+            }
+            _ => self.summary(),
         }
     }
 
@@ -564,10 +686,13 @@ fn per_group_sample_within(
                     }
                     watch.saw(batch.height());
                 }
-                callback_state
+                let mut state = callback_state
                     .lock()
-                    .map_err(|_| PolarsError::ComputeError("sampler lock failed".into()))?
-                    .observe(batch)?;
+                    .map_err(|_| PolarsError::ComputeError("sampler lock failed".into()))?;
+                state.observe(batch)?;
+                if let Some(watch) = &callback_watch {
+                    watch.hold(state.bytes(), state.held);
+                }
                 Ok(false)
             }),
             true,
@@ -671,6 +796,15 @@ impl GroupSample {
 }
 
 impl GroupState {
+    /// Bytes the rows held take.
+    fn bytes(&self) -> u64 {
+        self.groups
+            .values()
+            .filter_map(|group| group.rows.as_ref())
+            .map(|rows| rows.estimated_size() as u64)
+            .sum()
+    }
+
     fn observe(&mut self, mut batch: DataFrame) -> PolarsResult<()> {
         self.counter.observe(&mut batch)?;
         self.seen += batch.height();
@@ -720,6 +854,30 @@ impl GroupState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_size_takes_shorthand() {
+        use super::parse_size;
+        for (text, rows) in [
+            ("50000", 50_000),
+            ("50,000", 50_000),
+            ("1_000", 1_000),
+            ("50k", 50_000),
+            ("250K", 250_000),
+            ("2m", 2_000_000),
+            ("2.5M", 2_500_000),
+            (" 7 ", 7),
+            ("99999999999999999999999", usize::MAX),
+        ] {
+            assert_eq!(parse_size(text), Ok(rows), "{text}");
+        }
+        for bad in ["", "k", "12x", "1.5", "-3", "1e6", "2mm"] {
+            assert_eq!(parse_size(bad), Err(super::SizeError::NotASize), "{bad}");
+        }
+        for zero in ["0", "0k", "0.0001k"] {
+            assert_eq!(parse_size(zero), Err(super::SizeError::Zero), "{zero}");
+        }
+    }
+
     use super::*;
 
     fn table() -> LazyFrame {
@@ -962,6 +1120,19 @@ mod tests {
         assert_eq!(
             sample(SampleMethod::FirstRows, 1_000).summary(),
             format!("first 1,000 rows {middot} current view")
+        );
+        // A table smaller than the sample is read whole, and the line says so.
+        assert_eq!(
+            Sample::default().summary_within(Some(1_000)),
+            format!("all 1,000 rows {middot} current view")
+        );
+        assert_eq!(
+            Sample::default().summary_within(Some(1_000_000)),
+            Sample::default().summary()
+        );
+        assert_eq!(
+            Sample::default().summary_within(None),
+            Sample::default().summary()
         );
     }
 }

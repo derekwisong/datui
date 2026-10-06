@@ -17,7 +17,7 @@ view.
 | Tab | Shows |
 |---|---|
 | **Schema** | Row and column counts, column types, schema source, file coverage, and a Parquet file's per-column compression. A column's unit, when a delimited format spec read a unit row or the file names one (DataFlash, a DBC dictionary). A dataset a [catalog](../reference/catalogs.md#columns) documents adds what each column means (`About`), the selected column's note and codes below, and the documentation's link |
-| **Documentation** | A dataset a [catalog](../reference/catalogs.md) lists, or one inside it, or a file whose [format spec](../reference/format-specs.md#documentation) documents it: the page <kbd>Ctrl</kbd>+<kbd>E</kbd> shows on the home screen ([Documentation view](home-screen.md#documentation-view)). <kbd>↑</kbd> <kbd>↓</kbd> move, <kbd>Enter</kbd> opens a column's legend, <kbd>y</kbd> copies a line's link or value |
+| **Documentation** | A dataset a [catalog](../reference/catalogs.md) lists, or one inside it, or a file whose [format spec](../reference/format-specs.md#documentation) documents it: the page <kbd>Ctrl</kbd>+<kbd>E</kbd> shows on the home screen ([Documentation view](home-screen.md#documentation-view)). <kbd>↑</kbd> <kbd>↓</kbd> move, <kbd>Enter</kbd> opens a column's legend, <kbd>o</kbd> opens a link in the browser after asking ([how](home-screen.md#documentation-view)), <kbd>y</kbd> copies a line's link or value |
 | Format's own | What the file says besides its rows, named for its format; see [the table below](#tabs-by-format) |
 | **Metadata** | The metadata line a [delimited format spec](../formats/format-specs.md#delimited-text) names, as key and value; appears for files read through one |
 | **Resources** | File size, how the file is read, buffered memory, and loading measurements |
@@ -30,6 +30,32 @@ file the open read too, and none of its rows. Until they arrive the size and the
 read `reading...`; a file that cannot be read shows why in their place. Remote
 sources, directories, globs, datasets of several files, and compressed or streamed
 copies have no file size and no such tab.
+
+## Column types
+
+<kbd>Enter</kbd> on the Schema tab, or **Change type...** in the cell menu (a
+right click on a cell), changes the column's type for the view: the same names,
+formats and rules a [format spec's `type`](../formats/format-specs.md#column-types)
+takes. **Combine into datetime...** in the cell menu, on a text, date or time
+column, makes a column as a spec's [derived column](../formats/format-specs.md#derived-columns)
+does.
+
+| Choice | Does |
+|---|---|
+| A type name (`i64`, `f64`, `str`, `bool`, …) | The column reads as it at once. A value that does not fit is null |
+| `date`, `time`, `datetime` | A format next: each line shows what it makes of the column's first value (`03/04/2024 → 2024-04-03`), and a format typed (`%d.%m.%Y`) is the format |
+| `as read` | The type the read gave the column |
+
+- The type row shows a changed type in the accent, and the footer says
+  `typed zip` (or `typed 3`) before the filters and sort.
+- The first time the change is made, one pass counts the values it made null,
+  and the Notes tab says how many: `code: 1 value not i64, read as null`.
+- Filters, charts, analysis, find, value counts and exports see the new type; a
+  Parquet export writes it.
+- A [saved view](views.md) keeps each change as a spec's `[columns]` entry
+  says it, `{ "name": "zip", "type": "str" }`. On data without the column, the
+  step is left out with a note.
+- A query, a pivot or a melt starts from the data as read, without the changes.
 
 ## Tabs by format
 
@@ -66,7 +92,9 @@ CSV, TSV, PSV, JSON, NDJSON and plain text have no tab of their own: text holds 
 An `.xlsx` or `.xlsm` workbook lists its worksheets
 from its directory, without reading them; an `.xls` or `.xlsb` file keeps its worksheet
 names where only reading the workbook finds them, so it opens its first worksheet and
-`--table` names another.
+`--table` or <kbd>T</kbd> names another. On the Excel and SQLite tabs,
+<kbd>↑</kbd> <kbd>↓</kbd> move a cursor over the worksheets or tables and
+<kbd>Enter</kbd> opens the one under it in place of this one.
 
 A [Hugging Face](../formats/columnar-and-json.md#arrow-ipc) cache directory lists its
 splits inside it the same way (`cache/test`), above the files they are made of.

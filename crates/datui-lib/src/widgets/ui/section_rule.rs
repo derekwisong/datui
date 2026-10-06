@@ -8,11 +8,12 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
+/// Never a focus signal: the section's focused row carries the rail and the
+/// accent, and the rule reads the same whether focus is in its section or not.
 pub struct SectionRule<'a> {
     pub title: &'a str,
     /// Optional flat chip after the title, usually a count.
     pub chip: Option<&'a str>,
-    pub focused: bool,
 }
 
 impl SectionRule<'_> {
@@ -21,23 +22,9 @@ impl SectionRule<'_> {
             return;
         }
         let g = crate::glyphs::get();
-        let title_style = if self.focused {
-            Style::default()
-                .fg(ctx.accent_bright)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
-        };
-        let rule_glyph = if self.focused {
-            g.rule_h_focused
-        } else {
-            g.rule_h
-        };
-        let rule_style = Style::default().fg(if self.focused {
-            ctx.accent
-        } else {
-            ctx.column_separator
-        });
+        let title_style = Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD);
+        let rule_glyph = g.rule_h;
+        let rule_style = Style::default().fg(ctx.column_separator);
 
         let mut spans = vec![Span::styled(self.title, title_style), Span::raw(" ")];
         let mut used = self.title.chars().count() + 1;
@@ -77,7 +64,6 @@ mod tests {
             &SectionRule {
                 title: "Format",
                 chip: None,
-                focused: false,
             },
             20,
         );
@@ -90,24 +76,27 @@ mod tests {
             &SectionRule {
                 title: "Format",
                 chip: Some("6"),
-                focused: false,
             },
             20,
         );
         assert!(out.starts_with("Format  6 "), "got {out:?}");
     }
 
-    /// Focus changes the rule's weight, never the width.
+    /// The rule is plain: no heavy glyph and no bright accent, which once
+    /// marked the focused section beside the rail.
     #[test]
-    fn focus_never_moves_the_text() {
-        let make = |focused| SectionRule {
-            title: "Format",
-            chip: Some("6"),
-            focused,
-        };
-        let plain = render(&make(false), 20);
-        let focused = render(&make(true), 20);
-        assert_eq!(plain.find("6"), focused.find("6"));
-        assert_eq!(plain.chars().count(), focused.chars().count());
+    fn the_rule_never_signals_focus() {
+        let g = crate::glyphs::get();
+        let ctx = RenderContext::for_test();
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = Buffer::empty(area);
+        SectionRule {
+            title: "Sort",
+            chip: None,
+        }
+        .render(area, &mut buf, &ctx);
+        assert_eq!(buf[(0, 0)].fg, ctx.accent);
+        assert_eq!(buf[(19, 0)].symbol(), g.rule_h);
+        assert_eq!(buf[(19, 0)].fg, ctx.column_separator);
     }
 }

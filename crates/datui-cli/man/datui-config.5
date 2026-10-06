@@ -44,7 +44,7 @@ Catalog files elsewhere, listed on the home screen after catalog.toml and the co
 How files are read. A file's own layout (delimiter, header, rows to skip) is a flag for that file, not a setting.
 .TP
 \fBread.infer_types\fR (\fIbool | list of columns\fR)
-Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. Default: \fBtrue\fR. Flag: \fB\-\-infer\-types\fR.
+Read string columns as dates, times, durations or numbers where every value parses, after trimming: true for all, false for none, or a list of columns. CSV, and dates in JSON. A column with a leading zero (02134) stays text; a later value that does not parse is null, and the Notes tab counts them. Default: \fBtrue\fR. Flag: \fB\-\-infer\-types\fR.
 .TP
 \fBread.parquet_schema\fR (\fIunion | first\fR)
 A partitioned Parquet dataset's schema: union is every column any file has, from their footers; first lets Polars take one file's. Default: \fB"union"\fR.
@@ -151,6 +151,14 @@ Start charts with a grid at the major ticks (g toggles). Default: \fBfalse\fR.
 .TP
 \fBanalysis.quality_local_copy\fR (\fIsize\fR)
 Most a Data Quality full scan of a remote dataset copies into the cache to read once; 0 never copies. Default: \fB"2GiB"\fR.
+.TP
+\fBanalysis.sample_memory_limit\fR (\fIsize\fR)
+Most memory a view's sample may take. Unset: the memory available now decides; 0 never warns or stops. Unset by default.
+.SS "[chart]"
+Charts exported to a file (\fBe\fR in the chart view).
+.TP
+\fBchart.export_recipe\fR (\fIbool\fR)
+Embed how an exported chart was made (source path, query, chart, sample) in its PNG, SVG or PDF. The export dialog's Recipe row starts from it. Default: \fBtrue\fR.
 .SS "[home]"
 The home screen.
 .TP
@@ -161,7 +169,7 @@ Also list directories from the desktop's recently-used files; never the file nam
 List files datui cannot read, dimmed (Ctrl+A toggles). Default: \fBfalse\fR.
 .TP
 \fBhome.hide\fR (\fIlist\fR)
-Catalogs not shown, by id: mine (catalog.toml), public, or a listed file's name; one entry as catalog/id, such as public/nyc-taxis. Adds up across imports. Default: \fB[]\fR.
+Catalogs not shown, by id: mine (catalog.toml), examples, or a listed file's name; one entry as catalog/id, such as examples/nyc-taxis. Adds up across imports. Default: \fB[]\fR.
 .TP
 \fBhome.preview_max\fR (\fIsize\fR)
 Largest local file whose first rows the home screen previews; 0 turns the preview off. Default: \fB"64MiB"\fR.
@@ -217,6 +225,11 @@ Logins found on this machine that become home-screen sources: all (unset), none,
 .TP
 \fBcloud.list_on_start\fR (\fIbool\fR)
 List every source's buckets when the home screen opens, not when one is entered. Default: \fBfalse\fR.
+.SS "[http]"
+Every request datui makes: HTTP(S) files, cloud stores and their sign-ins.
+.TP
+\fBhttp.user_agent\fR (\fIstring\fR)
+The User-Agent header on every request. Empty sends datui/VERSION (+https:/\:/\:github.\:com/\:derekwisong/\:datui), which names datui and its version and nothing about you. Default: \fB""\fR.
 .SS "[query]"
 .TP
 \fBquery.history_limit\fR (\fIinteger\fR)
@@ -254,7 +267,7 @@ How much the log says (default warn). DATUI_LOG beats a config file's; \-c and \
 .SS "[theme]"
 .TP
 \fBtheme.mode\fR (\fIauto | dark | light\fR)
-Which mode's theme to use: theme.dark or theme.light. auto asks the terminal for its background, then reads COLORFGBG, then falls back to dark; it asks again when the terminal regains focus. Unset by default.
+Which mode's theme to use: theme.dark or theme.light. auto follows the terminal's answer about its background, else its last answer, then COLORFGBG, then dark; it asks again when the terminal regains focus. Unset by default.
 .TP
 \fBtheme.dark\fR (\fIstring\fR)
 The theme used when the terminal is dark: night-market, day-market, or a file's name in the config directory's themes/. A name that cannot be used falls back to night-market, with a warning when dark is in use. Default: \fB"night\-market"\fR.
@@ -393,6 +406,15 @@ Chart series 6. Default: \fB#f7768e\fR dark, \fB#f52a65\fR light.
 \fBtheme.colors.chart_7\fR (\fIcolor\fR)
 Chart series 7. Default: \fB#ff9e64\fR dark, \fB#b15c00\fR light.
 .TP
+\fBtheme.colors.chart_8\fR (\fIcolor\fR)
+Chart series 8. Default: \fB#1abc9c\fR dark, \fB#118c74\fR light.
+.TP
+\fBtheme.colors.chart_9\fR (\fIcolor\fR)
+Chart series 9. Default: \fB#ff5fd2\fR dark, \fB#d1188c\fR light.
+.TP
+\fBtheme.colors.chart_10\fR (\fIcolor\fR)
+Chart series 10. Default: \fB#f4ef8a\fR dark, \fB#24357a\fR light.
+.TP
 \fBtheme.colors.chart_grid\fR (\fIcolor\fR)
 The chart grid, a shade dimmer than dimmed. Default: \fB#3d4785\fR dark, \fB#70aabf\fR light.
 .TP
@@ -449,7 +471,7 @@ The config file: see datui-config(5). \fBdatui config path\fR prints the files r
 Your catalog, which Ctrl+D on the home screen adds to: see datui-catalog(1).
 .TP
 \fICONFIG\fR/catalogs/
-More catalogs, one *.toml each, named by its file; public.toml replaces the bundled one.
+More catalogs, one *.toml each, named by its file; examples.toml replaces the bundled one.
 .TP
 \fICONFIG\fR/views/
 Saved views: see datui-views(1).

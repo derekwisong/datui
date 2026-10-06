@@ -37,8 +37,19 @@ pub fn header_names(
     comment: Option<&str>,
 ) -> color_eyre::Result<Vec<String>> {
     let lines = named_lines(source, rows)?;
+    Ok(names_of(&lines, rows, join, separator, comment))
+}
+
+/// [`header_names`] from `lines`, the lines `rows` names as [`named_lines`] read them.
+pub fn names_of(
+    lines: &[Vec<u8>],
+    rows: &[usize],
+    join: &str,
+    separator: u8,
+    comment: Option<&str>,
+) -> Vec<String> {
     let mut columns: Vec<Vec<String>> = Vec::new();
-    for (&row, line) in rows.iter().zip(&lines) {
+    for (&row, line) in rows.iter().zip(lines) {
         for (i, field) in header_fields(line, row, separator, comment)
             .into_iter()
             .enumerate()
@@ -51,10 +62,10 @@ pub fn header_names(
             }
         }
     }
-    Ok(columns
+    columns
         .into_iter()
         .map(|pieces| pieces.join(join))
-        .collect())
+        .collect()
 }
 
 /// The lines `rows` names (1-based, from the top of the file), in the order `rows`
@@ -65,19 +76,22 @@ pub fn named_lines(mut source: impl BufRead, rows: &[usize]) -> color_eyre::Resu
     let last = rows.iter().copied().max().unwrap_or(0);
     // Only the named lines are kept; the others are passed over without being held.
     let mut lines: Vec<Vec<u8>> = vec![Vec::new(); last];
+    // Whether every byte so far is blank: a file of nothing has no header, which a
+    // read of several files passes over, where a short file of text is an error.
+    let mut blank = true;
     for (i, line) in lines.iter_mut().enumerate() {
         let n = i + 1;
         let read = if rows.contains(&n) {
-            (&mut source)
+            let read = (&mut source)
                 .take(MAX_HEADER_LINE + 1)
-                .read_until(b'\n', line)?
+                .read_until(b'\n', line)?;
+            blank &= line.iter().all(u8::is_ascii_whitespace);
+            read
         } else {
-            source.skip_until(b'\n')?
+            skip_line(&mut source, &mut blank)?
         };
         if read == 0 {
-            return Err(color_eyre::eyre::eyre!(
-                "header line {last} is past the end of the file"
-            ));
+            return Err(NoHeader { line: last, blank }.into());
         }
         if line.len() as u64 > MAX_HEADER_LINE {
             return Err(color_eyre::eyre::eyre!(
@@ -95,6 +109,114 @@ pub fn named_lines(mut source: impl BufRead, rows: &[usize]) -> color_eyre::Resu
                 .unwrap_or_default()
         })
         .collect())
+}
+
+/// A file that ends before the header line a read needs. `blank` when all it holds
+/// is white space, or nothing.
+#[derive(Debug)]
+pub struct NoHeader {
+    pub line: usize,
+    pub blank: bool,
+}
+
+impl std::fmt::Display for NoHeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "header line {} is past the end of the file", self.line)
+    }
+}
+
+impl std::error::Error for NoHeader {}
+
+/// Whether `e` says the file holds nothing but white space where its header should be.
+pub fn is_blank_file(e: &color_eyre::Report) -> bool {
+    e.chain()
+        .any(|cause| cause.downcast_ref::<NoHeader>().is_some_and(|h| h.blank))
+}
+
+/// Pass over one line of `source` without holding it, noting whether it is blank.
+fn skip_line(source: &mut impl BufRead, blank: &mut bool) -> std::io::Result<usize> {
+    let mut read = 0;
+    loop {
+        let buf = source.fill_buf()?;
+        if buf.is_empty() {
+            return Ok(read);
+        }
+        let (used, done) = match memchr::memchr(b'\n', buf) {
+            Some(at) => (at + 1, true),
+            None => (buf.len(), false),
+        };
+        *blank &= buf[..used].iter().all(u8::is_ascii_whitespace);
+        source.consume(used);
+        read += used;
+        if done {
+            return Ok(read);
+        }
+    }
+}
+
+/// The most bytes [`window`] reads: a bound on what a file of very long lines costs.
+const MAX_WINDOW_BYTES: u64 = 1 << 20;
+
+/// The first `rows` data lines of `source`, read on from where its header lines ended,
+/// each split on `separator` and trimmed: the lines a scan infers its types from. A
+/// line that starts with `comment`, or is blank, is not one. Stops at
+/// [`MAX_WINDOW_BYTES`].
+pub fn window(
+    source: impl BufRead,
+    rows: usize,
+    separator: u8,
+    comment: Option<&str>,
+) -> std::io::Result<Vec<Vec<String>>> {
+    Ok(window_of(source, rows, separator, comment)?.0)
+}
+
+/// [`window`], and whether a line it read holds bytes that are not UTF-8.
+pub fn window_of(
+    source: impl BufRead,
+    rows: usize,
+    separator: u8,
+    comment: Option<&str>,
+) -> std::io::Result<(Vec<Vec<String>>, bool)> {
+    let mut lossy = false;
+    let mut source = source.take(MAX_WINDOW_BYTES);
+    let comment = comment.filter(|c| !c.is_empty()).map(str::as_bytes);
+    let mut out = Vec::new();
+    let mut line = Vec::new();
+    while out.len() < rows {
+        line.clear();
+        if source.read_until(b'\n', &mut line)? == 0 {
+            break;
+        }
+        // A last line cut by the bound is not read: its last field may be cut too.
+        if !line.ends_with(b"\n") && source.limit() == 0 {
+            break;
+        }
+        let text = line.strip_suffix(b"\n").unwrap_or(&line);
+        let text = text.strip_suffix(b"\r").unwrap_or(text);
+        if text.iter().all(u8::is_ascii_whitespace) || comment.is_some_and(|c| text.starts_with(c))
+        {
+            continue;
+        }
+        lossy |= std::str::from_utf8(text).is_err();
+        out.push(
+            split_fields(text, separator)
+                .into_iter()
+                .map(|f| f.trim().to_string())
+                .collect(),
+        );
+    }
+    Ok((out, lossy))
+}
+
+/// Pass over `n` lines of `source`.
+pub fn skip_lines(source: &mut impl BufRead, n: usize) -> std::io::Result<()> {
+    let mut blank = true;
+    for _ in 0..n {
+        if skip_line(source, &mut blank)? == 0 {
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// Header line `row`'s fields, trimmed: without a byte-order mark on line 1, its line
@@ -310,8 +432,22 @@ mod tests {
         let err = header_names("a,b\n".as_bytes(), &[1, 5], " ", b',', None).unwrap_err();
         assert!(err.to_string().contains("past the end"), "{err}");
         assert!(header_names("".as_bytes(), &[1], " ", b',', None).is_err());
+        let blank = |text: &str| is_blank_file(&named_lines(text.as_bytes(), &[3]).unwrap_err());
+        assert!(blank(""), "empty");
+        assert!(blank(" \n\t\r\n"), "white space");
+        assert!(!blank("#a\n"), "text, too short");
+        assert!(!blank("\nx\n"), "text on a line passed over");
         // The last line needs no line break.
         assert_eq!(names("#u\na,b", &[2], None), ["a", "b"]);
+    }
+
+    #[test]
+    fn the_window_is_the_data_lines_after_the_header() {
+        let text = "a,b\n  1,  x\n#note\n\n  , 2.5\n3,4\n";
+        let mut source = text.as_bytes();
+        skip_lines(&mut source, 1).unwrap();
+        let rows = window(source, 2, b',', Some("#")).unwrap();
+        assert_eq!(rows, [vec!["1", "x"], vec!["", "2.5"]]);
     }
 
     #[test]

@@ -5,7 +5,7 @@ Set Height 800
 Set TypingSpeed 25ms
 # DO NOT DELETE - HEADER ABOVE
 
-# Browse-first variation: linger on the public catalog and its details.
+# Browse-first variation: linger on the example datasets and their details.
 Hide
 Type "cd /tmp/datui-demo/data"
 Enter

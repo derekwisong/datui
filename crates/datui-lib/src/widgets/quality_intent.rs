@@ -342,7 +342,6 @@ mod tests {
                 plan_field: field,
                 show_access: over.access,
                 observation_detail: false,
-                confirm_run: false,
                 focus: AnalysisFocus::Main,
                 theme: &self.theme,
                 ctx: &self.ctx,

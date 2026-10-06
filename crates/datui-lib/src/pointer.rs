@@ -6,8 +6,9 @@
 //! it, and a click on the table or the home list moves the cursor there, a double
 //! click then pressing Enter. A click on a chart's plot puts the crosshair there, as
 //! `x` and the arrows would. Dragging a header moves its column as `H` / `L` do, and
-//! dragging the gap after it sets its width as `<` / `>` do. A right click on a cell
-//! opens a menu of the keys that act on it. Nothing here changes what a key does.
+//! dragging the gap after it sets its width as `<` / `>` do; a double click on a header
+//! sorts by it as `[` / `]` do, and on the gap after it fits it as `=` does. A right
+//! click on a cell opens a menu of the keys that act on it. Nothing here changes what a key does.
 //!
 //! A pointer is aimed at what is on screen when it is used, so mouse input is never
 //! held for later the way typed keys are: where a typed key would wait, a mouse event
@@ -148,6 +149,9 @@ pub enum Hit {
     Tool(usize),
     /// Something a key names, a chart kind's tab (`1`-`6`): a click presses it.
     Key(KeyEvent),
+    /// A dialog's footer chip: a click presses its key, even while a picker or an
+    /// editor has the other clicks, or a question is up.
+    Chip(KeyEvent),
     /// A line of the context menu.
     MenuItem(usize),
     /// The context menu's frame.
@@ -376,7 +380,9 @@ impl Pointing {
             .any(|(_, hit)| matches!(hit, Hit::Picker | Hit::Editor));
         hits.iter()
             .rev()
-            .filter(|(_, hit)| !open || matches!(hit, Hit::Picker | Hit::PickerItem { .. }))
+            .filter(|(_, hit)| {
+                !open || matches!(hit, Hit::Picker | Hit::PickerItem { .. } | Hit::Chip(_))
+            })
             .find(|(rect, _)| rect.contains(at))
             .map(|(_, hit)| hit)
     }
@@ -400,6 +406,16 @@ impl Pointing {
             Some((at.x, at.y, now))
         };
         double
+    }
+}
+
+/// The key a double click on `column`'s header presses: `[` sorts up by it, `]` turns
+/// that sort down, and `]` again takes it away, as the same key again does.
+fn header_sort_key(state: &crate::widgets::datatable::DataTableState, column: &str) -> char {
+    if state.view_sort_columns() == [column] {
+        ']'
+    } else {
+        '['
     }
 }
 
@@ -492,7 +508,7 @@ fn click_hit(hit: &Hit, back: bool) -> Pointer {
             Pointer::Keys(keys)
         }
         Hit::Tool(i) => Pointer::Tool(*i),
-        Hit::Key(key) => Pointer::Keys(vec![*key]),
+        Hit::Key(key) | Hit::Chip(key) => Pointer::Keys(vec![*key]),
         Hit::MenuItem(i) => Pointer::MenuChoose(*i),
         Hit::Picker | Hit::Editor | Hit::Menu | Hit::Modal => Pointer::Nothing,
     }
@@ -599,7 +615,9 @@ impl App {
             .or_else(|| id.focus_in(&mut self.chart_export_modal))
             .or_else(|| id.focus_in(&mut self.pivot_melt_modal))
             .or_else(|| id.focus_in(&mut self.sort_filter_modal))
-            .or_else(|| id.focus_in(&mut self.view_modal));
+            .or_else(|| id.focus_in(&mut self.view_modal))
+            .or_else(|| self.combine.as_mut().and_then(|c| id.focus_in(c)))
+            .or_else(|| self.sample_form.as_mut().and_then(|f| id.focus_in(f)));
         if shown.is_some() {
             return shown;
         }
@@ -731,9 +749,13 @@ impl App {
             self.pointer.last_click = None;
             return Pointer::Keys(vec![key]);
         }
+        // Over help, an error or a question, only its footer's keys take clicks.
         if self.dialog_over_all() {
             self.pointer.last_click = None;
-            return Pointer::Nothing;
+            return match self.pointer.hit_at(at) {
+                Some(Hit::Chip(key)) => Pointer::Keys(vec![*key]),
+                _ => Pointer::Nothing,
+            };
         }
         if let Some(hit) = self.pointer.hit_at(at).cloned() {
             self.pointer.last_click = None;
@@ -762,14 +784,29 @@ impl App {
             && let Some(state) = self.data_table_state.as_ref()
         {
             if let Some(column) = state.drawn_edge(at.x, at.y) {
-                self.pointer.last_click = None;
+                // A double click on the gap fits the column to its rows, as `=` does
+                // on the cursor's column; the first click started a drag that did not
+                // move.
+                if double {
+                    let hit = CellHit {
+                        row: None,
+                        column: Some(column),
+                    };
+                    return Pointer::Point(Target::Table(hit), Some(press(KeyCode::Char('='))));
+                }
                 return Pointer::Resize { column, x: at.x };
             }
             if let Some(hit) = state.drawn_cell(at.x, at.y) {
-                // Enter acts on a row; a double click on the header only picks the
-                // column.
-                let enter = enter.filter(|_| hit.row.is_some());
-                return Pointer::Point(Target::Table(hit), enter);
+                // Enter acts on a row. A double click on a header sorts by it, as
+                // `[` and `]` do: up, then down, then off.
+                let key = match (&hit.row, &hit.column) {
+                    (Some(_), _) => enter,
+                    (None, Some(column)) if double => {
+                        Some(press(KeyCode::Char(header_sort_key(state, column))))
+                    }
+                    (None, _) => None,
+                };
+                return Pointer::Point(Target::Table(hit), key);
             }
         }
         Pointer::Nothing

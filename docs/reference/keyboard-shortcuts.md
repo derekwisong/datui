@@ -15,7 +15,7 @@ These keys work on every screen.
 | Key | Action |
 |---|---|
 | `? / F1` | This screen's keys. In a text field ? types, and F1 opens the help |
-| `Ctrl+O` | The home screen; abandons a load |
+| `Ctrl+O` | The home screen, on the dataset left, its filter kept and selected (typing replaces it); abandons a load |
 | `Ctrl+Q / Ctrl+C` | Quit from anywhere; Ctrl+C quits from a text field too, where Alt+W copies |
 | `Click a field` | Focus a form's field and act as Space: a checkbox flips, a choice steps, a picker opens, a button runs; a text field takes the cursor. A row of a list (a sort, a filter, a column) takes focus on the first click and acts on the second. A click on a picker's line chooses it, on a tab switches to it, and on a key in the footer presses it. A click outside a dialog does nothing. The mouse is the terminal's with display.mouse = false (or --mouse false); in most terminals Shift+drag selects text either way |
 | `Right-click a field` | Step a choice back, as ← does; else focus it |
@@ -63,7 +63,8 @@ Where a dataset opens.
 | `r` | Reverse sort order (sorted columns carry a direction mark in the header); with no sort, reverse the row order |
 | `H / L` | Move the cursor's column one place left or right, the cursor with it; a frozen column moves among the frozen ones. R puts the order back |
 | `p` | Pivot or melt |
-| `R` | Reset table: clear the query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view |
+| `S` | Draw a sample of the source into memory: the step under the query, filters and sort, which then run over it. The rows show as they arrive (Esc stops, keeping them); the footer says sample 100,000 of 36.8M. Analysis, charts and export read the sample. S again edits it; Method No sample, or R, takes it away |
+| `R` | Reset table: clear the sample, query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view |
 
 ### Table · Analyze
 
@@ -93,6 +94,7 @@ Where a dataset opens.
 | `< / >` | The cursor's column 4 cells narrower or wider |
 | `= / w` | Fit the cursor's column to the rows on screen; w puts it back to automatic width |
 | `b` | A binary file read through a format spec: read it again with another spec. Clears the query, filters and sort |
+| `T` | A file of several tables (a workbook's worksheets, a database's tables, a format spec's record types, a Hugging Face cache's splits): pick another to open in place of this one, as --table names it. Clears the query, filters and sort; a saved view for the table applies. On a file of one table, says so |
 | `t` | Follow the file as it grows (CSV, TSV, PSV, NDJSON). Reads it again, so the query, filters and sort are cleared; while following, t pauses and resumes, and Esc stops |
 
 ### Table · Go
@@ -101,7 +103,7 @@ Where a dataset opens.
 |---|---|
 | `q` | Back to the home screen when the dataset was opened from it; otherwise quit |
 | `Q` | Quit |
-| `Esc` | Leave a drill-down, stop a find or a follow |
+| `Esc` | Leave a drill-down; stop a find, a sample being drawn (its rows so far stay) or a follow |
 
 ### Table · Mouse
 
@@ -109,6 +111,8 @@ Where a dataset opens.
 |---|---|
 | `Click` | The cursor to the cell; on a header, its column |
 | `Double-click` | Enter on the row |
+| `Double-click a header` | Double-click a column's header to sort by it, as [ and ] do: ascending, then descending, then back to no sort, replacing the sort in effect |
+| `Double-click a header's edge` | Double-click the gap right of a column's header to fit the column to the rows on screen, as = does; the column cursor moves to it, and nothing is sorted |
 | `Wheel` | ↑ / ↓, three rows a notch; the same in help, the inspector and the sidebars |
 | `Shift+wheel` | ← / →, the column cursor (a sideways wheel too) |
 | `Click a key` | Press a key the footer shows; a click on the filters and sort presses s, on query presses : |
@@ -138,14 +142,14 @@ Where a dataset opens.
 |---|---|
 | `Enter` | What the footer says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them |
 | `Backspace` | Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a catalog's remote dataset, back here) |
-| `Esc` | Back out one layer: the path prompt, the filter, the directory (back to the row it was entered from), then to the open table |
+| `Esc` | Back out one layer: the path prompt, the filter (onto the first dataset), the directory (back to the row it was entered from), then to the open table |
 
 ### Home screen · Find
 
 | Key | Action |
 |---|---|
 | `(type)` | Narrow by name or column; fuzzy, so "sal" finds "sales". What you open often ranks first. Typing also searches below the directory you are inside and the listed bucket names; matches appear under "Found" |
-| `~` | While the filter is empty: type a path or URL by hand. The list shows the directory being typed, narrowed by the name after the last /. The prompt is a plain editor: characters, Backspace, Ctrl+U clears, Tab completes the one name left or what the names share, ↑ / ↓ pick a name, Enter opens a file or goes inside a directory, Esc closes. s3://, gs:// and az:// complete from buckets and prefixes already known. With a filter typed, ~ types into it |
+| `~` | While the filter is empty: type a path or URL by hand. The list shows the directory being typed, narrowed by the name after the last /. The prompt is a plain editor: characters, Backspace, Ctrl+U clears, The first name that matches is picked. Tab completes the one name left or what the names share, or a name picked further down; ↑ / ↓ pick a name, and ↑ from the first takes the path as typed; Enter opens the picked name or the typed path: a file opens, a directory is gone inside; Esc closes. s3://, gs:// and az:// complete from buckets and prefixes already known. With a filter typed, ~ types into it |
 | `Ctrl+U` | Clear the filter or path input |
 | `Ctrl+R` | List again what is on screen |
 
@@ -157,7 +161,7 @@ Where a dataset opens.
 | `Ctrl+X` | Show the local file under the cursor as bytes, in the hex view, whatever datui would read it as |
 | `Ctrl+D` | Add the dataset or directory under the cursor to catalog.toml, listed under My datasets; on a row from catalog.toml, forget it. A heading stands for the directory it lists. Only catalog.toml is written; another catalog is hidden with home.hide |
 | `Ctrl+E` | Open the Documentation view of a catalog row, of a place inside one, or of a file whose format spec documents it: description, publisher, license, links, record types, columns with units and value legends, bookmarks. A catalog's description, link and column notes stand over the spec's. Ctrl+E here is not readline's end of line: the filter is edited at its end |
-| `Delete` | Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source |
+| `Delete` | Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source. On the Example datasets heading, hide them until datui cache clear, after confirming |
 | `Shift+Delete` | Forget every recent entry, after confirming |
 
 ### Home screen · Mouse
@@ -179,6 +183,7 @@ Where a dataset opens.
 | `PgUp / PgDn` | A page |
 | `g / G` | The first or last line (Home / End too) |
 | `Enter / Space / →` | Open or close the value legend of the column under the cursor: a catalog's values, or a spec's enum |
+| `o` | Open the link on the cursor's line in the system browser. Only http and https links open, and only after a question showing the whole URL (Enter opens, Esc does not). Off over SSH or without a display: y copies the link instead |
 | `y` | Copy the link or value on the cursor's line, whole, however it is cut on screen |
 | `Esc / q / ←` | Back to the home screen |
 
@@ -257,7 +262,7 @@ Where a dataset opens.
 | `Home / End` | First and last field |
 | `PgUp / PgDn` | A page of fields |
 | `← / → (h/l)` | Previous and next row; the table's cursor moves with it |
-| `Tab` | Into the value, to scroll and find in it |
+| `Tab / Shift+Tab` | Into the value, to scroll and find in it. Nothing moves: the panes are split by what they hold, not by where the cursor is |
 | `Enter` | On a group's row, its rows, as at the table. Else open a struct, a list, or text holding a JSON object or array; or read a field the table's rows do not hold (hidden and binary columns) |
 | `r` | On a group's row, read a field the rows do not hold |
 | `/` | Find a field by name, then by value: type to narrow, Enter or ↓ keeps the list narrowed, Esc clears it |
@@ -265,7 +270,7 @@ Where a dataset opens.
 | `s` | Order: the table's, A-Z, or nulls last |
 | `c` | Compare: a column for the next row, or the pinned one |
 | `m` | Pin this row to compare others with; again to unpin |
-| `Esc / Space` | Close; Esc clears a find first |
+| `Esc / Space` | Close. Esc backs out one level at a time: a find first, then Compare, then the inspector |
 
 ### Inspector · Output
 
@@ -286,13 +291,14 @@ Where a dataset opens.
 | `Home / End` | Top and end, at once however long the value |
 | `/` | Find in the value; n and N go to the next and last place |
 | `e, w, y, o` | As in the fields |
-| `Esc / Tab` | Back to the fields; Esc clears a find first |
+| `Esc / Tab` | Back to the fields (Shift+Tab too); Esc clears a find first |
 
 ### Inspector · Nested
 
 | Key | Action |
 |---|---|
 | `Enter / → (l)` | Open the focused item |
+| `Tab / Shift+Tab` | Into the item's value; not in an empty level |
 | `Esc / ← (h)` | Up a level; at the row, Esc closes |
 | `y` | Copy the focused item: text as itself, a JSON object or array indented |
 
@@ -308,7 +314,8 @@ Where a dataset opens.
 | `↑ / ↓ (j/k)` | Schema, Notes or Documentation tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list |
 | `PgUp / PgDn` | Model, Audio, MIDI, Metadata and format tabs: scroll the list a page |
 | `Home / End` | Model, Audio, MIDI, Metadata and format tabs: the top or the end of the list |
-| `Enter` | Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor |
+| `Enter` | Schema tab: change the column's type, with the names and formats a format spec's type takes. Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor. Excel or SQLite tab: open the worksheet or table under the cursor in place of this one, as T does |
+| `o` | Documentation tab: open the link on the cursor's line in the system browser. Only http and https links open, and only after a question showing the whole URL. Off over SSH or without a display |
 | `y` | Documentation tab: copy the link or value on the cursor's line, whole, however it is cut on screen |
 | `H` | Schema tab, CSV, TSV, PSV: read the first row as data, under column_1, column_2, …; again to read it as column names. Reads the file again, so the query, filters and sort are cleared, and the panel closes |
 | `c` | A dataset of more files than read.exact_count_files shows a row count estimated from a sample of its footers; c reads every footer for the exact count. The footer shows how far it has got, and Esc at the table stops it |
@@ -369,6 +376,7 @@ Where a dataset opens.
 | Key | Action |
 |---|---|
 | `(type)` | Narrow the column list, when the find field is focused. ↓ from find goes to the list, on the table's column cursor |
+| `PgUp / PgDn, Home / End` | A page of columns, or the first or last; ↓ stops at the last column |
 | `Space` | Cycle the column's sort: none → ascending → descending (← steps back). Each column carries its own direction |
 | `1-9` | Put the column at that place in the sort order; 0 removes it (a digit past the end of the order says so) |
 | `Del` | Remove the column from the sort |
@@ -385,7 +393,7 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `(type)` | Narrow the column or operator list |
+| `(type)` | Narrow the column or operator list. The operators are those the column's type takes |
 | `Enter` | Pick the column (type to narrow, Enter chooses), the operator the same way, then type the value and Enter saves the row. Tab, → and Space also choose at the column and operator steps; Shift+Tab steps back; ↑ / ↓ move in the lists |
 | `Esc` | End the edit, and only the edit |
 
@@ -411,7 +419,7 @@ Where a dataset opens.
 | `↑ / ↓` | Move; typing narrows |
 | `Enter` | Choose; on a several-choice row, done |
 | `Space` | Choose; toggle a column on a several-choice row |
-| `Esc` | Back out of the picker, keeping toggles |
+| `Esc` | Back out of the picker; the toggles made since it opened are undone (Enter keeps them) |
 
 ## Chart
 
@@ -421,15 +429,15 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `1-7` | Switch the chart type directly: Line, Scatter, Bar, Histogram, Box, KDE, Heatmap ([ / ] step). The shelves keep what the new type takes |
+| `1-7` | Switch the chart type directly: Line, Scatter, Bar, Histogram, Box, KDE, Heatmap ([ / ] step). The shelves keep what the new type takes. On Rows, digits type a sample size instead |
 | `[ / ]` | Previous or next chart type |
 | `Tab / Shift+Tab (↑ / ↓)` | Next or previous row of the panel, wrapping (j/k too). A shelf the type does not use is dimmed and skipped |
-| `Space / Enter` | On X, Y or Color: open its picker. On the line under Color: pick the values that get a series, by rows. On an option: toggle it or take its next value. The panel applies as it changes, so Enter acts as Space does |
-| `← / → (h/l)` | Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, sum, mean, median, min, max), cumulative, bins, range, order or sample size; on a shelf that takes one column, the previous or next column; flip a toggle |
-| `+ / -` | Bins, bandwidth or sample size |
-| `PgUp / PgDn` | Adjust the sample size in bigger steps |
+| `Space / Enter` | On X, Y or Color: open its picker. On the line under Color: pick the values that get a series, by rows. On an option: toggle it or take its next value. The panel applies as it changes, so Enter acts as Space does, except on Rows: Space switches between Sample and Every row, and Enter reads what the row says |
+| `← / → (h/l)` | Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, stdev, quantile, min, max, first, last) and a quantile's percentile, cumulative, bins, range or order; on Rows, switch between Sample and Every row (read on Enter); on a shelf that takes one column, the previous or next column; on the line under Color, turn Other (every value without a series) on or off; flip a toggle |
+| `+ / -` | Bins or bandwidth |
+| `0-9` | On Rows: type a sample size, like 50000, 50,000, 50k, 250k or 2m. Backspace edits, Enter reads it, Esc puts the row back as it was. A size of at least the table's rows is Every row. Nothing is read until Enter or focus leaves the row |
 | `g` | Grid on or off at the labeled ticks: Line, Scatter, Histogram, Box and KDE. [analysis] chart_grid sets where it starts |
-| `Esc` | Back to the table |
+| `Esc` | Back to the table; on Rows with a change waiting, put the row back first |
 
 ### Chart · Plot
 
@@ -444,7 +452,7 @@ Where a dataset opens.
 | Key | Action |
 |---|---|
 | `↑ / ↓` | Move; typing narrows |
-| `Enter / Space` | Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 7) |
+| `Enter / Space` | Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 10, fewer on a terminal of fewer colors) |
 | `Tab / Shift+Tab` | Choose and move to the next or previous row |
 | `Esc` | Back out of the picker alone |
 
@@ -452,8 +460,8 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `Tab / Shift+Tab (↑ / ↓)` | Next or previous field: Path, Format, Style, Size, Width, Height, Legend, Title, Description, Notes, Source, Byline |
-| `← / →` | Step the format (PNG, SVG, PDF), the style (Light, Dark, Transparent), the size (Slide 16:9, Document, Square, Single column, Double column, Custom) or the legend (line ends, a corner, off). Typing a width or height makes the size Custom |
+| `Tab / Shift+Tab (↑ / ↓)` | Next or previous field: Path, Format, Style, Size, Width, Height, Legend, the marks (Opacity and Point size for a scatter, Line width for a line, Y from zero for a line), Title, Description, Notes, Source, Byline, Recipe |
+| `← / →` | Step the format (PNG, SVG, PDF), the style (Light, Dark, Transparent), the size (Slide 16:9, Document, Square, Single column, Double column, Custom), the legend (line ends, a corner, off), a scatter's point opacity (Auto, 100%, 50%, 20%) and size (Small, Medium, Large), a line's width (Thin, Normal, Bold), Y from zero, or the recipe (Include, Omit). Typing a width or height makes the size Custom |
 | `Ctrl+P / Ctrl+N` | Earlier or later paths in the path field |
 | `Enter` | Export, from anywhere in the dialog. A path ending .png, .svg or .pdf takes that format; any other gets the format's extension after it. An existing file asks Overwrite / No, starting on No; ←/→ (h/l) or Tab pick, Enter confirms, and declining returns to the filled dialog |
 | `Esc` | Back to the chart |
@@ -466,19 +474,19 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `Tab` | Between the results and the sidebar |
+| `Tab / Shift+Tab` | Between the results and the tools |
 | `↑ / ↓ (j/k)` | Rows, or the sidebar's tools |
 | `← / → (h/l)` | Scroll the statistics; the header counts those out of view |
 | `Home / End` | First or last row |
 | `PgUp / PgDn` | A page |
-| `Enter` | Select tool from sidebar (when sidebar focused). The first run on a dataset starts in the Sample form, where Enter runs it; later tools reuse that sample |
-| `Esc` | Cancel a run in progress; otherwise close the analysis view |
+| `Enter` | Open the sidebar's tool and move into its pane. The first run on a dataset starts in the Sample form, where Enter runs it; later tools reuse that sample. Results last until the view changes: closing and reopening shows them again |
+| `Esc` | Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view |
 
 ### Analysis: Describe · Sample
 
 | Key | Action |
 |---|---|
-| `s` | Choose the sample every tool reads: which rows, how they are picked, how many, the seed |
+| `s` | Choose the sample every tool reads: which rows, how they are picked, how many (typed, like 50000, 50k or 2m), the seed. Enter applies the form |
 | `v` | View the sample's rows as a table; Esc comes back |
 | `r` | Draw another sample (when the result is a sample) |
 | `a` | Read every row instead, after confirming |
@@ -496,15 +504,15 @@ Distribution in the Analysis sidebar.
 | `← / → (h/l)` | Scroll the statistics; the header counts those out of view |
 | `Home / End` | First or last row |
 | `PgUp / PgDn` | A page |
-| `Tab` | Between the results and the sidebar |
-| `Enter` | Open detail view for selected column (shows Q-Q plot and histogram); with the sidebar focused, select a tool |
-| `Esc` | Cancel a run in progress; otherwise close the analysis view |
+| `Tab / Shift+Tab` | Between the results and the tools |
+| `Enter` | Open detail view for selected column (shows Q-Q plot and histogram); with the sidebar focused, open a tool |
+| `Esc` | Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view |
 
 ### Analysis: Distribution · Sample
 
 | Key | Action |
 |---|---|
-| `s` | Choose the sample every tool reads: which rows, how they are picked, how many, the seed |
+| `s` | Choose the sample every tool reads: which rows, how they are picked, how many (typed, like 50000, 50k or 2m), the seed. Enter applies the form |
 | `v` | View the sample's rows as a table; Esc comes back |
 | `r` | Draw another sample (when the result is a sample) |
 | `a` | Read every row instead, after confirming |
@@ -519,6 +527,7 @@ Distribution in the Analysis sidebar.
 | Key | Action |
 |---|---|
 | `↑ / ↓ (j/k)` | Compare the values with another family |
+| `Home / End` | The first or last family |
 | `s` | Histogram scale: linear or log |
 | `Esc` | Back to the distribution table |
 
@@ -530,20 +539,20 @@ Correlation Matrix in the Analysis sidebar.
 
 | Key | Action |
 |---|---|
-| `Tab` | Between the matrix and the sidebar |
+| `Tab / Shift+Tab` | Between the matrix and the tools |
 | `↑ / ↓ (j/k)` | Matrix rows, or the sidebar's tools |
 | `← / → (h/l)` | Matrix columns |
-| `Home / End` | Jump to the first/last corner cell (the column resets too) |
+| `Home / End` | Jump to the first pair (the first row's second column) or the last (the last row's next-to-last column); the matrix opens on the first |
 | `PgUp / PgDn` | A page |
-| `Enter` | Open pair detail view (on a cell) or select tool (sidebar); does nothing on a diagonal cell |
+| `Enter` | Open pair detail view (on a cell) or open a tool (sidebar); does nothing on a diagonal cell |
 | `m` | Method: Pearson r or Spearman ρ, named in the title (both come from the one run, so it reads nothing) |
-| `Esc` | Cancel a run in progress; otherwise close the analysis view |
+| `Esc` | Cancel a run in progress; otherwise from the matrix back to the tools, and from the tools close the analysis view |
 
 ### Analysis: Correlation · Sample
 
 | Key | Action |
 |---|---|
-| `s` | Choose the sample every tool reads: which rows, how they are picked, how many, the seed |
+| `s` | Choose the sample every tool reads: which rows, how they are picked, how many (typed, like 50000, 50k or 2m), the seed. Enter applies the form |
 | `v` | View the sample's rows as a table; Esc comes back |
 | `r` | Draw another sample (when the result is a sample) |
 | `a` | Read every row instead, after confirming |
@@ -604,8 +613,8 @@ Data Quality in the Analysis sidebar.
 | `p` | The access plan: what a run reads |
 | `r` | On a sample, run again with a new seed |
 | `x` | Export the report to JSON or Markdown; nothing is read |
-| `Tab` | Between the result and the tools |
-| `Esc` | Back one level: all findings again, then close |
+| `Tab / Shift+Tab` | Between the result and the tools |
+| `Esc` | Back one level: all findings again, then the tools, then close |
 
 ### Analysis: Data Quality · Segments
 
@@ -641,8 +650,8 @@ Data Quality in the Analysis sidebar.
 | Key | Action |
 |---|---|
 | `Tab / Shift+Tab (↑ / ↓)` | Next or previous field, wrapping; the fields follow the format. The dialog opens on Path, and the arrows move from there |
-| `← / →` | On Format or Compression: the previous or next value (h/l too). On Include header or Source file: toggle. In Path and Delimiter: move the cursor |
-| `Space` | Toggle a checkbox (Include header, Source file); on Format or Compression, the next value, wrapping |
+| `← / →` | On Format or Compression: the previous or next value, along the Format row (h/l too). On Header or Source file: toggle. In Path and Delimiter: move the cursor |
+| `Space` | Toggle a checkbox (Header, Source file); on Format or Compression, the next value, wrapping |
 | `Ctrl+P / Ctrl+N` | In the path field: the paths exported to before, earlier or later (↑ and ↓ move between fields) |
 | `Enter` | Export, from anywhere in the form. On a blank path the form says "Enter a file path." instead of exporting |
 | `Esc` | Close without exporting |
@@ -709,8 +718,9 @@ Data Quality in the Analysis sidebar.
 
 | Key | Action |
 |---|---|
-| `Enter (d / D)` | Delete |
-| `Esc` | Cancel |
+| `← / → (h/l)` | Pick Delete or No (Tab too); it starts on No |
+| `Enter` | Confirm the one picked |
+| `Esc` | Keep the view |
 
 ## Format picker
 
@@ -725,6 +735,62 @@ Data Quality in the Analysis sidebar.
 | `Enter` | Read the file again with the spec chosen. The query, filters and sort are cleared |
 | `Backspace` | Delete a character (Ctrl+W a word, Ctrl+U all) |
 | `Esc` | Close and keep the format |
+
+## Column type
+
+<kbd>Enter</kbd> on the Info panel's Schema tab, or Change type in the cell menu.
+
+### Column type · Pick
+
+| Key | Action |
+|---|---|
+| `(type)` | Narrow the list to the names that contain it. In the format list, a strftime format typed that no line holds is the format |
+| `↑ / ↓` | Move |
+| `Enter` | The type: the column reads as it at once, a value that does not fit null. A date, time or datetime asks its format next, each line showing what it makes of the column's first value. as read takes the type away |
+| `Backspace` | Delete a character (Ctrl+W a word, Ctrl+U all) |
+| `Esc` | Back to the types, or close |
+
+## Combine into datetime
+
+Combine into datetime in the cell menu, on a text, date or time column.
+
+### Combine into datetime · Fields
+
+| Key | Action |
+|---|---|
+| `Tab / Shift+Tab (↑ / ↓)` | Next or previous field |
+| `Space` | Pick a column, or step the kind |
+| `← / →` | Step the kind: datetime, date or time |
+| `Enter` | Make the column, before the first column it is made from, as a format spec's derived column is: a date and a time, and a UTC offset, make a datetime in UTC |
+| `Esc` | Cancel |
+
+## Table picker
+
+<kbd>T</kbd> at a table of a file of several.
+
+### Table picker · Pick
+
+| Key | Action |
+|---|---|
+| `(type)` | Narrow to the names that contain it |
+| `↑ / ↓` | Move |
+| `Enter` | Open the table chosen in place of this one. The query, filters and sort are cleared |
+| `Backspace` | Delete a character (Ctrl+W a word, Ctrl+U all) |
+| `Esc` | Close and keep the table |
+
+## Sample
+
+<kbd>S</kbd> at the table.
+
+### Sample · Form
+
+| Key | Action |
+|---|---|
+| `Tab / Shift+Tab (↑ / ↓)` | Next or previous row |
+| `← / →` | Step Rows from, Method and Per value of; Method's No sample takes the view's sample away |
+| `(type)` | Type into the focused row: the size (50000, 50k, 2m), the seed, a row range, partition values or file numbers |
+| `Enter` | Draw the sample: the table shows its rows as they arrive, and the query, filters and sort run over them. When the estimate is more than the memory available now (or analysis.sample_memory_limit), the form says so; Enter again draws anyway |
+| `Esc` | Close; the view's sample stays as it was |
 
 ## Hex view
 

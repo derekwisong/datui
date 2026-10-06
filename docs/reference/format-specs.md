@@ -196,7 +196,8 @@ in sections of their own.
 
 A [delimited spec](../formats/format-specs.md#delimited-text) takes
 `description` and `unit` in `[columns]`, for a column of the file or a derived one:
-`temp = { description = "Air temperature", unit = "deg F" }`.
+`temp = { description = "Air temperature", unit = "deg F" }`. A column's declared
+`type` shows beside its unit: `Latitude  f64 · deg  GPS latitude`.
 
 Each text is trimmed, and an empty one is refused. Where a catalog lists the
 same file, its description and its `documentation` link stand over the spec's.

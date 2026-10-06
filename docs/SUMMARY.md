@@ -28,6 +28,7 @@
 - [Analysis](user-guide/analysis-features.md)
 - [Check data quality](user-guide/data-quality.md)
 - [Large datasets](user-guide/large-datasets.md)
+- [Sample a table](user-guide/sampling.md)
 - [Copy to the clipboard](user-guide/copying.md)
 - [Export data](user-guide/exporting-data.md)
 - [Save and apply views](user-guide/views.md)

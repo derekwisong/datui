@@ -13,7 +13,7 @@ datui\-keys \- the keys of every datui screen
 This screen's keys. In a text field ? types, and F1 opens the help
 .TP
 \fBCtrl+O\fR
-The home screen; abandons a load
+The home screen, on the dataset left, its filter kept and selected (typing replaces it); abandons a load
 .TP
 \fBCtrl+Q / Ctrl+C\fR
 Quit from anywhere; Ctrl+C quits from a text field too, where Alt+W copies
@@ -100,8 +100,11 @@ Move the cursor's column one place left or right, the cursor with it; a frozen c
 \fBp\fR
 Pivot or melt
 .TP
+\fBS\fR
+Draw a sample of the source into memory: the step under the query, filters and sort, which then run over it. The rows show as they arrive (Esc stops, keeping them); the footer says sample 100,000 of 36.8M. Analysis, charts and export read the sample. S again edits it; Method No sample, or R, takes it away
+.TP
 \fBR\fR
-Reset table: clear the query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view
+Reset table: clear the sample, query, filters, sort, column order, hidden columns and widths, frozen columns, pivot/melt, drill-down and the applied view
 .PP
 \fIAnalyze\fR
 .TP
@@ -151,6 +154,9 @@ Fit the cursor's column to the rows on screen; w puts it back to automatic width
 \fBb\fR
 A binary file read through a format spec: read it again with another spec. Clears the query, filters and sort
 .TP
+\fBT\fR
+A file of several tables (a workbook's worksheets, a database's tables, a format spec's record types, a Hugging Face cache's splits): pick another to open in place of this one, as \-\-table names it. Clears the query, filters and sort; a saved view for the table applies. On a file of one table, says so
+.TP
 \fBt\fR
 Follow the file as it grows (CSV, TSV, PSV, NDJSON). Reads it again, so the query, filters and sort are cleared; while following, t pauses and resumes, and Esc stops
 .PP
@@ -163,7 +169,7 @@ Back to the home screen when the dataset was opened from it; otherwise quit
 Quit
 .TP
 \fBEsc\fR
-Leave a drill-down, stop a find or a follow
+Leave a drill-down; stop a find, a sample being drawn (its rows so far stay) or a follow
 .PP
 \fIMouse\fR
 .TP
@@ -172,6 +178,12 @@ The cursor to the cell; on a header, its column
 .TP
 \fBDouble\-click\fR
 Enter on the row
+.TP
+\fBDouble\-click a header\fR
+Double-click a column's header to sort by it, as [ and ] do: ascending, then descending, then back to no sort, replacing the sort in effect
+.TP
+\fBDouble\-click a header's edge\fR
+Double-click the gap right of a column's header to fit the column to the rows on screen, as = does; the column cursor moves to it, and nothing is sorted
 .TP
 \fBWheel\fR
 \(ua / \(da, three rows a notch; the same in help, the inspector and the sidebars
@@ -225,7 +237,7 @@ What the footer says on this row: "Open all" reads a whole directory as one tabl
 Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a catalog's remote dataset, back here)
 .TP
 \fBEsc\fR
-Back out one layer: the path prompt, the filter, the directory (back to the row it was entered from), then to the open table
+Back out one layer: the path prompt, the filter (onto the first dataset), the directory (back to the row it was entered from), then to the open table
 .PP
 \fIFind\fR
 .TP
@@ -233,7 +245,7 @@ Back out one layer: the path prompt, the filter, the directory (back to the row 
 Narrow by name or column; fuzzy, so "sal" finds "sales". What you open often ranks first. Typing also searches below the directory you are inside and the listed bucket names; matches appear under "Found"
 .TP
 \fB~\fR
-While the filter is empty: type a path or URL by hand. The list shows the directory being typed, narrowed by the name after the last /. The prompt is a plain editor: characters, Backspace, Ctrl+U clears, Tab completes the one name left or what the names share, \(ua / \(da pick a name, Enter opens a file or goes inside a directory, Esc closes. s3://, gs:// and az:// complete from buckets and prefixes already known. With a filter typed, ~ types into it
+While the filter is empty: type a path or URL by hand. The list shows the directory being typed, narrowed by the name after the last /. The prompt is a plain editor: characters, Backspace, Ctrl+U clears, The first name that matches is picked. Tab completes the one name left or what the names share, or a name picked further down; \(ua / \(da pick a name, and \(ua from the first takes the path as typed; Enter opens the picked name or the typed path: a file opens, a directory is gone inside; Esc closes. s3://, gs:// and az:// complete from buckets and prefixes already known. With a filter typed, ~ types into it
 .TP
 \fBCtrl+U\fR
 Clear the filter or path input
@@ -256,7 +268,7 @@ Add the dataset or directory under the cursor to catalog.toml, listed under My d
 Open the Documentation view of a catalog row, of a place inside one, or of a file whose format spec documents it: description, publisher, license, links, record types, columns with units and value legends, bookmarks. A catalog's description, link and column notes stand over the spec's. Ctrl+E here is not readline's end of line: the filter is edited at its end
 .TP
 \fBDelete\fR
-Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source
+Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source. On the Example datasets heading, hide them until datui cache clear, after confirming
 .TP
 \fBShift+Delete\fR
 Forget every recent entry, after confirming
@@ -284,6 +296,9 @@ The first or last line (Home / End too)
 .TP
 \fBEnter / Space / \(->\fR
 Open or close the value legend of the column under the cursor: a catalog's values, or a spec's enum
+.TP
+\fBo\fR
+Open the link on the cursor's line in the system browser. Only http and https links open, and only after a question showing the whole URL (Enter opens, Esc does not). Off over SSH or without a display: y copies the link instead
 .TP
 \fBy\fR
 Copy the link or value on the cursor's line, whole, however it is cut on screen
@@ -401,8 +416,8 @@ A page of fields
 \fB\(<- / \(-> (h/l)\fR
 Previous and next row; the table's cursor moves with it
 .TP
-\fBTab\fR
-Into the value, to scroll and find in it
+\fBTab / Shift+Tab\fR
+Into the value, to scroll and find in it. Nothing moves: the panes are split by what they hold, not by where the cursor is
 .TP
 \fBEnter\fR
 On a group's row, its rows, as at the table. Else open a struct, a list, or text holding a JSON object or array; or read a field the table's rows do not hold (hidden and binary columns)
@@ -426,7 +441,7 @@ Compare: a column for the next row, or the pinned one
 Pin this row to compare others with; again to unpin
 .TP
 \fBEsc / Space\fR
-Close; Esc clears a find first
+Close. Esc backs out one level at a time: a find first, then Compare, then the inspector
 .PP
 \fIOutput\fR
 .TP
@@ -463,12 +478,15 @@ Find in the value; n and N go to the next and last place
 As in the fields
 .TP
 \fBEsc / Tab\fR
-Back to the fields; Esc clears a find first
+Back to the fields (Shift+Tab too); Esc clears a find first
 .PP
 \fINested\fR
 .TP
 \fBEnter / \(-> (l)\fR
 Open the focused item
+.TP
+\fBTab / Shift+Tab\fR
+Into the item's value; not in an empty level
 .TP
 \fBEsc / \(<- (h)\fR
 Up a level; at the row, Esc closes
@@ -493,7 +511,10 @@ Model, Audio, MIDI, Metadata and format tabs: scroll the list a page
 Model, Audio, MIDI, Metadata and format tabs: the top or the end of the list
 .TP
 \fBEnter\fR
-Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor
+Schema tab: change the column's type, with the names and formats a format spec's type takes. Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor. Excel or SQLite tab: open the worksheet or table under the cursor in place of this one, as T does
+.TP
+\fBo\fR
+Documentation tab: open the link on the cursor's line in the system browser. Only http and https links open, and only after a question showing the whole URL. Off over SSH or without a display
 .TP
 \fBy\fR
 Documentation tab: copy the link or value on the cursor's line, whole, however it is cut on screen
@@ -590,6 +611,9 @@ Remove every sort and filter
 \fB(type)\fR
 Narrow the column list, when the find field is focused. \(da from find goes to the list, on the table's column cursor
 .TP
+\fBPgUp / PgDn, Home / End\fR
+A page of columns, or the first or last; \(da stops at the last column
+.TP
 \fBSpace\fR
 Cycle the column's sort: none \(-> ascending \(-> descending (\(<- steps back). Each column carries its own direction
 .TP
@@ -626,7 +650,7 @@ Clear the staged sort, order, locks, hidden columns and widths
 \fIFilter editor\fR
 .TP
 \fB(type)\fR
-Narrow the column or operator list
+Narrow the column or operator list. The operators are those the column's type takes
 .TP
 \fBEnter\fR
 Pick the column (type to narrow, Enter chooses), the operator the same way, then type the value and Enter saves the row. Tab, \(-> and Space also choose at the column and operator steps; Shift+Tab steps back; \(ua / \(da move in the lists
@@ -668,14 +692,14 @@ Choose; on a several-choice row, done
 Choose; toggle a column on a several-choice row
 .TP
 \fBEsc\fR
-Back out of the picker, keeping toggles
+Back out of the picker; the toggles made since it opened are undone (Enter keeps them)
 .SS "Chart"
 \fBc\fR at the table: a chart chosen from the cursor column's type.
 .PP
 \fIShelves\fR
 .TP
 \fB1\-7\fR
-Switch the chart type directly: Line, Scatter, Bar, Histogram, Box, KDE, Heatmap ([ / ] step). The shelves keep what the new type takes
+Switch the chart type directly: Line, Scatter, Bar, Histogram, Box, KDE, Heatmap ([ / ] step). The shelves keep what the new type takes. On Rows, digits type a sample size instead
 .TP
 \fB[ / ]\fR
 Previous or next chart type
@@ -684,22 +708,22 @@ Previous or next chart type
 Next or previous row of the panel, wrapping (j/k too). A shelf the type does not use is dimmed and skipped
 .TP
 \fBSpace / Enter\fR
-On X, Y or Color: open its picker. On the line under Color: pick the values that get a series, by rows. On an option: toggle it or take its next value. The panel applies as it changes, so Enter acts as Space does
+On X, Y or Color: open its picker. On the line under Color: pick the values that get a series, by rows. On an option: toggle it or take its next value. The panel applies as it changes, so Enter acts as Space does, except on Rows: Space switches between Sample and Every row, and Enter reads what the row says
 .TP
 \fB\(<- / \(-> (h/l)\fR
-Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, sum, mean, median, min, max), cumulative, bins, range, order or sample size; on a shelf that takes one column, the previous or next column; flip a toggle
+Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, stdev, quantile, min, max, first, last) and a quantile's percentile, cumulative, bins, range or order; on Rows, switch between Sample and Every row (read on Enter); on a shelf that takes one column, the previous or next column; on the line under Color, turn Other (every value without a series) on or off; flip a toggle
 .TP
 \fB+ / \-\fR
-Bins, bandwidth or sample size
+Bins or bandwidth
 .TP
-\fBPgUp / PgDn\fR
-Adjust the sample size in bigger steps
+\fB0\-9\fR
+On Rows: type a sample size, like 50000, 50,000, 50k, 250k or 2m. Backspace edits, Enter reads it, Esc puts the row back as it was. A size of at least the table's rows is Every row. Nothing is read until Enter or focus leaves the row
 .TP
 \fBg\fR
 Grid on or off at the labeled ticks: Line, Scatter, Histogram, Box and KDE. [analysis] chart_grid sets where it starts
 .TP
 \fBEsc\fR
-Back to the table
+Back to the table; on Rows with a change waiting, put the row back first
 .PP
 \fIPlot\fR
 .TP
@@ -718,7 +742,7 @@ While following a file, draw again with the rows that arrived since; the bar say
 Move; typing narrows
 .TP
 \fBEnter / Space\fR
-Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 7)
+Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 10, fewer on a terminal of fewer colors)
 .TP
 \fBTab / Shift+Tab\fR
 Choose and move to the next or previous row
@@ -729,10 +753,10 @@ Back out of the picker alone
 \fIExport dialog\fR
 .TP
 \fBTab / Shift+Tab (\(ua / \(da)\fR
-Next or previous field: Path, Format, Style, Size, Width, Height, Legend, Title, Description, Notes, Source, Byline
+Next or previous field: Path, Format, Style, Size, Width, Height, Legend, the marks (Opacity and Point size for a scatter, Line width for a line, Y from zero for a line), Title, Description, Notes, Source, Byline, Recipe
 .TP
 \fB\(<- / \(->\fR
-Step the format (PNG, SVG, PDF), the style (Light, Dark, Transparent), the size (Slide 16:9, Document, Square, Single column, Double column, Custom) or the legend (line ends, a corner, off). Typing a width or height makes the size Custom
+Step the format (PNG, SVG, PDF), the style (Light, Dark, Transparent), the size (Slide 16:9, Document, Square, Single column, Double column, Custom), the legend (line ends, a corner, off), a scatter's point opacity (Auto, 100%, 50%, 20%) and size (Small, Medium, Large), a line's width (Thin, Normal, Bold), Y from zero, or the recipe (Include, Omit). Typing a width or height makes the size Custom
 .TP
 \fBCtrl+P / Ctrl+N\fR
 Earlier or later paths in the path field
@@ -747,8 +771,8 @@ Back to the chart
 .PP
 \fIExplore\fR
 .TP
-\fBTab\fR
-Between the results and the sidebar
+\fBTab / Shift+Tab\fR
+Between the results and the tools
 .TP
 \fB\(ua / \(da (j/k)\fR
 Rows, or the sidebar's tools
@@ -763,15 +787,15 @@ First or last row
 A page
 .TP
 \fBEnter\fR
-Select tool from sidebar (when sidebar focused). The first run on a dataset starts in the Sample form, where Enter runs it; later tools reuse that sample
+Open the sidebar's tool and move into its pane. The first run on a dataset starts in the Sample form, where Enter runs it; later tools reuse that sample. Results last until the view changes: closing and reopening shows them again
 .TP
 \fBEsc\fR
-Cancel a run in progress; otherwise close the analysis view
+Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view
 .PP
 \fISample\fR
 .TP
 \fBs\fR
-Choose the sample every tool reads: which rows, how they are picked, how many, the seed
+Choose the sample every tool reads: which rows, how they are picked, how many (typed, like 50000, 50k or 2m), the seed. Enter applies the form
 .TP
 \fBv\fR
 View the sample's rows as a table; Esc comes back
@@ -801,19 +825,19 @@ First or last row
 \fBPgUp / PgDn\fR
 A page
 .TP
-\fBTab\fR
-Between the results and the sidebar
+\fBTab / Shift+Tab\fR
+Between the results and the tools
 .TP
 \fBEnter\fR
-Open detail view for selected column (shows Q-Q plot and histogram); with the sidebar focused, select a tool
+Open detail view for selected column (shows Q-Q plot and histogram); with the sidebar focused, open a tool
 .TP
 \fBEsc\fR
-Cancel a run in progress; otherwise close the analysis view
+Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view
 .PP
 \fISample\fR
 .TP
 \fBs\fR
-Choose the sample every tool reads: which rows, how they are picked, how many, the seed
+Choose the sample every tool reads: which rows, how they are picked, how many (typed, like 50000, 50k or 2m), the seed. Enter applies the form
 .TP
 \fBv\fR
 View the sample's rows as a table; Esc comes back
@@ -834,6 +858,9 @@ While following a file, read again with the rows that arrived since the results 
 \fB\(ua / \(da (j/k)\fR
 Compare the values with another family
 .TP
+\fBHome / End\fR
+The first or last family
+.TP
 \fBs\fR
 Histogram scale: linear or log
 .TP
@@ -844,8 +871,8 @@ Correlation Matrix in the Analysis sidebar.
 .PP
 \fIExplore\fR
 .TP
-\fBTab\fR
-Between the matrix and the sidebar
+\fBTab / Shift+Tab\fR
+Between the matrix and the tools
 .TP
 \fB\(ua / \(da (j/k)\fR
 Matrix rows, or the sidebar's tools
@@ -854,24 +881,24 @@ Matrix rows, or the sidebar's tools
 Matrix columns
 .TP
 \fBHome / End\fR
-Jump to the first/last corner cell (the column resets too)
+Jump to the first pair (the first row's second column) or the last (the last row's next-to-last column); the matrix opens on the first
 .TP
 \fBPgUp / PgDn\fR
 A page
 .TP
 \fBEnter\fR
-Open pair detail view (on a cell) or select tool (sidebar); does nothing on a diagonal cell
+Open pair detail view (on a cell) or open a tool (sidebar); does nothing on a diagonal cell
 .TP
 \fBm\fR
 Method: Pearson r or Spearman \(*r, named in the title (both come from the one run, so it reads nothing)
 .TP
 \fBEsc\fR
-Cancel a run in progress; otherwise close the analysis view
+Cancel a run in progress; otherwise from the matrix back to the tools, and from the tools close the analysis view
 .PP
 \fISample\fR
 .TP
 \fBs\fR
-Choose the sample every tool reads: which rows, how they are picked, how many, the seed
+Choose the sample every tool reads: which rows, how they are picked, how many (typed, like 50000, 50k or 2m), the seed. Enter applies the form
 .TP
 \fBv\fR
 View the sample's rows as a table; Esc comes back
@@ -981,11 +1008,11 @@ On a sample, run again with a new seed
 \fBx\fR
 Export the report to JSON or Markdown; nothing is read
 .TP
-\fBTab\fR
+\fBTab / Shift+Tab\fR
 Between the result and the tools
 .TP
 \fBEsc\fR
-Back one level: all findings again, then close
+Back one level: all findings again, then the tools, then close
 .PP
 \fISegments\fR
 .TP
@@ -1031,10 +1058,10 @@ Back to the list
 Next or previous field, wrapping; the fields follow the format. The dialog opens on Path, and the arrows move from there
 .TP
 \fB\(<- / \(->\fR
-On Format or Compression: the previous or next value (h/l too). On Include header or Source file: toggle. In Path and Delimiter: move the cursor
+On Format or Compression: the previous or next value, along the Format row (h/l too). On Header or Source file: toggle. In Path and Delimiter: move the cursor
 .TP
 \fBSpace\fR
-Toggle a checkbox (Include header, Source file); on Format or Compression, the next value, wrapping
+Toggle a checkbox (Header, Source file); on Format or Compression, the next value, wrapping
 .TP
 \fBCtrl+P / Ctrl+N\fR
 In the path field: the paths exported to before, earlier or later (\(ua and \(da move between fields)
@@ -1136,11 +1163,14 @@ Back to the list, discarding edits
 .PP
 \fIDelete\fR
 .TP
-\fBEnter (d / D)\fR
-Delete
+\fB\(<- / \(-> (h/l)\fR
+Pick Delete or No (Tab too); it starts on No
+.TP
+\fBEnter\fR
+Confirm the one picked
 .TP
 \fBEsc\fR
-Cancel
+Keep the view
 .SS "Format picker"
 \fBb\fR at a table read through a format spec.
 .PP
@@ -1160,6 +1190,82 @@ Delete a character (Ctrl+W a word, Ctrl+U all)
 .TP
 \fBEsc\fR
 Close and keep the format
+.SS "Column type"
+\fBEnter\fR on the Info panel's Schema tab, or Change type in the cell menu.
+.PP
+\fIPick\fR
+.TP
+\fB(type)\fR
+Narrow the list to the names that contain it. In the format list, a strftime format typed that no line holds is the format
+.TP
+\fB\(ua / \(da\fR
+Move
+.TP
+\fBEnter\fR
+The type: the column reads as it at once, a value that does not fit null. A date, time or datetime asks its format next, each line showing what it makes of the column's first value. as read takes the type away
+.TP
+\fBBackspace\fR
+Delete a character (Ctrl+W a word, Ctrl+U all)
+.TP
+\fBEsc\fR
+Back to the types, or close
+.SS "Combine into datetime"
+Combine into datetime in the cell menu, on a text, date or time column.
+.PP
+\fIFields\fR
+.TP
+\fBTab / Shift+Tab (\(ua / \(da)\fR
+Next or previous field
+.TP
+\fBSpace\fR
+Pick a column, or step the kind
+.TP
+\fB\(<- / \(->\fR
+Step the kind: datetime, date or time
+.TP
+\fBEnter\fR
+Make the column, before the first column it is made from, as a format spec's derived column is: a date and a time, and a UTC offset, make a datetime in UTC
+.TP
+\fBEsc\fR
+Cancel
+.SS "Table picker"
+\fBT\fR at a table of a file of several.
+.PP
+\fIPick\fR
+.TP
+\fB(type)\fR
+Narrow to the names that contain it
+.TP
+\fB\(ua / \(da\fR
+Move
+.TP
+\fBEnter\fR
+Open the table chosen in place of this one. The query, filters and sort are cleared
+.TP
+\fBBackspace\fR
+Delete a character (Ctrl+W a word, Ctrl+U all)
+.TP
+\fBEsc\fR
+Close and keep the table
+.SS "Sample"
+\fBS\fR at the table.
+.PP
+\fIForm\fR
+.TP
+\fBTab / Shift+Tab (\(ua / \(da)\fR
+Next or previous row
+.TP
+\fB\(<- / \(->\fR
+Step Rows from, Method and Per value of; Method's No sample takes the view's sample away
+.TP
+\fB(type)\fR
+Type into the focused row: the size (50000, 50k, 2m), the seed, a row range, partition values or file numbers
+.TP
+\fBEnter\fR
+Draw the sample: the table shows its rows as they arrive, and the query, filters and sort run over them. When the estimate is more than the memory available now (or analysis.\:sample_memory_limit), the form says so; Enter again draws anyway
+.TP
+\fBEsc\fR
+Close; the view's sample stays as it was
 .SS "Hex view"
 \fBdatui \-\-hex FILE\fR, \fBCtrl\fR+\fBX\fR on the home screen, or \fBx\fR in the Info panel.
 .PP

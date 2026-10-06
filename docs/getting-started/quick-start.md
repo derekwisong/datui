@@ -10,7 +10,7 @@ datui
 ```
 
 Type `penguins` to narrow the home screen, select **Palmer penguins** under
-**Public datasets**, and press <kbd>Enter</kbd>. A catalog file this small
+**Example datasets**, and press <kbd>Enter</kbd>. A catalog file this small
 downloads without a question.
 
 The table has 344 penguins. Empty fields in the file are null, shown as `∅`;

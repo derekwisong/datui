@@ -1372,7 +1372,7 @@ dependencies = [
  "lz4",
  "memchr",
  "memmap2",
- "object 0.37.3",
+ "object 0.39.1",
  "object_store",
  "orc-rust",
  "polars",

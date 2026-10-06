@@ -71,24 +71,27 @@ A new query starts a fresh view, clearing sidebar filters and sort. See
 
 ## 3. Chart the measurements
 
-Press <kbd>R</kbd> to return to the original rows, then <kbd>c</kbd> for charts.
-On the **XY** tab, <kbd>Tab</kbd> moves between settings:
+Do heavier penguins have longer flippers? Press <kbd>R</kbd> to return to the
+original rows, put the column cursor on `body_mass_g` (<kbd>g</kbd>, type
+`body_mass_g`, <kbd>Enter</kbd>), then press <kbd>c</kbd> for a chart and
+<kbd>2</kbd> for **Scatter**. **Y** starts on the cursor's column.
 
-| Setting | Choose |
+| Shelf | Choose |
 |---|---|
-| Style | Scatter (<kbd>→</kbd>) |
-| X axis | `flipper_length_mm` |
-| Y series | `body_mass_g` |
+| Type | Scatter (<kbd>2</kbd>) |
+| X | `flipper_length_mm` |
+| Y | `body_mass_g` |
 
-<kbd>Space</kbd> on a column setting opens its picker. Type part of the name;
-on **Y series**, <kbd>Space</kbd> toggles a series and <kbd>Enter</kbd> closes
-the picker. The two penguins with no measurements are left out.
+<kbd>↓</kbd> <kbd>↑</kbd> move between rows of the panel; <kbd>Space</kbd> on
+**X** opens its picker. Type part of the name and press <kbd>Enter</kbd>. The
+two penguins with no measurements are left out.
 
-Now press <kbd>6</kbd> for **Bar**, choose `species` for **Category** and
-**Count** for **Value**: Adelie 152, Gentoo 124, Chinstrap 68.
+Now press <kbd>3</kbd> for **Bar**, choose `species` for **X**, and on
+**Aggregate** press <kbd>→</kbd> for **count**: Adelie 152, Gentoo 124,
+Chinstrap 68.
 
-Press <kbd>e</kbd> in the chart to export a PNG or EPS. Press <kbd>Esc</kbd> to
-return to the table. [More chart options](../user-guide/charting.md).
+Press <kbd>e</kbd> in the chart to export a PNG, SVG or PDF. Press
+<kbd>Esc</kbd> to return to the table. [More chart options](../user-guide/charting.md).
 
 ## 4. Copy or export
 

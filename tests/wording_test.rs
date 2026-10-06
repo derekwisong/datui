@@ -122,14 +122,10 @@ const ALLOWED: &[(&str, &str)] = &[
     ("docs/for-developers/tests.md", "\"opens anything\" claims"),
     // GGUF's own key.
     ("docs/", "chat template"),
-    ("release-notes/", "chat template"),
     // The 0.4 release notes name what was renamed.
     ("release-notes/", "| `[templates]`"),
-    ("release-notes/", "| `[query] default_mode = \"search\"`"),
-    ("release-notes/", "Templates are now views"),
-    ("release-notes/", "which replaces the Text query mode"),
-    ("release-notes/", "A status footer replaces the control bar"),
-    ("release-notes/", "- The `template` module is `view`"),
+    ("release-notes/", "**Views**, formerly templates"),
+    ("release-notes/", "| Text query mode |"),
 ];
 
 fn root() -> PathBuf {

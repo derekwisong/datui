@@ -89,7 +89,7 @@ memmap2 = "0.9"
 # Binary format specs: half floats, record checksums, finding sync words, and the
 # codecs of compressed blocks. Each is already in the tree through Polars or Arrow.
 half = "2.7"
-crc = "2.1"
+crc = "3.4"
 memchr = "2.8"
 lz4 = "1.28"
 snap = "1.1"

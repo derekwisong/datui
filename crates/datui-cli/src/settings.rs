@@ -274,7 +274,7 @@ pub const SETTINGS: &[Setting] = &[
     s("csv.infer_rows", Count, Value("1000"), "Rows read to infer column types.").flag("infer-rows").kwarg("infer_rows"),
     s("csv.ignore_errors", Bool, Value("false"), "Skip rows that do not parse instead of failing.").flag("ignore-errors").kwarg("ignore_errors"),
     // [display]
-    s("display.unicode", Choice(&["auto", "always", "never"]), Value("\"auto\""), "Box-drawing and arrow glyphs, or plain ASCII. auto uses them when the locale is UTF-8."),
+    s("display.unicode", Choice(&["auto", "always", "never"]), Value("\"auto\""), "Box-drawing and arrow glyphs, or plain ASCII. auto uses them when the locale is UTF-8, or on Windows when no locale is set."),
     s("display.row_numbers", Toml("\"auto\" \\| bool"), Value("\"auto\""), "Number rows on the left by their place in the source, kept through a sort or filter (# toggles). auto: for text and logs; true or false: for all of them.").flag("row-numbers").kwarg("row_numbers"),
     s("display.row_numbers_start", Count, Value("1"), "The number of the source's first row.").kwarg("row_numbers_start"),
     s("display.cell_padding", Toml("\"comfortable\" \\| \"compact\" \\| integer"), Value("\"comfortable\""), "Space between columns: comfortable (2 cells), compact (1) or a number of cells."),
@@ -556,12 +556,7 @@ pub const ENVIRONMENT: &[EnvVar] = &[
     env(
         &["LC_ALL", "LC_CTYPE", "LANG"],
         EnvGroup::Terminal,
-        "With `display.unicode = \"auto\"`, the first one set says whether the terminal takes UTF-8; when it does not, glyphs are ASCII",
-    ),
-    env(
-        &["WT_SESSION", "TERM_PROGRAM"],
-        EnvGroup::Terminal,
-        "Windows only: Windows Terminal, or VS Code's terminal (`TERM_PROGRAM=vscode`), draws Unicode glyphs whatever the code page",
+        "With `display.unicode = \"auto\"`, the first one set says whether the terminal takes UTF-8; when it does not, glyphs are ASCII. With none set, Windows draws Unicode and other systems ASCII",
     ),
     env(
         &["VISUAL", "EDITOR", "PAGER"],

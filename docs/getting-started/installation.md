@@ -186,7 +186,7 @@ winget install derekwisong.datui
 
 | | On Windows |
 |---|---|
-| Terminal | Windows Terminal and the classic console window draw 24-bit color; with "Use legacy console" checked, 16 colors. Windows Terminal draws datui's glyphs; the classic console draws ASCII unless its code page is UTF-8 (`chcp 65001`). `[display] unicode` overrides either way ([Glyphs or ASCII](../user-guide/configuration.md#glyphs-or-ascii)) |
+| Terminal | Windows Terminal and the classic console window draw 24-bit color; with "Use legacy console" checked, 16 colors. Both draw datui's Unicode glyphs whatever the code page; `[display] unicode = "never"` draws ASCII ([Glyphs or ASCII](../user-guide/configuration.md#glyphs-or-ascii)) |
 | Config file | `%APPDATA%\datui\config.toml` |
 | Format specs | `%APPDATA%\datui\formats` ([Format specs](../formats/format-specs.md)) |
 | Cache and log | `%LOCALAPPDATA%\datui` |

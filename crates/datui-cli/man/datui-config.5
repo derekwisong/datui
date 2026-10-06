@@ -89,7 +89,7 @@ Skip rows that do not parse instead of failing. Default: \fBfalse\fR. Flag: \fB\
 .SS "[display]"
 .TP
 \fBdisplay.unicode\fR (\fIauto | always | never\fR)
-Box-drawing and arrow glyphs, or plain ASCII. auto uses them when the locale is UTF-8. Default: \fB"auto"\fR.
+Box-drawing and arrow glyphs, or plain ASCII. auto uses them when the locale is UTF-8, or on Windows when no locale is set. Default: \fB"auto"\fR.
 .TP
 \fBdisplay.row_numbers\fR (\fI"auto" | bool\fR)
 Number rows on the left by their place in the source, kept through a sort or filter (# toggles). auto: for text and logs; true or false: for all of them. Default: \fB"auto"\fR. Flag: \fB\-\-row\-numbers\fR.

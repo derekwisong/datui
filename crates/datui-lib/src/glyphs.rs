@@ -986,54 +986,34 @@ static GLYPHS: OnceLock<Glyphs> = OnceLock::new();
 struct Environment {
     /// The first non-empty of `LC_ALL`, `LC_CTYPE`, `LANG`.
     locale: Option<String>,
-    /// A terminal that draws these glyphs whatever the code page: Windows
-    /// Terminal (`WT_SESSION`) or VS Code's (`TERM_PROGRAM=vscode`). Always false
-    /// off Windows.
-    unicode_terminal: bool,
-    /// The console output code page. Always `None` off Windows.
-    console_code_page: Option<u32>,
+    /// Running on Windows, which sets no locale variable.
+    windows: bool,
 }
-
-/// UTF-8, as a Windows code page.
-const CP_UTF8: u32 = 65001;
 
 impl Environment {
     fn current() -> Self {
-        let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
-            .into_iter()
-            .find_map(|key| std::env::var(key).ok().filter(|v| !v.is_empty()));
-        #[cfg(windows)]
-        {
-            // SAFETY: takes no arguments and only reads console state; 0 means
-            // there is no console.
-            let page = unsafe { windows_sys::Win32::System::Console::GetConsoleOutputCP() };
-            Self {
-                locale,
-                unicode_terminal: std::env::var_os("WT_SESSION").is_some()
-                    || std::env::var_os("TERM_PROGRAM").is_some_and(|t| t == "vscode"),
-                console_code_page: (page != 0).then_some(page),
-            }
-        }
-        #[cfg(not(windows))]
         Self {
-            locale,
-            ..Self::default()
+            locale: ["LC_ALL", "LC_CTYPE", "LANG"]
+                .into_iter()
+                .find_map(|key| std::env::var(key).ok().filter(|v| !v.is_empty())),
+            windows: cfg!(windows),
         }
     }
 
     /// The rule. A locale variable decides when one is set, on every OS, so
     /// `LANG=C` means ASCII everywhere and MSYS2 shells on Windows count as
-    /// they do on Unix. Windows itself sets none: there, Windows Terminal or
-    /// VS Code (whose consoles default to an OEM code page, but which draw
-    /// these glyphs) or a console switched to UTF-8 (`chcp 65001`, or the
-    /// system "Use Unicode UTF-8" option) picks Unicode.
+    /// they do on Unix. Windows itself sets none, and its console takes
+    /// Unicode whatever the code page: Rust writes to it in UTF-16. Neither
+    /// `WT_SESSION` nor the code page is a usable signal there: Windows
+    /// Terminal opened as the default terminal sets no `WT_SESSION`, and every
+    /// console starts on an OEM code page.
     fn is_utf8(&self) -> bool {
         match &self.locale {
             Some(value) => {
                 let lower = value.to_ascii_lowercase();
                 lower.contains("utf-8") || lower.contains("utf8")
             }
-            None => self.unicode_terminal || self.console_code_page == Some(CP_UTF8),
+            None => self.windows,
         }
     }
 }
@@ -1041,10 +1021,10 @@ impl Environment {
 /// Whether the terminal can be trusted with UTF-8.
 ///
 /// `LC_ALL` beats `LC_CTYPE` beats `LANG`, as in POSIX. With none of them set,
-/// Windows counts as UTF-8 under Windows Terminal, VS Code's terminal or a
-/// UTF-8 console code page. A terminal that is not doing UTF-8 renders
-/// multi-byte characters as replacement boxes, so this is the signal that
-/// matters, not terminal capability, which says nothing about the font.
+/// Windows counts as UTF-8 and anything else does not. A terminal that is not
+/// doing UTF-8 renders multi-byte characters as replacement boxes, so this is
+/// the signal that matters, not terminal capability, which says nothing about
+/// the font.
 pub fn environment_is_utf8() -> bool {
     Environment::current().is_utf8()
 }
@@ -1434,37 +1414,30 @@ mod tests {
         assert!(!ascii().unicode);
     }
 
-    /// A locale variable decides on every OS; Windows signals count only when
-    /// none is set (#541).
+    /// A locale variable decides on every OS; Windows counts as UTF-8 only when
+    /// none is set (#541). Windows Terminal opened as the default terminal sets
+    /// no `WT_SESSION`, so the rule reads neither it nor the code page.
     #[test]
-    fn utf8_rule_reads_the_locale_then_the_windows_console() {
-        let env = |locale: Option<&str>, unicode_terminal: bool, page: Option<u32>| Environment {
+    fn utf8_rule_reads_the_locale_then_windows() {
+        let env = |locale: Option<&str>, windows: bool| Environment {
             locale: locale.map(String::from),
-            unicode_terminal,
-            console_code_page: page,
+            windows,
         };
         // Unix: the locale alone.
-        assert!(env(Some("en_US.UTF-8"), false, None).is_utf8());
-        assert!(env(Some("C.utf8"), false, None).is_utf8());
-        assert!(!env(Some("C"), false, None).is_utf8());
-        assert!(!env(None, false, None).is_utf8());
-        // Windows sets no locale: Windows Terminal, VS Code or a UTF-8 code page.
-        assert!(env(None, true, Some(437)).is_utf8());
-        assert!(env(None, false, Some(CP_UTF8)).is_utf8());
-        assert!(!env(None, false, Some(437)).is_utf8());
+        assert!(env(Some("en_US.UTF-8"), false).is_utf8());
+        assert!(env(Some("C.utf8"), false).is_utf8());
+        assert!(!env(Some("C"), false).is_utf8());
+        assert!(!env(None, false).is_utf8());
+        // Windows sets no locale: Unicode.
+        assert!(env(None, true).is_utf8());
         // An explicit locale still wins there, as LANG=C does on Unix.
-        assert!(!env(Some("C"), true, Some(CP_UTF8)).is_utf8());
-        assert!(env(Some("en_US.UTF-8"), false, Some(437)).is_utf8());
+        assert!(!env(Some("C"), true).is_utf8());
+        assert!(env(Some("en_US.UTF-8"), true).is_utf8());
     }
 
-    /// Off Windows the console signals are never read, so Unix behavior is the
-    /// locale's alone.
-    #[cfg(not(windows))]
     #[test]
-    fn unix_reads_no_windows_signals() {
-        let current = Environment::current();
-        assert!(!current.unicode_terminal);
-        assert_eq!(current.console_code_page, None);
+    fn current_knows_its_os() {
+        assert_eq!(Environment::current().windows, cfg!(windows));
     }
 
     /// A bad `[glyphs]` line must fail at config load with the slot named.

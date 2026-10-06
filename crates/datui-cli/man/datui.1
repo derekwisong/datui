@@ -211,10 +211,7 @@ With \fBtheme.mode = "auto"\fR, says whether the background is light or dark, fo
 With \fBtheme.mode = "auto"\fR, names the terminal whose last answer about its background picks the first frame's theme; \fBTERM\fR when unset.
 .TP
 \fBLC_ALL\fR, \fBLC_CTYPE\fR, \fBLANG\fR
-With \fBdisplay.unicode = "auto"\fR, the first one set says whether the terminal takes UTF-8; when it does not, glyphs are ASCII.
-.TP
-\fBWT_SESSION\fR, \fBTERM_PROGRAM\fR
-Windows only: Windows Terminal, or VS Code's terminal (\fBTERM_PROGRAM=vscode\fR), draws Unicode glyphs whatever the code page.
+With \fBdisplay.unicode = "auto"\fR, the first one set says whether the terminal takes UTF-8; when it does not, glyphs are ASCII. With none set, Windows draws Unicode and other systems ASCII.
 .SS "Programs datui starts"
 .TP
 \fBVISUAL\fR, \fBEDITOR\fR, \fBPAGER\fR

@@ -265,7 +265,18 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build release binary
+        # The C runtime linked in, as release.yml does: a clean Windows has the
+        # UCRT but not VCRUNTIME140.dll.
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
         run: cargo build --release --locked -p datui
+
+      - name: Check the binary needs no Visual C++ redistributable
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes("target/release/datui.exe")
+          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+          if ($text -match '(?i)vcruntime140') { Write-Error "datui.exe imports VCRUNTIME140.dll"; exit 1 }
+          Write-Output "datui.exe: no VCRUNTIME140.dll import"
 
       - name: Bundle CLI for wheel
         run: |

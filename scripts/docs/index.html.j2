@@ -3,11 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-{# generated: format-count #}
-{% set format_count = 27 %}
-{% set format_sentence = "datui reads 27 formats: Parquet, CSV, TSV, PSV, JSON, NDJSON, Arrow IPC, Avro, ORC, Excel, SafeTensors, GGUF, NMEA, GPX, WAV/AIFF audio, MIDI, SQLite, VCD, FIX, SDF, NumPy, ELF, ULog, DataFlash, candump, plain text, systemd journal, and binary formats you describe in a format spec." %}
-{# end generated: format-count #}
-  <meta name="description" content="Explore tabular data in your terminal: {{ format_count }} formats, on disk or in S3, GCS, Azure and HTTP. Query with SQL, chart and export.">
+  <meta name="description" content="Explore tabular data in your terminal: Parquet, CSV, JSON and more, on disk or in S3, GCS, Azure and HTTP. Query with SQL or q, chart and export.">
   <meta name="theme-color" content="#1a1b26">
   <title>datui — Explore tabular data in your terminal</title>
   <script>
@@ -138,7 +134,7 @@
       <div class="hero">
         <p class="eyebrow">A terminal UI for tabular data</p>
         <h1>Explore tabular data in your terminal.</h1>
-        <p class="lead">{{ format_count }} formats, from your disk, S3, GCS, Azure, HTTP(S), a pipe or Python. Query with SQL or q, chart, reshape and export.</p>
+        <p class="lead">Parquet, CSV, JSON, Excel, SQLite, logs and more, from your disk, S3, GCS, Azure, HTTP(S), a pipe or Python. Query with SQL or q, chart, reshape and export.</p>
         <pre data-example="bash,network"><code>datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/   # 38M rows, no login</code></pre>
         <div class="actions">
           <a class="primary" href="#install">Install</a>
@@ -219,7 +215,7 @@ sudo apt install datui</code></pre>
         <div class="features">
           <div>
             <div class="placeholder" role="img" aria-label="Screenshot to come">STILL PLACEHOLDER (#356)<br>Formats</div>
-            <h3>{{ format_count }} formats, and yours</h3>
+            <h3>Formats, and yours</h3>
             <p>From Parquet, CSV, Arrow and JSON to SQLite, GGUF, audio and flight logs. A TOML format spec describes your own binary or delimited format; any file opens in the hex view.</p>
             <a href="{{ guide('formats/index') }}">Formats →</a> · <a href="{{ guide('formats/format-specs') }}">Format specs →</a>
           </div>
@@ -258,7 +254,7 @@ sudo apt install datui</code></pre>
       </section>
 
       <section aria-labelledby="formats-title">
-        <h2 id="formats-title">{{ format_count }} formats</h2>
+        <h2 id="formats-title">Formats</h2>
         <p class="section-lead">Each one reads from disk, HTTP(S) or a bucket. <a href="{{ guide('formats/index') }}">The formats table</a> says which read lazily and which read compressed.</p>
 {# generated: formats #}
 <dl class="format-families">

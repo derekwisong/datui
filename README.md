@@ -2,9 +2,9 @@
 
 **Explore tabular data in your terminal.**
 
-<!-- generated: format-count -->
-datui reads 27 formats: Parquet, CSV, TSV, PSV, JSON, NDJSON, Arrow IPC, Avro, ORC, Excel, SafeTensors, GGUF, NMEA, GPX, WAV/AIFF audio, MIDI, SQLite, VCD, FIX, SDF, NumPy, ELF, ULog, DataFlash, candump, plain text, systemd journal, and binary formats you describe in a format spec.
-<!-- end generated: format-count -->
+<!-- generated: pitch -->
+Parquet, CSV, JSON, Arrow, Excel, SQLite, logs, audio, model files and more, including binary formats you describe in a format spec.
+<!-- end generated: pitch -->
 
 From local disk, S3, GCS, Azure or HTTP(S), a pipe, or a Polars frame in Python.
 

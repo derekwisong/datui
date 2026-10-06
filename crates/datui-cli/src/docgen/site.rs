@@ -1,25 +1,27 @@
 //! The landing page, the README's install section and the package descriptions:
 //! the parts written from `scripts/docs/install.toml` and the format descriptors.
 
-use super::{format_count_sentence, format_page, short_title};
+use super::{format_page, short_title};
 use crate::formats::FileFormat;
 
 /// What datui is, in the words every page and package leads with.
 pub const TAGLINE: &str = "Explore tabular data in your terminal";
 
+/// What datui reads, as the README and the docs introduction say it. The full
+/// list and its count are on the Formats pages.
+pub const PITCH: &str = "Parquet, CSV, JSON, Arrow, Excel, SQLite, logs, audio, model files and more, \
+     including binary formats you describe in a format spec.";
+
 /// The one-line description: crates.io, PyPI, the AUR, deb and rpm, Homebrew.
 pub fn summary() -> String {
-    format!(
-        "{TAGLINE}: {} formats, on disk or in the cloud",
-        FileFormat::ALL.len()
-    )
+    format!("{TAGLINE}: Parquet, CSV, JSON and more")
 }
 
 /// The longer description: the deb's extended description, WinGet's `Description`.
 pub fn description() -> String {
     format!(
-        "{} Query with SQL or q, sort and filter, chart, analyze and export.",
-        format_count_sentence()
+        "{PITCH} On disk or in S3, GCS, Azure and HTTP(S). \
+         Query with SQL or q, sort and filter, chart, analyze and export."
     )
 }
 
@@ -194,15 +196,6 @@ pub fn landing_install(read: &dyn Fn(&str) -> String) -> String {
     }
     out.push_str("</div>");
     out
-}
-
-/// The count and the sentence, as Jinja variables the landing page uses.
-pub fn landing_format_count() -> String {
-    format!(
-        "{{% set format_count = {} %}}\n{{% set format_sentence = \"{}\" %}}",
-        FileFormat::ALL.len(),
-        format_count_sentence().replace('"', "\\\"")
-    )
 }
 
 /// A family page's title, as its H1 says it.

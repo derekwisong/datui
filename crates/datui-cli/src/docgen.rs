@@ -70,13 +70,13 @@ pub const GENERATED: &[Generated] = &[
     },
     Generated {
         file: "docs/introduction.md",
-        region: Some("format-count"),
-        render: |_| format_count_sentence(),
+        region: Some("pitch"),
+        render: |_| site::PITCH.to_string(),
     },
     Generated {
         file: "README.md",
-        region: Some("format-count"),
-        render: |_| format_count_sentence(),
+        region: Some("pitch"),
+        render: |_| site::PITCH.to_string(),
     },
     Generated {
         file: "docs/reference/python-api.md",
@@ -112,11 +112,6 @@ pub const GENERATED: &[Generated] = &[
         file: "docs/getting-started/installation.md",
         region: Some("install-apt"),
         render: |read| site::channel_block(read, "apt"),
-    },
-    Generated {
-        file: "scripts/docs/index.html.j2",
-        region: Some("format-count"),
-        render: |_| site::landing_format_count(),
     },
     Generated {
         file: "scripts/docs/index.html.j2",

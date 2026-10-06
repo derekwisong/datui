@@ -369,8 +369,10 @@ fn the_same_seed_draws_the_same_rows_before_and_after_the_count() {
         form.adjust(true);
     }
     key(&mut app, KeyCode::Enter);
-    pump_until_idle(&mut app, &rx, &tx);
-    assert!(app.data_table_state.as_ref().unwrap().is_num_rows_valid());
+    // The count is the footer's own worker, which `is_busy` does not cover.
+    pump_until(&mut app, &rx, &tx, |app| {
+        !app.is_busy() && app.data_table_state.as_ref().unwrap().is_num_rows_valid()
+    });
     draw(&mut app, "500");
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(ids(&app), first);

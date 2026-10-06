@@ -1304,6 +1304,9 @@ fn chart_rows_are_read_on_enter() {
     assert_eq!(app.input_mode, InputMode::Chart);
     assert_eq!(app.chart_modal.row_limit, None);
     assert!(screen(&mut app).contains("Every row (900)"));
+    // A switch there and back holds nothing to undo: one Esc closes.
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Left);
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.input_mode, InputMode::Normal);
 }

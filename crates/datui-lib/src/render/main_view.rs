@@ -952,7 +952,7 @@ fn chart_hints(app: &crate::App) -> Vec<Hint> {
     use crate::chart_modal::ChartFocus;
     let focus = modal.focus;
     // A Rows change waits for Enter; Esc puts it back.
-    if focus == ChartFocus::LimitRows && modal.rows_draft.is_some() {
+    if focus == ChartFocus::LimitRows && modal.rows_pending() {
         return vec![
             Hint::new("Enter", "Read"),
             Hint::new(g.updown_lr, "Switch"),

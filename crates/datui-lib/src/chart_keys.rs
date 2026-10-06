@@ -159,7 +159,14 @@ impl App {
                 modal.type_rows(c);
             }
             KeyCode::Backspace if typing => modal.backspace_rows(),
-            KeyCode::Esc if modal.rows_draft.is_some() => modal.discard_rows(),
+            KeyCode::Esc if modal.rows_draft.is_some() => {
+                // A draft back where it started holds nothing to undo: Esc closes.
+                let pending = modal.rows_pending();
+                modal.discard_rows();
+                if !pending {
+                    return false;
+                }
+            }
             KeyCode::Enter => {
                 modal.commit_rows();
             }

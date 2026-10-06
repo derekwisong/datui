@@ -19,6 +19,7 @@ select [columns] [by group_columns] [where conditions]
 |---|---|
 | `select` | Required. Alone it means all columns; otherwise a comma-separated list of column expressions |
 | `by` | Optional. Grouping and aggregation |
+| `from df` | Optional. The table on screen, as in q and like SQL's `FROM df`; no other name |
 | `where` | Optional. Filtering |
 
 Use clauses in the order shown, at most once each. Misplaced or repeated

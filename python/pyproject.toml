@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "datui"
 version = "0.4.0.dev0"
 # generated: description
-description = "Explore tabular data in your terminal: 27 formats, on disk or in the cloud"
+description = "Explore tabular data in your terminal: Parquet, CSV, JSON and more"
 # end generated: description
 readme = "README.md"
 requires-python = ">=3.10"

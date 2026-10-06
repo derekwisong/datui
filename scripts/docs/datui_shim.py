@@ -229,7 +229,24 @@ def record(status: int) -> None:
             f.write(f"{status}\n")
 
 
+def drain_stdin(limit: float = 10.0) -> None:
+    """Read what a producer still writes after datui quit, for up to `limit` seconds:
+    a finite producer (`journalctl -n 1000 | datui`) then ends as it would, not by
+    SIGPIPE, and the block's later lines run. An endless one is cut off at the limit."""
+    import select
+    import time
+
+    end = time.monotonic() + limit
+    fd = sys.stdin.fileno()
+    while (left := end - time.monotonic()) > 0:
+        ready, _, _ = select.select([fd], [], [], left)
+        if not ready or not os.read(fd, 1 << 16):
+            return
+
+
 if __name__ == "__main__":
     status = main()
     record(status)
+    if status == 0 and stdin_is_data():
+        drain_stdin()
     sys.exit(status)

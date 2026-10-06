@@ -228,6 +228,9 @@ q is a subset of the q language, not a complete q or q-sql, and it
 | NYC yellow taxis | `select trips: count VendorID by tpep_pickup_datetime.hour` | `SELECT EXTRACT(HOUR FROM tpep_pickup_datetime) AS hour, COUNT(VendorID) AS trips FROM df GROUP BY hour` |
 | US baby names | `select total: sum n by name where name in ["Emma", "Jennifer", "Olivia"]` | `SELECT name, SUM(n) AS total FROM df WHERE name IN ('Emma', 'Jennifer', 'Olivia') GROUP BY name` |
 
+`from df` is optional and accepted after the columns and `by`, as in q and like SQL's `FROM df`:
+`select mean_delay: avg dep_delay by hour from df where origin = "JFK"`.
+
 Right to left means `a * b + c` is `a * (b + c)`, and `(a + b) * 2 > 100` is
 `(a + b) * (2 > 100)`: put the comparison first, `100 < (a + b) * 2`.
 [Query syntax](../reference/query-syntax.md) has the grammar, every accessor

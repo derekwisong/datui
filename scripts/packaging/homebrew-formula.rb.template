@@ -3,7 +3,7 @@
 # URL_X64_PLACEHOLDER, SHA_X64_PLACEHOLDER.
 class Datui < Formula
 # generated: desc
-  desc "Explore tabular data in your terminal: 27 formats, on disk or in the cloud"
+  desc "Explore tabular data in your terminal: Parquet, CSV, JSON and more"
 # end generated: desc
   homepage "https://github.com/derekwisong/datui"
   version "VERSION_PLACEHOLDER"

@@ -2,9 +2,9 @@
 
 **Explore tabular data in your terminal.**
 
-<!-- generated: format-count -->
-datui reads 27 formats: Parquet, CSV, TSV, PSV, JSON, NDJSON, Arrow IPC, Avro, ORC, Excel, SafeTensors, GGUF, NMEA, GPX, WAV/AIFF audio, MIDI, SQLite, VCD, FIX, SDF, NumPy, ELF, ULog, DataFlash, candump, plain text, systemd journal, and binary formats you describe in a format spec.
-<!-- end generated: format-count -->
+<!-- generated: pitch -->
+Parquet, CSV, JSON, Arrow, Excel, SQLite, logs, audio, model files and more, including binary formats you describe in a format spec.
+<!-- end generated: pitch -->
 
 From local disk, S3, GCS, Azure or HTTP(S), a pipe, or a Polars frame in Python.
 
@@ -41,14 +41,12 @@ curl -fsSL https://raw.githubusercontent.com/derekwisong/datui/main/scripts/inst
 | [macOS, Homebrew](https://github.com/derekwisong/homebrew-datui) | `brew tap derekwisong/datui && brew trust derekwisong/datui && brew install datui` |
 | [Python, PyPI](https://pypi.org/project/datui/) | `pip install datui` |
 | [Rust, crates.io](https://crates.io/crates/datui) | `cargo install datui --locked` |
-| [Arch Linux, AUR](https://aur.archlinux.org/packages/datui-bin) | `yay -S datui-bin` |
+| [Arch Linux, AUR](https://aur.archlinux.org/packages/datui-bin) | `yay -S datui-bin   # or: paru -S datui-bin` |
 | Debian, Ubuntu | [Apt repository](https://derekwisong.github.io/datui/latest/getting-started/installation.html#apt-repository) |
 | Binaries | Linux, macOS and Windows binaries, `.deb`, `.rpm` and Arch tarballs on the [latest release](https://github.com/derekwisong/datui/releases/latest) |
 <!-- end generated: install -->
 
-One binary; only `cargo install` needs Rust. The [installation guide][install-guide]
-covers user-only installs, RPMs, the manual page, shell completions and
-building from source.
+More ways to install, and how to uninstall: the [installation guide][install-guide].
 
 ## How it stays fast
 

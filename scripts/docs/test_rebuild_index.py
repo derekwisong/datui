@@ -141,7 +141,9 @@ class LandingPageTests(unittest.TestCase):
 
     def test_generated_parts_are_filled_and_every_command_is_labelled(self):
         content, _ = self.render()
-        self.assertRegex(content, r"\d+ formats")
+        self.assertIn('class="format-families"', content)
+        # The count lives on the Formats pages, not in the pitch.
+        self.assertNotRegex(content, r"\d+ formats")
         self.assertNotIn("{{", content)
         for channel in ["script", "winget", "brew", "pip", "cargo", "aur", "apt", "binaries"]:
             self.assertIn(f'id="install-{channel}"', content)

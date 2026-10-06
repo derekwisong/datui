@@ -65,11 +65,12 @@ cargo run -p datui-cli --bin gen_docs -- write
 | `reference/environment.md` | `ENVIRONMENT` in the same file |
 | `reference/keyboard-shortcuts.md`, region `keys` | The key registry, `crates/datui-cli/src/keys.rs` |
 | `formats/index.md`, region `formats` | The format descriptors in `crates/datui-cli/src/formats.rs` |
-| Region `format-count` in `formats/index.md`, `introduction.md` and `README.md` | The same: how many formats, and their names |
+| Region `format-count` in `formats/index.md` | The same: how many formats, and their names |
+| Region `pitch` in `introduction.md` and `README.md` | `site::PITCH` in `crates/datui-cli/src/docgen/site.rs` |
 | `reference/python-api.md`, region `options` | The registry's Python keywords |
 | Region `install` in `README.md` and the landing page; `install-script`, `install-table` and `install-apt` in `getting-started/installation.md` | `scripts/docs/install.toml`, one entry per install channel |
-| Regions `format-count` and `formats` in the landing page | The format descriptors: the count, and the formats strip by family |
-| The package descriptions: `description` in `Cargo.toml` and `python/pyproject.toml`, the deb's `extended-description`, Homebrew's `desc`, the desktop entry's `Comment` | `site::summary` and `site::description` in `crates/datui-cli/src/docgen/site.rs`, with the format count |
+| Region `formats` in the landing page | The format descriptors: the formats strip by family |
+| The package descriptions: `description` in `Cargo.toml` and `python/pyproject.toml`, the deb's `extended-description`, Homebrew's `desc`, the desktop entry's `Comment` | `site::summary` and `site::description` in `crates/datui-cli/src/docgen/site.rs` |
 | `reference/manual-pages.md`, region `pages` | The list of manpages, `PAGES` in `crates/datui-cli/src/man/mod.rs` |
 | `crates/datui-cli/man/*` (the manpages) | All of the above, plus `long_about.txt`, `query-syntax.md`, `formats/index.md` and the format-spec pages ([Build and publish packages](packaging.md#manpages-and-completions)) |
 

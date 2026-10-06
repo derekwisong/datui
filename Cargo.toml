@@ -19,6 +19,9 @@ license = "MIT"
 readme = "README.md"
 keywords = ["cli", "tui", "data", "utility", "analysis"]
 categories = ["command-line-utilities", "science"]
+# Only what the binary builds from: crates.io refuses a package over 10 MiB, and the
+# repo's demos, docs and tests are far past that.
+include = ["/src", "/Cargo.toml", "/Cargo.lock", "/README.md", "/LICENSE"]
 
 [[bin]]
 name = "datui"

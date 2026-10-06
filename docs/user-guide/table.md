@@ -36,6 +36,12 @@ what is in effect, in pipeline order, with the cursor's place at the right:
 | `41,208 / 1,204,331` | The cursor's row of the view's rows, led by `col 3/40` when the table is wider than the screen |
 | `? keys` | Help: every key of the screen |
 
+![NYC flights summarized by day and sorted by delay: the footer reads nycflights13/flights.csv › query › delay ▼, then col 3/3 · 1 / 365, Enter Drill and ? keys; 2013-03-08 leads at 83.5 minutes](../demos/screenshots/table-footer.png)
+
+Which day of 2013 left latest? The [daily query](querying-data.md#dates-and-messy-text),
+then <kbd>]</kbd> on `delay`: 2013-03-08, at 83.5 minutes. The footer says
+`query › delay ▼`; the header marks `delay▼`.
+
 At rest only `? keys` is offered. A mode shows its two or three keys while it
 is active: after the column cursor moves, `+/- Filter  [/] Sort  F Counts`; with
 a find in effect, `n/N Next  Esc Clear`; while following a file, `t Pause`; on a

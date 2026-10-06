@@ -40,9 +40,11 @@ class LandingPageTests(unittest.TestCase):
         path.mkdir(parents=True)
         (path / "index.html").write_text("<h1>Book</h1>")
         if demo:
-            (path / "demos").mkdir()
+            (path / "demos/screenshots").mkdir(parents=True)
             (path / "demos/teaser.gif").write_bytes(b"GIF89a")
             (path / "demos/teaser.png").write_bytes(b"\x89PNG")
+            (path / "demos/theme-gallery.png").write_bytes(b"\x89PNG")
+            (path / "demos/screenshots/chart-color-origin.png").write_bytes(b"\x89PNG")
         return path
 
     def render(self):
@@ -66,7 +68,8 @@ class LandingPageTests(unittest.TestCase):
         content, page = self.render()
         self.assertIn("https://github.com/derekwisong/datui/tree/main/docs/", page.links)
         self.assertNotIn('id="teaser"', content)
-        self.assertIn("CAPTURE PLACEHOLDER", content)
+        self.assertNotIn("<img", content)
+        self.assertNotIn("PLACEHOLDER", content)
         self.assertFalse(any(link.startswith("latest/") for link in page.links))
 
     def test_tag_without_alias_links_to_the_existing_tag(self):
@@ -134,10 +137,24 @@ class LandingPageTests(unittest.TestCase):
         content, _ = self.render()
         self.assertIn('id="teaser"', content)
         self.assertIn('data-src="main/demos/teaser.gif"', content)
-        self.assertNotIn("CAPTURE PLACEHOLDER", content)
+        self.assertIn('src="main/demos/screenshots/chart-color-origin.png"', content)
+        self.assertIn('src="main/demos/theme-gallery.png"', content)
+        self.assertNotIn("PLACEHOLDER", content)
         (path / "demos/teaser.png").unlink()
         content, _ = self.render()
         self.assertNotIn('id="teaser"', content)
+
+    def test_captures_come_from_development_until_a_release_has_them(self):
+        self.build("v0.3.2")
+        self.build("dev", demo=True)
+        content, page = self.render()
+        self.assertIn("v0.3.2/getting-started/quick-start.html", page.links)
+        self.assertIn('data-src="dev/demos/teaser.gif"', content)
+        self.assertIn('src="dev/demos/screenshots/chart-color-origin.png"', content)
+        self.build("v0.4.0", demo=True)
+        content, _ = self.render()
+        self.assertIn('data-src="v0.4.0/demos/teaser.gif"', content)
+        self.assertNotIn("dev/demos/", content)
 
     def test_generated_parts_are_filled_and_every_command_is_labelled(self):
         content, _ = self.render()

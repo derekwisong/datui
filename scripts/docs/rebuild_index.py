@@ -218,13 +218,24 @@ def main():
     docs_path = LATEST_RELEASE_DIR if alias_exists else latest_stable_path
     if docs_path is None and recent_versions:
         docs_path = recent_versions[0]["path"]
-    # The teaser (#356): a GIF behind its poster, both from the docs build's demos.
-    teaser = None
-    if docs_path:
-        gif = Path(docs_path) / "demos" / "teaser.gif"
-        poster = Path(docs_path) / "demos" / "teaser.png"
+    # The captures (scripts/demos/capture.py) from the demos of the docs the page
+    # links to, else of a development build until a release carries them.
+    teaser, shots, gallery = None, {}, None
+    bases = [docs_path, *(v["path"] for v in recent_versions if v["is_development"])]
+    for base in bases:
+        if not base:
+            continue
+        demos = Path(base) / "demos"
+        gif, poster = demos / "teaser.gif", demos / "teaser.png"
         if (output_dir / gif).is_file() and (output_dir / poster).is_file():
             teaser = {"gif": gif.as_posix(), "poster": poster.as_posix()}
+            shots = {
+                shot.stem: (demos / "screenshots" / shot.name).as_posix()
+                for shot in (output_dir / demos / "screenshots").glob("*.png")
+            }
+            if (output_dir / demos / "theme-gallery.png").is_file():
+                gallery = (demos / "theme-gallery.png").as_posix()
+            break
 
     output_html = template.render(
         recent_versions=recent_versions,
@@ -232,6 +243,8 @@ def main():
         docs_path=docs_path,
         has_stable=alias_exists or latest_stable_path is not None,
         teaser=teaser,
+        shots=shots,
+        gallery=gallery,
     )
 
     # Write the output file

@@ -14,7 +14,7 @@ From local disk, S3, GCS, Azure or HTTP(S), a pipe, or a Polars frame in Python.
 
 [Website][site] · [Documentation][docs] · [Quick start][quick-start] · [Formats][formats]
 
-<!-- CAPTURE PLACEHOLDER (#356): the teaser GIF, the same one as the landing page's. -->
+![datui opening NYC flights (2013) from Example datasets, sorting by departure delay, inspecting the worst row, and charting the mean delay by hour, one line per airport](demos/teaser.gif)
 
 ## Try it
 

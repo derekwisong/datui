@@ -112,6 +112,12 @@ and automounts.
 
 ## The details pane
 
+![The home screen with NOAA daily weather (GHCN-D) selected: the details pane gives its kind, storage, publisher, license, links, and the first COLUMNS notes, with 6 more](../demos/screenshots/home-details.png)
+
+What is NOAA daily weather, and who publishes it? <kbd>↓</kbd> to it: an S3
+dataset from NOAA, CC0, no login, with notes on its columns.
+<kbd>Ctrl</kbd>+<kbd>E</kbd> shows them all.
+
 | Field | Says |
 |---|---|
 | Kind, storage | The format, and the file system or object store. A file a [format spec](../formats/format-specs.md#which-spec-reads-a-file) reads, by its glob or its magic, says `acme.l2feed file` |
@@ -245,6 +251,12 @@ description, publisher, license, homepage, URL and login.
 file whose [format spec documents it](../reference/format-specs.md#documentation),
 shows what the catalog and the spec say of it, full screen. The Info panel's
 Documentation tab shows the same page for the open dataset.
+
+![The Documentation view of NOAA daily weather: catalog, publisher, license, url, links, and the COLUMNS notes, ELEMENT's legend open: PRCP precipitation in tenths of mm, SNOW, SNWD, TMAX, TMIN, TAVG](../demos/screenshots/home-docs.png)
+
+What does `ELEMENT` hold? <kbd>Ctrl</kbd>+<kbd>E</kbd> on NOAA daily weather,
+<kbd>↓</kbd> to `ELEMENT`, <kbd>Enter</kbd>: `TMAX` is the maximum temperature
+in tenths of a degree C.
 
 | Line | Says |
 |---|---|

@@ -200,6 +200,12 @@ The repository's
 has more, each crediting its palette: `gruvbox-dark` and `high-contrast`. Copy
 one into `themes/` to use it.
 
+![The same NYC flights view, sorted by dep_delay with the cursor on the third row, in four themes: night-market, day-market, gruvbox-dark and high-contrast](../demos/theme-gallery.png)
+
+One table in each theme: `night-market` and `day-market` (top), `gruvbox-dark`
+and `high-contrast` (bottom), sorted with <kbd>]</kbd> on `dep_delay`.
+`datui -c theme.mode=light` uses `day-market` for one run.
+
 `datui theme list` lists the themes; `datui theme show NAME` prints one with
 every slot, to save into `themes/` and edit. A theme file with a mistake is
 left out with a warning. A theme name that cannot be used falls back to its

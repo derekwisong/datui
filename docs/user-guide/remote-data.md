@@ -226,7 +226,15 @@ datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/
 ```
 
 38,466,379 rows, with `YEAR` and `ELEMENT` as columns from the directory
-names. The most common measurements:
+names.
+
+![datui on NOAA's S3 bucket: Central Park's daily highs charted by year, then YEAR=2024 typed as a path with ~, opened as one table of 38,466,379 rows and scrolled to 2024-12-31](../demos/noaa-cloud.gif)
+
+Central Park from the catalog's bookmark, then <kbd>q</kbd>, <kbd>~</kbd>, the
+path, <kbd>Enter</kbd> twice and <kbd>G</kbd>. Recorded on a wired home
+connection with a cold cache; the waits are real.
+
+The most common measurements:
 
 ```sql,dataset=noaa2024,network
 SELECT ELEMENT, COUNT(*) AS observations, COUNT(DISTINCT ID) AS stations
@@ -237,6 +245,11 @@ ORDER BY observations DESC
 
 `PRCP` (precipitation) leads with 11,456,946 observations from 42,758
 stations, then `SNOW`, `TMAX` and `TMIN`. The query reads every file.
+
+![The ELEMENT counts for NOAA 2024: PRCP first with 11,456,946 observations from 42,758 stations, then SNOW, TMAX and TMIN](../demos/screenshots/remote-noaa-elements.png)
+
+Which measurements are most common in 2024? <kbd>:</kbd>, the query,
+<kbd>Enter</kbd>: 74 elements, `PRCP` first.
 
 In `ELEMENT=TMAX`, `USW00094728` is Central Park and `DATA_VALUE` is tenths
 of a degree Celsius:

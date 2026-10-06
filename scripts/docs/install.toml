@@ -56,7 +56,7 @@ id = "aur"
 label = "Arch Linux, AUR"
 link = "https://aur.archlinux.org/packages/datui-bin"
 lang = "bash"
-command = "paru -S datui-bin"
+command = "yay -S datui-bin"
 
 [[channel]]
 id = "apt"

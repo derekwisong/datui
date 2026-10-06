@@ -35,6 +35,7 @@ Usage: install.sh [OPTION]...
 
 Debian and Ubuntu: adds the datui apt repository and its signing key with sudo, then
 installs the package with apt. Fedora and RHEL: installs the release's .rpm with dnf.
+Arch on x86_64: installs datui-bin from the AUR with yay or paru, after asking.
 Elsewhere, and with --user: unpacks the release archive, the binary and the manual
 pages, into /usr/local or your home directory.
 
@@ -59,6 +60,12 @@ fail() {
     exit 1
 }
 
+# Whether there is a terminal to talk to: /dev/tty exists without one (CI, cron), and
+# only opening it tells.
+has_tty() {
+    (: < /dev/tty) 2> /dev/null
+}
+
 # Ask a yes/no question on the terminal. $1 is the question, $2 the answer
 # when there is no terminal or -y was given (y or n). Returns 0 for yes.
 ask() {
@@ -67,7 +74,7 @@ ask() {
     if [ "$ASSUME_YES" = true ]; then
         return 0
     fi
-    if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
+    if ! has_tty; then
         say "No terminal to ask on; taking the default ($default)."
         [ "$default" = y ]
         return
@@ -150,14 +157,73 @@ check_libc() {
     fi
 }
 
+# Arch and its derivatives (CachyOS, EndeavourOS, Manjaro): /etc/arch-release, or
+# arch in os-release's ID or ID_LIKE.
+is_arch() {
+    [ -f /etc/arch-release ] && return 0
+    [ -r /etc/os-release ] || return 1
+    # shellcheck disable=SC1091
+    ids=$(. /etc/os-release && printf '%s %s' "${ID:-}" "${ID_LIKE:-}")
+    case " $ids " in
+        *" arch "*) return 0 ;;
+    esac
+    return 1
+}
+
+# Arch on x86_64: datui-bin from the AUR, through yay or paru, so pacman owns it
+# and the helper's upgrades keep it current. With neither, or as root (the
+# helpers refuse it), say how and offer the archive.
 offer_aur() {
-    if [ -f /etc/arch-release ] && [ "$USER_INSTALL" != true ]; then
-        say "Arch Linux: the AUR has this release as datui-bin (paru -S datui-bin)."
-        if ! ask "Install the release binary into /usr/local anyway? [Y/n]" y; then
-            say "Stopped. Install it from the AUR."
+    if [ "$OS" != linux ] || [ "$USER_INSTALL" = true ] || ! is_arch; then
+        return
+    fi
+    if [ "$ARCH" != x86_64 ]; then
+        say "Arch Linux on $ARCH: datui-bin is x86_64 only; installing the release archive."
+        return
+    fi
+    helper=""
+    for h in yay paru; do
+        if command -v "$h" > /dev/null 2>&1; then
+            helper="$h"
+            break
+        fi
+    done
+    if [ -n "$helper" ] && [ "$(id -u)" != 0 ]; then
+        if ask "Arch Linux: install datui-bin from the AUR with $helper? [Y/n]" y; then
+            install_aur "$helper"
+            finish
             exit 0
         fi
+    elif [ -n "$helper" ]; then
+        say "Arch Linux: $helper does not run as root. As your user: $helper -S datui-bin"
+    else
+        say "Arch Linux: the AUR has datui-bin (yay -S datui-bin, paru -S datui-bin, or makepkg -si in a clone of https://aur.archlinux.org/datui-bin.git)."
     fi
+    if ! ask "Install the release archive into /usr/local instead? [Y/n]" y; then
+        say "Stopped. Install it from the AUR."
+        exit 0
+    fi
+}
+
+install_aur() {
+    helper="$1"
+    if [ -e "/usr/local/bin/$BINARY_NAME" ]; then
+        # An earlier archive install there comes first on PATH and would hide the package.
+        say "Note: /usr/local/bin/$BINARY_NAME, from an earlier install, comes before /usr/bin on PATH. Remove it: sudo rm /usr/local/bin/$BINARY_NAME"
+    fi
+    set -- -S --needed datui-bin
+    if [ "$ASSUME_YES" = true ] || ! has_tty; then
+        set -- "$@" --noconfirm
+    fi
+    say "Installing datui-bin with $helper..."
+    # The helper asks its own questions (sudo, the PKGBUILD); piped into sh, stdin is
+    # the script, so they go to the terminal.
+    if has_tty; then
+        "$helper" "$@" < /dev/tty || fail "$helper -S datui-bin failed"
+    else
+        "$helper" "$@" || fail "$helper -S datui-bin failed"
+    fi
+    INSTALLED="/usr/bin/$BINARY_NAME"
 }
 
 # The latest release's tag, from where GitHub redirects releases/latest.

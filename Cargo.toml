@@ -6,7 +6,7 @@ resolver = "2"
 
 [package]
 name = "datui"
-version = "0.4.0-dev"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Derek Wisong"]
@@ -35,8 +35,8 @@ streaming = ["datui/streaming"]
 [dependencies]
 # Import as `datui` in Rust; package name is datui-lib. Its features come from ours,
 # so `--no-default-features` here reaches the library.
-datui = { path = "crates/datui-lib", package = "datui-lib", version = "0.4.0-dev", default-features = false }
-datui-cli = { path = "crates/datui-cli", version = "0.4.0-dev"}
+datui = { path = "crates/datui-lib", package = "datui-lib", version = "0.4.0", default-features = false }
+datui-cli = { path = "crates/datui-cli", version = "0.4.0"}
 clap = { version = "4.5.54", features = ["derive"] }
 color-eyre = "0.6.5"
 crossterm = "0.29.0"

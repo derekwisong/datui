@@ -103,7 +103,7 @@ rusqlite = { version = "0.40", optional = true, default-features = false, featur
 zip = { version = "8.6", default-features = false, features = ["deflate"] }
 # ELF symbol and section tables, and Rust symbol names demangled. Both already in
 # the tree through backtrace, at these versions and with ELF reading on.
-object = { version = "0.37.3", default-features = false, features = ["read_core", "elf", "unaligned"] }
+object = { version = "0.39.1", default-features = false, features = ["read_core", "elf", "unaligned"] }
 rustc-demangle = "0.1.24"
 # The log facade, for the log file. Already in the tree through Polars and ureq.
 log = "0.4"

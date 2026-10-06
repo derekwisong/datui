@@ -225,7 +225,7 @@ NOAA's daily weather for 2024 is one hive partition, `YEAR=2024`, with an
 datui s3://noaa-ghcn-pds/parquet/by_year/YEAR=2024/
 ```
 
-37,108,477 rows, with `YEAR` and `ELEMENT` as columns from the directory
+38,465,374 rows, with `YEAR` and `ELEMENT` as columns from the directory
 names. The most common measurements:
 
 ```sql,dataset=noaa2024,network
@@ -235,7 +235,7 @@ GROUP BY ELEMENT
 ORDER BY observations DESC
 ```
 
-`PRCP` (precipitation) leads with 11,266,140 observations from 42,675
+`PRCP` (precipitation) leads with 11,456,946 observations from 42,758
 stations, then `SNOW`, `TMAX` and `TMIN`. The query reads every file.
 
 In `ELEMENT=TMAX`, `USW00094728` is Central Park and `DATA_VALUE` is tenths

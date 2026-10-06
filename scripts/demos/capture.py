@@ -88,7 +88,7 @@ class Tape:
     name: str
     kind: str  # "gif": GIF, WebM and poster; "shots": screenshots only
     used_on: str
-    expected: str
+    expected: str  # measured on a home connection; a GIF's is the clip's length
 
 
 @dataclass(frozen=True)
@@ -142,20 +142,20 @@ GALLERY = (
 TAPES = {
     t.name: t
     for t in (
-        Tape("teaser", "gif", "README hero; landing page", "~27 s"),
-        Tape("noaa-cloud", "gif", "Remote data guide; landing if it earns it", "~40 s"),
-        Tape("shots-home", "shots", "Home screen; Catalogs", "~25 s"),
-        Tape("shots-quick-start", "shots", "Quick start", "~45 s"),
-        Tape("shots-flights-query", "shots", "Table; Query data", "~45 s"),
-        Tape("shots-flights-charts", "shots", "Make a chart", "~60 s"),
-        Tape("shots-football", "shots", "Query data: dates and messy text", "~35 s"),
-        Tape("shots-food", "shots", "Sort, filter and arrange columns; Copy", "~60 s"),
-        Tape("shots-names", "shots", "Pivot and melt; Make a chart", "~50 s"),
-        Tape("shots-quakes", "shots", "Make a chart", "~25 s"),
-        Tape("shots-excel", "shots", "Columnar and Excel formats", "~20 s"),
-        Tape("shots-noaa-remote", "shots", "Connect to cloud storage", "~40 s"),
-        Tape("shots-noaa-views", "shots", "Save and apply views", "~70 s"),
-        Tape("theme-gallery", "gallery", "Configuration; landing", "~20 s per theme"),
+        Tape("teaser", "gif", "README hero; landing page", "~25 s clip"),
+        Tape("noaa-cloud", "gif", "Remote data guide; landing if it earns it", "~40 s clip"),
+        Tape("shots-home", "shots", "Home screen; Catalogs", "~10 s"),
+        Tape("shots-quick-start", "shots", "Quick start", "~20 s"),
+        Tape("shots-flights-query", "shots", "Table; Query data", "~20 s"),
+        Tape("shots-flights-charts", "shots", "Make a chart", "~30 s"),
+        Tape("shots-football", "shots", "Query data: dates and messy text", "~15 s"),
+        Tape("shots-food", "shots", "Sort, filter and arrange columns; Copy", "~30 s"),
+        Tape("shots-names", "shots", "Pivot and melt; Make a chart", "~15 s"),
+        Tape("shots-quakes", "shots", "Make a chart", "~10 s"),
+        Tape("shots-excel", "shots", "Columnar and Excel formats", "~10 s"),
+        Tape("shots-noaa-remote", "shots", "Connect to cloud storage", "~15 s"),
+        Tape("shots-noaa-views", "shots", "Save and apply views", "~20 s"),
+        Tape("theme-gallery", "gallery", "Configuration; landing", "~7 s per theme"),
     )
 }
 

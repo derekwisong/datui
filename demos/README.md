@@ -1,19 +1,13 @@
-# Demo GIFs
+# Captures
 
-Animated GIF demos are generated with [VHS](https://github.com/charmbracelet/vhs) from `.tape` scripts in `scripts/demos/`. Run from the repository root:
+The GIFs, screenshots and theme gallery the docs and the landing page embed.
+`scripts/demos/capture.py` records them with [VHS](https://github.com/charmbracelet/vhs)
+from the tapes in `scripts/demos/`, each in an isolated fixture, from the
+built-in catalog's public data:
 
-```bash
-python3 scripts/demos/generate_demos.py    # all demos (use --number N for one, -n N for workers)
-vhs scripts/demos/01-basic-navigation.tape  # single demo
+```bash,repo
+python3 scripts/demos/capture.py --list
 ```
 
-Most tapes open datasets under `demo/data`, built by `demo/build.py`. The home-screen
-tapes (`12` through `16`) copy that directory into a throwaway workspace under
-`/tmp/datui-demo`, with their own home directory, cache and config. The generator also
-removes inherited cloud credentials, so those recordings show seeded local data and
-the example datasets that come with datui rather than anything belonging to the machine recording
-them. It also pins true-color output and ignores an inherited `NO_COLOR` setting.
-
-For prerequisites, options, and detailed instructions, see the [Demos documentation][demos-docs].
-
-[demos-docs]: https://derekwisong.github.io/datui/latest/for-developers/demos.html
+`--publish` copies reviewed outputs here. See
+[Record demos](https://derekwisong.github.io/datui/latest/for-developers/demos.html).

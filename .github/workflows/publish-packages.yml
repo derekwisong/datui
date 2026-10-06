@@ -87,7 +87,9 @@ jobs:
   publish-crates-io:
     needs: resolve-release
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # cargo publish verifies each crate by building it from the packaged source,
+    # uncached. v0.4.0's datui verify ran past the old 15-minute limit.
+    timeout-minutes: 45
     steps:
       - name: Checkout at release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -115,9 +117,11 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
+          # cargo's output goes to the log as it runs, so a slow verify shows where the time went.
+          set -o pipefail
           for crate in datui-cli datui-lib datui; do
             set +e
-            output=$(cargo publish -p "$crate" --locked 2>&1)
+            output=$(cargo publish -p "$crate" --locked 2>&1 | tee /dev/stderr)
             ret=$?
             set -e
             if [ "$ret" -eq 0 ]; then
@@ -125,7 +129,6 @@ jobs:
             elif echo "$output" | grep -qE "already uploaded|is already on the registry|already published|already exists on crates.io index"; then
               echo "::notice:: $crate at this version is already on crates.io, skipping"
             else
-              echo "$output"
               exit 1
             fi
           done

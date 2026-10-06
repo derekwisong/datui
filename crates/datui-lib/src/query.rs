@@ -335,6 +335,78 @@ fn token_text(token: &Token) -> String {
 /// Remedy shown when a clause keyword turns up out of place.
 const CLAUSE_ORDER: &str = "clause order is select [by group] [where conditions]";
 
+/// [`CLAUSE_ORDER`] with q's optional `from df`, for errors about it.
+const FROM_ORDER: &str = "clause order is select [by group] [from df] [where conditions]";
+
+/// The one table q reads: the one on screen, named as SQL names it.
+const TABLE: &str = "df";
+
+/// The table name after a `from` at `tokens[i]`: an identifier, or a dotted
+/// path like `data.csv`, that is not an operator word. Returns it and the index
+/// past it.
+fn from_table_at(tokens: &[Token], i: usize) -> Option<(String, usize)> {
+    if tokens.get(i) != Some(&Token::Identifier("from".to_string())) {
+        return None;
+    }
+    let mut name = match tokens.get(i + 1) {
+        Some(Token::Identifier(n)) if !WORD_OPS.contains(&n.as_str()) => n.clone(),
+        _ => return None,
+    };
+    let mut end = i + 2;
+    while let (Some(Token::Dot), Some(Token::Identifier(part))) =
+        (tokens.get(end), tokens.get(end + 1))
+    {
+        name.push('.');
+        name.push_str(part);
+        end += 2;
+    }
+    Some((name, end))
+}
+
+/// The query body without q's `from df`, which may sit after the select list and
+/// `by`, before `where`. `from` stays an identifier, so it is the clause only
+/// where a column could not be: followed by a table name, then `where`, `by` or
+/// the end, outside brackets. A column named `from` reads as one elsewhere.
+fn strip_from(body: &[Token]) -> Result<Vec<Token>, String> {
+    let mut depth = 0i32;
+    let mut found: Option<(usize, usize)> = None;
+    for (i, token) in body.iter().enumerate() {
+        match token {
+            Token::LParen | Token::LBracket => depth += 1,
+            Token::RParen | Token::RBracket => depth -= 1,
+            _ => {}
+        }
+        if depth != 0 {
+            continue;
+        }
+        let Some((name, end)) = from_table_at(body, i) else {
+            continue;
+        };
+        let after_where = body[..i].contains(&Token::Where);
+        match body.get(end) {
+            None | Some(Token::Where) | Some(Token::By) => {}
+            _ => continue,
+        }
+        if name != TABLE {
+            return Err("q reads the table on screen, named df: … from df …".to_string());
+        }
+        if after_where {
+            return Err(format!(
+                "Unexpected 'from df' after the where clause: {FROM_ORDER}"
+            ));
+        }
+        if body.get(end) == Some(&Token::By) {
+            return Err(format!("Unexpected 'by' after 'from df': {FROM_ORDER}"));
+        }
+        found = Some((i, end));
+    }
+    let mut body = body.to_vec();
+    if let Some((start, end)) = found {
+        body.drain(start..end);
+    }
+    Ok(body)
+}
+
 /// Infix operators spelled as words (q's names). They stay ordinary identifiers
 /// everywhere else, so a column called `in` or `mod` still reads as one when it
 /// opens an expression or follows a `.`.
@@ -2070,7 +2142,8 @@ pub(crate) fn parse_nodes(query: &str) -> Result<QueryNodes, String> {
             tokens.get(2),
             Some(Token::Colon | Token::Comma | Token::Dot | Token::Op(_))
         );
-    let body = &tokens[if distinct { 2 } else { 1 }..];
+    let body = strip_from(&tokens[if distinct { 2 } else { 1 }..])?;
+    let body = &body[..];
 
     // Split by "where" first
     let mut parts = split_tokens(body, &Token::Where);
@@ -3913,6 +3986,88 @@ mod tests {
         let ParsedQuery { cols, distinct, .. } = parse_query("select distinct: n").unwrap();
         assert!(!distinct);
         assert_eq!(cols, vec![col("n").alias("distinct")]);
+    }
+
+    #[test]
+    fn test_from_df_is_optional() {
+        // `from df` sits where q puts it: after the select list and by, before where.
+        for (with, without) in [
+            (
+                "select mean dep_delay by hour from df where origin = \"JFK\"",
+                "select mean dep_delay by hour where origin = \"JFK\"",
+            ),
+            ("select from df where x > 1", "select where x > 1"),
+            ("select from df", "select"),
+            ("select a, b from df", "select a, b"),
+            ("select distinct a from df", "select distinct a"),
+            ("select n: count a by g from df", "select n: count a by g"),
+        ] {
+            assert_eq!(
+                format!("{:?}", parse_query(with).unwrap()),
+                format!("{:?}", parse_query(without).unwrap()),
+                "{with}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_from_names_only_df() {
+        for query in [
+            "select from trades",
+            "select a by g from trades where a > 1",
+            "select from data.csv",
+        ] {
+            assert_eq!(
+                parse_query(query).unwrap_err(),
+                "q reads the table on screen, named df: … from df …",
+                "{query}"
+            );
+        }
+        let err = parse_query("select a where a > 1 from df").unwrap_err();
+        assert!(err.contains("after the where clause"), "{err}");
+        let err = parse_query("select a from df by g").unwrap_err();
+        assert!(err.contains("'by' after 'from df'"), "{err}");
+    }
+
+    #[test]
+    fn test_from_column_names_and_values() {
+        // A column named `from` still reads as one wherever a table name cannot follow.
+        let cols = |q: &str| parse_query(q).unwrap().cols;
+        assert_eq!(cols("select from"), vec![col("from")]);
+        assert_eq!(cols("select from, to"), vec![col("from"), col("to")]);
+        assert_eq!(cols("select from from df"), vec![col("from")]);
+        assert_eq!(cols("select from + 1"), vec![col("from") + lit(1.0)]);
+        assert_eq!(cols("select from.year"), cols("select col[\"from\"].year"));
+        assert_eq!(cols("select max from"), cols("select max col[\"from\"]"));
+        let ParsedQuery { group_by, .. } = parse_query("select n: count a by from").unwrap();
+        assert_eq!(group_by, vec![col("from")]);
+        assert_eq!(
+            parse_query("select where from = \"df\"").unwrap().filter,
+            Some(col("from").eq(lit("df")))
+        );
+        assert_eq!(
+            parse_query("select where from in [1, 2]").unwrap().filter,
+            parse_query("select where col[\"from\"] in [1, 2]")
+                .unwrap()
+                .filter
+        );
+        // Names that contain the word, and values that are it.
+        assert_eq!(
+            cols("select from_city, datefrom from df"),
+            vec![col("from_city"), col("datefrom")]
+        );
+        assert_eq!(
+            parse_query("select from df where city = \"from df\"")
+                .unwrap()
+                .filter,
+            Some(col("city").eq(lit("from df")))
+        );
+        // A column named df is still a column.
+        assert_eq!(cols("select df from df"), vec![col("df")]);
+        // Run against data: from df changes nothing.
+        let df = df!("from" => &[1i64, 2, 3], "df" => &["x", "y", "z"]).unwrap();
+        let out = eval("select from, df from df where from > 1", &df);
+        assert_eq!(values(&out, "df"), ["y", "z"]);
     }
 
     #[test]

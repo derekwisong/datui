@@ -1312,8 +1312,8 @@ fn ctrl_c_quits_from_the_sort_and_chart_search_boxes() {
 
     let (mut p2, _d) = loaded_pump();
     p2.app.input_mode = InputMode::Chart;
-    p2.app.chart_modal.active = true;
-    p2.app.chart_modal.open(
+    p2.app.chart.modal.active = true;
+    p2.app.chart.modal.open(
         crate::chart_modal::ChartColumns {
             numeric: &["a".to_string(), "b".to_string()],
             ..Default::default()
@@ -1323,8 +1323,8 @@ fn ctrl_c_quits_from_the_sort_and_chart_search_boxes() {
         false,
         0,
     );
-    p2.app.chart_modal.focus = ChartFocus::X;
-    p2.app.chart_modal.open_picker();
+    p2.app.chart.modal.focus = ChartFocus::X;
+    p2.app.chart.modal.open_picker();
     assert!(
         p2.app.text_field_focused(),
         "the open Picker narrows by typing"
@@ -1932,7 +1932,7 @@ fn ctrl_c_quits_from_chart_mode_while_busy() {
     for c in ['c', 'q'] {
         let mut p = pump();
         p.app.input_mode = InputMode::Chart;
-        p.app.chart_modal.active = true;
+        p.app.chart.modal.active = true;
         p.app.busy = true;
         assert!(matches!(
             p.app.handle(&AppEvent::Key(ctrl(c))),
@@ -3089,18 +3089,18 @@ fn a_click_on_the_chart_panel_focuses_and_acts() {
     p.terminal_key(plain(KeyCode::Char('c'))).unwrap();
     settle(&mut p);
     assert_eq!(p.app.input_mode, InputMode::Chart);
-    let mark = p.app.chart_modal.spec.mark;
+    let mark = p.app.chart.modal.spec.mark;
     let at = on_screen(&mut p.app, "Type");
     assert!(p.terminal_mouse(click(at)).unwrap());
     settle(&mut p);
-    assert_eq!(p.app.chart_modal.focus, ChartFocus::Type);
-    assert_ne!(p.app.chart_modal.spec.mark, mark, "the type stepped");
-    let grid = p.app.chart_modal.grid;
+    assert_eq!(p.app.chart.modal.focus, ChartFocus::Type);
+    assert_ne!(p.app.chart.modal.spec.mark, mark, "the type stepped");
+    let grid = p.app.chart.modal.grid;
     let at = on_screen(&mut p.app, "Grid");
     p.terminal_mouse(click(at)).unwrap();
     settle(&mut p);
-    assert_eq!(p.app.chart_modal.focus, ChartFocus::Grid);
-    assert_ne!(p.app.chart_modal.grid, grid, "the grid flipped");
+    assert_eq!(p.app.chart.modal.focus, ChartFocus::Grid);
+    assert_ne!(p.app.chart.modal.grid, grid, "the grid flipped");
 }
 
 /// A header carried off the columns is over itself again: let go there, nothing

@@ -412,7 +412,7 @@ fn a_view_draws_its_sample_again_from_the_seed() {
     // A chart of the view, with an option set: the view keeps it.
     press(&mut app, KeyCode::Char('c'));
     assert_eq!(app.input_mode, datui::InputMode::Chart);
-    app.chart_modal.hist_bins = 17;
+    app.chart.modal.hist_bins = 17;
     press(&mut app, KeyCode::Esc);
     drain_events(&mut app, &rx);
 
@@ -446,7 +446,7 @@ fn a_view_draws_its_sample_again_from_the_seed() {
     }
     drain_events(&mut app, &rx);
     assert!(app.data_table_state.as_ref().unwrap().sampled().is_none());
-    app.chart_modal.hist_bins = 40;
+    app.chart.modal.hist_bins = 40;
     press(&mut app, KeyCode::Char('V'));
     drain_events(&mut app, &rx);
     let state = app.data_table_state.as_ref().unwrap();
@@ -456,11 +456,11 @@ fn a_view_draws_its_sample_again_from_the_seed() {
 
     // The table, with the chart one key away: `c` draws the view's chart.
     assert_eq!(app.input_mode, datui::InputMode::Normal);
-    assert!(app.chart_modal.restored);
+    assert!(app.chart.modal.restored);
     press(&mut app, KeyCode::Char('c'));
     assert_eq!(app.input_mode, datui::InputMode::Chart);
-    assert_eq!(app.chart_modal.spec, chart.spec);
-    assert_eq!(app.chart_modal.hist_bins, 17);
+    assert_eq!(app.chart.modal.spec, chart.spec);
+    assert_eq!(app.chart.modal.hist_bins, 17);
 }
 
 /// A sample drawn from the view's rows keeps the whole view it was drawn through: a

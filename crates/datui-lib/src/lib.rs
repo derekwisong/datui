@@ -505,12 +505,6 @@ pub enum AppEvent {
     DoExport(ExportRequest),
     /// A followed file's watcher found more rows, or that the file went.
     Followed(crate::follow::News),
-    /// The Info tab of a piped journal, read again once it ended, for the dataset of
-    /// that generation.
-    FollowedDetail {
-        dataset_generation: u64,
-        detail: Box<crate::text_formats::Detail>,
-    },
     Exit,
     Crash(String),
     QQuery(String),
@@ -581,12 +575,6 @@ pub enum AppEvent {
     /// A frame was painted. The run loop calls [`App::frame_painted`] itself; a harness
     /// that paints nothing sends this when [`App::count_waits_for_a_frame`].
     FramePainted,
-    /// Every footer of a dataset that opened from two of them has now been read. What
-    /// they say is in `App::pending_footers_result`; the columns they add join the
-    /// dataset already on screen.
-    BackgroundFootersJoined {
-        generation: u64,
-    },
     /// Every line of a text file opened from its first rows is indexed, `rows` of
     /// them, for the dataset of `generation`.
     LinesIndexed {
@@ -1058,8 +1046,8 @@ pub struct App {
     pub sample: sample_draw::SampleState,
     /// What Data Quality runs keep within the memory budget.
     quality: quality_runs::QualityRuns,
-    pub chart_modal: ChartModal,
-    pub chart_export_modal: ChartExportModal,
+    /// The chart view, its export form, and the preparations it keeps or waits on.
+    pub chart: chart_jobs::Charts,
     pub export_modal: ExportModal,
     pub copy_modal: copy_modal::CopyModal,
     pub inspector_modal: inspector_modal::InspectorModal,
@@ -1075,13 +1063,6 @@ pub struct App {
     pub column_forms: retype_keys::ColumnForms,
     /// The hex view, and the number its next read is tagged with.
     pub hex_view: hex_keys::HexState,
-    pub(crate) chart_cache: ChartCache,
-    /// The selection the chart last asked for, and, when it stepped the aggregate of
-    /// the one before, until when it waits for the next step before it is prepared.
-    chart_asked: Option<(ChartRequest, Option<std::time::Instant>)>,
-    /// A chart export that asked for data still being prepared. The preparation's end
-    /// picks it up; `busy` stays set until then.
-    chart_export_waiting: Option<ChartExportRequest>,
     error_modal: ErrorModal,
     flash: Option<Flash>,
     pub confirmation_modal: ConfirmationModal,
@@ -1532,8 +1513,8 @@ impl App {
     }
 
     /// Read a piped journal's Info tab again once it has ended, over every entry: the
-    /// one the open read describes the entries that had arrived then. Not a job, which
-    /// the user would wait on; the table works meanwhile.
+    /// one the open read describes the entries that had arrived then. Nobody waits on
+    /// it; the table works meanwhile.
     fn describe_ended_journal(&mut self) {
         let Some(lf) = self
             .data_table_state
@@ -1542,18 +1523,11 @@ impl App {
         else {
             return;
         };
-        let generation = self.dataset_generation;
-        let tx = self.events.clone();
-        self.runtime.spawn_blocking(move || {
-            let detail = logging::catch_panic(|| crate::journal::summary(&lf).ok())
-                .ok()
-                .flatten();
-            if let Some(detail) = detail {
-                let _ = tx.send(AppEvent::FollowedDetail {
-                    dataset_generation: generation,
-                    detail: Box::new(detail),
-                });
-            }
+        let dataset = self.dataset_generation;
+        self.spawn_job(Job::JournalDetail { dataset }, None, move |_| {
+            Ok(Answer::JournalDescribed(
+                crate::journal::summary(&lf).ok().map(Box::new),
+            ))
         });
     }
 
@@ -1896,8 +1870,8 @@ impl App {
         // that keeps the rows it was opened on, read the new ones.
         let refreshes = self.input_mode == InputMode::ValueCounts
             || (self.input_mode == InputMode::Chart
-                && self.chart_modal.picker.is_none()
-                && !self.chart_export_modal.active)
+                && self.chart.modal.picker.is_none()
+                && !self.chart.export_modal.active)
             || (self.analysis_modal.active && self.analysis_modal.current_results().is_some());
         let key = if self.in_normal_table_view() {
             Some(match follow.standing {
@@ -2325,11 +2299,11 @@ impl App {
                         .is_text_row(self.pivot_melt_modal.focus)
             }
             InputMode::Chart => {
-                if self.chart_export_modal.active {
-                    self.chart_export_modal.focus.is_text()
+                if self.chart.export_modal.active {
+                    self.chart.export_modal.focus.is_text()
                 } else {
                     // The open column Picker narrows by typing, so it types.
-                    self.chart_modal.picker.is_some()
+                    self.chart.modal.picker.is_some()
                 }
             }
             InputMode::Normal => {
@@ -3016,7 +2990,6 @@ impl App {
                 first_rows_asked: 0,
                 len_count_failed: None,
                 end_after_count: None,
-                pending_footers_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
                 end_when_the_footers_land: None,
                 end_when_indexed: None,
                 indexing_stop: Arc::default(),
@@ -3132,8 +3105,13 @@ impl App {
                 evidence_return: None,
                 evidence_label: None,
             },
-            chart_modal: ChartModal::new(),
-            chart_export_modal,
+            chart: chart_jobs::Charts {
+                modal: ChartModal::new(),
+                export_modal: chart_export_modal,
+                cache: ChartCache::default(),
+                asked: None,
+                export_waiting: None,
+            },
             export_modal: ExportModal::new(),
             copy_modal: copy_modal::CopyModal::new(),
             inspector_modal: inspector_modal::InspectorModal::new(),
@@ -3159,9 +3137,6 @@ impl App {
                 combine: None,
                 retype_from_info: false,
             },
-            chart_cache: ChartCache::default(),
-            chart_asked: None,
-            chart_export_waiting: None,
             error_modal: ErrorModal::new(),
             flash: None,
             confirmation_modal: ConfirmationModal::new(),
@@ -3429,7 +3404,7 @@ impl App {
     /// were.
     fn declined(&mut self) -> Option<AppEvent> {
         match self.confirmation_modal.take() {
-            Some(Confirm::ChartExport(_)) => self.chart_export_modal.resume(),
+            Some(Confirm::ChartExport(_)) => self.chart.export_modal.resume(),
             Some(Confirm::Export(_)) => {
                 self.export_modal.resume();
                 self.input_mode = InputMode::Export;
@@ -4136,10 +4111,10 @@ impl App {
                         })
                         .map(|(name, _)| name.to_string())
                         .collect();
-                    self.chart_modal.series_cap = Some(self.theme.series_colors().len());
-                    self.chart_modal.row_order = self.view_state().sort;
+                    self.chart.modal.series_cap = Some(self.theme.series_colors().len());
+                    self.chart.modal.row_order = self.view_state().sort;
                     let sampled = state.sampled().is_some();
-                    self.chart_modal.open(
+                    self.chart.modal.open(
                         ChartColumns {
                             numeric: &numeric_columns,
                             datetime: &datetime_columns,
@@ -4153,12 +4128,12 @@ impl App {
                     );
                     // A view's sample is read whole: the chart has no sample of its own.
                     if sampled {
-                        self.chart_modal.row_limit = None;
-                    } else if self.chart_modal.view_sampled {
-                        self.chart_modal.row_limit = Some(self.chart_modal.sample_rows);
+                        self.chart.modal.row_limit = None;
+                    } else if self.chart.modal.view_sampled {
+                        self.chart.modal.row_limit = Some(self.chart.modal.sample_rows);
                     }
-                    self.chart_modal.view_sampled = sampled;
-                    self.chart_cache.clear();
+                    self.chart.modal.view_sampled = sampled;
+                    self.chart.cache.clear();
                     self.input_mode = InputMode::Chart;
                 }
                 None
@@ -4418,8 +4393,7 @@ impl App {
             AppEvent::BackgroundLenReady { .. }
             | AppEvent::FramePainted
             | AppEvent::BackgroundLenFailed { .. }
-            | AppEvent::LinesIndexed { .. }
-            | AppEvent::BackgroundFootersJoined { .. } => self.counting_event(event),
+            | AppEvent::LinesIndexed { .. } => self.counting_event(event),
             AppEvent::BackgroundQualitySampleKept { kept } => {
                 self.retain_quality_sample(kept);
                 None
@@ -4705,17 +4679,6 @@ impl App {
             }
             AppEvent::Followed(news) => {
                 self.followed(news);
-                None
-            }
-            AppEvent::FollowedDetail {
-                dataset_generation,
-                detail,
-            } => {
-                if *dataset_generation == self.dataset_generation
-                    && let Some(state) = self.data_table_state.as_mut()
-                {
-                    state.set_format_detail((**detail).clone());
-                }
                 None
             }
             AppEvent::DoExport(request) => {
@@ -5233,15 +5196,23 @@ impl App {
         waited: bool,
         answer: Answer,
     ) -> Option<AppEvent> {
-        match answer {
-            Answer::Load(answer) => {
+        match (job, answer) {
+            (Job::JournalDetail { dataset }, Answer::JournalDescribed(Some(detail))) => {
+                if dataset == self.dataset_generation
+                    && let Some(state) = self.data_table_state.as_mut()
+                {
+                    state.set_format_detail(*detail);
+                }
+                None
+            }
+            (Job::FootersJoin { dataset }, Answer::FootersJoined(found)) => {
+                self.footers_joined(dataset, found.map(|found| *found))
+            }
+            (Job::Load(load), Answer::Load(answer)) => {
                 // The open's to judge, by its own identity rather than the generation: an
                 // answer for an open given up or replaced, or for a phase it has left,
                 // changes nothing on screen, and what it carries — a download's file, a
                 // dataset — is dropped with it.
-                let Job::Load(load) = job else {
-                    return None;
-                };
                 let step = self.loading.answered(
                     load,
                     *answer,
@@ -5250,16 +5221,16 @@ impl App {
                 );
                 self.run_load_step(step)
             }
-            Answer::NamedPaths {
-                paths,
-                options,
-                directory,
-            } => {
+            (
+                Job::OpenNamed(load),
+                Answer::NamedPaths {
+                    paths,
+                    options,
+                    directory,
+                },
+            ) => {
                 // The user left the open while its paths were looked at, or another took
                 // its place.
-                let Job::OpenNamed(load) = job else {
-                    return None;
-                };
                 if !self.loading.looking_at_paths(load) {
                     return None;
                 }
@@ -5269,10 +5240,7 @@ impl App {
                     None => AppEvent::Open(paths, *options),
                 })
             }
-            Answer::NamedPathMissing(path) => {
-                let Job::OpenNamed(load) = job else {
-                    return None;
-                };
+            (Job::OpenNamed(load), Answer::NamedPathMissing(path)) => {
                 if !self.loading.looking_at_paths(load) {
                     return None;
                 }
@@ -5282,30 +5250,27 @@ impl App {
                 }
                 Some(AppEvent::NamedPathMissing(path))
             }
-            Answer::LookedAt {
-                kind,
-                holds,
-                options,
-            } => {
+            (
+                Job::LookAtDirectory { load, path },
+                Answer::LookedAt {
+                    kind,
+                    holds,
+                    options,
+                },
+            ) => {
                 // The user pressed Ctrl+O and went to the home screen, a newer look
                 // replaced this one, or another open took its place while this was
                 // reading. Their choice is the one on screen, and this is the answer to a
                 // question nobody is waiting for.
-                let Job::LookAtDirectory { load, path } = job else {
-                    return None;
-                };
                 if !self.loading.looking_at_directory(load) {
                     return None;
                 }
                 // An `Open` that follows carries the same open on.
                 self.open_the_directory_looked_at(path, kind, holds.as_deref(), *options)
             }
-            Answer::Kind(found) => {
+            (Job::Classify(asked), Answer::Kind(found)) => {
                 // Superseded: a newer look, a trip away from home, or something that took
                 // the screen over owns the wait, so this one touches nothing.
-                let Job::Classify(asked) = job else {
-                    return None;
-                };
                 if !current {
                     return None;
                 }
@@ -5332,11 +5297,8 @@ impl App {
                 };
                 self.open_what_it_is(path, kind, asked.jump)
             }
-            Answer::Rows(result) => {
+            (Job::Rows(inflight), Answer::Rows(result)) => {
                 // A stale page is dropped; the wait belongs to whatever replaced it.
-                let Job::Rows(inflight) = job else {
-                    return None;
-                };
                 if !current {
                     return None;
                 }
@@ -5381,25 +5343,31 @@ impl App {
                 }
                 None
             }
-            Answer::RowsFailed {
-                message,
-                conversion,
-            } => {
+            (
+                _,
+                Answer::RowsFailed {
+                    message,
+                    conversion,
+                },
+            ) => {
                 self.rows_failed(current, waited, &message, conversion.as_deref());
                 None
             }
-            Answer::Analysis(install, results) => {
+            (_, Answer::Analysis(install, results)) => {
                 if current {
                     install(&mut self.analysis_modal, results);
                     self.analysis_modal.computing = None;
                 }
                 None
             }
-            Answer::DataQuality {
-                results,
-                kept,
-                plan,
-            } => {
+            (
+                _,
+                Answer::DataQuality {
+                    results,
+                    kept,
+                    plan,
+                },
+            ) => {
                 // Kept whatever became of the run's results: the rows are the rows the
                 // key names, and a read is not to be thrown away.
                 if let Some(kept) = kept {
@@ -5422,15 +5390,15 @@ impl App {
                 }
                 None
             }
-            Answer::SampleDrawn(drawn) => self.sample_drawn(job, current, drawn),
-            Answer::Sample { df, label } => {
+            (job, Answer::SampleDrawn(drawn)) => self.sample_drawn(job, current, drawn),
+            (_, Answer::Sample { df, label }) => {
                 if current {
                     self.analysis_modal.computing = None;
                     self.show_sample_view(df, label);
                 }
                 None
             }
-            Answer::Pivoted { spec, pivoted } => {
+            (_, Answer::Pivoted { spec, pivoted }) => {
                 // Superseded means something replaced the view, which owns the wait.
                 if !current {
                     return None;
@@ -5455,18 +5423,13 @@ impl App {
                 }
                 None
             }
-            Answer::ReshapePreviewed { input, result } => {
-                if let Job::ReshapePreview { epoch, token } = job {
-                    self.reshape_preview_ended(epoch, token, input, result);
-                }
+            (Job::ReshapePreview { epoch, token }, Answer::ReshapePreviewed { input, result }) => {
+                self.reshape_preview_ended(epoch, token, input, result);
                 None
             }
-            Answer::ViewPivoted(pivoted) => {
+            (Job::ViewPivot(pivot), Answer::ViewPivoted(pivoted)) => {
                 // Superseded means the view was cancelled or something replaced it, which
                 // owns the wait.
-                let Job::ViewPivot(pivot) = job else {
-                    return None;
-                };
                 let (view, why) = *pivot;
                 if !current {
                     return None;
@@ -5487,18 +5450,15 @@ impl App {
                 }
                 None
             }
-            Answer::DrillRow { group_index, row } => {
+            (_, Answer::DrillRow { group_index, row }) => {
                 // Superseded means something replaced the view, which owns the wait.
                 if current {
                     self.drill_into(group_index, &row);
                 }
                 None
             }
-            Answer::FieldsRead(values) => {
+            (Job::InspectRow { frame, row }, Answer::FieldsRead(values)) => {
                 // Superseded means something replaced the view, which owns the wait.
-                let Job::InspectRow { frame, row } = job else {
-                    return None;
-                };
                 if !current {
                     return None;
                 }
@@ -5513,11 +5473,8 @@ impl App {
                 }
                 None
             }
-            Answer::JsonParsed(root) => {
+            (Job::InspectJson { token }, Answer::JsonParsed(root)) => {
                 // Superseded means something replaced the view, which owns the wait.
-                let Job::InspectJson { token } = job else {
-                    return None;
-                };
                 if !current || !self.inspector_modal.active {
                     return None;
                 }
@@ -5531,10 +5488,7 @@ impl App {
                 }
                 None
             }
-            Answer::Indented(text) => {
-                let Job::InspectPretty { token } = job else {
-                    return None;
-                };
+            (Job::InspectPretty { token }, Answer::Indented(text)) => {
                 let modal = &mut self.inspector_modal;
                 if current
                     && let Some(inspector_modal::Pretty::Pending { token: t, place }) =
@@ -5548,10 +5502,7 @@ impl App {
                 }
                 None
             }
-            Answer::Unpacked(decoded) => {
-                let Job::InspectUnpack { token } = job else {
-                    return None;
-                };
+            (Job::InspectUnpack { token }, Answer::Unpacked(decoded)) => {
                 let modal = &mut self.inspector_modal;
                 if current
                     && let Some(inspector_modal::Unpack::Pending { token: t, place }) =
@@ -5565,13 +5516,13 @@ impl App {
                 }
                 None
             }
-            Answer::ValueWritten(open) => {
+            (_, Answer::ValueWritten(open)) => {
                 if current && self.inspector_modal.active {
                     self.external.open = Some(open);
                 }
                 None
             }
-            Answer::Exported(path) => {
+            (_, Answer::Exported(path)) => {
                 // Written: the dialog held for a failure is done with.
                 self.export_modal.close();
                 self.export_counts = None;
@@ -5581,43 +5532,37 @@ impl App {
                 }
                 None
             }
-            Answer::Copied { payload, message } => {
+            (_, Answer::Copied { payload, message }) => {
                 if current {
                     self.export_progress = None;
                     self.finish_copy(payload, message);
                 }
                 None
             }
-            Answer::QualityReportWritten(path) => {
+            (_, Answer::QualityReportWritten(path)) => {
                 self.analysis_modal.quality.export = None;
                 if current {
                     self.flash_path("Report written to ", &path);
                 }
                 None
             }
-            Answer::ChartPrepared(prepared) => {
-                if let Job::ChartPrepare(prep) = job {
-                    self.chart_prepared(*prep, current, Ok(*prepared));
-                }
+            (Job::ChartPrepare(prep), Answer::ChartPrepared(prepared)) => {
+                self.chart_prepared(*prep, current, Ok(*prepared));
                 None
             }
-            Answer::ChartExported => {
+            (Job::ChartExport { path, format }, Answer::ChartExported) => {
                 // Leaving the chart's dataset supersedes the write: one that finishes
                 // after Ctrl-O must not reopen its modal over the home screen.
-                if let Job::ChartExport { path, format } = job
-                    && current
-                {
+                if current {
                     self.finish_chart_export(&path, format, Ok(()));
                 }
                 None
             }
-            Answer::FileFacts(facts) => {
-                if let Job::FileFacts { dataset } = job {
-                    self.file_facts_landed(dataset, facts);
-                }
+            (Job::FileFacts { dataset }, Answer::FileFacts(facts)) => {
+                self.file_facts_landed(dataset, facts);
                 None
             }
-            Answer::UnfitCounted(unfit) => {
+            (Job::UnfitCount { dataset, version }, Answer::UnfitCounted(unfit)) => {
                 // Every value fitting says nothing in the Notes; the log says it ran.
                 let columns: Vec<&str> = unfit.iter().map(|u| u.column.as_str()).collect();
                 let said = if columns.is_empty() {
@@ -5626,8 +5571,7 @@ impl App {
                     columns.join(", ")
                 };
                 log::debug!(target: "datui", "values column types made null, by column: {said}");
-                if let Job::UnfitCount { dataset, version } = job
-                    && dataset == self.dataset_generation
+                if dataset == self.dataset_generation
                     && let Some(state) = self.data_table_state.as_mut()
                 {
                     match version {
@@ -5637,21 +5581,19 @@ impl App {
                 }
                 None
             }
-            Answer::Found(found) => {
-                if let Job::Find(run) = job {
-                    self.find_answered(run, current, found);
-                }
+            (Job::Find(run), Answer::Found(found)) => {
+                self.find_answered(run, current, found);
                 None
             }
-            Answer::HexOpened(source) => {
+            (job, Answer::HexOpened(source)) => {
                 self.hex_opened(job, current, *source);
                 None
             }
-            Answer::HexFound(hit) => {
+            (job, Answer::HexFound(hit)) => {
                 self.hex_found(job, current, hit);
                 None
             }
-            Answer::ValueCounts(counts) => {
+            (_, Answer::ValueCounts(counts)) => {
                 // Superseded means the screen moved on: another column, a cancel, a
                 // trip away.
                 if current {
@@ -5662,10 +5604,12 @@ impl App {
             }
             // What a test's answer carries goes with it.
             #[cfg(test)]
-            Answer::Probe(held) => {
+            (_, Answer::Probe(held)) => {
                 drop(held);
                 None
             }
+            // Each answer is the one its job asks for; another is dropped.
+            _ => None,
         }
     }
 
@@ -5690,6 +5634,10 @@ impl App {
                 if let loading::Step::Failed(failed) = self.loading.failed(*load, message) {
                     self.load_failed(failed);
                 }
+            }
+            // A pass that failed could not read them: the dataset stops waiting.
+            Job::FootersJoin { dataset } => {
+                self.footers_joined(*dataset, None);
             }
             Job::ChartPrepare(prep) => {
                 let message = if panicked {
@@ -5874,6 +5822,8 @@ impl App {
             Job::UnfitCount { .. } => {
                 log::warn!(target: "datui", "counting values that did not fit their type failed: {message}");
             }
+            // The Info tab keeps what the open read.
+            Job::JournalDetail { .. } => {}
         }
     }
 
@@ -6107,7 +6057,7 @@ impl App {
         match built {
             Ok(built) => {
                 self.theme = built;
-                self.chart_modal.series_cap = Some(self.theme.series_colors().len());
+                self.chart.modal.series_cap = Some(self.theme.series_colors().len());
                 self.app_config.theme = next;
                 // The prompts live as long as the app and keep the colors they were
                 // given; a dialog's fields take the theme each time it opens.

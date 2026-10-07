@@ -185,10 +185,11 @@ fn analysis_and_charts_read_the_views_sample() {
 
     key(&mut app, KeyCode::Char('c'));
     assert_eq!(app.input_mode, InputMode::Chart);
-    assert!(app.chart_modal.view_sampled);
-    assert_eq!(app.chart_modal.row_limit, None);
+    assert!(app.chart.modal.view_sampled);
+    assert_eq!(app.chart.modal.row_limit, None);
     assert!(
-        !app.chart_modal
+        !app.chart
+            .modal
             .row_order()
             .contains(&datui::chart_modal::ChartFocus::LimitRows),
         "no Rows row while the view has a sample"
@@ -285,7 +286,7 @@ fn an_exported_chart_carries_its_recipe_unless_omitted() {
     key(&mut app, KeyCode::Char('c'));
     pump_until(&mut app, &rx, &tx, App::chart_data_ready);
     assert!(
-        app.chart_export_modal.recipe,
+        app.chart.export_modal.recipe,
         "chart.export_recipe starts the row at Include"
     );
 

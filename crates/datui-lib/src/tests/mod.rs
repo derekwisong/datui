@@ -372,7 +372,8 @@ fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
         let event = rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the pass reports back");
-        if matches!(event, AppEvent::BackgroundFootersJoined { .. }) {
+        if matches!(event, AppEvent::JobEnded(ticket) if ticket.kind() == crate::JobKind::FootersJoin)
+        {
             break event;
         }
     };
@@ -888,7 +889,7 @@ fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
         let event = rx
             .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
             .expect("the pass reports back");
-        let is_the_pass = matches!(event, AppEvent::BackgroundFootersJoined { .. });
+        let is_the_pass = matches!(event, AppEvent::JobEnded(ticket) if ticket.kind() == crate::JobKind::FootersJoin);
         let _ = app.handle(&event);
         if is_the_pass {
             break;
@@ -979,7 +980,7 @@ fn a_pass_that_cannot_read_the_footers_stops_the_dataset_waiting_for_it() {
         .recv_timeout(std::time::Duration::from_secs(10))
         .expect("a pass that failed still says so");
     assert!(
-        matches!(reported, AppEvent::BackgroundFootersJoined { .. }),
+        matches!(reported, AppEvent::JobEnded(ticket) if ticket.kind() == crate::JobKind::FootersJoin),
         "and says it the same way a pass that succeeded does"
     );
     let _ = app.handle(&reported);
@@ -1130,7 +1131,8 @@ fn a_pass_that_brings_no_count_still_leaves_rows_on_screen() {
         let event = rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the pass reports back");
-        if matches!(event, AppEvent::BackgroundFootersJoined { .. }) {
+        if matches!(event, AppEvent::JobEnded(ticket) if ticket.kind() == crate::JobKind::FootersJoin)
+        {
             break event;
         }
     };
@@ -1297,8 +1299,7 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
         .as_ref()
         .and_then(|state| state.footers_pending())
         .and_then(|pass| pass(&app.counting.footer_progress));
-    App::record_footers(&app.counting.pending_footers_result, live, found);
-    let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
+    let _ = app.footers_joined(live, found);
     assert!(
         app.counting.footers_held.is_some(),
         "held rather than joined, because a query is the root"
@@ -1817,7 +1818,7 @@ fn a_parked_end_does_not_put_its_message_on_the_chart_view() {
     assert!(footer_text(&mut app).contains("Counting rows"), "parked");
 
     app.input_mode = crate::InputMode::Chart;
-    app.chart_modal.active = true;
+    app.chart.modal.active = true;
 
     let bar = footer_text(&mut app);
     assert!(
@@ -2625,7 +2626,7 @@ fn a_failure_leaves_other_work_alone() {
         .supersede(|job| matches!(job, Job::ChartExport { .. }));
     fail(&mut app, older);
     untouched(&app, "an older chart export");
-    assert!(!app.chart_export_modal.active);
+    assert!(!app.chart.export_modal.active);
 
     // An open is no longer waited on once the user has gone home from it.
     let load = app.open_for_tests("gone.csv");
@@ -3271,7 +3272,7 @@ fn a_count_landing_during_a_load_does_not_bump_the_generation() {
 #[test]
 fn a_dataset_owed_a_re_read_does_not_print_its_partial_as_the_total() {
     use crate::table::DataTableState;
-    use crate::{App, AppEvent, OpenOptions};
+    use crate::{App, OpenOptions};
     use polars::prelude::*;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
@@ -3318,8 +3319,7 @@ fn a_dataset_owed_a_re_read_does_not_print_its_partial_as_the_total() {
     ));
     let _lease = app.hold_the_generation();
     let live = app.dataset_generation;
-    App::record_footers(&app.counting.pending_footers_result, live, None);
-    let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
+    let _ = app.footers_joined(live, None);
     assert!(
         app.counting.reread_owed.is_some(),
         "the fixture is a dataset owed a re-read it cannot have yet"
@@ -3523,8 +3523,7 @@ fn a_pass_that_failed_waits_for_work_already_asked_for() {
 
     // The pass comes back empty-handed for the dataset on screen.
     let live = app.dataset_generation;
-    App::record_footers(&app.counting.pending_footers_result, live, None);
-    let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation: live });
+    let _ = app.footers_joined(live, None);
 
     assert_eq!(
         app.task_generation(),
@@ -3760,18 +3759,15 @@ fn columns_held_for_one_dataset_are_not_given_to_the_next() {
     );
 }
 
-/// The event that wakes the app does not decide whose answer is in the slot.
+/// An older dataset's pass, finishing after the one on screen, changes nothing.
 ///
-/// Two passes run at once when a second large prefix is opened, and the newer one
-/// can overwrite the slot before the older one's event is handled. Deciding by the
-/// event would drain the newer answer and throw it away on the older event's
-/// generation — and the newer event, arriving next, would find the slot empty. The
-/// dataset on screen would wait for columns that had already been and gone, with
-/// nothing to say so: the pass is over, so even the count in the bar is silent.
+/// Two passes run at once when a second large prefix is opened, and they answer in
+/// whatever order the network gives. Each answer carries its own dataset and what it
+/// found, so the older one is dropped and the one on screen still gets its columns.
 #[test]
 fn a_late_event_from_an_old_pass_does_not_throw_away_the_live_answer() {
     use crate::table::{DataTableState, FootersFound};
-    use crate::{App, AppEvent, OpenOptions};
+    use crate::{App, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
 
@@ -3789,6 +3785,23 @@ fn a_late_event_from_an_old_pass_does_not_throw_away_the_live_answer() {
         };
         crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
+    let found = || FootersFound {
+        estimate: None,
+        dataset: dataset_of(wider()),
+        lf: wider(),
+        file_rows: Vec::new(),
+        files: Vec::new(),
+        row_groups: Vec::new(),
+        remote: None,
+    };
+    let last_column = |app: &App| {
+        app.data_table_state
+            .as_ref()
+            .unwrap()
+            .get_column_order()
+            .last()
+            .cloned()
+    };
 
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
@@ -3801,105 +3814,18 @@ fn a_late_event_from_an_old_pass_does_not_throw_away_the_live_answer() {
     .unwrap();
     app.install_for_tests(state, None, &OpenOptions::default(), None);
 
-    // This dataset's own pass has finished and put its answer in the slot.
+    // The prefix opened before this one answers late: it is not this dataset's.
     let live = app.dataset_generation;
-    App::record_footers(
-        &app.counting.pending_footers_result,
-        live,
-        Some(FootersFound {
-            estimate: None,
-            dataset: dataset_of(wider()),
-            lf: wider(),
-            file_rows: Vec::new(),
-            files: Vec::new(),
-            row_groups: Vec::new(),
-            remote: None,
-        }),
-    );
-
-    // And the event that reaches the loop first belongs to the prefix the user
-    // opened before this one, whose pass was slower.
-    let _ = app.handle(&AppEvent::BackgroundFootersJoined {
-        generation: live.wrapping_sub(1),
-    });
-
+    let _ = app.footers_joined(live.wrapping_sub(1), Some(found()));
     assert_eq!(
-        app.data_table_state
-            .as_ref()
-            .unwrap()
-            .get_column_order()
-            .last()
-            .map(String::as_str),
-        Some("oops"),
-        "the answer in the slot is this dataset's, and it is the one that is used"
-    );
-}
-
-/// A slower pass from an older dataset does not displace a newer one's answer.
-///
-/// Opening a second large prefix does not stop the first one reading, so two passes
-/// can be in flight and finish in either order. If the older one wrote last, the
-/// generation in the slot would disagree with the generation on the event and both
-/// would be thrown away — leaving the dataset on screen permanently short of the
-/// columns its own pass had already found.
-#[test]
-fn an_older_pass_finishing_late_does_not_displace_a_newer_one() {
-    use crate::App;
-    use polars::prelude::*;
-    use std::sync::{Arc, Mutex};
-
-    let found = |name: &str| {
-        let mut lf = df!(name => &[1i64]).unwrap().lazy();
-        let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
-            schema,
-            row_group_rows: vec![1],
-            file_bytes: 0,
-            row_group_bytes: Vec::new(),
-            column_bytes: Vec::new(),
-        };
-        crate::table::FootersFound {
-            estimate: None,
-            dataset: crate::schema_union::union_sampled(1, &[0], &[Some(footer)]),
-            lf,
-            file_rows: Vec::new(),
-            files: Vec::new(),
-            row_groups: Vec::new(),
-            remote: None,
-        }
-    };
-    let name_in = |slot: &Mutex<Option<(u64, Option<crate::table::FootersFound>)>>| {
-        slot.lock().unwrap().as_ref().map(|(g, f)| {
-            let f = f.as_ref().expect("recorded with something in it");
-            (
-                *g,
-                f.dataset.schema.iter_names().next().unwrap().to_string(),
-            )
-        })
-    };
-
-    let slot = Mutex::new(None);
-    assert!(
-        App::record_footers(&slot, 7, Some(found("newer"))),
-        "the newer pass answers first"
-    );
-    assert!(
-        !App::record_footers(&slot, 6, Some(found("older"))),
-        "and the older one, finishing after it, is turned away"
-    );
-    assert_eq!(
-        name_in(&slot),
-        Some((7, "newer".to_string())),
-        "so what is waiting is still the newer dataset's"
+        last_column(&app).as_deref(),
+        Some("id"),
+        "the older answer changes nothing"
     );
 
-    // The ordinary case is unaffected: a pass for the dataset now on screen goes in
-    // over whatever an abandoned one left behind.
-    assert!(
-        App::record_footers(&slot, 8, Some(found("newest"))),
-        "a later dataset's pass takes the slot"
-    );
-    assert_eq!(name_in(&slot), Some((8, "newest".to_string())));
+    // This dataset's own answer is the one that is used.
+    let _ = app.footers_joined(live, Some(found()));
+    assert_eq!(last_column(&app).as_deref(), Some("oops"));
 }
 
 /// Columns that arrive while the user is inside a query wait for them to leave it.
@@ -4097,9 +4023,10 @@ fn a_staged_open_joins_what_its_footers_found() {
     let joined = rx
         .recv_timeout(std::time::Duration::from_secs(10))
         .expect("the pass reports back");
-    let AppEvent::BackgroundFootersJoined { generation } = joined else {
+    let AppEvent::JobEnded(ticket) = joined else {
         panic!("expected the footers to be reported, got another event");
     };
+    assert_eq!(ticket.kind(), crate::JobKind::FootersJoin);
 
     // It lands after a glance at the home screen, which leaves the dataset up and
     // puts down whatever open was in flight. One keystroke there and back must not
@@ -4108,7 +4035,7 @@ fn a_staged_open_joins_what_its_footers_found() {
     // The re-read runs off this thread and would count too, as soon as it runs. It
     // dies before it reads, so what is counted below is this thread's alone.
     app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, crate::Job::Rows(_)));
-    let _ = app.handle(&AppEvent::BackgroundFootersJoined { generation });
+    let _ = app.handle(&AppEvent::JobEnded(ticket));
     // Read again, not asked to be read again. The join drops the buffer, so a
     // request that goes on to be ignored — as a step of the open's chain is, once
     // the load is over — leaves the table with nothing to show at the moment it was

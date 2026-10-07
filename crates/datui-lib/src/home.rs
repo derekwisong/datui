@@ -154,6 +154,125 @@ pub enum CloudLook {
     Failed,
 }
 
+/// What a home row is called, decided once for the list and the pane beside it.
+#[derive(Debug, Default, PartialEq)]
+pub struct RowLabel {
+    /// The list's word beside the name: a count, a kind, the curated word, a source id.
+    pub short: String,
+    /// The pane's `kind` line, which has the room to say it in words.
+    pub words: String,
+    /// `short` is the word a source or catalog gives the place.
+    pub curated: bool,
+    /// `short` is the source id the path names, or that the source is gone.
+    pub source: bool,
+    /// The source the path names has left the config.
+    pub missing_source: bool,
+}
+
+/// What `entry` is called. `look` is where a bucket directory is in being looked into,
+/// drawn on the row at spinner `frame`; `known_sources`, the sources a URL can name, or
+/// `None` where the trail already names it.
+pub fn describe(
+    entry: &Entry,
+    place_kind: Option<&'static str>,
+    look: Option<CloudLook>,
+    frame: usize,
+    known_sources: Option<&[crate::config::CloudConnectionConfig]>,
+) -> RowLabel {
+    // The door into a directory is an action, not a thing: a label, a curated word or a
+    // source id is about the directory, and `bigquery (all files)  dataset` would say
+    // the door is the dataset.
+    if entry.opens_whole_directory {
+        return RowLabel::default();
+    }
+    let g = crate::glyphs::get();
+    // What a source calls a place it names (`dataset`, `project`), and a catalog's
+    // local dataset that is not there (`missing`): before any count, so the curated
+    // row stays marked as one.
+    let curated =
+        place_kind.filter(|_| matches!(entry.kind, EntryKind::Directory | EntryKind::Unknown));
+    let look_glyph = look.map(|look| match look {
+        CloudLook::Waiting => g.ellipsis,
+        CloudLook::Looking => g.spinner[frame % g.spinner.len()],
+        CloudLook::Failed => "?",
+    });
+    let short = match curated {
+        Some(word) => word.to_string(),
+        // A directory not yet counted: a bucket's own word, else that it is being
+        // looked into, rather than a word for the kind of place it is.
+        None if entry.kind == EntryKind::Directory && entry.holds.formats.is_empty() => {
+            object_place_label(&entry.path)
+                .or(look_glyph)
+                .map(str::to_string)
+                .unwrap_or_else(|| entry.label().into_owned())
+        }
+        None => entry.label().into_owned(),
+    };
+    // Two stores can hold the same bucket and key, so a row from one named in its URL
+    // says which where a label would otherwise go, or that the source has since left
+    // the config rather than failing only when it is opened.
+    let path_text = entry.path.to_string_lossy();
+    let named = crate::source::split_source_id(&path_text).0;
+    let missing_source = named
+        .is_some_and(|id| known_sources.is_some_and(|known| !known.iter().any(|k| k.name == id)));
+    let (short, source) = match (named, known_sources) {
+        (Some(id), Some(_)) if short.is_empty() && missing_source => {
+            (format!("source not found: {id}"), true)
+        }
+        (Some(id), Some(_)) if short.is_empty() => (id.to_string(), true),
+        // Nothing has looked into it and it has nothing else to say: an ellipsis claims
+        // nothing, where `dir` was a claim and a blank reads as a file's empty label.
+        _ if short.is_empty() && entry.kind == EntryKind::Unknown => {
+            (g.ellipsis.to_string(), false)
+        }
+        _ => (short, false),
+    };
+    let words = match (&entry.table, entry.kind) {
+        (Some(table), _) => {
+            let of = match (&entry.format_spec, table.format) {
+                (Some(spec), _) => spec.clone(),
+                (None, Some(format)) => format.name().to_string(),
+                (None, None) => String::new(),
+            };
+            format!("{of} {}", table.kind).trim_start().to_string()
+        }
+        (None, _) if curated.is_some() => curated.unwrap_or_default().to_string(),
+        (None, EntryKind::File) => match (
+            &entry.format_spec,
+            crate::FileFormat::from_path(&entry.path),
+        ) {
+            (Some(spec), _) => format!("{spec} file"),
+            (None, Some(format)) => format!("{} file", format.name()),
+            // Named nothing, and found by its bytes to be data.
+            (None, None) => "data file".to_string(),
+        },
+        (None, EntryKind::Hive) => "hive table".to_string(),
+        (None, EntryKind::MultiFile) => "multi-file table".to_string(),
+        (None, kind) if kind.is_lake_table() => {
+            format!(
+                "{} table",
+                kind.lake_name().unwrap_or_default().to_lowercase()
+            )
+        }
+        (None, EntryKind::Directory) => match look {
+            Some(CloudLook::Failed) => format!("? {} listing failed, Ctrl+R retries", g.middot),
+            // Nothing to say yet; the row's spinner says it is being found out.
+            Some(_) => String::new(),
+            None => object_place_label(&entry.path)
+                .unwrap_or("directory")
+                .to_string(),
+        },
+        _ => String::new(),
+    };
+    RowLabel {
+        short,
+        words,
+        curated: curated.is_some(),
+        source,
+        missing_source,
+    }
+}
+
 /// How a cloud source is addressed on the home screen: `cloud://<id>`. Not a URL any
 /// library reads; it names the level above a source's buckets, which no real URL can.
 pub const CLOUD_PLACE: &str = "cloud://";
@@ -5234,6 +5353,57 @@ pub fn expand_user_path(raw: &str) -> PathBuf {
 #[cfg(test)]
 mod holds_flow_tests {
     use super::*;
+
+    /// The list and the pane are told one thing: the curated word in both, and for a
+    /// bucket directory, where looking into it is.
+    #[test]
+    fn a_rows_label_is_one_decision_for_the_list_and_the_pane() {
+        let mut directory = Entry::for_test(Path::new("s3://bucket/warehouse"), "warehouse");
+        directory.kind = EntryKind::Directory;
+        let said = |look, place_kind| describe(&directory, place_kind, look, 0, None);
+        let g = crate::glyphs::get();
+
+        let waiting = said(Some(CloudLook::Waiting), None);
+        assert_eq!(
+            (waiting.short.as_str(), waiting.words.as_str()),
+            (g.ellipsis, "")
+        );
+        assert_eq!(said(Some(CloudLook::Looking), None).words, "");
+        assert!(
+            said(Some(CloudLook::Failed), None)
+                .words
+                .contains("listing failed")
+        );
+        assert_eq!(said(None, None).words, "directory");
+        let curated = said(None, Some("dataset"));
+        assert_eq!(
+            (curated.short.as_str(), curated.words.as_str()),
+            ("dataset", "dataset")
+        );
+        assert!(curated.curated);
+
+        directory.holds = crate::discover::Holds {
+            formats: vec![("parquet".to_string(), 12)],
+            ..Default::default()
+        };
+        let counted = describe(&directory, None, None, 0, None);
+        assert_eq!(counted.short, "12 parquet");
+        assert_eq!(
+            counted.words, "directory",
+            "the count is the pane's `contains` line"
+        );
+        let curated = describe(&directory, Some("dataset"), None, 0, None);
+        assert_eq!(
+            curated.short, "dataset",
+            "the curated word wins over the count"
+        );
+
+        directory.opens_whole_directory = true;
+        assert_eq!(
+            describe(&directory, Some("dataset"), None, 0, None),
+            RowLabel::default()
+        );
+    }
 
     /// A path under the home directory is written the way it is typed back: `~\` on
     /// Windows, and `~\` typed at the prompt expands.

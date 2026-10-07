@@ -1,6 +1,6 @@
 [package]
 name = "datui-lib"
-version = "0.4.2"
+version = "0.4.3-dev"
 edition = "2024"
 rust-version = "1.95"
 description = "Data Exploration in the Terminal (library)"
@@ -24,7 +24,7 @@ sqlite = ["dep:rusqlite"]
 streaming = ["polars/streaming"]
 
 [dependencies]
-datui-cli = { path = "../datui-cli", version = "0.4.2" }
+datui-cli = { path = "../datui-cli", version = "0.4.3-dev" }
 clap = { version = "4.5.54", features = ["derive"] }
 color-eyre = "0.6.5"
 # `event-stream`: the run loop's one terminal reader (terminal_input.rs) has to be

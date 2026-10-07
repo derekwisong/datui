@@ -67,9 +67,20 @@ jobs:
         uses: ./.github/actions/setup
         with:
           cache-key: clippy
+          python: true
+
+      # lint runs ruff, shellcheck and typos when each is installed, so CI installs
+      # them all at pinned versions (the image ships shellcheck).
+      - name: Install ruff
+        run: pip install --disable-pip-version-check -r scripts/requirements-lint.txt
+
+      - name: Install typos
+        uses: ./.github/actions/install-tools
+        with:
+          tools: typos
 
       # Formatting and clippy in the workspace, the fuzz targets and datui-pyo3: one
-      # target dir, so the three share what they build.
+      # target dir, so the three share what they build. Then ruff, shellcheck, typos.
       - name: Lint
         run: scripts/dev/test.sh lint
 

@@ -29,27 +29,26 @@ pub struct QualityRuns {
     pub(crate) released: Vec<(u64, u64, sampling::Sample)>,
     /// [`QUALITY_MEMORY_BUDGET`], smaller in a test that fills it.
     pub(crate) memory_budget: usize,
-    /// Local copies Data Quality's full scans read instead of a remote source, newest
-    /// first, within `analysis.quality_local_copy`. Removed from disk when
-    /// released, when the dataset is opened again or replaced, and at exit.
+    /// Local copies full scans read instead of a remote source, newest first, within
+    /// `analysis.quality_local_copy`. Removed from disk when released, when the dataset
+    /// is reopened or replaced, and at exit.
     pub(crate) copies: Vec<RetainedCopy>,
     /// The dataset whose copy was released, so Setup says why Run fetches again.
     pub(crate) copy_released: Option<u64>,
-    /// The dataset whose copy did not read as its source: its full scans read the
-    /// source, and Setup says why.
+    /// The dataset whose copy did not read as its source: full scans read the source,
+    /// and Setup says why.
     pub(crate) copy_unusable: Option<u64>,
-    /// Free bytes in the cache directory, and when they were asked: Setup redraws
-    /// often, and the answer only feeds a line of text until Run asks again.
+    /// Free bytes in the cache directory and when asked: Setup redraws often, and this
+    /// only feeds a line of text.
     pub(crate) copy_free: std::sync::Mutex<Option<(std::time::Instant, Option<u64>)>>,
-    /// The table an analysis drill left behind: Data Quality's matching rows or the
-    /// sample's, shown in its place until Esc brings it back.
+    /// The table an analysis drill replaced, shown again on Esc.
     pub(crate) evidence_return: Option<Box<DataTableState>>,
     pub(crate) evidence_label: Option<String>,
 }
 
 impl QualityRuns {
-    /// Forget the last dataset's runs. The objects may have changed since they were
-    /// copied, so a run on the dataset opened now fetches them again.
+    /// Forget the last dataset's runs: its objects may have changed, so the next run
+    /// fetches again.
     pub(crate) fn reset_for_dataset(&mut self) {
         self.cache.clear();
         self.samples.clear();
@@ -63,9 +62,8 @@ impl QualityRuns {
 }
 
 impl App {
-    /// The finding under the cursor's rows: from the rows the run kept, at once, or
-    /// staged as a read that says what it reads and waits for Enter. A finding with
-    /// no rows to show opens nothing.
+    /// The selected finding's rows: from kept rows at once, or staged as a read that
+    /// says what it reads and waits for Enter. Nothing for a finding with no rows.
     pub(crate) fn open_quality_evidence(&mut self) -> Option<AppEvent> {
         let (_, finding) = self.analysis_modal.selected_finding()?;
         let results = self.analysis_modal.quality.results.as_ref()?;
@@ -86,8 +84,8 @@ impl App {
         self.show_quality_rows(rows, label, sampled, what, count)
     }
 
-    /// The rows an interval's count under the cursor counted: from the rows the run
-    /// kept, or staged as a read when it kept none. Nothing opens for a count of none.
+    /// The rows an interval's count counted: from kept rows, or staged as a read.
+    /// Nothing for a count of zero.
     pub(crate) fn open_interval_evidence(&mut self) -> Option<AppEvent> {
         let schema = self.data_table_state.as_ref().map(|state| state.schema());
         let (predicate, label, count) = self
@@ -111,9 +109,8 @@ impl App {
         )
     }
 
-    /// The rows the report on screen measured, while they are kept: a sampled run's
-    /// rows, same dataset, view and sample. `None` after a full scan, which keeps
-    /// none, and once they are released.
+    /// The rows the on-screen report measured while kept: a sampled run's, same
+    /// dataset, view and sample. `None` after a full scan or once released.
     pub(crate) fn quality_rows_kept(&self) -> Option<std::sync::Arc<data_quality::QualitySample>> {
         self.analysis_modal.quality.results.as_ref()?;
         let plan = self.analysis_modal.quality_result_plan();
@@ -123,9 +120,8 @@ impl App {
         self.kept_quality_sample(&plan.sample())
     }
 
-    /// Open rows a Data Quality result counted. Kept rows are cut in memory and
-    /// shown; anything else would read the source, so it is staged with what it
-    /// reads, and only Enter on that reads.
+    /// Open rows a result counted. Kept rows are cut in memory; otherwise the read is
+    /// staged with what it reads, and only Enter reads.
     fn show_quality_rows(
         &mut self,
         rows: quality_report::EvidenceRows,
@@ -157,8 +153,8 @@ impl App {
             quality_report::EvidenceRows::Files(files) => files.clone(),
             _ => plan.scope.clone(),
         };
-        // A sample as large as the scope reads every row too, but it was not a full
-        // scan: its rows were kept, and since released.
+        // A sample as large as the scope reads every row but was not a full scan: its rows
+        // were kept, and since released.
         let not_kept = if plan.compute == data_quality::QualityCompute::Full {
             "a full scan keeps no rows"
         } else {
@@ -193,8 +189,7 @@ impl App {
                     widgets::data_quality::scope_read_label(state, &plan)
                 ),
             ),
-            // The table counts what matches, which reads every row; then it reads the
-            // rows it shows.
+            // The table counts matches (reading every row), then reads the rows it shows.
             _ => (
                 not_kept.to_string(),
                 format!(
@@ -250,8 +245,8 @@ impl App {
         }
         let predicate = match read.rows {
             quality_report::EvidenceRows::Matching(predicate) => predicate,
-            // A column its file never had, or holds in a type the scan cannot read,
-            // has no value to filter on: its rows are the ones those files hold.
+            // A column a file lacks, or holds in a type the scan cannot read, has no value to
+            // filter on: its rows are those files' rows.
             quality_report::EvidenceRows::Files(_) => polars::prelude::lit(true),
             quality_report::EvidenceRows::Duplicates => {
                 return self.read_duplicate_rows(read.scope, read.label);
@@ -260,8 +255,8 @@ impl App {
         self.open_quality_scope_rows(&read.scope, predicate, read.label)
     }
 
-    /// Every row of `scope` that repeats, read in one pass off the UI thread and
-    /// shown as a table: what a full scan's duplicate finding opens once asked to.
+    /// Every repeating row of `scope`, read in one pass off the UI thread and shown as
+    /// a table: a full scan's duplicate finding, once asked.
     fn read_duplicate_rows(
         &mut self,
         scope: data_quality::QualityScope,
@@ -277,8 +272,8 @@ impl App {
             }
         };
         let keys = schema.iter_names().cloned().collect::<Vec<_>>();
-        // Binary values as the run grouped them: one stub for all, so they never
-        // split a group the check counted as copies.
+        // Binary values grouped as the run grouped them: one stub for all, so groups the
+        // check counted are not split.
         let columns = schema
             .iter()
             .map(|(name, dtype)| {
@@ -303,8 +298,7 @@ impl App {
         None
     }
 
-    /// The rows of `scope` matching `predicate`, in the table viewer in place of the
-    /// table; Esc brings the table and the report back.
+    /// The rows of `scope` matching `predicate`, shown in place of the table until Esc.
     fn open_quality_scope_rows(
         &mut self,
         scope: &data_quality::QualityScope,
@@ -365,8 +359,8 @@ impl App {
         }
     }
 
-    /// What the data offers Setup's choices. Read from the schema and the rows
-    /// already on screen: nothing here reads the source.
+    /// What the data offers Setup's choices, from the schema and rows on screen; reads
+    /// nothing.
     pub(crate) fn quality_plan_context(&self) -> analysis_modal::PlanContext {
         let Some(state) = self.data_table_state.as_ref() else {
             return analysis_modal::PlanContext::default();
@@ -375,8 +369,8 @@ impl App {
         let scope = &plan.scope;
         let schema = state.schema();
         let mut partitions = state.partition_columns().unwrap_or_default().to_vec();
-        // A directory whose files agree opens as one scan and names no partition
-        // columns; its directory names still do.
+        // A directory whose files agree opens as one scan with no partition columns; its
+        // directory names still count.
         if partitions.is_empty()
             && let Some(dir) = self.path.as_ref().filter(|path| path.is_dir())
         {
@@ -421,8 +415,8 @@ impl App {
         }
     }
 
-    /// The columns a time role can be given: date and time columns, then text,
-    /// which a role reads through its Text as time format.
+    /// The columns a time role can take: date and time columns, then text (read
+    /// through a Text as time format).
     pub(crate) fn quality_time_candidates(&self) -> Vec<String> {
         let Some(state) = self.data_table_state.as_ref() else {
             return Vec::new();
@@ -445,9 +439,8 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// What a Data Quality run reads from, as far as the app knows without reading:
-    /// where it was opened from, its files, and what the view does to the rows when
-    /// the scope is the view.
+    /// What a run reads from, as the app knows without reading: the origin, its files,
+    /// and the view's effect on rows when the scope is the view.
     fn quality_source_identity(
         &self,
         state: &DataTableState,
@@ -493,8 +486,8 @@ impl App {
             }
         }
         let remote = state.is_remote_source();
-        // A local path made whole, so the report names the file wherever it is read;
-        // no file system access.
+        // A local path made absolute so the report names the file anywhere; no filesystem
+        // access.
         let piped = self.reads_stdin();
         let location = self.path.as_ref().map(|path| {
             match std::path::absolute(path).ok().filter(|_| !remote && !piped) {
@@ -512,7 +505,7 @@ impl App {
         .with_files(state.quality_source_file_names())
     }
 
-    /// The Setup setting the Data Quality page on screen lacks before it can show
+    /// The Setup setting the current Data Quality page needs before it can show
     /// anything; Enter opens it, and the footer says so.
     pub(crate) fn quality_page_setup(&self) -> Option<data_quality::QualitySetup> {
         let modal = &self.analysis_modal;
@@ -524,8 +517,8 @@ impl App {
         )
     }
 
-    /// Whether the plan's scope has a column it reads as time: a date or time
-    /// column, or text given a format. What an empty Trends page points to.
+    /// Whether the scope has a column read as time (date/time, or text with a format):
+    /// what an empty Trends page points to.
     pub(crate) fn has_quality_time_columns(&self) -> bool {
         !self.analysis_modal.quality.plan.time_formats.is_empty()
             || self.data_table_state.as_ref().is_some_and(|state| {
@@ -535,16 +528,15 @@ impl App {
             })
     }
 
-    /// Whether Data Quality's retained rows are the rows `plan` reads, so a run
-    /// starts from them rather than from the source. They serve any grain: every
-    /// column is kept, and where each row sat.
+    /// Whether the retained rows are the rows `plan` reads, so the run starts from
+    /// them. Any grain works: every column and row position is kept.
     pub(crate) fn quality_kept_serves(&self, plan: &data_quality::DataQualityPlan) -> bool {
         plan.compute == data_quality::QualityCompute::Sample
             && self.kept_quality_sample(&plan.sample()).is_some()
     }
 
-    /// Where a run of `plan` gets its exact segment totals: from the retained rows'
-    /// counts, from the pass that reads a new sample, or from a read of their own.
+    /// Where a run of `plan` gets exact segment totals: retained rows' counts, the pass
+    /// reading a new sample, or a read of their own.
     pub(crate) fn quality_segment_count(
         &self,
         plan: &data_quality::DataQualityPlan,
@@ -558,8 +550,8 @@ impl App {
         }
     }
 
-    /// Whether the rows `plan` reads were read this session and released to the
-    /// memory budget, so a Run reads them again.
+    /// Whether `plan`'s rows were read this session and released to the budget, so Run
+    /// reads them again.
     pub(crate) fn quality_released(&self, plan: &data_quality::DataQualityPlan) -> bool {
         let Some(view_generation) = self
             .data_table_state
@@ -581,8 +573,8 @@ impl App {
                 })
     }
 
-    /// Whether the dataset is one Parquet or IPC file, the one kind the sampler may
-    /// read seeded runs of.
+    /// Whether the dataset is one Parquet or IPC file, the only kind the sampler reads
+    /// seeded runs of.
     fn quality_one_columnar_file(&self) -> bool {
         let Some(state) = self.data_table_state.as_ref() else {
             return false;
@@ -604,11 +596,10 @@ impl App {
     }
 
     /// Whether a random sample of `plan` reads seeded runs of one file rather than
-    /// stream every row, as Setup's Read says. Told from the path and the view, since
-    /// the sampler's own test needs the plan built. Yes only where the scan is read as
-    /// loaded: the whole source whatever the view, or a view that picks no rows (a
-    /// sort does not count: samples read the view unsorted). Where it is not sure,
-    /// Setup names the longer read.
+    /// streaming every row, as Setup's Read says, judged from path and view (the
+    /// sampler's own test needs the built plan). Yes only where the scan is read as
+    /// loaded: the whole source, or a view selecting no rows (samples ignore the sort).
+    /// When unsure, Setup names the longer read.
     pub(crate) fn quality_reads_blocks(&self, plan: &data_quality::DataQualityPlan) -> bool {
         let Some(state) = self.data_table_state.as_ref() else {
             return false;
@@ -627,12 +618,9 @@ impl App {
     }
 
     /// Whether a random sample of `plan` may read seeded runs: where
-    /// [`Self::quality_reads_blocks`] is sure, and wherever the view may still read
-    /// the scan as loaded, a query's included.
-    ///
-    /// Leans to yes: seeded runs see too few rows to count segments, so a yes is what
-    /// makes Setup name a count pass, and a run that streams after all counts in its
-    /// one pass and reads less than Setup said, never more.
+    /// [`Self::quality_reads_blocks`] is sure, and wherever the view (a query too) may
+    /// still read the scan as loaded. Leans yes: a yes makes Setup name a count pass,
+    /// and a run that streams instead reads less than Setup said, never more.
     pub(crate) fn quality_may_read_blocks(&self, plan: &data_quality::DataQualityPlan) -> bool {
         let Some(state) = self.data_table_state.as_ref() else {
             return false;
@@ -648,8 +636,8 @@ impl App {
                 ))
     }
 
-    /// Whether the session cache holds a report measuring what `plan` measures on
-    /// this view: the windows it expects are checked against the report, not read.
+    /// Whether the session cache holds a report measuring what `plan` does on this
+    /// view; expected windows are checked against it, not read.
     pub(crate) fn quality_cached(&self, plan: &data_quality::DataQualityPlan) -> bool {
         let Some(view_generation) = self
             .data_table_state
@@ -665,9 +653,8 @@ impl App {
         })
     }
 
-    /// Everything Data Quality's runs kept for reuse on this dataset, as `d` in Setup
-    /// would release it: sampled rows in memory and a full scan's local copy on
-    /// disk. `None` when there is neither.
+    /// What runs kept for reuse on this dataset, as `d` in Setup releases it: sampled
+    /// rows in memory and a full scan's local copy. `None` when neither.
     pub(crate) fn quality_kept_rows(&self) -> Option<widgets::data_quality::KeptRows> {
         let kept = self
             .quality
@@ -690,10 +677,9 @@ impl App {
         })
     }
 
-    /// `d` in Setup: let go of every row runs kept, as the memory budget would, and
-    /// the local copy a full scan fetched, whose files go from disk. A run that would
-    /// have reused either reads again, and Setup's Read says so before Run. Reports
-    /// stay: they are results, and showing one reads nothing.
+    /// `d` in Setup: release every kept row and the full scan's local copy (removed
+    /// from disk). Runs that would reuse them read again, as Setup's Read says.
+    /// Reports stay: showing one reads nothing.
     pub(crate) fn release_quality_rows(&mut self) {
         let Some(kept) = self.quality_kept_rows() else {
             self.flash_note("Nothing kept to release".to_string());
@@ -737,8 +723,8 @@ impl App {
         });
     }
 
-    /// Rows a sampled Data Quality run read, when they are the rows `sample` names
-    /// now: same dataset, same view, same sample.
+    /// Rows a sampled run read, when they are the rows `sample` names now (same
+    /// dataset, view, sample).
     fn kept_quality_sample(
         &self,
         sample: &sampling::Sample,
@@ -756,8 +742,8 @@ impl App {
         })
     }
 
-    /// Keep what a run read, newest first, in place of any earlier copy of the same
-    /// rows: a later run returns them with the counts it added.
+    /// Keep what a run read, newest first, replacing an older copy of the same rows: a
+    /// later run returns them with its added counts.
     pub(crate) fn retain_quality_sample(&mut self, kept: &KeptQualitySample) {
         if kept.dataset_generation != self.dataset_generation {
             return;
@@ -772,13 +758,10 @@ impl App {
         self.trim_quality_memory();
     }
 
-    /// Hold Data Quality's reports and retained rows to [`QUALITY_MEMORY_BUDGET`].
-    ///
-    /// A report whose rows are still retained goes first: remaking it reads nothing.
-    /// Then the oldest rows, whose next run reads them again, which Setup says. A
-    /// report with no rows behind it, a full scan's, goes last: it is the dearest to
-    /// remake. The newest report and the newest rows always stay, whatever their size,
-    /// so a finished read is never thrown away to make room for itself.
+    /// Hold reports and retained rows to [`QUALITY_MEMORY_BUDGET`]. First to go: reports
+    /// whose rows are retained (remade without reading); then the oldest rows (reread
+    /// next run, as Setup says); last, row-less full-scan reports (dearest to remake).
+    /// The newest report and rows always stay.
     fn trim_quality_memory(&mut self) {
         loop {
             let used = self
@@ -878,8 +861,7 @@ impl App {
         else {
             return;
         };
-        // One report per measurement: a plan that only expects other windows
-        // replaces it.
+        // One report per measurement: a plan expecting other windows replaces it.
         self.quality.cache.retain(|entry| {
             !(entry.dataset_generation == self.dataset_generation
                 && entry.view_generation == view_generation
@@ -898,11 +880,10 @@ impl App {
         self.trim_quality_memory();
     }
 
-    /// The scope a full scan's passes read: `lf` over a local copy in place of its
-    /// remote objects, fetched first when `job` says so. `kept` hears whether the
-    /// copy stands in for the source: the copy to keep, or `None`, after which the
-    /// dataset's full scans read the source. The copy comes back too, for the caller
-    /// to hold while the passes read it.
+    /// The scope a full scan reads: `lf` over a local copy of its remote objects,
+    /// fetched first when `job` says. `kept` hears the copy to keep, or `None` if it
+    /// does not read as the source (later full scans read the source). The copy is
+    /// returned for the caller to hold while the passes read it.
     pub(crate) fn quality_scope_on_copy(
         lf: LazyFrame,
         job: QualityCopyJob,
@@ -949,8 +930,8 @@ impl App {
         Ok((local, Some(copy)))
     }
 
-    /// Copy `objects` under `root`, each streamed from its store and written as it
-    /// arrives; a cancel stops it at the next chunk and the partial copy is removed.
+    /// Copy `objects` under `root`, streaming each as it arrives; a cancel stops at the
+    /// next chunk and removes the partial copy.
     #[cfg(feature = "cloud")]
     fn fetch_quality_copy(
         objects: &[crate::local_copy::RemoteObject],
@@ -970,8 +951,8 @@ impl App {
             let listed = object.etag.clone();
             let open = async move {
                 let got = store.get(&path).await.map_err(|e| e.to_string())?;
-                // Rewritten since it opened, perhaps at the same size: the copy would
-                // not be the dataset on screen.
+                // Rewritten since opened (perhaps same size): the copy would not be the dataset on
+                // screen.
                 if let (Some(listed), Some(fetched)) = (&listed, &got.meta.e_tag)
                     && !crate::local_copy::same_etag(listed, fetched)
                 {
@@ -1047,8 +1028,8 @@ impl App {
         }
     }
 
-    /// How a run of `plan` gets its rows from a remote source, from what the open
-    /// learned: no read, and no more than a stat of the cache directory.
+    /// How a run of `plan` gets a remote source's rows, from what the open learned;
+    /// at most a stat of the cache directory.
     pub(crate) fn quality_copy_plan(
         &self,
         plan: &data_quality::DataQualityPlan,
@@ -1094,9 +1075,9 @@ impl App {
         self.quality.copy_released == Some(self.dataset_generation)
     }
 
-    /// Keep a copy a run fetched, newest first. Older copies go past the budget;
-    /// the newest stays, so a finished fetch is never thrown away for itself. With
-    /// none, the dataset's copy did not read as its source: any kept one goes too.
+    /// Keep a fetched copy, newest first; older ones go past the budget, the newest
+    /// always stays. `None` means the copy did not read as its source: any kept one
+    /// goes too.
     pub(crate) fn retain_quality_copy(
         &mut self,
         dataset_generation: u64,
@@ -1126,9 +1107,8 @@ impl App {
         }
     }
 
-    /// Read `sample` off the UI thread and show its rows: all of them, or only a
-    /// finding's, under the finding's label. The sample is drawn again from its seed,
-    /// so these are the rows the tool measured.
+    /// Read `sample` off the UI thread and show its rows (all, or a finding's under its
+    /// label). Redrawn from its seed, so these are the rows the tool measured.
     pub(crate) fn read_sample_rows(
         &mut self,
         sample: sampling::Sample,
@@ -1137,8 +1117,8 @@ impl App {
         let state = self.data_table_state.as_ref()?;
         let (source, known_total) = Self::sample_source_for(state, &sample.scope);
         let streaming = self.app_config.performance.streaming;
-        // The rows Data Quality just measured, when they are the rows asked for: cut
-        // from memory rather than drawn again from the files.
+        // The rows Data Quality just measured, if they are the rows asked: cut from memory
+        // rather than redrawn.
         let kept = self.kept_quality_sample(&sample).map(|kept| {
             let columns: Vec<_> = state
                 .schema()
@@ -1157,8 +1137,8 @@ impl App {
             "Reading the sample"
         }));
         self.spawn_job(Job::SampleRows, Some("Reading the sample..."), move |_| {
-            // The columns shown are the table's; a finding is cut from every column
-            // the run read first, so duplicates are judged as the run judged them.
+            // Shown columns are the table's; a finding is cut from every column the run read
+            // first, so duplicates are judged as the run judged them.
             let (rows, columns) = match kept {
                 Some((kept, columns)) => (Ok(kept.analysis_rows(kept.df().clone())), Some(columns)),
                 None => (
@@ -1187,8 +1167,7 @@ impl App {
                 );
                 match evidence {
                     Some((quality_report::EvidenceRows::Duplicates, label)) => {
-                        // Every column the run grouped by: the scope's own, not the
-                        // row numbers kept beside them.
+                        // Every column the run grouped by: the scope's own, not the kept row numbers.
                         let keys = rows
                             .df
                             .get_column_names()
@@ -1222,15 +1201,15 @@ impl App {
         None
     }
 
-    /// Mirror the shared sample into the Data Quality plan, which carries it into the
-    /// engine and into the session cache's key. Metadata-only stays metadata-only.
+    /// Mirror the shared sample into the Data Quality plan, which carries it to the
+    /// engine and the cache key. Metadata-only stays metadata-only.
     pub(crate) fn sync_quality_plan(&mut self) {
         let sample = self.analysis_modal.sample.clone();
         self.analysis_modal.quality.plan.adopt_sample(&sample);
     }
 
-    /// Open Data Quality Setup: the plan, staged. Edits wait for Run, and Esc puts
-    /// back the plan as it stood here. Opening it again while open changes nothing.
+    /// Open Setup with the plan staged: edits wait for Run, and Esc restores the plan.
+    /// Reopening while open changes nothing.
     pub(crate) fn open_quality_setup(&mut self) {
         use data_quality::QualityPage;
         let modal = &mut self.analysis_modal;
@@ -1247,8 +1226,8 @@ impl App {
         modal.focus = analysis_modal::AnalysisFocus::Main;
     }
 
-    /// Esc on Setup: every staged edit goes, and the report it came from comes back.
-    /// With no report yet, Setup stays in the pane and the cursor goes to the tools.
+    /// Esc on Setup: staged edits go and the report returns. With no report, Setup stays
+    /// and the cursor goes to the tools.
     pub(crate) fn leave_quality_setup(&mut self) {
         use data_quality::QualityPage;
         let modal = &mut self.analysis_modal;
@@ -1269,8 +1248,8 @@ impl App {
         }
     }
 
-    /// The confirmation a full scan asks: what it reads, what it fetches from a
-    /// remote source, and that it writes nothing there.
+    /// A full scan's confirmation: what it reads, what it fetches from a remote source,
+    /// and that it writes nothing there.
     fn quality_full_scan_question(&self, plan: &data_quality::DataQualityPlan) -> String {
         let mut lines = vec![
             "Run a full scan?".to_string(),
@@ -1287,8 +1266,8 @@ impl App {
         lines.join("\n")
     }
 
-    /// What stops Setup from running as it stands, said on its own line: a time
-    /// window on text that has no format to read it with.
+    /// What stops Setup from running, on its own line: a time window on text with no
+    /// format.
     fn quality_setup_problem(&self) -> Option<String> {
         let plan = &self.analysis_modal.quality.plan;
         let schema = self.data_table_state.as_ref()?.quality_schema(&plan.scope);
@@ -1306,14 +1285,10 @@ impl App {
         }
     }
 
-    /// Run, from Setup: the one place a Data Quality run starts. The draft becomes
-    /// the plan, and its sample the one every tool reads; then the report for it is
-    /// shown if one is already here, and otherwise read, once.
-    ///
-    /// Waits, with the reason on Setup, while a cancelled run is still stopping: a
-    /// second read beside it is how memory runs out. A full scan asks first, and
-    /// Esc there leaves the draft staged and the last report as it was.
-    /// `confirmed` is the full-scan question's Yes.
+    /// Run from Setup, the one place a run starts: the draft becomes the plan and its
+    /// sample every tool's; the report is shown if cached, else read once. Waits while
+    /// a cancelled run still stops (two reads can run memory out). A full scan asks
+    /// first; `confirmed` is that question's Yes, and Esc leaves the draft staged.
     pub(crate) fn run_quality_setup(&mut self, confirmed: bool) -> Option<AppEvent> {
         use data_quality::QualityPage;
         if self.cancelled_analysis_running().is_some() {
@@ -1354,9 +1329,8 @@ impl App {
             modal.set_quality_page(back);
             return None;
         }
-        // Only the expected windows or the comparison changed: the report on screen
-        // holds every count the windows are checked against and every segment the
-        // comparison is worked out from, so it is relabeled, not read again.
+        // Only expected windows or the comparison changed: the report on screen holds every
+        // count and segment needed, so it is relabeled, not reread.
         if let (Some(results), Some(last)) = (
             modal.quality.results.as_ref(),
             modal.quality.last_plan.as_ref(),
@@ -1391,10 +1365,9 @@ impl App {
         ))
     }
 
-    /// The draft is the plan now: Setup closes on it, and its sample becomes the
-    /// one every tool reads. The other tools' results were of the old sample, so
-    /// they go; Data Quality's last report stays, labeled with what it measured,
-    /// until the run replaces it.
+    /// Commit the draft: Setup closes and its sample becomes every tool's. Other tools'
+    /// results were of the old sample and go; Data Quality's last report stays,
+    /// labeled, until the run replaces it.
     fn commit_quality_plan(&mut self) {
         let modal = &mut self.analysis_modal;
         let sample = modal.quality.plan.sample();
@@ -1413,7 +1386,6 @@ impl App {
 
     /// Run the data quality check on the plan Setup committed.
     pub(crate) fn run_quality_compute(&mut self) -> Option<AppEvent> {
-        // The plan Run committed; Setup's Run is the only way here.
         if let Some(state) = &self.data_table_state {
             let plan = self.analysis_modal.quality.plan.clone();
             let source_scope = plan.scope.uses_source();
@@ -1447,8 +1419,8 @@ impl App {
             let dataset_generation = self.dataset_generation;
             let kept_entry = self.kept_quality_entry(&plan.sample());
             let kept = kept_entry.map(|kept| kept.rows.clone());
-            // A sampled run on rows already read is labeled as their read was:
-            // the file may have changed since, and these rows did not.
+            // A sampled run on rows already read is labeled as their read was: the file may
+            // have changed since.
             let kept_source = kept_entry
                 .filter(|_| plan.compute == data_quality::QualityCompute::Sample)
                 .map(|kept| kept.source.clone());
@@ -1469,17 +1441,16 @@ impl App {
             };
             #[cfg(feature = "cloud")]
             let (cloud, runtime) = (self.app_config.cloud.clone(), self.runtime.clone());
-            // Only a confirmed full scan pays to read the values a type
-            // conflict hides, and only its access plan promised the read.
+            // Only a confirmed full scan pays to read values a type conflict hides, as its
+            // access plan promised.
             let mut source = source;
             if plan.compute == data_quality::QualityCompute::Full
                 && let Some(source) = source.as_mut()
             {
                 source.conflict_scan = state.quality_conflict_scan();
             }
-            // Each stage the worker enters comes back as the job's progress, so a
-            // cancelled run's stages are dropped. The watch is the job's: Esc
-            // stops the run through its record.
+            // Each stage comes back as progress, so a cancelled run's are dropped; Esc stops the
+            // run through the job's watch.
             let started = self.start_job(
                 Job::Analysis(jobs::AnalysisRun::default()),
                 Some("Profiling data quality..."),
@@ -1512,8 +1483,7 @@ impl App {
                 };
                 let lf = data_quality::apply_quality_scope(lf, &plan.scope, source.as_ref())
                     .map_err(|error| format!("{error}"))?;
-                // Held to the end of the run: the copy stays on disk while its
-                // passes read it, released or not.
+                // Held to the end of the run: the copy stays on disk while read, released or not.
                 let fetch = |objects: &[crate::local_copy::RemoteObject], root: &Path| {
                     #[cfg(feature = "cloud")]
                     {
@@ -1550,8 +1520,8 @@ impl App {
                     }
                     (results, _) => results,
                 };
-                // Let go before the answer goes out: a `d` handled as soon
-                // as it lands must find the app's handle the last one.
+                // Released before the answer goes out, so a `d` handled on arrival finds the app's
+                // handle the last.
                 drop(held);
                 let kept = rows.map(|rows| KeptQualitySample {
                     dataset_generation,

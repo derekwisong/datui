@@ -1,24 +1,17 @@
 //! SQLite databases, read only.
 //!
-//! A database is a file of tables. One with a single table of its own opens it; one
-//! with several is a place on the home screen whose rows are its tables, each named by
-//! a path inside the file (`app.db/users`) that nothing on disk has. `--table` picks
-//! one by name either way.
+//! A database is a file of tables: one with a single table opens it; several make a
+//! home place listing tables by path inside the file (`app.db/users`); `--table`
+//! picks by name. Tables are read in place ([`open_table`]): windows by the table's
+//! key (so the last page costs what the first does), sidebar filters and sort run as
+//! `WHERE`/`ORDER BY` (see [`crate::pushdown`]), counts via `count(*)`, whole-view
+//! reads in batches; nothing is copied to disk.
 //!
-//! A table is read in place. The dataset's frame is a scan of it ([`open_table`]) whose
-//! windows SQLite reads by the table's key, so the first rows show at once and the last
-//! page costs what the first does; the sidebar's filters and sort run in SQLite as
-//! `WHERE` and `ORDER BY` (see [`crate::pushdown`]), where its indexes serve them, and
-//! the row count is SQLite's `count(*)`. What reads the whole view (analysis, a query,
-//! an export) has it read a batch at a time from SQLite, and nothing is copied to disk.
-//!
-//! Nothing is written to the database. It is opened read only, with `query_only`,
-//! defensive mode and an untrusted schema, and with extension loading left out of the
-//! build. Reading a table runs no trigger. A database in WAL mode with a `-wal` file is
-//! read through it, and SQLite creates the `-shm` index beside it if that is missing; one
-//! with no `-wal` is read as it stands (`immutable=1`), writing nothing. A database that
-//! cannot be read without writing beside it (a hot journal, or a `-wal` without its
-//! `-shm` in a read-only directory) is refused rather than read wrong.
+//! Nothing is written: read only, `query_only`, defensive mode, untrusted schema, no
+//! extension loading, no triggers. A WAL database with `-wal` is read through it
+//! (SQLite may create `-shm`); one without is read `immutable=1`. A database needing a
+//! write to read (a hot journal, or `-wal` without `-shm` in a read-only directory) is
+//! refused rather than misread.
 
 use std::path::Path;
 
@@ -254,16 +247,11 @@ mod read {
     /// Tables whose columns a listing reads; past this they are listed by name.
     const MAX_DESCRIBED: usize = 1000;
 
-    /// Open the database at `path` read only, hardened against what is in it.
-    ///
-    /// A WAL database is read through its WAL when it has one, as another program may
-    /// be writing it. One with no `-wal` beside it has nothing there to read, and is
-    /// read as it stands (`immutable=1`): opened the ordinary way, SQLite would create
-    /// the `-wal` and `-shm` files, and a read-only connection cannot remove them again.
-    /// Immutable takes no lock, so a program that starts writing it mid-read can make
-    /// the read fail or come out wrong; with no `-wal`, nothing was writing it a moment
-    /// ago. Immutable is never used where a `-wal` or a hot `-journal` is beside the
-    /// file, which it would ignore.
+    /// Open `path` read only, hardened. With a `-wal` beside it, read through the WAL
+    /// (another program may be writing). Without, `immutable=1`: an ordinary open would
+    /// create `-wal` and `-shm` that a read-only connection cannot remove; immutable takes
+    /// no lock, acceptable since nothing was writing. Never immutable beside a `-wal` or
+    /// hot `-journal`, which it would ignore.
     fn open(path: &Path) -> Result<Connection> {
         let not_a_database = |e: rusqlite::Error| match e.sqlite_error_code() {
             Some(rusqlite::ErrorCode::NotADatabase) => {
@@ -274,9 +262,8 @@ mod read {
         if !(is_wal(path) && !beside(path, "-wal").exists()) {
             match plain(path) {
                 Ok(conn) => return Ok(conn),
-                // A journal left by a writer that stopped mid-write, which a reader may
-                // not roll back: the file holds half a transaction, and read as it
-                // stands it would give rows that were never committed together.
+                // A hot journal from an interrupted writer: read as is, it would give uncommitted
+                // rows, and a reader may not roll it back.
                 Err(e) if cannot_open(&e) && beside(path, "-journal").exists() => {
                     return Err(FileError::new(
                         path,
@@ -284,9 +271,8 @@ mod read {
                     )
                     .into());
                 }
-                // A WAL whose index (`-shm`) is missing and cannot be made here (a
-                // read-only directory). Read without it, the database would lack what
-                // was committed to the WAL.
+                // A WAL without its `-shm`, which cannot be created here (read-only directory):
+                // reading without it would miss committed data.
                 Err(e) if cannot_open(&e) && beside(path, "-wal").exists() => {
                     return Err(FileError::new(
                         path,
@@ -336,9 +322,8 @@ mod read {
         )
     }
 
-    /// Harden a connection and make SQLite read the file's header and schema now, so a
-    /// file that is not a database says so here, and one that cannot be read the
-    /// ordinary way is caught where there is another way to read it.
+    /// Harden a connection and read the header and schema now, so a non-database says so
+    /// here and an ordinary-open failure is caught where an alternative exists.
     fn check(conn: Connection) -> rusqlite::Result<Connection> {
         conn.busy_timeout(BUSY)?;
         conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
@@ -427,10 +412,9 @@ mod read {
         Ok(tables)
     }
 
-    /// The SQLite tab of the Info panel for the database at `path`, whose `tables` the
-    /// open listed: the database's page size and versions, and each table of its own
-    /// with its kind, columns and the rows `ANALYZE` stored for it. Nothing here reads a
-    /// table: a count of every table's rows would be a pass over the whole database.
+    /// The Info panel's SQLite tab for `path`'s listed `tables`: page size, versions, and
+    /// each table's kind, columns and `ANALYZE` row estimate. Reads no table (counting
+    /// all would scan the database).
     pub fn detail(path: &Path, tables: &[Table]) -> Option<crate::text_formats::Detail> {
         use crate::model_files::MetaValue;
         use crate::text_formats::count;
@@ -588,10 +572,9 @@ mod read {
             }
         }
 
-        /// `e` as the frame shows it, in SQL: what the frame holds is what a filter or a
-        /// sort sees, so a statement over this agrees with Polars on every row. A number
-        /// column's other values are null; a text column's numbers are SQLite's own text
-        /// of them and its blobs their literal, `X'0A1B'`; a blob column's text its bytes.
+        /// `e` as the frame shows it, in SQL, so statements agree with Polars on every row: a
+        /// number column's other values are null; a text column's numbers are SQLite's text of
+        /// them and blobs `X'0A1B'`; a blob column's text is its bytes.
         fn read(self, e: &str) -> String {
             match self {
                 Self::Int => format!("CASE WHEN typeof({e}) = 'integer' THEN {e} END"),
@@ -629,12 +612,9 @@ mod read {
         }
     }
 
-    /// The kind a column is read as, from what it declares and what the sample found,
-    /// and whether it holds values of several types read as text.
-    ///
-    /// SQLite lets any column hold any value; its declared type only says what it
-    /// prefers. A declaration is taken unless the sample contradicts it, and a column
-    /// that declares nothing takes its values' type.
+    /// The kind a column is read as, from its declaration and sampled values, and whether
+    /// it mixes types read as text. SQLite columns hold anything; a declaration stands
+    /// unless contradicted, and an undeclared column takes its values' type.
     fn decide(affinity: Affinity, declared: &str, seen: Seen) -> (Kind, bool) {
         let numbers = seen.int || seen.real;
         let several = [numbers, seen.text, seen.blob]
@@ -720,9 +700,8 @@ mod read {
         )
     }
 
-    /// The table's key, by which its rows are ordered and a page is found: its rowid,
-    /// under a name no column of its own shadows; a table without rowids' primary key;
-    /// nothing for a view, whose rows are in whatever order it gives them.
+    /// The table's key, ordering rows and locating pages: its rowid (under a name no column
+    /// shadows), a WITHOUT ROWID table's primary key, or nothing for a view.
     fn key_of(conn: &Connection, table: &Table) -> Vec<String> {
         let quoted_table = quoted(&table.name);
         let shadowed = |alias: &str| {
@@ -756,9 +735,8 @@ mod read {
     struct Source {
         file: PathBuf,
         display: PathBuf,
-        /// `WITH s(k0, …, c0, …) AS (SELECT <key>, * FROM main."t")`: the table with
-        /// its key and columns named by position, so no name from the file is written
-        /// into a statement past this one place, where it is quoted.
+        /// `WITH s(k0, …, c0, …) AS (SELECT <key>, * FROM main."t")`: key and columns named by
+        /// position, so file-supplied names appear (quoted) only here.
         with: String,
         keys: usize,
         columns: Vec<SourceColumn>,
@@ -775,9 +753,8 @@ mod read {
         kind: Kind,
         /// The sample found values of several types, read as text.
         mixed: bool,
-        /// Text in a column that declares a number: compared as stored, SQLite would
-        /// make a number of a value that looks like one (`'2024'`), and text sorts
-        /// after every number.
+        /// Text in a numeric column: compared as stored, SQLite would coerce `'2024'` to a
+        /// number, and text sorts after numbers.
         numeric_text: bool,
     }
 
@@ -1223,12 +1200,9 @@ mod read {
             Ok(rows)
         }
 
-        /// Rows `[start, start + len)` of the view, as `columns`.
-        ///
-        /// Paged by the table's key where the view is in its order: from the nearest
-        /// place a page ended before, rather than skipping every row from the top. A
-        /// window past the middle of a view whose count is known is read from the end,
-        /// backward, so the last page costs what the first does.
+        /// Rows `[start, start + len)` of the view as `columns`, paged by key from the nearest
+        /// known page end where the view is in key order; a window past the middle of a counted
+        /// view is read backward from the end.
         fn window(
             &self,
             view: &View,
@@ -1305,10 +1279,8 @@ mod read {
             Ok(df)
         }
 
-        /// Every row of the view as `columns`, the first `n_rows` where given, and only
-        /// those `predicate` keeps. As much of the predicate as SQLite can run is run
-        /// there, and all of it is applied again to each batch, so what SQLite cannot
-        /// say is left to Polars rather than lost.
+        /// Every row as `columns` (the first `n_rows` if given) that `predicate` keeps: what
+        /// SQLite can run of the predicate runs there, and all of it is reapplied per batch.
         fn whole(
             &self,
             view: &View,
@@ -1374,10 +1346,8 @@ mod read {
     }
 
     impl Source {
-        /// As much of a predicate Polars pushed into the scan as SQLite can run, as a
-        /// condition that keeps every row the predicate keeps (and maybe more, which the
-        /// predicate then drops): comparisons of a column with a literal of its type,
-        /// joined by and and or.
+        /// The part of a pushed-down predicate SQLite can run, as a condition keeping at least
+        /// its rows: column-to-literal comparisons of the column's type, joined by and/or.
         fn predicate_sql(&self, e: &Expr, params: &mut Vec<Value>) -> Option<String> {
             let Expr::BinaryExpr { left, op, right } = e else {
                 return None;
@@ -1448,10 +1418,9 @@ mod read {
             }
         }
 
-        /// Each column's values that are not of its kind, and the rows: one pass over
-        /// the table, in the background, once. Until it is done, every column is read
-        /// through what the frame shows (see [`Kind::read`]); after, a column found
-        /// clean is read as stored, where an index on it can serve a filter or sort.
+        /// One background pass over the table finding each column's off-kind values. Until
+        /// done, columns read through the frame's view ([`Kind::read`]); after, clean columns
+        /// read as stored, so indexes can serve filters and sorts.
         fn take_census(&self) -> PolarsResult<()> {
             let conn = self.connect()?;
             let mut misfits = vec![0u64; self.columns.len()];
@@ -1485,9 +1454,8 @@ mod read {
             Ok(())
         }
 
-        /// What reading the table found to say: columns of several types read as text,
-        /// number columns with values that are not numbers (read as null), and blob
-        /// columns with values that are not blobs (read as their bytes).
+        /// What reading the table found: mixed-type columns read as text, non-numbers in number
+        /// columns (null), non-blobs in blob columns (their bytes).
         fn notes(&self) -> Vec<Note> {
             let census = self.census.get();
             let misfit = |i: usize| census.map_or(0, |c| c.misfits[i]);
@@ -1840,10 +1808,9 @@ mod read {
         }
     }
 
-    /// Open `table` of the database `file` (named `display` to the user) in place: the
-    /// frame over it, what the dataset runs its filters and sort through, and the hold
-    /// that stops its statements when the dataset lets go. `others` are the database's
-    /// other tables, for the Info panel.
+    /// Open `table` of database `file` (shown as `display`) in place: its frame, the
+    /// pushdown for filters and sort, and the hold that stops its statements when released.
+    /// `others` are the other tables, for Info.
     pub fn open_table(
         file: &Path,
         display: &Path,

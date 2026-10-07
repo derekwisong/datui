@@ -1,15 +1,8 @@
-//! Standard MIDI Files, read as a table of their events.
-//!
-//! The parser is written by hand over the file's bytes: `MThd` and `MTrk` chunks,
-//! variable-length deltas, running status, sysex and meta events. Every length the
-//! file states is checked against the bytes that remain before it is used, so a
-//! corrupt or hostile file is an error rather than a panic or an allocation sized by
-//! a number the file made up.
-//!
-//! The rows are an eager `DataFrame` (one per event) made lazy, as ORC and Excel are:
-//! MIDI files are kilobytes. What is not a row — the header, the tracks' names, the
-//! tempo range — is a [`MidiSummary`], carried to the dataset for the Info panel's
-//! MIDI tab.
+//! Standard MIDI Files as a table of events. A hand-written parser (`MThd`/`MTrk`
+//! chunks, variable-length deltas, running status, sysex, meta events) checks every
+//! stated length against the remaining bytes, so a hostile file errors rather than
+//! panics or over-allocates. Rows are a small eager frame made lazy; the header, track
+//! names and tempo range go to a [`MidiSummary`] for Info's MIDI tab.
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -194,13 +187,10 @@ fn unwrap_rmid(bytes: &[u8]) -> Result<&[u8]> {
     ))
 }
 
-/// Parse a Standard MIDI File (or one in a RIFF `RMID` wrapper).
-///
-/// Strict where being lenient would show a table that looks whole and is not: a track
-/// that runs past the end of the file, an event cut short, a data byte with no status
-/// before it, or fewer tracks than the header says are errors. Chunks other than
-/// `MTrk` are skipped, as the specification says, and anything after the last track
-/// the header promises is ignored. A track may end without its End of Track event.
+/// Parse a Standard MIDI File (or a RIFF `RMID` wrapper). Strict where leniency would
+/// fake a whole table: an overrunning track, a cut event, a data byte without status,
+/// or fewer tracks than the header says are errors. Non-`MTrk` chunks and anything
+/// after the promised tracks are skipped; a missing End of Track is fine.
 pub fn parse(bytes: &[u8]) -> Result<Smf<'_>> {
     let bytes = if bytes.starts_with(b"RIFF") {
         unwrap_rmid(bytes)?
@@ -960,13 +950,9 @@ fn read_bytes(path: &Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Read `paths` as one table of events, with a `file` column when there is more than
-/// one.
-///
-/// One file that cannot be read is an error. Of several — a directory of songs — a
-/// file that cannot be read is left out and named in the summary, unless none can be.
-/// Files are read one at a time and each one's bytes let go once its rows are taken,
-/// so a directory never holds more than one file's bytes.
+/// Read `paths` as one events table (with a `file` column for several). One unreadable
+/// file is an error; among several, unreadable ones are skipped and named in the summary
+/// unless all fail. One file's bytes are held at a time.
 pub fn read_midi(paths: &[PathBuf]) -> Result<(LazyFrame, MidiSummary)> {
     if paths.is_empty() {
         return Err(eyre!("No MIDI files to read"));

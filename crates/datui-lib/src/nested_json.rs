@@ -1,25 +1,12 @@
-//! List, array and struct cells as JSON text, for the destinations that hold
-//! one value per field: a CSV export and every clipboard copy. JSON rather than
-//! the table's own rendering (`[1, 2]`, `{1,"a"}`) because it keeps struct field
-//! names and reads back with any JSON parser, Polars' `str.json_decode` included.
+//! List, array and struct cells as JSON text for one-value-per-field destinations (CSV
+//! export, clipboard copies): JSON keeps struct field names and reads back anywhere
+//! (`str.json_decode`). The text is Polars' JSON writer's, as in NDJSON export.
 //!
-//! The text is Polars' own JSON writer, the one NDJSON export uses, so a list
-//! reads the same in a CSV as in a `.jsonl` written from the same view.
-//!
-//! Binary has no JSON or CSV form, and Polars' JSON writer panics on it, so it
-//! is written as standard base64 text wherever it sits: a CSV, JSON or NDJSON
-//! export and a copy all spell the same bytes the same way.
-//!
-//! Polars' writers also panic on a date or datetime past the calendar's range
-//! (a sentinel like `i64::MIN + 1` microseconds), so dates and millisecond and
-//! microsecond datetimes are given to them as the text they would write, and
-//! such a value as its stored number, as the table shows it. A nanosecond
-//! count is always a date and goes to the writers as it is.
-//!
-//! A duration has no CSV form either, and is written as the JSON writer spells
-//! it: ISO 8601 in seconds (`PT3723.004S`, `-PT1.5S`, `P0D`). That is exact to
-//! the nanosecond in every unit, and reads the same alone in a CSV cell or a
-//! copy, inside a list, and in a JSON export.
+//! Special cases where Polars' writers panic or have no form: binary is standard base64
+//! everywhere; dates and ms/µs datetimes go in as their written text (values past the
+//! calendar as their stored number, as the table shows; ns is always in range);
+//! durations are ISO 8601 seconds as the JSON writer spells them (`PT3723.004S`,
+//! `-PT1.5S`, `P0D`), exact to the nanosecond.
 
 use base64::Engine as _;
 use polars::prelude::*;
@@ -139,10 +126,9 @@ pub fn lazy_for_json(mut lf: LazyFrame) -> PolarsResult<LazyFrame> {
     })
 }
 
-/// `value` `unit`s as ISO 8601 text, the way Polars' JSON writer spells a
-/// duration (chrono's `TimeDelta` display): whole seconds and the fraction's
-/// significant digits, `P0D` for zero, a leading `-` when negative. Computed
-/// here rather than through chrono, whose range ends short of `i64::MIN` ms.
+/// `value` `unit`s as ISO 8601, as Polars' JSON writer (chrono's `TimeDelta`) spells it:
+/// whole seconds plus significant fraction digits, `P0D` for zero, `-` when negative.
+/// Computed here: chrono's range stops short of `i64::MIN` ms.
 pub fn duration_iso(value: i64, unit: TimeUnit, out: &mut String) {
     use std::fmt::Write as _;
     let nanos_per_unit: i128 = match unit {

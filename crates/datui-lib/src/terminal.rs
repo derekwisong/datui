@@ -1,13 +1,9 @@
 //! The terminal while the TUI holds it: setting it up, handing it back, and letting
 //! it go quietly once it has gone.
 
-/// Undo `run`'s terminal setup: let go of the mouse, pop the keyboard flags (a
-/// no-op where they were never pushed; a terminal that ignored the push ignores the
-/// pop too), then hand back the screen.
-///
-/// Says so on stderr if that fails, but never panics: after a hangup the terminal is
-/// gone, and `ratatui::restore`'s `eprintln!` would panic on it, then panic again in
-/// the panic hook and abort.
+/// Undo `run`'s terminal setup: release the mouse, pop keyboard flags (harmless if never
+/// pushed or ignored), restore the screen. Reports failures on stderr without panicking:
+/// after a hangup `ratatui::restore`'s `eprintln!` would panic twice and abort.
 pub(crate) fn restore_terminal() {
     use std::io::Write;
     let_go(&mut std::io::stdout());
@@ -25,20 +21,12 @@ fn let_go(out: &mut impl std::io::Write) {
     let _ = crossterm::execute!(out, crossterm::event::PopKeyboardEnhancementFlags);
 }
 
-/// Ask the terminal to tell Ctrl+Enter from Enter.
-///
-/// Without the kitty keyboard protocol the two are byte-identical. Disambiguation
-/// alone fixes that — plain Enter, Tab and Backspace keep their legacy encodings — and
-/// the terminal keeps a separate flag stack for the alternate screen, so leaving it on
-/// exit or panic restores the shell's keyboard either way.
-///
-/// Pushed without asking first. Asking means waiting for an answer, and a terminal
-/// that never answers held the first frame for Crossterm's two-second timeout; nor can
-/// the answer be read off to one side, because Crossterm's one parser consumes it. A
-/// terminal without the protocol ignores the push, as it ignores the pop that every
-/// exit has always sent: both are private-marker CSI sequences, which terminals that
-/// do not know them discard. Keys then arrive in the legacy encoding, which Crossterm
-/// reads either way.
+/// Ask the terminal to tell Ctrl+Enter from Enter (identical bytes without the kitty
+/// protocol). Disambiguation alone keeps Enter, Tab and Backspace legacy-encoded, and
+/// the alternate screen has its own flag stack, so exit restores the shell either way.
+/// Pushed without querying: a query waits (two seconds on a silent terminal) and its
+/// answer would be eaten by Crossterm's parser. Terminals without the protocol discard
+/// the private-marker CSI, and Crossterm reads legacy keys anyway.
 pub(crate) fn push_keyboard_flags() {
     let _ = crossterm::execute!(
         std::io::stdout(),
@@ -48,10 +36,8 @@ pub(crate) fn push_keyboard_flags() {
     );
 }
 
-/// Ask the terminal to report focus (`CSI ? 1004 h`), so the palette can follow a
-/// scheme changed while datui was in the background: on focus the background is asked
-/// again. A terminal without focus reports ignores it; [`restore_terminal`] turns it
-/// off on every way out.
+/// Ask for focus reports (`CSI ? 1004 h`) so the background is asked again on focus.
+/// Ignored where unsupported; [`restore_terminal`] turns it off on every exit.
 pub(crate) fn follow_focus(out: &mut impl std::io::Write) {
     let _ = crossterm::execute!(out, crossterm::event::EnableFocusChange);
 }

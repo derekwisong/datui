@@ -1,10 +1,6 @@
-//! Text typed as a value for a column, read as the column's own type.
-//!
-//! A filter and a Data Quality partition compare a column with a value someone
-//! typed. Compared as text it either fails (Polars will not compare a date with a
-//! string) or casts every row to text, which costs a pass over the column and
-//! blinds Parquet statistics and SQLite to the predicate. Read here into a literal
-//! of the column's type, `col op lit` stays a plain comparison.
+//! Typed text read as a column's own type, so a filter or Data Quality partition stays
+//! a plain `col op lit` comparison (comparing as text fails for dates, or casts every
+//! row, blinding Parquet statistics and SQLite to the predicate).
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone as _};
 use polars::prelude::*;
@@ -22,13 +18,10 @@ pub fn written_as(dtype: &DataType) -> &'static str {
     }
 }
 
-/// `text` as a literal of `dtype`: a number, a flag, a date, a date and time read as
-/// a clock in the column's zone, a time, a duration or a decimal at the column's
-/// scale. Text and categories stay text. The error says what `text` should look like.
-///
-/// Whole numbers are read as `i64` or `u64` whatever their width, so `< 300` on an
-/// `i8` column still compares; a float is read at the column's own precision, so
-/// `0.1` is the `f32` a Float32 column stores.
+/// `text` as a literal of `dtype` (number, flag, date, zoned datetime, time, duration,
+/// decimal at the column's scale); text and categories stay text. The error says the
+/// expected form. Whole numbers read as `i64`/`u64` (so `< 300` works on `i8`); floats
+/// at the column's precision.
 pub fn parse(text: &str, dtype: &DataType) -> Result<Scalar, String> {
     let bad = || format!("{text:?} is not {}", written_as(dtype));
     let scalar = |value: AnyValue<'static>| Scalar::new(dtype.clone(), value);
@@ -95,10 +88,9 @@ pub fn parse(text: &str, dtype: &DataType) -> Result<Scalar, String> {
     }
 }
 
-/// The text [`parse`] reads back to exactly `value`, a value of `dtype`: what `+` and
-/// `-` put in a filter. A float is its shortest exact decimal, a date and time its
-/// clock in the column's zone to the last digit (with its offset where that clock
-/// happens twice). `None` for a null, and for a type [`parse`] does not read.
+/// The text [`parse`] reads back to exactly `value` (what `+`/`-` filters use): floats
+/// as shortest exact decimals, datetimes as their zoned clock to the last digit (with
+/// offset when ambiguous). `None` for null or unsupported types.
 pub fn text_of(value: &AnyValue, dtype: &DataType) -> Option<String> {
     if value.is_null() {
         return None;
@@ -310,11 +302,9 @@ fn time_of(ns: i64) -> Option<NaiveTime> {
     NaiveTime::from_num_seconds_from_midnight_opt(secs, nanos)
 }
 
-/// A date and time as a stored number in `unit`. The forms: a date alone (its
-/// midnight), then `T` or a space, `HH:MM`, `HH:MM:SS` or `HH:MM:SS.f`, and an
-/// optional offset (`+01:00`, `Z`). Without an offset the clock is read in `zone`.
-/// `Err(Some(why))` names a problem other than the form; `{text}` in it stands for
-/// the text.
+/// A datetime as a stored number in `unit`: a date (midnight), or date `T`/space
+/// `HH:MM[:SS[.f]]`, optionally with an offset (`+01:00`, `Z`); otherwise read in
+/// `zone`. `Err(Some(why))` names a non-form problem, `{text}` standing for the text.
 fn parse_datetime(
     text: &str,
     unit: TimeUnit,

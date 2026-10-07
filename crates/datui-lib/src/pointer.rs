@@ -1,22 +1,12 @@
-//! The mouse: what a click, a drag or a turn of the wheel means where it lands.
-//!
-//! Keys stay the interface and the mouse is a shortcut to them. The wheel presses
-//! the arrows of whatever has the keys, a click on a footer key presses it, a click on
-//! a form's row focuses it and presses Space, a click on a tab steps the tab bar to
-//! it, and a click on the table or the home list moves the cursor there, a double
-//! click then pressing Enter. A click on a chart's plot puts the crosshair there, as
-//! `x` and the arrows would. Dragging a header moves its column as `H` / `L` do, and
-//! dragging the gap after it sets its width as `<` / `>` do; a double click on a header
-//! sorts by it as `[` / `]` do, and on the gap after it fits it as `=` does. A right
-//! click on a cell opens a menu of the keys that act on it. Nothing here changes what a key does.
-//!
-//! A pointer is aimed at what is on screen when it is used, so mouse input is never
-//! held for later the way typed keys are: where a typed key would wait, a mouse event
-//! is dropped (see [`crate::event_pump::EventPump::terminal_mouse`]).
-//!
-//! What a click can land on is recorded while a frame is drawn ([`record`]): the
-//! widget that lays a row or a tab out says where it put it, so nothing computes the
-//! layout a second time.
+//! The mouse, as shortcuts to keys (nothing here changes what a key does): the wheel
+//! presses arrows, a footer key click presses it, a form row click focuses and presses
+//! Space, a tab click selects it, a table or home click moves the cursor (double click:
+//! Enter), a plot click places the crosshair. Header drag moves a column (`H`/`L`),
+//! dragging the gap after sets width (`<`/`>`); header double click sorts (`[`/`]`), gap
+//! double click fits (`=`); right click opens a cell's key menu. Mouse input is never
+//! held: where a key would wait, it is dropped
+//! ([`crate::event_pump::EventPump::terminal_mouse`]). Click targets are recorded while
+//! drawing ([`record`]) by the widgets that lay them out.
 
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
@@ -50,11 +40,9 @@ pub fn wanted(mouse: &MouseEvent) -> bool {
     )
 }
 
-/// Ask the terminal for presses, releases, motion while a button is down (a drag)
-/// and the wheel, SGR-encoded so a wide screen's far columns report right. Not
-/// crossterm's `EnableMouseCapture`, which also asks for every motion with no button
-/// down: a stream of events the app would only throw away. Undone by
-/// `DisableMouseCapture`, which turns off every mode.
+/// Ask for presses, releases, drag motion and the wheel, SGR-encoded for wide screens;
+/// not `EnableMouseCapture`, which also streams buttonless motion the app would discard.
+/// Undone by `DisableMouseCapture`.
 pub struct EnableMouse;
 
 impl crossterm::Command for EnableMouse {

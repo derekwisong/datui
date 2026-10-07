@@ -94,11 +94,9 @@ pub(crate) fn is_azure_short_scheme(scheme: &str) -> bool {
     matches!(scheme.to_ascii_lowercase().as_str(), "az" | "adl" | "azure")
 }
 
-/// The source an `s3://<id>@bucket/key` URL names, and the URL without it.
-///
-/// Only S3 URLs carry a source, and only for S3-compatible servers, whose bucket names
-/// repeat from one endpoint to the next. Bucket names cannot contain `@`, so an `@` in
-/// the first segment is always a source. Everything else comes back unchanged.
+/// The source an `s3://<id>@bucket/key` URL names, and the URL without it. Only S3
+/// (S3-compatible servers repeat bucket names); bucket names cannot contain `@`, so one
+/// in the first segment is always a source. Other URLs come back unchanged.
 pub fn split_source_id(url: &str) -> (Option<&str>, std::borrow::Cow<'_, str>) {
     let Some((scheme, rest)) = url.split_once("://") else {
         return (None, url.into());
@@ -116,13 +114,10 @@ pub fn split_source_id(url: &str) -> (Option<&str>, std::borrow::Cow<'_, str>) {
     }
 }
 
-/// The account, container and path of an Azure Blob Storage URL.
-///
-/// Accepts the forms that name the account: `abfss://` and `abfs://`
-/// (`container@account.dfs.core.windows.net/path`), and `https://` on the blob or dfs
-/// endpoint (`account.blob.core.windows.net/container/path`). `az://container/path`
-/// does not name the account, so it is not one of them. The path comes back without a
-/// leading slash, and a trailing slash is kept, since it is what marks a directory.
+/// The account, container and path of an Azure Blob URL: `abfss://`/`abfs://`
+/// (`container@account.dfs.core.windows.net/path`) or `https://` blob/dfs endpoints
+/// (`account.blob.core.windows.net/container/path`); not `az://`, which names no
+/// account. The path has no leading slash and keeps a trailing one (a directory).
 pub fn azure_parts(url: &str) -> Option<(String, String, String)> {
     let (scheme, rest) = url.split_once("://")?;
     let scheme = scheme.to_ascii_lowercase();
@@ -183,10 +178,9 @@ pub(crate) fn has_glob_chars(path: &Path) -> bool {
     path.as_os_str().to_string_lossy().contains(['*', '?', '['])
 }
 
-/// Whether a path is a pattern to expand rather than a name: it carries a glob
-/// character and nothing on disk has that name. An existing `d[1].csv` or `a*b.csv`
-/// is that file; read as a glob, `d[1].csv` is `d1.csv` and `x?.csv` is every
-/// two-letter name. This is the `glob` flag for every Polars scan of a local path.
+/// Whether a path is a pattern to expand: it has glob characters and no file has that
+/// name (an existing `d[1].csv` is that file). The `glob` flag for every local Polars
+/// scan.
 pub(crate) fn expands_as_glob(path: &Path) -> bool {
     has_glob_chars(path) && std::fs::symlink_metadata(path).is_err()
 }
@@ -221,10 +215,9 @@ pub(crate) fn escape_glob(text: &str) -> String {
     escaped
 }
 
-/// True when the path names an object-store location datui scans in place, with range
-/// requests, rather than downloads to a temporary file first: Parquet, or a prefix or
-/// glob of it. A downloaded object reaches the schema phase under its display URL, and
-/// this is what keeps it from being treated as a remote scan.
+/// Whether a path is an object-store location scanned in place with range requests
+/// rather than downloaded: Parquet, or a prefix or glob of it. Keeps a downloaded object
+/// (reaching the schema phase under its URL) from being treated as remote.
 pub(crate) fn scans_in_place(path: &Path) -> bool {
     if !matches!(
         input_source(path),
@@ -281,10 +274,9 @@ pub(crate) fn download_suffix(url: &str) -> Option<String> {
     }
 }
 
-/// For S3/GCS: Polars can only scan Parquet directly. So we pass through only when the path is
-/// Parquet or looks like a directory/glob (no extension, trailing slash, or *). All other paths
-/// (e.g. .csv, .json, .gz, .csv.gz) must be downloaded first.
-/// Returns true when the path should be downloaded to temp instead of passed to Polars.
+/// For S3/GCS, whether a path must be downloaded first: Polars scans only Parquet
+/// directly, so only Parquet or directory-like paths (no extension, trailing slash,
+/// glob) pass through; `.csv`, `.json`, `.gz` and the like download.
 pub(crate) fn cloud_path_should_download(ext: Option<&str>, is_glob: bool) -> bool {
     if is_glob {
         return false;

@@ -558,8 +558,9 @@ pub fn column_schema_of(
         Some(crate::cli::Lines::Delimited(_)) => {
             // Read as the open will: header placement and inference length change the result.
             let options = as_read.open_options(format);
-            let header =
-                crate::formats::readers::csv::csv_header_names_of(&options, path, None).ok()?;
+            let header = crate::formats::csv_dialect::head(path, &options, None, false)
+                .ok()?
+                .names;
             let reader = crate::formats::readers::csv::configure_csv_reader(
                 crate::formats::readers::csv::csv_reader_of(path).ok()?,
                 &options,

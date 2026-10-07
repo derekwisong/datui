@@ -16,7 +16,7 @@ use crate::quality_trends::{
     GapCheck, GapKind, Gaps, TrendBar, TrendMeasure, TrendRow, TrendView, trend_view,
 };
 use crate::render::context::RenderContext;
-use crate::render::layout::centered_rect;
+use crate::render::layout::dialog_in;
 use crate::table::DataTableState;
 use crate::widgets::ui::{FormValue, Picker, Surface};
 use polars::prelude::{DataType, Schema};
@@ -1776,11 +1776,7 @@ fn render_finding_detail(
         room
     };
     let below = rows.saturating_sub(scroll.offset + shown);
-    let popup = centered_rect(
-        area.inner(ratatui::layout::Margin::new(1, 1)),
-        width,
-        height,
-    );
+    let popup = dialog_in(area, width, height);
     let content = Surface::new(&title)
         .border_style(Style::default().fg(config.ctx.modal_border_active))
         .render(popup, buf, config.ctx);
@@ -1897,11 +1893,7 @@ fn render_evidence_read(
         .unwrap_or(0)
         + 2;
     let lines = field_lines(&rows, label_width, width.saturating_sub(4) as usize, false);
-    let popup = centered_rect(
-        area.inner(ratatui::layout::Margin::new(1, 1)),
-        width,
-        lines.len() as u16 + 2,
-    );
+    let popup = dialog_in(area, width, lines.len() as u16 + 2);
     let content = Surface::new("Read Rows")
         .border_style(Style::default().fg(config.ctx.modal_border_active))
         .render(popup, buf, config.ctx);
@@ -4141,11 +4133,7 @@ fn render_narrow_tool_picker(
         "Correlation Matrix",
         "Data Quality",
     ];
-    let popup = centered_rect(
-        area.inner(ratatui::layout::Margin::new(1, 1)),
-        28,
-        tools.len() as u16 + 2,
-    );
+    let popup = dialog_in(area, 28, tools.len() as u16 + 2);
     let content = Surface::new("Analysis Tools").render(popup, buf, config.ctx);
     Picker::new(tools, sidebar_state.selected(), true)
         .on_click(crate::widgets::ui::Clicks::Tool)
@@ -4282,11 +4270,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
         + 2;
     // The frame and its gutters take four columns of the width.
     let lines = field_lines(&rows, label_width, width.saturating_sub(4) as usize, false);
-    let popup = centered_rect(
-        area.inner(ratatui::layout::Margin::new(1, 1)),
-        width,
-        lines.len() as u16 + 2,
-    );
+    let popup = dialog_in(area, width, lines.len() as u16 + 2);
     let content = Surface::new("Access Plan").render(popup, buf, config.ctx);
     render_counted(lines, content, config.theme, buf);
 }

@@ -379,6 +379,27 @@ pub fn duration_or_dash(seconds: Option<i64>) -> String {
     seconds.map_or_else(|| "-".to_string(), duration)
 }
 
+/// A share as a percentage: a tenth of a percent, two places below 1% so a small
+/// share never reads as none, and `<0.01%` below that.
+pub fn percent(share: f64) -> String {
+    let pct = share * 100.0;
+    if pct > 0.0 && pct < 0.01 {
+        "<0.01%".to_string()
+    } else if pct > 0.0 && pct < 1.0 {
+        format!("{pct:.2}%")
+    } else {
+        format!("{pct:.1}%")
+    }
+}
+
+/// [`percent`] of `count` in `of`, or a dash with nothing to take it over.
+pub fn percent_of(count: usize, of: usize) -> String {
+    if of == 0 {
+        return "-".to_string();
+    }
+    percent(count as f64 / of as f64)
+}
+
 /// Comma-group a count for the application's own chrome — the control bar's
 /// row count, info-panel totals, and similar labels.
 ///
@@ -672,6 +693,15 @@ mod tests {
         assert_eq!(duration(3_720), "1h 02m");
         assert_eq!(duration(-(2 * 86_400 + 3 * 3_600)), "-2d 03h");
         assert_eq!(duration_or_dash(None), "-");
+    }
+
+    #[test]
+    fn percents_never_round_a_small_share_to_none() {
+        assert_eq!(percent(0.4), "40.0%");
+        assert_eq!(percent(0.005), "0.50%");
+        assert_eq!(percent(0.00001), "<0.01%");
+        assert_eq!(percent(0.0), "0.0%");
+        assert_eq!(percent_of(1, 0), "-");
     }
 
     #[test]

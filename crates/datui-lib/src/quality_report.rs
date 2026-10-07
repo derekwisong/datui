@@ -256,7 +256,7 @@ impl Finding {
                 format!(
                     "{name}{}  {:>7}  {} {}",
                     " ".repeat(pad),
-                    percent(row.affected_rows, row.evaluated_rows),
+                    crate::numfmt::percent_of(row.affected_rows, row.evaluated_rows),
                     numfmt::group_chrome(row.affected_rows),
                     plural(row.affected_rows)
                 )
@@ -1026,7 +1026,7 @@ impl Group<'_> {
             "{} {}{each} ({})",
             numfmt::group_chrome(count),
             if count == 1 { "row" } else { "rows" },
-            percent(count, self.first.evaluated_rows)
+            crate::numfmt::percent_of(count, self.first.evaluated_rows)
         )
     }
 
@@ -1138,8 +1138,8 @@ fn nulls_summary(group: &Group<'_>) -> String {
         let fewest =
             group.results.observations[group.indices[group.indices.len() - 1]].affected_rows;
         let (low, high) = (
-            percent(fewest, first.evaluated_rows),
-            percent(first.affected_rows, first.evaluated_rows),
+            crate::numfmt::percent_of(fewest, first.evaluated_rows),
+            crate::numfmt::percent_of(first.affected_rows, first.evaluated_rows),
         );
         if low == high {
             group.rows_each(first.affected_rows, " each")
@@ -1174,7 +1174,7 @@ fn values_summary(group: &Group<'_>) -> String {
         } else {
             "values"
         },
-        percent(first.affected_rows, first.evaluated_rows)
+        crate::numfmt::percent_of(first.affected_rows, first.evaluated_rows)
     )
 }
 
@@ -1200,7 +1200,7 @@ fn parseable_summary(group: &Group<'_>) -> String {
         (Some(_), Some(profile)) if is_code(profile) => code_shape(profile),
         (Some(reading), Some(profile)) => format!(
             "{} parse as {}",
-            percent(group.first.affected_rows, profile.non_null_rows()),
+            crate::numfmt::percent_of(group.first.affected_rows, profile.non_null_rows()),
             reading.label()
         ),
         (None, _) | (_, None) => group.rows(),
@@ -1248,7 +1248,7 @@ fn key_like_summary(group: &Group<'_>) -> String {
     let unique = group
         .profile
         .and_then(ColumnQualityProfile::uniqueness_rate)
-        .map(|rate| format!(" ({:.1}% unique)", rate * 100.0))
+        .map(|rate| format!(" ({} unique)", crate::numfmt::percent(rate)))
         .unwrap_or_default();
     format!(
         "{} repeated{unique}",
@@ -1286,19 +1286,6 @@ fn code_shape(profile: &ColumnQualityProfile) -> String {
         }
         (Some(min), Some(max)) if min == max => format!("{min} digits each"),
         _ => format!("{} with a leading zero", numfmt::group_chrome(zeros)),
-    }
-}
-
-pub fn percent(count: usize, of: usize) -> String {
-    if of == 0 {
-        return "-".to_string();
-    }
-    let value = count as f64 / of as f64 * 100.0;
-    // Two places below 1% so a small share never rounds to a misleading 0.0%.
-    if value > 0.0 && value < 1.0 {
-        format!("{value:.2}%")
-    } else {
-        format!("{value:.1}%")
     }
 }
 
@@ -1694,7 +1681,7 @@ pub fn coverage(
                 "{} of {} sampled ({})",
                 count(evaluated),
                 count(total),
-                percent(evaluated, total)
+                crate::numfmt::percent_of(evaluated, total)
             ),
             (_, None) => format!("{} sampled, total not counted", count(evaluated)),
         });
@@ -1798,7 +1785,7 @@ pub fn advice(finding: &Finding) -> Vec<String> {
             if finding.columns.len() == 1 {
                 format!(
                     "Aggregates and joins see only {}",
-                    percent(rest, finding.evaluated_rows)
+                    crate::numfmt::percent_of(rest, finding.evaluated_rows)
                 )
             } else {
                 "Aggregates and joins see only the filled rows".to_string()
@@ -1842,7 +1829,7 @@ impl Detail<'_> {
             "{} of {} values ({}) {what}",
             numfmt::group_chrome(finding.affected_rows),
             numfmt::group_chrome(finding.evaluated_rows),
-            percent(finding.affected_rows, finding.evaluated_rows)
+            crate::numfmt::percent_of(finding.affected_rows, finding.evaluated_rows)
         )
     }
 }
@@ -1871,7 +1858,7 @@ pub fn describe(finding: &Finding, results: &DataQualityResults) -> (String, Vec
             "{} of {} rows ({})",
             count(finding.affected_rows),
             count(finding.evaluated_rows),
-            percent(finding.affected_rows, finding.evaluated_rows)
+            crate::numfmt::percent_of(finding.affected_rows, finding.evaluated_rows)
         ),
     };
     let headline = (kind.spec().headline)(&detail, &mut evidence);
@@ -1993,7 +1980,7 @@ fn parseable_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String
         "{} of {} values ({}) parse as {}",
         count(parsed),
         count(profile.non_null_rows()),
-        percent(parsed, profile.non_null_rows()),
+        crate::numfmt::percent_of(parsed, profile.non_null_rows()),
         reading.label()
     )
 }
@@ -2007,7 +1994,7 @@ fn duplicates_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> Strin
         "{} of {} rows ({}) have a copy",
         count(identity.rows_involved),
         count(identity.evaluated_rows),
-        percent(identity.rows_involved, identity.evaluated_rows)
+        crate::numfmt::percent_of(identity.rows_involved, identity.evaluated_rows)
     ));
     if !identity.examples.is_empty() {
         evidence.push("Most copied:".to_string());
@@ -2133,7 +2120,7 @@ fn files_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> String {
         "{} of {} rows of the loaded source ({})",
         count(finding.affected_rows),
         count(finding.evaluated_rows),
-        percent(finding.affected_rows, finding.evaluated_rows)
+        crate::numfmt::percent_of(finding.affected_rows, finding.evaluated_rows)
     ));
     for file in observation.files.iter().take(4) {
         let stored = file
@@ -2213,7 +2200,7 @@ impl<'a> Declared<'a> {
             intent,
             sampled,
             rows_word: if sampled { "sampled rows" } else { "rows" },
-            share: percent(finding.affected_rows, finding.evaluated_rows),
+            share: crate::numfmt::percent_of(finding.affected_rows, finding.evaluated_rows),
             check: intent.column(column),
             column,
         })

@@ -1442,7 +1442,7 @@ fn render_findings(
         }
         (
             numfmt::group_chrome(finding.affected_rows),
-            crate::quality_report::percent(finding.affected_rows, finding.evaluated_rows),
+            crate::numfmt::percent_of(finding.affected_rows, finding.evaluated_rows),
         )
     };
     let widest = |pick: fn((String, String)) -> String| {
@@ -2070,7 +2070,7 @@ fn render_columns(
             .map(|(value, count)| {
                 format!(
                     "{value} ({})",
-                    crate::quality_report::percent(count, profile.non_null_rows())
+                    crate::numfmt::percent_of(count, profile.non_null_rows())
                 )
             })
             .unwrap_or_else(|| "-".to_string());
@@ -2080,7 +2080,7 @@ fn render_columns(
             Cell::from(format!(
                 "{} ({})",
                 numfmt::group_chrome(profile.null_count),
-                crate::quality_report::percent(profile.null_count, profile.evaluated_rows)
+                crate::numfmt::percent_of(profile.null_count, profile.evaluated_rows)
             ))
         };
         let distinct = count_label(profile.distinct_count);
@@ -2258,7 +2258,7 @@ fn render_segments(
             let mut cells = vec![
                 Cell::from(segment_text(&segment.label)),
                 Cell::from(rows_label(segment)),
-                Cell::from(format!("{:.1}%", segment.null_rate * 100.0)),
+                Cell::from(crate::numfmt::percent(segment.null_rate)),
             ];
             if compared {
                 cells.push(Cell::from(
@@ -2283,17 +2283,6 @@ fn render_segments(
         .row_highlight_style(theme.highlight_style())
         .highlight_symbol(glyphs::get().selector);
     StatefulWidget::render(table, sections[1], buf, table_state);
-}
-
-/// A rate as the report writes one: two places below 1% so a small share never
-/// reads as none.
-fn rate_label(value: f64) -> String {
-    let percent = value * 100.0;
-    if percent > 0.0 && percent < 1.0 {
-        format!("{percent:.2}%")
-    } else {
-        format!("{percent:.1}%")
-    }
 }
 
 /// One segment's columns, every measure beside the segment it is compared with,
@@ -2364,11 +2353,11 @@ fn render_segment_detail(
             cells.push(Cell::from(
                 change
                     .before
-                    .map(rate_label)
+                    .map(crate::numfmt::percent)
                     .unwrap_or_else(|| "-".to_string()),
             ));
         }
-        cells.push(Cell::from(rate_label(change.now)));
+        cells.push(Cell::from(crate::numfmt::percent(change.now)));
         if other.is_some() {
             cells.push(match change.change() {
                 Some(points) => Cell::from(Span::styled(format!("{points:+.1} pp"), style)),
@@ -2456,18 +2445,8 @@ fn share(count: usize, of: usize) -> String {
             "{} of {} ({})",
             numfmt::group_chrome(count),
             numfmt::group_chrome(of),
-            rate_label(count as f64 / of as f64)
+            crate::numfmt::percent(count as f64 / of as f64)
         )
-    }
-}
-
-/// The rate of `count` in `of`, or a dash with nothing to take it over.
-fn share_rate(count: usize, of: usize) -> String {
-    // A dash as `numfmt::duration_or_dash` has it, beside which it sits.
-    if of == 0 {
-        "-".to_string()
-    } else {
-        rate_label(count as f64 / of as f64)
     }
 }
 
@@ -2562,7 +2541,7 @@ fn render_intervals(
             Some(count) if threshold.is_some() => count,
             _ => profile.negative_count,
         };
-        let rate = share_rate(count, profile.paired_rows);
+        let rate = crate::numfmt::percent_of(count, profile.paired_rows);
         if counted && profile.paired_rows > 0 {
             format!("{} ({rate})", numfmt::group_chrome(count))
         } else {
@@ -2981,9 +2960,13 @@ fn trend_range(line: &TrendRow) -> String {
             numfmt::group_chrome(line.high.round() as usize)
         )
     } else if (line.high - line.low).abs() < 1e-9 {
-        rate_label(line.high)
+        crate::numfmt::percent(line.high)
     } else {
-        format!("{} to {}", rate_label(line.low), rate_label(line.high))
+        format!(
+            "{} to {}",
+            crate::numfmt::percent(line.low),
+            crate::numfmt::percent(line.high)
+        )
     }
 }
 
@@ -3355,7 +3338,7 @@ fn trend_bar_fields(
                 "{} sampled of {} ({})",
                 numfmt::group_chrome(bar.evaluated),
                 numfmt::group_chrome(eligible),
-                share_rate(bar.evaluated, eligible)
+                crate::numfmt::percent_of(bar.evaluated, eligible)
             ),
             (true, None) => format!(
                 "{} sampled, total not counted",
@@ -3428,7 +3411,7 @@ fn trend_bar_fields(
                 "{} of {} {noun} ({})",
                 numfmt::group_chrome(count.round() as usize),
                 numfmt::group_chrome(of.round() as usize),
-                rate_label(count / of)
+                crate::numfmt::percent(count / of)
             )
         } else if bar.evaluated == 0 {
             "none: no row sampled".to_string()
@@ -3446,7 +3429,11 @@ fn trend_bar_fields(
         Some("none: a distinct share does not stand for the whole".to_string())
     } else {
         crate::quality_trends::wilson_interval(count, of).map(|(low, high)| {
-            let mut text = format!("{} to {}", rate_label(low), rate_label(high));
+            let mut text = format!(
+                "{} to {}",
+                crate::numfmt::percent(low),
+                crate::numfmt::percent(high)
+            );
             if (of as usize) < crate::quality_report::THIN_SEGMENT_ROWS {
                 text.push_str(&format!(
                     ", from under {} {noun}",
@@ -3468,8 +3455,8 @@ fn trend_bar_fields(
             match crate::quality_trends::bar_change(line, index, other, exact) {
                 Some(change) => format!(
                     "{} to {}, {:+.1} points: {}",
-                    rate_label(change.before),
-                    rate_label(change.now),
+                    crate::numfmt::percent(change.before),
+                    crate::numfmt::percent(change.now),
                     change.points(),
                     // Segments never judge a distinct share: it falls as a segment
                     // grows, so bars of different sizes differ by it whatever the data.
@@ -3955,7 +3942,7 @@ fn detail_measurements(
                 format!(
                     "{} ({})",
                     numfmt::group_chrome(profile.null_count),
-                    crate::quality_report::percent(profile.null_count, profile.evaluated_rows)
+                    crate::numfmt::percent_of(profile.null_count, profile.evaluated_rows)
                 )
             },
         ),

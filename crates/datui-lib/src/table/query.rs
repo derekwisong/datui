@@ -918,9 +918,9 @@ impl DataTableState {
             return;
         }
 
-        let source_schema = self.query_source().collect_schema().ok();
-        let parsed = parse_query_over(&query, source_schema.as_deref())
-            .map(|parsed| parsed.past_calendar_safe(source_schema.as_deref()));
+        let source_schema = self.query_source_schema();
+        let parsed = parse_query_over(&query, Some(&source_schema))
+            .map(|parsed| parsed.past_calendar_safe(Some(&source_schema)));
         match parsed {
             Ok(ParsedQuery {
                 cols,
@@ -941,8 +941,7 @@ impl DataTableState {
                         // Every other column, as each group's list of its values.
                         kept.extend(
                             source_schema
-                                .iter()
-                                .flat_map(|schema| schema.iter_names())
+                                .iter_names()
                                 .filter(|n| !group_by_col_names.iter().any(|g| g == n.as_str()))
                                 .map(|n| (n.to_string(), n.to_string())),
                         );
@@ -963,25 +962,13 @@ impl DataTableState {
                     if !cols.is_empty() {
                         lf = lf.group_by(group_by_cols.clone()).agg(cols);
                     } else {
-                        let schema = match lf.clone().collect_schema() {
-                            Ok(s) => s,
-                            Err(e) => {
-                                self.error = Some(e);
-                                return; // Don't modify state on error
-                            }
-                        };
-                        let all_columns: Vec<String> =
-                            schema.iter_names().map(|s| s.to_string()).collect();
-
-                        // In Polars, when you group_by and aggregate columns without explicit aggregation functions,
-                        // Polars automatically collects the values as lists. We need to aggregate all columns
-                        // except the group columns to avoid duplicates.
-                        let mut agg_exprs = Vec::new();
-                        for col_name in &all_columns {
-                            if !group_by_col_names.contains(col_name) {
-                                agg_exprs.push(col(col_name));
-                            }
-                        }
+                        // Every other column of the source (a filter keeps them all),
+                        // each group's values as a list.
+                        let agg_exprs: Vec<Expr> = source_schema
+                            .iter_names()
+                            .filter(|n| !group_by_col_names.iter().any(|g| g == n.as_str()))
+                            .map(|n| col(n.clone()))
+                            .collect();
 
                         lf = lf.group_by(group_by_cols.clone()).agg(agg_exprs);
                     }
@@ -1030,7 +1017,7 @@ impl DataTableState {
                 let keys: Vec<(PlSmallStr, Expr)> =
                     schema.iter_names().cloned().zip(group_by_cols).collect();
                 // Python's division depends on the types the query read.
-                let input = source_schema.unwrap_or_default();
+                let input = source_schema;
                 let steps = vec![Step::Query {
                     query: query.clone(),
                     input: input.clone(),
@@ -1067,11 +1054,8 @@ impl DataTableState {
                     });
                 }
                 self.forget_reshape();
-                // Collect will clamp start_row to valid range, but we want to ensure it's 0
-                // So we set it to 0, collect (which may clamp it), then ensure it's 0 again
                 self.collect();
-                // After collect(), ensure we're at the top (collect() may have clamped if num_rows was wrong)
-                // But if num_rows > 0, we want start_row = 0 to show the first row
+                // The result is viewed from its top, whatever a read clamped.
                 if self.num_rows > 0 {
                     self.start_row = 0;
                 }
@@ -1339,13 +1323,7 @@ impl DataTableState {
         }
         // The search runs over the data as loaded, so its columns come from there too,
         // not from a DSL query's possibly renamed schema.
-        let schema = match self.query_source().collect_schema() {
-            Ok(schema) => schema,
-            Err(e) => {
-                self.error = Some(e);
-                return;
-            }
-        };
+        let schema = self.query_source_schema();
         let string_cols: Vec<String> = schema
             .iter()
             .filter(|(_, dtype)| dtype.is_string())

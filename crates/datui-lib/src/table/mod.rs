@@ -1130,16 +1130,10 @@ impl DataTableState {
         self.reshape_source = None;
     }
 
-    /// Reset LazyFrame and view state to original_lf. Schema is re-fetched so it matches
-    /// after a previous query/SQL that may have changed columns. Caller should call
-    /// collect() afterward if display update is needed (reset/query/fuzzy do; sql_query
-    /// relies on event loop Collect).
+    /// Reset LazyFrame and view state to original_lf, with the schema it was loaded
+    /// with, whatever a query since made of the columns. The caller reads the rows.
     fn reset_lf_to_original(&mut self) {
-        let schema = self
-            .query_source()
-            .collect_schema()
-            .unwrap_or_else(|_| Arc::new(Schema::with_capacity(0)));
-        self.install_base(self.original_lf.clone(), schema);
+        self.install_base(self.original_lf.clone(), self.query_source_schema());
         self.base_steps = Vec::new();
         self.reshape_steps = None;
         self.lineage = None;

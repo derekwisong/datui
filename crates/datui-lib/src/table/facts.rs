@@ -817,6 +817,11 @@ impl DataTableState {
         Self::without_drift(self.original_lf.clone())
     }
 
+    /// The schema of [`Self::query_source`], as known since the open: nothing resolved.
+    pub(super) fn query_source_schema(&self) -> Arc<Schema> {
+        Self::without_source_rows(self.original_schema.clone()).0
+    }
+
     /// Whether rows still know which file they came from.
     pub fn drifts(&self) -> bool {
         self.drift_column_present

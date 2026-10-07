@@ -18,7 +18,7 @@ use color_eyre::eyre::Report;
 use polars::prelude::*;
 
 use crate::sampling::{CANCELLED, ReadWatch, Sample, SampleMethod};
-use crate::statistics::{collect_lazy, sample_rank};
+use crate::sampling::{sample_rank, stream_batches};
 
 /// The setting that caps a sample's memory, as every message about it names it.
 pub const MEMORY_SETTING: &str = "analysis.sample_memory_limit";
@@ -234,6 +234,7 @@ impl MemoryCheck {
 }
 
 /// What a draw keeps its chunks in and how it says so.
+#[derive(Clone)]
 pub struct Live {
     pub rows: Arc<SampleRows>,
     /// Told after each chunk is kept.
@@ -355,10 +356,10 @@ pub fn draw(
                 ..Drawn::default()
             }
         }
-        SampleMethod::Spread if crate::statistics::slices_reach_into_the_scan(lf) => {
+        SampleMethod::Spread if crate::sampling::slices_reach_into_the_scan(lf) => {
             let total = match known_total {
                 Some(total) => total,
-                None => crate::statistics::count_rows(lf, polars_streaming)?,
+                None => crate::sampling::count_rows(lf, polars_streaming)?,
             };
             if total <= n {
                 stream(lf, live, Some(total))?;
@@ -366,7 +367,7 @@ pub fn draw(
                 let on_run = |offset: usize, run: &DataFrame| {
                     live.keep(offset as u64, run.clone(), Some(n));
                 };
-                let read = crate::statistics::block_sample_live(
+                let read = crate::sampling::block_sample_live(
                     lf,
                     total,
                     n,
@@ -459,33 +460,12 @@ pub fn draw(
 /// rows seen. `expected` is the rows the whole read holds, when known.
 fn stream(lf: &LazyFrame, live: &Live, expected: Option<usize>) -> Result<usize> {
     let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let rows = Arc::clone(&live.rows);
-    let notify = Arc::clone(&live.notify);
-    let memory = live.memory.clone();
-    let watch = live.watch.clone();
-    let bytes_per_row = live.bytes_per_row;
     let counted = Arc::clone(&seen);
-    let sink = lf.clone().sink_batches(
-        PlanCallback::new(move |batch: DataFrame| {
-            if watch.stopped() {
-                return Ok(true);
-            }
-            watch.saw(batch.height());
-            let key = counted.fetch_add(batch.height(), std::sync::atomic::Ordering::Relaxed);
-            let live = Live {
-                rows: Arc::clone(&rows),
-                notify: Arc::clone(&notify),
-                memory: memory.clone(),
-                watch: watch.clone(),
-                bytes_per_row,
-            };
-            Ok(!live.keep(key as u64, batch, expected))
-        }),
-        true,
-        None,
-    )?;
-    // Streaming whatever the setting: holding the table is what this is here to avoid.
-    collect_lazy(sink, true).map_err(Report::from)?;
+    let kept = live.clone();
+    stream_batches(lf.clone(), Some(&live.watch), true, move |batch| {
+        let key = counted.fetch_add(batch.height(), std::sync::atomic::Ordering::Relaxed);
+        Ok(!kept.keep(key as u64, batch, expected))
+    })?;
     Ok(seen.load(std::sync::atomic::Ordering::Relaxed))
 }
 
@@ -494,32 +474,16 @@ fn stream(lf: &LazyFrame, live: &Live, expected: Option<usize>) -> Result<usize>
 /// √n), and the same seed keeps the same rows.
 fn bernoulli(lf: &LazyFrame, n: usize, total: usize, seed: u64, live: &Live) -> Result<()> {
     let bar = bernoulli_bar(n, total);
-    let rows = Arc::clone(&live.rows);
-    let notify = Arc::clone(&live.notify);
-    let memory = live.memory.clone();
-    let watch = live.watch.clone();
-    let bytes_per_row = live.bytes_per_row;
-    let sink = lf.clone().with_row_index(POSITION, None).sink_batches(
-        PlanCallback::new(move |batch: DataFrame| {
-            if watch.stopped() {
-                return Ok(true);
-            }
-            watch.saw(batch.height());
-            let (first, kept) = bernoulli_keep(&batch, seed, bar)?;
-            let live = Live {
-                rows: Arc::clone(&rows),
-                notify: Arc::clone(&notify),
-                memory: memory.clone(),
-                watch: watch.clone(),
-                bytes_per_row,
-            };
-            Ok(!live.keep(first, kept, Some(n)))
-        }),
+    let kept = live.clone();
+    stream_batches(
+        lf.clone().with_row_index(POSITION, None),
+        Some(&live.watch),
         true,
-        None,
-    )?;
-    collect_lazy(sink, true).map_err(Report::from)?;
-    Ok(())
+        move |batch| {
+            let (first, rows) = bernoulli_keep(&batch, seed, bar)?;
+            Ok(!kept.keep(first, rows, Some(n)))
+        },
+    )
 }
 
 /// The rank under which a row is kept, for `n` of `total` rows.

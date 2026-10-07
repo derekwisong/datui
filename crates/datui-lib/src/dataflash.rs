@@ -172,6 +172,7 @@ pub fn index(data: &[u8]) -> Result<Index, String> {
     }
     let mut index = Index::default();
     let mut records = 0usize;
+    let limit = crate::limits::get().indexed_records;
     let mut fmtu: Vec<(u8, String, String)> = Vec::new();
     let mut building: HashMap<u8, Offsets> = HashMap::new();
     let mut at = 0usize;
@@ -292,7 +293,7 @@ pub fn index(data: &[u8]) -> Result<Index, String> {
             }
             _ => {}
         }
-        if records < crate::indexed::MAX_RECORDS {
+        if records < limit {
             building
                 .entry(id)
                 .or_insert_with(|| Offsets::for_file(data.len()))
@@ -468,10 +469,10 @@ impl crate::indexed::Log for Index {
             notes.push("log cut short mid-record".to_string());
         }
         if self.past_limit > 0 {
-            notes.push(format!(
-                "{} records left out: past the first {}",
-                group(self.past_limit),
-                group(crate::indexed::MAX_RECORDS)
+            notes.push(crate::limits::left_out(
+                &format!("{} records", group(self.past_limit)),
+                crate::limits::get().indexed_records,
+                "indexed_records",
             ));
         }
         if !self.bad_formats.is_empty() {

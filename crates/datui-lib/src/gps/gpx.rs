@@ -14,7 +14,7 @@
 
 use polars::prelude::*;
 
-use super::table::{Builder, Cell, Kind};
+use crate::columns::{Builder, Cell, Kind};
 
 /// The longest tag, comment or other markup read whole.
 pub const MAX_MARKUP: usize = 1 << 20;

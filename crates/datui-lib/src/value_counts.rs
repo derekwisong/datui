@@ -13,7 +13,6 @@ use crate::sampling::ReadWatch;
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use polars::prelude::*;
-use std::sync::{Arc, Mutex};
 
 /// Values listed one per line; the rest are summed into one `other` line.
 pub const TOP_N: usize = 1_000;
@@ -85,7 +84,7 @@ impl Plan {
             .cloned()
             .ok_or_else(|| eyre!("no column {}", self.column))?;
         if let Some((rows, seed)) = self.sample(&lf) {
-            let read = crate::statistics::sample_rows_counting(
+            let read = crate::sampling::sample_rows_counting(
                 &lf,
                 Some(rows),
                 self.known_total,
@@ -122,38 +121,22 @@ impl Plan {
             || self
                 .known_total
                 .is_none_or(|rows| rows > sample_rows.saturating_mul(LARGE_SAMPLES));
-        (large && crate::statistics::slices_reach_into_the_scan(lf)).then_some((sample_rows, seed))
+        (large && crate::sampling::slices_reach_into_the_scan(lf)).then_some((sample_rows, seed))
     }
 }
 
 /// Count `column` of `lf` in one streamed pass, stopping between batches when
 /// `watch` says to.
 fn stream_counts(lf: &LazyFrame, column: &str, watch: &ReadWatch) -> Result<Counted> {
-    let state = Arc::new(Mutex::new(Tally::new(column, MAX_DISTINCT)));
-    let tally = Arc::clone(&state);
-    let seen = watch.clone();
-    let sink = lf.clone().sink_batches(
-        PlanCallback::new(move |batch: DataFrame| {
-            if seen.stopped() {
-                return Ok(true);
-            }
-            seen.saw(batch.height());
-            tally
-                .lock()
-                .map_err(|_| PolarsError::ComputeError("count lock failed".into()))?
-                .observe(&batch)
-        }),
+    let tally = crate::sampling::stream_fold(
+        lf.clone(),
+        Some(watch),
         false,
-        None,
+        Tally::new(column, MAX_DISTINCT),
+        |tally, batch| tally.observe(&batch),
     )?;
-    // Streaming whatever the setting: a count per value is all this holds.
-    crate::statistics::collect_lazy(sink, true)?;
     // Part of the view counted is not a count of it.
     watch.check()?;
-    let tally = std::mem::replace(
-        &mut *state.lock().unwrap_or_else(|e| e.into_inner()),
-        Tally::new(column, MAX_DISTINCT),
-    );
     Ok(tally.finish()?)
 }
 

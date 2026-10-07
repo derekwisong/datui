@@ -1523,6 +1523,10 @@ mod tests {
             beta: 5.0,
         };
         assert!(close(beta.cdf(0.5), 57.0 / 64.0, 1e-12));
+        // I_0.5(2, 3) = 11/16; Beta(1, 1) is the uniform.
+        assert!(close(beta_inc(2.0, 3.0, 0.5), 0.6875, 1e-12));
+        assert!(close(beta_inc(1.0, 1.0, 0.3), 0.3, 1e-12));
+        assert!(close(t_cdf(0.0, 5.0), 0.5, 1e-12));
         // Poisson(3): P(X <= 2) = 8.5 e^-3.
         let poisson = Fitted::Poisson { rate: 3.0 };
         assert!(close(poisson.cdf(2.0), 8.5 * (-3.0f64).exp(), 1e-12));

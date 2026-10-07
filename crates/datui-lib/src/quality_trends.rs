@@ -129,6 +129,26 @@ impl TrendView<'_> {
     }
 }
 
+/// Whether the segments are a sample's, then the segments with rows the sample drew
+/// none of and the segments it drew few of: what [`TrendView::coverage`] counts,
+/// without building the view.
+pub fn segment_coverage(results: &DataQualityResults) -> (bool, usize, usize) {
+    let sampled = matches!(
+        results.precision,
+        QualityPrecision::Sampled | QualityPrecision::Estimated
+    );
+    let thin = if sampled {
+        results
+            .segments
+            .iter()
+            .filter(|segment| segment.evaluated_rows < THIN_SEGMENT_ROWS)
+            .count()
+    } else {
+        0
+    };
+    (sampled, results.unsampled_segments.len(), thin)
+}
+
 /// The Trends table for `metric`, `bars` wide: rows per segment first (the exact
 /// count, then on a sample the rows it drew), then every column the measure is above
 /// zero in somewhere, the one that moves most first. Each bar pools consecutive
@@ -737,9 +757,8 @@ fn window_count(from: NaiveDateTime, before: NaiveDateTime, every: &str) -> usiz
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_quality::{
-        ExpectedWindows, QualityCompute, UnsampledSegment, compute_data_quality,
-    };
+    use crate::data_quality::fixtures::measure;
+    use crate::data_quality::{ExpectedWindows, QualityCompute, UnsampledSegment};
     use polars::prelude::{DataType, IntoLazy, LazyFrame, col, df};
 
     fn at(text: &str) -> NaiveDateTime {
@@ -854,7 +873,7 @@ mod tests {
     fn gaps_appear_only_with_stated_windows() {
         let frame = weekdays();
         let plan = daily(QualityCompute::Full, 0);
-        let results = compute_data_quality(&frame, None, &plan, None, false).unwrap();
+        let results = measure(&frame, None, &plan);
         assert_eq!(expected_gaps(&plan, &results), None);
         // Stated on a grain that is not time windows, it waits for one.
         let whole = DataQualityPlan {
@@ -872,7 +891,7 @@ mod tests {
         let frame = weekdays();
         let mut plan = daily(QualityCompute::Full, 0);
         plan.expected = Some(ExpectedWindows::default());
-        let results = compute_data_quality(&frame, None, &plan, None, false).unwrap();
+        let results = measure(&frame, None, &plan);
         let Some(Gaps::Checked(every_day)) = expected_gaps(&plan, &results) else {
             panic!("checked");
         };
@@ -927,7 +946,7 @@ mod tests {
             weekdays: true,
             ..ExpectedWindows::default()
         });
-        let results = compute_data_quality(&frame, Some(35 * 40), &plan, None, false).unwrap();
+        let results = measure(&frame, Some(35 * 40), &plan);
         assert_eq!(results.precision, QualityPrecision::Sampled);
         assert!(
             !results.unsampled_segments.is_empty(),
@@ -963,6 +982,8 @@ mod tests {
         assert_eq!(view.slots.len(), 35);
         assert_eq!(view.per_bar, 1);
         assert_eq!(view.coverage().0, results.unsampled_segments.len());
+        let (unsampled, thin) = view.coverage();
+        assert_eq!(segment_coverage(&results), (view.sampled, unsampled, thin));
         assert_eq!(view.lines[0].names, ["rows"]);
         assert_eq!(view.lines[1].names, ["sampled rows"]);
         let missed = view.bars.iter().position(|bar| bar.unsampled == 1).unwrap();
@@ -990,7 +1011,7 @@ mod tests {
             before: Some("2024-02-05".to_string()),
         });
         let scoped = crate::data_quality::apply_quality_scope(frame, &plan.scope, None).unwrap();
-        let results = compute_data_quality(&scoped, None, &plan, None, false).unwrap();
+        let results = measure(&scoped, None, &plan);
         let Some(Gaps::Checked(check)) = expected_gaps(&plan, &results) else {
             panic!("checked");
         };
@@ -1016,7 +1037,7 @@ mod tests {
         };
         let scoped =
             crate::data_quality::apply_quality_scope(weekdays(), &plan.scope, None).unwrap();
-        let results = compute_data_quality(&scoped, None, &plan, None, false).unwrap();
+        let results = measure(&scoped, None, &plan);
         let Some(Gaps::Checked(check)) = expected_gaps(&plan, &results) else {
             panic!("checked");
         };
@@ -1045,7 +1066,7 @@ mod tests {
             before: Some("2024-01-01".to_string()),
             ..ExpectedWindows::default()
         });
-        let results = compute_data_quality(&frame, None, &plan, None, false).unwrap();
+        let results = measure(&frame, None, &plan);
         assert_eq!(
             expected_gaps(&plan, &results),
             Some(Gaps::TooMany { windows: 35_064 })
@@ -1066,9 +1087,7 @@ mod tests {
         .unwrap()
         .lazy()
         .with_column(col("day").cast(DataType::Date));
-        let results =
-            compute_data_quality(&frame, None, &daily(QualityCompute::Full, 0), None, false)
-                .unwrap();
+        let results = measure(&frame, None, &daily(QualityCompute::Full, 0));
         let order = |bars: usize| {
             trend_view(&results, QualityMetric::NullRate, bars)
                 .lines
@@ -1088,7 +1107,7 @@ mod tests {
     fn missed_segments_keep_their_place() {
         let frame = weekdays();
         let plan = daily(QualityCompute::Full, 0);
-        let mut results = compute_data_quality(&frame, None, &plan, None, false).unwrap();
+        let mut results = measure(&frame, None, &plan);
         let moved = results.segments.remove(3);
         results.unsampled_segments.push(UnsampledSegment {
             label: moved.label.clone(),

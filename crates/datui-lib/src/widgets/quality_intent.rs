@@ -233,6 +233,7 @@ mod tests {
     use super::*;
     use crate::analysis_modal::{AnalysisFocus, DetailScroll, SetupRow};
     use crate::config::Theme;
+    use crate::data_quality::fixtures::measure;
     use crate::data_quality::{
         DataQualityPlan, DataQualityResults, QualityCompute, QualityMetric, QualityPage,
     };
@@ -303,9 +304,7 @@ mod tests {
                 },
                 ..DataQualityPlan::default()
             };
-            let results =
-                crate::data_quality::compute_data_quality(&lf, Some(2_000), &plan, None, false)
-                    .unwrap();
+            let results = measure(&lf, Some(2_000), &plan);
             Self {
                 state,
                 plan,

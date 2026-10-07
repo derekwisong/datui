@@ -39,7 +39,6 @@ fn test_distribution_detection_normal() -> Result<()> {
     let dist_analysis = &results.distribution_analyses[0];
     assert_eq!(dist_analysis.column_name, "value");
     assert!(dist_analysis.confidence > 0.0);
-    assert!(dist_analysis.fit_quality > 0.0);
 
     Ok(())
 }

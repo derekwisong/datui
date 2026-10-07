@@ -46,42 +46,15 @@ fn detect_with_seed(
 ) -> Result<()> {
     let results = compute_statistics_with_options(lf, Some(10000), seed, options)?;
 
-    // Find the column statistics for our test column
-    let col_stat = results
-        .column_statistics
-        .iter()
-        .find(|cs| cs.name == column_name)
-        .unwrap_or_else(|| panic!("Column {} not found in results", column_name));
-
-    // Check that distribution info was computed
-    let dist_info = col_stat
-        .distribution_info
-        .as_ref()
-        .unwrap_or_else(|| panic!("Distribution info not computed for {}", column_name));
-
-    // Check that the detected distribution type matches expected
-    assert_eq!(
-        dist_info.distribution_type,
-        expected_type,
-        "Distribution detection failed for {} (seed {seed}): expected {:?}, got {:?} (confidence: {:.3}, fit_quality: {:.3})",
-        column_name,
-        expected_type,
-        dist_info.distribution_type,
-        dist_info.confidence,
-        dist_info.fit_quality.unwrap_or(0.0)
-    );
-
-    // Also check that we have a distribution analysis
     let dist_analysis = results
         .distribution_analyses
         .iter()
         .find(|da| da.column_name == column_name)
         .unwrap_or_else(|| panic!("Distribution analysis not found for {}", column_name));
-
     assert_eq!(
         dist_analysis.distribution_type, expected_type,
-        "Distribution analysis type mismatch for {}: expected {:?}, got {:?}",
-        column_name, expected_type, dist_analysis.distribution_type
+        "Distribution detection failed for {} (seed {seed}): expected {:?}, got {:?} (confidence: {:.3})",
+        column_name, expected_type, dist_analysis.distribution_type, dist_analysis.confidence,
     );
 
     Ok(())

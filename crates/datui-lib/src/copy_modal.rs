@@ -79,6 +79,18 @@ pub struct CopyModal {
 impl crate::form::Form for CopyModal {
     type Field = CopyFocus;
 
+    fn shown_picker(&mut self) -> Option<(&mut crate::widgets::ui::PickerState, bool)> {
+        self.picker.as_mut().map(|p| (p, false))
+    }
+
+    fn dismiss_picker(&mut self) {
+        self.picker = None;
+    }
+
+    fn pick(&mut self, _toggle: bool) {
+        self.picker_choose();
+    }
+
     fn fields(&self) -> Vec<(CopyFocus, crate::form::FieldKind)> {
         use crate::form::FieldKind;
         self.row_order()

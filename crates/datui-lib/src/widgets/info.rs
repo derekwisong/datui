@@ -499,12 +499,6 @@ impl InfoModal {
         self.detail_scroll = self.detail_scroll.saturating_add_signed(delta);
     }
 
-    /// Scroll a detail tab's list by a page.
-    pub fn detail_page(&mut self, down: bool) {
-        let page = self.detail_visible.max(1) as isize;
-        self.detail_scroll_by(if down { page } else { -page });
-    }
-
     /// Move the cursor through the notes. Returns true when something changed.
     ///
     /// Only the index moves: the render scrolls to whatever is selected, so how tall a

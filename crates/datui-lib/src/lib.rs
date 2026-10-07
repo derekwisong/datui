@@ -5,7 +5,7 @@ use polars::prelude::{DataFrame, LazyFrame, col};
 use std::collections::HashMap;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, mpsc::Sender};
+use std::sync::{Arc, mpsc::Sender};
 use widgets::info::{FileFacts, InfoModal};
 
 use ratatui::style::Style;
@@ -33,6 +33,7 @@ mod chart_jobs;
 mod chart_keys;
 pub mod chart_modal;
 mod chart_pdf;
+pub mod chart_plot;
 mod chart_recipe;
 pub mod cli;
 pub mod clipboard;
@@ -132,6 +133,7 @@ pub mod numpy;
 mod open_options;
 mod open_scan;
 pub mod output_file;
+mod overlay;
 pub mod parquet_footer;
 pub mod past_calendar;
 mod picker_keys;
@@ -143,6 +145,7 @@ pub mod python_script;
 pub mod quality_export;
 mod quality_form_keys;
 pub mod quality_intent;
+mod quality_keys;
 mod quality_memory;
 pub mod quality_report;
 mod quality_runs;
@@ -221,7 +224,7 @@ use analysis_modal::{AnalysisModal, AnalysisProgress};
 use background::{CacheWrites, InflightCollect, LenCount, OwedCount};
 use chart_export::ChartExportRequest;
 use chart_export_modal::ChartExportModal;
-use chart_jobs::{ChartCache, ChartInflight, ChartPrepared, ChartRequest, ChartResultSlot};
+use chart_jobs::{ChartCache, ChartRequest};
 use chart_modal::{ChartColumns, ChartModal};
 use counting::FootersReported;
 pub use error_display::{ErrorKindForPython, error_for_python};
@@ -582,10 +585,6 @@ pub enum AppEvent {
         generation: u64,
         rows: usize,
     },
-    /// Background task completed: chart data for one selection is prepared. The data is
-    /// in `App::pending_chart_result`; it belongs to `App::chart_inflight`, which says
-    /// whether it is still wanted.
-    BackgroundChartReady,
     /// Write the Data Quality report on screen to a file, in a form. From the
     /// results in memory: nothing is read.
     QualityReportExport(PathBuf, crate::quality_export::ReportFormat, Overwrite),
@@ -1231,20 +1230,10 @@ pub struct App {
     /// so this handle must live as long as the copy should.
     clipboard: Option<Box<dyn clipboard::Destination>>,
     pub(crate) chart_cache: ChartCache,
-    /// The one chart preparation allowed to run at a time. Render draws only what is in
-    /// `chart_cache`; this drives the throbber while it is current. Its result is
-    /// installed only if the record is still current (not `stale`) and the dataset is
-    /// the one it was computed from. Deliberately not
-    /// `busy`: the sidebar stays live while the data is computed, and the newest
-    /// selection is prepared once this one lands.
-    chart_inflight: Option<ChartInflight>,
     /// The selection the chart last asked for, and, when it stepped the aggregate of
     /// the one before, until when it waits for the next step before it is prepared.
     chart_asked: Option<(ChartRequest, Option<std::time::Instant>)>,
-    /// The result of the background chart preparation, like `pending_collect_result`:
-    /// the data stays out of the event.
-    pending_chart_result: ChartResultSlot,
-    /// A chart export that asked for data still being prepared. `BackgroundChartReady`
+    /// A chart export that asked for data still being prepared. The preparation's end
     /// picks it up; `busy` stays set until then.
     chart_export_waiting: Option<ChartExportRequest>,
     error_modal: ErrorModal,
@@ -3344,9 +3333,7 @@ impl App {
             table_choices: None,
             clipboard: None,
             chart_cache: ChartCache::default(),
-            chart_inflight: None,
             chart_asked: None,
-            pending_chart_result: Arc::new(Mutex::new(None)),
             chart_export_waiting: None,
             error_modal: ErrorModal::new(),
             flash: None,
@@ -4881,9 +4868,7 @@ impl App {
                 );
                 None
             }
-            AppEvent::ChartExport(..)
-            | AppEvent::DoChartExport(..)
-            | AppEvent::BackgroundChartReady => self.chart_event(event),
+            AppEvent::ChartExport(..) | AppEvent::DoChartExport(..) => self.chart_event(event),
             AppEvent::Export(request) => {
                 if self.data_table_state.is_some() {
                     self.busy = true;
@@ -5293,8 +5278,7 @@ impl App {
             col.is_to_be_locked = false;
         }
         self.sort_filter_modal.sort.has_unapplied_changes = false;
-        self.sort_filter_modal.close();
-        self.input_mode = InputMode::Normal;
+        self.close_overlay();
         if view_unchanged {
             return None;
         }
@@ -5794,6 +5778,12 @@ impl App {
                 }
                 None
             }
+            Answer::ChartPrepared(prepared) => {
+                if let Job::ChartPrepare(prep) = job {
+                    self.chart_prepared(*prep, current, Ok(*prepared));
+                }
+                None
+            }
             Answer::ChartExported => {
                 // Leaving the chart's dataset supersedes the write: one that finishes
                 // after Ctrl-O must not reopen its modal over the home screen.
@@ -5883,6 +5873,14 @@ impl App {
                 if let loading::Step::Failed(failed) = self.loading.failed(*load, message) {
                     self.load_failed(failed);
                 }
+            }
+            Job::ChartPrepare(prep) => {
+                let message = if panicked {
+                    "Chart preparation panicked".to_string()
+                } else {
+                    message.to_string()
+                };
+                self.chart_prepared(*prep.clone(), current, Err(message));
             }
             Job::Classify(_) => {
                 if current {

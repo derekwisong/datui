@@ -108,6 +108,18 @@ pub trait Form {
             .map(|(_, kind)| kind)
     }
 
+    /// The picker open over a field, and whether it takes several values; `None`
+    /// for a form with no picker open.
+    fn shown_picker(&mut self) -> Option<(&mut PickerState, bool)> {
+        None
+    }
+
+    /// Close the open picker, choosing nothing.
+    fn dismiss_picker(&mut self) {}
+
+    /// Take the picker's item and close it, or with `toggle`, flip it and stay open.
+    fn pick(&mut self, _toggle: bool) {}
+
     /// Focus `field` if the form shows it: a click on a row, or a modal moving
     /// focus itself. Returns whether it did.
     fn focus(&mut self, field: Self::Field) -> bool {
@@ -234,6 +246,74 @@ pub fn key<T: Form + ?Sized>(form: &mut T, event: &KeyEvent) -> FormKey<T::Field
         },
         _ if kind.types() => FormKey::Text(field),
         _ => FormKey::Other,
+    }
+}
+
+/// `event` in a form with a picker open: the picker takes it ([`picker_key`]),
+/// choosing, toggling or closing through the form. Returns whether a picker was open.
+pub fn picker_form_key<T: Form + ?Sized>(form: &mut T, event: &KeyEvent) -> bool {
+    let Some((picker, multi)) = form.shown_picker() else {
+        return false;
+    };
+    match picker_key(picker, multi, event) {
+        PickerKey::Close => form.dismiss_picker(),
+        PickerKey::Choose => form.pick(false),
+        PickerKey::Toggle => form.pick(true),
+        PickerKey::ChooseAndMove(forward) => {
+            form.pick(false);
+            form.move_focus(if forward { 1 } else { -1 });
+        }
+        PickerKey::Handled | PickerKey::Other => {}
+    }
+    true
+}
+
+/// A move of a list's cursor, from the keys every list answers: ↑ / `k`, ↓ / `j`,
+/// PageUp, PageDown, Home and End.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListMove {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
+}
+
+impl ListMove {
+    /// The move `event` asks for, if it is a press of a list key.
+    pub fn from_key(event: &KeyEvent) -> Option<Self> {
+        if !event.is_press() {
+            return None;
+        }
+        Some(match event.code {
+            KeyCode::Up | KeyCode::Char('k') => Self::Up,
+            KeyCode::Down | KeyCode::Char('j') => Self::Down,
+            KeyCode::PageUp => Self::PageUp,
+            KeyCode::PageDown => Self::PageDown,
+            KeyCode::Home => Self::Home,
+            KeyCode::End => Self::End,
+            _ => return None,
+        })
+    }
+
+    /// How far it moves, `page` rows to a page; Home and End as far as a move goes.
+    pub fn delta(self, page: usize) -> isize {
+        let page = isize::try_from(page.max(1)).unwrap_or(isize::MAX);
+        match self {
+            Self::Up => -1,
+            Self::Down => 1,
+            Self::PageUp => -page,
+            Self::PageDown => page,
+            Self::Home => isize::MIN,
+            Self::End => isize::MAX,
+        }
+    }
+
+    /// `at` moved in a list of `len` rows, `page` rows to a page, kept in the list.
+    pub fn apply(self, at: usize, len: usize, page: usize) -> usize {
+        let last = len.saturating_sub(1);
+        at.saturating_add_signed(self.delta(page)).min(last)
     }
 }
 

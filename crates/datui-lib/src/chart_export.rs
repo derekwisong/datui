@@ -4,16 +4,13 @@
 //! outlines (`chart_pdf`). The same figure comes out the same on every machine;
 //! text the bundled font lacks falls back to a system font.
 
-use std::borrow::Cow;
 use std::sync::{Arc, OnceLock};
 
 use color_eyre::Result;
 use resvg::{tiny_skia, usvg};
 
-use crate::chart_data::{
-    self, AxisNumbers, BarData, BoxPlotData, HeatmapData, HistogramData, KdeData,
-    XAxisTemporalKind, segments,
-};
+use crate::chart_data::{BarData, segments};
+use crate::chart_plot::{Axis, Plot, PlotData};
 use crate::widgets::axes::{AxisSpec, TickSet};
 
 const FONT_REGULAR: &[u8] = include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf");
@@ -554,157 +551,6 @@ pub struct ChartExportRequest {
     /// Whether the file carries the chart's recipe, which the app writes in when the
     /// export starts.
     pub recipe: bool,
-}
-
-/// One axis: its title, what its numbers are, and whether they are dates.
-#[derive(Debug, Clone, Default)]
-pub struct Axis {
-    pub title: String,
-    pub numbers: AxisNumbers,
-    pub kind: XAxisTemporalKind,
-    /// Values are `ln(1 + y)`; ticks name `y`.
-    pub log: bool,
-}
-
-/// What a chart plots, built once from the prepared data (`chart_jobs::plot`) and
-/// drawn by the screen and by every export. Borrowed from the chart cache on
-/// screen; owned by an export, which outlives the frame.
-#[derive(Debug, Clone)]
-pub enum Plot<'a> {
-    Lines(Lines<'a>),
-    Bars {
-        data: Cow<'a, BarData>,
-        value: Axis,
-    },
-    Histogram {
-        data: Cow<'a, HistogramData>,
-        x: Axis,
-        y: Axis,
-    },
-    Kde {
-        data: Cow<'a, KdeData>,
-        x: Axis,
-        y: Axis,
-    },
-    Box {
-        data: Cow<'a, BoxPlotData>,
-        x_title: String,
-        y: Axis,
-    },
-    Heatmap {
-        data: Cow<'a, HeatmapData>,
-        x: Axis,
-        y: Axis,
-    },
-}
-
-/// A line or scatter chart's series, or the axes they will stand on.
-#[derive(Debug, Clone)]
-pub struct Lines<'a> {
-    /// Each series' points as drawn: `ln(1 + y)` on a log scale.
-    pub series: Cow<'a, [Vec<(f64, f64)>]>,
-    /// The points before any log, for the crosshair's readout.
-    pub values: Cow<'a, [Vec<(f64, f64)>]>,
-    /// Per series, where its line starts again after a gap (see `chart_data::segments`).
-    pub breaks: Cow<'a, [Vec<usize>]>,
-    /// Each series' name: its Y column or its color group.
-    pub names: Cow<'a, [String]>,
-    /// Every X of every series, in order, each once: where the crosshair stops.
-    pub xs: Cow<'a, [f64]>,
-    /// The least and greatest X and Y of the points as drawn.
-    pub bounds: Option<[f64; 4]>,
-    /// The last series is Other: every value of a color without a series of its own.
-    pub other: bool,
-    pub scatter: bool,
-    /// Where the axes stand before any series arrives.
-    pub x_bounds: Option<(f64, f64)>,
-    pub x: Axis,
-    pub y: Axis,
-    pub y_from_zero: bool,
-}
-
-/// One series of [`Lines`] that has points.
-#[derive(Debug, Clone, Copy)]
-pub struct Drawn<'a> {
-    /// Its place among every series, which picks its color on screen: an empty
-    /// series before it keeps its color too.
-    pub index: usize,
-    pub name: &'a str,
-    pub points: &'a [(f64, f64)],
-    pub breaks: &'a [usize],
-    pub other: bool,
-}
-
-impl Lines<'_> {
-    /// The series with points.
-    pub fn drawn(&self) -> impl Iterator<Item = Drawn<'_>> {
-        let last = self.names.len().saturating_sub(1);
-        self.series
-            .iter()
-            .zip(self.names.iter())
-            .enumerate()
-            .filter(|(_, (points, _))| !points.is_empty())
-            .map(move |(index, (points, name))| Drawn {
-                index,
-                name,
-                points,
-                breaks: self.breaks.get(index).map_or(&[][..], Vec::as_slice),
-                other: self.other && index == last,
-            })
-    }
-}
-
-impl Plot<'_> {
-    /// Nothing to draw: no points, bins, boxes, cells or bars.
-    pub fn is_empty(&self) -> bool {
-        match self {
-            Self::Lines(lines) => lines.drawn().next().is_none(),
-            Self::Bars { data, .. } => data.bars.is_empty(),
-            Self::Histogram { data, .. } => data.bins.is_empty(),
-            Self::Kde { data, .. } => data.series.is_empty(),
-            Self::Box { data, .. } => data.stats.is_empty(),
-            Self::Heatmap { data, .. } => data.counts.is_empty() || data.max_count <= 0.0,
-        }
-    }
-
-    /// The plot with its data its own, for an export that outlives the chart cache.
-    /// What the crosshair reads stays behind.
-    pub fn into_owned(self) -> Plot<'static> {
-        match self {
-            Self::Lines(lines) => Plot::Lines(Lines {
-                series: Cow::Owned(lines.series.into_owned()),
-                values: Cow::Owned(Vec::new()),
-                xs: Cow::Owned(Vec::new()),
-                breaks: Cow::Owned(lines.breaks.into_owned()),
-                names: Cow::Owned(lines.names.into_owned()),
-                ..lines
-            }),
-            Self::Bars { data, value } => Plot::Bars {
-                data: Cow::Owned(data.into_owned()),
-                value,
-            },
-            Self::Histogram { data, x, y } => Plot::Histogram {
-                data: Cow::Owned(data.into_owned()),
-                x,
-                y,
-            },
-            Self::Kde { data, x, y } => Plot::Kde {
-                data: Cow::Owned(data.into_owned()),
-                x,
-                y,
-            },
-            Self::Box { data, x_title, y } => Plot::Box {
-                data: Cow::Owned(data.into_owned()),
-                x_title,
-                y,
-            },
-            Self::Heatmap { data, x, y } => Plot::Heatmap {
-                data: Cow::Owned(data.into_owned()),
-                x,
-                y,
-            },
-        }
-    }
 }
 
 /// A chart ready to draw: what it plots, and what it says about its rows (a
@@ -1264,38 +1110,21 @@ pub fn svg(figure: &Figure, options: &ExportOptions) -> Result<String> {
     ))
 }
 
-/// The names a legend lists, in the order of their colors.
-fn legend_names(figure: &Figure) -> Vec<String> {
-    match &figure.plot {
-        Plot::Lines(lines) => lines.drawn().map(|s| s.name.to_string()).collect(),
-        Plot::Bars { data, .. } => data.groups.clone(),
-        Plot::Histogram { data, .. } => data.groups.iter().map(|g| g.name.clone()).collect(),
-        Plot::Kde { data, .. } => data.series.iter().map(|s| s.name.clone()).collect(),
-        Plot::Box { .. } | Plot::Heatmap { .. } => Vec::new(),
-    }
-}
-
-/// Where Other is among the figure's series: last, when it has one.
-fn other_at(figure: &Figure) -> Option<usize> {
-    match &figure.plot {
-        Plot::Lines(lines) => lines.drawn().position(|s| s.other),
-        Plot::Bars { data, .. } => chart_data::other_at(data.other, data.groups.len()),
-        Plot::Histogram { data, .. } => chart_data::other_at(data.other, data.groups.len()),
-        Plot::Kde { data, .. } => chart_data::other_at(data.other, data.series.len()),
-        Plot::Box { .. } | Plot::Heatmap { .. } => None,
-    }
-}
-
 /// The plot in `frame`: axes, grid, marks, and the legend.
 fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame: Area) {
-    let names = legend_names(figure);
-    c.other = other_at(figure);
+    let names: Vec<String> = figure
+        .plot
+        .legend()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    c.other = figure.plot.other_at();
     let is_lines = matches!(
-        figure.plot,
-        Plot::Lines(Lines { scatter: false, .. }) | Plot::Kde { .. }
+        (&*figure.plot.data, figure.plot.scatter),
+        (PlotData::Lines(_), false) | (PlotData::Kde(_), _)
     );
     // A line's swatch is drawn a little heavier than its line, as the line is.
-    if matches!(figure.plot, Plot::Lines(Lines { scatter: false, .. })) {
+    if matches!(*figure.plot.data, PlotData::Lines(_)) && !figure.plot.scatter {
         c.swatch_stroke = 1.75 / 1.5 * options.line_width.pt() * c.pt;
     }
     // A single series is named by the axis title; two or more get a legend.
@@ -1315,115 +1144,51 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
             .fold(0.0, f64::max);
         frame.right -= (widest + tick).min(frame.width() / 3.0);
     }
-    match &figure.plot {
-        Plot::Lines(lines) => {
-            let Lines {
-                scatter,
-                x,
-                y,
-                y_from_zero,
-                ..
-            } = lines;
-            // Numbered as drawn: a series with no points takes no color.
-            let series: Vec<Drawn> = lines.drawn().collect();
-            let all = series.iter().flat_map(|s| s.points.iter());
-            let (x_lo, x_hi) = all
-                .clone()
-                .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
-                    (a.min(p.0), b.max(p.0))
-                });
-            let (y_lo, y_hi) = all.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
-                (a.min(p.1), b.max(p.1))
-            });
-            let (mut y_lo, mut y_hi) = (y_lo, y_hi);
-            if options.y_from_zero.unwrap_or(*y_from_zero) {
-                y_lo = y_lo.min(0.0);
-                y_hi = y_hi.max(0.0);
-            }
-            let (sx, sy, plot) = axes(
-                c,
-                frame,
-                span(x_lo, x_hi),
-                span(y_lo, y_hi),
-                x,
-                y,
-                figure.grid,
-            );
-            let width = options.line_width.pt() * c.pt;
-            let radius = options.point_size.pt() * c.pt;
-            let opacity = options
-                .point_opacity
-                .of(series.iter().map(|s| s.points.len()).sum());
-            let mut ends = Vec::new();
-            // Other first, under the series drawn over it.
-            let mut order: Vec<(usize, _)> = series.iter().enumerate().collect();
-            order.sort_by_key(|(_, s)| !s.other);
-            for (i, &Drawn { points, breaks, .. }) in order {
-                let color = c.color(i);
-                if *scatter {
-                    for &(px, py) in points {
-                        c.dot(sx.at(px), sy.at(py), radius, color, opacity);
+    let Plot {
+        x,
+        y,
+        scatter,
+        y_from_zero,
+        ..
+    } = &figure.plot;
+    let data = &*figure.plot.data;
+    match data {
+        PlotData::Lines(_) | PlotData::Kde(_) | PlotData::Histogram(_) => {
+            let ((x_lo, x_hi), (y_lo, y_hi)) = match data {
+                PlotData::Kde(data) => (span(data.x_min, data.x_max), (0.0, data.y_max)),
+                PlotData::Histogram(data) => (
+                    span(data.x_min, data.x_max),
+                    (
+                        0.0,
+                        if data.max_count > 0.0 {
+                            data.max_count
+                        } else {
+                            1.0
+                        },
+                    ),
+                ),
+                PlotData::Lines(lines) => {
+                    let [x_lo, x_hi, mut y_lo, mut y_hi] = lines.shown_bounds(y.log).unwrap_or([
+                        f64::INFINITY,
+                        f64::NEG_INFINITY,
+                        f64::INFINITY,
+                        f64::NEG_INFINITY,
+                    ]);
+                    if options.y_from_zero.unwrap_or(*y_from_zero) {
+                        y_lo = y_lo.min(0.0);
+                        y_hi = y_hi.max(0.0);
                     }
-                } else {
-                    for run in segments(points, breaks) {
-                        let pts: Vec<(f64, f64)> =
-                            run.iter().map(|&(px, py)| (sx.at(px), sy.at(py))).collect();
-                        c.polyline(&pts, color, width);
-                    }
+                    (span(x_lo, x_hi), span(y_lo, y_hi))
                 }
-                if let Some(&(px, py)) = points.last() {
-                    ends.push((sy.at(py), sx.at(px), i));
-                }
-            }
-            if legend == LegendPlace::LineEnds {
-                line_end_labels(c, &names, ends, plot);
-            }
-        }
-        Plot::Kde { data, x, y } => {
-            let (sx, sy, plot) = axes(
-                c,
-                frame,
-                span(data.x_min, data.x_max),
-                (0.0, data.y_max),
-                x,
-                y,
-                figure.grid,
-            );
-            let mut ends = Vec::new();
-            for i in chart_data::drawing_order(data.series.len(), c.other) {
-                let pts: Vec<(f64, f64)> = data.series[i]
-                    .points
-                    .iter()
-                    .map(|&(px, py)| (sx.at(px), sy.at(py)))
-                    .collect();
-                if let Some(&(px, py)) = pts.last() {
-                    ends.push((py, px, i));
-                }
-                c.polyline(&pts, c.color(i), 1.5 * c.pt);
-            }
-            if legend == LegendPlace::LineEnds {
-                line_end_labels(c, &names, ends, plot);
-            }
-        }
-        Plot::Histogram { data, x, y } => {
-            let max = if data.max_count > 0.0 {
-                data.max_count
-            } else {
-                1.0
+                _ => unreachable!("one of the three kinds matched above"),
             };
-            let (sx, sy, _) = axes(
-                c,
-                frame,
-                span(data.x_min, data.x_max),
-                (0.0, max),
-                x,
-                y,
-                figure.grid,
-            );
-            let n = data.bins.len().max(1);
-            let bin = (data.x_max - data.x_min) / n as f64;
-            if data.groups.is_empty() {
+            let (sx, sy, plot) = axes(c, frame, (x_lo, x_hi), (y_lo, y_hi), x, y, figure.grid);
+            if let PlotData::Histogram(data) = data
+                && data.groups.is_empty()
+            {
                 // Filled bars, a hairline of the background between them.
+                let n = data.bins.len().max(1);
+                let bin = (data.x_max - data.x_min) / n as f64;
                 let gap = 1.0 * c.pt;
                 for (i, b) in data.bins.iter().enumerate() {
                     let x0 = sx.at(data.x_min + i as f64 * bin);
@@ -1438,24 +1203,42 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                         1.0,
                     );
                 }
-            } else {
-                // Groups overlaid as step outlines: filled bars would hide each other.
-                let steps = data.step_outlines();
-                for g in chart_data::drawing_order(steps.len(), c.other) {
-                    let pts: Vec<(f64, f64)> = steps[g]
-                        .iter()
-                        .map(|&(x, y)| (sx.at(x), sy.at(y)))
-                        .collect();
-                    c.polyline(&pts, c.color(g), 1.5 * c.pt);
+            }
+            let curves = figure.plot.curves();
+            let (width, dots) = match data {
+                PlotData::Lines(_) => (options.line_width.pt() * c.pt, *scatter),
+                _ => (1.5 * c.pt, false),
+            };
+            let radius = options.point_size.pt() * c.pt;
+            let opacity = options
+                .point_opacity
+                .of(curves.iter().map(|curve| curve.points.len()).sum());
+            let mut ends = Vec::new();
+            for curve in &curves {
+                let color = c.color(curve.slot);
+                let to_page = |&(px, py): &(f64, f64)| (sx.at(px), sy.at(py));
+                if dots {
+                    for point in curve.points.iter() {
+                        let (px, py) = to_page(point);
+                        c.dot(px, py, radius, color, opacity);
+                    }
+                } else {
+                    for run in segments(&curve.points, curve.breaks) {
+                        let pts: Vec<(f64, f64)> = run.iter().map(to_page).collect();
+                        c.polyline(&pts, color, width);
+                    }
+                }
+                if let Some(end) = curve.points.last() {
+                    let (px, py) = to_page(end);
+                    ends.push((py, px, curve.slot));
                 }
             }
+            if legend == LegendPlace::LineEnds {
+                line_end_labels(c, &names, ends, plot);
+            }
         }
-        Plot::Box { data, x_title, y } => {
+        PlotData::Box(data) => {
             let n = data.stats.len().max(1);
-            let x_axis = Axis {
-                title: x_title.clone(),
-                ..Default::default()
-            };
             let (lo, hi) = span(data.y_min, data.y_max);
             let pad = (hi - lo) * 0.04;
             let (_, sy, plot) = category_axes(
@@ -1467,7 +1250,7 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                     .map(|s| s.name.clone())
                     .collect::<Vec<_>>(),
                 (lo - pad, hi + pad),
-                &x_axis,
+                x,
                 y,
                 figure.grid,
             );
@@ -1497,7 +1280,7 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                 c.line(a, b, color, stroke * 2.0);
             }
         }
-        Plot::Heatmap { data, x, y } => {
+        PlotData::Heatmap(data) => {
             let (sx, sy, _) = axes(
                 c,
                 frame,
@@ -1532,7 +1315,9 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                 }
             }
         }
-        Plot::Bars { data, value } => draw_bars(c, frame, data, value, figure.grid),
+        PlotData::Bars(data) => draw_bars(c, frame, data, x, figure.grid),
+        // A single X column has nothing to draw, and is never exported.
+        PlotData::XRange(_) => {}
     }
     match legend {
         LegendPlace::Off | LegendPlace::LineEnds => {}
@@ -1549,13 +1334,9 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
 /// The title written over the plot's left edge: the Y axis's, or a bar chart's
 /// category.
 fn axis_title(figure: &Figure) -> &str {
-    match &figure.plot {
-        Plot::Lines(Lines { y, .. })
-        | Plot::Histogram { y, .. }
-        | Plot::Kde { y, .. }
-        | Plot::Box { y, .. }
-        | Plot::Heatmap { y, .. } => &y.title,
-        Plot::Bars { data, .. } => &data.category,
+    match &*figure.plot.data {
+        PlotData::Bars(data) => &data.category,
+        _ => &figure.plot.y.title,
     }
 }
 
@@ -2005,24 +1786,48 @@ fn draw_bars(c: &mut Canvas<'_>, frame: Area, data: &BarData, value: &Axis, grid
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chart_data::{Bar, BoxPlotStats, HistogramBin, HistogramGroup, OTHER, RowsRead};
+    use crate::chart_data::{
+        Bar, BoxPlotData, BoxPlotStats, HeatmapData, HistogramBin, HistogramData, HistogramGroup,
+        OTHER, RowsRead, XAxisTemporalKind,
+    };
+    use crate::chart_plot::LinesData;
+    use std::borrow::Cow;
+
+    /// A figure of `data` on plain axes.
+    fn figure_of(data: PlotData) -> Figure {
+        Figure {
+            plot: Plot {
+                data: Cow::Owned(data),
+                x: Axis::default(),
+                y: Axis::default(),
+                scatter: false,
+                y_from_zero: false,
+            },
+            chart_notes: Vec::new(),
+            grid: true,
+        }
+    }
+
+    /// The lines of `figure`, to change.
+    fn lines_of(figure: &mut Figure) -> &mut LinesData {
+        match figure.plot.data.to_mut() {
+            PlotData::Lines(lines) => lines,
+            _ => unreachable!("a line chart"),
+        }
+    }
 
     fn lines(names: &[&str]) -> Figure {
         Figure {
-            plot: Plot::Lines(Lines {
-                series: Cow::Owned(
-                    (0..names.len())
+            plot: Plot {
+                data: Cow::Owned(PlotData::Lines(LinesData {
+                    series: (0..names.len())
                         .map(|i| (0..10).map(|x| (x as f64, (x * (i + 1)) as f64)).collect())
                         .collect(),
-                ),
-                values: Cow::Owned(Vec::new()),
-                breaks: Cow::Owned(Vec::new()),
-                names: Cow::Owned(names.iter().map(|n| n.to_string()).collect()),
-                xs: Cow::Owned(Vec::new()),
-                bounds: None,
-                other: names.last() == Some(&OTHER),
+                    names: names.iter().map(|n| n.to_string()).collect(),
+                    other: names.last() == Some(&OTHER),
+                    ..LinesData::default()
+                })),
                 scatter: false,
-                x_bounds: None,
                 x: Axis {
                     title: "x".to_string(),
                     ..Default::default()
@@ -2032,7 +1837,7 @@ mod tests {
                     ..Default::default()
                 },
                 y_from_zero: false,
-            }),
+            },
             chart_notes: vec!["sample of 1,000 of 50k rows".to_string()],
             grid: true,
         }
@@ -2075,9 +1880,7 @@ mod tests {
     #[test]
     fn an_export_names_other_last_in_its_neutral_color() {
         let mut figure = lines(&["AAPL", "MSFT", OTHER]);
-        if let Plot::Lines(Lines { scatter, .. }) = &mut figure.plot {
-            *scatter = true;
-        }
+        figure.plot.scatter = true;
         let svg = svg(
             &figure,
             &ExportOptions {
@@ -2344,25 +2147,16 @@ mod tests {
             rows,
         };
         let plots = [
-            Plot::Bars {
-                data: Cow::Owned(bars),
-                value: Axis::default(),
+            figure_of(PlotData::Bars(bars)).plot,
+            figure_of(PlotData::Histogram(histogram)).plot,
+            Plot {
+                x: Axis {
+                    title: "carrier".to_string(),
+                    ..Axis::default()
+                },
+                ..figure_of(PlotData::Box(boxes)).plot
             },
-            Plot::Histogram {
-                data: Cow::Owned(histogram),
-                x: Axis::default(),
-                y: Axis::default(),
-            },
-            Plot::Box {
-                data: Cow::Owned(boxes),
-                x_title: "carrier".to_string(),
-                y: Axis::default(),
-            },
-            Plot::Heatmap {
-                data: Cow::Owned(heatmap),
-                x: Axis::default(),
-                y: Axis::default(),
-            },
+            figure_of(PlotData::Heatmap(heatmap)).plot,
         ];
         let (w, h) = SizePreset::SingleColumn.size().unwrap();
         for plot in plots {
@@ -2422,13 +2216,7 @@ mod tests {
         );
 
         let mut scatter = lines(&["AAPL"]);
-        if let Plot::Lines(Lines {
-            scatter: is_scatter,
-            ..
-        }) = &mut scatter.plot
-        {
-            *is_scatter = true;
-        }
+        scatter.plot.scatter = true;
         let radius = |r: f64| format!("r=\"{:.2}\"", r * pt);
         let dots = |options: ExportOptions| svg(&scatter, &options).unwrap();
         let medium = dots(options());
@@ -2471,9 +2259,7 @@ mod tests {
 
         // Y from zero: a line of 100 to 109 takes in 0 only when asked.
         let mut high = lines(&["AAPL"]);
-        if let Plot::Lines(Lines { series, .. }) = &mut high.plot {
-            series.to_mut()[0] = (0..10).map(|x| (x as f64, 100.0 + x as f64)).collect();
-        }
+        lines_of(&mut high).series[0] = (0..10).map(|x| (x as f64, 100.0 + x as f64)).collect();
         let y_zero = "text-anchor=\"end\" fill=\"#5b6170\">0</text>";
         let off = svg(&high, &options()).unwrap();
         assert!(!off.contains(y_zero), "{off}");

@@ -58,8 +58,7 @@ impl App {
         self.sample_form.as_ref()?;
         match self.sample_form_edit(event) {
             form::FormKey::Cancel => {
-                self.sample_form = None;
-                self.input_mode = InputMode::Normal;
+                self.close_overlay();
             }
             form::FormKey::Submit => match Self::submit_view_sample(
                 self.sample_form.as_mut()?,
@@ -70,13 +69,11 @@ impl App {
             ) {
                 Submitted::Stays => {}
                 Submitted::Clear => {
-                    self.sample_form = None;
-                    self.input_mode = InputMode::Normal;
+                    self.close_overlay();
                     self.clear_table_sample();
                 }
                 Submitted::Draw { sample, anyway } => {
-                    self.sample_form = None;
-                    self.input_mode = InputMode::Normal;
+                    self.close_overlay();
                     self.apply_table_sample(sample, None, anyway, false);
                 }
             },

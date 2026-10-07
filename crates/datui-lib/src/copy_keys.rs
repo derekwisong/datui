@@ -3,11 +3,11 @@
 
 use crate::copy_modal::CopyFocus;
 use crate::feedback::Confirm;
-use crate::form::{FormKey, PickerKey};
+use crate::form::FormKey;
 use crate::jobs::{Answer, Job};
 use crate::open_options::OpenOptions;
 use crate::table::DataTableState;
-use crate::{App, AppEvent, InputMode, clipboard, copy_modal, python_script, source};
+use crate::{App, AppEvent, clipboard, copy_modal, python_script, source};
 use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent};
 use std::path::Path;
@@ -15,19 +15,7 @@ use std::path::Path;
 impl App {
     /// Keys in the copy modal.
     pub(crate) fn copy_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
-        if let Some(picker) = self.copy_modal.picker.as_mut() {
-            match crate::form::picker_key(picker, false, event) {
-                PickerKey::Close => self.copy_modal.picker = None,
-                PickerKey::Choose | PickerKey::Toggle => self.copy_modal.picker_choose(),
-                PickerKey::ChooseAndMove(forward) => {
-                    self.copy_modal.picker_choose();
-                    crate::form::Form::move_focus(
-                        &mut self.copy_modal,
-                        if forward { 1 } else { -1 },
-                    );
-                }
-                PickerKey::Handled | PickerKey::Other => {}
-            }
+        if crate::form::picker_form_key(&mut self.copy_modal, event) {
             return None;
         }
 
@@ -37,8 +25,7 @@ impl App {
 
         match crate::form::key(&mut self.copy_modal, event) {
             FormKey::Cancel => {
-                self.copy_modal.close();
-                self.input_mode = InputMode::Normal;
+                self.close_overlay();
             }
             // Enter copies from anywhere in the form; what it will do has been
             // echoed on the spec line all along.
@@ -81,8 +68,7 @@ impl App {
         let accepts = match self.copy_destination() {
             Ok(destination) => destination.accepts(),
             Err(e) => {
-                self.copy_modal.close();
-                self.input_mode = InputMode::Normal;
+                self.close_overlay();
                 self.error_modal.show(e);
                 return None;
             }
@@ -159,8 +145,7 @@ impl App {
                 }
             },
         };
-        self.copy_modal.close();
-        self.input_mode = InputMode::Normal;
+        self.close_overlay();
         match planned {
             Ok(Planned::Copy(payload, message)) => {
                 self.finish_copy(payload, message);

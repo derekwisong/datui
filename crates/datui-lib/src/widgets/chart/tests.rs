@@ -1,6 +1,5 @@
 use super::*;
 use ratatui::buffer::Buffer;
-use std::borrow::Cow;
 
 /// What a test draws: the data as the chart cache holds it, with the axes' numbers.
 /// Turned into the chart view's plot under the modal it is drawn with, so the titles
@@ -44,9 +43,9 @@ struct PlotNumbers {
     y: AxisNumbers,
 }
 
-impl<'a> Draw<'a> {
-    fn plot(self, modal: &ChartModal, ctx: &RenderContext) -> Option<Plot<'a>> {
-        use crate::chart_jobs::{ChartPrepared, PlotContext};
+impl Draw<'_> {
+    fn plot(self, modal: &ChartModal, ctx: &RenderContext) -> Option<Plot<'static>> {
+        use crate::chart_plot::{LinesData, PlotContext};
         // The data says what kind of chart it is, whatever the modal's type.
         let mut spec = modal.effective_spec();
         spec.mark = match &self {
@@ -58,19 +57,7 @@ impl<'a> Draw<'a> {
             Draw::Heatmap { .. } => Mark::Heatmap,
             Draw::Bar { .. } => Mark::Bar,
         };
-        let plot = |prepared: Option<ChartPrepared>| {
-            crate::chart_jobs::plot(
-                prepared.as_ref(),
-                &PlotContext {
-                    modal,
-                    spec: &spec,
-                    numbers: &ctx.number_format,
-                    schema: None,
-                },
-            )
-            .map(Plot::into_owned)
-        };
-        match self {
+        let (data, numbers, kind) = match self {
             Draw::XY {
                 series,
                 breaks,
@@ -81,79 +68,75 @@ impl<'a> Draw<'a> {
                 numbers,
                 other,
             } => {
-                let Some(Plot::Lines(lines)) = plot(None) else {
-                    unreachable!("a line or scatter modal plots lines")
+                let data = match (series, x_bounds) {
+                    // `series` as drawn; `values` before the log, when it differs.
+                    (Some(series), _) => Some(PlotData::Lines(LinesData {
+                        names: names.to_vec(),
+                        series: values.unwrap_or(series).clone(),
+                        series_log: values.map(|_| series.clone()),
+                        breaks: breaks.cloned().unwrap_or_default(),
+                        x_axis_kind,
+                        other,
+                        ..LinesData::default()
+                    })),
+                    (None, Some((x_min, x_max))) => {
+                        Some(PlotData::XRange(crate::chart_data::ChartXRangeResult {
+                            x_min,
+                            x_max,
+                            x_axis_kind,
+                            rows: Default::default(),
+                        }))
+                    }
+                    (None, None) => None,
                 };
-                let series = series.map_or(Cow::Owned(Vec::new()), |s| Cow::Borrowed(&s[..]));
-                Some(Plot::Lines(Lines {
-                    values: values.map_or(series.clone(), |v| Cow::Borrowed(&v[..])),
-                    series,
-                    breaks: breaks.map_or(Cow::Owned(Vec::new()), |b| Cow::Borrowed(&b[..])),
-                    names: Cow::Borrowed(names),
-                    other,
-                    x_bounds,
-                    x: Axis {
-                        kind: x_axis_kind,
-                        numbers: numbers.x,
-                        ..lines.x
-                    },
-                    y: Axis {
-                        numbers: numbers.y,
-                        ..lines.y
-                    },
-                    ..lines
-                }))
+                (data, Some((numbers.x, numbers.y)), Some(x_axis_kind))
             }
-            Draw::Histogram { data, x } => match plot(data.cloned().map(ChartPrepared::Histogram))?
-            {
-                Plot::Histogram { data, x: axis, y } => Some(Plot::Histogram {
-                    data,
-                    x: Axis { numbers: x, ..axis },
-                    y,
-                }),
-                _ => None,
+            Draw::Histogram { data, x } => (
+                data.cloned().map(PlotData::Histogram),
+                Some((x, AxisNumbers::count(&ctx.number_format))),
+                None,
+            ),
+            Draw::BoxPlot { data, y } => (
+                data.cloned().map(PlotData::Box),
+                Some((AxisNumbers::default(), y)),
+                None,
+            ),
+            Draw::Kde { data, x } => (
+                data.cloned().map(PlotData::Kde),
+                Some((
+                    x.fractional(),
+                    AxisNumbers::measure(&ctx.number_format, "Density"),
+                )),
+                None,
+            ),
+            Draw::Heatmap { data, numbers } => (
+                data.cloned().map(PlotData::Heatmap),
+                Some((numbers.x, numbers.y)),
+                None,
+            ),
+            Draw::Bar { data } => (data.cloned().map(PlotData::Bars), None, None),
+        };
+        let mut plot = crate::chart_plot::plot(
+            data.as_ref(),
+            &PlotContext {
+                modal,
+                spec: &spec,
+                numbers: &ctx.number_format,
+                schema: None,
             },
-            Draw::BoxPlot { data, y } => match plot(data.cloned().map(ChartPrepared::BoxPlot))? {
-                Plot::Box {
-                    data,
-                    x_title,
-                    y: axis,
-                } => Some(Plot::Box {
-                    data,
-                    x_title,
-                    y: Axis { numbers: y, ..axis },
-                }),
-                _ => None,
-            },
-            Draw::Kde { data, x } => match plot(data.cloned().map(ChartPrepared::Kde))? {
-                Plot::Kde { data, x: axis, y } => Some(Plot::Kde {
-                    data,
-                    x: Axis {
-                        numbers: x.fractional(),
-                        ..axis
-                    },
-                    y,
-                }),
-                _ => None,
-            },
-            Draw::Heatmap { data, numbers } => {
-                match plot(data.cloned().map(ChartPrepared::Heatmap))? {
-                    Plot::Heatmap { data, x, y } => Some(Plot::Heatmap {
-                        data,
-                        x: Axis {
-                            numbers: numbers.x,
-                            ..x
-                        },
-                        y: Axis {
-                            numbers: numbers.y,
-                            ..y
-                        },
-                    }),
-                    _ => None,
-                }
+        )?
+        .into_owned();
+        if let Some((x, y)) = numbers {
+            plot.x.numbers = x;
+            // A share is a measure, which the test does not say.
+            if !matches!(&*plot.data, PlotData::Histogram(h) if h.share) {
+                plot.y.numbers = y;
             }
-            Draw::Bar { data } => plot(data.cloned().map(ChartPrepared::Bar)),
         }
+        if let Some(kind) = kind {
+            plot.x.kind = kind;
+        }
+        Some(plot)
     }
 }
 
@@ -1823,7 +1806,10 @@ fn log_scale_ticks_fall_on_the_decades() {
             .map(|i| (f64::from(i), f64::from(i).powi(2) * 3.333))
             .collect(),
     ];
-    let logged = crate::chart_jobs::log_series(&linear);
+    let logged: Vec<Vec<(f64, f64)>> = linear
+        .iter()
+        .map(|points| points.iter().map(|&(x, y)| (x, y.ln_1p())).collect())
+        .collect();
     let theme = crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
     let ctx = RenderContext::for_test();
     let y_labels = |height: u16| {

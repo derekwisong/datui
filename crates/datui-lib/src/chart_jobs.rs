@@ -2,17 +2,18 @@
 //! prepared, the cache of both, and chart exports written from it.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use color_eyre::Result;
 use polars::prelude::{LazyFrame, Schema};
 
 use crate::chart_data::{self, ColorSplit, ValueRange};
 use crate::chart_modal::{Aggregate, ChartModal, ChartSpec, ColorCounts, Mark};
-use crate::jobs::{Answer, Job};
+use crate::chart_plot::{LinesData, PlotContext, PlotData, plot};
+use crate::jobs::{Answer, ChartPrep, Job};
 use crate::output_file::Overwrite;
 use crate::{
-    App, AppEvent, ExportProgress, InputMode, chart_export, logging, numfmt, output_file, sampling,
+    App, AppEvent, ExportProgress, InputMode, chart_export, numfmt, output_file, sampling,
 };
 use chart_export::{ChartExportFormat, ChartExportRequest, ExportOptions, Figure};
 
@@ -25,7 +26,7 @@ use chart_export::{ChartExportFormat, ChartExportRequest, ExportOptions, Figure}
 /// has its log copy.
 #[derive(Default)]
 pub(crate) struct ChartCache {
-    pub(crate) entries: Vec<(ChartRequest, Result<ChartPrepared, String>)>,
+    pub(crate) entries: Vec<(ChartRequest, Result<PlotData, String>)>,
     /// The rows read for these entries and which view (`len_generation`) they are
     /// from, so another option re-draws from them rather than reading again.
     held: chart_data::HeldRows,
@@ -68,7 +69,7 @@ impl ChartCache {
         self.held.clone()
     }
 
-    pub(crate) fn get(&self, request: &ChartRequest) -> Option<&Result<ChartPrepared, String>> {
+    pub(crate) fn get(&self, request: &ChartRequest) -> Option<&Result<PlotData, String>> {
         self.entries
             .iter()
             .find(|(r, _)| r == request)
@@ -76,13 +77,13 @@ impl ChartCache {
     }
 
     /// The prepared data for `request`, if it has been prepared.
-    pub(crate) fn prepared(&self, request: &ChartRequest) -> Option<&ChartPrepared> {
+    pub(crate) fn prepared(&self, request: &ChartRequest) -> Option<&PlotData> {
         self.get(request).and_then(|outcome| outcome.as_ref().ok())
     }
 
     /// What stands in for `request` while it is prepared: the newest chart prepared of
     /// the same columns, drawn under another option (sample size, bins, range).
-    pub(crate) fn standing_in(&self, request: &ChartRequest) -> Option<&ChartPrepared> {
+    pub(crate) fn standing_in(&self, request: &ChartRequest) -> Option<&PlotData> {
         self.entries
             .iter()
             .rev()
@@ -95,11 +96,11 @@ impl ChartCache {
         self.prepared(request).is_some()
     }
 
-    pub(crate) fn insert(&mut self, request: ChartRequest, outcome: Result<ChartPrepared, String>) {
+    pub(crate) fn insert(&mut self, request: ChartRequest, outcome: Result<PlotData, String>) {
         self.entries.retain(|(r, _)| *r != request);
         self.entries.push((request, outcome));
         Self::evict(&mut self.entries, Self::XY_CAPACITY, |outcome| {
-            matches!(outcome, Ok(ChartPrepared::XY(_)))
+            matches!(outcome, Ok(PlotData::Lines(_)))
         });
         Self::evict(&mut self.entries, Self::CAPACITY, |_| true);
     }
@@ -107,9 +108,9 @@ impl ChartCache {
     /// Drop the least recently used of the entries `counts` selects until at most `cap`
     /// remain.
     fn evict(
-        entries: &mut Vec<(ChartRequest, Result<ChartPrepared, String>)>,
+        entries: &mut Vec<(ChartRequest, Result<PlotData, String>)>,
         cap: usize,
-        counts: impl Fn(&Result<ChartPrepared, String>) -> bool,
+        counts: impl Fn(&Result<PlotData, String>) -> bool,
     ) {
         let mut over = entries
             .iter()
@@ -127,57 +128,13 @@ impl ChartCache {
     }
 
     /// Note that `request` is the selection on screen: its entry moves to the back,
-    /// where eviction reaches it last, and it alone keeps a log-scale copy of its
-    /// series, built here when wanted. A pure in-memory map, cheap enough for the event
-    /// thread; it never happens in render.
-    pub(crate) fn touch(&mut self, request: &ChartRequest, log_scale: bool) {
-        let Some(i) = self.entries.iter().position(|(r, _)| r == request) else {
-            return;
-        };
-        let current = self.entries.remove(i);
-        self.entries.push(current);
-        let Some(((_, current), others)) = self.entries.split_last_mut() else {
-            return;
-        };
-        for (_, outcome) in others {
-            if let Ok(ChartPrepared::XY(xy)) = outcome {
-                xy.series_log = None;
-            }
-        }
-        if let Ok(ChartPrepared::XY(xy)) = current
-            && log_scale
-            && xy.series_log.is_none()
-        {
-            xy.series_log = Some(log_series(&xy.series));
+    /// where eviction reaches it last.
+    pub(crate) fn touch(&mut self, request: &ChartRequest) {
+        if let Some(i) = self.entries.iter().position(|(r, _)| r == request) {
+            let current = self.entries.remove(i);
+            self.entries.push(current);
         }
     }
-}
-
-/// The least and greatest X and Y over every point; `None` with no points.
-pub(crate) fn extent(series: &[Vec<(f64, f64)>]) -> Option<[f64; 4]> {
-    let mut points = series.iter().flatten().peekable();
-    points.peek()?;
-    Some(points.fold(
-        [
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-            f64::INFINITY,
-            f64::NEG_INFINITY,
-        ],
-        |[x0, x1, y0, y1], &(x, y)| [x0.min(x), x1.max(x), y0.min(y), y1.max(y)],
-    ))
-}
-
-/// A Y as the log scale draws it: `ln(1 + y)`, negatives at zero.
-fn log_y(y: f64) -> f64 {
-    y.max(0.0).ln_1p()
-}
-
-pub(crate) fn log_series(series: &[Vec<(f64, f64)>]) -> Vec<Vec<(f64, f64)>> {
-    series
-        .iter()
-        .map(|pts| pts.iter().map(|&(x, y)| (x, log_y(y))).collect())
-        .collect()
 }
 
 /// What the chart view needs prepared for the panel's spec. Compared with the cache
@@ -319,7 +276,7 @@ impl ChartRequest {
         lf: &LazyFrame,
         schema: &Schema,
         sampling: &chart_data::ChartSampling,
-    ) -> Result<(ChartPrepared, Option<ColorCounts>)> {
+    ) -> Result<(PlotData, Option<ColorCounts>)> {
         let encoding = &self.spec.encoding;
         let counts = encoding
             .color
@@ -355,7 +312,7 @@ impl ChartRequest {
         let first_y = encoding.y.field.first().map(String::as_str);
         let prepared = match self.spec.mark {
             Mark::Line | Mark::Scatter if self.x_only => {
-                ChartPrepared::XRange(chart_data::prepare_chart_x_range(lf, schema, x, sampling)?)
+                PlotData::XRange(chart_data::prepare_chart_x_range(lf, schema, x, sampling)?)
             }
             Mark::Line | Mark::Scatter => {
                 let aggregate = encoding.y.aggregate;
@@ -394,24 +351,13 @@ impl ChartRequest {
                         other: false,
                     }
                 };
-                ChartPrepared::XY(ChartCacheXY {
-                    other: grouped.other,
-                    names: grouped.names,
-                    xs: crate::widgets::crosshair::xs(&grouped.series),
-                    bounds: extent(&grouped.series),
-                    breaks: grouped.breaks,
-                    series: grouped.series,
-                    series_log: None,
-                    x_axis_kind: grouped.x_axis_kind,
-                    rows: grouped.rows,
-                    rows_note: (aggregate != Aggregate::None).then(|| {
-                        rows_note(
-                            grouped.rows.total_rows,
-                            sampling.known_total == Some(grouped.rows.total_rows),
-                            left_out && !other,
-                        )
+                let rows = grouped.rows.total_rows;
+                PlotData::Lines(LinesData::new(
+                    grouped,
+                    (aggregate != Aggregate::None).then(|| {
+                        rows_note(rows, sampling.known_total == Some(rows), left_out && !other)
                     }),
-                })
+                ))
             }
             Mark::Bar if encoding.y.aggregate != Aggregate::None => {
                 let mut data = chart_data::prepare_bar_aggregate(
@@ -430,9 +376,9 @@ impl ChartRequest {
                 )?;
                 // Every category is a bar, a null one too: uncolored, it is every row.
                 data.rows_note = Some(rows_note(data.rows.total_rows, true, left_out && !other));
-                ChartPrepared::Bar(data)
+                PlotData::Bars(data)
             }
-            Mark::Bar => ChartPrepared::Bar(chart_data::prepare_bar_data(
+            Mark::Bar => PlotData::Bars(chart_data::prepare_bar_data(
                 lf,
                 x,
                 first_y.unwrap_or_default(),
@@ -440,10 +386,10 @@ impl ChartRequest {
                 chart_data::BAR_CAP,
                 sampling,
             )?),
-            Mark::Histogram => ChartPrepared::Histogram(chart_data::prepare_histogram_by(
+            Mark::Histogram => PlotData::Histogram(chart_data::prepare_histogram_by(
                 lf, x, self.bins, self.range, self.share, split, sampling,
             )?),
-            Mark::Kde => ChartPrepared::Kde(match split {
+            Mark::Kde => PlotData::Kde(match split {
                 Some(split) => {
                     chart_data::prepare_kde_by(lf, x, self.bandwidth, self.range, split, sampling)?
                 }
@@ -451,7 +397,7 @@ impl ChartRequest {
             }),
             Mark::Box => {
                 let y = first_y.unwrap_or_default();
-                ChartPrepared::BoxPlot(match encoding.x.field.as_deref() {
+                PlotData::Box(match encoding.x.field.as_deref() {
                     // One box per category: the largest by rows.
                     Some(by) => {
                         let rows = chart_data::value_rows(lf, by, sampling)?;
@@ -476,7 +422,7 @@ impl ChartRequest {
                     None => chart_data::prepare_box_plot_data(lf, y, self.range, sampling)?,
                 })
             }
-            Mark::Heatmap => ChartPrepared::Heatmap(chart_data::prepare_heatmap_data(
+            Mark::Heatmap => PlotData::Heatmap(chart_data::prepare_heatmap_data(
                 lf,
                 x,
                 first_y.unwrap_or_default(),
@@ -485,95 +431,6 @@ impl ChartRequest {
             )?),
         };
         Ok((prepared, picker))
-    }
-}
-
-/// The outcome handed from the chart worker to `BackgroundChartReady`, with the
-/// Color column's values when it counted them.
-pub(crate) type ChartResultSlot =
-    Arc<Mutex<Option<Result<(ChartPrepared, Option<ColorCounts>), String>>>>;
-
-/// The chart preparation currently running. There is at most one: a burst of selection
-/// changes must not fan out into a full collect per column, so the next request waits
-/// for this one to land and then the newest selection is the one prepared. Being the
-/// only one is also what ties a `BackgroundChartReady` to it; `dataset` keeps its
-/// answer to the dataset it was asked of.
-pub(crate) struct ChartInflight {
-    /// `len_generation` of the dataset the request was spawned against, so a result
-    /// cannot be installed for a different dataset that happens to share column names.
-    pub(crate) dataset: Option<u64>,
-    pub(crate) request: ChartRequest,
-    /// Set when the view or dataset it was spawned for has gone. The worker cannot be
-    /// cancelled, so the record stays until its result lands and is discarded; the next
-    /// request waits for it, which is what keeps the number of collects at one.
-    pub(crate) stale: bool,
-    /// Set when the selection moves past the request or its view goes. A streamed
-    /// count or group-by stops at its next batch; a sampled read is bounded and runs
-    /// to the end.
-    pub(crate) cancel: Arc<std::sync::atomic::AtomicBool>,
-}
-
-/// A prepared chart, ready to go into the cache. Each payload names the columns it
-/// was drawn from, since render and export label the axes from it.
-pub(crate) enum ChartPrepared {
-    XY(ChartCacheXY),
-    XRange(chart_data::ChartXRangeResult),
-    Histogram(chart_data::HistogramData),
-    BoxPlot(chart_data::BoxPlotData),
-    Kde(chart_data::KdeData),
-    Heatmap(chart_data::HeatmapData),
-    Bar(chart_data::BarData),
-}
-
-impl ChartPrepared {
-    /// What the chart says under the plot about the rows and values it drew;
-    /// `middot` joins a sample's seed on.
-    pub(crate) fn notes(&self, middot: &str) -> Vec<String> {
-        let rows_of = |rows: usize| crate::discover::format_rows(rows);
-        match self {
-            Self::Bar(d) => {
-                let mut notes = chart_data::chart_notes(&d.rows, None, middot);
-                if let Some(note) = &d.rows_note {
-                    notes.push(note.clone());
-                } else if let Some(rows) = d.counted {
-                    notes.push(format!("counts of {} rows", rows_of(rows)));
-                } else if d.rows.sample_size.is_none() && !d.value_column.is_empty() {
-                    notes.push(format!(
-                        "all {} rows",
-                        numfmt::group_chrome(d.rows.total_rows)
-                    ));
-                }
-                if d.no_value > 0 {
-                    let noun = if d.no_value == 1 {
-                        "category"
-                    } else {
-                        "categories"
-                    };
-                    notes.push(format!(
-                        "{} {noun} without a value",
-                        numfmt::group_chrome(d.no_value)
-                    ));
-                }
-                notes
-            }
-            Self::XY(c) if c.rows_note.is_some() => c.rows_note.iter().cloned().collect(),
-            Self::XY(c) => chart_data::chart_notes(&c.rows, None, middot),
-            Self::XRange(c) => chart_data::chart_notes(&c.rows, None, middot),
-            Self::Histogram(d) => chart_data::chart_notes(&d.rows, d.clipped.as_ref(), middot),
-            Self::BoxPlot(d) => {
-                let mut notes = chart_data::chart_notes(&d.rows, d.clipped.as_ref(), middot);
-                if d.of > 0 {
-                    notes.push(format!(
-                        "the {} largest of {} categories",
-                        d.stats.len(),
-                        numfmt::group_chrome(d.of)
-                    ));
-                }
-                notes
-            }
-            Self::Kde(d) => chart_data::chart_notes(&d.rows, d.clipped.as_ref(), middot),
-            Self::Heatmap(d) => chart_data::chart_notes(&d.rows, None, middot),
-        }
     }
 }
 
@@ -600,25 +457,6 @@ impl ChartExportJob {
     }
 }
 
-pub(crate) struct ChartCacheXY {
-    /// One per series: its Y column, or its color group.
-    pub(crate) names: Vec<String>,
-    pub(crate) series: Vec<Vec<(f64, f64)>>,
-    /// Where each series' line starts again after a null (see `chart_data::segments`).
-    pub(crate) breaks: Vec<Vec<usize>>,
-    pub(crate) series_log: Option<Vec<Vec<(f64, f64)>>>,
-    /// Every X of every series, in order, each once: where the crosshair stops.
-    pub(crate) xs: Vec<f64>,
-    /// The least and greatest X and Y over every point, before any log.
-    pub(crate) bounds: Option<[f64; 4]>,
-    pub(crate) x_axis_kind: chart_data::XAxisTemporalKind,
-    pub(crate) rows: chart_data::RowsRead,
-    /// What an aggregate over every row read, said in the title row.
-    pub(crate) rows_note: Option<String>,
-    /// The last series is Other.
-    pub(crate) other: bool,
-}
-
 /// What an aggregate read, under the plot: every row of the view (`all 336,776
 /// rows`) when it counted them all, the rows of the groups a color drew, or the rows
 /// with an X.
@@ -634,15 +472,25 @@ fn rows_note(counted: usize, whole: bool, grouped: bool) -> String {
 }
 
 impl App {
-    /// True while chart data for the current view is being prepared off-thread — either
-    /// its worker is running, or it is waiting its turn behind an orphaned worker that
-    /// cannot be cancelled (see `ChartInflight::stale`). Either way the user is waiting
-    /// on a computation and the throbber should say so.
+    /// True while chart data for the current view is being prepared off-thread: its
+    /// job is running, or it waits its turn behind a superseded one still reading,
+    /// which cannot be stopped mid-read (see [`ChartPrep`]). Either way the user is
+    /// waiting on a computation and the throbber should say so.
     pub fn chart_preparing(&self) -> bool {
-        match self.chart_inflight.as_ref() {
-            Some(inflight) if !inflight.stale => true,
-            Some(_) => self.chart_request_pending(),
-            None => self.chart_settling(),
+        if self.chart_prep().is_some() {
+            true
+        } else if self.jobs.running(is_chart_prep) {
+            self.chart_request_pending()
+        } else {
+            self.chart_settling()
+        }
+    }
+
+    /// The chart preparation running whose answer is still wanted.
+    fn chart_prep(&self) -> Option<&ChartPrep> {
+        match self.jobs.current(is_chart_prep)? {
+            (_, Job::ChartPrepare(prep)) => Some(prep),
+            _ => None,
         }
     }
 
@@ -666,28 +514,23 @@ impl App {
     }
 
     /// Forget everything chart-related that belongs to the view or dataset on its way
-    /// out: the cache, the handed-over slot, an export parked on data that is now never
-    /// coming, and an export write still running (its file may still appear, but its
-    /// result is ignored and `busy` is released). The preparation in flight is marked
-    /// stale rather than forgotten: it cannot be cancelled, so it is waited for and its
-    /// result discarded on arrival. Called when the chart view closes and whenever the
-    /// dataset changes or is left for the home screen.
+    /// out: the cache, an export parked on data that is now never coming, and an export
+    /// write still running (its file may still appear, but its result is ignored and
+    /// `busy` is released). The preparation running is superseded: it is waited for,
+    /// as it cannot be stopped mid-read, and its answer dropped on arrival. Called when
+    /// the chart view closes and whenever the dataset changes or is left for the home
+    /// screen.
     pub(crate) fn reset_chart_state(&mut self) {
         self.chart_cache.clear();
         self.chart_asked = None;
-        if let Some(inflight) = self.chart_inflight.as_mut() {
-            inflight.stale = true;
-            inflight
-                .cancel
+        if let Some(prep) = self.chart_prep() {
+            prep.cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
+        self.jobs.supersede(is_chart_prep);
         // A failed export reopens its modal; it must not follow the user to the next
         // dataset.
         self.chart_export_modal.close();
-        *self
-            .pending_chart_result
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = None;
         let writing = self
             .jobs
             .supersede(|job| matches!(job, Job::ChartExport { .. }));
@@ -703,10 +546,8 @@ impl App {
     /// view, and says how many where the table knows.
     pub(crate) fn chart_status(&self) -> String {
         let aggregating = self
-            .chart_inflight
-            .as_ref()
-            .filter(|i| !i.stale)
-            .map(|i| i.request.aggregates())
+            .chart_prep()
+            .map(|prep| prep.request.aggregates())
             .or_else(|| ChartRequest::from_modal(&self.chart_modal).map(|r| r.aggregates()))
             .unwrap_or(false);
         if !aggregating {
@@ -727,7 +568,7 @@ impl App {
     pub fn chart_names(&self) -> Option<Vec<String>> {
         let request = ChartRequest::from_modal(&self.chart_modal)?;
         match self.chart_cache.prepared(&request)? {
-            ChartPrepared::XY(xy) => Some(xy.names.clone()),
+            PlotData::Lines(xy) => Some(xy.names.clone()),
             _ => None,
         }
     }
@@ -752,15 +593,12 @@ impl App {
             .as_ref()
             .and_then(|state| state.num_rows_if_valid());
         let request = ChartRequest::from_modal(&self.chart_modal);
-        if let Some(inflight) = self.chart_inflight.as_ref()
-            && !request
-                .as_ref()
-                .is_some_and(|r| r.reads_as(&inflight.request))
+        if let Some(prep) = self.chart_prep()
+            && !request.as_ref().is_some_and(|r| r.reads_as(&prep.request))
         {
             // A count streaming a large view for a selection the cursor has moved
             // past would hold up the next chart for as long as it reads.
-            inflight
-                .cancel
+            prep.cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         let Some(request) = request else {
@@ -783,7 +621,7 @@ impl App {
         };
         self.chart_asked = Some((request.clone(), settle));
         if self.chart_cache.get(&request).is_some() {
-            self.chart_cache.touch(&request, self.chart_modal.log_scale);
+            self.chart_cache.touch(&request);
             // A cached chart's colors were counted with it.
             if let Some(colors) = request
                 .spec
@@ -797,7 +635,7 @@ impl App {
             }
             return;
         }
-        if self.chart_inflight.is_some() || self.chart_settling() {
+        if self.jobs.running(is_chart_prep) || self.chart_settling() {
             return;
         }
         let Some(state) = self.data_table_state.as_ref() else {
@@ -823,27 +661,58 @@ impl App {
             held: self.chart_cache.held_rows(dataset),
             cancel: Arc::default(),
         };
-        self.chart_inflight = Some(ChartInflight {
+        let prep = ChartPrep {
             dataset,
             request: request.clone(),
-            stale: false,
             cancel: Arc::clone(&sampling.cancel),
-        });
-        let slot = self.pending_chart_result.clone();
-        let tx = self.events.clone();
-        self.runtime.spawn_blocking(move || {
-            // A panic in the preparation must still report back: without the event the
-            // in-flight record would stand for the rest of the session and every later
-            // selection would be refused.
-            let result = logging::catch_panic(|| request.prepare(&lf, &schema, &sampling))
-                .unwrap_or_else(|_| Err(color_eyre::eyre::eyre!("Chart preparation panicked")))
-                .map_err(|e| crate::error_display::user_message_from_report(&e, None));
-            *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
-            let _ = tx.send(AppEvent::BackgroundChartReady);
+        };
+        self.spawn_job(Job::ChartPrepare(Box::new(prep)), None, move |_| {
+            request
+                .prepare(&lf, &schema, &sampling)
+                .map(|prepared| Answer::ChartPrepared(Box::new(prepared)))
+                .map_err(|e| crate::error_display::user_message_from_report(&e, None))
         });
     }
 
-    /// The chart view's events: an export asked for, and a preparation landing.
+    /// A chart preparation ended with `outcome`. It is installed only while the job is
+    /// `current` (a reset supersedes it when its view or dataset goes) and only into
+    /// the dataset it was read from. Its ending is what lets the next start.
+    pub(crate) fn chart_prepared(
+        &mut self,
+        prep: ChartPrep,
+        current: bool,
+        outcome: Result<(PlotData, Option<ColorCounts>), String>,
+    ) {
+        if !current {
+            return;
+        }
+        // A count stopped part way is no answer, and must not be remembered as a
+        // failure; the selection is prepared again when it comes back.
+        if outcome.is_err() && prep.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        let dataset = self.data_table_state.as_ref().map(|s| s.len_generation());
+        if dataset != prep.dataset {
+            return;
+        }
+        let outcome = outcome.map(|(prepared, colors)| {
+            if let Some(colors) = colors {
+                self.chart_cache.hold_colors(colors.clone());
+                self.chart_modal.color_counts = Some(colors);
+            }
+            prepared
+        });
+        self.chart_cache.insert(prep.request, outcome);
+        // An export parked on chart data resumes against the *current* selection,
+        // whatever just landed: it is written if that selection is now prepared, fails
+        // with the reason if that is the one that failed, and otherwise waits for the
+        // next result (which `ensure_chart_data` starts once this event is handled).
+        if let Some(request) = self.chart_export_waiting.take() {
+            self.start_chart_export(request);
+        }
+    }
+
+    /// The chart view's events: an export asked for, and then started.
     pub(crate) fn chart_event(&mut self, event: &AppEvent) -> Option<AppEvent> {
         match event {
             AppEvent::ChartExport(request) => {
@@ -863,49 +732,6 @@ impl App {
                     return None;
                 }
                 self.start_chart_export(request.clone());
-                None
-            }
-            AppEvent::BackgroundChartReady => {
-                // The result belongs to the one preparation in flight. It is installed
-                // only while that record is current (a reset marks it stale when its
-                // view or dataset goes) and only into the dataset it was computed from.
-                // Taking the record is what lets the next request start; the slot is
-                // emptied either way so a discarded series is not kept around.
-                let inflight = self.chart_inflight.take()?;
-                let outcome = self
-                    .pending_chart_result
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take()
-                    .unwrap_or_else(|| Err("Chart preparation produced no result".to_string()));
-                if inflight.stale {
-                    return None;
-                }
-                // A count stopped part way is no answer, and must not be remembered as
-                // a failure; the selection is prepared again when it comes back.
-                if outcome.is_err() && inflight.cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                    return None;
-                }
-                let dataset = self.data_table_state.as_ref().map(|s| s.len_generation());
-                if dataset != inflight.dataset {
-                    return None;
-                }
-                let outcome = outcome.map(|(prepared, colors)| {
-                    if let Some(colors) = colors {
-                        self.chart_cache.hold_colors(colors.clone());
-                        self.chart_modal.color_counts = Some(colors);
-                    }
-                    prepared
-                });
-                self.chart_cache.insert(inflight.request, outcome);
-                // An export parked on chart data resumes against the *current*
-                // selection, whatever just landed: it is written if that selection is
-                // now prepared, fails with the reason if that is the one that failed,
-                // and otherwise waits for the next result (which `ensure_chart_data`
-                // starts once this handler returns).
-                if let Some(request) = self.chart_export_waiting.take() {
-                    self.start_chart_export(request);
-                }
                 None
             }
             _ => unreachable!("not an event for chart_event"),
@@ -938,19 +764,17 @@ impl App {
             schema: Some(state.schema().as_ref()),
         };
         // A single X column has nothing to export.
-        let plot = match prepared {
-            ChartPrepared::XRange(_) => None,
-            prepared => plot(Some(prepared), &context).filter(|plot| !plot.is_empty()),
-        }
-        .ok_or_else(|| color_eyre::eyre::eyre!("No valid data points to export"))?;
+        let plot = plot(Some(prepared), &context)
+            .filter(|plot| !plot.data.is_empty())
+            .ok_or_else(|| color_eyre::eyre::eyre!("No valid data points to export"))?;
         let mut plot = plot.into_owned();
         // The screen's title row says how the rows were made; a file has none, so
         // its Y axis names the aggregate.
         let y = &request.spec.encoding.y;
-        if let chart_export::Plot::Lines(lines) = &mut plot
+        if matches!(*plot.data, PlotData::Lines(_))
             && !matches!(y.aggregate, Aggregate::None | Aggregate::Count)
         {
-            lines.y.title = format!("{} {}", y.aggregate_name(), lines.y.title);
+            plot.y.title = format!("{} {}", y.aggregate_name(), plot.y.title);
         }
         Ok(Some(Figure {
             plot,
@@ -991,7 +815,7 @@ impl App {
                     Ok(Answer::ChartExported)
                 });
             }
-            // Still being prepared; `BackgroundChartReady` comes back here.
+            // Still being prepared; its job's end comes back here.
             Ok(None) => self.chart_export_waiting = Some(request),
             Err(e) => {
                 let message = Self::format_export_error(&e);
@@ -1028,7 +852,7 @@ impl App {
     /// chart can be drawn again.
     pub(crate) fn chart_notes_of(
         &self,
-        prepared: &crate::chart_jobs::ChartPrepared,
+        prepared: &crate::chart_jobs::PlotData,
         middot: &str,
     ) -> Vec<String> {
         let mut notes = prepared.notes(middot);
@@ -1047,184 +871,7 @@ impl App {
     }
 }
 
-/// What a plot is drawn from beside its data: the panel's options, the spec, and
-/// how the view's columns print.
-pub(crate) struct PlotContext<'a> {
-    pub(crate) modal: &'a ChartModal,
-    /// The spec drawn: on screen, with the picker's choice previewed.
-    pub(crate) spec: &'a crate::chart_modal::ChartSpec,
-    pub(crate) numbers: &'a crate::numfmt::NumberFormatSettings,
-    pub(crate) schema: Option<&'a Schema>,
-}
-
-/// The plot of `prepared` for the spec, as the screen and every export draw it: a
-/// line or scatter chart's axes always, standing empty until its series arrive;
-/// any other kind once its data has.
-pub(crate) fn plot<'a>(
-    prepared: Option<&'a ChartPrepared>,
-    context: &PlotContext<'_>,
-) -> Option<chart_export::Plot<'a>> {
-    use chart_data::AxisNumbers;
-    use chart_export::{Axis, Plot};
-    use std::borrow::Cow;
-    let PlotContext {
-        modal,
-        spec,
-        numbers,
-        schema,
-    } = *context;
-    let column = |name: &str| AxisNumbers::column(numbers, schema, name);
-    let title = |name: &str| modal.axis_title(name);
-    let axis = |title: String, numbers: AxisNumbers| Axis {
-        title,
-        numbers,
-        ..Default::default()
-    };
-    let encoding = &spec.encoding;
-    let x_name = encoding.x.field.as_deref();
-    let ys = &encoding.y.field;
-    Some(match (spec.mark, prepared) {
-        (Mark::Line | Mark::Scatter, prepared) => Plot::Lines(lines(prepared, context)),
-        (Mark::Histogram, Some(ChartPrepared::Histogram(data))) => Plot::Histogram {
-            x: axis(title(&data.column), column(&data.column)),
-            y: if data.share {
-                axis("Share".to_string(), AxisNumbers::measure(numbers, "Share"))
-            } else {
-                axis("Count".to_string(), AxisNumbers::count(numbers))
-            },
-            data: Cow::Borrowed(data),
-        },
-        (Mark::Kde, Some(ChartPrepared::Kde(data))) => Plot::Kde {
-            x: axis(
-                x_name.map(title).unwrap_or_default(),
-                x_name.map(column).unwrap_or_default().fractional(),
-            ),
-            y: axis(
-                "Density".to_string(),
-                AxisNumbers::measure(numbers, "Density"),
-            ),
-            data: Cow::Borrowed(data),
-        },
-        (Mark::Box, Some(ChartPrepared::BoxPlot(data))) => Plot::Box {
-            x_title: x_name.unwrap_or_default().to_string(),
-            y: axis(
-                ys.first().map(|y| title(y)).unwrap_or_default(),
-                AxisNumbers::columns(numbers, schema, ys),
-            ),
-            data: Cow::Borrowed(data),
-        },
-        (Mark::Heatmap, Some(ChartPrepared::Heatmap(data))) => Plot::Heatmap {
-            x: axis(title(&data.x_column), column(&data.x_column)),
-            y: axis(title(&data.y_column), column(&data.y_column)),
-            data: Cow::Borrowed(data),
-        },
-        (Mark::Bar, Some(ChartPrepared::Bar(data))) => Plot::Bars {
-            value: axis(
-                data.value_column.clone(),
-                AxisNumbers {
-                    format: data.value_format(numbers),
-                    whole: data.value_dtype.is_integer(),
-                },
-            ),
-            data: Cow::Borrowed(data),
-        },
-        _ => return None,
-    })
-}
-
-/// A line or scatter chart's series and axes; the axes alone, over the X column's
-/// range or typed from the schema, while the series are on their way.
-fn lines<'a>(
-    prepared: Option<&'a ChartPrepared>,
-    context: &PlotContext<'_>,
-) -> chart_export::Lines<'a> {
-    use chart_data::AxisNumbers;
-    use chart_export::Axis;
-    use std::borrow::Cow;
-    let PlotContext {
-        modal,
-        spec,
-        numbers,
-        schema,
-    } = *context;
-    let encoding = &spec.encoding;
-    let ys = &encoding.y.field;
-    let aggregate = encoding.y.aggregate;
-    let y_numbers = match aggregate {
-        Aggregate::Count | Aggregate::Distinct => AxisNumbers::count(numbers),
-        // A mean or median of whole numbers is not whole.
-        a if a.is_fractional() => AxisNumbers::columns(numbers, schema, ys).fractional(),
-        _ => AxisNumbers::columns(numbers, schema, ys),
-    };
-    let names = if aggregate == Aggregate::Count {
-        "count".to_string()
-    } else {
-        ys.iter()
-            .map(|y| modal.axis_title(y))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let y = Axis {
-        title: names,
-        numbers: y_numbers,
-        log: modal.log_scale,
-        ..Default::default()
-    };
-    let x_name = encoding.x.field.as_deref();
-    let x = |kind| Axis {
-        title: x_name.map(|x| modal.axis_title(x)).unwrap_or_default(),
-        numbers: x_name
-            .map(|x| AxisNumbers::column(numbers, schema, x))
-            .unwrap_or_default(),
-        kind,
-        log: false,
-    };
-    let empty = |kind, x_bounds| chart_export::Lines {
-        series: Cow::Borrowed(&[][..]),
-        values: Cow::Borrowed(&[][..]),
-        breaks: Cow::Borrowed(&[][..]),
-        names: Cow::Borrowed(&[][..]),
-        xs: Cow::Borrowed(&[][..]),
-        bounds: None,
-        other: false,
-        scatter: spec.mark == Mark::Scatter,
-        x_bounds,
-        x: x(kind),
-        y: y.clone(),
-        y_from_zero: modal.y_starts_at_zero,
-    };
-    match prepared {
-        Some(ChartPrepared::XY(cache)) => chart_export::Lines {
-            series: match (modal.log_scale, &cache.series_log) {
-                (false, _) => Cow::Borrowed(&cache.series[..]),
-                (true, Some(logged)) => Cow::Borrowed(&logged[..]),
-                (true, None) => Cow::Owned(log_series(&cache.series)),
-            },
-            values: Cow::Borrowed(&cache.series[..]),
-            breaks: Cow::Borrowed(&cache.breaks[..]),
-            names: Cow::Borrowed(&cache.names[..]),
-            xs: Cow::Borrowed(&cache.xs[..]),
-            // The log is monotone: the bounds of the logged points are the logged
-            // bounds.
-            bounds: cache.bounds.map(|[x0, x1, y0, y1]| match modal.log_scale {
-                true => [x0, x1, log_y(y0), log_y(y1)],
-                false => [x0, x1, y0, y1],
-            }),
-            other: cache.other,
-            x_bounds: None,
-            x: x(cache.x_axis_kind),
-            ..empty(cache.x_axis_kind, None)
-        },
-        Some(ChartPrepared::XRange(range)) => {
-            empty(range.x_axis_kind, Some((range.x_min, range.x_max)))
-        }
-        // Still on its way: typed from the schema so the labels are right.
-        _ => {
-            let kind = match (x_name, schema) {
-                (Some(x), Some(schema)) => chart_data::x_axis_temporal_kind_for_column(schema, x),
-                _ => chart_data::XAxisTemporalKind::Numeric,
-            };
-            empty(kind, None)
-        }
-    }
+/// A chart preparation's job.
+fn is_chart_prep(job: &Job) -> bool {
+    matches!(job, Job::ChartPrepare(_))
 }

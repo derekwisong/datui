@@ -1,7 +1,7 @@
 //! The Pivot & Melt builder's keys: the shared form keys (`crate::form`), then what
 //! each row does with them; and its live preview, rerun as the spec changes.
 
-use crate::form::{FormKey, PickerKey};
+use crate::form::FormKey;
 use crate::jobs::{Answer, Job};
 use crate::pivot_melt_modal::{
     PREVIEW_INPUT_ROWS, PivotMeltFocus, PivotMeltTab, PreviewFrame, PreviewInput,
@@ -176,23 +176,7 @@ impl App {
             return None;
         }
 
-        let multi = self
-            .pivot_melt_modal
-            .is_multi_row(self.pivot_melt_modal.focus);
-        if let Some(picker) = self.pivot_melt_modal.picker.as_mut() {
-            match crate::form::picker_key(picker, multi, event) {
-                PickerKey::Close => self.pivot_melt_modal.picker_cancel(),
-                PickerKey::Choose => self.pivot_melt_modal.picker_choose(),
-                PickerKey::Toggle => self.pivot_melt_modal.picker_toggle(),
-                PickerKey::ChooseAndMove(forward) => {
-                    self.pivot_melt_modal.picker_choose();
-                    crate::form::Form::move_focus(
-                        &mut self.pivot_melt_modal,
-                        if forward { 1 } else { -1 },
-                    );
-                }
-                PickerKey::Handled | PickerKey::Other => {}
-            }
+        if crate::form::picker_form_key(&mut self.pivot_melt_modal, event) {
             return None;
         }
 
@@ -202,8 +186,7 @@ impl App {
 
         match crate::form::key(&mut self.pivot_melt_modal, event) {
             FormKey::Cancel => {
-                self.pivot_melt_modal.close();
-                self.input_mode = InputMode::Normal;
+                self.close_overlay();
             }
             // Enter applies from anywhere in the form; what it will do has
             // been echoed on the spec line all along.

@@ -353,6 +353,18 @@ impl CombineModal {
 impl crate::form::Form for CombineModal {
     type Field = CombineField;
 
+    fn shown_picker(&mut self) -> Option<(&mut crate::widgets::ui::PickerState, bool)> {
+        self.picker.as_mut().map(|(_, p)| (p, false))
+    }
+
+    fn dismiss_picker(&mut self) {
+        self.picker = None;
+    }
+
+    fn pick(&mut self, _toggle: bool) {
+        self.picker_choose();
+    }
+
     fn fields(&self) -> Vec<(CombineField, crate::form::FieldKind)> {
         use crate::form::FieldKind;
         let mut fields = vec![

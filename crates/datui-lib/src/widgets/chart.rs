@@ -13,10 +13,10 @@ use crate::chart_data::{
     AxisNumbers, BarData, BoxPlotData, HeatmapData, HistogramData, KdeData, XAxisTemporalKind,
     drawing_order, other_at, segments,
 };
-use crate::chart_export::{Axis, Lines, Plot};
 use crate::chart_modal::{
     Aggregate, ChartFocus, ChartModal, Cumulative, Mark, PickerFor, ShelfUse, TimeUnit,
 };
+use crate::chart_plot::{Axis, LinesData, Plot, PlotData};
 use crate::config::Theme;
 use crate::glyphs::Glyphs;
 use crate::pointer::Hit;
@@ -730,43 +730,48 @@ fn render_plot(
             .render(area, buf);
     };
     let picked = || ChartModal::is_complete(&modal.effective_spec());
-    match plot {
-        Some(Plot::Lines(lines)) => {
-            return render_xy_chart(area, buf, modal, theme, &lines, text_secondary, g);
+    let Some(plot) = plot else {
+        if modal.mark() == Mark::Bar {
+            render_bar_chart(
+                area,
+                buf,
+                (ctx, theme),
+                None,
+                (picked(), modal.show_legend),
+                g,
+            );
+        } else {
+            hint(buf);
         }
-        Some(Plot::Histogram { data, x, y }) => {
+        return None;
+    };
+    let (x, y) = (&plot.x, &plot.y);
+    match &*plot.data {
+        PlotData::Lines(_) | PlotData::XRange(_) => {
+            return render_xy_chart(area, buf, modal, theme, &plot, text_secondary, g);
+        }
+        PlotData::Histogram(data) => {
             let look = HistogramLook {
                 grid: modal.grid,
                 legend: modal.show_legend,
             };
-            render_histogram_chart(area, buf, &look, theme, &data, (&x, &y), g)
+            render_histogram_chart(area, buf, &look, theme, data, (x, y), g)
         }
-        Some(Plot::Box { data, x_title, y }) => {
-            render_box_plot_chart(area, buf, modal, theme, &data, (&x_title, &y), g)
+        PlotData::Box(data) => {
+            render_box_plot_chart(area, buf, modal, theme, data, (&x.title, y), g)
         }
-        Some(Plot::Kde { data, x, y }) => {
-            render_kde_chart(area, buf, modal, theme, &data, (&x, &y), g)
+        PlotData::Kde(data) => render_kde_chart(area, buf, modal, theme, data, (x, y), g),
+        PlotData::Heatmap(data) => {
+            render_heatmap_chart(area, buf, theme, data, (x, y), text_secondary, g)
         }
-        Some(Plot::Heatmap { data, x, y }) => {
-            render_heatmap_chart(area, buf, theme, &data, (&x, &y), text_secondary, g)
-        }
-        Some(Plot::Bars { data, .. }) => render_bar_chart(
+        PlotData::Bars(data) => render_bar_chart(
             area,
             buf,
             (ctx, theme),
-            Some(&data),
+            Some(data),
             (picked(), modal.show_legend),
             g,
         ),
-        None if modal.mark() == Mark::Bar => render_bar_chart(
-            area,
-            buf,
-            (ctx, theme),
-            None,
-            (picked(), modal.show_legend),
-            g,
-        ),
-        None => hint(buf),
     }
     None
 }
@@ -1039,18 +1044,24 @@ fn render_xy_chart(
     buf: &mut ratatui::buffer::Buffer,
     modal: &ChartModal,
     theme: &Theme,
-    lines: &Lines<'_>,
+    plot: &Plot<'_>,
     text_secondary: ratatui::style::Color,
     g: &Glyphs,
 ) -> Option<PlotPlace> {
+    let empty = LinesData::default();
+    let (lines, x_bounds) = match &*plot.data {
+        PlotData::Lines(lines) => (lines, None),
+        PlotData::XRange(range) => (&empty, Some((range.x_min, range.x_max))),
+        _ => return None,
+    };
     let other_at = lines.other.then(|| lines.names.len().saturating_sub(1));
-    let graph_type = if lines.scatter {
+    let graph_type = if plot.scatter {
         GraphType::Scatter
     } else {
         GraphType::Line
     };
-    let (x, y) = (&lines.x, &lines.y);
-    let drawn: Vec<_> = lines.drawn().collect();
+    let (x, y) = (&plot.x, &plot.y);
+    let drawn: Vec<_> = plot.drawn().collect();
 
     if drawn.is_empty() {
         if modal.x().is_none() {
@@ -1063,7 +1074,7 @@ fn render_xy_chart(
         // The axes stand empty until the series arrive.
         const PLACEHOLDER_MIN: f64 = 0.0;
         const PLACEHOLDER_MAX: f64 = 1.0;
-        let (x_min, x_max) = lines.x_bounds.unwrap_or((PLACEHOLDER_MIN, PLACEHOLDER_MAX));
+        let (x_min, x_max) = x_bounds.unwrap_or((PLACEHOLDER_MIN, PLACEHOLDER_MAX));
         let axes = plot_axes(
             theme,
             x_axis([x_min, x_max], x.kind, &x.numbers, &x.title),
@@ -1077,17 +1088,15 @@ fn render_xy_chart(
     }
 
     // Kept with the prepared series; worked out here only for series made here.
-    let [all_x_min, all_x_max, all_y_min, all_y_max] = lines
-        .bounds
-        .or_else(|| crate::chart_jobs::extent(&lines.series))
-        .unwrap_or([0.0; 4]);
+    let [all_x_min, all_x_max, all_y_min, all_y_max] =
+        lines.shown_bounds(y.log).unwrap_or([0.0; 4]);
 
     // A scatter of few points marks each with a dot a cell wide; past one point per
     // four cells, the line's finer marks keep them apart.
     let points: usize = drawn.iter().map(|s| s.points.len()).sum();
     let cells = usize::from(area.width) * usize::from(area.height);
     let finer = resolution(g.plot.line) > resolution(g.plot.point);
-    let marker = match lines.scatter {
+    let marker = match plot.scatter {
         false => g.plot.line,
         true if finer && points * 4 > cells => g.plot.line,
         true => g.plot.point,
@@ -1111,7 +1120,7 @@ fn render_xy_chart(
         })
         .collect();
 
-    let y_min_bounds = if lines.y_from_zero {
+    let y_min_bounds = if plot.y_from_zero {
         0.0_f64.min(all_y_min)
     } else {
         all_y_min
@@ -1156,11 +1165,8 @@ fn render_xy_chart(
     let sub = resolution(marker).0;
     // The crosshair's readout takes the rows under the plot while the plot has the
     // keys.
-    let values = if lines.values.is_empty() {
-        &lines.series[..]
-    } else {
-        &lines.values[..]
-    };
+    // Before any log: what the readout reads.
+    let values = &lines.series[..];
     let cursor = modal
         .cursor_x
         .filter(|_| modal.plot_focus)

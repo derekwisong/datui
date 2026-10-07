@@ -1,15 +1,16 @@
 //! The chart view's keys. The panel and the export dialog take the shared form keys
 //! (`crate::form`); the chart's own keys come after them.
 
+use crate::ChartRequest;
 use crate::chart_export::{ChartExportFormat, ChartExportRequest};
 use crate::chart_export_modal::{ChartExportFocus, ExportDefaults};
 use crate::chart_modal::{ChartFocus, Mark};
+use crate::chart_plot::PlotData;
 use crate::form::{FormKey, PickerKey};
 use crate::logging::LogFailure;
 use crate::output_file::Overwrite;
 use crate::widgets::crosshair::{self, Move};
 use crate::{App, AppEvent, InputMode, home};
-use crate::{ChartPrepared, ChartRequest};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 impl App {
@@ -326,7 +327,7 @@ impl App {
     fn chart_xs(&self) -> Option<&[f64]> {
         let request = ChartRequest::from_modal(&self.chart_modal)?;
         match self.chart_cache.prepared(&request)? {
-            ChartPrepared::XY(xy) => Some(&xy.xs),
+            PlotData::Lines(xy) => Some(&xy.xs),
             _ => None,
         }
     }

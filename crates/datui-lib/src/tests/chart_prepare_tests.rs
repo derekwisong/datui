@@ -1,6 +1,6 @@
 use crate::chart_export::ChartExportFormat;
-use crate::chart_jobs::ChartCacheXY;
 use crate::chart_modal::{Aggregate, ChartFocus, Mark};
+use crate::chart_plot::{LinesData, PlotData};
 use crate::*;
 use std::sync::mpsc;
 
@@ -18,8 +18,8 @@ fn histogram_request(column: &str) -> ChartRequest {
     ChartRequest::from_modal(&modal).unwrap()
 }
 
-fn prepared_histogram(column: &str) -> ChartPrepared {
-    ChartPrepared::Histogram(chart_data::HistogramData {
+fn prepared_histogram(column: &str) -> PlotData {
+    PlotData::Histogram(chart_data::HistogramData {
         column: column.to_string(),
         bins: Vec::new(),
         groups: Vec::new(),
@@ -350,40 +350,34 @@ fn xy_request(x: &str) -> ChartRequest {
     ChartRequest::from_modal(&modal).unwrap()
 }
 
-fn prepared_xy() -> ChartPrepared {
-    ChartPrepared::XY(ChartCacheXY {
-        other: false,
-        names: vec!["y".to_string()],
-        series: vec![vec![(0.0, 1.0)]],
-        breaks: vec![Vec::new()],
-        series_log: None,
-        xs: vec![0.0],
-        bounds: Some([0.0, 0.0, 1.0, 1.0]),
-        x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
-        rows: chart_data::RowsRead::default(),
-        rows_note: None,
-    })
-}
-
-fn has_log_series(cache: &ChartCache, request: &ChartRequest) -> bool {
-    matches!(
-        cache.prepared(request),
-        Some(ChartPrepared::XY(xy)) if xy.series_log.is_some()
-    )
+fn prepared_xy() -> PlotData {
+    PlotData::Lines(LinesData::new(
+        chart_data::GroupedSeries {
+            names: vec!["y".to_string()],
+            series: vec![vec![(0.0, 1.0)]],
+            breaks: vec![Vec::new()],
+            x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
+            rows: chart_data::RowsRead::default(),
+            other: false,
+        },
+        None,
+    ))
 }
 
 /// XY series are the payload that grows with the data, so fewer of them are kept
-/// than small kinds, the one on screen is kept over one merely inserted later, and
-/// only the one on screen carries a log-scale copy.
+/// than small kinds, and the one on screen is kept over one merely inserted later.
+/// Each comes with its log copy, made off the UI thread with it.
 #[test]
 fn xy_entries_are_few_and_the_one_on_screen_stays() {
     let mut cache = ChartCache::default();
     let (a, b, c) = (xy_request("a"), xy_request("b"), xy_request("c"));
     cache.insert(a.clone(), Ok(prepared_xy()));
     cache.insert(b.clone(), Ok(prepared_xy()));
-    cache.touch(&a, true);
-    assert!(has_log_series(&cache, &a));
-    assert!(!has_log_series(&cache, &b));
+    cache.touch(&a);
+    assert!(matches!(
+        cache.prepared(&a),
+        Some(PlotData::Lines(xy)) if xy.series_log.as_deref() == Some(&[vec![(0.0, 2f64.ln())]][..])
+    ));
 
     cache.insert(c.clone(), Ok(prepared_xy()));
     assert!(cache.satisfies(&a), "on screen, so kept");
@@ -394,13 +388,6 @@ fn xy_entries_are_few_and_the_one_on_screen_stays() {
     // Small kinds are not counted against the XY cap, and vice versa.
     cache.insert(histogram_request("h"), Ok(prepared_histogram("h")));
     assert_eq!(cache.entries.len(), 3);
-
-    cache.touch(&c, true);
-    assert!(has_log_series(&cache, &c));
-    assert!(
-        !has_log_series(&cache, &a),
-        "only the one on screen keeps its log copy"
-    );
 }
 
 /// Writes a CSV with columns x and y where y = x * factor, so two datasets share a
@@ -503,7 +490,7 @@ fn a_prepare_from_the_previous_dataset_does_not_land_in_the_next() {
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
 
     let request = ChartRequest::from_modal(&app.chart_modal).unwrap();
-    let Some(ChartPrepared::XY(xy)) = app.chart_cache.prepared(&request) else {
+    let Some(PlotData::Lines(xy)) = app.chart_cache.prepared(&request) else {
         panic!("an XY chart is prepared");
     };
     assert_eq!(xy.series[0][4], (4.0, 400.0), "the second dataset's values");
@@ -560,7 +547,7 @@ fn a_sort_or_filter_keeps_the_chart_columns() {
     assert_eq!(app.chart_modal.y(), ["y"]);
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
     let request = ChartRequest::from_modal(&app.chart_modal).unwrap();
-    let Some(ChartPrepared::XY(xy)) = app.chart_cache.prepared(&request) else {
+    let Some(PlotData::Lines(xy)) = app.chart_cache.prepared(&request) else {
         panic!("an XY chart is prepared");
     };
     assert_eq!(
@@ -590,7 +577,7 @@ fn a_sort_or_filter_keeps_the_chart_columns() {
     assert_eq!(app.chart_modal.y(), ["y"]);
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
     let request = ChartRequest::from_modal(&app.chart_modal).unwrap();
-    let Some(ChartPrepared::XY(xy)) = app.chart_cache.prepared(&request) else {
+    let Some(PlotData::Lines(xy)) = app.chart_cache.prepared(&request) else {
         panic!("an XY chart is prepared");
     };
     assert_eq!(xy.series[0].len(), 3, "drawn from the filtered view");

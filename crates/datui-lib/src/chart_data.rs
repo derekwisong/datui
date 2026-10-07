@@ -752,7 +752,8 @@ impl RowsRead {
     }
 }
 
-/// Result of loading only the x column: min/max for axis bounds and temporal kind.
+/// The X column's range alone, for a line or scatter chart's axes before any Y.
+#[derive(Debug, Clone)]
 pub struct ChartXRangeResult {
     pub x_min: f64,
     pub x_max: f64,

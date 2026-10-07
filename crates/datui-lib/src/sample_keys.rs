@@ -1,22 +1,18 @@
-//! The view's sample: `S` at the table, the draw that fills it as the table shows
-//! it, and taking it away.
-//!
-//! The sample is a step of the view, between the source and the query
-//! ([`crate::table::Sampled`]). Its rows are drawn off the UI thread by a
-//! [`Job::SampleDraw`], which keeps them in memory a chunk at a time
-//! ([`crate::table_sample`]); each chunk is laid under the view's frames as it lands,
-//! as a followed pipe's rows are.
+//! `S` at the table: the sample form and the keys that act while a sample is drawn.
 
-use crate::jobs::{Answer, Job, SampleDraw};
+use crate::analysis_modal::AnalysisProgress;
+use crate::form::FormKey;
+use crate::jobs::Job;
 use crate::sample_modal::SampleForm;
 use crate::table::DataTableState;
-use crate::table_sample::{Limit, MemoryCheck, MemoryProbe};
-use crate::{App, AppEvent, InputMode, form, sampling};
+use crate::table_sample::{Limit, MemoryCheck};
+use crate::{
+    App, AppEvent, InputMode, analysis_modal, data_quality, form, sample_keys, sample_modal,
+    sampling,
+};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use polars::datatypes::DataType;
 use std::sync::Arc;
-
-/// What the status line says while a sample is drawn.
-const DRAWING: &str = "Sampling...";
 
 /// What Enter on a Sample form that edits the view's sample comes to.
 pub(crate) enum Submitted {
@@ -158,149 +154,9 @@ impl App {
         }
     }
 
-    /// The memory check a sample is drawn under: `analysis.sample_memory_limit`
-    /// against what is held, or the memory available now.
-    pub(crate) fn memory_check(&self) -> MemoryCheck {
-        MemoryCheck {
-            limit: Limit::of_setting(self.app_config.analysis.sample_memory_limit),
-            probe: Arc::clone(&self.memory_probe),
-        }
-    }
-
-    /// Read the memory available now from `probe` rather than from the system: for a
-    /// test that decides how much there is.
-    pub fn set_memory_probe(&mut self, probe: MemoryProbe) {
-        self.memory_probe = probe;
-    }
-
-    /// Draw `sample` as the view's sample, in place of any it has. The table shows
-    /// the rows as they land, with `replay` (the query, filters, sort and columns of
-    /// a view being applied) laid over them; with none, the view's own steps go back
-    /// on, unless the sample was drawn through them. `anyway` draws with no running
-    /// memory check. `then_analyze` runs Analysis's tool once it is drawn.
-    pub(crate) fn apply_table_sample(
-        &mut self,
-        sample: sampling::Sample,
-        replay: Option<crate::view::ViewSettings>,
-        anyway: bool,
-        then_analyze: bool,
-    ) {
-        self.draw_table_sample(sample, None, replay, anyway, then_analyze);
-    }
-
-    /// [`Self::apply_table_sample`], drawing a random sample of a stream the way
-    /// `path` says, as a view says it was drawn: the same rows again.
-    pub(crate) fn draw_table_sample(
-        &mut self,
-        sample: sampling::Sample,
-        path: Option<crate::table_sample::DrawPath>,
-        replay: Option<crate::view::ViewSettings>,
-        anyway: bool,
-        then_analyze: bool,
-    ) {
-        use crate::data_quality::QualityScope;
-        let Some(state) = self.data_table_state.as_ref() else {
-            return;
-        };
-        let source = state.unsampled();
-        // A view scope reads the view as shown: what it shows other than the source
-        // is what the sample stands for, so it is not laid on again. Its order is
-        // part of which rows a row range reads.
-        let reads_view = !sample.scope.uses_source();
-        let ranged = matches!(
-            sample.scope,
-            QualityScope::FirstRows(_) | QualityScope::ViewRows { .. }
-        );
-        let sorted = !source.get_sort_columns().is_empty() || !source.get_sort_ascending();
-        let through = reads_view
-            && (source.changes_rows() || !source.column_changes().is_empty() || ranged && sorted);
-        // The steps to lay on the new sample: a view's being applied; those on the
-        // sample it replaces; or the view's own, unless the sample stands for them.
-        let replay = replay.or_else(|| match state.sampled() {
-            Some(_) => Some(crate::view_settings_of(state)),
-            None => (!through).then(|| crate::view_settings_of(source)),
-        });
-        // A pivot is read whole once its rows are all there, which a sample being
-        // drawn is not: say so rather than leave it off.
-        if replay
-            .as_ref()
-            .is_some_and(|settings| settings.pivot.is_some())
-        {
-            self.error_modal.show(PIVOT_OVER_A_SAMPLE.to_string());
-            return;
-        }
-        self.put_down_sample_draw();
-        let Some(state) = self.data_table_state.as_ref() else {
-            return;
-        };
-        let source = state.unsampled();
-        let (cut, known_total) = Self::table_sample_source(source, &sample.scope);
-        // How a random sample of a stream is drawn is decided once for what it is
-        // drawn from: the view's word, the way it was drawn here before, or by
-        // whether the count is in. The same seed keeps the same rows either way.
-        let path_key = Self::sample_path_key(source, &sample.scope);
-        let path = (sample.method == sampling::SampleMethod::Spread).then(|| {
-            path.or_else(|| {
-                self.sample_paths
-                    .iter()
-                    .find(|(key, _)| *key == path_key)
-                    .map(|(_, path)| *path)
-            })
-            .unwrap_or(match known_total {
-                Some(of) => crate::table_sample::DrawPath::Bernoulli { of },
-                None => crate::table_sample::DrawPath::Reservoir,
-            })
-        });
-        let bytes_per_row = Some(source.sample_row_bytes(sample.scope.uses_source()));
-        let streaming = self.app_config.performance.streaming;
-        let rows = Arc::new(crate::table_sample::SampleRows::default());
-        let (memory, watch) = if anyway {
-            (MemoryCheck::off(), sampling::ReadWatch::default())
-        } else {
-            let memory = self.memory_check();
-            // A sampler that keeps its rows to the end is checked as it holds them.
-            let held = memory.clone();
-            let watch = sampling::ReadWatch::judging_held(Arc::new(move |bytes, rows| {
-                held.holds_too_much(bytes, rows)
-            }));
-            (memory, watch)
-        };
-        let job = Job::SampleDraw(Box::new(SampleDraw {
-            sample: sample.clone(),
-            rows: Arc::clone(&rows),
-            watch: watch.clone(),
-            through,
-            replay,
-            then_analyze,
-            path,
-            path_key,
-            schema: None,
-        }));
-        self.spawn_job(job, Some(DRAWING), move |worker| {
-            let report = worker.reporter();
-            let failed = |error: color_eyre::eyre::Report| {
-                crate::error_display::user_message_from_report(&error, None)
-            };
-            let lf = cut.cut(&sample.scope).map_err(failed)?;
-            let schema = lf.clone().collect_schema().map_err(|e| failed(e.into()))?;
-            report(crate::Progress::SampleBegun(schema));
-            let live = crate::table_sample::Live {
-                rows,
-                notify: Arc::new(move || report(crate::Progress::SampleGrew)),
-                memory,
-                watch,
-                bytes_per_row,
-            };
-            let drawn =
-                crate::table_sample::draw(&lf, &sample, known_total, path, streaming, &live)
-                    .map_err(failed)?;
-            Ok(Answer::SampleDrawn(drawn))
-        });
-    }
-
     /// What a draw from `scope` of `source` is remembered by: the scope, and the
     /// view's steps it reads through.
-    fn sample_path_key(
+    pub(crate) fn sample_path_key(
         source: &DataTableState,
         scope: &crate::data_quality::QualityScope,
     ) -> String {
@@ -315,273 +171,6 @@ impl App {
             serde_json::to_string(&settings).unwrap_or_default()
         };
         format!("{}\n{steps}", scope.command())
-    }
-
-    /// Where a view's sample is drawn from: the loaded source for a source scope,
-    /// otherwise the view as shown (in its order for a row range), with every column
-    /// the view has, whole: the sample is the view's rows, not an analysis's.
-    fn table_sample_source(
-        state: &DataTableState,
-        scope: &crate::data_quality::QualityScope,
-    ) -> (sampling::SampleSource, Option<usize>) {
-        use crate::data_quality::QualityScope;
-        if scope.uses_source() {
-            let (lf, source) = state.data_quality_source_scan();
-            return (sampling::SampleSource::loaded(lf, source), None);
-        }
-        let lf = match scope {
-            QualityScope::FirstRows(_) | QualityScope::ViewRows { .. } => state.lf().clone(),
-            _ => state.analysis_lf(),
-        };
-        let columns: Vec<polars::prelude::Expr> = state
-            .schema()
-            .iter_names()
-            .map(|name| polars::prelude::col(name.clone()))
-            .collect();
-        (
-            sampling::SampleSource::view(lf.select(columns)),
-            sampling::view_scope_rows(state.num_rows_if_valid(), scope),
-        )
-    }
-
-    /// The view's sample goes: the view it was drawn from comes back, with the
-    /// query, filters and sort laid on the sample laid on it instead, unless the
-    /// sample was drawn through the view's own.
-    pub(crate) fn clear_table_sample(&mut self) {
-        let Some(sampled) = self.data_table_state.as_ref().and_then(|s| s.sampled()) else {
-            return;
-        };
-        let through = sampled.through();
-        let settings = self.data_table_state.as_ref().map(crate::view_settings_of);
-        // A pivot over the sample would have to read the whole source to move onto
-        // it: the sample stays, and the way out is said.
-        if !through && settings.as_ref().is_some_and(|s| s.pivot.is_some()) {
-            self.error_modal.show(PIVOT_OFF_A_SAMPLE.to_string());
-            return;
-        }
-        self.put_down_sample_draw();
-        let Some(state) = self.data_table_state.take() else {
-            return;
-        };
-        let mut source = state.into_unsampled();
-        if !through && let Some(settings) = settings {
-            let laid = source.deferred(|s| {
-                s.reset_view_for_replay();
-                Self::replay_view(s, &settings, None).map(|_| ())
-            });
-            if let Err(error) = laid {
-                self.error_modal.show(format!(
-                    "The view's steps did not go back on the source: {error}"
-                ));
-            }
-        }
-        self.data_table_state = Some(source);
-        self.sample_changed();
-        self.flash_note("Sample cleared".to_string());
-        self.spawn_async_collect(Self::LOADING_BUFFER);
-    }
-
-    /// The view's rows changed underneath every result read from them: Analysis's,
-    /// the chart's and the rows a page read held.
-    pub(crate) fn sample_changed(&mut self) {
-        self.forget_the_rows_read();
-        self.chart_cache.clear();
-        let modal = &mut self.analysis_modal;
-        modal.describe_results = None;
-        modal.distribution_results = None;
-        modal.correlation_results = None;
-        modal.data_quality_results = None;
-        modal.data_quality_last_plan = None;
-        let sampled = self
-            .data_table_state
-            .as_ref()
-            .is_some_and(|state| state.sampled().is_some());
-        self.analysis_modal.follow_view_sample(sampled);
-        self.sync_quality_plan();
-    }
-
-    /// The draw in flight, if one is: its record.
-    pub(crate) fn sample_draw(&self) -> Option<&SampleDraw> {
-        match self.jobs.current(|job| matches!(job, Job::SampleDraw(_))) {
-            Some((_, Job::SampleDraw(draw))) => Some(draw),
-            _ => None,
-        }
-    }
-
-    /// Whether the view's sample is being drawn.
-    pub fn sample_drawing(&self) -> bool {
-        self.sample_draw().is_some()
-    }
-
-    /// Esc while the sample is drawn: it stops, and the rows so far stay.
-    pub(crate) fn stop_sample_draw(&mut self) {
-        if let Some(draw) = self.sample_draw() {
-            draw.watch.stop();
-        }
-    }
-
-    /// Stop the draw in flight and drop whatever it still sends: another sample
-    /// replaces it, or the view it was for goes.
-    pub(crate) fn put_down_sample_draw(&mut self) {
-        if let Some(draw) = self.sample_draw() {
-            draw.watch.stop();
-        }
-        self.jobs.supersede(|job| matches!(job, Job::SampleDraw(_)));
-    }
-
-    /// Whether the view on screen is the one the draw in flight fills.
-    fn draw_fills_view(&self, draw: &SampleDraw) -> bool {
-        self.data_table_state
-            .as_ref()
-            .and_then(|state| state.sampled())
-            .is_some_and(|sampled| sampled.holds(&draw.rows))
-    }
-
-    /// The draw has cut its rows to their scope: what their columns are is kept
-    /// for the view that takes its first rows.
-    pub(crate) fn sample_begun(&mut self, schema: &polars::prelude::SchemaRef) {
-        if let Some(Job::SampleDraw(draw)) = self
-            .jobs
-            .current_mut(|job| matches!(job, Job::SampleDraw(_)))
-        {
-            draw.schema = Some(schema.clone());
-        }
-    }
-
-    /// The view becomes the sample's, with the steps laid on it, in place of the
-    /// view it is drawn from or the sample it replaces. Only once rows have come:
-    /// a draw that fails or stops first leaves the view as it was. Returns whether
-    /// the view is the draw's.
-    fn take_on_sample(&mut self, draw: &SampleDraw) -> bool {
-        if self.draw_fills_view(draw) {
-            return true;
-        }
-        let Some(schema) = draw.schema.as_ref() else {
-            return false;
-        };
-        let Some(state) = self.data_table_state.take() else {
-            return false;
-        };
-        let source = state.into_unsampled();
-        let mut view = match DataTableState::sampled_from(
-            source,
-            draw.sample.clone(),
-            schema,
-            Arc::clone(&draw.rows),
-            draw.through,
-            draw.path,
-        ) {
-            Ok(view) => view,
-            Err(error) => {
-                self.put_down_sample_draw();
-                self.error_modal
-                    .show(format!("Cannot show the sample: {error}"));
-                return false;
-            }
-        };
-        if let Some(settings) = &draw.replay {
-            let laid = view.deferred(|s| Self::replay_view(s, settings, None));
-            match laid {
-                Ok(crate::Replayed::Planned) => {}
-                // Refused before the draw started; never left off silently.
-                Ok(crate::Replayed::Pivot(_)) => {
-                    self.error_modal.show(PIVOT_OVER_A_SAMPLE.to_string());
-                }
-                Err(error) => self.flash_note(format!(
-                    "The view's steps did not apply to the sample: {error}"
-                )),
-            }
-        }
-        self.data_table_state = Some(view);
-        self.sample_changed();
-        true
-    }
-
-    /// The draw kept another chunk: the view reads it, staying where it is.
-    pub(crate) fn sample_grew(&mut self) {
-        let Some(draw) = self.sample_draw().cloned() else {
-            return;
-        };
-        if !self.take_on_sample(&draw) {
-            return;
-        }
-        let grew = self
-            .data_table_state
-            .as_mut()
-            .and_then(DataTableState::sample_grew);
-        // Rows read through the frame before it grew are of fewer rows, in another
-        // order: nothing may land them now.
-        if grew == Some(false) {
-            self.forget_the_rows_read();
-        }
-        // The page is read again when nothing else is reading it; the next chunk, or
-        // the end, reads it otherwise.
-        if grew.is_some() && self.rows_in_flight().is_none() && self.in_normal_table_view() {
-            self.spawn_collect(None);
-        }
-    }
-
-    /// The draw ended: the rows go into source order, and a run Analysis waits for
-    /// starts. A draw memory stopped says why.
-    pub(crate) fn sample_drawn(
-        &mut self,
-        job: Job,
-        current: bool,
-        drawn: crate::table_sample::Drawn,
-    ) -> Option<AppEvent> {
-        let Job::SampleDraw(draw) = job else {
-            return None;
-        };
-        if !current || !self.take_on_sample(&draw) {
-            return None;
-        }
-        if let Some(path) = drawn.path {
-            self.sample_paths.retain(|(key, _)| *key != draw.path_key);
-            self.sample_paths.push((draw.path_key.clone(), path));
-        }
-        if let Some(state) = self.data_table_state.as_mut() {
-            state.sample_drawn(drawn);
-        }
-        self.forget_the_rows_read();
-        if let Some(reason) = draw.rows.stopped() {
-            self.flash_note(reason);
-        }
-        self.spawn_collect(None);
-        if draw.then_analyze && self.analysis_modal.active {
-            self.analysis_modal.computing = None;
-            return self.start_analysis_run();
-        }
-        None
-    }
-
-    /// The draw failed, or was stopped before it kept a row. The view stays as it
-    /// was when no row had come; rows that had stay, as a sample cut short.
-    pub(crate) fn sample_draw_failed(&mut self, job: &Job, current: bool, message: &str) {
-        let Job::SampleDraw(draw) = job else {
-            return;
-        };
-        if !current {
-            return;
-        }
-        if self.draw_fills_view(draw)
-            && let Some(state) = self.data_table_state.as_mut()
-        {
-            state.sample_drawn(crate::table_sample::Drawn {
-                cut: true,
-                path: draw.path,
-                ..Default::default()
-            });
-            self.forget_the_rows_read();
-            self.spawn_collect(None);
-        }
-        if draw.then_analyze {
-            self.analysis_modal.computing = None;
-        }
-        if message == sampling::CANCELLED {
-            self.flash_note("Sample stopped".to_string());
-        } else {
-            self.error_modal.show(message.to_string());
-        }
     }
 
     /// While a sample is drawn, the keys that read only the rows on hand act at
@@ -620,58 +209,215 @@ impl App {
         }
     }
 
-    /// Apply `view`, whose rows are a sample: the view goes back to its source, the
-    /// view the sample was drawn through goes on, and the sample is drawn again from
-    /// its seed, the way it was. The view's own steps go on the sample as it arrives.
-    pub(crate) fn apply_sampled_view(
-        &mut self,
-        view: &crate::view::SavedView,
-        saved: &crate::view::SavedSample,
-        why: Option<crate::view::MatchReason>,
-    ) -> color_eyre::Result<()> {
-        let sample = saved.sample()?;
-        let through = saved.through.as_deref();
-        if through.is_some_and(|through| through.pivot.is_some()) || view.settings.pivot.is_some() {
-            return Err(color_eyre::eyre::eyre!("{PIVOT_OVER_A_SAMPLE}"));
+    /// Open the Sample form on a copy of the shared sample. A per-partition sample
+    /// splits by a column; partition columns lead the choices, then the columns a
+    /// partition is usually made of (text, integers, dates), never floats.
+    pub(crate) fn open_sample_form(&mut self) {
+        self.open_sample_form_as(false);
+    }
+
+    /// A tool with nothing to show yet: the Sample form is its pane, as it stands.
+    /// Where the cursor goes is the caller's: into the form when the tool is picked,
+    /// back to the tool list when Esc leaves it.
+    pub(crate) fn open_first_run_form(&mut self) {
+        self.open_sample_form_as(true);
+        self.sync_sample_form_focus();
+    }
+
+    /// The scope field shows its cursor only while the form has the cursor.
+    pub(crate) fn sync_sample_form_focus(&mut self) {
+        let focused = self.analysis_modal.focus == analysis_modal::AnalysisFocus::Main;
+        if let Some(form) = self.analysis_modal.sample_form.as_mut() {
+            let has_cursor = focused || !form.inline;
+            form.sync_focus(has_cursor);
         }
-        self.put_down_sample_draw();
-        let Some(state) = self.data_table_state.take() else {
-            return Ok(());
-        };
-        let mut source = state.into_unsampled();
-        let replayed = source.try_transition(|s| {
-            s.reset_view_for_replay();
-            match through {
-                Some(through) => Self::replay_view(s, through, None).map(|_| ()),
-                None => Ok(()),
+    }
+
+    /// Run the tool on screen with the Sample form's sample, or say on the form why
+    /// its scope does not parse. In Data Quality the sample is staged in Setup's
+    /// draft instead: the form applies, and Run reads.
+    pub(crate) fn run_sample_form(&mut self) -> Option<AppEvent> {
+        let quality =
+            self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality);
+        // The view's sample: it is drawn again, and the tool runs on it once it is.
+        if self.analysis_modal.sample_form.as_ref()?.view {
+            let memory = self.memory_check();
+            let form = self.analysis_modal.sample_form.as_mut()?;
+            return match Self::submit_view_sample(form, memory) {
+                sample_keys::Submitted::Stays => None,
+                sample_keys::Submitted::Clear => {
+                    self.analysis_modal.sample_form = None;
+                    self.clear_table_sample();
+                    if quality {
+                        None
+                    } else {
+                        self.start_analysis_run()
+                    }
+                }
+                sample_keys::Submitted::Draw { sample, anyway } => {
+                    self.analysis_modal.sample_form = None;
+                    self.apply_table_sample(sample, None, anyway, !quality);
+                    if !quality {
+                        self.analysis_modal.computing =
+                            Some(AnalysisProgress::new("Drawing the sample"));
+                    }
+                    None
+                }
+            };
+        }
+        let finished = self.analysis_modal.sample_form.as_mut()?.finish();
+        match finished {
+            Ok(sample) if quality => {
+                self.analysis_modal.sample_form = None;
+                self.analysis_modal.data_quality_plan.adopt_sample(&sample);
+                self.analysis_modal.data_quality_setup_note = None;
+                None
             }
-        });
-        self.data_table_state = Some(source);
-        replayed?;
-        self.sample_changed();
-        if let Some(path) = &self.path {
-            use crate::logging::LogFailure;
-            self.view_manager
-                .record_use(&view.id, path)
-                .or_log("record a view's use");
+            // The form stays open, as filled, while a cancelled run finishes.
+            Ok(_) if self.read_waits_for_cancelled() => None,
+            Ok(sample) => {
+                self.analysis_modal.sample_form = None;
+                self.apply_sample(sample)
+            }
+            Err(error) => {
+                if let Some(form) = self.analysis_modal.sample_form.as_mut() {
+                    form.error = Some(error);
+                }
+                None
+            }
         }
-        self.active_view_id = Some(view.id.clone());
-        self.restore_view_chart(view.settings.chart.as_ref());
-        let mut settings = view.settings.clone();
-        settings.sample = None;
-        self.draw_table_sample(sample, saved.path, Some(settings), false, false);
-        if let Some(why) = why {
-            self.flash_view_applied(&view.name, why);
+    }
+
+    fn open_sample_form_as(&mut self, inline: bool) {
+        let sample = self.analysis_modal.sample.clone();
+        self.open_sample_form_on(&sample, inline);
+    }
+
+    /// `s` in Data Quality: the Sample form over Setup, on the draft's sample. Its
+    /// Enter stages the sample in the draft and returns to Setup; only Run reads.
+    pub(crate) fn open_quality_sample_form(&mut self) {
+        self.open_quality_setup();
+        let sample = self.analysis_modal.data_quality_plan.sample();
+        self.open_sample_form_on(&sample, false);
+    }
+
+    fn open_sample_form_on(&mut self, sample: &sampling::Sample, inline: bool) {
+        let Some(state) = self.data_table_state.as_ref() else {
+            return;
+        };
+        // A view with a sample: the form edits it, and the rows come from the view it
+        // was drawn from.
+        let (sample, view) = match state.sampled() {
+            Some(sampled) => (sampled.sample().clone(), true),
+            None => (sample.clone(), false),
+        };
+        let context = self.sample_context(state.unsampled());
+        let mut form = sample_modal::SampleForm::new(&sample, context, &self.theme);
+        form.inline = inline;
+        form.view = view;
+        form.bytes_per_row = Some(state.unsampled().sample_row_bytes(false));
+        form.source_bytes_per_row = Some(state.unsampled().sample_row_bytes(true));
+        self.analysis_modal.sample_form = Some(form);
+        self.sync_sample_form_focus();
+    }
+
+    /// What the Sample form offers for `state`'s rows: its partitions, files, time
+    /// columns and the columns an equal-per-value sample can split by.
+    pub(crate) fn sample_context(&self, state: &DataTableState) -> sample_modal::SampleContext {
+        let mut partition_columns = state.partition_columns().unwrap_or_default().to_vec();
+        let mut partition_values = Vec::new();
+        // A directory whose files agree opens as one scan and names no partition
+        // columns; its directory names still do. One branch of the tree is walked for
+        // the columns and one listing read for the first column's values: local,
+        // and small next to opening the dataset.
+        if let Some(dir) = self.path.as_ref().filter(|path| path.is_dir()) {
+            if partition_columns.is_empty() {
+                partition_columns = crate::readers::hive::discover_hive_partition_columns(dir)
+                    .into_iter()
+                    .filter(|column| state.schema().get(column).is_some())
+                    .collect();
+            }
+            if let Some(first) = partition_columns.first() {
+                let prefix = format!("{first}=");
+                let mut values: Vec<String> = std::fs::read_dir(dir)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter_map(|entry| {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        name.strip_prefix(&prefix).map(str::to_string)
+                    })
+                    .collect();
+                values.sort();
+                if !values.is_empty() {
+                    partition_values.push((first.clone(), values));
+                }
+            }
         }
-        self.first_rows_settled();
-        Ok(())
+        // An equal-per-value sample splits by a column: partition columns first, then
+        // text, the usual stuff of a group (a ticker, a region), then dates and
+        // integers. Never floats.
+        let mut value_columns = partition_columns.clone();
+        for kind in 0..3 {
+            for (name, dtype) in state.schema().iter() {
+                let rank = match dtype {
+                    DataType::String | DataType::Categorical(..) | DataType::Boolean => 0,
+                    DataType::Date => 1,
+                    dtype if dtype.is_integer() => 2,
+                    _ => continue,
+                };
+                if rank == kind && !value_columns.iter().any(|column| column == name.as_str()) {
+                    value_columns.push(name.to_string());
+                }
+            }
+        }
+        sample_modal::SampleContext {
+            view_rows: state.num_rows_if_valid(),
+            filtered: state.changes_rows(),
+            files: state.quality_source_file_names().to_vec(),
+            partition_columns,
+            partition_values,
+            time_columns: state.quality_temporal_columns(&data_quality::QualityScope::WholeSource),
+            value_columns,
+        }
+    }
+
+    pub(crate) fn sample_form_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+        let form = self.analysis_modal.sample_form.as_mut()?;
+        let file_count = form.context.files.len();
+        let key = form::key(form, event);
+        match key {
+            // In a tool's empty pane the form stays, as it was: Esc discards the
+            // edit and hands the cursor back to the tool list.
+            FormKey::Cancel if form.inline => {
+                self.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
+                self.open_first_run_form();
+            }
+            FormKey::Cancel => self.analysis_modal.sample_form = None,
+            FormKey::Submit => return self.run_sample_form(),
+            FormKey::Step(_, delta) => {
+                form.adjust(delta > 0);
+                form.edited();
+            }
+            FormKey::Text(sample_modal::SampleField::Files)
+                if matches!(event.code, KeyCode::PageDown | KeyCode::PageUp) =>
+            {
+                form.file_offset = if event.code == KeyCode::PageDown {
+                    (form.file_offset + crate::widgets::sample_form::FILES_SHOWN)
+                        .min(file_count.saturating_sub(1))
+                } else {
+                    form.file_offset
+                        .saturating_sub(crate::widgets::sample_form::FILES_SHOWN)
+                };
+            }
+            FormKey::Text(_) => {
+                if let Some(input) = form.input_mut(form.field) {
+                    let _ = input.handle_key(event, None);
+                }
+                form.edited();
+            }
+            FormKey::Act(_) | FormKey::Moved | FormKey::Other => {}
+        }
+        None
     }
 }
-
-/// Why a sample is not drawn under a pivot.
-const PIVOT_OVER_A_SAMPLE: &str = "A pivot cannot be laid on a sample as it is drawn: sample \
-     the pivoted view (Rows from: All rows), or take the pivot away with R";
-
-/// Why the sample under a pivot stays.
-const PIVOT_OFF_A_SAMPLE: &str = "The pivot on the sample cannot move to the source: R takes \
-     away both";

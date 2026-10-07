@@ -1,5 +1,6 @@
 //! The home screen's keys.
 
+use crate::feedback::Confirm;
 use crate::{App, AppEvent, discover, home, source};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::Path;
@@ -286,9 +287,10 @@ impl App {
                 if count == 0 {
                     self.home.status = Some("Nothing to forget".into());
                 } else {
-                    self.pending_clear_recents = true;
-                    self.confirmation_modal
-                        .show(format!("Forget all {count} recently opened datasets?"));
+                    self.confirmation_modal.show(
+                        format!("Forget all {count} recently opened datasets?"),
+                        Confirm::ClearRecents,
+                    );
                 }
             }
             KeyCode::Delete => self.home_forget_selected(),

@@ -1,4 +1,5 @@
 use crate::background::Counted;
+use crate::table::OpenFacts;
 use crate::*;
 use std::path::Path;
 
@@ -184,7 +185,7 @@ fn end_on_an_uncounted_remote_dataset_waits_for_the_count() {
     app.data_table_state = Some(state);
 
     // No jump to a guess: the count starts, and nothing is busy.
-    assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
+    assert!(app.jump_key(Scroll::End).is_none());
     assert!(!app.is_busy());
     assert_eq!(app.end_after_count, Some(dataset));
     assert_eq!(app.len_count_inflight, Some(dataset));
@@ -204,7 +205,7 @@ fn end_on_an_uncounted_remote_dataset_waits_for_the_count() {
     // With the count in, End goes.
     let next = app.event(&counted);
     assert!(
-        matches!(next, Some(AppEvent::DoScrollEnd)),
+        matches!(next, Some(AppEvent::Scroll(Scroll::End))),
         "the jump follows the count"
     );
     assert_eq!(app.end_after_count, None);
@@ -364,7 +365,7 @@ fn end_before_the_paint_starts_the_count_and_waits_for_it() {
     app.event(&recv(&rx));
     assert_eq!(app.counts_spawned.get(), 0);
 
-    assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
+    assert!(app.jump_key(Scroll::End).is_none());
     assert_eq!(app.end_after_count, Some(dataset));
     assert_eq!(app.counts_spawned.get(), 1, "started for the End");
     assert_eq!(app.status_message.as_deref(), Some(App::COUNTING_FOR_END));
@@ -372,13 +373,13 @@ fn end_before_the_paint_starts_the_count_and_waits_for_it() {
     assert_eq!(app.data_table_state.as_ref().unwrap().start_row(), 0);
     // The paint that follows, and End again, do not start a second.
     app.frame_painted();
-    assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
+    assert!(app.jump_key(Scroll::End).is_none());
     assert_eq!(app.counts_spawned.get(), 1);
 
     let (rows, next) = until_counted(&mut app, &rx, dataset);
     assert_eq!(rows, 50_000);
     assert!(
-        matches!(next, Some(AppEvent::DoScrollEnd)),
+        matches!(next, Some(AppEvent::Scroll(Scroll::End))),
         "the jump follows"
     );
     assert_eq!(app.end_after_count, None);
@@ -393,9 +394,9 @@ fn a_count_end_starts_is_marked_running() {
     app.spawn_async_collect("Filtering...");
     app.event(&recv(&rx));
     app.len_count_inflight = None;
-    assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
+    assert!(app.jump_key(Scroll::End).is_none());
     assert_eq!(app.len_count_inflight, Some(dataset));
-    assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
+    assert!(app.jump_key(Scroll::End).is_none());
     app.frame_painted();
     assert_eq!(app.counts_spawned.get(), 1);
     assert_eq!(until_counted(&mut app, &rx, dataset).0, 50_000);
@@ -417,7 +418,7 @@ fn a_failed_count_is_retried_by_end_not_by_scrolling() {
     assert_eq!(app.counts_spawned.get(), 0);
     assert!(!app.row_count_pending());
 
-    assert!(app.jump_key(AppEvent::DoScrollEnd).is_none());
+    assert!(app.jump_key(Scroll::End).is_none());
     assert_eq!(app.counts_spawned.get(), 1);
     let (rows, _) = until_counted(&mut app, &rx, dataset);
     assert_eq!(rows, 50_000);

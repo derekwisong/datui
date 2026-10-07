@@ -4,6 +4,7 @@
 use crate::chart_export::{ChartExportFormat, ChartExportRequest};
 use crate::chart_export_modal::{ChartExportFocus, ExportDefaults};
 use crate::chart_modal::{ChartFocus, Mark};
+use crate::feedback::Confirm;
 use crate::form::{FormKey, PickerKey};
 use crate::logging::LogFailure;
 use crate::output_file::Overwrite;
@@ -308,13 +309,13 @@ impl App {
             recipe,
         };
         if request.path.exists() {
-            self.pending_chart_export = Some(request);
             // Suspended, not closed: declining returns to the filled form with the
             // typed path intact.
             self.chart_export_modal.suspend();
             self.confirmation_modal.show_destructive(
                 format!("File already exists:\n{path_display}\n\nOverwrite it?"),
                 "Overwrite",
+                Confirm::ChartExport(Box::new(request)),
             );
             return None;
         }
@@ -322,26 +323,25 @@ impl App {
         Some(AppEvent::ChartExport(request))
     }
 
-    /// The line or scatter series on screen, before any log.
-    fn chart_xy_series(&self) -> Option<&Vec<Vec<(f64, f64)>>> {
+    /// Every X of the line or scatter series on screen, in order, each once.
+    fn chart_xs(&self) -> Option<&[f64]> {
         let request = ChartRequest::from_modal(&self.chart_modal)?;
         match self.chart_cache.prepared(&request)? {
-            ChartPrepared::XY(xy) => Some(&xy.series),
+            ChartPrepared::XY(xy) => Some(&xy.xs),
             _ => None,
         }
     }
 
     /// Step the crosshair, from where it stands or the middle of the plot.
     fn move_crosshair(&mut self, to: Move) {
-        let (Some(place), Some(series)) = (self.chart_modal.plot, self.chart_xy_series()) else {
+        let (Some(place), Some(xs)) = (self.chart_modal.plot, self.chart_xs()) else {
             return;
         };
-        let xs = crosshair::xs(series);
         let from = self
             .chart_modal
             .cursor_x
-            .or_else(|| crosshair::at_column(&xs, &place, middle(place.graph)));
-        let to = from.and_then(|from| crosshair::step(&xs, &place, from, to));
+            .or_else(|| crosshair::at_column(xs, &place, middle(place.graph)));
+        let to = from.and_then(|from| crosshair::step(xs, &place, from, to));
         if to.is_some() {
             self.chart_modal.cursor_x = to;
         }
@@ -350,14 +350,13 @@ impl App {
     /// Put the crosshair on the point nearest `column`, or with none, back on the
     /// point it stood on (the nearest one now), or in the middle of the plot.
     pub(crate) fn move_crosshair_to(&mut self, column: Option<u16>) {
-        let (Some(place), Some(series)) = (self.chart_modal.plot, self.chart_xy_series()) else {
+        let (Some(place), Some(xs)) = (self.chart_modal.plot, self.chart_xs()) else {
             return;
         };
-        let xs = crosshair::xs(series);
         let at = match (column, self.chart_modal.cursor_x) {
-            (Some(column), _) => crosshair::at_column(&xs, &place, column),
-            (None, Some(x)) => crosshair::nearest(&xs, x),
-            (None, None) => crosshair::at_column(&xs, &place, middle(place.graph)),
+            (Some(column), _) => crosshair::at_column(xs, &place, column),
+            (None, Some(x)) => crosshair::nearest(xs, x),
+            (None, None) => crosshair::at_column(xs, &place, middle(place.graph)),
         };
         if at.is_some() {
             self.chart_modal.cursor_x = at;

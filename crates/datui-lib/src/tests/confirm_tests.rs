@@ -1,0 +1,217 @@
+//! Every confirmation, driven to Yes, to No and to Esc: what each answer does next.
+
+use crate::feedback::Confirm;
+use crate::output_file::Overwrite;
+use crate::*;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::path::PathBuf;
+use std::sync::mpsc;
+
+fn new_app() -> App {
+    let (tx, _rx) = mpsc::channel();
+    App::new(tx, crate::tests::test_runtime())
+}
+
+fn key(app: &mut App, code: KeyCode) -> Option<AppEvent> {
+    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+}
+
+/// Yes: Enter with Yes focused.
+fn yes(app: &mut App) -> Option<AppEvent> {
+    key(app, KeyCode::Left);
+    key(app, KeyCode::Enter)
+}
+
+/// No: Enter with No focused.
+fn no(app: &mut App) -> Option<AppEvent> {
+    key(app, KeyCode::Right);
+    key(app, KeyCode::Enter)
+}
+
+fn export_request() -> ExportRequest {
+    ExportRequest {
+        path: PathBuf::from("out.csv"),
+        format: crate::export_modal::ExportFormat::Csv,
+        options: ExportOptions {
+            source_file: false,
+            csv_delimiter: b',',
+            csv_include_header: true,
+            csv_compression: None,
+            json_compression: None,
+            ndjson_compression: None,
+        },
+        overwrite: Overwrite::Forbid,
+    }
+}
+
+fn chart_request() -> crate::chart_export::ChartExportRequest {
+    crate::chart_export::ChartExportRequest {
+        path: PathBuf::from("out.png"),
+        format: crate::chart_export::ChartExportFormat::Png,
+        options: Default::default(),
+        overwrite: Overwrite::Forbid,
+        recipe: false,
+    }
+}
+
+/// Builds one question's `Confirm`.
+type Asks = fn() -> Confirm;
+
+/// Every question but leaving, each built fresh.
+fn questions() -> Vec<(&'static str, Asks)> {
+    vec![
+        ("read all", || Confirm::ReadAll),
+        ("open link", || {
+            Confirm::OpenLink("https://example.com".into())
+        }),
+        ("clear recents", || Confirm::ClearRecents),
+        ("full scan", || Confirm::QualityFullScan),
+        ("hide examples", || Confirm::HideExamples),
+        ("delete view", || Confirm::DeleteView("no-such-view".into())),
+        ("forget place", || {
+            Confirm::ForgetPlace(PathBuf::from("/nowhere"))
+        }),
+        ("quality export", || {
+            Confirm::QualityExport(PathBuf::from("r.json"), Default::default())
+        }),
+        ("chart export", || {
+            Confirm::ChartExport(Box::new(chart_request()))
+        }),
+        ("export", || Confirm::Export(Box::new(export_request()))),
+        ("copy", || Confirm::Copy(Default::default(), true)),
+        ("download", || Confirm::Download),
+    ]
+}
+
+/// No and Esc do nothing that was asked about, and leave nothing armed for the next
+/// question to fire.
+#[test]
+fn no_and_esc_disarm_every_confirmation() {
+    for decline in [no as fn(&mut App) -> Option<AppEvent>, |app: &mut App| {
+        key(app, KeyCode::Esc)
+    }] {
+        for (name, asking) in questions() {
+            let mut app = new_app();
+            app.confirmation_modal.show("?".into(), asking());
+            assert!(
+                decline(&mut app).is_none(),
+                "{name}: declining does nothing"
+            );
+            assert!(
+                !app.confirmation_modal.active,
+                "{name}: the question closes"
+            );
+            assert!(app.confirmation_modal.asking.is_none(), "{name}: disarmed");
+        }
+    }
+}
+
+/// Yes carries on with what was asked about: the overwrites replace, the link opens,
+/// the copy runs.
+#[test]
+fn yes_carries_on_with_what_was_asked() {
+    let mut app = new_app();
+    app.confirmation_modal
+        .show("?".into(), Confirm::OpenLink("https://x.org".into()));
+    assert!(matches!(yes(&mut app), Some(AppEvent::OpenLink(url)) if url == "https://x.org"));
+
+    app.confirmation_modal.show(
+        "?".into(),
+        Confirm::QualityExport(PathBuf::from("r.json"), Default::default()),
+    );
+    assert!(matches!(
+        yes(&mut app),
+        Some(AppEvent::QualityReportExport(_, _, Overwrite::Replace))
+    ));
+
+    app.confirmation_modal
+        .show("?".into(), Confirm::ChartExport(Box::new(chart_request())));
+    assert!(matches!(
+        yes(&mut app),
+        Some(AppEvent::ChartExport(r)) if r.overwrite == Overwrite::Replace
+    ));
+
+    app.confirmation_modal
+        .show("?".into(), Confirm::Export(Box::new(export_request())));
+    assert!(matches!(
+        yes(&mut app),
+        Some(AppEvent::Export(r)) if r.overwrite == Overwrite::Replace
+    ));
+
+    app.confirmation_modal
+        .show("?".into(), Confirm::Copy(Default::default(), false));
+    assert!(matches!(
+        yes(&mut app),
+        Some(AppEvent::CopyTable { header: false, .. })
+    ));
+    assert!(!app.confirmation_modal.active);
+}
+
+/// Yes on the home screen's questions: the status line they leave is cleared, and the
+/// question closes.
+#[test]
+fn yes_on_the_home_questions_closes_them() {
+    for asking in [
+        Confirm::ClearRecents,
+        Confirm::ForgetPlace(PathBuf::from("/nowhere")),
+        Confirm::HideExamples,
+        Confirm::DeleteView("no-such-view".into()),
+    ] {
+        let mut app = new_app();
+        app.home.status = Some("Forget them?".into());
+        let forgets = matches!(asking, Confirm::ClearRecents | Confirm::ForgetPlace(_));
+        app.confirmation_modal.show("?".into(), asking);
+        assert!(yes(&mut app).is_none());
+        assert!(!app.confirmation_modal.active);
+        if forgets {
+            assert_eq!(app.home.status, None);
+        }
+    }
+}
+
+/// A declined overwrite returns to the filled form behind it.
+#[test]
+fn a_declined_overwrite_returns_to_its_form() {
+    for decline in [no as fn(&mut App) -> Option<AppEvent>, |app: &mut App| {
+        key(app, KeyCode::Esc)
+    }] {
+        let mut app = new_app();
+        app.confirmation_modal
+            .show("?".into(), Confirm::Export(Box::new(export_request())));
+        decline(&mut app);
+        assert_eq!(app.input_mode, InputMode::Export);
+        assert!(app.export_modal.active);
+
+        let mut app = new_app();
+        app.chart_export_modal.suspend();
+        app.confirmation_modal
+            .show("?".into(), Confirm::ChartExport(Box::new(chart_request())));
+        decline(&mut app);
+        assert!(app.chart_export_modal.active);
+    }
+}
+
+/// Leaving while recording: both choices leave, and Esc stays.
+#[test]
+fn leaving_while_recording_leaves_on_either_choice_and_stays_on_esc() {
+    for answer in [yes as fn(&mut App) -> Option<AppEvent>, no] {
+        let mut app = new_app();
+        app.confirmation_modal.show_choice(
+            "?".into(),
+            "Stop recording",
+            "Keep recording",
+            Confirm::Leave(Leaving::Quit),
+        );
+        assert!(matches!(answer(&mut app), Some(AppEvent::Exit)));
+        assert!(!app.confirmation_modal.active);
+    }
+    let mut app = new_app();
+    app.confirmation_modal.show_choice(
+        "?".into(),
+        "Stop recording",
+        "Keep recording",
+        Confirm::Leave(Leaving::Quit),
+    );
+    assert!(key(&mut app, KeyCode::Esc).is_none());
+    assert!(!app.confirmation_modal.active);
+}

@@ -1274,7 +1274,7 @@ impl DataTableState {
         let lf = if self.remote_files.is_some() {
             lf
         } else {
-            crate::hoist_partition_columns(
+            crate::open_scan::hoist_partition_columns(
                 lf,
                 &dataset.schema,
                 self.partition_columns.as_deref().unwrap_or(&[]),

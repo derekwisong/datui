@@ -4,16 +4,17 @@
 //! outlines (`chart_pdf`). The same figure comes out the same on every machine;
 //! text the bundled font lacks falls back to a system font.
 
+use std::borrow::Cow;
 use std::sync::{Arc, OnceLock};
 
 use color_eyre::Result;
 use resvg::{tiny_skia, usvg};
 
 use crate::chart_data::{
-    AxisFormat, AxisNumbers, BarData, BoxPlotData, HeatmapData, HistogramData, KdeData,
-    XAxisTemporalKind, segments, x_axis_label_at,
+    self, AxisNumbers, BarData, BoxPlotData, HeatmapData, HistogramData, KdeData,
+    XAxisTemporalKind, segments,
 };
-use crate::widgets::ticks;
+use crate::widgets::axes::{AxisSpec, TickSet};
 
 const FONT_REGULAR: &[u8] = include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf");
 const FONT_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/IBMPlexSans-SemiBold.ttf");
@@ -565,58 +566,152 @@ pub struct Axis {
     pub log: bool,
 }
 
-/// One line or scatter series.
+/// What a chart plots, built once from the prepared data (`chart_jobs::plot`) and
+/// drawn by the screen and by every export. Borrowed from the chart cache on
+/// screen; owned by an export, which outlives the frame.
 #[derive(Debug, Clone)]
-pub struct Series {
-    pub name: String,
-    pub points: Vec<(f64, f64)>,
-    /// Where a line starts again after a gap (see `chart_data::segments`).
-    pub breaks: Vec<usize>,
-    /// Other: every value of a color without a series of its own.
-    pub other: bool,
-}
-
-/// What a figure plots.
-#[derive(Debug, Clone)]
-pub enum Plot {
-    Lines {
-        series: Vec<Series>,
-        scatter: bool,
-        x: Axis,
-        y: Axis,
-        y_from_zero: bool,
-    },
+pub enum Plot<'a> {
+    Lines(Lines<'a>),
     Bars {
-        data: BarData,
+        data: Cow<'a, BarData>,
         value: Axis,
     },
     Histogram {
-        data: HistogramData,
+        data: Cow<'a, HistogramData>,
         x: Axis,
         y: Axis,
     },
     Kde {
-        data: KdeData,
+        data: Cow<'a, KdeData>,
         x: Axis,
         y: Axis,
     },
     Box {
-        data: BoxPlotData,
+        data: Cow<'a, BoxPlotData>,
         x_title: String,
         y: Axis,
     },
     Heatmap {
-        data: HeatmapData,
+        data: Cow<'a, HeatmapData>,
         x: Axis,
         y: Axis,
     },
+}
+
+/// A line or scatter chart's series, or the axes they will stand on.
+#[derive(Debug, Clone)]
+pub struct Lines<'a> {
+    /// Each series' points as drawn: `ln(1 + y)` on a log scale.
+    pub series: Cow<'a, [Vec<(f64, f64)>]>,
+    /// The points before any log, for the crosshair's readout.
+    pub values: Cow<'a, [Vec<(f64, f64)>]>,
+    /// Per series, where its line starts again after a gap (see `chart_data::segments`).
+    pub breaks: Cow<'a, [Vec<usize>]>,
+    /// Each series' name: its Y column or its color group.
+    pub names: Cow<'a, [String]>,
+    /// Every X of every series, in order, each once: where the crosshair stops.
+    pub xs: Cow<'a, [f64]>,
+    /// The least and greatest X and Y of the points as drawn.
+    pub bounds: Option<[f64; 4]>,
+    /// The last series is Other: every value of a color without a series of its own.
+    pub other: bool,
+    pub scatter: bool,
+    /// Where the axes stand before any series arrives.
+    pub x_bounds: Option<(f64, f64)>,
+    pub x: Axis,
+    pub y: Axis,
+    pub y_from_zero: bool,
+}
+
+/// One series of [`Lines`] that has points.
+#[derive(Debug, Clone, Copy)]
+pub struct Drawn<'a> {
+    /// Its place among every series, which picks its color on screen: an empty
+    /// series before it keeps its color too.
+    pub index: usize,
+    pub name: &'a str,
+    pub points: &'a [(f64, f64)],
+    pub breaks: &'a [usize],
+    pub other: bool,
+}
+
+impl Lines<'_> {
+    /// The series with points.
+    pub fn drawn(&self) -> impl Iterator<Item = Drawn<'_>> {
+        let last = self.names.len().saturating_sub(1);
+        self.series
+            .iter()
+            .zip(self.names.iter())
+            .enumerate()
+            .filter(|(_, (points, _))| !points.is_empty())
+            .map(move |(index, (points, name))| Drawn {
+                index,
+                name,
+                points,
+                breaks: self.breaks.get(index).map_or(&[][..], Vec::as_slice),
+                other: self.other && index == last,
+            })
+    }
+}
+
+impl Plot<'_> {
+    /// Nothing to draw: no points, bins, boxes, cells or bars.
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Lines(lines) => lines.drawn().next().is_none(),
+            Self::Bars { data, .. } => data.bars.is_empty(),
+            Self::Histogram { data, .. } => data.bins.is_empty(),
+            Self::Kde { data, .. } => data.series.is_empty(),
+            Self::Box { data, .. } => data.stats.is_empty(),
+            Self::Heatmap { data, .. } => data.counts.is_empty() || data.max_count <= 0.0,
+        }
+    }
+
+    /// The plot with its data its own, for an export that outlives the chart cache.
+    /// What the crosshair reads stays behind.
+    pub fn into_owned(self) -> Plot<'static> {
+        match self {
+            Self::Lines(lines) => Plot::Lines(Lines {
+                series: Cow::Owned(lines.series.into_owned()),
+                values: Cow::Owned(Vec::new()),
+                xs: Cow::Owned(Vec::new()),
+                breaks: Cow::Owned(lines.breaks.into_owned()),
+                names: Cow::Owned(lines.names.into_owned()),
+                ..lines
+            }),
+            Self::Bars { data, value } => Plot::Bars {
+                data: Cow::Owned(data.into_owned()),
+                value,
+            },
+            Self::Histogram { data, x, y } => Plot::Histogram {
+                data: Cow::Owned(data.into_owned()),
+                x,
+                y,
+            },
+            Self::Kde { data, x, y } => Plot::Kde {
+                data: Cow::Owned(data.into_owned()),
+                x,
+                y,
+            },
+            Self::Box { data, x_title, y } => Plot::Box {
+                data: Cow::Owned(data.into_owned()),
+                x_title,
+                y,
+            },
+            Self::Heatmap { data, x, y } => Plot::Heatmap {
+                data: Cow::Owned(data.into_owned()),
+                x,
+                y,
+            },
+        }
+    }
 }
 
 /// A chart ready to draw: what it plots, and what it says about its rows (a
 /// sample, values a range left out).
 #[derive(Debug, Clone)]
 pub struct Figure {
-    pub plot: Plot,
+    pub plot: Plot<'static>,
     pub chart_notes: Vec<String>,
     pub grid: bool,
 }
@@ -986,55 +1081,71 @@ impl Scale {
     }
 }
 
-/// An axis's ticks and their labels from `lo` to `hi`, at most `most` of them: on
-/// nice numbers, or on calendar boundaries for dates.
-fn axis_ticks(lo: f64, hi: f64, axis: &Axis, most: usize) -> Vec<(f64, String)> {
-    let most = most.max(2);
-    if axis.kind != XAxisTemporalKind::Numeric
-        && axis.kind != XAxisTemporalKind::Time
-        && let (Some(a), Some(b)) = (
-            ticks::to_datetime(lo, axis.kind),
-            ticks::to_datetime(hi, axis.kind),
-        )
-    {
-        for step in ticks::calendar_steps(axis.kind) {
-            let at = ticks::calendar_ticks(a, b, step);
-            if at.is_empty() || at.len() > most {
-                continue;
-            }
-            let labels = ticks::calendar_labels(&at, step.unit, axis.kind, true);
-            return at
+/// An axis's ticks and labels over `lo..hi`, chosen by the screen's tick engine
+/// for an axis `length` long whose labels are `tick` high: on nice numbers, the
+/// calendar or a log scale's powers, about a label per six label heights across or
+/// three down. A Y axis widens to the ticks either side of its range, as on screen;
+/// the range it ends up with comes back with the ticks. Across, the finest set and
+/// fullest labels that stand apart; down, the first whose labels differ.
+fn axis_ticks(
+    (lo, hi): (f64, f64),
+    axis: &Axis,
+    length: f64,
+    tick: f64,
+    across: bool,
+) -> ([f64; 2], Vec<(f64, String)>) {
+    let bounds = [lo, hi];
+    let spec = match (axis.log, across) {
+        (true, _) => AxisSpec::y_log(bounds, &axis.numbers, ""),
+        (false, true) => AxisSpec::calendar(bounds, axis.kind, &axis.numbers, ""),
+        (false, false) => AxisSpec::y_numbers(bounds, &axis.numbers, ""),
+    };
+    let (spacing, least) = if across {
+        (tick * 6.0, tick * 2.5)
+    } else {
+        (tick * 3.0, tick * 1.5)
+    };
+    let groups = spec.tick_sets(length, spacing, least, tick);
+    let placed = |set: &TickSet, labels: &[String]| {
+        (
+            set.bounds,
+            set.ticks
                 .iter()
-                .zip(labels)
-                .filter_map(|(t, label)| Some((ticks::from_datetime(*t, axis.kind)?, label)))
-                .collect();
+                .copied()
+                .zip(labels.iter().cloned())
+                .collect(),
+        )
+    };
+    let distinct = |labels: &[String]| labels.windows(2).all(|w| w[0] != w[1]);
+    for set in groups.iter().flatten() {
+        for labels in &set.levels {
+            let fits = if across {
+                // Centered under their ticks, a label height apart, within the axis.
+                let mut next_free = f64::NEG_INFINITY;
+                set.ticks.iter().zip(labels).all(|(&v, label)| {
+                    let w = text_width(label, tick);
+                    let at = if set.bounds[1] > set.bounds[0] {
+                        (v - set.bounds[0]) / (set.bounds[1] - set.bounds[0]) * length
+                    } else {
+                        0.0
+                    };
+                    let x = (at - w / 2.0).clamp(-w / 2.0, length - w / 2.0);
+                    let clear = x >= next_free;
+                    next_free = x + w + tick;
+                    clear
+                })
+            } else {
+                true
+            };
+            if fits && distinct(labels) {
+                return placed(set, labels);
+            }
         }
     }
-    let (show_lo, show_hi) = if axis.log {
-        (lo.exp_m1(), hi.exp_m1())
-    } else {
-        (lo, hi)
-    };
-    let whole = axis.numbers.whole && !axis.log;
-    let steps = ticks::nice_steps(show_lo, show_hi, 0.0, whole);
-    let step = steps
-        .iter()
-        .copied()
-        .find(|s| (((show_hi - show_lo) / s) as usize) < most)
-        .or_else(|| steps.last().copied());
-    let values = match step {
-        Some(step) => ticks::multiples(show_lo, show_hi, step),
-        None => vec![show_lo],
-    };
-    let format = AxisFormat::new(&values, &axis.numbers);
-    values
-        .iter()
-        .filter_map(|&v| {
-            let label = x_axis_label_at(v, axis.kind, (show_lo, show_hi), 0, &format)?;
-            let at = if axis.log { v.max(0.0).ln_1p() } else { v };
-            Some((at, label))
-        })
-        .collect()
+    match groups.iter().flatten().next() {
+        Some(set) if !across => placed(set, set.levels.first().map_or(&[][..], |l| &l[..])),
+        _ => (bounds, Vec::new()),
+    }
 }
 
 /// `lo..hi` padded so a flat series or a single point still has room.
@@ -1156,7 +1267,7 @@ pub fn svg(figure: &Figure, options: &ExportOptions) -> Result<String> {
 /// The names a legend lists, in the order of their colors.
 fn legend_names(figure: &Figure) -> Vec<String> {
     match &figure.plot {
-        Plot::Lines { series, .. } => series.iter().map(|s| s.name.clone()).collect(),
+        Plot::Lines(lines) => lines.drawn().map(|s| s.name.to_string()).collect(),
         Plot::Bars { data, .. } => data.groups.clone(),
         Plot::Histogram { data, .. } => data.groups.iter().map(|g| g.name.clone()).collect(),
         Plot::Kde { data, .. } => data.series.iter().map(|s| s.name.clone()).collect(),
@@ -1166,14 +1277,13 @@ fn legend_names(figure: &Figure) -> Vec<String> {
 
 /// Where Other is among the figure's series: last, when it has one.
 fn other_at(figure: &Figure) -> Option<usize> {
-    let (other, n) = match &figure.plot {
-        Plot::Lines { series, .. } => return series.iter().position(|s| s.other),
-        Plot::Bars { data, .. } => (data.other, data.groups.len()),
-        Plot::Histogram { data, .. } => (data.other, data.groups.len()),
-        Plot::Kde { data, .. } => (data.other, data.series.len()),
-        Plot::Box { .. } | Plot::Heatmap { .. } => (false, 0),
-    };
-    (other && n > 0).then(|| n - 1)
+    match &figure.plot {
+        Plot::Lines(lines) => lines.drawn().position(|s| s.other),
+        Plot::Bars { data, .. } => chart_data::other_at(data.other, data.groups.len()),
+        Plot::Histogram { data, .. } => chart_data::other_at(data.other, data.groups.len()),
+        Plot::Kde { data, .. } => chart_data::other_at(data.other, data.series.len()),
+        Plot::Box { .. } | Plot::Heatmap { .. } => None,
+    }
 }
 
 /// The plot in `frame`: axes, grid, marks, and the legend.
@@ -1182,10 +1292,10 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
     c.other = other_at(figure);
     let is_lines = matches!(
         figure.plot,
-        Plot::Lines { scatter: false, .. } | Plot::Kde { .. }
+        Plot::Lines(Lines { scatter: false, .. }) | Plot::Kde { .. }
     );
     // A line's swatch is drawn a little heavier than its line, as the line is.
-    if matches!(figure.plot, Plot::Lines { scatter: false, .. }) {
+    if matches!(figure.plot, Plot::Lines(Lines { scatter: false, .. })) {
         c.swatch_stroke = 1.75 / 1.5 * options.line_width.pt() * c.pt;
     }
     // A single series is named by the axis title; two or more get a legend.
@@ -1206,13 +1316,16 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
         frame.right -= (widest + tick).min(frame.width() / 3.0);
     }
     match &figure.plot {
-        Plot::Lines {
-            series,
-            scatter,
-            x,
-            y,
-            y_from_zero,
-        } => {
+        Plot::Lines(lines) => {
+            let Lines {
+                scatter,
+                x,
+                y,
+                y_from_zero,
+                ..
+            } = lines;
+            // Numbered as drawn: a series with no points takes no color.
+            let series: Vec<Drawn> = lines.drawn().collect();
             let all = series.iter().flat_map(|s| s.points.iter());
             let (x_lo, x_hi) = all
                 .clone()
@@ -1243,22 +1356,22 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                 .of(series.iter().map(|s| s.points.len()).sum());
             let mut ends = Vec::new();
             // Other first, under the series drawn over it.
-            let mut order: Vec<(usize, &Series)> = series.iter().enumerate().collect();
+            let mut order: Vec<(usize, _)> = series.iter().enumerate().collect();
             order.sort_by_key(|(_, s)| !s.other);
-            for (i, s) in order {
+            for (i, &Drawn { points, breaks, .. }) in order {
                 let color = c.color(i);
                 if *scatter {
-                    for &(px, py) in &s.points {
+                    for &(px, py) in points {
                         c.dot(sx.at(px), sy.at(py), radius, color, opacity);
                     }
                 } else {
-                    for run in segments(&s.points, &s.breaks) {
+                    for run in segments(points, breaks) {
                         let pts: Vec<(f64, f64)> =
                             run.iter().map(|&(px, py)| (sx.at(px), sy.at(py))).collect();
                         c.polyline(&pts, color, width);
                     }
                 }
-                if let Some(&(px, py)) = s.points.last() {
+                if let Some(&(px, py)) = points.last() {
                     ends.push((sy.at(py), sx.at(px), i));
                 }
             }
@@ -1277,8 +1390,8 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                 figure.grid,
             );
             let mut ends = Vec::new();
-            for (i, s) in data.series.iter().enumerate() {
-                let pts: Vec<(f64, f64)> = s
+            for i in chart_data::drawing_order(data.series.len(), c.other) {
+                let pts: Vec<(f64, f64)> = data.series[i]
                     .points
                     .iter()
                     .map(|&(px, py)| (sx.at(px), sy.at(py)))
@@ -1327,15 +1440,12 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                 }
             } else {
                 // Groups overlaid as step outlines: filled bars would hide each other.
-                for (g, group) in data.groups.iter().enumerate() {
-                    let mut pts = vec![(sx.at(data.x_min), sy.at(0.0))];
-                    for (i, &count) in group.counts.iter().enumerate() {
-                        let x0 = sx.at(data.x_min + i as f64 * bin);
-                        let x1 = sx.at(data.x_min + (i + 1) as f64 * bin);
-                        pts.push((x0, sy.at(count)));
-                        pts.push((x1, sy.at(count)));
-                    }
-                    pts.push((sx.at(data.x_max), sy.at(0.0)));
+                let steps = data.step_outlines();
+                for g in chart_data::drawing_order(steps.len(), c.other) {
+                    let pts: Vec<(f64, f64)> = steps[g]
+                        .iter()
+                        .map(|&(x, y)| (sx.at(x), sy.at(y)))
+                        .collect();
                     c.polyline(&pts, c.color(g), 1.5 * c.pt);
                 }
             }
@@ -1367,20 +1477,12 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                 let mid = plot.left + slot * (i as f64 + 0.5);
                 let half = (slot * 0.3).min(c.body * 3.0);
                 let stroke = 1.25 * c.pt;
-                c.line((mid, sy.at(s.max)), (mid, sy.at(s.q3)), color, stroke);
-                c.line((mid, sy.at(s.q1)), (mid, sy.at(s.min)), color, stroke);
-                c.line(
-                    (mid - half / 2.0, sy.at(s.max)),
-                    (mid + half / 2.0, sy.at(s.max)),
-                    color,
-                    stroke,
-                );
-                c.line(
-                    (mid - half / 2.0, sy.at(s.min)),
-                    (mid + half / 2.0, sy.at(s.min)),
-                    color,
-                    stroke,
-                );
+                let marks = s.marks(mid, half, half / 2.0);
+                let at = |[a, b]: [(f64, f64); 2]| ((a.0, sy.at(a.1)), (b.0, sy.at(b.1)));
+                for segment in [marks.high, marks.low, marks.high_cap, marks.low_cap] {
+                    let (a, b) = at(segment);
+                    c.line(a, b, color, stroke);
+                }
                 let top = sy.at(s.q3);
                 c.rect(mid - half, top, half * 2.0, sy.at(s.q1) - top, color, 0.18);
                 c.out.push_str(&format!(
@@ -1391,12 +1493,8 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                     (sy.at(s.q1) - top).max(0.0),
                     color.hex()
                 ));
-                c.line(
-                    (mid - half, sy.at(s.median)),
-                    (mid + half, sy.at(s.median)),
-                    color,
-                    stroke * 2.0,
-                );
+                let (a, b) = at(marks.median);
+                c.line(a, b, color, stroke * 2.0);
             }
         }
         Plot::Heatmap { data, x, y } => {
@@ -1452,7 +1550,7 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
 /// category.
 fn axis_title(figure: &Figure) -> &str {
     match &figure.plot {
-        Plot::Lines { y, .. }
+        Plot::Lines(Lines { y, .. })
         | Plot::Histogram { y, .. }
         | Plot::Kde { y, .. }
         | Plot::Box { y, .. }
@@ -1532,7 +1630,7 @@ fn axes_with(
     let top = frame.top + tick * 2.2;
     let x_title_h = if x.title.is_empty() { 0.0 } else { tick * 1.5 };
     let bottom = frame.bottom - tick * 1.6 - x_title_h;
-    let y_ticks = axis_ticks(ys.0, ys.1, y, ((bottom - top) / (tick * 3.0)) as usize);
+    let (y_bounds, y_ticks) = axis_ticks(ys, y, bottom - top, tick, false);
     let y_label_w = y_ticks
         .iter()
         .map(|(_, l)| text_width(l, tick))
@@ -1550,27 +1648,16 @@ fn axes_with(
         to: plot.right,
     };
     let sy = Scale {
-        lo: ys.0,
-        hi: ys.1,
+        lo: y_bounds[0],
+        hi: y_bounds[1],
         from: plot.bottom,
         to: plot.top,
     };
-    let widest_x = |labels: &[(f64, String)]| {
-        labels
-            .iter()
-            .map(|(_, l)| text_width(l, tick))
-            .fold(0.0, f64::max)
-    };
-    let mut most = (plot.width() / (tick * 6.0)) as usize;
-    let mut x_ticks = if x_ticked {
-        axis_ticks(xs.0, xs.1, x, most)
+    let x_ticks = if x_ticked {
+        axis_ticks(xs, x, plot.width(), tick, true).1
     } else {
         Vec::new()
     };
-    while x_ticked && most > 2 && widest_x(&x_ticks) * x_ticks.len() as f64 * 1.4 > plot.width() {
-        most -= 1;
-        x_ticks = axis_ticks(xs.0, xs.1, x, most);
-    }
     let hair = 0.6 * c.pt;
     for (v, label) in &y_ticks {
         let py = sy.at(*v);
@@ -1585,17 +1672,43 @@ fn axes_with(
             label,
         );
     }
-    for (v, label) in &x_ticks {
+    draw_x_ticks(c, plot, &sx, &x_ticks, (grid, true));
+    c.line(
+        (plot.left, plot.bottom),
+        (plot.right, plot.bottom),
+        palette.text_secondary,
+        hair,
+    );
+    draw_y_title(c, frame, &y.title);
+    draw_x_title(c, (frame, plot), &x.title);
+    (sx, sy, plot)
+}
+
+/// X's labels under `plot` at its ticks, with the grid when `grid` and a short mark
+/// above each label when `marks`.
+fn draw_x_ticks(
+    c: &mut Canvas<'_>,
+    plot: Area,
+    sx: &Scale,
+    ticks: &[(f64, String)],
+    (grid, marks): (bool, bool),
+) {
+    let tick = c.body * 0.9;
+    let hair = 0.6 * c.pt;
+    let palette = c.palette.clone();
+    for (v, label) in ticks {
         let px = sx.at(*v);
         if grid {
             c.line((px, plot.top), (px, plot.bottom), palette.grid, hair);
         }
-        c.line(
-            (px, plot.bottom),
-            (px, plot.bottom + tick * 0.35),
-            palette.text_secondary,
-            hair,
-        );
+        if marks {
+            c.line(
+                (px, plot.bottom),
+                (px, plot.bottom + tick * 0.35),
+                palette.text_secondary,
+                hair,
+            );
+        }
         c.text(
             (px, plot.bottom + tick * 1.35),
             tick,
@@ -1604,31 +1717,38 @@ fn axes_with(
             label,
         );
     }
-    c.line(
-        (plot.left, plot.bottom),
-        (plot.right, plot.bottom),
-        palette.text_secondary,
-        hair,
+}
+
+/// X's title, centered under the plot at the foot of `frame`.
+fn draw_x_title(c: &mut Canvas<'_>, (frame, plot): (Area, Area), title: &str) {
+    if title.is_empty() {
+        return;
+    }
+    let tick = c.body * 0.9;
+    let color = c.palette.text;
+    c.text(
+        ((plot.left + plot.right) / 2.0, frame.bottom - tick * 0.2),
+        tick,
+        color,
+        ("middle", 600),
+        title,
     );
-    if !y.title.is_empty() {
-        c.text(
-            (frame.left, frame.top + tick),
-            tick,
-            palette.text,
-            ("start", 600),
-            &y.title,
-        );
+}
+
+/// The title written over the plot's left edge, not turned on its side.
+fn draw_y_title(c: &mut Canvas<'_>, frame: Area, title: &str) {
+    if title.is_empty() {
+        return;
     }
-    if !x.title.is_empty() {
-        c.text(
-            ((plot.left + plot.right) / 2.0, frame.bottom - tick * 0.2),
-            tick,
-            palette.text,
-            ("middle", 600),
-            &x.title,
-        );
-    }
-    (sx, sy, plot)
+    let tick = c.body * 0.9;
+    let color = c.palette.text;
+    c.text(
+        (frame.left, frame.top + tick),
+        tick,
+        color,
+        ("start", 600),
+        title,
+    );
 }
 
 /// Axes with a category on X, one slot per name, and Y as `axes` draws it.
@@ -1808,37 +1928,11 @@ fn draw_bars(c: &mut Canvas<'_>, frame: Area, data: &BarData, value: &Axis, grid
         from: plot.left,
         to: plot.right,
     };
-    let x_ticks = axis_ticks(lo, hi, value, (plot.width() / (tick * 6.0)) as usize);
+    let (_, x_ticks) = axis_ticks((lo, hi), value, plot.width(), tick, true);
     let hair = 0.6 * c.pt;
-    for (v, label) in &x_ticks {
-        let px = sx.at(*v);
-        if grid {
-            c.line((px, plot.top), (px, plot.bottom), palette.grid, hair);
-        }
-        c.text(
-            (px, plot.bottom + tick * 1.35),
-            tick,
-            palette.text_secondary,
-            ("middle", 400),
-            label,
-        );
-    }
-    if !value.title.is_empty() {
-        c.text(
-            ((plot.left + plot.right) / 2.0, frame.bottom - tick * 0.2),
-            tick,
-            palette.text,
-            ("middle", 600),
-            &value.title,
-        );
-    }
-    c.text(
-        (frame.left, frame.top + tick),
-        tick,
-        palette.text,
-        ("start", 600),
-        &data.category,
-    );
+    draw_x_ticks(c, plot, &sx, &x_ticks, (grid, false));
+    draw_x_title(c, (frame, plot), &value.title);
+    draw_y_title(c, frame, &data.category);
     let rows = bars.len() + usize::from(more > 0);
     let row_h = (plot.height() / rows.max(1) as f64).min(tick * 2.5 * groups as f64);
     let zero = sx.at(0.0);
@@ -1915,18 +2009,20 @@ mod tests {
 
     fn lines(names: &[&str]) -> Figure {
         Figure {
-            plot: Plot::Lines {
-                series: names
-                    .iter()
-                    .enumerate()
-                    .map(|(i, n)| Series {
-                        name: n.to_string(),
-                        points: (0..10).map(|x| (x as f64, (x * (i + 1)) as f64)).collect(),
-                        breaks: Vec::new(),
-                        other: *n == OTHER,
-                    })
-                    .collect(),
+            plot: Plot::Lines(Lines {
+                series: Cow::Owned(
+                    (0..names.len())
+                        .map(|i| (0..10).map(|x| (x as f64, (x * (i + 1)) as f64)).collect())
+                        .collect(),
+                ),
+                values: Cow::Owned(Vec::new()),
+                breaks: Cow::Owned(Vec::new()),
+                names: Cow::Owned(names.iter().map(|n| n.to_string()).collect()),
+                xs: Cow::Owned(Vec::new()),
+                bounds: None,
+                other: names.last() == Some(&OTHER),
                 scatter: false,
+                x_bounds: None,
                 x: Axis {
                     title: "x".to_string(),
                     ..Default::default()
@@ -1936,7 +2032,7 @@ mod tests {
                     ..Default::default()
                 },
                 y_from_zero: false,
-            },
+            }),
             chart_notes: vec!["sample of 1,000 of 50k rows".to_string()],
             grid: true,
         }
@@ -1979,7 +2075,7 @@ mod tests {
     #[test]
     fn an_export_names_other_last_in_its_neutral_color() {
         let mut figure = lines(&["AAPL", "MSFT", OTHER]);
-        if let Plot::Lines { scatter, .. } = &mut figure.plot {
+        if let Plot::Lines(Lines { scatter, .. }) = &mut figure.plot {
             *scatter = true;
         }
         let svg = svg(
@@ -2249,21 +2345,21 @@ mod tests {
         };
         let plots = [
             Plot::Bars {
-                data: bars,
+                data: Cow::Owned(bars),
                 value: Axis::default(),
             },
             Plot::Histogram {
-                data: histogram,
+                data: Cow::Owned(histogram),
                 x: Axis::default(),
                 y: Axis::default(),
             },
             Plot::Box {
-                data: boxes,
+                data: Cow::Owned(boxes),
                 x_title: "carrier".to_string(),
                 y: Axis::default(),
             },
             Plot::Heatmap {
-                data: heatmap,
+                data: Cow::Owned(heatmap),
                 x: Axis::default(),
                 y: Axis::default(),
             },
@@ -2326,10 +2422,10 @@ mod tests {
         );
 
         let mut scatter = lines(&["AAPL"]);
-        if let Plot::Lines {
+        if let Plot::Lines(Lines {
             scatter: is_scatter,
             ..
-        } = &mut scatter.plot
+        }) = &mut scatter.plot
         {
             *is_scatter = true;
         }
@@ -2375,8 +2471,8 @@ mod tests {
 
         // Y from zero: a line of 100 to 109 takes in 0 only when asked.
         let mut high = lines(&["AAPL"]);
-        if let Plot::Lines { series, .. } = &mut high.plot {
-            series[0].points = (0..10).map(|x| (x as f64, 100.0 + x as f64)).collect();
+        if let Plot::Lines(Lines { series, .. }) = &mut high.plot {
+            series.to_mut()[0] = (0..10).map(|x| (x as f64, 100.0 + x as f64)).collect();
         }
         let y_zero = "text-anchor=\"end\" fill=\"#5b6170\">0</text>";
         let off = svg(&high, &options()).unwrap();
@@ -2401,7 +2497,7 @@ mod tests {
             kind: XAxisTemporalKind::Date,
             ..Default::default()
         };
-        let ticks = axis_ticks(19723.0, 20454.0, &axis, 6);
+        let (_, ticks) = axis_ticks((19723.0, 20454.0), &axis, 400.0, 12.0, true);
         let labels: Vec<&str> = ticks.iter().map(|(_, l)| l.as_str()).collect();
         assert!(labels.contains(&"2025"), "{labels:?}");
         assert!(ticks.len() <= 6);

@@ -52,7 +52,7 @@ fn until(app: &mut App, rx: &mpsc::Receiver<AppEvent>, done: impl Fn(&App) -> bo
         if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
             let mut next = Some(event);
             while let Some(event) = next {
-                next = app.event(&event);
+                next = app.event(event);
             }
             drain_events(app, rx);
         }
@@ -103,7 +103,7 @@ fn appended_rows_show_and_the_last_row_sticks() {
     assert_eq!(t.last().copied().flatten(), Some(5), "{t:?}");
 
     // Scrolled up, it stays where it was put and the bar counts what came below.
-    app.event(&key(KeyCode::Home));
+    app.event(key(KeyCode::Home));
     drain_events(&mut app, &rx);
     append(&path, "6,60\n7,70\n8,80\n");
     until(&mut app, &rx, |app| shown(app) == 8 && app.follow_settled());
@@ -114,7 +114,7 @@ fn appended_rows_show_and_the_last_row_sticks() {
     assert!(screen(&mut app).contains("3 new below"));
 
     // Esc stops following; the rows read stay.
-    app.event(&key(KeyCode::Esc));
+    app.event(key(KeyCode::Esc));
     assert!(app.follow().is_none());
     assert_eq!(rows(&app), 8);
     assert_eq!(app.flash_message(), Some("Stopped following"));
@@ -133,7 +133,7 @@ fn a_query_runs_over_the_new_rows() {
         "select where level = \"error\"".to_string(),
     ));
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     drain_events(&mut app, &rx);
     assert_eq!(rows(&app), 1);
@@ -157,7 +157,7 @@ fn a_filter_counts_and_reads_the_new_rows() {
     let (mut app, rx) = app();
     pump_open_until_loaded(&mut app, &rx, vec![path.clone()], following());
     screen(&mut app);
-    app.event(&AppEvent::Filter(vec![FilterStatement {
+    app.event(AppEvent::Filter(vec![FilterStatement {
         columns: Vec::new(),
         column: "n".into(),
         operator: FilterOperator::Eq,
@@ -177,7 +177,7 @@ fn a_filter_counts_and_reads_the_new_rows() {
             shown(app) == end as usize && app.follow_settled() && state.is_num_rows_valid()
         });
         assert_eq!(rows(&app), matches(end));
-        app.event(&key(KeyCode::End));
+        app.event(key(KeyCode::End));
         drain_events(&mut app, &rx);
         let page = visible(&app).column("t").unwrap().i64().unwrap().to_vec();
         let expected: Vec<_> = (0..end).filter(|i| i % 7 == 3).map(Some).collect();
@@ -199,7 +199,7 @@ fn a_partial_line_waits_for_its_newline() {
     assert_eq!(rows(&app), 2, "the third line is not complete");
     append(&path, "ee\n");
     until(&mut app, &rx, |app| shown(app) == 3 && app.follow_settled());
-    app.event(&key(KeyCode::End));
+    app.event(key(KeyCode::End));
     drain_events(&mut app, &rx);
     let words = visible(&app).column("word").unwrap().str().unwrap().clone();
     assert_eq!(words.get(2), Some("three"), "read whole, not as it was");
@@ -248,7 +248,7 @@ fn a_replaced_file_of_the_same_or_larger_size_is_read_again() {
             && app.follow_settled()
     });
     assert_eq!(rows(&app), 3);
-    app.event(&key(KeyCode::Home));
+    app.event(key(KeyCode::Home));
     drain_events(&mut app, &rx);
     let t = visible(&app).column("t").unwrap().i64().unwrap().to_vec();
     assert_eq!(t, vec![Some(7), Some(8), Some(9)]);
@@ -290,7 +290,7 @@ fn a_pause_holds_the_view_and_a_resume_catches_up() {
     pump_open_until_loaded(&mut app, &rx, vec![path.clone()], following());
     screen(&mut app);
     assert_eq!(rows(&app), 1);
-    app.event(&key(KeyCode::Char('t')));
+    app.event(key(KeyCode::Char('t')));
     assert_eq!(app.follow().unwrap().standing(), &Standing::Paused);
     append(
         &path,
@@ -307,7 +307,7 @@ fn a_pause_holds_the_view_and_a_resume_catches_up() {
         bar.contains("1 row does not fit"),
         "an id that is not a number: {bar}"
     );
-    app.event(&key(KeyCode::Char('t')));
+    app.event(key(KeyCode::Char('t')));
     drain_events(&mut app, &rx);
     assert_eq!(rows(&app), 3);
     assert_eq!(app.follow().unwrap().standing(), &Standing::Following);
@@ -353,7 +353,7 @@ fn blank_lines_in_ndjson_cost_no_rows() {
     until(&mut app, &rx, |app| {
         shown(app) == 8_000 && app.follow_settled()
     });
-    app.event(&key(KeyCode::End));
+    app.event(key(KeyCode::End));
     drain_events(&mut app, &rx);
     let page = visible(&app).column("id").unwrap().i64().unwrap().to_vec();
     assert_eq!(page.last().copied().flatten(), Some(8_000), "{page:?}");
@@ -461,7 +461,7 @@ fn t_starts_following_a_file() {
     assert!(app.follow().is_none());
     let mut next = Some(key(KeyCode::Char('t')));
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     drain_events(&mut app, &rx);
     assert!(app.follow().is_some());
@@ -480,7 +480,7 @@ fn value_counts_keep_their_snapshot_until_t() {
     let (mut app, rx) = app();
     pump_open_until_loaded(&mut app, &rx, vec![path.clone()], following());
     screen(&mut app);
-    app.event(&key(KeyCode::Char('F')));
+    app.event(key(KeyCode::Char('F')));
     let counted = |app: &App| app.value_counts.current().map(|c| c.summary.rows);
     until(&mut app, &rx, |app| counted(app).is_some());
     assert_eq!(counted(&app), Some(2));
@@ -492,10 +492,10 @@ fn value_counts_keep_their_snapshot_until_t() {
         bar.contains("2 new rows") && bar.contains("Refresh"),
         "{bar}"
     );
-    app.event(&key(KeyCode::Char('t')));
+    app.event(key(KeyCode::Char('t')));
     until(&mut app, &rx, |app| counted(app) == Some(4));
     // Back at the table, it reads its rows again.
-    app.event(&key(KeyCode::Esc));
+    app.event(key(KeyCode::Esc));
     until(&mut app, &rx, |app| {
         app.follow_settled() && visible(app).height() == 4
     });
@@ -724,19 +724,19 @@ fn quitting_while_recording_asks_whether_to_keep_recording() {
         screen(&mut app);
 
         assert!(
-            app.event(&key(KeyCode::Char('Q'))).is_none(),
+            app.event(key(KeyCode::Char('Q'))).is_none(),
             "asked, not quit"
         );
         assert!(app.confirmation_modal.active);
-        app.event(&key(KeyCode::Esc));
+        app.event(key(KeyCode::Esc));
         assert!(!app.confirmation_modal.active);
         assert!(spool(&app).live(), "Esc stays, recording");
 
-        assert!(app.event(&key(KeyCode::Char('Q'))).is_none());
+        assert!(app.event(key(KeyCode::Char('Q'))).is_none());
         if keep {
-            app.event(&key(KeyCode::Right));
+            app.event(key(KeyCode::Right));
         }
-        let out = app.event(&key(KeyCode::Enter));
+        let out = app.event(key(KeyCode::Enter));
         assert!(matches!(out, Some(AppEvent::Exit)), "either way it quits");
         let after = app.recording_after_exit();
         if keep {

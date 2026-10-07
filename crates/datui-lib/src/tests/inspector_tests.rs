@@ -22,7 +22,7 @@ fn draw(app: &mut App) -> String {
 }
 
 fn press(app: &mut App, code: KeyCode) -> Option<AppEvent> {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
 }
 
 /// Enter on the hidden field: the answer the worker sends, still unhandled.
@@ -52,7 +52,7 @@ fn read_hidden(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>) -> AppEv
 fn a_read_lands_for_the_row_it_was_asked_for() {
     let (mut app, rx) = app();
     let answer = read_hidden(&mut app, &rx);
-    app.event(&answer);
+    app.event(answer);
     assert!(!app.is_busy());
     let frame = app.data_table_state.as_ref().unwrap().len_generation();
     let secret = app
@@ -70,7 +70,7 @@ fn a_read_from_a_stale_generation_is_dropped() {
     let (mut app, rx) = app();
     let answer = read_hidden(&mut app, &rx);
     app.jobs.advance();
-    app.event(&answer);
+    app.event(answer);
     assert!(matches!(
         app.inspector_modal.read,
         Some(FieldRead::Reading { .. })
@@ -90,7 +90,7 @@ fn a_read_for_another_row_is_let_go() {
         app.inspector_modal.read.is_none(),
         "the new row has read nothing"
     );
-    app.event(&answer);
+    app.event(answer);
     assert!(app.inspector_modal.read.is_none());
 }
 
@@ -101,7 +101,7 @@ fn a_failed_read_says_so_in_the_pane() {
     app.jobs.worker_dies =
         crate::tests::worker_dies_once(|job| matches!(job, Job::InspectRow { .. }));
     let answer = read_hidden(&mut app, &rx);
-    app.event(&answer);
+    app.event(answer);
     assert!(!app.is_busy());
     assert!(matches!(
         app.inspector_modal.read,
@@ -141,7 +141,7 @@ fn a_json_parse_for_another_row_is_let_go() {
     press(&mut app, KeyCode::Right);
     draw(&mut app);
     assert!(app.inspector_modal.json_wait.is_none());
-    app.event(&answer);
+    app.event(answer);
     assert!(app.inspector_modal.drill.is_none(), "nothing opened");
 
     // Asked again on this row, the answer opens the array.
@@ -155,7 +155,7 @@ fn a_json_parse_for_another_row_is_let_go() {
             Err(e) => panic!("no answer from the worker: {e}"),
         }
     };
-    app.event(&answer);
+    app.event(answer);
     let drill = app.inspector_modal.drill.as_ref().expect("opened");
     assert_eq!(drill.row, 1);
     assert_eq!(drill.level().node.len(), 40_001);

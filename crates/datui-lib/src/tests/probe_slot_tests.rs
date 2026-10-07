@@ -32,7 +32,7 @@ fn rows_so_far_show_until_the_listing_lands() {
     app.home_app.probes_inflight = vec![dir.clone()];
     let row = |name: &str| discover::Entry::directory(&dir.join(name));
 
-    app.event(&AppEvent::HomeProbeProgress {
+    app.event(AppEvent::HomeProbeProgress {
         root: dir.clone(),
         rows: vec![row("2009-01-03")],
     });
@@ -42,12 +42,12 @@ fn rows_so_far_show_until_the_listing_lands() {
     assert_eq!(section.subtitle.as_deref(), Some("1 so far"));
     assert_eq!(section.rows.len(), 1);
 
-    app.event(&AppEvent::HomeProbeReady {
+    app.event(AppEvent::HomeProbeReady {
         root: dir.clone(),
         rows: Some(vec![row("2009-01-03"), row("2009-01-04")]),
         cut_short: true,
     });
-    app.event(&AppEvent::HomeProbeProgress {
+    app.event(AppEvent::HomeProbeProgress {
         root: dir.clone(),
         rows: vec![row("late")],
     });
@@ -77,7 +77,7 @@ fn an_answered_probe_frees_its_slot() {
     for (i, root) in roots.iter().enumerate() {
         // Alternate the two ways a probe can answer; both are answers.
         let rows = if i % 2 == 0 { Some(Vec::new()) } else { None };
-        app.event(&AppEvent::HomeProbeReady {
+        app.event(AppEvent::HomeProbeReady {
             root: root.clone(),
             rows,
             cut_short: false,
@@ -101,7 +101,7 @@ fn an_unanswered_probe_keeps_its_slot() {
     let answered = PathBuf::from("/pretend/live-mount");
     app.home_app.probes_inflight = vec![wedged.clone(), answered.clone()];
 
-    app.event(&AppEvent::HomeProbeReady {
+    app.event(AppEvent::HomeProbeReady {
         root: answered,
         rows: Some(Vec::new()),
         cut_short: false,
@@ -130,7 +130,7 @@ fn without_cloud_a_bucket_says_it_cannot_be_listed() {
         let event = rx
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("the probe answers");
-        app.event(&event);
+        app.event(event);
     }
     assert_eq!(
         app.home.probes.error(&bucket),
@@ -153,7 +153,7 @@ fn batches_read_before_a_frame_are_listed_once() {
 
     let generation = app.home_app.generation;
     for name in ["a", "b", "c"] {
-        app.event(&AppEvent::HomeProbeProgress {
+        app.event(AppEvent::HomeProbeProgress {
             root: dir.clone(),
             rows: vec![row(name)],
         });

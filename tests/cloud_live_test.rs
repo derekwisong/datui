@@ -210,7 +210,7 @@ fn drive(app: &mut datui::App, first: datui::AppEvent) -> Option<String> {
         if let datui::AppEvent::Crash(message) = &event {
             crash = Some(message.clone());
         }
-        next = app.event(&event);
+        next = app.event(event);
     }
     crash
 }
@@ -330,7 +330,7 @@ fn enter_source(
     if !shown || !select_row(app, &label) {
         return false;
     }
-    app.event(&key(crossterm::event::KeyCode::Enter));
+    app.event(key(crossterm::event::KeyCode::Enter));
     pump_until(app, rx, 30, |app| {
         section_named(app, &label).is_some_and(|s| !s.rows.is_empty())
     })
@@ -429,7 +429,7 @@ fn the_home_screen_lists_buckets_and_descends_into_one() {
     // Enter on the bucket, through the real key handler rather than by reaching into
     // state, so what is tested is what a keypress does.
     assert!(select_row(&mut app, "datui-sales"), "the bucket row");
-    app.event(&key(crossterm::event::KeyCode::Enter));
+    app.event(key(crossterm::event::KeyCode::Enter));
     let descended = pump_until(&mut app, &rx, 30, |app| {
         section_named(app, "s3://datui-sales")
             .is_some_and(|s| s.rows.iter().any(|r| r.name == "top-level.csv"))
@@ -477,7 +477,7 @@ fn the_home_screen_lists_buckets_and_descends_into_one() {
 
     // And down one more level, into a prefix rather than a bucket.
     assert!(select_row(&mut app, "2024"), "the prefix row");
-    app.event(&key(crossterm::event::KeyCode::Enter));
+    app.event(key(crossterm::event::KeyCode::Enter));
     let deeper = pump_until(&mut app, &rx, 30, |app| {
         section_named(app, "s3://datui-sales/2024")
             .is_some_and(|s| s.rows.iter().any(|r| r.name == "january.csv"))
@@ -510,7 +510,7 @@ fn an_s3_object_opens_and_lands_in_recents() {
         "the bucket should be listed"
     );
     assert!(select_row(&mut app, "datui-sales"), "the bucket row");
-    app.event(&key(crossterm::event::KeyCode::Enter));
+    app.event(key(crossterm::event::KeyCode::Enter));
 
     let inside = pump_until(&mut app, &rx, 30, |app| {
         section_named(app, "s3://datui-sales")
@@ -532,7 +532,7 @@ fn an_s3_object_opens_and_lands_in_recents() {
         // The modal opens focused on No, which is the right default for a prompt that
         // spends somebody's egress budget. Moving to Yes is part of what a user does.
         println!("confirmation raised, accepting");
-        app.event(&key(crossterm::event::KeyCode::Left));
+        app.event(key(crossterm::event::KeyCode::Left));
         if let Some(crash) = drive(&mut app, key(crossterm::event::KeyCode::Enter)) {
             panic!("confirming the download crashed: {crash}");
         }
@@ -633,7 +633,7 @@ fn the_cloud_section_renders_legibly() {
 
     // And inside a bucket, where objects carry sizes and prefixes are somewhere to go.
     assert!(select_row(&mut app, "datui-sales"), "the bucket row");
-    app.event(&key(crossterm::event::KeyCode::Enter));
+    app.event(key(crossterm::event::KeyCode::Enter));
     pump_until(&mut app, &rx, 30, |app| {
         section_named(app, "s3://datui-sales")
             .is_some_and(|s| s.rows.iter().any(|r| r.name == "orders.parquet"))
@@ -650,8 +650,8 @@ fn the_cloud_section_renders_legibly() {
     );
 
     // The other provider looks the same.
-    app.event(&key(crossterm::event::KeyCode::Esc));
-    app.event(&key(crossterm::event::KeyCode::Esc));
+    app.event(key(crossterm::event::KeyCode::Esc));
+    app.event(key(crossterm::event::KeyCode::Esc));
     assert_eq!(app.home.browsing, None, "back at the home listing");
     assert!(
         enter_source(&mut app, &rx, "gcs-default"),
@@ -874,7 +874,7 @@ fn the_cloud_section_lists_sources_and_steps_through_them() {
         "the details pane names the endpoint"
     );
 
-    app.event(&key(crossterm::event::KeyCode::Enter));
+    app.event(key(crossterm::event::KeyCode::Enter));
     let inside = pump_until(&mut app, &rx, 10, |app| {
         section_named(app, "Lab MinIO").is_some_and(|s| s.rows.iter().any(|r| r.name == "data"))
     });
@@ -888,7 +888,7 @@ fn the_cloud_section_lists_sources_and_steps_through_them() {
     );
 
     assert!(select_row(&mut app, "data"), "the bucket row");
-    app.event(&key(crossterm::event::KeyCode::Enter));
+    app.event(key(crossterm::event::KeyCode::Enter));
     let objects = pump_until(&mut app, &rx, 30, |app| {
         app.home
             .sections
@@ -901,12 +901,12 @@ fn the_cloud_section_lists_sources_and_steps_through_them() {
     assert!(bucket.contains(&format!("cloud {sep} Lab MinIO {sep} data")));
 
     // Backspace climbs back out through the source to the home listing.
-    app.event(&key(crossterm::event::KeyCode::Backspace));
+    app.event(key(crossterm::event::KeyCode::Backspace));
     assert_eq!(
         app.home.browsing.as_deref(),
         Some(std::path::Path::new("cloud://lab"))
     );
-    app.event(&key(crossterm::event::KeyCode::Esc));
+    app.event(key(crossterm::event::KeyCode::Esc));
     assert_eq!(app.home.browsing, None, "Esc from the source returns home");
 }
 
@@ -1080,7 +1080,7 @@ fn awkward_names_list_and_open() {
                     || (app.data_table_state.is_some() && !app.is_busy())
             });
             if app.awaiting_open_confirmation() {
-                app.event(&key(crossterm::event::KeyCode::Left));
+                app.event(key(crossterm::event::KeyCode::Left));
                 drive(&mut app, key(crossterm::event::KeyCode::Enter));
                 pump_until(&mut app, &rx, 60, |app| {
                     app.data_table_state.is_some() && !app.is_busy()
@@ -1202,7 +1202,7 @@ fn open_url_with(
         app.awaiting_open_confirmation() || (app.data_table_state.is_some() && !app.is_busy())
     });
     if app.awaiting_open_confirmation() {
-        app.event(&key(crossterm::event::KeyCode::Left));
+        app.event(key(crossterm::event::KeyCode::Left));
         drive(&mut app, key(crossterm::event::KeyCode::Enter));
         pump_until(&mut app, &rx, 120, |app| {
             app.data_table_state.is_some() && !app.is_busy()
@@ -1369,7 +1369,7 @@ fn public_datasets_browse_and_open_from_the_home_screen() {
     );
     // Out of the dataset's root: back to the listing, not up into a bucket that cannot
     // be listed.
-    app.event(&key(crossterm::event::KeyCode::Backspace));
+    app.event(key(crossterm::event::KeyCode::Backspace));
     assert_eq!(app.home.browsing, None, "back to the listing");
 
     assert!(pump_until(&mut app, &rx, 60, listed("Palmer penguins")));
@@ -1605,7 +1605,7 @@ fn gcloud_projects_browse_from_the_home_screen() {
             rows(app).iter().any(|(n, _)| n == &name)
         });
         assert!(select_row(&mut app, &name));
-        app.event(&key(crossterm::event::KeyCode::Enter));
+        app.event(key(crossterm::event::KeyCode::Enter));
         pump_until(&mut app, &rx, 30, |app| {
             app.home
                 .browsing
@@ -1625,7 +1625,7 @@ fn gcloud_projects_browse_from_the_home_screen() {
         if let Some((bucket, path)) = buckets.first().cloned() {
             assert!(path.to_string_lossy().starts_with("gs://"));
             assert!(select_row(&mut app, &bucket));
-            app.event(&key(crossterm::event::KeyCode::Enter));
+            app.event(key(crossterm::event::KeyCode::Enter));
             pump_until(&mut app, &rx, 30, |app| {
                 app.home
                     .browsing
@@ -1637,7 +1637,7 @@ fn gcloud_projects_browse_from_the_home_screen() {
                 text.contains(&format!("{name} {sep} {bucket}")),
                 "the trail goes through the project"
             );
-            app.event(&key(crossterm::event::KeyCode::Backspace));
+            app.event(key(crossterm::event::KeyCode::Backspace));
             assert_eq!(
                 app.home
                     .browsing
@@ -1649,7 +1649,7 @@ fn gcloud_projects_browse_from_the_home_screen() {
             entered_bucket = true;
             break;
         }
-        app.event(&key(crossterm::event::KeyCode::Backspace));
+        app.event(key(crossterm::event::KeyCode::Backspace));
     }
     assert!(entered_bucket, "no project had a bucket");
 }
@@ -1923,7 +1923,7 @@ fn partitioned_cloud_directories_are_hive_datasets() {
 
     // → goes inside, where one row stands for the whole directory.
     assert!(select_row(&mut app, "blocks"));
-    app.event(&key(crossterm::event::KeyCode::Right));
+    app.event(key(crossterm::event::KeyCode::Right));
     assert!(
         pump_until(&mut app, &rx, 60, |app| row_kind(
             app,
@@ -1933,7 +1933,7 @@ fn partitioned_cloud_directories_are_hive_datasets() {
         "a row for every partition"
     );
     println!("{}", screen_text(&mut app, 120, 20));
-    app.event(&key(crossterm::event::KeyCode::Backspace));
+    app.event(key(crossterm::event::KeyCode::Backspace));
 
     // Enter opens the directory as one dataset, with the partition as a column.
     step(&mut app, "blocks");

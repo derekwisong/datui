@@ -737,12 +737,12 @@ impl App {
     }
 
     /// The chart view's events: an export asked for, and then started.
-    pub(crate) fn chart_event(&mut self, event: &AppEvent) -> Option<AppEvent> {
+    pub(crate) fn chart_event(&mut self, event: AppEvent) -> Option<AppEvent> {
         match event {
             AppEvent::ChartExport(request) => {
                 self.busy = true;
                 self.export_progress = Some(ExportProgress::new(&request.path, "Exporting chart"));
-                Some(AppEvent::DoChartExport(request.clone()))
+                Some(AppEvent::DoChartExport(request))
             }
             AppEvent::DoChartExport(request) => {
                 // `ChartExport` arms `busy` and defers here so the phase can be drawn
@@ -755,7 +755,7 @@ impl App {
                     self.busy = false;
                     return None;
                 }
-                self.start_chart_export(request.clone());
+                self.start_chart_export(request);
                 None
             }
             _ => unreachable!("not an event for chart_event"),

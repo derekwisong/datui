@@ -377,10 +377,10 @@ fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
             break event;
         }
     };
-    let _ = app.handle(&reported);
+    let _ = app.handle(reported);
     // The jump the key asked for is queued behind the join, as a jump always is.
     while let Ok(event) = rx.try_recv() {
-        let _ = app.handle(&event);
+        let _ = app.handle(event);
     }
 
     let state = app.data_table_state.as_ref().unwrap();
@@ -491,9 +491,9 @@ fn a_sampled_dataset_shows_an_estimate_until_it_is_counted() {
         while !done(app) {
             assert!(std::time::Instant::now() < deadline, "never got there");
             if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
-                let mut next = app.event(&event);
+                let mut next = app.event(event);
                 while let Some(event) = next {
-                    next = app.event(&event);
+                    next = app.event(event);
                 }
             }
         }
@@ -698,7 +698,7 @@ fn a_key_that_acts_while_busy_reads_nothing() {
         // acts by handing back `AppEvent::Reset`, and dropping it here would let
         // an admitted key that collects through the check.
         if let Some(next) = app.key(&key) {
-            let _ = app.handle(&next);
+            let _ = app.handle(next);
         }
         // A page waiting on the widths lands at the next draw, which must read
         // nothing either.
@@ -890,7 +890,7 @@ fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
             .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
             .expect("the pass reports back");
         let is_the_pass = matches!(event, AppEvent::JobEnded(ticket) if ticket.kind() == crate::JobKind::FootersJoin);
-        let _ = app.handle(&event);
+        let _ = app.handle(event);
         if is_the_pass {
             break;
         }
@@ -983,7 +983,7 @@ fn a_pass_that_cannot_read_the_footers_stops_the_dataset_waiting_for_it() {
         matches!(reported, AppEvent::JobEnded(ticket) if ticket.kind() == crate::JobKind::FootersJoin),
         "and says it the same way a pass that succeeded does"
     );
-    let _ = app.handle(&reported);
+    let _ = app.handle(reported);
 
     assert!(
         app.data_table_state
@@ -1136,7 +1136,7 @@ fn a_pass_that_brings_no_count_still_leaves_rows_on_screen() {
             break event;
         }
     };
-    let _ = app.handle(&reported);
+    let _ = app.handle(reported);
 
     assert!(
         app.rows_in_flight().is_some(),
@@ -1308,7 +1308,7 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
     // The user leaves the query, and the join goes in underneath the count.
     let state = app.data_table_state.as_mut().unwrap();
     state.deferred(|s| s.query(String::new()));
-    let _ = app.handle(&AppEvent::Update);
+    let _ = app.handle(AppEvent::Update);
     let joined = app.data_table_state.as_ref().unwrap().len_generation();
     assert_ne!(
         joined, orphaned,
@@ -1317,7 +1317,7 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
 
     // And the count comes back, answering a frame that is gone.
     let before = app.data_table_state.as_ref().unwrap().start_row();
-    let next = app.event(&AppEvent::BackgroundLenReady {
+    let next = app.event(AppEvent::BackgroundLenReady {
         len_generation: orphaned,
         num_rows: 100,
         file_row_groups: None,
@@ -1335,7 +1335,7 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
     // Retired, not re-issued: nothing jumps on the strength of the stale answer.
     let mut follow = next;
     while let Some(event) = follow {
-        follow = app.event(&event);
+        follow = app.event(event);
     }
     assert_eq!(
         app.data_table_state.as_ref().unwrap().start_row(),
@@ -1395,7 +1395,7 @@ fn a_count_that_failed_for_another_frame_does_not_answer_for_this_end() {
     app.status_message = None;
 
     // And a count for some frame that is long gone fails.
-    let _ = app.handle(&AppEvent::BackgroundLenFailed {
+    let _ = app.handle(AppEvent::BackgroundLenFailed {
         len_generation: live.wrapping_sub(1),
     });
 
@@ -1481,7 +1481,7 @@ fn the_bar_says_question_mark_when_the_count_failed() {
         "nothing has failed yet"
     );
 
-    let _ = app.handle(&AppEvent::BackgroundLenFailed {
+    let _ = app.handle(AppEvent::BackgroundLenFailed {
         len_generation: live,
     });
 
@@ -1508,7 +1508,7 @@ fn a_dead_frames_failed_count_leaves_this_frames_question_mark_alone() {
     let (mut app, _rx) = uncounted_remote_app();
     let live = app.data_table_state.as_ref().unwrap().len_generation();
 
-    let _ = app.handle(&AppEvent::BackgroundLenFailed {
+    let _ = app.handle(AppEvent::BackgroundLenFailed {
         len_generation: live,
     });
     assert!(
@@ -1517,7 +1517,7 @@ fn a_dead_frames_failed_count_leaves_this_frames_question_mark_alone() {
     );
 
     // And now a count orphaned by an earlier frame change fails too.
-    let _ = app.handle(&AppEvent::BackgroundLenFailed {
+    let _ = app.handle(AppEvent::BackgroundLenFailed {
         len_generation: live.wrapping_sub(1),
     });
 
@@ -1560,7 +1560,7 @@ fn the_look_answers(
 ) -> Option<crate::AppEvent> {
     let ticket = look.ticket();
     look.end(crate::Outcome::answered(crate::Answer::Kind(found)));
-    app.event(&crate::AppEvent::JobEnded(ticket))
+    app.event(crate::AppEvent::JobEnded(ticket))
 }
 
 /// An answer nobody is waiting for is dropped — and the busy state it was holding
@@ -1645,7 +1645,7 @@ fn a_newer_look_replaces_an_older_one() {
 
     // A second Enter, at a row the user moved to while the first was out.
     let second = std::path::PathBuf::from("/mnt/share/bbb");
-    let _ = app.event(&AppEvent::ClassifyThenOpen {
+    let _ = app.event(AppEvent::ClassifyThenOpen {
         path: second.clone(),
         jump: false,
     });
@@ -1754,7 +1754,7 @@ fn a_parked_end_does_not_put_its_message_on_the_home_screen() {
     // And the count it was waiting on then fails, with the user somewhere else.
     // (Both halves of the fix are exercised: `abandon_load` clears the message on
     // the way out, and the gate below keeps it off a view that is not the table.)
-    let _ = app.handle(&AppEvent::BackgroundLenFailed {
+    let _ = app.handle(AppEvent::BackgroundLenFailed {
         len_generation: waiting,
     });
     let bar = footer_text(&mut app);
@@ -1860,7 +1860,7 @@ fn a_failed_count_for_a_frame_that_is_gone_retires_its_end_quietly() {
         "the frame the count belongs to is gone"
     );
 
-    let _ = app.handle(&AppEvent::BackgroundLenFailed {
+    let _ = app.handle(AppEvent::BackgroundLenFailed {
         len_generation: waiting,
     });
 
@@ -1905,7 +1905,7 @@ fn the_bar_says_it_is_counting_for_an_end_and_says_when_that_failed() {
         "and the line says why the view has not moved: {bar:?}"
     );
 
-    let _ = app.handle(&AppEvent::BackgroundLenFailed {
+    let _ = app.handle(AppEvent::BackgroundLenFailed {
         len_generation: waiting,
     });
     let bar = footer_text(&mut app);
@@ -1978,13 +1978,13 @@ fn an_end_pressed_on_the_dataset_they_left_does_not_move_the_next_one() {
     );
 
     // The first directory's count finally arrives.
-    let mut follow = app.event(&AppEvent::BackgroundLenReady {
+    let mut follow = app.event(AppEvent::BackgroundLenReady {
         len_generation: theirs,
         num_rows: 100,
         file_row_groups: None,
     });
     while let Some(event) = follow {
-        follow = app.event(&event);
+        follow = app.event(event);
     }
     let next = app.data_table_state.as_ref().unwrap().len_generation();
     assert_ne!(
@@ -1994,13 +1994,13 @@ fn an_end_pressed_on_the_dataset_they_left_does_not_move_the_next_one() {
     );
 
     // Even once its own count lands, as it would.
-    let mut follow = app.event(&AppEvent::BackgroundLenReady {
+    let mut follow = app.event(AppEvent::BackgroundLenReady {
         len_generation: next,
         num_rows: 500,
         file_row_groups: None,
     });
     while let Some(event) = follow {
-        follow = app.event(&event);
+        follow = app.event(event);
     }
     assert_eq!(
         app.data_table_state.as_ref().unwrap().start_row(),
@@ -2048,7 +2048,7 @@ fn a_job_holds_the_generation_until_its_answer_is_handled() {
         app.work_a_bump_would_strand(),
         "an answer not yet handled still holds it"
     );
-    let _ = app.handle(&ended);
+    let _ = app.handle(ended);
     assert!(
         !app.work_a_bump_would_strand(),
         "and handling it lets go, with nothing left to arrive"
@@ -2074,7 +2074,7 @@ fn a_job_puts_down_the_keys_and_the_line_it_held() {
     let end = |app: &mut App, job: crate::jobs::Started, outcome: Outcome| {
         let ticket = job.ticket();
         job.end(outcome);
-        app.event(&AppEvent::JobEnded(ticket))
+        app.event(AppEvent::JobEnded(ticket))
     };
     let written = || Answer::QualityReportWritten(std::path::PathBuf::from("r.json"));
 
@@ -2141,7 +2141,7 @@ fn a_job_leaves_the_line_another_job_still_shows() {
     first.end(Outcome::answered(Answer::QualityReportWritten(
         std::path::PathBuf::from("a.json"),
     )));
-    app.event(&AppEvent::JobEnded(ticket));
+    app.event(AppEvent::JobEnded(ticket));
     assert!(app.is_busy(), "the second still holds the keys");
     assert_eq!(
         app.status_message.as_deref(),
@@ -2193,7 +2193,7 @@ fn a_cancelled_read_waits_out_its_worker_and_a_replaced_one_does_not() {
         "the cancelled read is still going"
     );
     drop(sample);
-    app.event(&recv(&rx));
+    app.event(recv(&rx));
     assert!(app.cancelled_analysis_running().is_none(), "until it ends");
 
     let run = app.job_for_tests(
@@ -2206,7 +2206,7 @@ fn a_cancelled_read_waits_out_its_worker_and_a_replaced_one_does_not() {
         "replaced, not cancelled"
     );
     drop(run);
-    let _ = app.handle(&recv(&rx));
+    let _ = app.handle(recv(&rx));
     assert!(!matches!(rx.try_recv(), Ok(AppEvent::JobEnded(_))));
 }
 
@@ -2237,7 +2237,7 @@ fn a_superseded_scan_does_not_continue_the_load() {
     assert_ne!(first, second);
     let ticket = scan.ticket();
     scan.end(Outcome::answered(scanned()));
-    assert!(app.event(&AppEvent::JobEnded(ticket)).is_none());
+    assert!(app.event(AppEvent::JobEnded(ticket)).is_none());
     assert!(
         app.jobs
             .current(|job| matches!(job, Job::Load(_)))
@@ -2355,7 +2355,7 @@ fn stale_analysis_answers_are_ignored() {
     for (run, answer) in runs.into_iter().zip(answers) {
         let ticket = run.ticket();
         run.end(Outcome::answered(answer));
-        app.event(&AppEvent::JobEnded(ticket));
+        app.event(AppEvent::JobEnded(ticket));
     }
     let modal = &app.analysis_modal;
     assert!(modal.describe_results.is_none());
@@ -2392,7 +2392,7 @@ fn a_cancelled_job_does_not_hold_the_generation() {
     assert!(app.work_a_bump_would_strand());
 
     drop(old);
-    let _ = app.handle(&recv(&rx));
+    let _ = app.handle(recv(&rx));
     assert!(
         app.work_a_bump_would_strand(),
         "the current job still holds"
@@ -2401,7 +2401,7 @@ fn a_cancelled_job_does_not_hold_the_generation() {
     drop(current);
     let ended = recv(&rx);
     assert!(matches!(ended, AppEvent::JobEnded(_)));
-    let _ = app.handle(&ended);
+    let _ = app.handle(ended);
     assert!(!app.work_a_bump_would_strand());
 }
 
@@ -2435,7 +2435,7 @@ fn a_panicking_worker_ends_its_job() {
         matches!(&failed, AppEvent::JobEnded(t) if *t == ticket && t.kind() == JobKind::Pivot),
         "the panic ends the job it stopped"
     );
-    let _ = app.handle(&failed);
+    let _ = app.handle(failed);
     assert!(!app.is_busy(), "the spinner comes down");
     assert!(app.status_message.is_none());
     assert!(app.error_modal.active, "and the user is told");
@@ -2493,7 +2493,7 @@ fn an_error_and_a_panic_end_a_job_the_same_way() {
             "a job that {what}: {}",
             describe(&ended)
         );
-        let _ = app.handle(&ended);
+        let _ = app.handle(ended);
         assert!(
             rx.recv_timeout(std::time::Duration::from_millis(50))
                 .is_err(),
@@ -2533,7 +2533,7 @@ fn a_failure_leaves_other_work_alone() {
             message: "not this one".to_string(),
             panicked: false,
         });
-        app.event(&AppEvent::JobEnded(ticket));
+        app.event(AppEvent::JobEnded(ticket));
     };
     let untouched = |app: &App, what: &str| {
         assert!(app.is_busy(), "{what}: still busy");
@@ -2655,42 +2655,33 @@ fn a_count_answers_however_its_worker_ends() {
     let state = DataTableState::from_lazyframe(lf, &OpenOptions::default()).unwrap();
     let generation = state.len_generation();
     let owed = || OwedCount::new(LenCount::for_state(&state), tx.clone());
-    let answer = |app: &mut App| {
+    let answer = |app: &mut App, said: fn(&AppEvent) -> bool| {
         app.counting.len_count_inflight = Some(generation);
         let event = recv(&rx);
-        app.event(&event);
+        assert!(said(&event), "{}", describe(&event));
+        app.event(event);
         assert_eq!(
             app.counting.len_count_inflight, None,
             "the count is no longer waited on"
         );
         assert!(rx.try_recv().is_err(), "once");
-        event
     };
 
     owed().answer(|_| panic!("count died"));
-    let failed = answer(&mut app);
-    assert!(
-        matches!(failed, AppEvent::BackgroundLenFailed { .. }),
-        "{}",
-        describe(&failed)
-    );
+    answer(&mut app, |e| {
+        matches!(e, AppEvent::BackgroundLenFailed { .. })
+    });
 
     // The worker carrying it died first.
     drop(owed());
-    let failed = answer(&mut app);
-    assert!(
-        matches!(failed, AppEvent::BackgroundLenFailed { .. }),
-        "{}",
-        describe(&failed)
-    );
+    answer(&mut app, |e| {
+        matches!(e, AppEvent::BackgroundLenFailed { .. })
+    });
 
     owed().answer(LenCount::run);
-    let counted = answer(&mut app);
-    assert!(
-        matches!(counted, AppEvent::BackgroundLenReady { num_rows: 3, .. }),
-        "{}",
-        describe(&counted)
-    );
+    answer(&mut app, |e| {
+        matches!(e, AppEvent::BackgroundLenReady { num_rows: 3, .. })
+    });
 }
 
 /// An open's first phase holds the generation before the errands behind it get
@@ -2733,7 +2724,7 @@ fn an_open_holds_the_generation_before_the_errands_behind_it() {
 
     // And the user opens something else.
     let out = app
-        .handle(&AppEvent::Open(vec![path], OpenOptions::default()))
+        .handle(AppEvent::Open(vec![path], OpenOptions::default()))
         .expect("the open is not a key");
     assert!(out.is_none(), "the open started its scan itself");
     assert!(
@@ -2885,7 +2876,7 @@ fn the_download_confirmation_is_not_busy() {
         OpenOptions::default(),
     ));
     while let Some(event) = next {
-        next = app.handle(&event).expect("no keys here");
+        next = app.handle(event).expect("no keys here");
     }
 
     assert!(app.is_busy(), "the probe is running");
@@ -2897,7 +2888,7 @@ fn the_download_confirmation_is_not_busy() {
         .recv_timeout(std::time::Duration::from_secs(60))
         .expect("the probe answers");
     assert!(matches!(answered, AppEvent::JobEnded(_)));
-    let _ = app.handle(&answered);
+    let _ = app.handle(answered);
 
     assert!(app.awaiting_open_confirmation(), "the user is being asked");
     assert!(!app.is_busy(), "and nothing is running while they decide");
@@ -3226,13 +3217,13 @@ fn a_count_landing_during_a_load_does_not_bump_the_generation() {
     let opening = app.task_generation();
 
     // And the count lands.
-    let mut follow = app.event(&AppEvent::BackgroundLenReady {
+    let mut follow = app.event(AppEvent::BackgroundLenReady {
         len_generation: waiting,
         num_rows: 100,
         file_row_groups: None,
     });
     while let Some(event) = follow {
-        follow = app.event(&event);
+        follow = app.event(event);
     }
 
     assert_eq!(
@@ -3247,7 +3238,7 @@ fn a_count_landing_during_a_load_does_not_bump_the_generation() {
 
     // The open finishes, and the jump gets its turn.
     drop(lease);
-    let _ = app.handle(&AppEvent::Update);
+    let _ = app.handle(AppEvent::Update);
     assert!(
         !app.rows_owed(),
         "the collect the jump asked for runs once nothing is waiting"
@@ -3456,7 +3447,7 @@ fn a_pass_from_the_dataset_before_this_one_joins_nothing_to_it() {
     // the one that notices.
     app.install_for_tests(state_of(second()), None, &OpenOptions::default(), None);
 
-    let _ = app.handle(&reported);
+    let _ = app.handle(reported);
     assert_eq!(
         app.data_table_state.as_ref().unwrap().get_column_order(),
         ["other"],
@@ -3538,8 +3529,8 @@ fn a_pass_that_failed_waits_for_work_already_asked_for() {
     // The export finishes, and the errand gets its turn on the next event.
     app.export_progress = None;
     drop(lease);
-    let _ = app.handle(&AppEvent::Update);
-    let _ = app.handle(&AppEvent::Update);
+    let _ = app.handle(AppEvent::Update);
+    let _ = app.handle(AppEvent::Update);
 
     assert!(
         app.task_generation() != waiting_on,
@@ -3631,7 +3622,7 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
             });
             app.jobs.end(ticket);
         }
-        let _ = app.handle(&AppEvent::Update);
+        let _ = app.handle(AppEvent::Update);
     };
 
     for (what, start) in under_way {
@@ -3649,7 +3640,7 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
                 remote: None,
             },
         ));
-        let _ = app.handle(&AppEvent::Update);
+        let _ = app.handle(AppEvent::Update);
 
         assert_eq!(
             app.task_generation(),
@@ -3664,7 +3655,7 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
     }
 
     // Nothing under way now, and they go in.
-    let _ = app.handle(&AppEvent::Update);
+    let _ = app.handle(AppEvent::Update);
     assert_eq!(
         app.data_table_state
             .as_ref()
@@ -3737,7 +3728,7 @@ fn columns_held_for_one_dataset_are_not_given_to_the_next() {
             remote: None,
         },
     ));
-    let _ = app.handle(&AppEvent::Update);
+    let _ = app.handle(AppEvent::Update);
     assert!(
         app.counting.footers_held.is_some(),
         "waiting, as they should be"
@@ -3745,7 +3736,7 @@ fn columns_held_for_one_dataset_are_not_given_to_the_next() {
 
     // And instead of clearing the query, the user opens something else.
     app.install_for_tests(state_of(second()), None, &OpenOptions::default(), None);
-    let _ = app.handle(&AppEvent::Update);
+    let _ = app.handle(AppEvent::Update);
 
     assert_eq!(
         app.data_table_state.as_ref().unwrap().get_column_order(),
@@ -3894,7 +3885,7 @@ fn columns_arriving_under_a_query_wait_rather_than_break_it() {
             remote: None,
         },
     ));
-    let _ = app.handle(&AppEvent::Update);
+    let _ = app.handle(AppEvent::Update);
 
     let table = app.data_table_state.as_ref().unwrap();
     assert_eq!(
@@ -3915,7 +3906,7 @@ fn columns_arriving_under_a_query_wait_rather_than_break_it() {
     // The user clears the query — an empty one is how that is said — and now they
     // can get in.
     app.data_table_state.as_mut().unwrap().query(String::new());
-    let _ = app.handle(&AppEvent::Update);
+    let _ = app.handle(AppEvent::Update);
     assert_eq!(
         app.data_table_state
             .as_ref()
@@ -4034,7 +4025,7 @@ fn a_staged_open_joins_what_its_footers_found() {
     // The re-read runs off this thread and would count too, as soon as it runs. It
     // dies before it reads, so what is counted below is this thread's alone.
     app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, crate::Job::Rows(_)));
-    let _ = app.handle(&AppEvent::JobEnded(ticket));
+    let _ = app.handle(AppEvent::JobEnded(ticket));
     // Read again, not asked to be read again. The join drops the buffer, so a
     // request that goes on to be ignored — as a step of the open's chain is, once
     // the load is over — leaves the table with nothing to show at the moment it was

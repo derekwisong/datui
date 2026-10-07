@@ -115,7 +115,7 @@ pub fn drain_events(app: &mut App, rx: &Receiver<AppEvent>) {
     while let Some(event) = next_event(app, rx) {
         let mut next = Some(event);
         while let Some(event) = next {
-            next = app.event(&event);
+            next = app.event(event);
         }
     }
 }
@@ -143,10 +143,10 @@ pub fn pump_open_until_loaded(
     loop {
         match next.take() {
             Some(event @ AppEvent::Crash(_)) => {
-                app.event(&event);
+                app.event(event);
                 return;
             }
-            Some(event) => next = app.event(&event),
+            Some(event) => next = app.event(event),
             None => match next_event(app, rx) {
                 Some(event) => next = Some(event),
                 None => return,

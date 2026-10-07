@@ -86,7 +86,7 @@ fn info_opens_on(app: &mut App, tab: InfoTab) {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     // Notes take the panel first while unread.
     app.data_table_state.as_mut().unwrap().mark_notes_seen();
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('i'),
         KeyModifiers::NONE,
     )));
@@ -187,7 +187,7 @@ FROM (
   )
 )
 ORDER BY time";
-    app.event(&AppEvent::SqlQuery(sql.to_string()));
+    app.event(AppEvent::SqlQuery(sql.to_string()));
     super::pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.error().is_none(), "{:?}", state.error());
@@ -590,10 +590,10 @@ fn an_sdf_file_opens_from_a_url() {
         let Some(event) = next.take().or_else(|| next_event(&app, &rx)) else {
             continue;
         };
-        next = app.event(&event);
+        next = app.event(event);
     }
     while let Some(event) = next.take().or_else(|| next_event(&app, &rx)) {
-        next = app.event(&event);
+        next = app.event(event);
     }
     assert_eq!(app.error_message(), None);
     assert_eq!(frame(&app).height(), 2);

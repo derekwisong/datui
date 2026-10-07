@@ -127,7 +127,7 @@ fn listing_and_opening_sign_with_the_active_profile() {
             if let Ok(event) = rx.recv_timeout(Duration::from_millis(50)) {
                 let mut next = Some(event);
                 while let Some(event) = next {
-                    next = app.event(&event);
+                    next = app.event(event);
                 }
             }
         }
@@ -158,7 +158,7 @@ fn listing_and_opening_sign_with_the_active_profile() {
     );
     let mut next = Some(open);
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
     // Until the object itself is asked for: the second profile's listing can land after
     // the snapshot above and would otherwise end the wait early.

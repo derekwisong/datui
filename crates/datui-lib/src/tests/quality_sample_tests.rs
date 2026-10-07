@@ -79,7 +79,7 @@ fn a_copy_that_does_not_read_as_the_source_is_let_go() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
     let generation = app.dataset_generation;
-    app.event(&AppEvent::BackgroundQualityCopyKept {
+    app.event(AppEvent::BackgroundQualityCopyKept {
         dataset_generation: generation,
         copy: None,
     });
@@ -87,7 +87,7 @@ fn a_copy_that_does_not_read_as_the_source_is_let_go() {
 }
 
 fn key(app: &mut App, code: KeyCode) -> Option<AppEvent> {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
 }
 
 fn screen(app: &mut App) -> String {
@@ -177,7 +177,7 @@ fn a_cancelled_run_says_so_until_its_worker_exits() {
     assert!(text.contains("Cancelling: source read finishing"), "{text}");
 
     // A stage the stopped worker still sends changes nothing.
-    app.event(&AppEvent::JobProgress {
+    app.event(AppEvent::JobProgress {
         ticket: stopped,
         progress: quality_stage(data_quality::QualityStage::ProfilingColumns),
     });
@@ -201,7 +201,7 @@ fn a_cancelled_run_says_so_until_its_worker_exits() {
     // The worker exits; the state goes, the reason with it, and Run runs.
     drop(worker);
     while let Ok(event) = rx.try_recv() {
-        app.event(&event);
+        app.event(event);
     }
     assert!(app.cancelled_analysis_running().is_none());
     let text = screen(&mut app);
@@ -220,7 +220,7 @@ fn a_cancelled_run_says_so_until_its_worker_exits() {
         Job::Analysis(crate::jobs::AnalysisRun::default()),
         Some("Profiling data quality..."),
     );
-    app.event(&AppEvent::JobProgress {
+    app.event(AppEvent::JobProgress {
         ticket: running.ticket(),
         progress: quality_stage(data_quality::QualityStage::ProfilingColumns),
     });
@@ -274,7 +274,7 @@ fn a_run_that_stops_at_its_next_batch_is_not_called_a_finishing_read() {
 
     drop(worker);
     while let Ok(event) = rx.try_recv() {
-        app.event(&event);
+        app.event(event);
     }
     assert!(app.cancelled_analysis_running().is_none());
     assert!(!screen(&mut app).contains("Run waits"));
@@ -301,7 +301,7 @@ fn a_stale_report_never_replaces_the_current_one() {
         Some("Profiling data quality..."),
     );
     while let Ok(event) = rx.try_recv() {
-        app.event(&event);
+        app.event(event);
     }
     let on_screen = app.analysis_modal.quality.results.clone().unwrap();
     let df = polars::prelude::df!("id" => [1i64, 2, 3]).unwrap();
@@ -333,7 +333,7 @@ fn a_stale_report_never_replaces_the_current_one() {
     };
 
     let (old_plan, old_results, old_rows) = measured(1);
-    app.event(&AppEvent::JobProgress {
+    app.event(AppEvent::JobProgress {
         ticket: stale.ticket(),
         progress: quality_stage(data_quality::QualityStage::Assembling),
     });
@@ -343,13 +343,13 @@ fn a_stale_report_never_replaces_the_current_one() {
         kept: Some(old_rows),
         plan: Box::new(old_plan.clone()),
     }));
-    app.event(&AppEvent::JobEnded(ended));
+    app.event(AppEvent::JobEnded(ended));
     let ended = failing.ticket();
     failing.end(Outcome::Failed {
         message: "the stale run failed".to_string(),
         panicked: false,
     });
-    app.event(&AppEvent::JobEnded(ended));
+    app.event(AppEvent::JobEnded(ended));
     assert_eq!(
         format!("{:?}", app.analysis_modal.quality.results),
         format!("{:?}", Some(&on_screen)),
@@ -374,7 +374,7 @@ fn a_stale_report_never_replaces_the_current_one() {
         kept: Some(new_rows),
         plan: Box::new(new_plan.clone()),
     }));
-    app.event(&AppEvent::JobEnded(ended));
+    app.event(AppEvent::JobEnded(ended));
     assert_eq!(
         format!("{:?}", app.analysis_modal.quality.results),
         format!("{:?}", Some(&new_results))
@@ -386,7 +386,7 @@ fn a_stale_report_never_replaces_the_current_one() {
     assert!(app.analysis_modal.computing.is_none() && !app.is_busy());
     assert!(app.quality_cached(&new_plan));
     while let Ok(event) = rx.try_recv() {
-        app.event(&event);
+        app.event(event);
     }
     assert!(!app.background_work_in_flight());
 }
@@ -539,7 +539,7 @@ fn nothing_reads_beside_a_cancelled_run_through_another_way_in() {
     // The worker exits: each way in reads again.
     drop(worker);
     while let Ok(event) = rx.try_recv() {
-        app.event(&event);
+        app.event(event);
     }
     assert!(app.cancelled_analysis_running().is_none());
     assert!(matches!(

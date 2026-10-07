@@ -61,9 +61,9 @@ fn ints(df: &DataFrame, column: &str) -> Vec<i64> {
 
 /// Press a key and handle what it asks for next, as the event loop would.
 fn press(app: &mut App, code: KeyCode) {
-    let mut next = app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    let mut next = app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
 }
 
@@ -257,9 +257,7 @@ fn audio_with_no_extension_is_known_by_its_first_bytes() {
 #[test]
 fn a_query_reads_the_samples_it_needs() {
     let (mut app, rx) = open("tone.wav");
-    app.event(&AppEvent::QQuery(
-        "select ch2 where ch2 = 32767".to_string(),
-    ));
+    app.event(AppEvent::QQuery("select ch2 where ch2 = 32767".to_string()));
     drain_events(&mut app, &rx);
     assert_eq!(app.error_message(), None);
     let state = app.data_table_state.as_ref().unwrap();

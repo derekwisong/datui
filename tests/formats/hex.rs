@@ -30,7 +30,7 @@ fn type_in(app: &mut App, text: &str) {
 }
 
 fn ctrl(app: &mut App, c: char) -> Option<AppEvent> {
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char(c),
         KeyModifiers::CONTROL,
     )))
@@ -373,7 +373,7 @@ fields = [
     let next = press(&mut app, KeyCode::Enter).expect("an open");
     let mut next = Some(next);
     while let Some(event) = next.take() {
-        next = app.event(&event);
+        next = app.event(event);
     }
     drain_events(&mut app, &rx);
     assert!(app.error_message().is_none(), "{:?}", app.error_message());

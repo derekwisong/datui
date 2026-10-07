@@ -21,7 +21,7 @@ fn a_stalled_cache_read_holds_up_neither_the_home_screen_nor_its_keys() {
     assert_eq!(app.input_mode, InputMode::Home);
     let area = Rect::new(0, 0, 100, 20);
     app.render(area, &mut Buffer::empty(area));
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('r'),
         KeyModifiers::NONE,
     )));
@@ -49,7 +49,7 @@ fn a_stalled_cache_read_holds_up_neither_the_home_screen_nor_its_keys() {
         if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
             let mut next = Some(event);
             while let Some(event) = next.take() {
-                next = app.event(&event);
+                next = app.event(event);
             }
         }
     }

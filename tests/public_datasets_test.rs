@@ -22,7 +22,7 @@ fn drive(app: &mut App, event: AppEvent) {
         if let AppEvent::Crash(message) = &event {
             panic!("{message}");
         }
-        next = app.event(&event);
+        next = app.event(event);
         // A job that failed says so on screen.
         if let Some(message) = app.error_message() {
             panic!("{message}");
@@ -332,15 +332,15 @@ fn an_unreachable_web_file_says_so_on_its_row_and_its_open() {
     assert!(screen.contains("returned 404: the"), "{screen}");
 
     // Enter: the probe settles it, so the error comes without a download question.
-    let mut next = app.event(&key(KeyCode::Enter));
+    let mut next = app.event(key(KeyCode::Enter));
     let deadline = Instant::now() + Duration::from_secs(10);
     while app.error_message().is_none() && Instant::now() < deadline {
         assert!(!app.awaiting_open_confirmation(), "asked to download a 404");
         match next.take() {
-            Some(event) => next = app.event(&event),
+            Some(event) => next = app.event(event),
             None => {
                 if let Ok(event) = rx.recv_timeout(Duration::from_millis(20)) {
-                    next = app.event(&event);
+                    next = app.event(event);
                 }
             }
         }

@@ -686,27 +686,24 @@ impl App {
     }
 
     /// Row counts, footer passes and line indexing answering, and the frame that waited on them.
-    pub(crate) fn counting_event(&mut self, event: &AppEvent) -> Option<AppEvent> {
+    pub(crate) fn counting_event(&mut self, event: AppEvent) -> Option<AppEvent> {
         match event {
             AppEvent::BackgroundLenReady {
                 len_generation,
                 num_rows,
                 file_row_groups,
             } => {
-                if self.counting.len_count_inflight == Some(*len_generation) {
+                if self.counting.len_count_inflight == Some(len_generation) {
                     self.counting.len_count_inflight = None;
                 }
-                if self.counting.len_count_failed == Some(*len_generation) {
+                if self.counting.len_count_failed == Some(len_generation) {
                     self.counting.len_count_failed = None;
                 }
                 // A count of the view a running query replaced goes back with it.
                 if let Some(run) = self.prompt.query_running.as_mut() {
-                    run.rollback.count_landed(
-                        *len_generation,
-                        *num_rows,
-                        file_row_groups.as_deref(),
-                    );
-                    if run.counts.len_count_inflight == Some(*len_generation) {
+                    run.rollback
+                        .count_landed(len_generation, num_rows, file_row_groups.as_deref());
+                    if run.counts.len_count_inflight == Some(len_generation) {
                         run.counts.len_count_inflight = None;
                     }
                 }
@@ -715,15 +712,15 @@ impl App {
                 // usually already rendered), so it just corrects the scrollbar/total —
                 // no busy state, no re-collect.
                 if let Some(state) = self.data_table_state.as_mut()
-                    && state.count_landed(*len_generation, *num_rows, file_row_groups.as_deref())
+                    && state.count_landed(len_generation, num_rows, file_row_groups.as_deref())
                 {
                     // End was pressed before there was an end to go to.
-                    if self.counting.end_after_count == Some(*len_generation) {
+                    if self.counting.end_after_count == Some(len_generation) {
                         self.counting.end_after_count = None;
                         self.status_message = None;
                         return self.jump_key(crate::Scroll::End);
                     }
-                } else if self.counting.end_after_count == Some(*len_generation) {
+                } else if self.counting.end_after_count == Some(len_generation) {
                     // This is the count End was waiting on, and it answers a frame that
                     // is gone — a join landed underneath it and took a fresh
                     // `len_generation` past it. Left here the flag is stranded on a
@@ -748,18 +745,18 @@ impl App {
                 None
             }
             AppEvent::BackgroundLenFailed { len_generation } => {
-                if self.counting.len_count_inflight == Some(*len_generation) {
+                if self.counting.len_count_inflight == Some(len_generation) {
                     self.counting.len_count_inflight = None;
                 }
-                if self.counting.count_after_stop.take() == Some(*len_generation) {
+                if self.counting.count_after_stop.take() == Some(len_generation) {
                     self.count_exactly();
                     return None;
                 }
                 if let Some(run) = self.prompt.query_running.as_mut()
-                    && run.counts.len_count_inflight == Some(*len_generation)
+                    && run.counts.len_count_inflight == Some(len_generation)
                 {
                     run.counts.len_count_inflight = None;
-                    run.counts.len_count_failed = Some(*len_generation);
+                    run.counts.len_count_failed = Some(len_generation);
                 }
                 // Mark this generation's count as failed so the row count renders as "?"
                 // instead of a misleading provisional total. Before the End handling
@@ -777,20 +774,20 @@ impl App {
                 if self
                     .data_table_state
                     .as_ref()
-                    .is_some_and(|state| state.len_generation() == *len_generation)
+                    .is_some_and(|state| state.len_generation() == len_generation)
                 {
-                    self.counting.len_count_failed = Some(*len_generation);
+                    self.counting.len_count_failed = Some(len_generation);
                 }
                 // Only for the count End was actually waiting on. Taken unconditionally,
                 // a count that failed for one frame answered for an End pressed on
                 // another — printing "Could not count the rows to find the end" about a
                 // key the user pressed somewhere else entirely, and long since.
-                if self.counting.end_after_count == Some(*len_generation) {
+                if self.counting.end_after_count == Some(len_generation) {
                     self.counting.end_after_count = None;
                     if self
                         .data_table_state
                         .as_ref()
-                        .is_some_and(|state| state.len_generation() == *len_generation)
+                        .is_some_and(|state| state.len_generation() == len_generation)
                     {
                         self.status_message =
                             Some("Could not count the rows to find the end".to_string());
@@ -804,7 +801,7 @@ impl App {
                 None
             }
             AppEvent::LinesIndexed { generation, rows } => {
-                self.lines_indexed(*generation, *rows);
+                self.lines_indexed(generation, rows);
                 None
             }
             _ => unreachable!("not an event for counting_event"),

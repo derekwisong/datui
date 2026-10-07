@@ -79,7 +79,7 @@ impl Harness {
                 if let AppEvent::Crash(message) = &event {
                     panic!("the app crashed: {message}");
                 }
-                next = self.app.event(&event);
+                next = self.app.event(event);
                 continue;
             }
             if stop(&self.app) {

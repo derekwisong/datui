@@ -29,7 +29,7 @@ fn pump(app: &mut App, rx: &mpsc::Receiver<AppEvent>, done: impl Fn(&App) -> boo
             "the worker never answered"
         );
         if let Ok(event) = rx.recv_timeout(std::time::Duration::from_millis(50)) {
-            app.event(&event);
+            app.event(event);
         }
     }
 }
@@ -43,7 +43,7 @@ fn a_stale_listing_leaves_the_current_one_in_flight() {
     let stale = app.home_app.generation;
     app.home_refresh();
     assert!(app.home.listing_in_flight);
-    app.event(&AppEvent::HomeListingReady {
+    app.event(AppEvent::HomeListingReady {
         generation: stale,
         listing: Box::default(),
         known: Default::default(),
@@ -52,7 +52,7 @@ fn a_stale_listing_leaves_the_current_one_in_flight() {
         newest: None,
     });
     assert!(app.home.listing_in_flight, "the current listing still runs");
-    app.event(&AppEvent::HomeListingReady {
+    app.event(AppEvent::HomeListingReady {
         generation: app.home_app.generation,
         listing: Box::default(),
         known: Default::default(),

@@ -76,7 +76,7 @@ fn a_view_on_a_queried_remote_dataset_matches_by_url_and_source_columns() {
     );
 
     // `V` applies it there: the next year's rows under the saved query.
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('V'),
         KeyModifiers::NONE,
     )));
@@ -107,7 +107,7 @@ fn open_with(
     open: AppEvent,
 ) {
     app.input_mode = InputMode::Normal;
-    if let Some(next) = app.event(&open) {
+    if let Some(next) = app.event(open) {
         let _ = tx.send(next);
     }
     super::chart_prepare_tests::pump(app, rx, tx, |a| {
@@ -116,7 +116,7 @@ fn open_with(
 }
 
 fn press(app: &mut App, c: char) {
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char(c),
         KeyModifiers::NONE,
     )));

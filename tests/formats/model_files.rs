@@ -84,7 +84,7 @@ fn strings(df: &DataFrame, column: &str) -> Vec<String> {
 }
 
 fn press(app: &mut App, code: KeyCode) {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
 }
 
 /// The screen as lines of text.
@@ -524,7 +524,7 @@ mod remote {
             OpenOptions::default(),
         ));
         while let Some(event) = next.take().or_else(|| next_event(&app, &rx)) {
-            next = app.event(&event);
+            next = app.event(event);
         }
         shards_read(&app);
         assert!(
@@ -558,7 +558,7 @@ mod remote {
                 .take()
                 .or_else(|| next_event(&app, &rx))
                 .expect("the open asks about the download");
-            next = app.event(&event);
+            next = app.event(event);
         }
         assert_eq!(app.error_message(), None);
         assert!(
@@ -571,7 +571,7 @@ mod remote {
             KeyModifiers::NONE,
         )));
         while let Some(event) = next.take().or_else(|| next_event(&app, &rx)) {
-            next = app.event(&event);
+            next = app.event(event);
         }
         assert_eq!(app.error_message(), None);
         assert_eq!(frame(&app).height(), 4);

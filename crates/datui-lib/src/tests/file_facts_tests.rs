@@ -64,7 +64,7 @@ fn install(app: &mut App, path: &str) {
 }
 
 fn press(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Option<AppEvent> {
-    app.event(&AppEvent::Key(KeyEvent::new(code, modifiers)))
+    app.event(AppEvent::Key(KeyEvent::new(code, modifiers)))
 }
 
 /// `i`, then → to the Resources tab, where the file size is: past a Parquet tab.
@@ -234,7 +234,7 @@ fn an_answer_for_a_replaced_dataset_is_dropped() {
             .expect("the old read answers");
         let answered =
             matches!(event, AppEvent::JobEnded(t) if t.kind() == crate::JobKind::FileFacts);
-        app.event(&event);
+        app.event(event);
         if answered {
             break;
         }
@@ -258,7 +258,7 @@ fn an_answer_for_a_replaced_dataset_is_dropped() {
         message: "not this one".to_string(),
         panicked: false,
     });
-    app.event(&AppEvent::JobEnded(ticket));
+    app.event(AppEvent::JobEnded(ticket));
     assert!(reading(&app), "the new dataset is still waiting on its own");
 
     gate.answer.send(read(5)).unwrap();

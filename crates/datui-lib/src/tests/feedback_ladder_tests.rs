@@ -4,7 +4,7 @@ use polars::prelude::IntoLazy;
 use std::sync::mpsc;
 
 fn key(app: &mut App, code: KeyCode) -> Option<AppEvent> {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
 }
 
 /// Enter on an incomplete pivot form re-accents the gap line instead of

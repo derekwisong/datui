@@ -110,15 +110,15 @@ fn a_switch_leaves_the_query_filters_and_sort_behind() {
     use datui::filter_modal::FilterOperator;
     let (_dir, book) = copy_of("sheets.xlsx");
     let (mut app, rx, tx) = open(vec![book.join("2023")], OpenOptions::default());
-    app.event(&AppEvent::QQuery("select where month < 7".to_string()));
+    app.event(AppEvent::QQuery("select where month < 7".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
-    app.event(&AppEvent::Filter(vec![filter_stmt(
+    app.event(AppEvent::Filter(vec![filter_stmt(
         "month",
         FilterOperator::Gt,
         "2",
     )]));
     pump_until_idle(&mut app, &rx, &tx);
-    app.event(&AppEvent::Sort(vec!["total".to_string()], vec![true]));
+    app.event(AppEvent::Sort(vec!["total".to_string()], vec![true]));
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.error_message().is_none(), "{:?}", app.error_message());
     assert_eq!(current_rows(&app), 4);
@@ -238,10 +238,10 @@ fn t_opens_another_table_of_a_database_and_leaves_the_query_behind() {
     assert!(app.offers_other_tables());
 
     // A query, a filter and a sort on the customers.
-    app.event(&AppEvent::QQuery("select where id < 4".to_string()));
+    app.event(AppEvent::QQuery("select where id < 4".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.error_message().is_none(), "q {:?}", app.error_message());
-    app.event(&AppEvent::Filter(vec![filter_stmt(
+    app.event(AppEvent::Filter(vec![filter_stmt(
         "id",
         FilterOperator::Gt,
         "1",
@@ -251,7 +251,7 @@ fn t_opens_another_table_of_a_database_and_leaves_the_query_behind() {
     let state = app.data_table_state.as_ref().unwrap();
     assert!(!state.get_active_query().is_empty());
     assert_eq!(state.get_filters().len(), 1);
-    app.event(&AppEvent::Sort(vec!["name".to_string()], vec![true]));
+    app.event(AppEvent::Sort(vec!["name".to_string()], vec![true]));
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.error_message().is_none(), "s {:?}", app.error_message());
 
@@ -388,7 +388,7 @@ fn t_opens_another_split_of_a_hugging_face_cache() {
 fn a_sort_after_a_query_on_a_sqlite_table() {
     let (_dir, db) = copy_of("sqlite/shop.db");
     let (mut app, rx, tx) = open(vec![db.join("customers")], OpenOptions::default());
-    app.event(&AppEvent::QQuery("select where id < 4".to_string()));
+    app.event(AppEvent::QQuery("select where id < 4".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.error_message().is_none(), "q {:?}", app.error_message());
     press_and_send(&mut app, &tx, KeyCode::Char('['));

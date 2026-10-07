@@ -53,7 +53,7 @@ fn end_prep(app: &mut App, started: jobs::Started, outcome: Result<PlotData, (&s
             panicked,
         },
     });
-    app.event(&AppEvent::JobEnded(ticket));
+    app.event(AppEvent::JobEnded(ticket));
 }
 
 fn is_chart_prep(job: &Job) -> bool {
@@ -131,12 +131,12 @@ fn a_chart_export_deferred_past_the_chart_view_releases_busy() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
     let next = app
-        .event(&AppEvent::ChartExport(chart_request("/tmp/x.png")))
+        .event(AppEvent::ChartExport(chart_request("/tmp/x.png")))
         .expect("ChartExport defers to DoChartExport");
     assert!(app.is_busy());
 
     app.enter_home();
-    app.event(&next);
+    app.event(next);
     assert!(!app.is_busy());
     assert!(app.nothing_loading());
     assert!(app.chart.export_waiting.is_none());
@@ -170,7 +170,7 @@ fn leaving_the_dataset_abandons_an_export_write() {
         message: "disk full".to_string(),
         panicked: false,
     });
-    app.event(&AppEvent::JobEnded(ticket));
+    app.event(AppEvent::JobEnded(ticket));
     assert!(!app.error_modal.active);
     assert_ne!(app.overlay, Overlay::ChartExport);
     assert!(!app.is_busy());
@@ -222,13 +222,13 @@ fn an_export_counts_the_bytes_it_has_written() {
             bytes,
         },
     };
-    app.event(&writing(ticket, 1_572_864));
+    app.event(writing(ticket, 1_572_864));
     assert!(
         bar(&mut app).contains("Writing file...  out.csv  1.5 MiB"),
         "{}",
         bar(&mut app)
     );
-    app.event(&writing(passed, 9_999_999));
+    app.event(writing(passed, 9_999_999));
     assert!(
         bar(&mut app).contains("out.csv  1.5 MiB"),
         "{}",
@@ -239,8 +239,8 @@ fn an_export_counts_the_bytes_it_has_written() {
     export.end(Outcome::answered(Answer::Exported(PathBuf::from(
         "/tmp/out.csv",
     ))));
-    app.event(&AppEvent::JobEnded(ticket));
-    app.event(&writing(ticket, 2_000_000));
+    app.event(AppEvent::JobEnded(ticket));
+    app.event(writing(ticket, 2_000_000));
     assert!(app.nothing_loading());
     assert!(!app.is_busy());
     assert!(bar(&mut app).contains("Exported to"), "{}", bar(&mut app));
@@ -436,7 +436,7 @@ pub(super) fn pump(
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
     loop {
         while let Ok(ev) = rx.try_recv() {
-            if let Some(next) = app.event(&ev) {
+            if let Some(next) = app.event(ev) {
                 let _ = tx.send(next);
             }
         }
@@ -450,7 +450,7 @@ pub(super) fn pump(
             "app never reached the expected state"
         );
         if let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(50))
-            && let Some(next) = app.event(&ev)
+            && let Some(next) = app.event(ev)
         {
             let _ = tx.send(next);
         }
@@ -465,7 +465,7 @@ pub(super) fn open(
 ) {
     // As `home_open_path` does before it emits the `Open`.
     app.input_mode = InputMode::Normal;
-    if let Some(next) = app.event(&AppEvent::Open(vec![path], OpenOptions::default())) {
+    if let Some(next) = app.event(AppEvent::Open(vec![path], OpenOptions::default())) {
         let _ = tx.send(next);
     }
     pump(app, rx, tx, |a| {
@@ -474,7 +474,7 @@ pub(super) fn open(
 }
 
 fn select_xy(app: &mut App) {
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('c'),
         KeyModifiers::NONE,
     )));
@@ -482,7 +482,7 @@ fn select_xy(app: &mut App) {
     app.chart.modal.set_mark(Mark::Line);
     app.chart.modal.spec.encoding.x.field = Some("x".to_string());
     app.chart.modal.spec.encoding.y.field = vec!["y".to_string()];
-    app.event(&AppEvent::Resize(80, 24));
+    app.event(AppEvent::Resize(80, 24));
 }
 
 /// A chart still being prepared when the user goes home and opens another file with
@@ -501,7 +501,7 @@ fn a_prepare_from_the_previous_dataset_does_not_land_in_the_next() {
     select_xy(&mut app);
     assert!(app.chart_preparing());
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('o'),
         KeyModifiers::CONTROL,
     )));
@@ -538,7 +538,7 @@ fn a_panicked_preparation_is_remembered_and_frees_the_next() {
 }
 
 fn key(app: &mut App, code: KeyCode) {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
 }
 
 fn screen(app: &mut App) -> String {
@@ -563,7 +563,7 @@ fn a_sort_or_filter_keeps_the_chart_columns() {
     key(&mut app, KeyCode::Esc);
     assert!(app.at_table());
 
-    app.event(&AppEvent::Sort(vec!["y".to_string()], vec![true]));
+    app.event(AppEvent::Sort(vec!["y".to_string()], vec![true]));
     pump(&mut app, &rx, &tx, |a| !a.is_busy());
     key(&mut app, KeyCode::Char('c'));
     assert_eq!(app.overlay, Overlay::Chart);
@@ -588,7 +588,7 @@ fn a_sort_or_filter_keeps_the_chart_columns() {
     key(&mut app, KeyCode::Esc);
 
     use crate::filter_modal::{FilterOperator, LogicalOperator};
-    app.event(&AppEvent::Filter(vec![FilterStatement {
+    app.event(AppEvent::Filter(vec![FilterStatement {
         columns: Vec::new(),
         column: "x".to_string(),
         operator: FilterOperator::Lt,
@@ -628,7 +628,7 @@ fn quick_aggregate_steps_group_only_where_they_stop() {
         Aggregate::Mean,
     ] {
         app.chart.modal.spec.encoding.y.aggregate = aggregate;
-        app.event(&AppEvent::Wake);
+        app.event(AppEvent::Wake);
         assert!(
             !app.jobs.running(is_chart_prep),
             "{aggregate:?} waits for the next"
@@ -660,7 +660,7 @@ fn a_failed_preparation_shows_its_error() {
     open(&mut app, &rx, &tx, path);
     select_xy(&mut app);
     app.chart.modal.spec.encoding.y.field = vec!["gone".to_string()];
-    app.event(&AppEvent::Resize(100, 24));
+    app.event(AppEvent::Resize(100, 24));
     let request = ChartRequest::from_modal(&app.chart.modal).unwrap();
     pump(&mut app, &rx, &tx, |a| {
         a.chart.cache.get(&request).is_some()
@@ -693,7 +693,7 @@ fn a_bar_chart_draws_a_grouped_string_column() {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx.clone(), crate::tests::test_runtime());
     open(&mut app, &rx, &tx, path);
-    if let Some(next) = app.event(&AppEvent::QQuery(
+    if let Some(next) = app.event(AppEvent::QQuery(
         "select delay: avg arr_delay by carrier".to_string(),
     )) {
         let _ = tx.send(next);
@@ -722,7 +722,7 @@ fn a_bar_chart_draws_a_grouped_string_column() {
     key(&mut app, KeyCode::Left);
     assert_eq!(app.chart.modal.aggregate(), Aggregate::None);
     assert_eq!(app.chart.modal.y(), ["delay"]);
-    app.event(&AppEvent::Resize(100, 24));
+    app.event(AppEvent::Resize(100, 24));
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
 
     let rows = |app: &mut App| -> Vec<String> {
@@ -820,7 +820,7 @@ fn a_bar_chart_counts_rows_per_category() {
     assert_eq!(app.chart.modal.mark(), Mark::Bar);
     assert_eq!(app.chart.modal.aggregate(), Aggregate::Count);
     app.chart.modal.row_limit = Some(100);
-    app.event(&AppEvent::Resize(100, 24));
+    app.event(AppEvent::Resize(100, 24));
     pump(&mut app, &rx, &tx, |a| a.chart_data_ready());
 
     let area = ratatui::layout::Rect::new(0, 0, 100, 24);
@@ -866,7 +866,7 @@ fn a_reselection_behind_a_stale_worker_counts_as_preparing() {
 
     select_xy(&mut app);
     assert!(app.chart_preparing());
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));

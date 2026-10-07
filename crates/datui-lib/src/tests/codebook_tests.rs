@@ -91,7 +91,7 @@ fn draw(app: &mut App) -> String {
 }
 
 fn press(app: &mut App, code: KeyCode) -> Option<AppEvent> {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
 }
 
 #[test]

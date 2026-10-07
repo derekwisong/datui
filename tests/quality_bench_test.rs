@@ -186,7 +186,7 @@ impl SpillWatch {
 }
 
 fn press(app: &mut App, code: KeyCode) -> Option<AppEvent> {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
 }
 
 /// Handle `first` and every event after it until the app owes nothing.
@@ -195,7 +195,7 @@ fn settle(app: &mut App, rx: &mpsc::Receiver<AppEvent>, first: Option<AppEvent>)
     let mut next = first;
     loop {
         if let Some(event) = next.take() {
-            next = app.event(&event);
+            next = app.event(event);
             continue;
         }
         match rx.recv_timeout(Duration::from_millis(10)) {

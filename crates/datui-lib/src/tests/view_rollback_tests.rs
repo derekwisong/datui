@@ -82,13 +82,13 @@ fn open_with_view(
     app.views.manager.update_view(view).unwrap();
     app.source.startup_view = Some(view.name.clone());
     let path = dir.path().join("long.csv");
-    let mut next = app.event(&AppEvent::Open(vec![path], OpenOptions::default()));
+    let mut next = app.event(AppEvent::Open(vec![path], OpenOptions::default()));
     let asked = app.counting.first_rows_asked;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         while let Some(event) = next.take() {
             if !intercept(app, &event) {
-                next = app.event(&event);
+                next = app.event(event);
             }
         }
         if app.data_table_state.is_some() && !app.is_busy() && !app.awaiting_dataset() {
@@ -122,7 +122,7 @@ fn a_startup_view_waits_for_views_still_being_read() {
     app.busy = true;
     // The app draws and handles a key with the views still out.
     footer_text(&mut app);
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('?'),
         KeyModifiers::NONE,
     )));
@@ -133,14 +133,14 @@ fn a_startup_view_waits_for_views_still_being_read() {
         std::thread::sleep(std::time::Duration::from_millis(20));
         views_tx.send(ViewManager::new(&config).unwrap()).unwrap();
     });
-    let mut next = app.event(&AppEvent::Open(
+    let mut next = app.event(AppEvent::Open(
         vec![dir.path().join("long.csv")],
         OpenOptions::default(),
     ));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         while let Some(event) = next.take() {
-            next = app.event(&event);
+            next = app.event(event);
         }
         if app.data_table_state.is_some() && !app.is_busy() && !app.awaiting_dataset() {
             break;
@@ -339,12 +339,12 @@ fn the_bar_offers_esc_while_a_view_applies() {
 #[test]
 fn the_bar_offers_esc_while_a_pivot_is_computed() {
     let (mut app, rx, tx, _dir) = long_csv_app();
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('p'),
         KeyModifiers::NONE,
     )));
     assert_eq!(app.overlay, Overlay::PivotMelt);
-    app.event(&AppEvent::Pivot(pivot_melt_modal::PivotSpec {
+    app.event(AppEvent::Pivot(pivot_melt_modal::PivotSpec {
         index: vec!["id".to_string()],
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
@@ -369,7 +369,7 @@ fn esc_cancels_a_view_being_pivoted() {
 
     let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
     assert!(app.hard_escape_while_busy(&esc), "it jumps the queue");
-    app.event(&AppEvent::Key(esc));
+    app.event(AppEvent::Key(esc));
     assert!(!app.is_busy());
     assert!(!app.view_applying());
     assert_eq!(app.flash_message(), Some("View cancelled"));
@@ -380,7 +380,7 @@ fn esc_cancels_a_view_being_pivoted() {
         let event = rx.recv_timeout(std::time::Duration::from_secs(1));
         if let Ok(event) = event {
             let pivot = matches!(event, AppEvent::JobEnded(t) if t.kind() == JobKind::ViewPivot);
-            if let Some(next) = app.event(&event) {
+            if let Some(next) = app.event(event) {
                 let _ = tx.send(next);
             }
             if pivot {
@@ -404,7 +404,7 @@ fn esc_cancels_a_view_being_read() {
     assert!(app.apply_view(&view).is_ok());
     assert!(app.view_applying());
 
-    app.event(&AppEvent::Key(KeyEvent::new(
+    app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
@@ -430,7 +430,7 @@ fn a_stale_view_pivot_is_dropped() {
     let stale = polars::prelude::df!("id" => [1i64], "zz" => [2i64]).unwrap();
     let ticket = passed.ticket();
     passed.end(Outcome::answered(Answer::ViewPivoted(stale)));
-    app.event(&AppEvent::JobEnded(ticket));
+    app.event(AppEvent::JobEnded(ticket));
     assert_eq!(
         columns(&app),
         ["id", "key", "val"],
@@ -508,9 +508,9 @@ fn sorted_and_filtered(
     tx: &mpsc::Sender<AppEvent>,
 ) -> Option<DataFrame> {
     use crate::filter_modal::{FilterOperator, LogicalOperator};
-    app.event(&AppEvent::Sort(vec!["val".to_string()], vec![true]));
+    app.event(AppEvent::Sort(vec!["val".to_string()], vec![true]));
     super::chart_prepare_tests::pump(app, rx, tx, |a| !crate::tests::work_pending(a));
-    app.event(&AppEvent::Filter(vec![FilterStatement {
+    app.event(AppEvent::Filter(vec![FilterStatement {
         columns: Vec::new(),
         column: "val".to_string(),
         operator: FilterOperator::Gt,
@@ -557,9 +557,9 @@ fn a_prompt_query_whose_rows_worker_dies_rolls_back() {
     let (mut app, rx, tx, _dir) = long_csv_app();
     let shown = sorted_and_filtered(&mut app, &rx, &tx);
     let press = |app: &mut App, code: KeyCode| {
-        let mut next = app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+        let mut next = app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
         while let Some(event) = next.take() {
-            next = app.event(&event);
+            next = app.event(event);
         }
     };
     press(&mut app, KeyCode::Char(':'));
@@ -591,7 +591,7 @@ fn a_query_whose_rows_worker_dies_rolls_back() {
     let (mut app, rx, tx, _dir) = long_csv_app();
     let shown = sorted_and_filtered(&mut app, &rx, &tx);
     app.jobs.worker_dies = crate::tests::worker_dies_once(|job| matches!(job, Job::Rows(_)));
-    app.event(&AppEvent::QQuery("select id where val > 5".to_string()));
+    app.event(AppEvent::QQuery("select id where val > 5".to_string()));
     assert!(app.prompt.query_running.is_some(), "the query planned");
     pump_with_dying_rows(&mut app, &rx, &tx);
 
@@ -630,7 +630,7 @@ fn a_failed_view_rolls_back_what_the_rows_knew() {
         hive: true,
         ..OpenOptions::default()
     };
-    if let Some(next) = app.event(&AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
+    if let Some(next) = app.event(AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
         let _ = tx.send(next);
     }
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| {
@@ -707,7 +707,7 @@ fn a_failed_view_does_not_make_the_views_note_permanent() {
         hive: true,
         ..OpenOptions::default()
     };
-    if let Some(next) = app.event(&AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
+    if let Some(next) = app.event(AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
         let _ = tx.send(next);
     }
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| {
@@ -821,7 +821,7 @@ fn a_native_list_column_does_not_drill_and_keeps_the_views_note() {
         hive: true,
         ..OpenOptions::default()
     };
-    if let Some(next) = app.event(&AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
+    if let Some(next) = app.event(AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
         let _ = tx.send(next);
     }
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| {
@@ -893,7 +893,7 @@ fn a_rollback_that_fails_early_still_puts_all_of_the_view_back() {
         hive: true,
         ..OpenOptions::default()
     };
-    if let Some(next) = app.event(&AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
+    if let Some(next) = app.event(AppEvent::Open(vec![dir.path().to_path_buf()], opts)) {
         let _ = tx.send(next);
     }
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| {
@@ -1105,11 +1105,11 @@ fn a_count_that_lands_while_a_query_runs_comes_back_with_the_view() {
     let counting = state.len_generation();
     app.counting.len_count_inflight = Some(counting);
 
-    app.event(&AppEvent::SqlQuery(
+    app.event(AppEvent::SqlQuery(
         "SELECT CAST(name AS INT) AS n FROM df".to_string(),
     ));
     assert!(app.prompt.query_running.is_some());
-    app.event(&AppEvent::BackgroundLenReady {
+    app.event(AppEvent::BackgroundLenReady {
         len_generation: counting,
         num_rows: 40,
         file_row_groups: None,
@@ -1312,7 +1312,7 @@ fn a_view_failing_after_any_step_puts_the_view_back() {
     for (step, fails, steps) in cases {
         let (mut app, rx, tx, _dir) = long_csv_app();
         // The view it is applied over: a query, a sort and a filter, a selection.
-        app.event(&AppEvent::QQuery(
+        app.event(AppEvent::QQuery(
             "select id, key, val where val >= 0".to_string(),
         ));
         super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !crate::tests::work_pending(a));

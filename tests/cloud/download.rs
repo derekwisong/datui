@@ -48,7 +48,7 @@ fn app(s3: &FakeS3) -> (App, mpsc::Receiver<AppEvent>) {
 fn chain(app: &mut App, first: AppEvent) {
     let mut next = Some(first);
     while let Some(event) = next {
-        next = app.event(&event);
+        next = app.event(event);
     }
 }
 

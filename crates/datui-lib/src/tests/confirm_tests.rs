@@ -13,7 +13,7 @@ fn new_app() -> App {
 }
 
 fn key(app: &mut App, code: KeyCode) -> Option<AppEvent> {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)))
 }
 
 /// Yes: Enter with Yes focused.
@@ -262,7 +262,7 @@ fn yes_on_an_open_reads_it() {
                 .take()
                 .or_else(|| rx.recv_timeout(std::time::Duration::from_millis(50)).ok())
             {
-                next = app.event(&event);
+                next = app.event(event);
             }
         }
     };

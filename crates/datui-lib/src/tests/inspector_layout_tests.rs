@@ -11,7 +11,7 @@ fn rows_at(app: &mut App, width: u16, height: u16) -> Vec<String> {
 }
 
 fn press(app: &mut App, code: KeyCode) {
-    app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
 }
 
 /// Twelve short fields and a long URL, the inspector open on the URL of row 2.

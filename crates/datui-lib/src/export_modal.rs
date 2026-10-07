@@ -92,9 +92,9 @@ impl ExportFormat {
         }
     }
 
-    /// `lf` as this format can write it: binary as base64 and dates as text for
-    /// CSV and JSON, nested columns as JSON and durations as ISO 8601 for CSV, and the types
-    /// Avro lacks cast to ones it has. Planned, not run.
+    /// `lf` as this format can write it (planned, not run): binary as base64 and dates
+    /// as text for CSV and JSON, nested columns as JSON and durations as ISO 8601 for
+    /// CSV, and types Avro lacks cast to ones it has.
     pub fn prepare(self, lf: LazyFrame) -> PolarsResult<LazyFrame> {
         match self {
             Self::Csv | Self::Tsv | Self::Psv => crate::nested_json::lazy_as_json(lf),
@@ -134,9 +134,8 @@ pub enum ExportFocus {
     CsvIncludeHeader,
     /// The compression of the chosen format; offered by the formats that take one.
     Compression,
-    /// Add a column naming the file each row came from. Only offered for a dataset
-    /// whose files disagree, since that is where a null and an absent cell differ and
-    /// the source file is what tells them apart downstream.
+    /// A column naming each row's source file. Offered only when the files disagree,
+    /// where it tells a null from an absent cell downstream.
     SourceFile,
 }
 
@@ -221,10 +220,9 @@ impl ExportModal {
         self.path_error = None;
     }
 
-    /// Follow the typed path's extension with the format picker, so `out.csv` never
-    /// silently receives Parquet bytes. An extension that names no format leaves the
-    /// picker alone, and an explicit format picked after typing stands, because this
-    /// runs only when the path itself changes.
+    /// Follow the typed path's extension with the format choice, so `out.csv` never
+    /// receives Parquet bytes. An unknown extension leaves the format alone; runs only
+    /// when the path changes, so a format picked after typing stands.
     pub fn sync_format_to_path(&mut self) {
         let value = self.path_input.value().trim().to_string();
         if let Some(format) = ExportFormat::from_path(&value) {
@@ -239,18 +237,16 @@ impl ExportModal {
         }
     }
 
-    /// The other direction of [`Self::sync_format_to_path`]: a format picked after
-    /// typing rewrites the path's format extension, so `out.csv` never silently
-    /// receives Parquet bytes from the picker side either. A path whose extension
-    /// names no format is left alone. A compression suffix survives when the new
-    /// format supports one and is dropped when it cannot.
-    /// Offer `stem` with the format's extension as the path: Enter takes it as it
-    /// stands, typing replaces it, and stepping the format carries it along.
+    /// Offer `stem` with the format's extension as the path: Enter takes it, typing
+    /// replaces it, and stepping the format carries it along.
     pub fn suggest_path(&mut self, stem: &str) {
         let path = format!("{stem}.{}", self.selected_format.extension());
         self.path_input.suggest(path);
     }
 
+    /// The reverse of [`Self::sync_format_to_path`]: a format picked after typing
+    /// rewrites the path's format extension. A path with no format extension is left
+    /// alone; a compression suffix stays only if the new format supports one.
     pub fn sync_path_to_format(&mut self) {
         let suggested = self.path_input.is_suggested();
         let value = self.path_input.value().trim().to_string();
@@ -325,11 +321,7 @@ impl ExportModal {
         crate::form::Form::settle_focus(self);
     }
 
-    /// The fields this modal offers, in the order Tab walks them.
-    ///
-    /// Built as a list rather than a match per field: the options differ by format and
-    /// one of them depends on the dataset, and a hand-written state machine over both
-    /// has an arm for every pair.
+    /// The fields in Tab order: a list, since options vary by format and dataset.
     pub fn focus_order(&self) -> Vec<ExportFocus> {
         crate::form::Form::fields(self)
             .into_iter()

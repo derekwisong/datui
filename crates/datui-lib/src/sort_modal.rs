@@ -71,9 +71,8 @@ impl SortModal {
         Self::default()
     }
 
-    /// The columns the find text matches, in display order. Asked several times a
-    /// key; the list is worked out again only when the find text, a name or the
-    /// order changed, which a fingerprint of them tells without allocating.
+    /// The columns the find text matches, in display order. Asked several times a key,
+    /// so recomputed only when a fingerprint of the find text, names and order changes.
     pub fn filtered_columns(&self) -> Vec<(usize, &SortColumn)> {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -360,10 +359,8 @@ impl SortModal {
                         if (was_locked || was_to_be_locked)
                             && current_display_order == last_locked_or_to_be_order
                         {
-                            // Clear to-be-locked for columns that are now at positions between new and old (exclusive of new, inclusive of old)
-                            // After swap: the column that was at new_display_order is now at current_display_order
-                            // We want to clear to-be-locked for columns at positions > new_display_order and <= current_display_order
-                            // but don't remove real locks
+                            // Clear to-be-locked (never real locks) on the columns now between the new
+                            // position (exclusive) and the old (inclusive).
                             for col in &mut self.columns {
                                 if col.display_order > new_display_order
                                     && col.display_order <= current_display_order
@@ -417,10 +414,8 @@ impl SortModal {
                     // Swap display orders first
                     self.columns[real_idx].display_order = new_display_order;
 
-                    // If a locked or to-be-locked column is moved down, mark any unlocked columns it crosses as to-be-locked
-                    // After swap: the column that was at new_display_order is now at current_display_order
-                    // We need to mark columns that are now at positions from old position (inclusive) to new position (exclusive)
-                    // Excluding the moved column itself (which is now at new_display_order)
+                    // A locked or to-be-locked column moved down marks the unlocked columns it crossed
+                    // (old position inclusive to new exclusive, not itself) as to-be-locked.
                     if was_locked || was_to_be_locked {
                         for (idx, col) in self.columns.iter_mut().enumerate() {
                             // Mark columns that are now at positions from old position (inclusive) to new position (exclusive)

@@ -116,10 +116,9 @@ pub struct PlanPicker {
     pub state: crate::widgets::ui::PickerState,
 }
 
-/// What the data offers Setup's choices: partition columns, the columns a time
-/// window can split by (and whether they hold times of day), whether there are
-/// files to split by, and the text columns that could be read as time, each with
-/// a few of its values from the rows on screen.
+/// What the data offers Setup's choices: partition columns, time-window columns
+/// (and whether they hold times of day), whether there are files to split by, and
+/// text columns readable as time with a few values from the rows on screen.
 #[derive(Debug, Clone, Default)]
 pub struct PlanContext {
     pub partitions: Vec<String>,
@@ -317,9 +316,8 @@ impl crate::form::Form for ExpectedForm {
     }
 }
 
-/// Read `column` as time through `format`, or as text again with `None`. A time
-/// window on a column that is text again has no clock, so the grain goes back to
-/// the whole dataset rather than failing the run.
+/// Read `column` as time through `format`, or as text again with `None`; a time
+/// window on a column back to text falls back to the whole-dataset grain.
 pub fn set_time_format(plan: &mut DataQualityPlan, column: &str, format: Option<(TimeKind, &str)>) {
     plan.time_formats
         .retain(|interpretation| interpretation.column != column);
@@ -374,14 +372,14 @@ impl AnalysisTool {
 #[derive(Debug, Clone)]
 pub struct AnalysisProgress {
     pub phase: String,
-    /// When the run began, for the elapsed time on screen. A run has no total to
-    /// count against, so time is the progress there is to show.
+    /// When the run began, for the elapsed time: a run has no total, so time is its
+    /// progress.
     pub started: std::time::Instant,
-    /// Whether the stage now running reads the source or works on rows already
-    /// read. `None` until a Data Quality run names its first stage.
+    /// Whether the running stage reads the source or rows already read; `None` until
+    /// a Data Quality run names its first stage.
     pub reads_source: Option<bool>,
-    /// Whether a cancel stops the stage now running partway. `None` until a Data
-    /// Quality run names its first stage.
+    /// Whether a cancel stops the running stage partway; `None` until a Data Quality run
+    /// names its first stage.
     pub interruptible: Option<bool>,
     /// The sampler's count of rows seen, where the read can count them.
     pub read: Option<crate::sampling::ReadWatch>,
@@ -423,9 +421,8 @@ pub struct DetailScroll {
     pub max: u16,
 }
 
-/// A result table wider than its pane scrolls by statistic: the first one shown,
-/// and the furthest that first can go, which is where the last statistic comes
-/// into view. The table sets `max` as it draws, so the keys stop where it does.
+/// Scrolling of a result table wider than its pane, by statistic: the first shown,
+/// and `max`, set by the table as it draws, where the last comes into view.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ColumnScroll {
     pub offset: usize,
@@ -452,19 +449,19 @@ pub struct AnalysisModal {
     pub distribution_columns: ColumnScroll,
     /// Kept on the selected cell by the matrix as it draws.
     pub correlation_columns: ColumnScroll,
-    /// The rows every tool reads: one scope, method, size and seed for all of them,
-    /// so switching tools compares like with like. Kept across opens; `s` edits it.
+    /// The rows every tool reads (one scope, method, size and seed), so tools compare
+    /// like with like. Kept across opens; `s` edits it.
     pub sample: crate::sampling::Sample,
-    /// The dataset the sample's scope was chosen for. A scope naming a partition or a
-    /// file of one dataset means nothing on the next.
+    /// The dataset the sample's scope was chosen for: a partition or file scope means
+    /// nothing on another.
     pub sample_dataset: Option<u64>,
-    /// The dataset a sample was last run on. Once one has been, a tool picked with
-    /// no result runs on it at once; before, the Sample form asks first.
+    /// The dataset a sample last ran on; after that, a tool with no result runs at once
+    /// instead of asking with the Sample form.
     pub sample_run_for: Option<u64>,
     /// The Sample form, while it is open.
     pub sample_form: Option<crate::sample_modal::SampleForm>,
-    /// The tools' own sample, put aside while the view has a sample of its own:
-    /// every tool then reads the view's rows whole.
+    /// The tools' own sample, set aside while the view has its own sample, which every
+    /// tool then reads whole.
     pub own_sample: Option<crate::sampling::Sample>,
     pub table_state: TableState,              // For describe table
     pub distribution_table_state: TableState, // For distribution table
@@ -474,8 +471,7 @@ pub struct AnalysisModal {
     pub describe_results: Option<AnalysisResults>,
     pub distribution_results: Option<AnalysisResults>,
     pub correlation_results: Option<AnalysisResults>,
-    /// Set while a tool runs: its phase and progress, drawn in place of its results.
-    /// What it is building lives in App.
+    /// Set while a tool runs: its phase and progress, drawn in place of results.
     pub computing: Option<AnalysisProgress>,
     pub view: AnalysisView,
     pub focus: AnalysisFocus,
@@ -490,11 +486,10 @@ pub struct AnalysisModal {
     pub histogram_scale: HistogramScale,
     /// Data Quality: its plan, its report and where the cursor is in each.
     pub quality: QualityState, // Scale for histogram (linear or log)
-    /// The view (`DataTableState::len_generation`) the screen was opened on, which
-    /// its results are of.
+    /// The view (`DataTableState::len_generation`) the results are of.
     pub results_view: Option<u64>,
-    /// What a close put down: the tools' results and where they were, taken back
-    /// by the next open on the same view.
+    /// The results and positions a close put down, restored by the next open on the
+    /// same view.
     kept: Option<Kept>,
 }
 
@@ -504,11 +499,9 @@ pub struct AnalysisModal {
 pub struct QualityState {
     pub results: Option<DataQualityResults>,
     pub page: QualityPage,
-    /// The plan: the one the last Run committed, and while Setup is open, the draft
-    /// being staged for the next.
+    /// The plan the last Run committed; while Setup is open, the draft for the next.
     pub plan: DataQualityPlan,
-    /// The plan as it stood when Setup opened: Esc puts it back. `None` while Setup
-    /// is closed.
+    /// The plan when Setup opened, restored by Esc; `None` while Setup is closed.
     pub setup_before: Option<DataQualityPlan>,
     /// The report page Setup was opened from, and goes back to.
     pub setup_return: QualityPage,
@@ -598,9 +591,8 @@ impl AnalysisModal {
         modal
     }
 
-    /// Open the screen on `view`. On the view a close left results of, they come
-    /// back as they were, with the tool on screen; on any other, every tool starts
-    /// empty.
+    /// Open the screen on `view`: a close's results on this view come back as they
+    /// were; on any other view every tool starts empty.
     pub fn open(&mut self, view: Option<u64>) {
         let kept = self
             .kept
@@ -652,8 +644,7 @@ impl AnalysisModal {
         }
     }
 
-    /// Close the screen. The tools' results are put down rather than dropped: the
-    /// next open on the same view shows them again.
+    /// Close the screen, keeping the results for the next open on the same view.
     pub fn close(&mut self) {
         self.kept = Some(Kept {
             view: self.results_view.take(),
@@ -711,9 +702,8 @@ impl AnalysisModal {
         }
     }
 
-    /// Tab on the main view: the tool list and the result trade focus. The detail
-    /// views have one focusable thing, so Tab is not offered there; nor is it
-    /// before a tool is chosen, when the pane beside the list is empty.
+    /// Tab on the main view: the tool list and the result trade focus. Not offered on
+    /// detail views (one focusable thing) or before a tool is chosen.
     pub fn switch_focus(&mut self) {
         self.focus = match self.focus {
             AnalysisFocus::Sidebar if self.selected_tool.is_some() => AnalysisFocus::Main,
@@ -728,8 +718,7 @@ impl AnalysisModal {
             .copied()
     }
 
-    /// Select the tool under the sidebar cursor. Where the cursor goes is the
-    /// caller's: Enter on a tool takes it into the tool's pane.
+    /// Select the tool under the sidebar cursor; the caller places the cursor.
     pub fn select_tool(&mut self) {
         if self.sidebar_state.selected().is_some() {
             self.selected_tool = Some(self.highlighted_tool().unwrap_or_default());
@@ -848,8 +837,7 @@ impl AnalysisModal {
             QualityPage::Setup => SetupRow::ALL.len(),
             QualityPage::TimeRoles => TemporalRole::ALL.len(),
             QualityPage::IntervalPairs => self.quality.plan.candidate_pairs().len(),
-            // The scope's columns, which the modal does not hold: the list's keys move
-            // by them in `App`.
+            // The scope's columns are not held here: `App` moves the list by them.
             QualityPage::Intent => 0,
             QualityPage::Intervals => results.temporal.len(),
             QualityPage::IntervalDetail => self.interval_facts().len(),
@@ -865,8 +853,8 @@ impl AnalysisModal {
                     .lines
                     .len()
             }
-            // As many bars as there are segments, at most: the width decides how many
-            // there are, and the page holds the cursor to the last as it draws.
+            // At most one bar per segment: the width decides how many, and the page clamps
+            // the cursor as it draws.
             QualityPage::TrendDetail => crate::quality_trends::trend_slots(results).len(),
             QualityPage::Gaps => {
                 match crate::quality_trends::expected_gaps(self.quality_result_plan(), results) {
@@ -995,8 +983,8 @@ impl AnalysisModal {
         *self.quality.table_state.offset_mut() = 0;
     }
 
-    /// Whether `s` opens the Sample form here: on a tool's main view, with nothing
-    /// else holding the keys — no run, no popup, no editor, no text field.
+    /// Whether `s` opens the Sample form: on a tool's main view with nothing else
+    /// holding keys (run, popup, editor, text field).
     pub fn sample_key_opens_form(&self) -> bool {
         self.view == AnalysisView::Main
             && self.selected_tool.is_some()
@@ -1025,8 +1013,7 @@ impl AnalysisModal {
             .is_some_and(|form| !form.on_format)
     }
 
-    /// Whether a Column intent field owns typed characters, so Ctrl-C and `?` are
-    /// text there as in any field.
+    /// Whether a Column intent field owns typed characters, so Ctrl-C and `?` type.
     pub fn intent_typing(&self) -> bool {
         self.quality
             .intent_form
@@ -1035,15 +1022,15 @@ impl AnalysisModal {
     }
 
     /// Whether the Sample form's scope field owns typed characters, so Ctrl-C and `?`
-    /// are text there as in any field.
+    /// type.
     pub fn sample_scope_typing(&self) -> bool {
         self.sample_form.as_ref().is_some_and(|form| {
             form.field.is_text() && (!form.inline || self.focus == AnalysisFocus::Main)
         })
     }
 
-    /// Whether the Expected editor's From or Before has the cursor, so every key
-    /// but its own types there.
+    /// Whether the Expected editor's From or Before has the cursor, so all but its own
+    /// keys type.
     pub fn quality_expected_typing(&self) -> bool {
         self.quality.page == QualityPage::ExpectedWindows
             && self
@@ -1109,11 +1096,9 @@ impl AnalysisModal {
         self.quality.table_state.select(Some(0));
     }
 
-    /// Move between the column lens and its detail without losing which column
-    /// the user was looking at.
+    /// Move between the column lens and its detail, keeping the selected column.
     pub fn set_quality_column_page(&mut self, page: QualityPage) {
-        // Detail moves the same selection with Up/Down, so capture it from there
-        // too or navigating inside Detail is lost on the way back.
+        // Detail moves the same selection with Up/Down, so take it from there too.
         if matches!(
             self.quality.page,
             QualityPage::Columns | QualityPage::Detail
@@ -1221,11 +1206,9 @@ impl AnalysisModal {
             .copied()
     }
 
-    /// The rows behind the count under the cursor in an interval's detail, when it
-    /// has any and they can be told by their values: a predicate over the rows the
-    /// run read, with what to call them.
-    /// `schema`, the data's where known, lets a partition segment compare in its
-    /// column's type.
+    /// The rows behind the selected count in an interval's detail, when its values
+    /// identify them: a predicate over the run's rows, with a label. `schema` (where
+    /// known) lets a partition segment compare in its column's type.
     pub fn interval_evidence(
         &self,
         schema: Option<&polars::prelude::Schema>,
@@ -1307,9 +1290,8 @@ impl AnalysisModal {
         self.quality.metric = QualityMetric::ALL[(current + 1) % QualityMetric::ALL.len()];
     }
 
-    /// The plan the result on screen was measured with; the plan until a run
-    /// exists. Result pages read this one, so a draft never relabels what was
-    /// measured.
+    /// The plan the on-screen result was measured with (the plan until a run exists),
+    /// so a draft never relabels what was measured.
     pub fn quality_result_plan(&self) -> &DataQualityPlan {
         self.quality
             .last_plan
@@ -1351,8 +1333,7 @@ impl AnalysisModal {
                         .cloned()
                         .map(QualityGrain::Partition),
                 );
-                // Any date column can split the rows by day, week or month; no role
-                // has to be invented for it first. Hours only where there are times.
+                // Any date column can split by day, week or month; hours only where there are times.
                 for (column, has_time) in &context.time_columns {
                     for every in QUALITY_WINDOW_WIDTHS {
                         if every == "1h" && !has_time {
@@ -1411,8 +1392,8 @@ impl AnalysisModal {
                 .into_iter()
                 .map(|seconds| (threshold_label(seconds), PlanChoice::Latency(seconds)))
                 .collect(),
-            // Each text column with the first value on screen, so choosing which one
-            // holds times is choosing among things seen.
+            // Each text column with its first value on screen, so the choice is among things
+            // seen.
             SetupRow::TextAsTime => context
                 .text_columns
                 .iter()
@@ -1459,9 +1440,8 @@ impl AnalysisModal {
         });
     }
 
-    /// How `column` can be read as time: each format with how many of `examples`,
-    /// values on screen, it reads, the formats that read the most first; and, when
-    /// it has a format, reading it as text again.
+    /// How `column` can be read as time: each format with how many of the on-screen
+    /// `examples` it reads, best first, and reading as text again when it has a format.
     pub fn open_format_picker(&mut self, column: &str, examples: &[String]) {
         let mut formats = TIME_FORMATS
             .iter()
@@ -1484,8 +1464,7 @@ impl AnalysisModal {
         let mut choices = formats
             .into_iter()
             .map(|(read, _, kind, format)| {
-                // The count first, so a narrow list clips the format, not the
-                // evidence for choosing it.
+                // The count first, so a narrow list clips the format, not the evidence.
                 let label = if examples.is_empty() {
                     format!("{} {format}", kind.label())
                 } else {
@@ -1510,8 +1489,8 @@ impl AnalysisModal {
         self.show_picker(SetupRow::TextAsTime, format!("Read {column} As"), choices);
     }
 
-    /// Take the picker's selection into the plan and close it. A text column chosen
-    /// to read as time comes back: its format is the next choice.
+    /// Take the picker's selection into the plan and close it. Returns a text column
+    /// chosen to read as time: its format is the next choice.
     pub fn choose_plan_picker(&mut self) -> Option<String> {
         let picker = self.quality.picker.take()?;
         let choice = picker
@@ -1621,10 +1600,9 @@ impl AnalysisModal {
         }
     }
 
-    /// Move the focused tool's cursor by `step` in its `rows` rows, ten to a page.
-    /// The correlation matrix moves its row, keeping its column; Down steps the cell
-    /// as the matrix does, and Home and End take the first and last pair off the
-    /// diagonal.
+    /// Move the focused tool's cursor by `step` in `rows` rows, ten to a page. The
+    /// correlation matrix moves its row, keeping its column; Home and End take the first
+    /// and last off-diagonal pair.
     pub fn move_row(&mut self, step: crate::form::ListMove, rows: usize) {
         use crate::form::ListMove;
         const PAGE: usize = 10;
@@ -1672,9 +1650,8 @@ impl AnalysisModal {
         }
     }
 
-    /// The matrix a run read. The cursor stays where it was when it is still a cell
-    /// of it; otherwise it starts on the first pair, off the diagonal, where Enter
-    /// has a detail to open.
+    /// Install the matrix a run read. The cursor stays if still a cell, else starts on
+    /// the first off-diagonal pair, where Enter opens a detail.
     pub fn install_correlations(&mut self, results: AnalysisResults) {
         let n = results
             .correlation_matrix
@@ -1710,8 +1687,8 @@ impl AnalysisModal {
             })
     }
 
-    /// Move the correlation cursor by `(rows, columns)`, stopping at the edges. The
-    /// matrix scrolls to keep the cell in view as it draws, from the width it has.
+    /// Move the correlation cursor by `(rows, columns)`, stopping at edges; the matrix
+    /// scrolls to keep it in view as it draws.
     pub fn move_correlation_cell(&mut self, (rows, cols): (isize, isize)) {
         let n = self.correlation_size();
         if n == 0 {

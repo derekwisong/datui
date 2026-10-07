@@ -2136,6 +2136,9 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
             time_format: None,
             full_scale: None,
         }];
+        // The report was built for the results as run; changed in place, it is built
+        // again.
+        results.derived = Default::default();
         app.analysis_modal.set_quality_page(QualityPage::Overview);
         app.analysis_modal.data_quality_table_state.select(Some(0));
         app.analysis_modal.data_quality_observation_detail = true;
@@ -2180,6 +2183,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         time_format: None,
         full_scale: None,
     }];
+    results.derived = Default::default();
     app.analysis_modal.set_quality_page(QualityPage::Overview);
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,

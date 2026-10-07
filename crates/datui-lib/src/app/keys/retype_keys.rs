@@ -1,8 +1,8 @@
 //! Keys of the type picker and the combine form, and opening them from the Info
 //! panel's Schema tab and the cell menu.
 
-use crate::form::FormKey;
-use crate::retype_modal::{Chosen, CombineField, CombineModal, RetypeModal};
+use crate::app::form::FormKey;
+use crate::app::modals::retype_modal::{Chosen, CombineField, CombineModal, RetypeModal};
 use crate::{App, AppEvent, Overlay};
 use crossterm::event::{KeyCode, KeyEvent};
 use polars::prelude::DataType;
@@ -11,9 +11,9 @@ use polars::prelude::DataType;
 #[derive(Default)]
 pub struct ColumnForms {
     /// The type picker, while it is open.
-    pub retype: Option<crate::retype_modal::RetypeModal>,
+    pub retype: Option<RetypeModal>,
     /// The combine form, while it is open.
-    pub combine: Option<crate::retype_modal::CombineModal>,
+    pub combine: Option<CombineModal>,
 }
 
 /// How many values on screen the format picker judges and previews formats by.
@@ -21,7 +21,7 @@ const EXAMPLES: usize = 20;
 
 impl App {
     /// A line of the cell menu that no key reaches.
-    pub(crate) fn menu_action(&mut self, action: crate::context_menu::MenuAction) {
+    pub(crate) fn menu_action(&mut self, action: crate::app::context_menu::MenuAction) {
         let Some(column) = self
             .data_table_state
             .as_ref()
@@ -30,8 +30,8 @@ impl App {
             return;
         };
         match action {
-            crate::context_menu::MenuAction::ChangeType => self.open_retype(&column),
-            crate::context_menu::MenuAction::CombineDatetime => self.open_combine(&column),
+            crate::app::context_menu::MenuAction::ChangeType => self.open_retype(&column),
+            crate::app::context_menu::MenuAction::CombineDatetime => self.open_combine(&column),
         }
     }
 
@@ -120,11 +120,11 @@ impl App {
     /// The combine form's keys: the shared form keys, then what each field does.
     pub(crate) fn combine_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let modal = self.column_forms.combine.as_mut()?;
-        if crate::form::picker_form_key(modal, event) {
+        if crate::app::form::picker_form_key(modal, event) {
             return None;
         }
         modal.problem = None;
-        match crate::form::key(modal, event) {
+        match crate::app::form::key(modal, event) {
             FormKey::Cancel => self.close_overlay(),
             FormKey::Submit => {
                 let derived = match modal.derived() {

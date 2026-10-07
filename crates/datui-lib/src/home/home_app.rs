@@ -2,10 +2,10 @@
 //! classifying rows, previews, search, catalogs and the cloud sources, and the
 //! answers its workers send back.
 
-use crate::background::{CacheWrites, OwedAnswer};
+use crate::app::background::{CacheWrites, OwedAnswer};
+use crate::app::feedback::Confirm;
 use crate::cache::CacheManager;
 use crate::cli::FileFormat;
-use crate::feedback::Confirm;
 use crate::loading::open_options::OpenOptions;
 #[cfg(feature = "cloud")]
 use crate::wait_on_runtime;

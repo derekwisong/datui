@@ -1,14 +1,14 @@
 //! The process around the app: the terminal session, the event loop's thread, the
 //! signals that end it, and handing a file to the system's opener.
 
-use crate::config::AppConfig;
-use crate::terminal::{
+use crate::app::terminal::{
     QuietTerminal, TakenTerminal, follow_focus, push_keyboard_flags, restore_terminal,
 };
+use crate::config::AppConfig;
 use crate::view::Views;
 use crate::{
-    App, AppEvent, RunInput, event_pump, glyphs, inspector::external_open, logging, pointer,
-    startup, terminal_color, terminal_input,
+    App, AppEvent, RunInput, app::event_pump, app::pointer, app::startup, app::terminal_color,
+    app::terminal_input, glyphs, inspector::external_open, logging,
 };
 use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyModifiers};

@@ -13,8 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use polars::prelude::*;
 
-use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
-use crate::jobs::{Answer, Job, Progress};
+use crate::app::jobs::{Answer, Job, Progress};
+use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use crate::table::ViewRows;
 use crate::widgets::text_input::{TextInput, TextInputEvent};
 use crate::{App, AppEvent, InputMode, InputType};
@@ -904,7 +904,7 @@ impl App {
             column: spec
                 .column
                 .clone()
-                .unwrap_or_else(|| crate::filter_modal::ANY_COLUMN.to_string()),
+                .unwrap_or_else(|| crate::app::modals::filter_modal::ANY_COLUMN.to_string()),
             operator,
             value: spec.pattern.clone(),
             logical_op: LogicalOperator::And,

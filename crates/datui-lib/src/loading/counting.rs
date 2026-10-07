@@ -1,8 +1,8 @@
 //! Row counts, footer passes and line indexing behind a dataset's first rows, and
 //! what waits on them: an End, a `:N`, the status line.
 
-use crate::background::{LenCount, OwedCount};
-use crate::jobs::{Answer, Job};
+use crate::app::background::{LenCount, OwedCount};
+use crate::app::jobs::{Answer, Job};
 use crate::table::DataTableState;
 use crate::{App, AppEvent, logging};
 use std::sync::Arc;
@@ -244,7 +244,7 @@ impl App {
     }
 
     /// Work the re-read after a join would cancel: anything a bump would strand
-    /// ([`crate::jobs::Jobs::would_strand`]), plus a chart being prepared, since the join changes the
+    /// ([`crate::app::jobs::Jobs::would_strand`]), plus a chart being prepared, since the join changes the
     /// frame (a fresh `len_generation`) under it.
     pub(crate) fn work_the_join_would_cancel(&self) -> bool {
         self.work_a_bump_would_strand() || self.chart_preparing()

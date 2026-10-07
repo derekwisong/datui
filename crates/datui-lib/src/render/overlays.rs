@@ -49,7 +49,7 @@ pub fn render_confirmation_modal(
 ) {
     // A question owns the screen: a click outside it does nothing, and its own
     // footer keys, drawn after, take theirs.
-    crate::pointer::record(area, crate::pointer::Hit::Modal);
+    crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
     let g = crate::glyphs::get();
     let footer = confirmation_keys()
         .into_iter()
@@ -104,7 +104,7 @@ pub fn render_error_modal(
     modal: &mut crate::ErrorModal,
     ctx: &RenderContext,
 ) {
-    crate::pointer::record(area, crate::pointer::Hit::Modal);
+    crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
     // One way out, named once: Esc closes it too, as every dialog.
     let footer = HintBar::from_ctx(ctx)
         .screen(Context::Question)
@@ -387,7 +387,7 @@ mod tests {
         let mut modal = crate::ConfirmationModal::new();
         modal.show(
             "Overwrite out.csv?".to_string(),
-            crate::feedback::Confirm::ClearRecents,
+            crate::app::feedback::Confirm::ClearRecents,
         );
         render_confirmation_modal(area, &mut buf, &mut modal, &ctx);
         let rows = grid(&buf, area);

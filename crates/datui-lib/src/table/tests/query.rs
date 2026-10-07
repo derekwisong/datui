@@ -1752,7 +1752,7 @@ fn absent_columns_and_type_conflicts_are_measured_from_the_footers() {
 fn a_filtered_remote_scan_falls_back_to_the_page_window() {
     // `filter(..).slice(0, N)` stops at the first N matches, so a window of a few
     // pages stops at the first row group with any; the 100k window read forty.
-    use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     let lf = df!("a" => (0..1_000i32).collect::<Vec<i32>>())
         .unwrap()
         .lazy();
@@ -1983,9 +1983,9 @@ fn a_followed_view_reads_and_counts_from_its_marks() {
     state.filter(vec![FilterStatement {
         columns: Vec::new(),
         column: "n".to_string(),
-        operator: crate::filter_modal::FilterOperator::Eq,
+        operator: crate::app::modals::filter_modal::FilterOperator::Eq,
         value: "3".to_string(),
-        logical_op: crate::filter_modal::LogicalOperator::And,
+        logical_op: crate::app::modals::filter_modal::LogicalOperator::And,
     }]);
     let matches = |n: usize| (0..n).filter(|i| i % 7 == 3).count();
     // The first count of the filter reads the whole file.

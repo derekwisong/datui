@@ -101,7 +101,7 @@ fn screen(app: &mut App) -> String {
 /// test decides how it ends.
 fn quality_run_under_way(
     stage: analysis::data_quality::QualityPhase,
-) -> (App, mpsc::Receiver<AppEvent>, jobs::Started) {
+) -> (App, mpsc::Receiver<AppEvent>, app::jobs::Started) {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
     let df = polars::prelude::df!("id" => [1i64, 2, 3]).unwrap();
@@ -130,7 +130,7 @@ fn quality_run_under_way(
     progress.reads_source = Some(stage.reads_source);
     progress.interruptible = Some(stage.interruptible);
     modal.computing = Some(progress);
-    let run = Job::Analysis(crate::jobs::AnalysisRun {
+    let run = Job::Analysis(crate::app::jobs::AnalysisRun {
         watch: Some(analysis::data_quality::QualityWatch::default()),
         runs_out: false,
     });
@@ -216,7 +216,7 @@ fn a_cancelled_run_says_so_until_its_worker_exits() {
 
     // The run in flight hears its own stages, and shows them.
     let running = app.job_for_tests(
-        Job::Analysis(crate::jobs::AnalysisRun::default()),
+        Job::Analysis(crate::app::jobs::AnalysisRun::default()),
         Some("Profiling data quality..."),
     );
     app.event(AppEvent::JobProgress {
@@ -292,11 +292,17 @@ fn a_stale_report_never_replaces_the_current_one() {
     });
     // Two runs on a generation since left, and the run in flight.
     drop(worker);
-    let stale = app.job_for_tests(Job::Analysis(crate::jobs::AnalysisRun::default()), None);
-    let failing = app.job_for_tests(Job::Analysis(crate::jobs::AnalysisRun::default()), None);
+    let stale = app.job_for_tests(
+        Job::Analysis(crate::app::jobs::AnalysisRun::default()),
+        None,
+    );
+    let failing = app.job_for_tests(
+        Job::Analysis(crate::app::jobs::AnalysisRun::default()),
+        None,
+    );
     app.jobs.advance();
     let worker = app.job_for_tests(
-        Job::Analysis(crate::jobs::AnalysisRun::default()),
+        Job::Analysis(crate::app::jobs::AnalysisRun::default()),
         Some("Profiling data quality..."),
     );
     while let Ok(event) = rx.try_recv() {

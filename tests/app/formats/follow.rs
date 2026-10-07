@@ -147,7 +147,7 @@ fn a_query_runs_over_the_new_rows() {
 /// what it counted, and its last page holds the last matches.
 #[test]
 fn a_filter_counts_and_reads_the_new_rows() {
-    use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use datui::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("long.csv");
     let lines = |range: std::ops::Range<i64>| -> String {

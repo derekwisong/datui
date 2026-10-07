@@ -1927,7 +1927,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
             // A click steps the tabs there, as ← / → do from anywhere here.
             clicks.push((
                 spans.len(),
-                crate::pointer::Hit::Option {
+                crate::app::pointer::Hit::Option {
                     field: None,
                     index: i,
                     current,
@@ -1941,7 +1941,7 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         };
         let line = Line::from(spans);
         if tab_rows > 0 {
-            crate::pointer::record_spans(tab_area, &line, clicks);
+            crate::app::pointer::record_spans(tab_area, &line, clicks);
         }
         Paragraph::new(line).render(tab_area, buf);
 

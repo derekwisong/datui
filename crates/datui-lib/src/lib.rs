@@ -14,7 +14,7 @@ use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use ratatui::widgets::{Block, Clear};
 
 pub mod analysis;
-mod background;
+pub mod app;
 pub mod cache;
 pub mod canonical;
 pub mod chart;
@@ -23,59 +23,27 @@ pub mod clipboard;
 pub mod cloud;
 pub mod commands;
 pub mod config;
-pub mod context_menu;
-mod copy_keys;
-pub mod copy_modal;
-mod documentation_keys;
-mod editing_keys;
 pub mod error_display;
-pub mod event_pump;
 pub mod exact;
 pub mod export;
-mod feedback;
-pub mod filter_modal;
 pub mod find;
-mod footer_state;
-pub mod form;
 pub mod formats;
 pub mod glyphs;
-pub mod help;
-mod hex_keys;
-pub mod hex_view;
 pub mod home;
-mod info_keys;
 pub mod inspector;
-mod jobs;
 pub mod limits;
-pub mod link_open;
 pub mod loading;
 pub mod logging;
 pub mod notes;
 pub mod numfmt;
-mod overlay;
-pub use overlay::Overlay;
+pub use app::overlay::Overlay;
 pub mod past_calendar;
-mod picker_keys;
-mod pivot_melt_keys;
-pub mod pivot_melt_modal;
-pub mod pointer;
-mod retype_keys;
-pub mod retype_modal;
-mod run;
-pub use run::{ended_by_signal, run, run_captured};
+pub use app::run::{ended_by_signal, run, run_captured};
 // Public for the fuzz targets in `fuzz/`.
 pub mod query;
 mod render;
 pub mod sanitize;
-mod sort_filter_keys;
-pub mod sort_filter_modal;
-pub mod sort_modal;
-pub mod startup;
 pub mod table;
-pub mod table_switch;
-mod terminal;
-mod terminal_color;
-pub mod terminal_input;
 pub mod typed_value;
 pub mod view;
 pub mod widgets;
@@ -88,30 +56,30 @@ pub use config::{
 };
 
 use analysis::analysis_modal::{AnalysisModal, AnalysisProgress};
-use background::{CacheWrites, InflightCollect, LenCount, OwedCount};
+use app::background::{CacheWrites, InflightCollect, LenCount, OwedCount};
 use chart::chart_export::ChartExportRequest;
 use chart::chart_export_modal::ChartExportModal;
 use chart::chart_jobs::ChartRequest;
 use chart::chart_modal::ChartColumns;
 
 pub use analysis::quality_memory::{KeptQualitySample, QUALITY_MEMORY_BUDGET, RetainedCopy};
+use app::feedback::Confirm;
+pub use app::feedback::{ConfirmationModal, ErrorModal, Flash};
+use app::jobs::{Answer, Job, Jobs, Outcome};
+pub use app::jobs::{JobKind, Progress, Ticket};
+use app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+use app::modals::pivot_melt_modal::{MeltSpec, PivotMeltModal, PivotSpec};
+use app::modals::sort_filter_modal::SortFilterModal;
+use app::modals::sort_modal::{SortColumn, order_with_hidden};
 pub use error_display::{ErrorKindForPython, error_for_python};
 use export::export_modal::{ExportFocus, ExportModal};
 use export::output_file::Overwrite;
 pub use export::{ExportOptions, ExportRequest};
-use feedback::Confirm;
-pub use feedback::{ConfirmationModal, ErrorModal, Flash};
-use filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
-use jobs::{Answer, Job, Jobs, Outcome};
-pub use jobs::{JobKind, Progress, Ticket};
 pub use loading::open_options::{
     OpenOptions, ParseStringsTarget, ReadReport, SqliteOpen, TypedDialect, UnaskedDownload,
 };
 pub use loading::unfinished::ExitSweep;
 use numfmt::NumberFormatSettings;
-use pivot_melt_modal::{MeltSpec, PivotMeltModal, PivotSpec};
-use sort_filter_modal::SortFilterModal;
-use sort_modal::{SortColumn, order_with_hidden};
 use table::{DataTableState, DrillRow};
 pub use view::{SavedView, ViewManager, Views};
 use widgets::column_widths::WidthChoice;
@@ -180,8 +148,8 @@ pub enum AppEvent {
     /// A key taken as if typed (Enter on a help line). The pump runs it through
     /// `classify` like a typed key; outside the pump it is a `Key`.
     Press(KeyEvent),
-    /// Read from the terminal by [`terminal_input::TerminalInput`]. The
-    /// [`event_pump::EventPump`] turns it into `Key`/`Resize`.
+    /// Read from the terminal by [`app::terminal_input::TerminalInput`]. The
+    /// [`app::event_pump::EventPump`] turns it into `Key`/`Resize`.
     Terminal(crossterm::event::Event),
     /// Something polled rather than sent changed (a background panic, a Polars
     /// warning): wakes the loop. Handled as nothing.
@@ -191,7 +159,7 @@ pub enum AppEvent {
     /// The terminal regained focus: under `auto` the background is asked again.
     TerminalFocused,
     /// Settings `run` reads on a worker before building the app; never reaches the app.
-    SettingsRead(Box<Result<startup::Settings>>),
+    SettingsRead(Box<Result<app::startup::Settings>>),
     /// Paths from the command line or the Python binding, checked on a worker
     /// ([`JobKind::OpenNamed`]): a local-looking path may be a slow mount.
     OpenNamed(Vec<PathBuf>, OpenOptions),
@@ -375,7 +343,7 @@ pub enum AppEvent {
         header: bool,
     },
     ChartExport(ChartExportRequest),
-    /// A confirmed documentation link, checked by `link_open::checked_url`.
+    /// A confirmed documentation link, checked by `app::link_open::checked_url`.
     OpenLink(String),
     /// Deferred: run the chart export once its phase is drawn.
     DoChartExport(ChartExportRequest),
@@ -432,7 +400,7 @@ pub enum AppEvent {
         /// A path typed at `~` rather than a listed row: Esc returns to the listing.
         jump: bool,
     },
-    /// A background job's outcome is in its record: `jobs::Jobs::end` takes it.
+    /// A background job's outcome is in its record: `app::jobs::Jobs::end` takes it.
     JobEnded(Ticket),
     /// A report from a background job still running.
     JobProgress {
@@ -812,12 +780,12 @@ pub struct App {
     source: loading::open_scan::OpenedSource,
     path: Option<PathBuf>,
     /// Standard input and output when datui sits in a pipe.
-    pipes: run::Pipes,
+    pipes: app::run::Pipes,
     events: Sender<AppEvent>,
     debug: DebugState,
     pub info_modal: InfoModal,
     /// What the Info panel shows of the dataset beyond its schema.
-    pub info: info_keys::InfoState,
+    pub info: app::keys::info_keys::InfoState,
     /// The command line: its inputs per mode, completion, and the query it is running.
     pub prompt: query::query_prompt::QueryPrompt,
     pub input_mode: InputMode,
@@ -834,29 +802,29 @@ pub struct App {
     /// The chart view, its export form, and the preparations it keeps or waits on.
     pub chart: chart::chart_jobs::Charts,
     pub export_modal: ExportModal,
-    pub copy_modal: copy_modal::CopyModal,
+    pub copy_modal: app::modals::copy_modal::CopyModal,
     pub inspector_modal: inspector::inspector_modal::InspectorModal,
     /// What datui hands to other programs, and the clipboard.
-    external: run::External,
+    external: app::run::External,
     /// The go-to-column, format and table pickers.
-    pub pickers: picker_keys::Pickers,
+    pub pickers: app::keys::picker_keys::Pickers,
     /// The Value Counts screen (`F`).
     pub value_counts: analysis::value_counts_modal::ValueCountsModal,
     /// The counts the export dialog writes, when it was opened from Value Counts.
     export_counts: Option<polars::prelude::DataFrame>,
     /// The retype and combine forms.
-    pub column_forms: retype_keys::ColumnForms,
+    pub column_forms: app::keys::retype_keys::ColumnForms,
     /// The hex view, and the number its next read is tagged with.
-    pub hex: hex_keys::HexState,
+    pub hex: app::keys::hex_keys::HexState,
     error_modal: ErrorModal,
     flash: Option<Flash>,
     pub confirmation_modal: ConfirmationModal,
     /// The help overlay, over whatever screen it was opened at.
-    help: help::Help,
+    help: app::help::Help,
     /// What the mouse can land on in the last frame, and the last click.
-    pointer: pointer::Pointing,
+    pointer: app::pointer::Pointing,
     /// The menu a right click on a cell opened, while it is open.
-    context_menu: Option<context_menu::ContextMenu>,
+    context_menu: Option<app::context_menu::ContextMenu>,
     cache: CacheManager,
     /// The recent and the shape an open writes, which the home listing waits on.
     cache_writes: CacheWrites,
@@ -1099,7 +1067,7 @@ impl App {
         };
         let sample = self.analysis_modal.sample.clone();
         self.spawn_job(
-            Job::Analysis(jobs::AnalysisRun::default()),
+            Job::Analysis(app::jobs::AnalysisRun::default()),
             Some(status),
             move |_| {
                 let results = source
@@ -1876,7 +1844,7 @@ impl App {
     /// While a header is dragged over another column, a rule where it would land:
     /// after that column moving right, before it moving left.
     fn render_drop_mark(&self, buf: &mut Buffer, ctx: &crate::render::context::RenderContext) {
-        let Some(pointer::Drag::Move { column, over }) = self.pointer.drag() else {
+        let Some(app::pointer::Drag::Move { column, over }) = self.pointer.drag() else {
             return;
         };
         let Some(state) = self.data_table_state.as_ref() else {
@@ -1955,9 +1923,9 @@ impl App {
             .is_some_and(|dtype| {
                 matches!(dtype, DataType::String | DataType::Date | DataType::Time)
             });
-        self.context_menu = Some(context_menu::ContextMenu::with(
+        self.context_menu = Some(app::context_menu::ContextMenu::with(
             at,
-            context_menu::column_items(combine),
+            app::context_menu::column_items(combine),
         ));
     }
 
@@ -1970,8 +1938,8 @@ impl App {
     pub fn choose_from_menu(&mut self, i: usize) -> Option<AppEvent> {
         let menu = self.context_menu.take()?;
         match menu.chosen(i)? {
-            context_menu::MenuKey::Run(key) => Some(AppEvent::Press(key)),
-            context_menu::MenuKey::Do(action) => {
+            app::context_menu::MenuKey::Run(key) => Some(AppEvent::Press(key)),
+            app::context_menu::MenuKey::Do(action) => {
                 self.menu_action(action);
                 None
             }
@@ -2042,11 +2010,9 @@ impl App {
             Overlay::Inspect => self.inspector_modal.finding,
             Overlay::GoToColumn => true,
             Overlay::PickFormat | Overlay::Retype { .. } => true,
-            Overlay::Combine { .. } => {
-                self.column_forms.combine.as_ref().is_some_and(|c| {
-                    c.picker.is_some() || c.focus == retype_modal::CombineField::Name
-                })
-            }
+            Overlay::Combine { .. } => self.column_forms.combine.as_ref().is_some_and(|c| {
+                c.picker.is_some() || c.focus == app::modals::retype_modal::CombineField::Name
+            }),
             Overlay::PickTable => true,
             Overlay::Sample => self
                 .sample
@@ -2340,8 +2306,8 @@ impl App {
     /// a caller replacing work in flight advances it first.
     fn spawn_job<F, R>(&mut self, job: Job, status: Option<&str>, work: F) -> Ticket
     where
-        F: FnOnce(&jobs::Worker) -> std::result::Result<R, String> + Send + 'static,
-        R: Into<jobs::Answered>,
+        F: FnOnce(&app::jobs::Worker) -> std::result::Result<R, String> + Send + 'static,
+        R: Into<app::jobs::Answered>,
     {
         let started = self.start_job(job, status);
         let ticket = started.ticket();
@@ -2350,8 +2316,8 @@ impl App {
     }
 
     /// As [`Self::spawn_job`], with the ticket before the work: run it with
-    /// [`jobs::Started::run`].
-    fn start_job(&mut self, job: Job, status: Option<&str>) -> jobs::Started {
+    /// [`app::jobs::Started::run`].
+    fn start_job(&mut self, job: Job, status: Option<&str>) -> app::jobs::Started {
         if let Some(status) = status {
             // Any errand that led here passes its keys to this job's record.
             self.busy = false;
@@ -2389,14 +2355,14 @@ impl App {
     }
 
     /// Hold the generation: a continuation waiting to run, or an errand waiting on the
-    /// user. See [`jobs::Hold`].
-    pub(crate) fn hold_the_generation(&self) -> jobs::Hold {
+    /// user. See [`app::jobs::Hold`].
+    pub(crate) fn hold_the_generation(&self) -> app::jobs::Hold {
         self.jobs.hold()
     }
 
     /// A job with no worker, started as `spawn_job` does, for tests that end it.
     #[cfg(test)]
-    pub(crate) fn job_for_tests(&mut self, job: Job, status: Option<&str>) -> jobs::Started {
+    pub(crate) fn job_for_tests(&mut self, job: Job, status: Option<&str>) -> app::jobs::Started {
         self.start_job(job, status)
     }
 
@@ -2648,17 +2614,18 @@ impl App {
                 ..Default::default()
             },
             home_app: home::home_app::HomeApp {
-                local_desktop: link_open::local_desktop(link_open::Platform::current(), |name| {
-                    std::env::var(name).ok()
-                }),
+                local_desktop: app::link_open::local_desktop(
+                    app::link_open::Platform::current(),
+                    |name| std::env::var(name).ok(),
+                ),
                 ..Default::default()
             },
             source: loading::open_scan::OpenedSource::default(),
-            pipes: run::Pipes::default(),
+            pipes: app::run::Pipes::default(),
             events,
             debug: DebugState::default(),
             info_modal: InfoModal::new(),
-            info: info_keys::InfoState {
+            info: app::keys::info_keys::InfoState {
                 head_web_rows: !cache::running_as_a_cargo_test(),
                 ..Default::default()
             },
@@ -2708,19 +2675,19 @@ impl App {
                 ..Default::default()
             },
             export_modal: ExportModal::new(),
-            copy_modal: copy_modal::CopyModal::new(),
+            copy_modal: app::modals::copy_modal::CopyModal::new(),
             inspector_modal: inspector::inspector_modal::InspectorModal::new(),
-            external: run::External::default(),
-            pickers: picker_keys::Pickers::default(),
+            external: app::run::External::default(),
+            pickers: app::keys::picker_keys::Pickers::default(),
             value_counts: analysis::value_counts_modal::ValueCountsModal::default(),
-            hex: hex_keys::HexState::default(),
+            hex: app::keys::hex_keys::HexState::default(),
             export_counts: None,
-            column_forms: retype_keys::ColumnForms::default(),
+            column_forms: app::keys::retype_keys::ColumnForms::default(),
             error_modal: ErrorModal::new(),
             flash: None,
             confirmation_modal: ConfirmationModal::new(),
-            help: help::Help::default(),
-            pointer: pointer::Pointing::default(),
+            help: app::help::Help::default(),
+            pointer: app::pointer::Pointing::default(),
             context_menu: None,
             cache,
             cache_writes: CacheWrites::default(),
@@ -3002,21 +2969,21 @@ impl App {
         }
         if let Some(menu) = self.context_menu.as_mut() {
             match menu.key(event) {
-                context_menu::MenuKey::Moved => return None,
-                context_menu::MenuKey::Close => {
+                app::context_menu::MenuKey::Moved => return None,
+                app::context_menu::MenuKey::Close => {
                     self.context_menu = None;
                     return None;
                 }
-                context_menu::MenuKey::Run(key) => {
+                app::context_menu::MenuKey::Run(key) => {
                     self.context_menu = None;
                     return Some(AppEvent::Press(key));
                 }
-                context_menu::MenuKey::Do(action) => {
+                app::context_menu::MenuKey::Do(action) => {
                     self.context_menu = None;
                     self.menu_action(action);
                     return None;
                 }
-                context_menu::MenuKey::Other => self.context_menu = None,
+                app::context_menu::MenuKey::Other => self.context_menu = None,
             }
         }
 
@@ -3183,8 +3150,8 @@ impl App {
         self.close_help_left_behind();
         if self.help.is_open() {
             return match self.help.key(event) {
-                help::HelpKey::Press(key) => Some(AppEvent::Press(key)),
-                help::HelpKey::Stay | help::HelpKey::Closed => None,
+                app::help::HelpKey::Press(key) => Some(AppEvent::Press(key)),
+                app::help::HelpKey::Stay | app::help::HelpKey::Closed => None,
             };
         }
 
@@ -3683,7 +3650,7 @@ impl App {
                     && let Some(state) = self.data_table_state.as_ref()
                 {
                     let columns = state.get_column_order().to_vec();
-                    let context = copy_modal::CopyContext {
+                    let context = app::modals::copy_modal::CopyContext {
                         row_number: state.selected_display_row().unwrap_or(0),
                         view_rows: state.copy_view_df().map(|d| d.height()).unwrap_or(0),
                         view_cols: columns.len(),
@@ -3701,7 +3668,7 @@ impl App {
 
     /// Handle one event. A key arriving while busy is neither acted on nor dropped: it
     /// returns as `Err(key)` for the caller to hold until idle, as
-    /// [`event_pump::EventPump`] does. [`App::event`] is for callers with nowhere to
+    /// [`app::event_pump::EventPump`] does. [`App::event`] is for callers with nowhere to
     /// hold a key.
     pub fn handle(&mut self, event: AppEvent) -> EventOutcome {
         let started = std::time::Instant::now();
@@ -3966,7 +3933,7 @@ impl App {
                 // A second Enter supersedes the first (home keys act while busy): the newer look
                 // is the one waited for, and refusing would let a dead share block every look.
                 self.jobs.supersede(|job| matches!(job, Job::Classify(_)));
-                let look = Job::Classify(jobs::Classify {
+                let look = Job::Classify(app::jobs::Classify {
                     path: looking.clone(),
                     browsing: self.home.browsing.clone(),
                     jump,
@@ -4169,7 +4136,7 @@ impl App {
             }
             AppEvent::OpenLink(url) => {
                 // Not waited on; a browser that will not start gets a flash, not an error.
-                if link_open::open(&url).is_err() {
+                if app::link_open::open(&url).is_err() {
                     self.flash_note("Couldn't open the link; y copies it".to_string());
                 }
                 None
@@ -4212,7 +4179,7 @@ impl App {
                             payload,
                             message: format!(
                                 "Copied {} rows as {}",
-                                copy_modal::thousands(rows),
+                                app::modals::copy_modal::thousands(rows),
                                 format.as_str()
                             ),
                         })
@@ -4411,7 +4378,7 @@ impl App {
             .map(|name| {
                 schema
                     .get(name)
-                    .map(crate::filter_modal::Operand::of)
+                    .map(crate::app::modals::filter_modal::Operand::of)
                     .unwrap_or_default()
             })
             .collect();
@@ -4557,7 +4524,7 @@ impl App {
     /// answer starts next holds them first. A waited-on job gives back the keys and
     /// its footer line here, unless the answer continues, keeping the wait up.
     fn job_ended(&mut self, ticket: Ticket) -> Option<AppEvent> {
-        let jobs::Ended {
+        let app::jobs::Ended {
             job,
             current,
             keys,
@@ -5529,7 +5496,7 @@ impl App {
     fn terminal_answered(&mut self, mode: ThemeMode) {
         if self.app_config.theme.follow {
             self.cache
-                .remember_terminal_mode(&terminal_color::terminal_key(), mode);
+                .remember_terminal_mode(&app::terminal_color::terminal_key(), mode);
         }
         self.follow_terminal_background(mode);
     }
@@ -5540,7 +5507,9 @@ impl App {
         if let Some(mode) = answered {
             self.terminal_answered(mode);
         } else if self.app_config.theme.follow
-            && let Some(mode) = self.cache.terminal_mode(&terminal_color::terminal_key())
+            && let Some(mode) = self
+                .cache
+                .terminal_mode(&app::terminal_color::terminal_key())
         {
             self.follow_terminal_background(mode);
         }

@@ -349,12 +349,12 @@ impl CombineModal {
     }
 
     pub fn step_kind(&mut self, delta: i8) {
-        self.kind = crate::form::step_value(&DerivedKind::ALL, self.kind, delta);
-        crate::form::Form::settle_focus(self);
+        self.kind = crate::app::form::step_value(&DerivedKind::ALL, self.kind, delta);
+        crate::app::form::Form::settle_focus(self);
     }
 }
 
-impl crate::form::Form for CombineModal {
+impl crate::app::form::Form for CombineModal {
     type Field = CombineField;
 
     fn shown_picker(&mut self) -> Option<(&mut crate::widgets::ui::PickerState, bool)> {
@@ -369,8 +369,8 @@ impl crate::form::Form for CombineModal {
         self.picker_choose();
     }
 
-    fn fields(&self) -> Vec<(CombineField, crate::form::FieldKind)> {
-        use crate::form::FieldKind;
+    fn fields(&self) -> Vec<(CombineField, crate::app::form::FieldKind)> {
+        use crate::app::form::FieldKind;
         let mut fields = vec![
             (CombineField::Date, FieldKind::Picker { multi: false }),
             (CombineField::Kind, FieldKind::Choice),

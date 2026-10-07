@@ -107,7 +107,7 @@ fn t_opens_another_worksheet_of_a_workbook() {
 
 #[test]
 fn a_switch_leaves_the_query_filters_and_sort_behind() {
-    use datui::filter_modal::FilterOperator;
+    use datui::app::modals::filter_modal::FilterOperator;
     let (_dir, book) = copy_of("sheets.xlsx");
     let (mut app, rx, tx) = open(vec![book.join("2023")], OpenOptions::default());
     app.event(AppEvent::QQuery("select where month < 7".to_string()));
@@ -232,7 +232,7 @@ fn enter_on_the_schema_tab_retypes_and_on_the_excel_tab_opens() {
 #[cfg(feature = "sqlite")]
 #[test]
 fn t_opens_another_table_of_a_database_and_leaves_the_query_behind() {
-    use datui::filter_modal::FilterOperator;
+    use datui::app::modals::filter_modal::FilterOperator;
     let (_dir, db) = copy_of("sqlite/shop.db");
     let (mut app, rx, tx) = open(vec![db.join("customers")], OpenOptions::default());
     assert!(app.offers_other_tables());

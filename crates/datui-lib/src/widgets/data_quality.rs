@@ -250,7 +250,7 @@ pub fn render(
         || config.show_access
         || config.observation_detail
     {
-        crate::pointer::record(area, crate::pointer::Hit::Modal);
+        crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
     }
     if let Some(form) = config.intent_form {
         crate::widgets::quality_intent::render_form(form, &config, area, buf);
@@ -261,12 +261,12 @@ pub fn render(
     } else if config.observation_detail {
         render_finding_detail(&config, table_state, detail_scroll, area, buf);
     } else if sidebar_width == 0 && config.focus == AnalysisFocus::Sidebar {
-        crate::pointer::record(area, crate::pointer::Hit::Modal);
+        crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
         render_narrow_tool_picker(&config, sidebar_state, area, buf);
     }
     // A staged read of rows sits over whatever asked for it: a finding or a count.
     if let Some(read) = config.evidence_read {
-        crate::pointer::record(area, crate::pointer::Hit::Modal);
+        crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
         render_evidence_read(&config, read, area, buf);
     }
 }
@@ -366,7 +366,7 @@ fn render_tabs(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffe
         spans.push(Span::styled(" ", dimmed));
         clicks.push((
             spans.len(),
-            crate::pointer::Hit::Key(crossterm::event::KeyEvent::new(
+            crate::app::pointer::Hit::Key(crossterm::event::KeyEvent::new(
                 crossterm::event::KeyCode::Char(char::from(b'1' + i as u8)),
                 crossterm::event::KeyModifiers::NONE,
             )),
@@ -378,7 +378,7 @@ fn render_tabs(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffe
         spans.push(Span::styled(" ", dimmed));
     }
     let line = Line::from(spans);
-    crate::pointer::record_spans(area, &line, clicks);
+    crate::app::pointer::record_spans(area, &line, clicks);
     Paragraph::new(line).style(dimmed).render(area, buf);
 }
 /// One line of Setup, top to bottom.
@@ -3744,7 +3744,7 @@ fn render_expected_windows(config: &DataQualityWidgetConfig<'_>, area: Rect, buf
                 label_width: 10,
             }
             .render(row_area, buf, ctx);
-            crate::pointer::record_field::<crate::analysis::analysis_modal::ExpectedForm>(
+            crate::app::pointer::record_field::<crate::analysis::analysis_modal::ExpectedForm>(
                 row_area, field,
             );
         }

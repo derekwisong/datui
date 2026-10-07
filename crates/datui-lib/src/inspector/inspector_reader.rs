@@ -9,7 +9,7 @@
 //! A unit's bounds depend only on the text, never on how it was reached, so a
 //! unit wrapped walking down is the unit found walking up.
 
-use crate::copy_modal::thousands;
+use crate::app::modals::copy_modal::thousands;
 use std::collections::HashMap;
 use std::sync::Arc;
 use unicode_width::UnicodeWidthChar;

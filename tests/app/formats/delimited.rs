@@ -190,7 +190,7 @@ fn a_computed_column_that_reuses_a_name_has_no_unit() {
     assert_eq!(unit(&app, "UTCOfst").as_deref(), Some("hh:mm"), "a key");
 
     // A melt carries its id columns; its value column is not any one of them.
-    let melt = datui::pivot_melt_modal::MeltSpec {
+    let melt = datui::app::modals::pivot_melt_modal::MeltSpec {
         index: vec!["UTCOfst".to_string()],
         value_columns: vec!["volts".to_string(), "cht1".to_string()],
         variable_name: "variable".to_string(),

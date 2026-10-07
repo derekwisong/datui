@@ -3,12 +3,12 @@
 use crate::analysis::analysis_modal::AnalysisProgress;
 use crate::analysis::sample_modal::SampleForm;
 use crate::analysis::table_sample::{Limit, MemoryCheck};
-use crate::form::FormKey;
-use crate::jobs::Job;
+use crate::app::form::FormKey;
+use crate::app::jobs::Job;
 use crate::table::DataTableState;
 use crate::{
     App, AppEvent, InputMode, Overlay, analysis::analysis_modal, analysis::data_quality,
-    analysis::sample_keys, analysis::sample_modal, analysis::sampling, form,
+    analysis::sample_keys, analysis::sample_modal, analysis::sampling, app::form,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use polars::datatypes::DataType;

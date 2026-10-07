@@ -39,7 +39,7 @@ pub fn render(
             !form.inline || app.analysis_modal.focus == analysis_modal::AnalysisFocus::Main;
         if !form.inline {
             // Floating, it owns the keys: what it covers takes no clicks.
-            crate::pointer::record(target, crate::pointer::Hit::Modal);
+            crate::app::pointer::record(target, crate::app::pointer::Hit::Modal);
         }
         crate::widgets::sample_form::render(form, focused, target, buf, ctx);
     }

@@ -200,7 +200,7 @@ pub fn render_form(
             label_width: LABEL_WIDTH,
         }
         .render(line(row), buf, ctx);
-        crate::pointer::record_field::<crate::analysis::intent_modal::IntentForm>(
+        crate::app::pointer::record_field::<crate::analysis::intent_modal::IntentForm>(
             line(row),
             *field,
         );

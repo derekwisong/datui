@@ -1,8 +1,8 @@
 //! The documentation viewer: opening a dataset's documentation, its keys, copying
 //! from it and following its links.
 
-use crate::feedback::Confirm;
-use crate::{App, clipboard, glyphs, link_open, widgets};
+use crate::app::feedback::Confirm;
+use crate::{App, app::link_open, clipboard, glyphs, widgets};
 use crossterm::event::{KeyCode, KeyEvent};
 use std::path::Path;
 

@@ -1,8 +1,8 @@
 //! Saved views: the list, the save form, matching a view to a dataset, and replaying
 //! its steps with a rollback when its rows fail.
 
-use crate::filter_modal::FilterStatement;
-use crate::jobs::{Answer, Job};
+use crate::app::jobs::{Answer, Job};
+use crate::app::modals::filter_modal::FilterStatement;
 use crate::table::DataTableState;
 use crate::view::SavedView;
 use crate::widgets::view_modal::{FormFocus, ViewModalMode, ViewRow};

@@ -71,7 +71,7 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
                         registry_hint_in(Context::Find, Some("Find"), "Esc"),
                     ],
                     _ => {
-                        let row = crate::editing_keys::row_number(
+                        let row = crate::app::keys::editing_keys::row_number(
                             app.query_prompt_text().unwrap_or_default(),
                         )
                         .is_some();
@@ -764,7 +764,7 @@ fn setup_control_keys(app: &crate::App) -> Vec<Hint> {
 /// Footer keys for the hex view: its prompt's while one is open, Esc while a
 /// find reads, and otherwise the view's own, most used first.
 fn hex_control_keys(app: &crate::App) -> Vec<Hint> {
-    use crate::hex_view::PromptKind;
+    use crate::app::hex_view::PromptKind;
     let key = |keys| registry_hint(Context::Hex, keys);
     let say = |keys, label| registry_hint_as(Context::Hex, None, keys, label);
     let prompt = |keys| registry_hint_in(Context::Hex, Some("Prompt"), keys);
@@ -801,7 +801,7 @@ fn hex_control_keys(app: &crate::App) -> Vec<Hint> {
         .found
         .as_ref()
         .and_then(|f| f.stride)
-        .is_some_and(|s| (1..=crate::hex_view::MAX_RECORD_SIZE as u64).contains(&s))
+        .is_some_and(|s| (1..=crate::app::hex_view::MAX_RECORD_SIZE as u64).contains(&s))
         && view.record_size
             != view
                 .found
@@ -825,7 +825,7 @@ fn hex_control_keys(app: &crate::App) -> Vec<Hint> {
     }
     if matches!(
         view.origin,
-        crate::hex_view::Origin::Table | crate::hex_view::Origin::Info
+        crate::app::hex_view::Origin::Table | crate::app::hex_view::Origin::Info
     ) {
         keys.push(registry_hint_in(Context::Hex, Some("Go"), "Esc"));
     }
@@ -978,7 +978,7 @@ mod tests {
         assert_eq!(super::help_key(&app, content), Some("?"));
         app.confirmation_modal.show(
             "Overwrite out.csv?".to_string(),
-            crate::feedback::Confirm::ClearRecents,
+            crate::app::feedback::Confirm::ClearRecents,
         );
         assert_eq!(super::help_key(&app, content), None);
         app.confirmation_modal.hide();

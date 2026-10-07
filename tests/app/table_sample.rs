@@ -336,7 +336,7 @@ fn an_exported_chart_carries_its_recipe_unless_omitted() {
 #[test]
 fn the_same_seed_draws_the_same_rows_before_and_after_the_count() {
     use datui::analysis::table_sample::DrawPath;
-    use datui::filter_modal::FilterOperator;
+    use datui::app::modals::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open(parquet("table_sample_path.parquet", 20_000));
     // A filter streams the rows, and its count is not in yet when the sample is
     // drawn: a reservoir.
@@ -400,7 +400,7 @@ fn ids(app: &App) -> Vec<i64> {
 /// sample away from under one, is refused with the way out.
 #[test]
 fn a_pivot_is_refused_never_dropped() {
-    use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
+    use datui::app::modals::pivot_melt_modal::{PivotAggregation, PivotSpec};
     let pivot = || {
         AppEvent::Pivot(PivotSpec {
             index: vec!["id".to_string()],

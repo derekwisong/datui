@@ -308,33 +308,33 @@ impl ExportModal {
 
     /// Step the chosen format's compression through [`COMPRESSION_OPTIONS`].
     pub fn step_compression(&mut self, delta: i8) {
-        let next = crate::form::step_value(&COMPRESSION_OPTIONS, self.compression(), delta);
+        let next = crate::app::form::step_value(&COMPRESSION_OPTIONS, self.compression(), delta);
         self.set_compression_for(self.selected_format, next);
     }
 
     /// Step the format, carrying the typed path's extension with it.
     pub fn step_format(&mut self, delta: i8) {
         self.selected_format =
-            crate::form::step_value(&ExportFormat::ALL, self.selected_format, delta);
+            crate::app::form::step_value(&ExportFormat::ALL, self.selected_format, delta);
         self.sync_path_to_format();
         // A format without a delimiter row or compression takes focus off it.
-        crate::form::Form::settle_focus(self);
+        crate::app::form::Form::settle_focus(self);
     }
 
     /// The fields in Tab order: a list, since options vary by format and dataset.
     pub fn focus_order(&self) -> Vec<ExportFocus> {
-        crate::form::Form::fields(self)
+        crate::app::form::Form::fields(self)
             .into_iter()
             .map(|(field, _)| field)
             .collect()
     }
 }
 
-impl crate::form::Form for ExportModal {
+impl crate::app::form::Form for ExportModal {
     type Field = ExportFocus;
 
-    fn fields(&self) -> Vec<(ExportFocus, crate::form::FieldKind)> {
-        use crate::form::FieldKind::{Checkbox, Choice, Text};
+    fn fields(&self) -> Vec<(ExportFocus, crate::app::form::FieldKind)> {
+        use crate::app::form::FieldKind::{Checkbox, Choice, Text};
         let mut fields = vec![
             (ExportFocus::FormatSelector, Choice),
             (ExportFocus::PathInput, Text),
@@ -501,7 +501,7 @@ mod tests {
             modal.selected_format = format;
             for field in modal.focus_order() {
                 modal.selected_format = format;
-                crate::form::Form::set_focused(&mut modal, field);
+                crate::app::form::Form::set_focused(&mut modal, field);
                 for delta in [1, -1, 1, 1] {
                     modal.step_format(delta);
                     assert!(

@@ -83,7 +83,7 @@ fn the_sample_size_is_typed_in_shorthand() {
     app.analysis_modal.sidebar_state.select(Some(0));
     show_sample_form(&mut app);
     let form = app.analysis_modal.sample_form.as_mut().unwrap();
-    assert!(datui::form::Form::focus(form, SampleField::Size));
+    assert!(datui::app::form::Form::focus(form, SampleField::Size));
     for c in "zz".chars() {
         app.event(key(KeyCode::Char(c)));
     }
@@ -562,7 +562,7 @@ fn test_keys_held_during_an_analysis_do_not_outlive_its_cancel() {
 /// view getters describe the frame on screen.
 #[test]
 fn test_view_getters_describe_the_grouped_view_while_drilled() {
-    use datui::filter_modal::FilterOperator;
+    use datui::app::modals::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("drill_view_getters.csv");
 
     app.event(AppEvent::QQuery("select by c".to_string()));

@@ -5,7 +5,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::analysis::analysis_modal::AnalysisTool;
-use datui::event_pump::EventPump;
+use datui::app::event_pump::EventPump;
 use datui::{App, AppEvent, InputMode, JobKind, OpenOptions, Overlay, QueryMode};
 use polars::prelude::*;
 use ratatui::buffer::Buffer;
@@ -1149,15 +1149,15 @@ fn current_rows(app: &App) -> usize {
 
 fn filter_stmt(
     column: &str,
-    operator: datui::filter_modal::FilterOperator,
+    operator: datui::app::modals::filter_modal::FilterOperator,
     value: &str,
-) -> datui::filter_modal::FilterStatement {
-    datui::filter_modal::FilterStatement {
+) -> datui::app::modals::filter_modal::FilterStatement {
+    datui::app::modals::filter_modal::FilterStatement {
         columns: Vec::new(),
         column: column.to_string(),
         operator,
         value: value.to_string(),
-        logical_op: datui::filter_modal::LogicalOperator::And,
+        logical_op: datui::app::modals::filter_modal::LogicalOperator::And,
     }
 }
 
@@ -1586,8 +1586,8 @@ fn press(app: &mut App, code: KeyCode) -> Option<AppEvent> {
 
 /// Step the open copy dialog's scope row (where it opens) with → until it reads
 /// `scope`. The scope is sticky, so a test never assumes where it starts.
-fn copy_scope(app: &mut App, scope: datui::copy_modal::CopyScope) {
-    for _ in 0..datui::copy_modal::CopyScope::ALL.len() {
+fn copy_scope(app: &mut App, scope: datui::app::modals::copy_modal::CopyScope) {
+    for _ in 0..datui::app::modals::copy_modal::CopyScope::ALL.len() {
         if app.copy_modal.scope == scope {
             return;
         }
@@ -1604,7 +1604,7 @@ fn start_new_filter(app: &mut App) {
     press(app, KeyCode::Up);
     assert_eq!(
         app.sort_filter_modal.focus,
-        datui::sort_filter_modal::SortFilterField::AddFilter
+        datui::app::modals::sort_filter_modal::SortFilterField::AddFilter
     );
     press(app, KeyCode::Char(' '));
     assert!(app.sort_filter_modal.filter.editor.is_some());
@@ -1617,14 +1617,14 @@ fn open_columns_list(app: &mut App) {
     press(app, KeyCode::Up);
     assert_eq!(
         app.sort_filter_modal.focus,
-        datui::sort_filter_modal::SortFilterField::TabBar
+        datui::app::modals::sort_filter_modal::SortFilterField::TabBar
     );
     press(app, KeyCode::Right);
     press(app, KeyCode::Down);
     press(app, KeyCode::Down);
     assert!(matches!(
         app.sort_filter_modal.focus,
-        datui::sort_filter_modal::SortFilterField::Column(_)
+        datui::app::modals::sort_filter_modal::SortFilterField::Column(_)
     ));
 }
 
@@ -2455,11 +2455,11 @@ fn open_python_fixture() -> (
 
 fn python_filter(
     column: &str,
-    operator: datui::filter_modal::FilterOperator,
+    operator: datui::app::modals::filter_modal::FilterOperator,
     value: &str,
-    logical_op: datui::filter_modal::LogicalOperator,
-) -> datui::filter_modal::FilterStatement {
-    datui::filter_modal::FilterStatement {
+    logical_op: datui::app::modals::filter_modal::LogicalOperator,
+) -> datui::app::modals::filter_modal::FilterStatement {
+    datui::app::modals::filter_modal::FilterStatement {
         columns: Vec::new(),
         column: column.to_string(),
         operator,

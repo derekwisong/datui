@@ -494,7 +494,7 @@ fn a_dialog_s_footer_chips_press_their_keys() {
     // A question: its Cancel chip answers it; a click beside it does nothing.
     p.app.confirmation_modal.show(
         "Delete it?".to_string(),
-        crate::feedback::Confirm::ClearRecents,
+        crate::app::feedback::Confirm::ClearRecents,
     );
     p.terminal_mouse(click((0, 2))).unwrap();
     settle(&mut p);
@@ -803,7 +803,7 @@ fn a_drill_whose_read_dies_flashes_one_line_and_the_next_one_drills() {
 /// form is not stuck computing — and the next pivot is installed.
 #[test]
 fn a_pivot_whose_worker_dies_is_shown_and_the_next_one_installs() {
-    use crate::pivot_melt_modal::{PivotAggregation, PivotSpec};
+    use crate::app::modals::pivot_melt_modal::{PivotAggregation, PivotSpec};
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("long.csv");
     std::fs::write(&path, "day,key,val\n1,a,10\n1,b,20\n2,a,30\n2,b,40\n").unwrap();
@@ -855,7 +855,7 @@ fn stale_failures_leave_a_newer_open_alone() {
         crate::Job::Load(gone),
         crate::Job::OpenNamed(gone),
         crate::Job::Rows(crate::InflightCollect::for_tests(0, 3)),
-        crate::Job::Analysis(crate::jobs::AnalysisRun::default()),
+        crate::Job::Analysis(crate::app::jobs::AnalysisRun::default()),
         crate::Job::SampleRows,
         crate::Job::Pivot,
         crate::Job::DrillRow,
@@ -1215,7 +1215,7 @@ fn keys_held_before_an_error_modal_appears_are_dropped() {
     assert_eq!(held(&p).len(), 2);
 
     let analysis = p.app.job_for_tests(
-        crate::Job::Analysis(crate::jobs::AnalysisRun::default()),
+        crate::Job::Analysis(crate::app::jobs::AnalysisRun::default()),
         Some("Running analysis..."),
     );
     analysis.end(crate::Outcome::Failed {
@@ -1288,8 +1288,8 @@ fn ctrl_c_in_the_query_bar_quits() {
 /// search, the chart view's open column Picker, and the plain table.
 #[test]
 fn ctrl_c_quits_from_the_sort_and_chart_search_boxes() {
+    use crate::app::modals::sort_filter_modal::{SortFilterField, SortFilterTab};
     use crate::chart::chart_modal::ChartFocus;
-    use crate::sort_filter_modal::{SortFilterField, SortFilterTab};
 
     let (mut p, _dir) = loaded_pump();
     p.app.overlay = Overlay::SortFilter;
@@ -2599,7 +2599,7 @@ fn every_registry_key_is_taken_where_it_is_listed() {
                 let mut taken = false;
                 for press in presses {
                     let before = frame(&mut p.app);
-                    p.terminal_key(crate::help::key_event(press)).unwrap();
+                    p.terminal_key(crate::app::help::key_event(press)).unwrap();
                     if matches!(settle(&mut p), Drained::Exit) {
                         taken = true;
                         break;
@@ -2837,7 +2837,7 @@ fn a_click_focuses_a_form_row_and_acts_on_it() {
 /// bar field, and the Info panel's, which switch from anywhere.
 #[test]
 fn a_click_on_a_tab_switches_to_it() {
-    use crate::sort_filter_modal::{SortFilterField, SortFilterTab};
+    use crate::app::modals::sort_filter_modal::{SortFilterField, SortFilterTab};
     let (mut p, _dir) = loaded_pump();
     p.terminal_key(plain(KeyCode::Char('s'))).unwrap();
     assert_eq!(p.app.overlay, Overlay::SortFilter);
@@ -3154,7 +3154,7 @@ fn a_right_click_on_a_checkbox_only_focuses_it() {
 /// the second, so it can be picked out without changing it.
 #[test]
 fn a_list_row_focuses_first_and_acts_on_a_second_click() {
-    use crate::sort_filter_modal::{SortFilterField, SortFilterTab};
+    use crate::app::modals::sort_filter_modal::{SortFilterField, SortFilterTab};
     let (mut p, _dir) = loaded_pump();
     p.terminal_key(plain(KeyCode::Char('['))).unwrap();
     settle(&mut p);

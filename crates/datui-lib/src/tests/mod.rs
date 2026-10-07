@@ -216,7 +216,9 @@ pub fn work_pending(app: &crate::App) -> bool {
 
 /// For `App::worker_dies`: the first job `dies` picks panics as it starts, and
 /// every job after it runs.
-pub(crate) fn worker_dies_once(dies: fn(&crate::Job) -> bool) -> Option<crate::jobs::WorkerDies> {
+pub(crate) fn worker_dies_once(
+    dies: fn(&crate::Job) -> bool,
+) -> Option<crate::app::jobs::WorkerDies> {
     let mut died = false;
     Some(Box::new(move |job| {
         if died || !dies(job) {
@@ -233,12 +235,12 @@ pub(crate) fn worker_dies_once(dies: fn(&crate::Job) -> bool) -> Option<crate::j
 pub(crate) fn worker_waits_once(
     which: fn(&crate::Job) -> bool,
 ) -> (
-    Option<crate::jobs::WorkerWaits>,
+    Option<crate::app::jobs::WorkerWaits>,
     std::sync::mpsc::Sender<()>,
 ) {
     let (release, gate) = std::sync::mpsc::channel();
     let mut gate = Some(gate);
-    let waits: crate::jobs::WorkerWaits =
+    let waits: crate::app::jobs::WorkerWaits =
         Box::new(move |job| if which(job) { gate.take() } else { None });
     (Some(waits), release)
 }
@@ -1536,8 +1538,12 @@ fn a_dead_frames_failed_count_leaves_this_frames_question_mark_alone() {
 
 /// A look, set up as `ClassifyThenOpen` leaves it.
 #[cfg(test)]
-fn a_look_is_out(app: &mut crate::App, path: &std::path::Path, jump: bool) -> crate::jobs::Started {
-    let look = crate::Job::Classify(crate::jobs::Classify {
+fn a_look_is_out(
+    app: &mut crate::App,
+    path: &std::path::Path,
+    jump: bool,
+) -> crate::app::jobs::Started {
+    let look = crate::Job::Classify(crate::app::jobs::Classify {
         path: path.to_path_buf(),
         browsing: app.home.browsing.clone(),
         jump,
@@ -1561,7 +1567,7 @@ fn a_look_waits(app: &crate::App) -> Option<std::path::PathBuf> {
 #[cfg(test)]
 fn the_look_answers(
     app: &mut crate::App,
-    look: crate::jobs::Started,
+    look: crate::app::jobs::Started,
     found: Option<crate::home::discover::EntryKind>,
 ) -> Option<crate::AppEvent> {
     let ticket = look.ticket();
@@ -2085,7 +2091,7 @@ fn a_job_puts_down_the_keys_and_the_line_it_held() {
 
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
-    let end = |app: &mut App, job: crate::jobs::Started, outcome: Outcome| {
+    let end = |app: &mut App, job: crate::app::jobs::Started, outcome: Outcome| {
         let ticket = job.ticket();
         job.end(outcome);
         app.event(AppEvent::JobEnded(ticket))
@@ -2211,7 +2217,7 @@ fn a_cancelled_read_waits_out_its_worker_and_a_replaced_one_does_not() {
     assert!(app.cancelled_analysis_running().is_none(), "until it ends");
 
     let run = app.job_for_tests(
-        Job::Analysis(crate::jobs::AnalysisRun::default()),
+        Job::Analysis(crate::app::jobs::AnalysisRun::default()),
         Some("Running analysis..."),
     );
     app.jobs.advance();
@@ -2359,7 +2365,7 @@ fn stale_analysis_answers_are_ignored() {
         .iter()
         .map(|_| {
             app.job_for_tests(
-                Job::Analysis(crate::jobs::AnalysisRun::default()),
+                Job::Analysis(crate::app::jobs::AnalysisRun::default()),
                 Some("Running analysis..."),
             )
         })
@@ -2388,7 +2394,7 @@ fn a_cancelled_job_does_not_hold_the_generation() {
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
     let old = app.job_for_tests(
-        Job::Analysis(crate::jobs::AnalysisRun::default()),
+        Job::Analysis(crate::app::jobs::AnalysisRun::default()),
         Some("Running analysis..."),
     );
     app.jobs.advance();
@@ -2399,7 +2405,7 @@ fn a_cancelled_job_does_not_hold_the_generation() {
     assert!(app.cancelled_work_running(), "though it is still running");
 
     let current = app.job_for_tests(
-        Job::Analysis(crate::jobs::AnalysisRun::default()),
+        Job::Analysis(crate::app::jobs::AnalysisRun::default()),
         Some("Running analysis..."),
     );
     assert!(app.work_a_bump_would_strand());
@@ -2540,7 +2546,7 @@ fn a_failure_leaves_other_work_alone() {
 
     let (tx, _rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
-    let fail = |app: &mut App, job: crate::jobs::Started| {
+    let fail = |app: &mut App, job: crate::app::jobs::Started| {
         let ticket = job.ticket();
         job.end(Outcome::Failed {
             message: "not this one".to_string(),
@@ -2558,7 +2564,7 @@ fn a_failure_leaves_other_work_alone() {
             "{what}: the analysis is still waited on"
         );
     };
-    let analysis = || Job::Analysis(crate::jobs::AnalysisRun::default());
+    let analysis = || Job::Analysis(crate::app::jobs::AnalysisRun::default());
 
     // Jobs on a generation the analysis's has passed.
     let kinds = [
@@ -2601,7 +2607,7 @@ fn a_failure_leaves_other_work_alone() {
 
     // An older look at a path, which a newer one superseded.
     let look = |path: &str| {
-        Job::Classify(crate::jobs::Classify {
+        Job::Classify(crate::app::jobs::Classify {
             path: PathBuf::from(path),
             browsing: None,
             jump: false,
@@ -2981,7 +2987,7 @@ fn a_capped_table_copy_asks_only_past_what_the_cap_could_hold() {
         let state = app.data_table_state.as_mut().unwrap();
         assert!(state.count_landed(state.len_generation(), 3, None));
         app.set_clipboard_destination(Box::new(TestClipboard(Some(limit))));
-        app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
+        app.copy_modal.scope = crate::app::modals::copy_modal::CopyScope::Table;
         let next = app.perform_copy();
         (app, next)
     };
@@ -3025,7 +3031,7 @@ fn a_table_copy_with_no_size_yet_asks_first() {
     assert!(state.estimated_copy_bytes().is_none());
 
     uncapped_clipboard(&mut app);
-    app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
+    app.copy_modal.scope = crate::app::modals::copy_modal::CopyScope::Table;
     let _ = app.perform_copy();
     assert!(
         app.confirmation_modal.active,
@@ -3033,7 +3039,7 @@ fn a_table_copy_with_no_size_yet_asks_first() {
     );
     assert!(matches!(
         app.confirmation_modal.asking,
-        Some(crate::feedback::Confirm::Copy(..))
+        Some(crate::app::feedback::Confirm::Copy(..))
     ));
 }
 
@@ -3074,7 +3080,7 @@ fn a_table_copy_counts_binary_at_its_base64_size() {
         let state = app.data_table_state.as_mut().unwrap();
         assert!(state.count_landed(state.len_generation(), 3, None));
         uncapped_clipboard(&mut app);
-        app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
+        app.copy_modal.scope = crate::app::modals::copy_modal::CopyScope::Table;
         let next = app.perform_copy();
         (app, next)
     };
@@ -3086,7 +3092,7 @@ fn a_table_copy_counts_binary_at_its_base64_size() {
     assert!(
         matches!(
             app.confirmation_modal.asking,
-            Some(crate::feedback::Confirm::Copy(..))
+            Some(crate::app::feedback::Confirm::Copy(..))
         ) && next.is_none()
     );
 
@@ -3099,7 +3105,7 @@ fn a_table_copy_counts_binary_at_its_base64_size() {
     assert!(
         matches!(
             app.confirmation_modal.asking,
-            Some(crate::feedback::Confirm::Copy(..))
+            Some(crate::app::feedback::Confirm::Copy(..))
         ) && next.is_none()
     );
 }
@@ -3138,7 +3144,7 @@ fn a_local_directorys_footers_size_its_binary_columns() {
         let state = app.data_table_state.as_mut().unwrap();
         assert!(state.count_landed(state.len_generation(), 3, None));
         uncapped_clipboard(&mut app);
-        app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
+        app.copy_modal.scope = crate::app::modals::copy_modal::CopyScope::Table;
         let next = app.perform_copy();
         (app, next)
     };
@@ -3175,7 +3181,7 @@ fn a_confirmation_keeps_its_keys_in_its_own_footer() {
 
     app.data_table_state.as_mut().unwrap().invalidate_num_rows();
     uncapped_clipboard(&mut app);
-    app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
+    app.copy_modal.scope = crate::app::modals::copy_modal::CopyScope::Table;
     let _ = app.perform_copy();
     assert!(app.confirmation_modal.active, "an unknown size asks");
     let bar = footer_text(&mut app);
@@ -3604,7 +3610,10 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
     // beside it because it is the one that a bump would *not* strand: it is
     // prepared against the frame, and the join takes a fresh one of those too.
     /// What keeps the work under way: a hold on the generation, or a running job.
-    type Underway = (Option<crate::jobs::Hold>, Option<crate::jobs::Started>);
+    type Underway = (
+        Option<crate::app::jobs::Hold>,
+        Option<crate::app::jobs::Started>,
+    );
     type Start = fn(&mut App) -> Underway;
     let under_way: Vec<(&str, Start)> = vec![
         ("leased background work", |app: &mut App| {
@@ -3613,14 +3622,14 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
         ("a chart", |app: &mut App| {
             let mut modal = crate::chart::chart_modal::ChartModal::new();
             modal.spec.encoding.x.field = Some("id".to_string());
-            let prep = crate::jobs::ChartPrep {
+            let prep = crate::app::jobs::ChartPrep {
                 dataset: None,
                 request: crate::ChartRequest::from_modal(&modal).expect("an x range"),
                 cancel: Default::default(),
             };
             (
                 None,
-                Some(app.job_for_tests(crate::jobs::Job::ChartPrepare(Box::new(prep)), None)),
+                Some(app.job_for_tests(crate::app::jobs::Job::ChartPrepare(Box::new(prep)), None)),
             )
         }),
     ];
@@ -3629,7 +3638,7 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
         drop(lease);
         if let Some(job) = job {
             let ticket = job.ticket();
-            job.end(crate::jobs::Outcome::Failed {
+            job.end(crate::app::jobs::Outcome::Failed {
                 message: "put away".to_string(),
                 panicked: false,
             });
@@ -3925,7 +3934,7 @@ fn a_footer_answer_survives_an_open_that_fails() {
 /// not describe the one on screen.
 #[test]
 fn a_journal_reread_for_a_replaced_dataset_is_dropped() {
-    use crate::jobs::{Answer, Job, Outcome};
+    use crate::app::jobs::{Answer, Job, Outcome};
     use crate::table::DataTableState;
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;

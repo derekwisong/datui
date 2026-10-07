@@ -240,7 +240,7 @@ pub fn render(
         && let Some(form) = &app.sample.form
     {
         // A dialog over the table: what it covers takes no clicks.
-        crate::pointer::record(data_area, crate::pointer::Hit::Modal);
+        crate::app::pointer::record(data_area, crate::app::pointer::Hit::Modal);
         crate::widgets::sample_form::render(form, true, data_area, buf, ctx);
     }
 
@@ -277,7 +277,7 @@ pub fn render(
         let wanted = if app.copy_modal.picker.is_some() {
             15
         } else {
-            crate::copy_modal::CopyModal::MOST_ROWS + 6
+            crate::app::modals::copy_modal::CopyModal::MOST_ROWS + 6
         };
         let modal_height = wanted.min(area.height);
         let modal_area = crate::render::layout::centered_rect(area, modal_width, modal_height);

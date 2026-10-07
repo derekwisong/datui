@@ -1,6 +1,6 @@
 use color_eyre::Result;
+use datui::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use datui::config::ConfigManager;
-use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use datui::view::{MatchCriteria, ViewManager, ViewSettings};
 use std::path::PathBuf;
 use std::time::SystemTime;

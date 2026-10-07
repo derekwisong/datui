@@ -3,10 +3,10 @@
 //! every per-column property in one flat list. Built on the `widgets::ui` kit; the
 //! rail marks focus.
 
-use crate::filter_modal::{FilterEditStep, FilterModal};
-use crate::pointer::{FieldId, Hit};
+use crate::app::modals::filter_modal::{FilterEditStep, FilterModal};
+use crate::app::modals::sort_filter_modal::{SortFilterField, SortFilterModal, SortFilterTab};
+use crate::app::pointer::{FieldId, Hit};
 use crate::render::context::RenderContext;
-use crate::sort_filter_modal::{SortFilterField, SortFilterModal, SortFilterTab};
 use crate::widgets::column_widths::WidthChoice;
 use crate::widgets::ui::{HintBar, Picker, SectionRule, Surface};
 use datui_cli::keys::Context;
@@ -83,7 +83,7 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
     };
     let field = Some(FieldId::of::<SortFilterModal>(SortFilterField::TabBar));
     let current = usize::from(columns_tab);
-    crate::pointer::record_spans(
+    crate::app::pointer::record_spans(
         tab_area,
         &tab_line,
         [1, 4]
@@ -260,7 +260,7 @@ fn render_in_effect(
         } else {
             SortFilterField::Sort(row)
         };
-        crate::pointer::record_field::<SortFilterModal>(row_area, field);
+        crate::app::pointer::record_field::<SortFilterModal>(row_area, field);
         let focused = match modal.focus {
             SortFilterField::Sort(i) => i == row,
             SortFilterField::AddSort => row == entries.len(),
@@ -308,7 +308,7 @@ fn render_in_effect(
     }
     if let Some(picker) = &modal.sort_picker {
         // It owns the keys even with no room to draw: the rows take no clicks.
-        crate::pointer::record(area, Hit::Picker);
+        crate::app::pointer::record(area, Hit::Picker);
         let rows = (area.y + 1 + shown as u16).min(bottom).saturating_sub(y);
         if rows > 0 {
             Picker::from_state(picker, true).render(
@@ -381,7 +381,7 @@ fn render_columns_tab(
         Span::styled("find: ", label_style),
     ]))
     .render(Rect { height: 1, ..area }, buf);
-    crate::pointer::record_field::<SortFilterModal>(
+    crate::app::pointer::record_field::<SortFilterModal>(
         Rect { height: 1, ..area },
         SortFilterField::Find,
     );
@@ -470,7 +470,7 @@ fn render_columns_tab(
             ..list_area
         };
         let is_cursor = i == selected;
-        crate::pointer::record_field::<SortFilterModal>(row_area, SortFilterField::Column(i));
+        crate::app::pointer::record_field::<SortFilterModal>(row_area, SortFilterField::Column(i));
         let (_, column) = &filtered[i];
         let lock = if column.is_locked {
             g.dot_full
@@ -637,7 +637,7 @@ fn render_filters(
 
         if under_edit {
             // While a filter is edited in place, it alone takes clicks.
-            crate::pointer::record(row_area, Hit::Editor);
+            crate::app::pointer::record(row_area, Hit::Editor);
             let rows_owed = (filter.row_count() - row - 1) as u16;
             let editor = filter.editor.as_mut().expect("checked above");
             // The row under edit: the three steps on one line, the active one
@@ -651,11 +651,11 @@ fn render_filters(
                 }
             };
             let column_text = match editor.column.selected_original() {
-                Some(i) if step != FilterEditStep::Column => filter
-                    .available_columns
-                    .get(i)
-                    .cloned()
-                    .unwrap_or_else(|| crate::filter_modal::ANY_COLUMN_LABEL.to_string()),
+                Some(i) if step != FilterEditStep::Column => {
+                    filter.available_columns.get(i).cloned().unwrap_or_else(|| {
+                        crate::app::modals::filter_modal::ANY_COLUMN_LABEL.to_string()
+                    })
+                }
                 _ => format!("{}{}", editor.column.filter, g.cursor),
             };
             let operator_text = if step == FilterEditStep::Operator {
@@ -732,7 +732,7 @@ fn render_filters(
         } else {
             SortFilterField::Filter(row)
         };
-        crate::pointer::record_field::<SortFilterModal>(row_area, field);
+        crate::app::pointer::record_field::<SortFilterModal>(row_area, field);
         if row == filter.statements.len() {
             // The add row: the standing offer, dimmed until it is taken.
             let style = if is_cursor {
@@ -807,8 +807,8 @@ mod tests {
         }
     }
     use super::*;
-    use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
-    use crate::sort_modal::SortColumn;
+    use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use crate::app::modals::sort_modal::SortColumn;
 
     fn modal() -> SortFilterModal {
         let mut m = SortFilterModal::new();

@@ -2,8 +2,8 @@
 //! terminal is wide enough, sized to its content and scrolled only when the
 //! terminal is too small for it.
 
+use crate::app::help::{Block, Help, Line};
 use crate::glyphs::{asciify_instructions, display_width, take_columns};
-use crate::help::{Block, Help, Line};
 use crate::render::context::RenderContext;
 use crate::widgets::ui::{HintBar, SectionRule, Surface};
 use datui_cli::keys::Context;
@@ -215,7 +215,7 @@ fn frame(area: Rect, two: bool, content_height: u16) -> Rect {
 /// written back to `help`.
 pub fn render_help(area: Rect, buf: &mut Buffer, help: &mut Help, ctx: &RenderContext) {
     // Help owns the clicks over the view: only its footer's keys take them.
-    crate::pointer::record(area, crate::pointer::Hit::Modal);
+    crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
     let blocks = help.blocks();
     let shown = key_count(&blocks);
     if shown > 0 {

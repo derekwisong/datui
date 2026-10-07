@@ -1,10 +1,10 @@
 //! The row inspector: opening and closing it, its keys, the value view and its
 //! find, drilling into nested values, copying fields, and the reads it asks for.
 
-use crate::form::ListMove;
-use crate::jobs::{Answer, Job};
+use crate::app::form::ListMove;
+use crate::app::jobs::{Answer, Job};
 use crate::{
-    App, AppEvent, Overlay, clipboard, copy_modal, inspector::external_open,
+    App, AppEvent, Overlay, app::modals::copy_modal, clipboard, inspector::external_open,
     inspector::inspector_bytes, inspector::inspector_drill, inspector::inspector_modal,
     inspector::inspector_reader, sentence,
 };

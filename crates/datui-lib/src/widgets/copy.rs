@@ -1,6 +1,6 @@
 //! The copy dialog: a FormView of its axes, the spec line saying what Enter will do.
 
-use crate::copy_modal::{CopyFocus, CopyModal};
+use crate::app::modals::copy_modal::{CopyFocus, CopyModal};
 use crate::render::context::RenderContext;
 use crate::widgets::ui::{FormValue, FormView, HintBar};
 use datui_cli::keys::Context;
@@ -70,7 +70,7 @@ pub fn render_copy_modal(area: Rect, buf: &mut Buffer, modal: &mut CopyModal, ct
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::copy_modal::{CopyContext, CopyScope};
+    use crate::app::modals::copy_modal::{CopyContext, CopyScope};
 
     fn render_to_text(modal: &mut CopyModal) -> String {
         let area = Rect::new(0, 0, 46, 14);

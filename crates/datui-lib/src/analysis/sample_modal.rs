@@ -681,11 +681,11 @@ pub fn new_seed() -> u64 {
         % 1_000_000
 }
 
-impl crate::form::Form for SampleForm {
+impl crate::app::form::Form for SampleForm {
     type Field = SampleField;
 
-    fn fields(&self) -> Vec<(SampleField, crate::form::FieldKind)> {
-        use crate::form::FieldKind;
+    fn fields(&self) -> Vec<(SampleField, crate::app::form::FieldKind)> {
+        use crate::app::form::FieldKind;
         SampleForm::fields(self)
             .into_iter()
             .map(|field| {
@@ -800,7 +800,7 @@ mod tests {
     /// the handler pages the numbered file list on `Text(Files)`, never `Other`.
     #[test]
     fn the_files_row_keeps_its_paging_keys() {
-        use crate::form::{Form, FormKey};
+        use crate::app::form::{Form, FormKey};
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut form = form();
         while form.kind != RowsKind::Files {
@@ -809,7 +809,7 @@ mod tests {
         assert!(form.focus(SampleField::Files));
         for code in [KeyCode::PageDown, KeyCode::PageUp] {
             assert_eq!(
-                crate::form::key(&mut form, &KeyEvent::new(code, KeyModifiers::NONE)),
+                crate::app::form::key(&mut form, &KeyEvent::new(code, KeyModifiers::NONE)),
                 FormKey::Text(SampleField::Files)
             );
         }
@@ -822,7 +822,7 @@ mod tests {
         let mut form = form();
         assert_eq!(form.size.value(), "100,000");
         while form.field != SampleField::Size {
-            crate::form::Form::focus_next(&mut form);
+            crate::app::form::Form::focus_next(&mut form);
         }
         let key = |c| {
             crossterm::event::KeyEvent::new(
@@ -855,7 +855,7 @@ mod tests {
     fn the_seed_is_typed() {
         let mut form = form();
         while form.field != SampleField::Seed {
-            crate::form::Form::focus_next(&mut form);
+            crate::app::form::Form::focus_next(&mut form);
         }
         assert!(form.field.is_text());
         let zero = crossterm::event::KeyEvent::new(

@@ -1,7 +1,7 @@
 //! The analysis modal's keys.
 
-use crate::feedback::Confirm;
-use crate::form::ListMove;
+use crate::app::feedback::Confirm;
+use crate::app::form::ListMove;
 use crate::{
     ANALYSIS_READ_WAITS, App, AppEvent, analysis::analysis_modal, analysis::sample_modal,
     analysis::sampling,

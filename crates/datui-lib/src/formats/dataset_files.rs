@@ -107,7 +107,7 @@ struct Listed {
     remembered: Option<crate::cache::CacheManager>,
     /// Where the home screen's record is written, off the open's path. One write at a
     /// time, so a sample's record never lands after the whole one it would not replace.
-    writes: crate::background::CacheWrites,
+    writes: crate::app::background::CacheWrites,
     writing: Arc<std::sync::Mutex<()>>,
 }
 

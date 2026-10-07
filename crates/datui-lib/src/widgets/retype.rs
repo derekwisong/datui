@@ -1,7 +1,7 @@
 //! The type picker and the combine form: one Surface each over the table.
 
+use crate::app::modals::retype_modal::{CombineField, CombineModal, RetypeModal, Stage};
 use crate::render::context::RenderContext;
-use crate::retype_modal::{CombineField, CombineModal, RetypeModal, Stage};
 use crate::widgets::ui::{FormValue, FormView, HintBar, Picker, Surface};
 use datui_cli::keys::Context;
 use ratatui::buffer::Buffer;
@@ -32,7 +32,7 @@ pub fn render_retype(area: Rect, buf: &mut Buffer, modal: &RetypeModal, ctx: &Re
         width,
         height,
     };
-    crate::pointer::record(popup, crate::pointer::Hit::Modal);
+    crate::app::pointer::record(popup, crate::app::pointer::Hit::Modal);
     let back = match modal.stage {
         Stage::Type => "Cancel",
         Stage::Format { .. } => "Back",
@@ -93,7 +93,7 @@ const LABEL_WIDTH: u16 = 13;
 
 /// The combine form over `area`.
 pub fn render_combine(area: Rect, buf: &mut Buffer, modal: &CombineModal, ctx: &RenderContext) {
-    let fields: Vec<CombineField> = crate::form::Form::fields(modal)
+    let fields: Vec<CombineField> = crate::app::form::Form::fields(modal)
         .into_iter()
         .map(|(f, _)| f)
         .collect();
@@ -127,7 +127,7 @@ pub fn render_combine(area: Rect, buf: &mut Buffer, modal: &CombineModal, ctx: &
         .iter()
         .position(|k| *k == modal.kind)
         .unwrap_or(0);
-    let none = || FormValue::Placeholder(crate::retype_modal::NONE);
+    let none = || FormValue::Placeholder(crate::app::modals::retype_modal::NONE);
     let rows = fields
         .into_iter()
         .map(|field| {

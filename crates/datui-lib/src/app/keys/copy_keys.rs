@@ -1,13 +1,15 @@
-//! The copy modal's keys: the shared form keys (`crate::form`), then what each row
+//! The copy modal's keys: the shared form keys (`crate::app::form`), then what each row
 //! does with them.
 
-use crate::copy_modal::CopyFocus;
-use crate::feedback::Confirm;
-use crate::form::FormKey;
-use crate::jobs::{Answer, Job};
+use crate::app::feedback::Confirm;
+use crate::app::form::FormKey;
+use crate::app::jobs::{Answer, Job};
+use crate::app::modals::copy_modal::CopyFocus;
 use crate::loading::open_options::OpenOptions;
 use crate::table::DataTableState;
-use crate::{App, AppEvent, clipboard, cloud::source, copy_modal, export::python_script};
+use crate::{
+    App, AppEvent, app::modals::copy_modal, clipboard, cloud::source, export::python_script,
+};
 use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent};
 use std::path::Path;
@@ -15,7 +17,7 @@ use std::path::Path;
 impl App {
     /// Keys in the copy modal.
     pub(crate) fn copy_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
-        if crate::form::picker_form_key(&mut self.copy_modal, event) {
+        if crate::app::form::picker_form_key(&mut self.copy_modal, event) {
             return None;
         }
 
@@ -23,7 +25,7 @@ impl App {
         // plain (Enter re-arms it).
         self.copy_modal.attention = false;
 
-        match crate::form::key(&mut self.copy_modal, event) {
+        match crate::app::form::key(&mut self.copy_modal, event) {
             FormKey::Cancel => {
                 self.close_overlay();
             }

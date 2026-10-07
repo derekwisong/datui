@@ -2,7 +2,7 @@
 //! scoped to that row alone, and the live preview of the spec it stages. The spec
 //! is echoed live; Enter applies it.
 
-use crate::filter_modal::FilterStatement;
+use crate::app::modals::filter_modal::FilterStatement;
 use crate::widgets::text_input::TextInput;
 use crate::widgets::ui::PickerState;
 use polars::datatypes::DataType;
@@ -489,7 +489,7 @@ impl PivotMeltModal {
     /// ←/→ (and Space) on a choice row: the next or previous value, wrapping. A
     /// new strategy changes which melt rows follow it.
     pub fn step_choice(&mut self, delta: i8) {
-        use crate::form::step_value;
+        use crate::app::form::step_value;
         match self.focus {
             PivotMeltFocus::PivotAggregation => {
                 self.aggregation = step_value(&PivotAggregation::ALL, self.aggregation, delta);
@@ -945,7 +945,7 @@ impl PivotMeltModal {
     }
 }
 
-impl crate::form::Form for PivotMeltModal {
+impl crate::app::form::Form for PivotMeltModal {
     type Field = PivotMeltFocus;
 
     fn shown_picker(&mut self) -> Option<(&mut crate::widgets::ui::PickerState, bool)> {
@@ -966,8 +966,8 @@ impl crate::form::Form for PivotMeltModal {
     }
 
     /// The tab bar, then the active tab's rows. Melt's value rows follow its strategy.
-    fn fields(&self) -> Vec<(PivotMeltFocus, crate::form::FieldKind)> {
-        use crate::form::FieldKind;
+    fn fields(&self) -> Vec<(PivotMeltFocus, crate::app::form::FieldKind)> {
+        use crate::app::form::FieldKind;
         std::iter::once(PivotMeltFocus::TabBar)
             .chain(self.row_order().iter().copied())
             .map(|row| {
@@ -997,7 +997,7 @@ impl crate::form::Form for PivotMeltModal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::form::Form;
+    use crate::app::form::Form;
 
     fn modal_with_columns(columns: &[&str]) -> PivotMeltModal {
         let mut m = PivotMeltModal::new();

@@ -291,12 +291,12 @@ impl ExpectedForm {
     }
 }
 
-impl crate::form::Form for ExpectedForm {
+impl crate::app::form::Form for ExpectedForm {
     /// The row, in [`EXPECTED_ROWS`].
     type Field = usize;
 
-    fn fields(&self) -> Vec<(usize, crate::form::FieldKind)> {
-        use crate::form::FieldKind;
+    fn fields(&self) -> Vec<(usize, crate::app::form::FieldKind)> {
+        use crate::app::form::FieldKind;
         (0..EXPECTED_ROWS.len())
             .map(|row| {
                 let kind = if row == 0 {
@@ -1603,8 +1603,8 @@ impl AnalysisModal {
     /// Move the focused tool's cursor by `step` in `rows` rows, ten to a page. The
     /// correlation matrix moves its row, keeping its column; Home and End take the first
     /// and last off-diagonal pair.
-    pub fn move_row(&mut self, step: crate::form::ListMove, rows: usize) {
-        use crate::form::ListMove;
+    pub fn move_row(&mut self, step: crate::app::form::ListMove, rows: usize) {
+        use crate::app::form::ListMove;
         const PAGE: usize = 10;
         let to = |at: Option<usize>| match (at, step) {
             (Some(at), _) => Some(step.apply(at, rows, PAGE)),

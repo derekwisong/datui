@@ -1,10 +1,10 @@
-//! The Sort & Filter sidebar's keys: the shared form keys (`crate::form`), then
+//! The Sort & Filter sidebar's keys: the shared form keys (`crate::app::form`), then
 //! what each entry does with them, then the list keys (`[` `]` move, `d` removes,
 //! and the Columns tab's per-column keys).
 
-use crate::filter_modal::FilterEditStep;
-use crate::form::{Form, FormKey, PickerKey};
-use crate::sort_filter_modal::SortFilterField;
+use crate::app::form::{Form, FormKey, PickerKey};
+use crate::app::modals::filter_modal::FilterEditStep;
+use crate::app::modals::sort_filter_modal::SortFilterField;
 use crate::widgets::column_widths::WidthChoice;
 use crate::{App, AppEvent};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -28,7 +28,7 @@ impl App {
         }
 
         if let Some(picker) = self.sort_filter_modal.sort_picker.as_mut() {
-            match crate::form::picker_key(picker, false, event) {
+            match crate::app::form::picker_key(picker, false, event) {
                 PickerKey::Close => self.sort_filter_modal.sort_picker = None,
                 PickerKey::Choose | PickerKey::Toggle | PickerKey::ChooseAndMove(_) => {
                     self.sort_filter_modal.choose_sort();
@@ -59,7 +59,7 @@ impl App {
         }
         let from = modal.focus;
         let list_cursor = modal.sort.table_state.selected();
-        match crate::form::key(modal, event) {
+        match crate::app::form::key(modal, event) {
             // From find into the list, focus lands on the list's cursor (the table's column
             // cursor on open).
             FormKey::Moved
@@ -121,7 +121,8 @@ impl App {
         let focus = modal.focus;
         let on_entry = matches!(focus, SortFilterField::Sort(_) | SortFilterField::Filter(_));
         let on_column = matches!(focus, SortFilterField::Column(_));
-        let in_effect = modal.active_tab == crate::sort_filter_modal::SortFilterTab::InEffect;
+        let in_effect =
+            modal.active_tab == crate::app::modals::sort_filter_modal::SortFilterTab::InEffect;
         match event.code {
             // What is in effect: one key per change.
             KeyCode::Char('[') if on_entry => modal.move_focused(true),

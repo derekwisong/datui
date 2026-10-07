@@ -923,7 +923,7 @@ fn chart_export_dialog_presets_and_legend() {
     );
     app.chart.modal.spec.encoding.y.aggregate = datui::chart::chart_modal::Aggregate::None;
     // Size: Document -> Slide 16:9.
-    datui::form::Form::focus(&mut app.chart.export_modal, ChartExportFocus::Size);
+    datui::app::form::Form::focus(&mut app.chart.export_modal, ChartExportFocus::Size);
     press(&mut app, KeyCode::Left);
     assert_eq!(app.chart.export_modal.size, SizePreset::Slide);
     assert_eq!(app.chart.export_modal.export_dimensions(), (1920, 1080));

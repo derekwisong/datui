@@ -1,15 +1,15 @@
 //! Opening a dataset: routing what was named, downloads, the scan and schema read
 //! for each kind of source, the load's phases as jobs, and installing the result.
 
+use crate::app::feedback::Confirm;
+use crate::app::jobs::{Answer, Job};
+use crate::app::modals::pivot_melt_modal::PivotMeltModal;
+use crate::app::modals::sort_filter_modal::SortFilterModal;
 use crate::cli::{CompressionFormat, FileFormat};
 #[cfg(feature = "cloud")]
 use crate::cloud::cloud_hive;
-use crate::feedback::Confirm;
-use crate::jobs::{Answer, Job};
 use crate::loading::open_options::{OpenOptions, ReadReport, UnaskedDownload};
 use crate::loading::scan::Scan;
-use crate::pivot_melt_modal::PivotMeltModal;
-use crate::sort_filter_modal::SortFilterModal;
 use crate::table::{DataTableState, OpenFacts};
 #[cfg(feature = "cloud")]
 use crate::wait_on_runtime;
@@ -528,7 +528,7 @@ impl App {
         // details pane says why.
         if kind == discover::EntryKind::Other {
             if matches!(source::input_source(&path), source::InputSource::Local(_)) {
-                self.open_hex(path, crate::hex_view::Origin::Home, true, None);
+                self.open_hex(path, crate::app::hex_view::Origin::Home, true, None);
             }
             return None;
         }

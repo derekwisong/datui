@@ -1878,7 +1878,7 @@ fn data_quality_edits_read_only_what_they_must() {
 #[test]
 fn data_quality_setup_names_every_count_pass_on_one_parquet_file() {
     use datui::analysis::data_quality::{QualityGrain, QualityScope, QualityStage};
-    use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use datui::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 
     let dir = common::fixture_dir();
     let path = dir.join("dq_reuse_blocks.parquet");
@@ -2757,7 +2757,7 @@ fn test_copy_dialog_keeps_its_size_across_scopes() {
     press(&mut app, KeyCode::Char('y'));
     assert_eq!(app.overlay, Overlay::Copy);
     let mut frames = std::collections::HashSet::new();
-    for scope in datui::copy_modal::CopyScope::ALL {
+    for scope in datui::app::modals::copy_modal::CopyScope::ALL {
         copy_scope(&mut app, scope);
         let rows = rows_at(&mut app, 80, 24);
         frames.insert(common::frame_bottoms(&rows));
@@ -2814,7 +2814,10 @@ fn test_copy_dialog_sends_each_scope_to_the_destination() {
     // the HTML flavor beside the TSV.
     key(&mut app, KeyCode::Char('y'));
     key(&mut app, KeyCode::Char(' ')); // the next scope: Row -> View
-    assert_eq!(app.copy_modal.scope, datui::copy_modal::CopyScope::View);
+    assert_eq!(
+        app.copy_modal.scope,
+        datui::app::modals::copy_modal::CopyScope::View
+    );
     key(&mut app, KeyCode::Enter); // copy
     {
         let copies = copies.lock().unwrap();
@@ -2831,7 +2834,10 @@ fn test_copy_dialog_sends_each_scope_to_the_destination() {
     key(&mut app, KeyCode::Char('y'));
     key(&mut app, KeyCode::Left);
     key(&mut app, KeyCode::Left);
-    assert_eq!(app.copy_modal.scope, datui::copy_modal::CopyScope::Cell);
+    assert_eq!(
+        app.copy_modal.scope,
+        datui::app::modals::copy_modal::CopyScope::Cell
+    );
     key(&mut app, KeyCode::Tab); // Scope -> Column
     key(&mut app, KeyCode::Char(' '));
     key(&mut app, KeyCode::Char('p'));
@@ -2855,7 +2861,7 @@ fn test_copy_dialog_sends_each_scope_to_the_destination() {
     // The table scope collects off-thread, then lands on the same destination
     // with the header the scope defaults to.
     key(&mut app, KeyCode::Char('y'));
-    copy_scope(&mut app, datui::copy_modal::CopyScope::Table);
+    copy_scope(&mut app, datui::app::modals::copy_modal::CopyScope::Table);
     let mut next = key(&mut app, KeyCode::Enter);
     while let Some(ev) = next {
         next = app.event(ev);

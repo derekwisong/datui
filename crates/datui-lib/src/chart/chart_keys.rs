@@ -1,14 +1,14 @@
 //! The chart view's keys. The panel and the export dialog take the shared form keys
-//! (`crate::form`); the chart's own keys come after them.
+//! (`crate::app::form`); the chart's own keys come after them.
 
 use crate::ChartRequest;
+use crate::app::feedback::Confirm;
+use crate::app::form::FormKey;
 use crate::chart::chart_export::{ChartExportFormat, ChartExportRequest};
 use crate::chart::chart_export_modal::{ChartExportFocus, ExportDefaults};
 use crate::chart::chart_modal::{ChartFocus, Mark};
 use crate::chart::chart_plot::PlotData;
 use crate::export::output_file::Overwrite;
-use crate::feedback::Confirm;
-use crate::form::FormKey;
 use crate::logging::LogFailure;
 use crate::widgets::crosshair::{self, Move};
 use crate::{App, AppEvent, Overlay, home};
@@ -33,7 +33,7 @@ impl App {
             return self.chart_export_key(event);
         }
 
-        if crate::form::picker_form_key(&mut self.chart.modal, event) {
+        if crate::app::form::picker_form_key(&mut self.chart.modal, event) {
             return None;
         }
 
@@ -70,7 +70,7 @@ impl App {
         }
 
         // The panel applies as it changes, so Enter acts on the focused row like Space.
-        match crate::form::key(&mut self.chart.modal, event) {
+        match crate::app::form::key(&mut self.chart.modal, event) {
             FormKey::Cancel => {
                 self.close_overlay();
                 return None;
@@ -193,7 +193,7 @@ impl App {
 
     /// Keys in the chart's export dialog.
     fn chart_export_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
-        match crate::form::key(&mut self.chart.export_modal, event) {
+        match crate::app::form::key(&mut self.chart.export_modal, event) {
             FormKey::Cancel => self.close_overlay(),
             FormKey::Submit => return self.submit_chart_export(),
             FormKey::Step(field, delta) => self.chart.export_modal.step(field, delta),
@@ -237,7 +237,10 @@ impl App {
         let path_str = modal.path_input.value().trim();
         if path_str.is_empty() {
             self.chart.export_modal.error = Some("Enter a file path.".to_string());
-            crate::form::Form::focus(&mut self.chart.export_modal, ChartExportFocus::PathInput);
+            crate::app::form::Form::focus(
+                &mut self.chart.export_modal,
+                ChartExportFocus::PathInput,
+            );
             return None;
         }
         // `~` and `$VAR` expand as everywhere else a path is typed.

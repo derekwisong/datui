@@ -379,7 +379,7 @@ impl Lines {
         let mut indexing = self.indexing.0.lock().unwrap_or_else(|e| e.into_inner());
         while *indexing {
             polars_ensure!(
-                !crate::jobs::superseded(),
+                !crate::app::jobs::superseded(),
                 ComputeError: "the read is no longer wanted"
             );
             indexing = self

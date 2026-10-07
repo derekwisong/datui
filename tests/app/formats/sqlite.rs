@@ -373,7 +373,7 @@ fn the_home_screen_counts_and_lists_tables() {
 /// scan with no sort or filter of Polars' own over it, and holds what Polars would give.
 #[test]
 fn the_sidebar_sorts_and_filters_in_sqlite() {
-    use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use datui::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     let db = sqlite().join("shop.db");
     let (mut app, _rx) = open_with(db, table("orders"));
     assert_eq!(app.error_message(), None);

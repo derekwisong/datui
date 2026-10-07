@@ -42,16 +42,15 @@ fn test_full_workflow() {
     app.sort_filter_modal.filter.available_columns =
         app.data_table_state.as_ref().unwrap().headers();
     let column = app.sort_filter_modal.filter.available_columns[2].clone();
-    app.sort_filter_modal
-        .filter
-        .statements
-        .push(datui::filter_modal::FilterStatement {
+    app.sort_filter_modal.filter.statements.push(
+        datui::app::modals::filter_modal::FilterStatement {
             columns: Vec::new(),
             column,
-            operator: datui::filter_modal::FilterOperator::Eq,
+            operator: datui::app::modals::filter_modal::FilterOperator::Eq,
             value: "1".to_string(),
-            logical_op: datui::filter_modal::LogicalOperator::And,
-        });
+            logical_op: datui::app::modals::filter_modal::LogicalOperator::And,
+        },
+    );
     // On the Filters tab Enter means add/edit; Ctrl+Enter is the apply.
     let key_event = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL);
     if let Some(next_event) = app.event(AppEvent::Key(key_event)) {
@@ -75,7 +74,7 @@ fn test_full_workflow() {
         .headers()
         .iter()
         .enumerate()
-        .map(|(i, h)| datui::sort_modal::SortColumn {
+        .map(|(i, h)| datui::app::modals::sort_modal::SortColumn {
             name: h.clone(),
             sort_order: None,
             sort_descending: false,
@@ -91,7 +90,7 @@ fn test_full_workflow() {
     // Space cycles none -> ascending -> descending.
     app.sort_filter_modal.sort.cycle_sort();
     app.sort_filter_modal.sort.cycle_sort();
-    app.sort_filter_modal.focus = datui::sort_filter_modal::SortFilterField::TabBar;
+    app.sort_filter_modal.focus = datui::app::modals::sort_filter_modal::SortFilterField::TabBar;
 
     let key_event = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
     if let Some(next_event) = app.event(AppEvent::Key(key_event)) {
@@ -245,7 +244,7 @@ fn test_absent_null_and_conflicting_cells_still_differ_after_a_filter() {
     let state = app.data_table_state.as_mut().unwrap();
     state.filter(vec![filter_stmt(
         "id",
-        datui::filter_modal::FilterOperator::GtEq,
+        datui::app::modals::filter_modal::FilterOperator::GtEq,
         "2",
     )]);
     assert!(state.error().is_none(), "the filter itself must succeed");
@@ -348,7 +347,7 @@ fn test_a_sort_leaves_out_the_rows_its_column_is_not_read_from() {
 /// answer either half of the question. It goes, and the note says why.
 #[test]
 fn test_a_filter_leaves_out_the_rows_its_column_is_not_read_from() {
-    use datui::filter_modal::{FilterOperator, LogicalOperator};
+    use datui::app::modals::filter_modal::{FilterOperator, LogicalOperator};
 
     let dir = tempfile::tempdir().unwrap();
     write_parquet(
@@ -508,7 +507,7 @@ fn test_no_offer_to_read_as_text_where_the_files_were_not_all_counted() {
 /// they would read wrongly.
 #[test]
 fn test_reading_a_filtered_column_as_text_says_the_comparison_changed() {
-    use datui::filter_modal::FilterOperator;
+    use datui::app::modals::filter_modal::FilterOperator;
 
     let dir = tempfile::tempdir().unwrap();
     write_parquet(
@@ -906,7 +905,7 @@ fn test_escape_stops_at_where_browsing_began() {
 /// clearing the filters returns to the query result. Reset still clears everything.
 #[test]
 fn test_sidebar_filter_applies_on_top_of_query() {
-    use datui::filter_modal::FilterOperator;
+    use datui::app::modals::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("query_then_filter.csv");
 
     app.event(AppEvent::QQuery("select where a < 50".to_string()));
@@ -985,7 +984,7 @@ fn test_q_style_distinct_like_mod_and_xbar() {
 #[cfg(feature = "sql")]
 #[test]
 fn test_sidebar_filter_keeps_sql_query() {
-    use datui::filter_modal::FilterOperator;
+    use datui::app::modals::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("sql_then_filter.csv");
 
     app.event(AppEvent::SqlQuery(
@@ -1047,7 +1046,7 @@ fn test_skip_tail_rows_survives_a_sidebar_sort() {
 #[test]
 fn test_parse_strings_survives_a_sidebar_filter() {
     use datui::ParseStringsTarget;
-    use datui::filter_modal::FilterOperator;
+    use datui::app::modals::filter_modal::FilterOperator;
     let mut csv = String::from("id,amount\n");
     for i in 0..100 {
         csv.push_str(&format!("{i},\" {} \"\n", i * 3));
@@ -1082,7 +1081,7 @@ fn test_parse_strings_survives_a_sidebar_filter() {
 #[cfg(feature = "sql")]
 #[test]
 fn test_sql_after_pivot_sees_the_pivoted_columns() {
-    use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
+    use datui::app::modals::pivot_melt_modal::{PivotAggregation, PivotSpec};
     let mut csv = String::from("id,key,val\n");
     for id in 0..10 {
         csv.push_str(&format!("{id},k1,{id}\n{id},k2,{}\n", id * 10));
@@ -1121,7 +1120,7 @@ fn test_sql_after_pivot_sees_the_pivoted_columns() {
 /// leaves the drill-down in place; drilling back up restores the grouped view.
 #[test]
 fn test_sidebar_filter_and_sort_stay_inside_a_drill_down() {
-    use datui::filter_modal::FilterOperator;
+    use datui::app::modals::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("drill_down_filter.csv");
 
     app.event(AppEvent::QQuery("select by c".to_string()));
@@ -1175,7 +1174,7 @@ fn test_sidebar_filter_and_sort_stay_inside_a_drill_down() {
 #[cfg(feature = "sql")]
 #[test]
 fn test_query_after_pivot_drops_the_reshape_for_sql() {
-    use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
+    use datui::app::modals::pivot_melt_modal::{PivotAggregation, PivotSpec};
     let mut csv = String::from("id,key,val\n");
     for id in 0..10 {
         csv.push_str(&format!("{id},k1,{id}\n{id},k2,{}\n", id * 10));
@@ -1222,7 +1221,7 @@ fn test_query_after_pivot_drops_the_reshape_for_sql() {
 /// a List column. Drilling back up brings the grouped view's settings back.
 #[test]
 fn test_drill_down_resyncs_the_sort_filter_sidebar() {
-    use datui::filter_modal::FilterOperator;
+    use datui::app::modals::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("drill_sidebar.csv");
 
     app.event(AppEvent::QQuery("select by c".to_string()));
@@ -1235,7 +1234,7 @@ fn test_drill_down_resyncs_the_sort_filter_sidebar() {
     assert_eq!(current_rows(&app), 2, "groups c = 1 and c = 2");
     // What Apply would have left in the sidebar.
     app.sort_filter_modal.filter.statements = vec![statement];
-    app.sort_filter_modal.sort.columns = vec![datui::sort_modal::SortColumn {
+    app.sort_filter_modal.sort.columns = vec![datui::app::modals::sort_modal::SortColumn {
         name: "c".to_string(),
         sort_order: Some(0),
         sort_descending: false,
@@ -2127,7 +2126,7 @@ fn home_f1_opens_help_mid_filter() {
 /// stops at the last column, and the rows out of view are counted above and below.
 #[test]
 fn test_sort_filter_columns_list_pages_and_counts_both_ends() {
-    use datui::sort_filter_modal::SortFilterField;
+    use datui::app::modals::sort_filter_modal::SortFilterField;
 
     let path = common::fixture_dir().join("columns_52.csv");
     let header: Vec<String> = (0..52).map(|i| format!("col_{i}")).collect();
@@ -2778,7 +2777,7 @@ fn test_the_first_filter_is_s_down_space() {
     press(&mut app, KeyCode::Char('s'));
     assert_eq!(
         app.sort_filter_modal.focus,
-        datui::sort_filter_modal::SortFilterField::AddSort
+        datui::app::modals::sort_filter_modal::SortFilterField::AddSort
     );
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Char(' '));
@@ -2852,7 +2851,7 @@ fn test_sort_filter_sidebar_is_one_surface() {
 /// Esc backs out one layer: an open picker first, then the dialog.
 #[test]
 fn esc_closes_the_picker_then_the_dialog() {
-    use datui::pivot_melt_modal::PivotMeltFocus;
+    use datui::app::modals::pivot_melt_modal::PivotMeltFocus;
     let (mut app, _rx, _tx) = open_query_filter_fixture("forms_esc_order.csv");
     press(&mut app, KeyCode::Char('p'));
     press(&mut app, KeyCode::Down);
@@ -2873,7 +2872,7 @@ fn esc_closes_the_picker_then_the_dialog() {
 /// undoes them, as Esc discards the innermost level everywhere.
 #[test]
 fn esc_in_a_toggle_picker_undoes_its_toggles() {
-    use datui::pivot_melt_modal::PivotMeltFocus;
+    use datui::app::modals::pivot_melt_modal::PivotMeltFocus;
     let (mut app, _rx, _tx) = open_query_filter_fixture("forms_picker_toggles.csv");
     press(&mut app, KeyCode::Char('p'));
     press(&mut app, KeyCode::Down);
@@ -2914,7 +2913,7 @@ fn enter_on_an_incomplete_form_stays_and_says_why() {
 /// the list as it stands.
 #[test]
 fn sort_and_filter_edits_what_is_in_effect() {
-    use datui::sort_filter_modal::SortFilterField;
+    use datui::app::modals::sort_filter_modal::SortFilterField;
     let (mut app, rx, tx) = open_query_filter_fixture("forms_in_effect.csv");
     app.event(AppEvent::Sort(
         vec!["a".to_string(), "c".to_string()],
@@ -3843,7 +3842,7 @@ fn plus_and_minus_filter_on_the_cursors_cell() {
     assert_eq!(quick_view(&app), (1, strings(&["name = north", "n != 1"])));
     assert_eq!(
         app.data_table_state.as_ref().unwrap().view_filters()[1].logical_op,
-        datui::filter_modal::LogicalOperator::And
+        datui::app::modals::filter_modal::LogicalOperator::And
     );
     table_key(&mut app, &rx, &tx, 'R');
     run_and_settle(&mut app, key(KeyCode::Home), &rx, &tx);
@@ -3935,16 +3934,15 @@ fn plus_and_minus_filter_on_the_cursors_cell() {
 fn a_filter_value_its_column_cannot_read_is_refused_with_a_reason() {
     let (mut app, rx, tx) = open_quick_filter_table("quick_filter_refused.parquet");
     press(&mut app, KeyCode::Char('s'));
-    app.sort_filter_modal
-        .filter
-        .statements
-        .push(datui::filter_modal::FilterStatement {
+    app.sort_filter_modal.filter.statements.push(
+        datui::app::modals::filter_modal::FilterStatement {
             columns: Vec::new(),
             column: "day".into(),
-            operator: datui::filter_modal::FilterOperator::Gt,
+            operator: datui::app::modals::filter_modal::FilterOperator::Gt,
             value: "2024-13-01".into(),
-            logical_op: datui::filter_modal::LogicalOperator::And,
-        });
+            logical_op: datui::app::modals::filter_modal::LogicalOperator::And,
+        },
+    );
     run_and_settle(&mut app, key(KeyCode::Enter), &rx, &tx);
     assert_eq!(app.overlay, Overlay::SortFilter, "the sidebar stays");
     assert_eq!(

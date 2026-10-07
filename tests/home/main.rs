@@ -6564,7 +6564,7 @@ fn test_a_click_selects_a_home_row_and_the_wheel_stops_at_the_ends() {
     for (width, height) in [(80, 24), (200, 50)] {
         let (_tmp, app, rx) = home_at_80x24(60);
         let (tx, _) = std::sync::mpsc::channel();
-        let mut pump = datui::event_pump::EventPump::new(app, tx, rx);
+        let mut pump = datui::app::event_pump::EventPump::new(app, tx, rx);
         let area = Rect::new(0, 0, width, height);
         let draw = |app: &mut datui::App| {
             let mut buf = Buffer::empty(area);
@@ -6587,7 +6587,7 @@ fn test_a_click_selects_a_home_row_and_the_wheel_stops_at_the_ends() {
             modifiers: KeyModifiers::NONE,
         };
         let click = |at| mouse(MouseEventKind::Down(MouseButton::Left), at);
-        let on = |pump: &datui::event_pump::EventPump| {
+        let on = |pump: &datui::app::event_pump::EventPump| {
             pump.app
                 .home
                 .selected_entry()

@@ -8,7 +8,7 @@ use super::*;
 #[cfg(feature = "sql")]
 #[test]
 fn test_sql_runs_against_the_loaded_data_not_the_filtered_view() {
-    use datui::filter_modal::FilterOperator;
+    use datui::app::modals::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("filter_then_sql.csv");
 
     app.event(AppEvent::Filter(vec![filter_stmt(
@@ -179,7 +179,7 @@ fn view_modal_does_not_survive_going_home() {
 /// new filter learn again from the first rows they show.
 #[test]
 fn a_change_of_view_relearns_widths() {
-    use datui::filter_modal::FilterOperator;
+    use datui::app::modals::filter_modal::FilterOperator;
     use datui::widgets::column_widths::WidthChoice;
     let csv_path = common::fixture_dir().join("relearn_widths.csv");
     let n = 80usize;
@@ -310,13 +310,13 @@ fn a_query_sent_without_the_prompt_that_fails_leaves_the_view() {
 #[cfg(feature = "sql")]
 #[test]
 fn test_a_view_replays_the_query_before_the_pivot() {
-    use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
+    use datui::app::modals::pivot_melt_modal::{PivotAggregation, PivotSpec};
     let steps = || {
         vec![
             AppEvent::SqlQuery("SELECT id, key, val FROM df WHERE id >= 4".to_string()),
             AppEvent::Filter(vec![filter_stmt(
                 "id",
-                datui::filter_modal::FilterOperator::Lt,
+                datui::app::modals::filter_modal::FilterOperator::Lt,
                 "8",
             )]),
             AppEvent::Pivot(PivotSpec {
@@ -345,7 +345,7 @@ fn test_a_view_replays_the_query_before_the_pivot() {
 #[cfg(feature = "sql")]
 #[test]
 fn test_a_view_replays_sql_on_the_pivot_after_it() {
-    use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
+    use datui::app::modals::pivot_melt_modal::{PivotAggregation, PivotSpec};
     let steps = || {
         vec![
             AppEvent::Pivot(PivotSpec {
@@ -371,7 +371,7 @@ fn test_a_view_replays_sql_on_the_pivot_after_it() {
 #[cfg(feature = "sql")]
 #[test]
 fn test_a_view_replays_the_query_before_the_melt() {
-    use datui::pivot_melt_modal::MeltSpec;
+    use datui::app::modals::pivot_melt_modal::MeltSpec;
     let steps = || {
         vec![
             AppEvent::SqlQuery(
@@ -401,7 +401,7 @@ fn test_a_view_replays_the_query_before_the_melt() {
 #[cfg(feature = "sql")]
 #[test]
 fn test_a_view_of_a_melted_pivot_fails_to_apply_and_changes_nothing() {
-    use datui::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
+    use datui::app::modals::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
     let steps = [
         AppEvent::SqlQuery("SELECT * FROM df WHERE id >= 4".to_string()),
         AppEvent::Pivot(PivotSpec {

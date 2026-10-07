@@ -1,7 +1,7 @@
 //! The info panel's keys.
 
+use crate::app::form::ListMove;
 use crate::cli::FileFormat;
-use crate::form::ListMove;
 use crate::widgets::info::FileFacts;
 use crate::widgets::info::InfoTab;
 use crate::{App, AppEvent};
@@ -12,7 +12,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 #[derive(Default)]
 pub struct InfoState {
     /// What Info's read found about the open file, with its `dataset_generation`.
-    /// Read on a worker ([`crate::jobs::Job::FileFacts`]) when the panel opens and kept however it
+    /// Read on a worker ([`crate::app::jobs::Job::FileFacts`]) when the panel opens and kept however it
     /// ended, so drawing or reopening never reads again.
     pub(crate) file_facts: Option<(u64, FileFacts)>,
     /// What the dataset's columns mean, when a catalog that lists it says.
@@ -102,7 +102,7 @@ impl App {
             KeyCode::Char('x') if event.is_press() => {
                 if let Some(path) = self.hex_target() {
                     self.close_overlay();
-                    self.open_hex(path, crate::hex_view::Origin::Info, false, None);
+                    self.open_hex(path, crate::app::hex_view::Origin::Info, false, None);
                 }
             }
             // Delimited text: read the first row as data, or as names again; the panel closes

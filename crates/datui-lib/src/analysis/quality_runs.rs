@@ -5,13 +5,13 @@ use crate::analysis::analysis_modal::AnalysisProgress;
 use crate::analysis::quality_memory::{
     KeptQualitySample, QUALITY_RELEASED_REMEMBERED, QualityCacheEntry, QualityCopyJob, RetainedCopy,
 };
+use crate::app::feedback::Confirm;
+use crate::app::jobs::{Answer, Job, Progress};
 use crate::export::export_modal::ExportFormat;
-use crate::feedback::Confirm;
-use crate::jobs::{Answer, Job, Progress};
 use crate::table::DataTableState;
 use crate::{
     App, AppEvent, QUALITY_RUN_WAITS, analysis::analysis_modal, analysis::data_quality,
-    analysis::quality_report, analysis::sampling, glyphs, jobs, numfmt, widgets,
+    analysis::quality_report, analysis::sampling, app::jobs, glyphs, numfmt, widgets,
 };
 use color_eyre::Result;
 use polars::prelude::LazyFrame;

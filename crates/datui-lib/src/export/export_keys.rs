@@ -1,13 +1,13 @@
-//! The export modal's keys: the shared form keys (`crate::form`), then what each
+//! The export modal's keys: the shared form keys (`crate::app::form`), then what each
 //! field does with them.
 
+use crate::app::feedback::Confirm;
+use crate::app::form::FormKey;
 use crate::cli::{CompressionFormat, FileFormat};
 use crate::export::export_modal::ExportFocus;
 use crate::export::export_modal::ExportFormat;
 use crate::export::output_file::Overwrite;
 use crate::export::{ExportOptions, ExportRequest};
-use crate::feedback::Confirm;
-use crate::form::FormKey;
 use crate::logging::LogFailure;
 use crate::{App, AppEvent, home};
 use crossterm::event::KeyEvent;
@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 impl App {
     /// Keys in the export modal.
     pub(crate) fn export_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
-        match crate::form::key(&mut self.export_modal, event) {
+        match crate::app::form::key(&mut self.export_modal, event) {
             FormKey::Cancel => {
                 self.close_overlay();
             }
@@ -49,7 +49,7 @@ impl App {
         let path_str = self.export_modal.path_input.value().trim().to_string();
         if path_str.is_empty() {
             self.export_modal.path_error = Some("Enter a file path.".to_string());
-            crate::form::Form::focus(&mut self.export_modal, ExportFocus::PathInput);
+            crate::app::form::Form::focus(&mut self.export_modal, ExportFocus::PathInput);
             return None;
         }
         // `~` and `$VAR` expand as in every typed path.

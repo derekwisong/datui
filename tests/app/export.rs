@@ -587,7 +587,7 @@ fn test_durations_export_and_copy_as_iso_8601() {
 
     // View, with its header and the HTML flavor.
     press(&mut app, KeyCode::Char('y'));
-    copy_scope(&mut app, datui::copy_modal::CopyScope::View);
+    copy_scope(&mut app, datui::app::modals::copy_modal::CopyScope::View);
     press(&mut app, KeyCode::Enter);
     let view = last(&copies);
     assert_eq!(view.text, tsv.join("\n"));
@@ -596,7 +596,7 @@ fn test_durations_export_and_copy_as_iso_8601() {
 
     // Table, collected off-thread.
     press(&mut app, KeyCode::Char('y'));
-    copy_scope(&mut app, datui::copy_modal::CopyScope::Table);
+    copy_scope(&mut app, datui::app::modals::copy_modal::CopyScope::Table);
     let mut next = press(&mut app, KeyCode::Enter);
     while let Some(ev) = next {
         next = app.event(ev);
@@ -606,7 +606,7 @@ fn test_durations_export_and_copy_as_iso_8601() {
 
     // One cell: `ns` of the first row.
     press(&mut app, KeyCode::Char('y'));
-    copy_scope(&mut app, datui::copy_modal::CopyScope::Cell);
+    copy_scope(&mut app, datui::app::modals::copy_modal::CopyScope::Cell);
     press(&mut app, KeyCode::Tab);
     press(&mut app, KeyCode::Char(' '));
     press(&mut app, KeyCode::Char('n'));
@@ -799,7 +799,7 @@ fn test_copy_writes_list_cells_as_json() {
 
     // The table scope, collected off-thread, as TSV with its header.
     press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
-    copy_scope(&mut app, datui::copy_modal::CopyScope::Table);
+    copy_scope(&mut app, datui::app::modals::copy_modal::CopyScope::Table);
     press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     pump_until_idle(&mut app, &rx, &tx);
     let text = copies.lock().unwrap().last().expect("a copy").text.clone();
@@ -1466,7 +1466,7 @@ fn test_a_capped_destination_gets_text_within_its_cap() {
 
     // The view scope: TSV with no HTML beside it.
     press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
-    copy_scope(&mut app, datui::copy_modal::CopyScope::View);
+    copy_scope(&mut app, datui::app::modals::copy_modal::CopyScope::View);
     press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     {
         let copies = copies.lock().unwrap();
@@ -1477,7 +1477,7 @@ fn test_a_capped_destination_gets_text_within_its_cap() {
     // The whole table is about 60 KB, over a 4 KB cap: refused, nothing sent.
     let copy_table = |app: &mut App| {
         press_key(app, KeyCode::Char('y'), KeyModifiers::NONE);
-        copy_scope(app, datui::copy_modal::CopyScope::Table);
+        copy_scope(app, datui::app::modals::copy_modal::CopyScope::Table);
         press_key(app, KeyCode::Enter, KeyModifiers::NONE);
         pump_until_idle(app, &rx, &tx);
     };
@@ -1575,8 +1575,8 @@ fn out_of_range_dates_copy_and_export_as_their_stored_number() {
 /// script, filters, a sort over two columns and the columns shown included.
 #[test]
 fn test_copy_as_python_writes_the_view_as_a_script() {
+    use datui::app::modals::filter_modal::{FilterOperator, LogicalOperator};
     use datui::clipboard::{Destination, Payload};
-    use datui::filter_modal::{FilterOperator, LogicalOperator};
     use std::sync::{Arc, Mutex};
 
     struct Capture(Arc<Mutex<Vec<Payload>>>);
@@ -1617,7 +1617,7 @@ fn test_copy_as_python_writes_the_view_as_a_script() {
     let key =
         |app: &mut App, code| app.event(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     key(&mut app, KeyCode::Char('y'));
-    copy_scope(&mut app, datui::copy_modal::CopyScope::Python);
+    copy_scope(&mut app, datui::app::modals::copy_modal::CopyScope::Python);
     assert_eq!(app.copy_modal.row_order().len(), 1, "no format or header");
     key(&mut app, KeyCode::Enter);
     assert!(app.at_table());
@@ -1649,8 +1649,8 @@ fn test_copy_as_python_writes_the_view_as_a_script() {
 /// datui shows. Skipped where the project's virtualenv is missing.
 #[test]
 fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
-    use datui::filter_modal::{FilterOperator, LogicalOperator};
-    use datui::pivot_melt_modal::{PivotAggregation, PivotSpec};
+    use datui::app::modals::filter_modal::{FilterOperator, LogicalOperator};
+    use datui::app::modals::pivot_melt_modal::{PivotAggregation, PivotSpec};
 
     type Build = Box<dyn Fn(&mut datui::table::DataTableState)>;
     let views: Vec<(&str, Build)> = vec![
@@ -1750,7 +1750,7 @@ fn test_copy_as_python_scripts_compute_the_rows_datui_shows() {
         (
             "a melt, then SQL over it",
             Box::new(|s| {
-                s.melt(&datui::pivot_melt_modal::MeltSpec {
+                s.melt(&datui::app::modals::pivot_melt_modal::MeltSpec {
                     index: vec!["order_id".into()],
                     value_columns: vec!["amount".into(), "qty".into()],
                     variable_name: "measure".into(),
@@ -2102,7 +2102,7 @@ fn test_copy_as_python_divides_integers_as_datui_does() {
 /// name that reads as code in a comment stays in the comment.
 #[test]
 fn test_copy_as_python_escapes_names_and_values() {
-    use datui::filter_modal::{FilterOperator, LogicalOperator};
+    use datui::app::modals::filter_modal::{FilterOperator, LogicalOperator};
     let python = Path::new(".venv/bin/python");
     if !python.exists() {
         eprintln!("skipped: no .venv to write the file with");

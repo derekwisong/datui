@@ -254,8 +254,8 @@ fn scrolling_sideways_still_moves_the_columns() {
     assert_eq!(back, first, "Left should come back to where it started");
 }
 
-use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
-use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
+use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+use crate::app::modals::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec};
 
 /// The join drops the rows it read through the frame it replaced.
 ///

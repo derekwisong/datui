@@ -47,7 +47,7 @@ fn pivot_view(app: &mut App, name: &str) -> SavedView {
         index: vec!["id".to_string()],
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
-        aggregation: pivot_melt_modal::PivotAggregation::First,
+        aggregation: app::modals::pivot_melt_modal::PivotAggregation::First,
     });
     view.settings.column_order.clear();
     view
@@ -274,7 +274,7 @@ fn a_failed_view_rolls_back_the_reshape() {
 fn a_view_whose_pivot_fails_on_the_data_changes_nothing() {
     let (mut app, rx, tx, _dir) = long_csv_app();
     let mut view = pivot_view(&mut app, "cast then pivot");
-    view.settings.reshape_source = Some(pivot_melt_modal::ReshapeSource {
+    view.settings.reshape_source = Some(app::modals::pivot_melt_modal::ReshapeSource {
         sql_query: Some("SELECT id, key, CAST(key AS INT) AS val FROM df".to_string()),
         ..Default::default()
     });
@@ -344,11 +344,11 @@ fn the_bar_offers_esc_while_a_pivot_is_computed() {
         KeyModifiers::NONE,
     )));
     assert_eq!(app.overlay, Overlay::PivotMelt);
-    app.event(AppEvent::Pivot(pivot_melt_modal::PivotSpec {
+    app.event(AppEvent::Pivot(app::modals::pivot_melt_modal::PivotSpec {
         index: vec!["id".to_string()],
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
-        aggregation: pivot_melt_modal::PivotAggregation::First,
+        aggregation: app::modals::pivot_melt_modal::PivotAggregation::First,
     }));
     let bar = footer_text(&mut app);
     assert!(
@@ -507,7 +507,7 @@ fn sorted_and_filtered(
     rx: &mpsc::Receiver<AppEvent>,
     tx: &mpsc::Sender<AppEvent>,
 ) -> Option<DataFrame> {
-    use crate::filter_modal::{FilterOperator, LogicalOperator};
+    use crate::app::modals::filter_modal::{FilterOperator, LogicalOperator};
     app.event(AppEvent::Sort(vec!["val".to_string()], vec![true]));
     super::chart_prepare_tests::pump(app, rx, tx, |a| !crate::tests::work_pending(a));
     app.event(AppEvent::Filter(vec![FilterStatement {
@@ -1202,7 +1202,7 @@ fn blank_view(app: &mut App, name: &str) -> SavedView {
 /// which stay valid for it, so nothing is read again.
 #[test]
 fn a_view_failing_after_any_step_puts_the_view_back() {
-    use crate::filter_modal::{FilterOperator, LogicalOperator};
+    use crate::app::modals::filter_modal::{FilterOperator, LogicalOperator};
     let filter = |column: &str| FilterStatement {
         columns: Vec::new(),
         column: column.to_string(),
@@ -1220,7 +1220,7 @@ fn a_view_failing_after_any_step_puts_the_view_back() {
         index: vec!["id".to_string()],
         pivot_column: "key".to_string(),
         value_column: "val".to_string(),
-        aggregation: pivot_melt_modal::PivotAggregation::First,
+        aggregation: app::modals::pivot_melt_modal::PivotAggregation::First,
     };
     enum Fails {
         /// While planning: `apply_view` says so and nothing is read.
@@ -1259,7 +1259,7 @@ fn a_view_failing_after_any_step_puts_the_view_back() {
             Fails::Planning,
             Box::new(move |s| {
                 s.melt = Some(melt("val"));
-                s.reshape_source = Some(pivot_melt_modal::ReshapeSource {
+                s.reshape_source = Some(app::modals::pivot_melt_modal::ReshapeSource {
                     query: Some("select nope".to_string()),
                     ..Default::default()
                 });

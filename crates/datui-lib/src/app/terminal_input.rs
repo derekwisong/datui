@@ -24,7 +24,7 @@ use crossterm::event::{Event, EventStream};
 use futures_core::Stream;
 
 use crate::AppEvent;
-use crate::terminal_color::{self, ReplyScanner, Scanned};
+use crate::app::terminal_color::{self, ReplyScanner, Scanned};
 
 /// Wakes the reader thread when Crossterm has an event, or when it is told to stop.
 struct Unpark(Thread);
@@ -146,12 +146,12 @@ fn pass_on(tx: &Sender<AppEvent>, scanned: &mut Vec<Scanned>) -> Result<(), ()> 
 
 /// Hand one event to the loop. Only presses are keys: a terminal speaking the kitty
 /// protocol may report releases and repeats too, and the app acts on presses alone.
-/// Of the mouse, only what the app acts on ([`crate::pointer::wanted`]).
+/// Of the mouse, only what the app acts on ([`crate::app::pointer::wanted`]).
 fn forward(tx: &Sender<AppEvent>, event: Event) -> Result<(), ()> {
     let event = match event {
         Event::Key(key) if !key.is_press() => return Ok(()),
         Event::Key(_) | Event::Resize(..) => event,
-        Event::Mouse(mouse) if crate::pointer::wanted(&mouse) => event,
+        Event::Mouse(mouse) if crate::app::pointer::wanted(&mouse) => event,
         // The terminal is back in front: its scheme may have changed meanwhile.
         Event::FocusGained => return tx.send(AppEvent::TerminalFocused).map_err(|_| ()),
         _ => return Ok(()),

@@ -2,7 +2,7 @@
 
 use std::ops::ControlFlow;
 
-use crate::form::ListMove;
+use crate::app::form::ListMove;
 use crate::{
     App, AppEvent, QUALITY_RUN_WAITS, analysis::analysis_modal, analysis::data_quality,
     analysis::sample_modal,

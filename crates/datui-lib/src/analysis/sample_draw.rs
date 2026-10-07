@@ -5,7 +5,7 @@
 //! frames as it lands, like a followed pipe's rows.
 
 use crate::analysis::table_sample::{Limit, MemoryCheck, MemoryProbe};
-use crate::jobs::{Answer, Job, SampleDraw};
+use crate::app::jobs::{Answer, Job, SampleDraw};
 use crate::table::DataTableState;
 use crate::{App, AppEvent, analysis::analysis_modal, analysis::data_quality, analysis::sampling};
 use std::sync::Arc;

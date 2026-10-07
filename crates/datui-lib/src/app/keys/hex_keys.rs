@@ -1,10 +1,10 @@
 //! The hex view's App side: opening a file in it, its keys, and its find. The view
-//! itself is [`crate::hex_view`].
+//! itself is [`crate::app::hex_view`].
 
-use crate::hex_view::{
+use crate::app::hex_view::{
     Found, HexFindRun, HexHit, HexSource, HexView, MAX_RECORD_SIZE, Origin, PromptKind,
 };
-use crate::jobs::{Answer, Job, Progress};
+use crate::app::jobs::{Answer, Job, Progress};
 use crate::{App, AppEvent, InputMode, Overlay};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[derive(Default)]
 pub struct HexState {
     /// The hex view (`InputMode::Hex`), kept while it is up.
-    pub view: Option<crate::hex_view::HexView>,
+    pub view: Option<crate::app::hex_view::HexView>,
     /// Bumped per hex view opened, so a find's answer for another is dropped.
     pub(crate) serial: u64,
 }
@@ -278,7 +278,7 @@ impl App {
         let text = view.input.value().to_string();
         match kind {
             PromptKind::GoTo => {
-                match crate::hex_view::parse_offset(&text, view.cursor, view.len()) {
+                match crate::app::hex_view::parse_offset(&text, view.cursor, view.len()) {
                     Ok(at) => {
                         view.go(at);
                         close_prompt(view);
@@ -305,7 +305,7 @@ impl App {
                     }
                 }
             }
-            PromptKind::Find => match crate::hex_view::parse_pattern(&text, view.utf16) {
+            PromptKind::Find => match crate::app::hex_view::parse_pattern(&text, view.utf16) {
                 Ok(pattern) => {
                     close_prompt(view);
                     let from = view.cursor;
@@ -341,7 +341,7 @@ impl App {
     }
 
     /// Find `pattern` from `from` on a worker. The keys wait, and Esc stops it.
-    fn start_hex_find(&mut self, pattern: crate::hex_view::Pattern, from: u64, forward: bool) {
+    fn start_hex_find(&mut self, pattern: crate::app::hex_view::Pattern, from: u64, forward: bool) {
         self.stop_hex_find();
         let Some(view) = self.hex.view.as_mut() else {
             return;
@@ -358,13 +358,13 @@ impl App {
         self.spawn_job(Job::HexFind(run), Some(&status), move |worker| {
             let report = worker.reporter();
             let hay = bytes.as_slice();
-            let mut hit = crate::hex_view::find(hay, &pattern, from, forward, &stop, |read| {
+            let mut hit = crate::app::hex_view::find(hay, &pattern, from, forward, &stop, |read| {
                 report(Progress::HexFinding { read, total })
             })
             .map_err(|_| crate::find::CANCELLED.to_string())?;
             hit.stride = hit
                 .at
-                .and_then(|at| crate::hex_view::stride(hay, &pattern, at, &stop));
+                .and_then(|at| crate::app::hex_view::stride(hay, &pattern, at, &stop));
             Ok(Answer::HexFound(hit))
         });
     }

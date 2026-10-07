@@ -34,7 +34,7 @@ pub fn render_chart_export_modal(
         .weight(1)
         .key("Esc")
         .weight(4);
-    crate::pointer::record(area, crate::pointer::Hit::Modal);
+    crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
     let content = Surface::new("Export Chart")
         .footer(&footer)
         .render(area, buf, ctx);
@@ -95,7 +95,7 @@ pub fn render_chart_export_modal(
             label_width: LABEL_WIDTH,
         }
         .render(row, buf, ctx);
-        crate::pointer::record_field::<ChartExportModal>(row, *field);
+        crate::app::pointer::record_field::<ChartExportModal>(row, *field);
     }
 }
 

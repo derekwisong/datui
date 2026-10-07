@@ -338,7 +338,7 @@ fn test_inspector_copies_the_exact_value() {
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     press_key(&mut app, KeyCode::Up, KeyModifiers::NONE);
     press_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
-    copy_scope(&mut app, datui::copy_modal::CopyScope::Cell);
+    copy_scope(&mut app, datui::app::modals::copy_modal::CopyScope::Cell);
     press_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
     for c in "amount".chars() {

@@ -174,7 +174,7 @@ impl App {
             .enumerate()
             .map(|(i, f)| {
                 let text = f.describe();
-                if i > 0 && f.logical_op == crate::filter_modal::LogicalOperator::Or {
+                if i > 0 && f.logical_op == crate::app::modals::filter_modal::LogicalOperator::Or {
                     format!("or {text}")
                 } else {
                     text

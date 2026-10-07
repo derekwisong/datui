@@ -1,11 +1,11 @@
 //! Value Counts: counting a column's values off the UI thread, its keys, and drilling,
 //! copying or exporting from it.
 
-use crate::form::ListMove;
-use crate::jobs::{Answer, Job};
+use crate::app::form::ListMove;
+use crate::app::jobs::{Answer, Job};
 use crate::{
-    App, AppEvent, Overlay, analysis::value_counts, analysis::value_counts_modal, clipboard,
-    copy_modal,
+    App, AppEvent, Overlay, analysis::value_counts, analysis::value_counts_modal,
+    app::modals::copy_modal, clipboard,
 };
 use crossterm::event::{KeyCode, KeyEvent};
 use std::sync::Arc;

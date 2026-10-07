@@ -2,7 +2,7 @@
 //! rail and its label in the accent; the chosen value is always echoed, so
 //! nothing is ambiguous when focus is elsewhere.
 
-use crate::pointer::{FieldId, Hit};
+use crate::app::pointer::{FieldId, Hit};
 use crate::render::context::RenderContext;
 use crate::widgets::text_input::TextInput;
 use ratatui::buffer::Buffer;
@@ -231,7 +231,7 @@ impl OptionsRow<'_> {
             ..value_area
         };
         let line = Line::from(spans);
-        crate::pointer::record_spans(area, &line, hits);
+        crate::app::pointer::record_spans(area, &line, hits);
         Paragraph::new(line).render(area, buf);
     }
 }

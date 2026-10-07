@@ -75,7 +75,7 @@ pub struct CopyModal {
     pub context: CopyContext,
 }
 
-impl crate::form::Form for CopyModal {
+impl crate::app::form::Form for CopyModal {
     type Field = CopyFocus;
 
     fn shown_picker(&mut self) -> Option<(&mut crate::widgets::ui::PickerState, bool)> {
@@ -90,8 +90,8 @@ impl crate::form::Form for CopyModal {
         self.picker_choose();
     }
 
-    fn fields(&self) -> Vec<(CopyFocus, crate::form::FieldKind)> {
-        use crate::form::FieldKind;
+    fn fields(&self) -> Vec<(CopyFocus, crate::app::form::FieldKind)> {
+        use crate::app::form::FieldKind;
         self.row_order()
             .into_iter()
             .map(|row| {
@@ -178,7 +178,7 @@ impl CopyModal {
     /// Step the scope. The scope decides which rows exist, so a focus the new scope
     /// does not offer goes back to the scope row.
     pub fn step_scope(&mut self, delta: i8) {
-        self.scope = crate::form::step_value(&CopyScope::ALL, self.scope, delta);
+        self.scope = crate::app::form::step_value(&CopyScope::ALL, self.scope, delta);
         if !self.row_order().contains(&self.focus) {
             self.focus = CopyFocus::Scope;
         }
@@ -186,7 +186,7 @@ impl CopyModal {
 
     /// Step the format. Markdown has no header row, so focus there moves back.
     pub fn step_format(&mut self, delta: i8) {
-        self.format = crate::form::step_value(&CopyFormat::ALL, self.format, delta);
+        self.format = crate::app::form::step_value(&CopyFormat::ALL, self.format, delta);
         if !self.row_order().contains(&self.focus) {
             self.focus = CopyFocus::Format;
         }
@@ -203,7 +203,7 @@ impl CopyModal {
             .as_ref()
             .and_then(|c| columns.iter().position(|name| name == c));
         let next = match at {
-            Some(at) => crate::form::step_index(at, columns.len(), delta),
+            Some(at) => crate::app::form::step_index(at, columns.len(), delta),
             None if delta < 0 => columns.len() - 1,
             None => 0,
         };
@@ -444,7 +444,7 @@ mod tests {
             "Copy the view as a Python (Polars) script"
         );
         modal.focus = CopyFocus::Scope;
-        crate::form::Form::focus_next(&mut modal);
+        crate::app::form::Form::focus_next(&mut modal);
         assert_eq!(modal.focus, CopyFocus::Scope, "Tab has nowhere else to go");
     }
 

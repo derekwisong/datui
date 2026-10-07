@@ -1,6 +1,6 @@
 //! The home screen's keys.
 
-use crate::feedback::Confirm;
+use crate::app::feedback::Confirm;
 use crate::{App, AppEvent, cloud::source, home, home::discover};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::Path;
@@ -226,7 +226,7 @@ impl App {
                             )
                             && local(&entry.path) =>
                     {
-                        self.open_hex(entry.path, crate::hex_view::Origin::Home, false, None);
+                        self.open_hex(entry.path, crate::app::hex_view::Origin::Home, false, None);
                     }
                     _ => self.flash_note("Ctrl+X shows a local file's bytes".to_string()),
                 }

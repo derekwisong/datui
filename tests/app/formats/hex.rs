@@ -3,7 +3,7 @@
 //! and fix the bytes per row.
 
 use super::*;
-use datui::hex_view::Origin;
+use datui::app::hex_view::Origin;
 
 fn fresh() -> (App, mpsc::Receiver<AppEvent>, mpsc::Sender<AppEvent>) {
     let (tx, rx) = mpsc::channel();

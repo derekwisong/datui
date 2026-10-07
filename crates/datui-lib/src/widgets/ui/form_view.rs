@@ -1,7 +1,7 @@
 //! A dialog of form rows: one Surface, a FormRow per field, the open Picker below the
 //! rows, and a status line above the footer saying what Enter will do.
 
-use crate::form::Form;
+use crate::app::form::Form;
 use crate::render::context::RenderContext;
 use crate::widgets::ui::{FormRow, FormValue, HintBar, Picker, PickerState, Surface};
 use ratatui::buffer::Buffer;
@@ -40,7 +40,7 @@ impl<'a, F: Copy + PartialEq> FormView<'a, F> {
                 .weight(4),
             None => self.footer,
         };
-        crate::pointer::record(area, crate::pointer::Hit::Modal);
+        crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
         let content = Surface::new(self.title)
             .footer(&footer)
             .render(area, buf, ctx);
@@ -66,13 +66,13 @@ impl<'a, F: Copy + PartialEq> FormView<'a, F> {
                 label_width: self.label_width,
             }
             .render_picking(row, buf, ctx, self.picker.is_some());
-            crate::pointer::record_field::<T>(row, field);
+            crate::app::pointer::record_field::<T>(row, field);
             y += 1;
         }
         // The open Picker drops in below the rows and reaches down to the status line.
         if let Some(state) = self.picker {
             // It owns the keys even with no room to draw: the rows take no clicks.
-            crate::pointer::record(content, crate::pointer::Hit::Picker);
+            crate::app::pointer::record(content, crate::app::pointer::Hit::Picker);
             let picker_y = y + 1;
             if picker_y < status_y {
                 let picker_area = Rect {

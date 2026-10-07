@@ -758,7 +758,7 @@ fn an_open_picker_with_no_room_still_takes_the_clicks() {
     let mut modal = open_modal();
     modal.focus = ChartFocus::Y;
     modal.open_picker();
-    let hits = crate::pointer::recording(|| {
+    let hits = crate::app::pointer::recording(|| {
         render_rows(&mut modal, 100, 7);
     });
     assert!(hits.iter().any(|(_, h)| *h == Hit::Picker), "{hits:?}");

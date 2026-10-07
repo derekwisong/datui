@@ -9,6 +9,7 @@ use ratatui::{
     widgets::{Chart, Clear, Dataset, GraphType, Paragraph, Widget, Wrap},
 };
 
+use crate::app::pointer::Hit;
 use crate::chart::chart_data::{
     BarData, BoxPlotData, HeatmapData, HistogramData, KdeData, XAxisTemporalKind, other_at,
     segments,
@@ -19,7 +20,6 @@ use crate::chart::chart_modal::{
 use crate::chart::chart_plot::{Axis, Curve, LinesData, Plot, PlotData};
 use crate::config::Theme;
 use crate::glyphs::Glyphs;
-use crate::pointer::Hit;
 use crate::render::context::RenderContext;
 use crate::widgets::axes::{
     AxisSpec, Legend, PlotAxes, Track, cut, fit_x_labels, fit_y_labels, resolution,
@@ -438,7 +438,7 @@ fn render_sidebar(
             } => {
                 let focused = field.is_some() && *field == focus;
                 if let Some(field) = field {
-                    crate::pointer::record_field::<ChartModal>(row, *field);
+                    crate::app::pointer::record_field::<ChartModal>(row, *field);
                 }
                 if focused {
                     focused_at = Some(row);
@@ -486,7 +486,7 @@ fn render_picker(
         return;
     };
     // It owns the keys, drawn or not: the panel's rows take no clicks.
-    crate::pointer::record(area, Hit::Picker);
+    crate::app::pointer::record(area, Hit::Picker);
     let title = match modal.picker_for {
         Some(PickerFor::X) => "X",
         Some(PickerFor::Y) => "Y",

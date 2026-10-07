@@ -204,8 +204,8 @@ impl HintBar {
         // Every chip that names one key is a click target that presses it, as the
         // status footer's are; drawn after what it sits on, it lies on top.
         for (rect, key) in self.chips(area, flush) {
-            if let Some(key) = crate::pointer::chip_key(key) {
-                crate::pointer::record(rect, crate::pointer::Hit::Chip(key));
+            if let Some(key) = crate::app::pointer::chip_key(key) {
+                crate::app::pointer::record(rect, crate::app::pointer::Hit::Chip(key));
             }
         }
         let kept = self.kept(area.width, flush);

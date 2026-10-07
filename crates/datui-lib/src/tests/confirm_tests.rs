@@ -1,7 +1,7 @@
 //! Every confirmation, driven to Yes, to No and to Esc: what each answer does next.
 
+use crate::app::feedback::Confirm;
 use crate::export::output_file::Overwrite;
-use crate::feedback::Confirm;
 use crate::*;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;

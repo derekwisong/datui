@@ -24,7 +24,7 @@ pub fn prefix(app: &crate::App) -> &'static str {
         Some(crate::InputType::Find) => "/",
         _ => {
             let text = app.query_prompt_text().unwrap_or_default();
-            if crate::editing_keys::row_number(text).is_some() {
+            if crate::app::keys::editing_keys::row_number(text).is_some() {
                 "row:"
             } else {
                 app.prompt.query_mode.prefix_colon()
@@ -79,7 +79,8 @@ fn plan(app: &crate::App, width: u16, room: u16) -> (u16, u16) {
 fn columns_line(app: &crate::App) -> bool {
     app.prompt.input_type == Some(crate::InputType::Query)
         && !app.prompt.sql_columns.is_empty()
-        && crate::editing_keys::row_number(app.query_prompt_text().unwrap_or_default()).is_none()
+        && crate::app::keys::editing_keys::row_number(app.query_prompt_text().unwrap_or_default())
+            .is_none()
 }
 
 fn prefix_width(app: &crate::App) -> u16 {

@@ -10,7 +10,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
-use crate::pointer::{self, Hit};
+use crate::app::pointer::{self, Hit};
 use crate::render::context::RenderContext;
 use crate::widgets::ui::Surface;
 
@@ -73,7 +73,7 @@ impl MenuItem {
     /// The key this line presses, as typed.
     pub fn key_event(&self) -> KeyEvent {
         let chord = datui_cli::keys::chord(self.key).expect("a menu key is one key");
-        crate::help::key_event(chord)
+        crate::app::help::key_event(chord)
     }
 }
 

@@ -1623,7 +1623,7 @@ pub(crate) fn render_sidebar(
             ..content
         };
         line.render(row, buf);
-        crate::pointer::record(row, crate::pointer::Hit::Tool(idx));
+        crate::app::pointer::record(row, crate::app::pointer::Hit::Tool(idx));
     }
 }
 

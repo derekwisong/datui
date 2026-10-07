@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 
 use polars::prelude::*;
 
-use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
-use crate::pivot_melt_modal::PivotAggregation;
+use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+use crate::app::modals::pivot_melt_modal::PivotAggregation;
 use crate::{CompressionFormat, FileFormat, OpenOptions};
 
 /// `s` as a Python string literal.
@@ -130,7 +130,7 @@ pub struct SidebarFilter {
     pub text: String,
     pub logical_op: LogicalOperator,
     /// The columns a find kept as a filter matches in, with their types: the one
-    /// named, or every column for [`crate::filter_modal::ANY_COLUMN`].
+    /// named, or every column for [`crate::app::modals::filter_modal::ANY_COLUMN`].
     pub searched: Vec<(String, DataType)>,
 }
 
@@ -142,15 +142,16 @@ impl SidebarFilter {
         let mut filter = Self::typed(statement, schema.get(&statement.column));
         if statement.operator.is_find() {
             let spec = filter.find_spec();
-            let names: Vec<&String> = if statement.column == crate::filter_modal::ANY_COLUMN {
-                if statement.columns.is_empty() {
-                    shown.iter().collect()
+            let names: Vec<&String> =
+                if statement.column == crate::app::modals::filter_modal::ANY_COLUMN {
+                    if statement.columns.is_empty() {
+                        shown.iter().collect()
+                    } else {
+                        statement.columns.iter().collect()
+                    }
                 } else {
-                    statement.columns.iter().collect()
-                }
-            } else {
-                vec![&statement.column]
-            };
+                    vec![&statement.column]
+                };
             filter.searched = names
                 .into_iter()
                 .filter_map(|name| Some((name.clone(), schema.get(name)?.clone())))
@@ -2214,7 +2215,7 @@ mod tests {
         ]);
         let statement = FilterStatement {
             columns: vec!["name".into(), "took".into()],
-            column: crate::filter_modal::ANY_COLUMN.to_string(),
+            column: crate::app::modals::filter_modal::ANY_COLUMN.to_string(),
             operator: FilterOperator::Has,
             value: "1d".to_string(),
             logical_op: LogicalOperator::And,
@@ -2246,7 +2247,7 @@ mod tests {
         ]);
         let statement = FilterStatement {
             columns: Vec::new(),
-            column: crate::filter_modal::ANY_COLUMN.to_string(),
+            column: crate::app::modals::filter_modal::ANY_COLUMN.to_string(),
             operator: FilterOperator::Has,
             value: "al".to_string(),
             logical_op: LogicalOperator::And,

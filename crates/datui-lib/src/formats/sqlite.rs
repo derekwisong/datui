@@ -221,8 +221,8 @@ mod read {
     use rusqlite::{Connection, OpenFlags};
 
     use super::{Affinity, Hold, Opened, Table, is_internal};
+    use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     use crate::error_display::{FileError, file_message};
-    use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     use crate::formats::pushdown::{Counter, Pushdown, PushedView, Windowed};
     use crate::notes::Note;
     use crate::numfmt::group_chrome;

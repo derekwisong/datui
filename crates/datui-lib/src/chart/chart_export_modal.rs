@@ -1,6 +1,6 @@
 //! Chart export dialog: where, in what format, style and size, with what legend,
 //! and the words around the chart. Its keys are the shared form keys
-//! (`crate::form`).
+//! (`crate::app::form`).
 
 use crate::chart::chart_export::{
     ChartExportFormat, ExportStyle, LegendPlace, LineWidth, PointOpacity, PointSize, SizePreset,
@@ -311,7 +311,7 @@ impl ChartExportModal {
 
     /// ←/→ on a choice.
     pub fn step(&mut self, field: ChartExportFocus, delta: i8) {
-        use crate::form::step_value;
+        use crate::app::form::step_value;
         match field {
             ChartExportFocus::Format => {
                 self.format = step_value(&ChartExportFormat::ALL, self.format, delta)
@@ -390,11 +390,11 @@ impl ChartExportModal {
     }
 }
 
-impl crate::form::Form for ChartExportModal {
+impl crate::app::form::Form for ChartExportModal {
     type Field = ChartExportFocus;
 
-    fn fields(&self) -> Vec<(ChartExportFocus, crate::form::FieldKind)> {
-        use crate::form::FieldKind::{Choice, Text};
+    fn fields(&self) -> Vec<(ChartExportFocus, crate::app::form::FieldKind)> {
+        use crate::app::form::FieldKind::{Choice, Text};
         self.shown()
             .into_iter()
             .map(|f| {
@@ -451,7 +451,7 @@ impl Default for ChartExportModal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::form::Form;
+    use crate::app::form::Form;
 
     fn opened() -> ChartExportModal {
         let config = crate::config::AppConfig::default();

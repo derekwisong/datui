@@ -4,7 +4,7 @@ use polars::prelude::*;
 use rusqlite::Connection;
 
 use super::*;
-use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 use crate::formats::members::{place as table_place, split as table_path};
 
 /// A database at `dir/name` built by `sql`.

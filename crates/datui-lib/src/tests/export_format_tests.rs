@@ -1,4 +1,4 @@
-use crate::background::Counted;
+use crate::app::background::Counted;
 use crate::export::export_modal::ExportFormat;
 use crate::table::OpenFacts;
 use crate::*;
@@ -10,7 +10,7 @@ fn opts() -> OpenOptions {
 
 #[test]
 fn a_collect_in_flight_serves_the_frame_but_not_a_changed_frame() {
-    use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     use polars::prelude::IntoLazy;
 
     let (tx, _rx) = std::sync::mpsc::channel();
@@ -60,7 +60,7 @@ fn a_collect_in_flight_serves_the_frame_but_not_a_changed_frame() {
 
 #[test]
 fn a_short_read_on_a_remote_scan_is_the_count() {
-    use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     use polars::prelude::IntoLazy;
 
     // A frame whose len() cannot be taken: a short read has to answer without it.
@@ -216,7 +216,7 @@ fn end_on_an_uncounted_remote_dataset_waits_for_the_count() {
 
 /// A local frame of `rows` rows of `a`, filtered to `a < keep`, with no count yet.
 fn filtered_local(rows: i32, keep: i32) -> (App, std::sync::mpsc::Receiver<AppEvent>, u64) {
-    use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     use polars::prelude::IntoLazy;
     let (tx, rx) = std::sync::mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
@@ -494,7 +494,7 @@ fn a_page_whose_worker_dies_fails_the_count_waiting_on_it() {
 /// the frame that replaced it gets the one count.
 #[test]
 fn a_count_for_a_replaced_frame_never_starts() {
-    use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     let (mut app, rx, first) = filtered_local(100_000, 50_000);
     app.spawn_async_collect("Filtering...");
     assert_eq!(app.counting.count_after_paint, Some(first));
@@ -572,7 +572,7 @@ fn a_footer_count_starts_with_the_page() {
 fn a_filter_applied_from_the_end_shows_its_rows() {
     // End on a 10,000-row remote object, then a filter matching 100 rows: the view
     // comes back to the top and the count is the filter's, not the old position.
-    use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     use polars::prelude::IntoLazy;
 
     let (tx, rx) = std::sync::mpsc::channel();

@@ -7,7 +7,7 @@
 //! hidden (`ChartModal::shelf`). Options that are not part of what is charted
 //! (bins, ranges, the grid, the sample size) sit beside the spec.
 //!
-//! The panel is one form of the shared focus model (`crate::form`); column and
+//! The panel is one form of the shared focus model (`crate::app::form`); column and
 //! value rows are edited through the one shared Picker.
 
 use crate::chart::chart_data::{BarOrder, ValueRange};
@@ -990,7 +990,7 @@ impl ChartModal {
     }
 
     pub fn step_mark(&mut self, delta: i8) {
-        let mark = crate::form::step_value(&Mark::ALL, self.spec.mark, delta);
+        let mark = crate::app::form::step_value(&Mark::ALL, self.spec.mark, delta);
         self.set_mark(mark);
     }
 
@@ -1112,7 +1112,7 @@ impl ChartModal {
             return;
         }
         let next = match self.current_index(which, &items) {
-            Some(at) => crate::form::step_index(at, items.len(), delta),
+            Some(at) => crate::app::form::step_index(at, items.len(), delta),
             None if delta < 0 => items.len() - 1,
             None => 0,
         };
@@ -1279,7 +1279,7 @@ impl ChartModal {
             ChartFocus::TimeUnit => {
                 let encoding = &mut self.spec.encoding;
                 encoding.x.time_unit =
-                    crate::form::step_value(&TimeUnit::ALL, encoding.x.time_unit, delta);
+                    crate::app::form::step_value(&TimeUnit::ALL, encoding.x.time_unit, delta);
                 // A bucket holds many rows, so it needs something to make of them.
                 if encoding.x.time_unit != TimeUnit::None && encoding.y.aggregate == Aggregate::None
                 {
@@ -1291,7 +1291,7 @@ impl ChartModal {
                 let bucketable = self.x_is_bucketable() && self.spec.mark.is_xy();
                 let encoding = &mut self.spec.encoding;
                 encoding.y.aggregate =
-                    crate::form::step_value(&Aggregate::ALL, encoding.y.aggregate, delta);
+                    crate::app::form::step_value(&Aggregate::ALL, encoding.y.aggregate, delta);
                 // A date X with a group per raw value is close to a group per row:
                 // an aggregate starts by the day.
                 if was == Aggregate::None
@@ -1305,19 +1305,24 @@ impl ChartModal {
             }
             ChartFocus::Cumulative => {
                 let y = &mut self.spec.encoding.y;
-                y.cumulative = crate::form::step_value(&Cumulative::ALL, y.cumulative, delta);
+                y.cumulative = crate::app::form::step_value(&Cumulative::ALL, y.cumulative, delta);
             }
             ChartFocus::Quantile => {
                 let y = &mut self.spec.encoding.y;
-                y.percentile = Some(crate::form::step_value(&QUANTILES, y.quantile(), delta));
+                y.percentile = Some(crate::app::form::step_value(
+                    &QUANTILES,
+                    y.quantile(),
+                    delta,
+                ));
             }
             ChartFocus::Y if self.spec.mark == Mark::Histogram => self.share = !self.share,
             ChartFocus::Order => {
-                self.bar_order = crate::form::step_value(&BarOrder::ALL, self.bar_order, delta);
+                self.bar_order =
+                    crate::app::form::step_value(&BarOrder::ALL, self.bar_order, delta);
             }
             ChartFocus::Range => {
                 self.value_range =
-                    crate::form::step_value(&ValueRange::ALL, self.value_range, delta);
+                    crate::app::form::step_value(&ValueRange::ALL, self.value_range, delta);
             }
             ChartFocus::Bins => self.adjust_bins(delta.into()),
             ChartFocus::Bandwidth => {
@@ -1563,7 +1568,7 @@ impl ChartModal {
     }
 }
 
-impl crate::form::Form for ChartModal {
+impl crate::app::form::Form for ChartModal {
     type Field = ChartFocus;
 
     fn shown_picker(&mut self) -> Option<(&mut crate::widgets::ui::PickerState, bool)> {
@@ -1583,8 +1588,8 @@ impl crate::form::Form for ChartModal {
         }
     }
 
-    fn fields(&self) -> Vec<(ChartFocus, crate::form::FieldKind)> {
-        use crate::form::FieldKind;
+    fn fields(&self) -> Vec<(ChartFocus, crate::app::form::FieldKind)> {
+        use crate::app::form::FieldKind;
         self.row_order()
             .into_iter()
             .map(|row| {
@@ -1616,7 +1621,7 @@ impl crate::form::Form for ChartModal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::form::Form;
+    use crate::app::form::Form;
 
     fn s(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
@@ -2059,7 +2064,7 @@ mod tests {
         modal.type_rows('2');
         modal.type_rows('m');
         // Leaving the row reads it.
-        crate::form::Form::focus(&mut modal, ChartFocus::Type);
+        crate::app::form::Form::focus(&mut modal, ChartFocus::Type);
         assert_eq!(modal.row_limit, Some(2_000_000));
 
         // At least every row is Every row; Sample remembers its size.

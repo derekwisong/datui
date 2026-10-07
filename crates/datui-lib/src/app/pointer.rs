@@ -5,7 +5,7 @@
 //! dragging the gap after sets width (`<`/`>`); header double click sorts (`[`/`]`), gap
 //! double click fits (`=`); right click opens a cell's key menu. Mouse input is never
 //! held: where a key would wait, it is dropped
-//! ([`crate::event_pump::EventPump::terminal_mouse`]). Click targets are recorded while
+//! ([`crate::app::event_pump::EventPump::terminal_mouse`]). Click targets are recorded while
 //! drawing ([`record`]) by the widgets that lay them out.
 
 use std::cell::RefCell;
@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
-use crate::form::{FieldKind, Form};
+use crate::app::form::{FieldKind, Form};
 use crate::table::CellHit;
 use crate::{App, InputMode, Overlay};
 

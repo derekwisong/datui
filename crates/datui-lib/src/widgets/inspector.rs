@@ -4,7 +4,7 @@
 //! the right. Tab moves focus (and the rail). The value pane wraps only on-screen rows
 //! ([`crate::inspector::inspector_reader`]), so a 2 MiB value's end is a key away.
 
-use crate::copy_modal::thousands;
+use crate::app::modals::copy_modal::thousands;
 use crate::exact;
 use crate::formats::column_types::dtype_label;
 use crate::inspector::inspector_bytes::{self, Decoded, Sniffed};

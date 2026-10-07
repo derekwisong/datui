@@ -1,7 +1,7 @@
 //! The main loop, minus the terminal.
 //!
 //! `run()` sets up the terminal and hands [`EventPump::run`] a way to draw. Keys
-//! arrive on the same channel as worker results ([`crate::terminal_input`]), so the
+//! arrive on the same channel as worker results ([`crate::app::terminal_input`]), so the
 //! loop sleeps until either arrives or a deadline passes ([`Pacer`]). Keys typed
 //! while busy are held in order and replayed one per iteration once idle, through
 //! the path a fresh key takes; a replayed key's follow-ups drain before the next is
@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 use color_eyre::Result;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 
-use crate::jobs::Hold;
-use crate::pointer::Pointer;
+use crate::app::jobs::Hold;
+use crate::app::pointer::Pointer;
 use crate::{App, AppEvent};
 
 /// Keys held while busy. Beyond this the newest is dropped and the user told: the
@@ -209,7 +209,7 @@ impl EventPump {
                         return Ok(false);
                     };
                     if let Some(back) = act.filter(|_| clicked.acts) {
-                        then.extend(crate::pointer::act_key(clicked.kind, back));
+                        then.extend(crate::app::pointer::act_key(clicked.kind, back));
                     }
                 }
                 self.press_now(then)?;

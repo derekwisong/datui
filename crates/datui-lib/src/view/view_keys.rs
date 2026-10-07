@@ -1,7 +1,7 @@
 //! The view modal's keys.
 
-use crate::feedback::Confirm;
-use crate::form::FormKey;
+use crate::app::feedback::Confirm;
+use crate::app::form::FormKey;
 use crate::widgets::view_modal::{FormFocus, ViewModalMode};
 use crate::{App, AppEvent};
 use crossterm::event::{KeyCode, KeyEvent};
@@ -83,10 +83,10 @@ impl App {
         None
     }
 
-    /// Keys in the save/edit form: the shared form keys (`crate::form`), then what
+    /// Keys in the save/edit form: the shared form keys (`crate::app::form`), then what
     /// each row does with them.
     fn view_form_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
-        match crate::form::key(&mut self.view_modal, event) {
+        match crate::app::form::key(&mut self.view_modal, event) {
             // Back to the list; the form's staged edits die with it.
             FormKey::Cancel => self.view_modal.exit_form(),
             FormKey::Submit => self.save_view_form(),

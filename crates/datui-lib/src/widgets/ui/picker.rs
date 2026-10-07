@@ -1,7 +1,7 @@
 //! The pick-one list: type to narrow, `↑↓` move, Enter chooses. A radio group
 //! is a short Picker, not a grid.
 
-use crate::pointer::Hit;
+use crate::app::pointer::Hit;
 use crate::render::context::RenderContext;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -229,7 +229,7 @@ impl<'a> Picker<'a> {
         let offset = selected.saturating_sub(height.saturating_sub(1));
         let below = self.items.len().saturating_sub(offset + height);
         if self.clicks == Some(Clicks::Choose) {
-            crate::pointer::record(area, Hit::Picker);
+            crate::app::pointer::record(area, Hit::Picker);
         }
         for row in 0..height.min(self.items.len().saturating_sub(offset)) {
             let i = offset + row;
@@ -280,7 +280,7 @@ impl<'a> Picker<'a> {
                 }
             }
             if let Some(hit) = self.click_on(i) {
-                crate::pointer::record(row_area, hit);
+                crate::app::pointer::record(row_area, hit);
             }
         }
     }

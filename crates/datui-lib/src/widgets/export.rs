@@ -3,8 +3,8 @@
 //! side by side on its row, where ←/→ visibly step along them.
 
 use crate::CompressionFormat;
+use crate::app::pointer::FieldId;
 use crate::export::export_modal::{COMPRESSION_OPTIONS, ExportFocus, ExportFormat, ExportModal};
-use crate::pointer::FieldId;
 use crate::render::context::RenderContext;
 use crate::widgets::ui::{FormRow, FormValue, HintBar, Surface};
 use ratatui::layout::Rect;
@@ -91,7 +91,7 @@ pub fn render_export_modal(
         ExportFocus::PathInput | ExportFocus::CsvDelimiter => footer,
     };
     let footer = footer.key("Tab").weight(1).key("Esc").weight(4);
-    crate::pointer::record(area, crate::pointer::Hit::Modal);
+    crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
     let content = Surface::new("Export Data")
         .footer(&footer)
         .render(area, buf, ctx);
@@ -157,7 +157,7 @@ pub fn render_export_modal(
             ..content
         };
         // The row first: the format's values, recorded as drawn, lie on top.
-        crate::pointer::record_field::<ExportModal>(row, field);
+        crate::app::pointer::record_field::<ExportModal>(row, field);
         FormRow {
             label,
             value,
@@ -221,7 +221,7 @@ pub fn render_export_modal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pointer::Hit;
+    use crate::app::pointer::Hit;
     use ratatui::buffer::Buffer;
 
     fn draw(modal: &mut ExportModal, width: u16, height: u16) -> Buffer {
@@ -347,7 +347,7 @@ mod tests {
     fn each_format_value_is_a_click_target() {
         let mut modal = ExportModal::new();
         modal.selected_format = ExportFormat::Tsv;
-        let hits = crate::pointer::recording(|| {
+        let hits = crate::app::pointer::recording(|| {
             draw(&mut modal, MAX_WIDTH, HEIGHT);
         });
         let field = Some(FieldId::of::<ExportModal>(ExportFocus::FormatSelector));
@@ -381,7 +381,7 @@ mod tests {
         assert!(row < first_option, "the values lie on top of the row");
 
         // Compact, the step marks step by one.
-        let hits = crate::pointer::recording(|| {
+        let hits = crate::app::pointer::recording(|| {
             draw(&mut modal, 50, HEIGHT);
         });
         let steps: Vec<(usize, usize)> = hits

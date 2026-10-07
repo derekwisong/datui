@@ -170,7 +170,7 @@ pub struct OpenReport {
     pub remembered: Option<crate::cache::CacheManager>,
     /// Where what is remembered for the home screen is written, off the open's path:
     /// the app's, which the home listing settles before it reads.
-    pub(crate) writes: crate::background::CacheWrites,
+    pub(crate) writes: crate::app::background::CacheWrites,
 }
 
 /// What the open on screen cost, as measured; shared with reading threads (`Arc`,

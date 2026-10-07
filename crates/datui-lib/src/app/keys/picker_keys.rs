@@ -2,7 +2,7 @@
 //! of the same source.
 
 use crate::loading::open_options::OpenOptions;
-use crate::{App, AppEvent, Overlay, table_switch};
+use crate::{App, AppEvent, Overlay, app::table_switch};
 use crossterm::event::{KeyCode, KeyEvent};
 
 /// The go-to-column, format and table pickers.
@@ -14,7 +14,7 @@ pub struct Pickers {
     pub format_picker: crate::widgets::ui::PickerState,
     /// The tables `T` offers: the picker's lines, and what each opens.
     pub table_picker: crate::widgets::ui::PickerState,
-    pub table_choices: Option<crate::table_switch::Tables>,
+    pub table_choices: Option<crate::app::table_switch::Tables>,
 }
 
 impl App {

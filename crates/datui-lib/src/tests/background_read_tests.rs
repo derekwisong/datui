@@ -89,7 +89,7 @@ fn a_column_order_does_not_wait_on_a_read_of_other_columns() {
 /// changed: a filter and a sort together are one view, not two reads.
 #[test]
 fn one_sidebar_apply_reads_one_page() {
-    use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     let (mut app, rx, tx, _dir) = app();
     app.sync_sort_filter_modal();
     let before = app.home_app.reads.pages;
@@ -127,7 +127,7 @@ fn one_sidebar_apply_reads_one_page() {
 /// page again for a change of columns.
 #[test]
 fn a_sidebar_apply_says_what_it_does() {
-    use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     let (mut app, rx, tx, _dir) = app();
     let filter = FilterStatement {
         columns: Vec::new(),

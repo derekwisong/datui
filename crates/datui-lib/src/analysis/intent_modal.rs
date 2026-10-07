@@ -211,11 +211,11 @@ impl IntentForm {
     }
 }
 
-impl crate::form::Form for IntentForm {
+impl crate::app::form::Form for IntentForm {
     type Field = IntentField;
 
-    fn fields(&self) -> Vec<(IntentField, crate::form::FieldKind)> {
-        use crate::form::FieldKind;
+    fn fields(&self) -> Vec<(IntentField, crate::app::form::FieldKind)> {
+        use crate::app::form::FieldKind;
         IntentForm::fields(self)
             .into_iter()
             .map(|field| {

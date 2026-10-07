@@ -860,7 +860,7 @@ fn metadata_only_reads_no_values() {
 /// completes and yields a valid buffer.
 #[test]
 fn test_async_collect_handles_invalidated_num_rows() {
-    use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use datui::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 
     let test_data_dir = common::fixture_dir();
     let csv_path = test_data_dir.join("invalidated_num_rows_test.csv");
@@ -5697,13 +5697,13 @@ fn a_freeze_survives_a_narrow_window() {
     assert!(!wide.contains(g.rule_broken), "{wide}");
 }
 
-/// Every dialog takes the same keys (`datui::form`): ↓ / ↑ move between fields from
+/// Every dialog takes the same keys (`datui::app::form`): ↓ / ↑ move between fields from
 /// the moment it opens, ← / → and Space step a choice, Space toggles a checkbox.
 #[test]
 fn every_dialog_moves_between_fields_with_the_arrows_on_open() {
-    use datui::copy_modal::{CopyFocus, CopyScope};
+    use datui::app::modals::copy_modal::{CopyFocus, CopyScope};
+    use datui::app::modals::pivot_melt_modal::{PivotMeltFocus, PivotMeltTab};
     use datui::export::export_modal::{ExportFocus, ExportFormat};
-    use datui::pivot_melt_modal::{PivotMeltFocus, PivotMeltTab};
     let (mut app, _rx, _tx) = open_query_filter_fixture("forms_arrows_on_open.csv");
 
     // Export opens on the path; ↓ is the delimiter, ↑ ↑ the format.
@@ -5762,7 +5762,7 @@ fn every_dialog_moves_between_fields_with_the_arrows_on_open() {
     press(&mut app, KeyCode::Char(' '));
     assert_eq!(
         app.pivot_melt_modal.melt_value_strategy,
-        datui::pivot_melt_modal::MeltValueStrategy::ByPattern,
+        datui::app::modals::pivot_melt_modal::MeltValueStrategy::ByPattern,
         "Space takes the next value"
     );
     press(&mut app, KeyCode::Down);
@@ -7052,7 +7052,7 @@ fn files_and_directories_named_like_globs_open_together() {
 /// a find's keys; and a line more for a prompt, taken from the table's bottom.
 #[test]
 fn the_footer_says_what_is_in_effect_and_the_mode_s_keys() {
-    use datui::filter_modal::FilterOperator;
+    use datui::app::modals::filter_modal::FilterOperator;
     let (mut app, rx, tx) = open_query_filter_fixture("footer_states.csv");
     let none = KeyModifiers::NONE;
     let footer = |app: &mut App, width: u16| {

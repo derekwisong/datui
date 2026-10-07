@@ -1,11 +1,11 @@
 //! The Sort & Filter sidebar: what is in effect first — the sorts and the filters,
 //! each a row to flip, edit, reorder or remove, and a row to add one — and the
 //! Columns tab beside it, every per-column property in one list. One form
-//! (`crate::form`): the tab bar is its first field, and every entry is a field.
+//! (`crate::app::form`): the tab bar is its first field, and every entry is a field.
 
-use crate::filter_modal::FilterModal;
-use crate::form::{FieldKind, Form};
-use crate::sort_modal::SortModal;
+use crate::app::form::{FieldKind, Form};
+use crate::app::modals::filter_modal::FilterModal;
+use crate::app::modals::sort_modal::SortModal;
 use crate::widgets::ui::PickerState;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -274,8 +274,8 @@ impl Form for SortFilterModal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
-    use crate::sort_modal::SortColumn;
+    use crate::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use crate::app::modals::sort_modal::SortColumn;
     use crate::widgets::column_widths::WidthChoice;
 
     fn column(name: &str, place: usize, sort: Option<(usize, bool)>) -> SortColumn {

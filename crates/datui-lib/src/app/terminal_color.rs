@@ -1,6 +1,6 @@
 //! Asking the terminal for its background (OSC 11) so `theme.mode = "auto"` picks the
 //! palette from the screen. The reply (`ESC ] 11 ; rgb:RRRR/GGGG/BBBB` then BEL or ST)
-//! arrives on the input stream, which Crossterm reads ([`crate::terminal_input`]) as
+//! arrives on the input stream, which Crossterm reads ([`crate::app::terminal_input`]) as
 //! Alt+`]` and typed characters, so while a question is out ([`armed`]) the reader takes
 //! that run off the stream ([`ReplyScanner`]). Nothing waits: the first frame uses this
 //! terminal's last answer (cached under [`terminal_key`]); a later answer switches if

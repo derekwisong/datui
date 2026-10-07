@@ -2,8 +2,8 @@
 //! preview, saved views, and the read in the background.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
-use datui::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotMeltFocus, PivotSpec};
+use datui::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+use datui::app::modals::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotMeltFocus, PivotSpec};
 use datui::view::MatchCriteria;
 use datui::{App, AppEvent, OpenOptions, Overlay};
 use polars::prelude::AnyValue;
@@ -598,7 +598,7 @@ fn test_esc_stops_a_pivot_being_read() {
 // ----- The builder's live preview -----
 
 /// The preview the builder shows for the spec staged now: one is on screen for it.
-fn shown_preview(app: &App) -> datui::pivot_melt_modal::PreviewFrame {
+fn shown_preview(app: &App) -> datui::app::modals::pivot_melt_modal::PreviewFrame {
     let preview = &app.pivot_melt_modal.preview;
     match &preview.shown {
         Some((spec, Ok(frame))) if preview.wanted.as_ref() == Some(spec) => frame.clone(),
@@ -720,7 +720,7 @@ fn the_builder_previews_the_melt_and_applies_it() {
     send_key(&mut app, KeyCode::Right); // Melt
     assert_eq!(
         app.pivot_melt_modal.active_tab,
-        datui::pivot_melt_modal::PivotMeltTab::Melt
+        datui::app::modals::pivot_melt_modal::PivotMeltTab::Melt
     );
     // Index: id and date, the first two columns; the rest melt.
     send_key(&mut app, KeyCode::Tab);
@@ -742,7 +742,7 @@ fn the_builder_previews_the_melt_and_applies_it() {
     assert_eq!((frame.rows, frame.columns), (80 * 7, 4));
     assert_eq!(
         frame.head.height(),
-        datui::pivot_melt_modal::PREVIEW_ROWS,
+        datui::app::modals::pivot_melt_modal::PREVIEW_ROWS,
         "the preview keeps the first rows"
     );
     assert!(shape_line(&app.pivot_melt_modal.preview, &frame).starts_with("560 rows"));

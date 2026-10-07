@@ -12,9 +12,9 @@ use std::time::SystemTime;
 
 use polars::prelude::Schema;
 
+use crate::app::modals::filter_modal::FilterStatement;
+use crate::app::modals::pivot_melt_modal::{MeltSpec, PivotSpec, ReshapeSource};
 use crate::config::ConfigManager;
-use crate::filter_modal::FilterStatement;
-use crate::pivot_melt_modal::{MeltSpec, PivotSpec, ReshapeSource};
 
 // Custom serialization for SystemTime (convert to/from seconds since epoch)
 mod time_serde {

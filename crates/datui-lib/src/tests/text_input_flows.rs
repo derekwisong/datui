@@ -278,8 +278,9 @@ fn the_command_line_goes_to_a_row_and_keeps_the_query() {
 
 /// Put the Sort tab's column filter under the cursor.
 fn focus_column_filter(app: &mut App) {
-    app.sort_filter_modal.active_tab = crate::sort_filter_modal::SortFilterTab::Columns;
-    app.sort_filter_modal.focus = crate::sort_filter_modal::SortFilterField::Find;
+    app.sort_filter_modal.active_tab =
+        crate::app::modals::sort_filter_modal::SortFilterTab::Columns;
+    app.sort_filter_modal.focus = crate::app::modals::sort_filter_modal::SortFilterField::Find;
 }
 
 #[test]
@@ -387,7 +388,7 @@ fn the_view_name_field_takes_text() {
 
 #[test]
 fn the_melt_name_fields_replace_their_defaults_when_typed_over() {
-    use crate::pivot_melt_modal::PivotMeltFocus;
+    use crate::app::modals::pivot_melt_modal::PivotMeltFocus;
     let mut h = Harness::with_data();
     let to_variable_row = |h: &mut Harness| {
         h.press(KeyCode::Char('p'));
@@ -473,7 +474,7 @@ fn the_pivot_and_melt_modal_opens_a_picker_narrowed_as_you_type() {
 
     h.press(KeyCode::Char('p'));
     assert_eq!(h.app.overlay, Overlay::PivotMelt);
-    h.app.pivot_melt_modal.focus = crate::pivot_melt_modal::PivotMeltFocus::PivotIndex;
+    h.app.pivot_melt_modal.focus = crate::app::modals::pivot_melt_modal::PivotMeltFocus::PivotIndex;
 
     // Space opens a picked row's Picker; typing narrows it.
     h.press(KeyCode::Char(' '));

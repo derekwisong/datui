@@ -7,11 +7,11 @@ use std::sync::Arc;
 use color_eyre::Result;
 use polars::prelude::{LazyFrame, Schema};
 
+use crate::app::jobs::{Answer, ChartPrep, Job};
 use crate::chart::chart_data::{self, ColorSplit, ValueRange};
 use crate::chart::chart_modal::{Aggregate, ChartModal, ChartSpec, ColorCounts, Mark};
 use crate::chart::chart_plot::{LinesData, PlotContext, PlotData, plot};
 use crate::export::output_file::Overwrite;
-use crate::jobs::{Answer, ChartPrep, Job};
 use crate::{
     App, AppEvent, ExportProgress, Overlay, analysis::sampling, chart::chart_export,
     export::output_file, numfmt,

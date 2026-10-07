@@ -163,7 +163,7 @@ pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ct
                     label_width: LABEL_WIDTH,
                 }
                 .render(line, buf, ctx);
-                crate::pointer::record_field::<SampleForm>(line, *field);
+                crate::app::pointer::record_field::<SampleForm>(line, *field);
             }
             Item::Context(text) => {
                 // Under the value column, so it reads as belonging to the row above.

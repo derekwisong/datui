@@ -162,12 +162,12 @@ pub(crate) enum Job {
     ValueCounts,
     /// Mapping a file for the hex view, opened from `origin`.
     HexOpen {
-        origin: crate::hex_view::Origin,
+        origin: crate::app::hex_view::Origin,
         fallback: bool,
         record_size: Option<usize>,
     },
     /// A find reading the hex view's file.
-    HexFind(crate::hex_view::HexFindRun),
+    HexFind(crate::app::hex_view::HexFindRun),
     /// Counting values the read's column types made null, for the Notes; judged by
     /// `dataset`. `version` is the view's column changes counted; `None` for the read's
     /// types.
@@ -397,7 +397,7 @@ pub(crate) enum Answer {
     SampleDrawn(crate::analysis::table_sample::Drawn),
     /// [`Job::Pivot`]: the pivot.
     Pivoted {
-        spec: crate::pivot_melt_modal::PivotSpec,
+        spec: crate::app::modals::pivot_melt_modal::PivotSpec,
         pivoted: DataFrame,
     },
     /// [`Job::ViewPivot`]: the view's pivot.
@@ -405,8 +405,8 @@ pub(crate) enum Answer {
     /// [`Job::ReshapePreview`]: the head read, if any, and the preview or the reshape's
     /// error.
     ReshapePreviewed {
-        input: Option<crate::pivot_melt_modal::PreviewInput>,
-        result: Result<crate::pivot_melt_modal::PreviewFrame, String>,
+        input: Option<crate::app::modals::pivot_melt_modal::PreviewInput>,
+        result: Result<crate::app::modals::pivot_melt_modal::PreviewFrame, String>,
     },
     /// [`Job::DrillRow`]: the group row.
     DrillRow { group_index: usize, row: DataFrame },
@@ -447,9 +447,9 @@ pub(crate) enum Answer {
     /// [`Job::ValueCounts`]: the column's values, counted.
     ValueCounts(Box<crate::analysis::value_counts::ValueCounts>),
     /// [`Job::HexOpen`]: the file, mapped.
-    HexOpened(Box<crate::hex_view::HexSource>),
+    HexOpened(Box<crate::app::hex_view::HexSource>),
     /// [`Job::HexFind`]: where the pattern is, if anywhere.
-    HexFound(crate::hex_view::HexHit),
+    HexFound(crate::app::hex_view::HexHit),
     /// [`Job::UnfitCount`]: the columns whose types made values null.
     UnfitCounted(Vec<crate::formats::column_types::Unfit>),
     /// A test's answer, which says when it is dropped.
@@ -722,7 +722,7 @@ impl Worker {
 type HoldCounts = Arc<Mutex<HashMap<u64, usize>>>;
 
 /// A hold on the generation by work that is not a running job: a continuation
-/// [`crate::event_pump::EventPump`] has not dispatched, the gap between an errand's
+/// [`crate::app::event_pump::EventPump`] has not dispatched, the gap between an errand's
 /// phases, a download waiting on the user. Released on drop.
 #[must_use]
 pub(crate) struct Hold {

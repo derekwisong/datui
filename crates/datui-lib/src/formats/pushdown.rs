@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use polars::prelude::{Expr, LazyFrame, Operator, PolarsResult};
 
-use crate::filter_modal::FilterStatement;
+use crate::app::modals::filter_modal::FilterStatement;
 
 /// A source that reads rows `[start, start + len)` of a view without the ones before.
 ///

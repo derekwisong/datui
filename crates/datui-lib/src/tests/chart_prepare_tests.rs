@@ -35,8 +35,8 @@ fn prepared_histogram(column: &str) -> PlotData {
 }
 
 /// A preparation of `request` for `dataset`, started as a job a test ends by hand.
-fn start_prep(app: &mut App, request: &ChartRequest, dataset: Option<u64>) -> jobs::Started {
-    let prep = jobs::ChartPrep {
+fn start_prep(app: &mut App, request: &ChartRequest, dataset: Option<u64>) -> app::jobs::Started {
+    let prep = app::jobs::ChartPrep {
         request: request.clone(),
         dataset,
         cancel: Arc::default(),
@@ -45,7 +45,7 @@ fn start_prep(app: &mut App, request: &ChartRequest, dataset: Option<u64>) -> jo
 }
 
 /// End `started` with `outcome` and hand the end to the app.
-fn end_prep(app: &mut App, started: jobs::Started, outcome: Result<PlotData, (&str, bool)>) {
+fn end_prep(app: &mut App, started: app::jobs::Started, outcome: Result<PlotData, (&str, bool)>) {
     let ticket = started.ticket();
     started.end(match outcome {
         Ok(data) => Outcome::answered(Answer::ChartPrepared(Box::new((data, None)))),
@@ -588,7 +588,7 @@ fn a_sort_or_filter_keeps_the_chart_columns() {
     );
     key(&mut app, KeyCode::Esc);
 
-    use crate::filter_modal::{FilterOperator, LogicalOperator};
+    use crate::app::modals::filter_modal::{FilterOperator, LogicalOperator};
     app.event(AppEvent::Filter(vec![FilterStatement {
         columns: Vec::new(),
         column: "x".to_string(),

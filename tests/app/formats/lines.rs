@@ -211,7 +211,7 @@ fn a_query_filters_lines() {
 /// sort; turned on for a CSV, it numbers the rows of the file as they were read.
 #[test]
 fn row_numbers_are_the_source_row_through_sort_and_filter() {
-    use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+    use datui::app::modals::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     let dir = tempfile::tempdir().unwrap();
     let path = write(dir.path(), "app.log", LOG);
     let (mut app, rx) = open(vec![path], OpenOptions::default());

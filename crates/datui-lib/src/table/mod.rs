@@ -9,13 +9,13 @@ use ratatui::widgets::TableState;
 
 use crate::OpenOptions;
 use crate::analysis::statistics::collect_lazy;
+use crate::app::modals::filter_modal::FilterStatement;
+use crate::app::modals::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec, ReshapeSource};
 use crate::cloud::local_copy::RemoteObject;
 use crate::export::python_script::{SidebarFilter, Step};
-use crate::filter_modal::FilterStatement;
 use crate::formats::readers::csv::Decompressed;
 use crate::formats::readers::{Read, Typing};
 use crate::numfmt::{self};
-use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec, ReshapeSource};
 #[cfg(feature = "sql")]
 use crate::query::sql_plan::{
     count_subquery_values_once, leftover_subquery_value_columns, ordered_by, stable_order,

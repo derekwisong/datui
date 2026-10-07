@@ -43,9 +43,9 @@ use crate::loading::unfinished::{Unfinished, Writer};
 use crate::table::DataTableState;
 use crate::{CompressionFormat, FileFormat, OpenOptions, cloud::source};
 
-use crate::jobs::Hold;
+use crate::app::jobs::Hold;
 #[cfg(any(feature = "http", feature = "cloud"))]
-use crate::jobs::Jobs;
+use crate::app::jobs::Jobs;
 
 /// Names one open, from the moment it is asked for until it is done.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

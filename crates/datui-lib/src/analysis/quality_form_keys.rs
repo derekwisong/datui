@@ -1,11 +1,12 @@
 //! The Data Quality forms: the intent and expected-values forms, Setup's rows and
 //! pickers, and the quality export.
 
+use crate::app::feedback::Confirm;
+use crate::app::form::FormKey;
 use crate::export::output_file::Overwrite;
-use crate::feedback::Confirm;
-use crate::form::FormKey;
 use crate::{
-    App, AppEvent, analysis::analysis_modal, analysis::data_quality, analysis::intent_modal, form,
+    App, AppEvent, analysis::analysis_modal, analysis::data_quality, analysis::intent_modal,
+    app::form,
 };
 use crossterm::event::{KeyCode, KeyEvent};
 

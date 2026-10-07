@@ -1,9 +1,9 @@
-//! The Pivot & Melt builder's keys: the shared form keys (`crate::form`), then what
+//! The Pivot & Melt builder's keys: the shared form keys (`crate::app::form`), then what
 //! each row does with them; and its live preview, rerun as the spec changes.
 
-use crate::form::FormKey;
-use crate::jobs::{Answer, Job};
-use crate::pivot_melt_modal::{
+use crate::app::form::FormKey;
+use crate::app::jobs::{Answer, Job};
+use crate::app::modals::pivot_melt_modal::{
     PREVIEW_INPUT_ROWS, PivotMeltFocus, PivotMeltTab, PreviewFrame, PreviewInput,
 };
 use crate::{App, AppEvent, Overlay};
@@ -118,7 +118,7 @@ impl App {
                 }
                 (None, None) => return Err("Nothing to preview".to_string()),
             };
-            let result = crate::pivot_melt_modal::run_preview(&input.rows, &spec);
+            let result = crate::app::modals::pivot_melt_modal::run_preview(&input.rows, &spec);
             Ok(Answer::ReshapePreviewed {
                 input: read,
                 result,
@@ -173,7 +173,7 @@ impl App {
             return None;
         }
 
-        if crate::form::picker_form_key(&mut self.pivot_melt_modal, event) {
+        if crate::app::form::picker_form_key(&mut self.pivot_melt_modal, event) {
             return None;
         }
 
@@ -181,7 +181,7 @@ impl App {
         // plain (Enter re-arms it).
         self.pivot_melt_modal.attention = false;
 
-        match crate::form::key(&mut self.pivot_melt_modal, event) {
+        match crate::app::form::key(&mut self.pivot_melt_modal, event) {
             FormKey::Cancel => {
                 self.close_overlay();
             }

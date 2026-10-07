@@ -1293,7 +1293,7 @@ pub enum ThemeMode {
 impl ThemeMode {
     /// Resolve `Auto` from the environment (`Dark` and `Light` pass through): `COLORFGBG`
     /// with background 7 or 15 means light; otherwise dark. The terminal's own answer,
-    /// when it comes, replaces this (`crate::terminal_color`).
+    /// when it comes, replaces this (`crate::app::terminal_color`).
     pub fn resolve(self) -> Self {
         match self {
             Self::Auto => detect_terminal_mode(),

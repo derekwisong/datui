@@ -1,5 +1,5 @@
 use super::*;
-use crate::filter_modal::{FilterOperator, LogicalOperator};
+use crate::app::modals::filter_modal::{FilterOperator, LogicalOperator};
 
 fn state() -> DataTableState {
     let lf = df!(

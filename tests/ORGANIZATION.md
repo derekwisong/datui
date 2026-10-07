@@ -207,3 +207,26 @@ Left as they are, each for a reason:
 | `sqlite::tests::a_preview_of_a_view_that_never_ends_gives_up`, `a_read_stops_when_the_dataset_lets_go` | 2 s | the product's 2 s budgets are the subject |
 | `event_pump::tests::a_background_count_redraws_at_the_idle_cadence` | 2 s | frames counted over a real second |
 | `config_test::test_history_update_is_dropped_rather_than_blocking` | 2 s | the lock deadline is the subject |
+
+### Pilot: the `data` target
+
+`tests/data/main.rs` declares `statistics`, `distribution`, `reshape` (pivot and
+melt) and `excel`, which were four executables. They share one `common`, and the
+counting allocator `statistics` installs covers the whole executable. Select
+them as `scripts/dev/test.sh integration data statistics::`. The same 49 tests
+pass under `cargo test` and under nextest.
+
+| Measure | Four targets | `data` |
+|---|---|---|
+| Executables in the workspace | 36 | 33 |
+| Their size | 1,204 MiB (236 + 237 + 400 + 390) | 382 MiB |
+| Rebuild after a one-line `datui-lib` edit, all test targets | 11.4 s wall, 38 units, 35.9 s across the root test units | 11.1 s wall, 35 units, 33.2 s |
+| Of that, the data tests | 4.3 s across four links | 1.5 s, one link |
+| Rebuild after a one-line edit of one data test file | 0.5 s | 0.5 s |
+| Run under `cargo test` | 8.3 s, one after another | 7.8 s |
+
+Wall time after a library edit hardly moves: the library's own test executable
+(about 9.5 s) is the critical path, and the root targets link alongside it. What
+folding saves is link work (2.8 s of CPU for these four), disk (820 MiB), and the
+cold build's link queue. A test edit costs the same. No cold build was measured
+for the pilot.

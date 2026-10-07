@@ -1,0 +1,191 @@
+name: Set up the build
+description: >-
+  The Rust toolchain rust-toolchain.toml pins, apt packages, the cargo cache,
+  Python with an optional .venv, and the test fixtures, in that order. Each
+  part runs only when asked for. Run it after actions/checkout.
+
+inputs:
+  rust:
+    description: Install Rust. 'false' for a job that only needs the rest.
+    default: 'true'
+  toolchain:
+    description: >-
+      A toolchain to install instead of the pinned one (the MSRV job).
+      rust-toolchain.toml still outranks it in the checkout: set
+      RUSTUP_TOOLCHAIN where it builds, and cache in the job.
+    default: ''
+  apt:
+    description: Space-separated apt packages, on Linux; '' for none.
+    default: pkg-config
+  cache-key:
+    description: rust-cache's shared-key; '' for no cargo cache.
+    default: ''
+  cache-workspaces:
+    description: rust-cache's workspaces.
+    default: ''
+  cache-targets:
+    description: rust-cache's cache-targets.
+    default: 'true'
+  cache-workspace-crates:
+    description: rust-cache's cache-workspace-crates.
+    default: 'false'
+  cache-save:
+    description: "'main' saves the cargo cache from main only; 'never' restores only."
+    default: main
+  python:
+    description: Set up Python 3. Implied by venv and fixtures.
+    default: 'false'
+  pip-cache:
+    description: setup-python's cache-dependency-path; '' for no pip cache.
+    default: ''
+  venv:
+    description: Space-separated requirements files to install into .venv.
+    default: ''
+  fixtures:
+    description: Restore tests/sample-data from the cache, or generate it and (on main) save it.
+    default: 'false'
+
+outputs:
+  python-version:
+    description: The Python version setup-python resolved.
+    value: ${{ steps.python.outputs.python-version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Read the pinned toolchain
+      id: pin
+      if: inputs.rust == 'true'
+      shell: bash
+      env:
+        OVERRIDE: ${{ inputs.toolchain }}
+      run: |
+        file="$GITHUB_WORKSPACE/rust-toolchain.toml"
+        if [ -n "$OVERRIDE" ]; then
+          echo "channel=$OVERRIDE" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        channel=$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' "$file")
+        components=$(sed -n 's/^components *= *\[\(.*\)\].*/\1/p' "$file" | tr -d '" ')
+        [ -n "$channel" ] || { echo "::error::No channel in rust-toolchain.toml"; exit 1; }
+        echo "channel=$channel" >> "$GITHUB_OUTPUT"
+        echo "components=$components" >> "$GITHUB_OUTPUT"
+
+    # dtolnay regenerates the stable branch from master, so an old pin drops
+    # out of branch history and zizmor flags it as an impostor commit. To
+    # refresh: take `gh api repos/dtolnay/rust-toolchain/branches/stable`,
+    # check `compare/master...<sha>` adds only the default-toolchain commit,
+    # and pin that SHA here and in publish-packages.yml.
+    - name: Install Rust
+      if: inputs.rust == 'true'
+      uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      with:
+        toolchain: ${{ steps.pin.outputs.channel }}
+        components: ${{ steps.pin.outputs.components }}
+
+    # The runner image ships third-party apt repositories datui does not use
+    # (Chrome, for one). When one of those serves a bad index, `apt-get update`
+    # exits non-zero and fails a build that had nothing to do with it. The
+    # install is the real gate: if Ubuntu's own indexes did not fetch, it fails
+    # there, for the right reason. A stalled mirror gets 30s per connection and
+    # three retries, and the step five minutes in all (a composite step cannot
+    # take timeout-minutes), so a hang fails here rather than holding the job.
+    - name: Install system dependencies
+      if: runner.os == 'Linux' && inputs.apt != ''
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.apt }}
+      run: |
+        end=$((SECONDS + 300))
+        left() { local n=$((end - SECONDS)); echo $((n > 0 ? n : 1)); }
+        echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
+        sudo timeout "$(left)" apt-get update || echo '::warning::apt-get update reported errors; continuing'
+        # shellcheck disable=SC2086 # a list of package names
+        sudo timeout "$(left)" apt-get install -y $PACKAGES
+
+    # rust-cache keys an entry by its shared-key, the OS and arch, the rustc it
+    # finds, CARGO*/RUST* env and the lockfile; ci.yml has the cache policy.
+    - name: Cache cargo dependencies
+      if: inputs.cache-key != ''
+      uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      with:
+        shared-key: ${{ inputs.cache-key }}
+        workspaces: ${{ inputs.cache-workspaces }}
+        cache-targets: ${{ inputs.cache-targets }}
+        cache-workspace-crates: ${{ inputs.cache-workspace-crates }}
+        save-if: ${{ inputs.cache-save == 'main' && github.ref == 'refs/heads/main' }}
+
+    - name: Set up Python
+      id: python
+      if: inputs.python == 'true' || inputs.venv != '' || inputs.fixtures == 'true'
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: '3.x'
+        cache: ${{ inputs.pip-cache != '' && 'pip' || '' }}
+        cache-dependency-path: ${{ inputs.pip-cache }}
+
+    - name: Create the virtual environment
+      if: inputs.venv != ''
+      shell: bash
+      env:
+        REQUIREMENTS: ${{ inputs.venv }}
+      run: |
+        python -m venv .venv
+        if [ "$RUNNER_OS" = Windows ]; then py=.venv/Scripts/python.exe; else py=.venv/bin/python; fi
+        for r in $REQUIREMENTS; do
+          "$py" -m pip install --disable-pip-version-check -r "$r"
+        done
+
+    # The fixtures are cached under a key holding every input to the generator:
+    #   - scripts/generate_sample_data.py, which reads no other file
+    #   - scripts/requirements-fixtures.txt: every package it imports, and what
+    #     those pull in, at exact versions
+    #   - the Python version setup-python resolved, and the runner OS and arch
+    #   - sample-data-v1, a schema version to bump by hand to discard them all
+    # No restore-keys: a near match is a stale one. A restore is checked against
+    # the manifest saved with it (every file name and SHA-256) and regenerated if
+    # anything differs. Saved from main only, before the tests run.
+    - name: Restore sample data
+      id: sample-data
+      if: inputs.fixtures == 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          tests/sample-data
+          ${{ runner.temp }}/sample-data.sha256
+        key: sample-data-v1-${{ runner.os }}-${{ runner.arch }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('scripts/generate_sample_data.py', 'scripts/requirements-fixtures.txt') }}
+
+    - name: Verify restored sample data
+      id: verify
+      if: inputs.fixtures == 'true' && steps.sample-data.outputs.cache-hit == 'true'
+      shell: bash
+      run: |
+        (cd tests/sample-data && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/sample-data.actual"
+        if [ -s "$RUNNER_TEMP/sample-data.sha256" ] && cmp -s "$RUNNER_TEMP/sample-data.sha256" "$RUNNER_TEMP/sample-data.actual"; then
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning::Restored sample data does not match its manifest; regenerating"
+          diff "$RUNNER_TEMP/sample-data.sha256" "$RUNNER_TEMP/sample-data.actual" || true
+        fi
+
+    # With the fixtures in place the tests never start Python.
+    - name: Generate sample data
+      id: generate
+      if: inputs.fixtures == 'true' && steps.verify.outputs.ok != 'true'
+      shell: bash
+      run: |
+        rm -rf tests/sample-data
+        python -m venv .venv
+        if [ "$RUNNER_OS" = Windows ]; then py=.venv/Scripts/python.exe; else py=.venv/bin/python; fi
+        "$py" -m pip install --disable-pip-version-check -r scripts/requirements-fixtures.txt
+        "$py" scripts/generate_sample_data.py
+        (cd tests/sample-data && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/sample-data.sha256"
+
+    - name: Save sample data
+      if: inputs.fixtures == 'true' && steps.generate.outcome == 'success' && github.ref == 'refs/heads/main'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          tests/sample-data
+          ${{ runner.temp }}/sample-data.sha256
+        key: ${{ steps.sample-data.outputs.cache-primary-key }}

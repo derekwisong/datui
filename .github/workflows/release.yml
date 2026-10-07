@@ -17,9 +17,6 @@ on:
   # builds before a tag depends on it.
   workflow_dispatch: {}
 
-env:
-  MDBOOK_VERSION: "0.5.2"
-
 jobs:
   check-ci-passed:
     runs-on: ubuntu-latest
@@ -53,7 +50,7 @@ jobs:
     needs: [check-ci-passed]
     if: github.event_name == 'push'
     # Slowest Nightly fuzz job in the last 50 runs: 47m48s (run 36274717293).
-    # Above 1.5x that time, with room to link and replay all six targets.
+    # Above 1.5x that time, with room to link and replay every target.
     timeout-minutes: 90
     env:
       DATUI_FUZZ_SANITIZER: address
@@ -76,29 +73,19 @@ jobs:
           docker-images: true
           swap-storage: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          toolchain: stable
-
-      - name: Install system dependencies
-        timeout-minutes: 5
-        run: |
-          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
-          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config
-
       # Restore Nightly's registry and tools only; the ASan target dir is too large.
-      - name: Cache cargo dependencies
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Set up the build
+        uses: ./.github/actions/setup
         with:
-          shared-key: fuzz-asan
-          workspaces: fuzz
+          cache-key: fuzz-asan
+          cache-workspaces: fuzz
           cache-targets: false
-          save-if: false
+          cache-save: never
 
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz --locked
+        uses: ./.github/actions/install-tools
+        with:
+          tools: cargo-fuzz
 
       # Always replay this tag's committed corpora, regardless of Nightly's result.
       - name: Replay every corpus under ASan
@@ -144,48 +131,27 @@ jobs:
           docker-images: true
           swap-storage: true
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      # The cargo cache restores what the Nightly workflow built on main, and never
+      # saves. A cache entry is scoped to the ref that wrote it, and a tag run can
+      # read its own tag's entries and main's, nothing else. The `release` key this
+      # used to share was only ever written from tags, so every release found
+      # nothing, built from cold (57 minutes on Windows), then spent quota saving
+      # an entry no later tag could reach. Nightly's release build uses the same
+      # commands and env, so its key prefix matches here (keep the two in step:
+      # rust-cache hashes CARGO*/RUST* env into the key); the version bump changes
+      # the lockfile hash, and rust-cache falls back to the most recent nightly
+      # entry, which differs by datui's own crates.
+      - name: Set up the build
+        uses: ./.github/actions/setup
         with:
-          toolchain: stable
-
-      - name: Install system dependencies
-        timeout-minutes: 5
-        run: |
-          # The runner image ships third-party apt repositories datui does not use (Chrome, for one).
-          # When one of those serves a bad index, `apt-get update` exits non-zero and fails a build
-          # that had nothing to do with it. The install below is the real gate: if Ubuntu's own
-          # indexes did not fetch, it fails there, for the right reason.
-          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
-          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config python3-dev
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.x'
-          cache: 'pip'
-          cache-dependency-path: scripts/requirements-release.txt
+          apt: pkg-config python3-dev
+          cache-key: nightly
+          cache-save: never
+          cache-workspace-crates: true
+          pip-cache: scripts/requirements-release.txt
 
       - name: Install zig, cargo-zigbuild and maturin
         run: pip install -r scripts/requirements-release.txt
-
-      - name: Cache cargo dependencies
-        # Restores what the Nightly workflow built on main, and never saves. A
-        # cache entry is scoped to the ref that wrote it, and a tag run can read
-        # its own tag's entries and main's, nothing else. The `release` key this
-        # used to share was only ever written from tags, so every release found
-        # nothing, built from cold (57 minutes on Windows), then spent quota
-        # saving an entry no later tag could reach. Nightly's release build uses
-        # the same commands and env, so its key prefix matches here (keep the two in
-        # step: rust-cache hashes CARGO*/RUST* env into the key); the version
-        # bump changes the lockfile hash, and rust-cache falls back to the most
-        # recent nightly entry, which differs by datui's own crates.
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: nightly
-          save-if: false
-          cache-workspace-crates: true
 
       - name: Build release binary against glibc 2.28
         run: cargo zigbuild --release --locked -p datui --target "$TARGET.2.28"
@@ -193,19 +159,10 @@ jobs:
       - name: Place the binary where the packagers read it
         run: install -D "target/$TARGET/release/datui" target/release/datui
 
-      - name: Cache cargo packaging tools
-        id: cache-cargo-tools
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cargo/bin
-          key: ${{ runner.os }}-cargo-packaging-tools-v2
-          restore-keys: |
-            ${{ runner.os }}-cargo-packaging-tools-
-
       - name: Install cargo packaging tools
-        run: |
-          command -v cargo-deb || cargo install cargo-deb
-          command -v cargo-generate-rpm || cargo install cargo-generate-rpm
+        uses: ./.github/actions/install-tools
+        with:
+          tools: cargo-deb cargo-generate-rpm
 
       - name: Build deb package
         run: python3 scripts/packaging/build_package.py deb --no-build
@@ -260,27 +217,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - name: Set up the build
+        uses: ./.github/actions/setup
         with:
-          toolchain: stable
+          apt: pkg-config python3-dev
+          pip-cache: scripts/requirements-release.txt
+
       - name: Run sccache
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
-
-      - name: Install system dependencies
-        timeout-minutes: 5
-        run: |
-          # See the linux job for why `apt-get update` is allowed to fail here.
-          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
-          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config python3-dev
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.x'
-          cache: 'pip'
-          cache-dependency-path: scripts/requirements-release.txt
 
       - name: Install zig, cargo-zigbuild and maturin
         run: pip install -r scripts/requirements-release.txt
@@ -294,21 +238,19 @@ jobs:
       - name: Place the binary where the packagers read it
         run: install -D "target/$TARGET/release/datui" target/release/datui
 
+      # No rust-cache here to carry cargo-generate-rpm, which is built from source.
+      # runner.arch is in the key: an x86_64 entry would restore binaries that
+      # fail to execute here.
       - name: Cache cargo packaging tools
-        id: cache-cargo-tools
-        # runner.arch is in the key: the linux job's entry holds x86_64 binaries,
-        # which would restore here and fail to execute.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-packaging-tools-v2
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-cargo-packaging-tools-
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-packaging-tools-${{ hashFiles('.github/tool-versions') }}
 
       - name: Install cargo packaging tools
-        run: |
-          command -v cargo-deb || cargo install cargo-deb
-          command -v cargo-generate-rpm || cargo install cargo-generate-rpm
+        uses: ./.github/actions/install-tools
+        with:
+          tools: cargo-deb cargo-generate-rpm
 
       - name: Build deb package
         run: python3 scripts/packaging/build_package.py deb --no-build
@@ -403,28 +345,17 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      # Nightly's cargo cache from main, restore only. See the linux job.
+      - name: Set up the build
+        uses: ./.github/actions/setup
         with:
-          toolchain: stable
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.x'
-          cache: 'pip'
-          cache-dependency-path: scripts/requirements-wheel-windows.txt
+          cache-key: nightly
+          cache-save: never
+          cache-workspace-crates: true
+          pip-cache: scripts/requirements-wheel-windows.txt
 
       - name: Install maturin
         run: pip install maturin
-
-      - name: Cache cargo dependencies
-        # Nightly's entry from main, restore only. See the linux job.
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: nightly
-          save-if: false
-          cache-workspace-crates: true
 
       - name: Build release binary
         # The C runtime linked in: a clean Windows has the UCRT but not
@@ -490,31 +421,22 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      # Nightly's cargo cache from main, restore only. See the linux job.
+      - name: Set up the build
+        uses: ./.github/actions/setup
         with:
-          toolchain: stable
+          cache-key: nightly-${{ matrix.target }}
+          cache-save: never
+          cache-workspace-crates: true
+          pip-cache: scripts/requirements-wheel.txt
 
       - name: Add Rust target
-        run: rustup target add ${{ matrix.target }}
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.x'
-          cache: 'pip'
-          cache-dependency-path: scripts/requirements-wheel.txt
+        env:
+          TARGET: ${{ matrix.target }}
+        run: rustup target add "$TARGET"
 
       - name: Install maturin
         run: pip install maturin
-
-      - name: Cache cargo dependencies
-        # Nightly's entry from main, restore only. See the linux job.
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: nightly-${{ matrix.target }}
-          save-if: false
-          cache-workspace-crates: true
 
       - name: Build release binary
         run: cargo build --release --locked -p datui --target ${{ matrix.target }}
@@ -572,26 +494,14 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      # mandoc renders the manpages into the docs (reference/man/).
+      - name: Set up the build
+        uses: ./.github/actions/setup
         with:
-          toolchain: stable
-
-      - name: Install system dependencies
-        timeout-minutes: 5
-        run: |
-          # See the linux job for why `apt-get update` is allowed to fail here.
-          # mandoc renders the manpages into the docs (reference/man/).
-          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
-          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y mandoc
-
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.x'
-          cache: 'pip'
-          cache-dependency-path: |
+          rust: false
+          apt: mandoc
+          python: true
+          pip-cache: |
             scripts/requirements.txt
             scripts/requirements-fixtures.txt
 
@@ -600,18 +510,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r scripts/requirements.txt
 
-      - name: Cache mdbook
-        id: cache-mdbook
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cargo/bin/mdbook
-          key: ${{ runner.os }}-mdbook-${{ env.MDBOOK_VERSION }}
-          restore-keys: |
-            ${{ runner.os }}-mdbook-
-
       - name: Install mdbook
-        if: steps.cache-mdbook.outputs.cache-hit != 'true'
-        run: cargo install mdbook --version ${{ env.MDBOOK_VERSION }} --locked --force
+        uses: ./.github/actions/install-tools
+        with:
+          tools: mdbook
 
       - name: Compute docs cache key
         id: compute-docs-key

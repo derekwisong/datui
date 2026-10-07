@@ -24,6 +24,7 @@ on:
       - 'crates/datui-lib/src/cloud/azure.rs'
       - 'tests/cloud_live_test.rs'
       - '.github/workflows/public-datasets.yml'
+      - '.github/actions/setup/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -46,24 +47,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      # CI linux's cargo cache from main, restore only: the same debug test build and env.
+      - name: Set up the build
+        uses: ./.github/actions/setup
         with:
-          toolchain: stable
-
-      - name: Install system dependencies
-        timeout-minutes: 5
-        run: |
-          echo 'Acquire::Retries "3"; Acquire::http::Timeout "30";' | sudo tee /etc/apt/apt.conf.d/99timeouts >/dev/null
-          sudo apt-get update || echo '::warning::apt-get update reported errors; continuing'
-          sudo apt-get install -y pkg-config
-
-      # CI linux's entry from main, restore only: the same debug test build and env.
-      - name: Cache cargo dependencies
-        uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: tests
-          save-if: false
+          cache-key: tests
+          cache-save: never
 
       - name: List and open every public dataset with no credentials
         env:

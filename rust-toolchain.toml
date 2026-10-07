@@ -1,0 +1,8 @@
+# The Rust that builds, lints and tests datui, here and in CI, so a new stable
+# release cannot change clippy's verdict overnight. Bump it on purpose: see
+# docs/for-developers/contributing.md. The MSRV (rust-version in Cargo.toml) is
+# checked separately in CI.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

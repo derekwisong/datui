@@ -98,10 +98,19 @@ jobs:
           ref: ${{ needs.resolve-release.outputs.tag_name }}
           fetch-depth: 0
 
+      # The tag's pinned toolchain, read here rather than through the setup action:
+      # tags from before the pin have neither, and republishing one must still work.
+      - name: Read the pinned toolchain
+        id: pin
+        run: |
+          channel=$(sed -n 's/^channel *= *"\([^"]*\)".*/\1/p' rust-toolchain.toml 2>/dev/null || true)
+          echo "channel=${channel:-stable}" >> "$GITHUB_OUTPUT"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
-          toolchain: stable
+          toolchain: ${{ steps.pin.outputs.channel }}
+
       - name: Install system dependencies
         timeout-minutes: 5
         run: |

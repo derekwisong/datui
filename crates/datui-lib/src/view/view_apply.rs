@@ -18,6 +18,13 @@ pub struct SavedViews {
     pub(crate) active_id: Option<String>, // ID of currently applied view
 }
 
+impl SavedViews {
+    /// A new dataset is on screen with no view applied.
+    pub(crate) fn reset_for_dataset(&mut self) {
+        self.active_id = None;
+    }
+}
+
 impl App {
     /// Open the views list for the dataset on screen, scored against it.
     pub(crate) fn open_view_list(&mut self) {

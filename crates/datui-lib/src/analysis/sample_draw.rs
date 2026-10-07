@@ -22,6 +22,13 @@ pub struct SampleState {
     pub(crate) paths: Vec<(String, crate::analysis::table_sample::DrawPath)>,
 }
 
+impl SampleState {
+    /// A new dataset is on screen: the paths draws took were the last one's.
+    pub(crate) fn reset_for_dataset(&mut self) {
+        self.paths.clear();
+    }
+}
+
 /// What the status line says while a sample is drawn.
 const DRAWING: &str = "Sampling...";
 

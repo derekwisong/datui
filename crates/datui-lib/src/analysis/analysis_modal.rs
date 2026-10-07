@@ -547,6 +547,13 @@ pub struct QualityState {
 }
 
 impl QualityState {
+    /// A new dataset is on screen: findings narrowed to the last one's columns would
+    /// hide this one's, and a read for its rows was over the last one.
+    pub(crate) fn reset_for_dataset(&mut self) {
+        self.findings = FindingsView::default();
+        self.evidence_read = None;
+    }
+
     /// What a close leaves: the plan, and how Segments is ordered.
     fn close(&mut self) {
         *self = Self {

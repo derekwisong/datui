@@ -1500,12 +1500,8 @@ impl App {
             .read_catalog_files(dir.as_deref())
             .map_err(|e| e.to_string())?;
         // The open dataset's notes and Documentation tab follow the file.
-        let shown = home::catalogs(&self.app_config);
-        let path = self.path.clone();
-        self.info.codebook = path.as_deref().and_then(|p| home::codebook_for(&shown, p));
-        self.info.catalog_entry = path
-            .as_deref()
-            .and_then(|p| home::catalog_entry_for(&shown, p));
+        self.info
+            .follow_catalogs(&self.app_config, self.path.as_deref());
         self.open_info_documentation();
         self.home_refresh();
         Ok(())

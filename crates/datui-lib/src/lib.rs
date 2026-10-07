@@ -5739,7 +5739,7 @@ impl Drop for App {
         // Stop the footer pass. The loader stops the open in flight as it drops (a running
         // download removes its partial file). In Drop to cover every exit: quit, error,
         // panic unwind, and the Python binding running again in-process.
-        self.counting.footer_progress.cancel();
+        self.counting.stop_footer_pass();
         // Stop indexing so nothing holds the file once the app is gone (the Python
         // binding runs on).
         self.counting

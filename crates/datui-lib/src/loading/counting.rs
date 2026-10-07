@@ -86,12 +86,17 @@ impl Counting {
         &mut self,
         footers: Arc<crate::formats::schema_union::FooterProgress>,
     ) {
-        self.footer_progress.cancel();
+        self.stop_footer_pass();
         self.footer_progress = footers;
         self.end_when_the_footers_land = None;
         self.end_after_count = None;
         self.end_when_indexed = None;
         self.goto_when_indexed = None;
+    }
+
+    /// Stop the footer pass of the dataset on screen: unread beats read and dropped.
+    pub(crate) fn stop_footer_pass(&self) {
+        self.footer_progress.cancel();
     }
 
     /// The markers a running query keeps for the view it may roll back to.

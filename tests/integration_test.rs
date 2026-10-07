@@ -2625,7 +2625,7 @@ fn data_quality_on_a_local_file_leads_with_the_result() {
     )));
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Setup);
 
-    // The control bar is the one hint surface: the widget draws no key rows
+    // The footer is the one hint surface: the widget draws no key rows
     // or prose of its own.
     let area = Rect::new(0, 0, 110, 30);
     let mut buffer = Buffer::empty(area);
@@ -8051,7 +8051,7 @@ fn test_each_open_counts_its_own_footers() {
     );
 }
 
-/// The control bar shows the same count the loading body does.
+/// The footer shows the same count the loading body does.
 ///
 /// Both derive it from `App::loading_phase`, and the point of that is that one wait
 /// cannot be described two ways. The truncation test in `controls.rs` builds the bar
@@ -8076,7 +8076,7 @@ fn test_the_control_bar_counts_the_footers_the_loading_screen_does() {
 
     let body = rows.iter().find(|r| r.contains("Reading footers"));
     assert!(body.is_some(), "the body counts them:\n{}", rows.join("\n"));
-    let bar = rows.last().expect("a control bar");
+    let bar = rows.last().expect("a footer");
     assert!(
         bar.contains("Reading footers: 1,203 of 6,541"),
         "and so does the bar, rather than the phase the body has stopped showing: \
@@ -8111,7 +8111,7 @@ fn test_the_control_bar_counts_a_listing_without_a_percentage() {
         "the body counts them:\n{}",
         rows.join("\n")
     );
-    let bar = rows.last().expect("a control bar");
+    let bar = rows.last().expect("a footer");
     assert!(bar.contains("Listing files: 1,500"), "{bar:?}");
     assert!(
         !bar.contains('%'),
@@ -8122,7 +8122,7 @@ fn test_the_control_bar_counts_a_listing_without_a_percentage() {
 /// The bar says the footers are still arriving, after the dataset is on screen.
 ///
 /// A cloud prefix of many files opens from two of them and reads the rest behind the
-/// data. Nothing is blocked and nothing is wrong, so it is said in the control bar
+/// data. Nothing is blocked and nothing is wrong, so it is said in the footer
 /// rather than on a loading screen — but it is said, because otherwise columns appear
 /// minutes later with no explanation.
 #[test]
@@ -8455,7 +8455,7 @@ fn test_a_uniform_dataset_shows_no_absent_or_conflicting_cells() {
 
     let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
     let text = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 20));
-    // The table, without the control bar (the last row), whose separator is the
+    // The table, without the footer (the last row), whose separator is the
     // same dot.
     let text: String = text.chars().take(100 * 19).collect();
     assert!(text.contains(g.null), "the real null still shows");
@@ -10272,7 +10272,7 @@ fn key(code: KeyCode) -> AppEvent {
     AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
 }
 
-/// The same, without the control bar on the last row. The bar reports a load on its
+/// The same, without the footer on the last row. The bar reports a load on its
 /// own; assertions about what the *view* shows have to exclude it.
 fn main_area_text(buf: &Buffer, area: Rect) -> String {
     let cells = (area.width as usize) * (area.height as usize - 1);
@@ -14066,7 +14066,7 @@ fn test_the_rule_counts_datasets_past_the_cap() {
     assert!(!bar.contains("datasets"), "{bar:?}");
 }
 
-/// The rendered list, one string per screen row, without the control bar.
+/// The rendered list, one string per screen row, without the footer.
 fn list_rows(buf: &Buffer, area: Rect) -> Vec<String> {
     (0..area.height - 1)
         .map(|y| {
@@ -14628,7 +14628,7 @@ fn test_an_unexamined_lake_root_is_classified_before_it_is_opened() {
 
 /// `→` into a lake table says the same thing `Enter` does.
 ///
-/// The control bar advertises `→` on that row, and `home_browse_into` clears the status
+/// The footer advertises `→` on that row, and `home_browse_into` clears the status
 /// line — so the door the bar points at was the one that arrived inside with no
 /// explanation.
 #[test]
@@ -16180,7 +16180,7 @@ fn test_a_directory_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
     );
 }
 
-/// The control bar says what Enter will really do, on a row of every shape.
+/// The footer says what Enter will really do, on a row of every shape.
 ///
 /// `WhatEnter` is a prediction the renderer reads and `home_open_selected` is the thing
 /// that decides, so the two can drift. This is what stops them: one row of each shape,
@@ -19406,7 +19406,7 @@ fn test_info_panel_reads_the_file_facts_off_the_ui_thread() {
     );
 }
 
-/// The control bar's "of" total: none while pristine, the dataset's count under a
+/// The footer's "of" total: none while pristine, the dataset's count under a
 /// filter or query, and gone again when the filter clears. Never a fresh read — only
 /// the count the pristine frame already resolved.
 #[test]
@@ -20104,7 +20104,7 @@ fn test_copy_dialog_sends_each_scope_to_the_destination() {
         );
     }
 
-    // The completion is a flash on the control bar, not a modal.
+    // The completion is a flash on the footer, not a modal.
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
     let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
@@ -24949,7 +24949,7 @@ fn test_copy_as_python_reads_streams_beside_ipc_files() {
 }
 
 /// Dropping footer rows counts the whole file before the first row: the loading
-/// screen and the control bar say so while it does.
+/// screen and the footer say so while it does.
 #[test]
 fn test_a_footer_count_says_so_on_screen() {
     let dir = tempfile::tempdir().unwrap();
@@ -25439,7 +25439,7 @@ fn copy_as_python_reads_a_directory_named_like_a_glob() {
     assert!(!script.contains("glob=False"), "{script}");
 }
 
-/// While a query's first rows are read, the table area says what the control bar
+/// While a query's first rows are read, the table area says what the footer
 /// does, in place of the rows it replaces; once they are in, they show.
 #[cfg(feature = "sql")]
 #[test]
@@ -25456,7 +25456,7 @@ fn a_running_query_says_so_in_the_table() {
     // Its rows are not in until their job's end is handled.
     assert!(app.is_busy(), "the query is running");
     let screen = screen_text(&mut app);
-    // Above the control bar's row, which says it too.
+    // Above the footer's row, which says it too.
     let table: String = screen.chars().take(120 * 29).collect();
     assert!(table.contains("Applying SQL query..."), "{screen}");
     assert!(!table.contains("alpha_0"), "{screen}");

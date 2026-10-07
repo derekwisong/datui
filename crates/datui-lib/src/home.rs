@@ -3458,7 +3458,7 @@ impl HomeState {
     /// fresh listing that is every directory in it, and any of them may turn out to be a
     /// dataset. This is [`EntryKind::is_dataset`] rather than
     /// [`EntryKind::is_known_dataset`] on purpose — the question is whether there is
-    /// anywhere to go, not how many datasets there are, which is what the control bar's
+    /// anywhere to go, not how many datasets there are, which is what the footer's
     /// count asks and answers differently.
     pub fn has_any_dataset(&self) -> bool {
         self.view().has_dataset
@@ -4809,7 +4809,7 @@ impl HomeState {
     ///
     /// The highlighted row first because it is the one about to be acted on. → goes
     /// inside a directory that holds one dataset and folds the section otherwise, and the
-    /// control bar offers the key on the same test, so both read better for the row
+    /// footer offers the key on the same test, so both read better for the row
     /// being looked into in the first pass rather than the third.
     pub fn unclassified_visible(&self, limit: usize) -> Vec<Entry> {
         if limit == 0 {

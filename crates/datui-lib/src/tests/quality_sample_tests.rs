@@ -455,7 +455,7 @@ fn stages_and_spinner_frames_do_not_move_the_layout() {
                 // The stage's line and the one two below it, which says what
                 // it reads, are the words that change.
                 if y != at.0 && y != at.0 + 2 && row != before {
-                    // The control bar's spinner turns in its one cell.
+                    // The footer's spinner turns in its one cell.
                     let moved = row
                         .chars()
                         .zip(before.chars())

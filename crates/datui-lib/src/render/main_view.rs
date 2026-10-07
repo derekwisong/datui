@@ -22,7 +22,7 @@ pub enum MainViewContent {
 
 impl MainViewContent {
     /// Which view is showing. The one place that decides, so the main area and the
-    /// control bar at the foot of it cannot disagree about what the user is looking at.
+    /// footer at the foot of it cannot disagree about what the user is looking at.
     ///
     /// Home first: it is where you are, not an overlay. Then a load in flight, which
     /// owns the screen until it has a dataset to hand over — every other view would be
@@ -327,7 +327,7 @@ pub fn enter_label(enter: crate::WhatEnter) -> &'static str {
     }
 }
 
-/// Control bar keys for the analysis screen, per view, tool and Data Quality
+/// Footer keys for the analysis screen, per view, tool and Data Quality
 /// page. This is the screen's one hint surface: the widgets draw no key rows
 /// of their own, and a detail view's bar describes the detail, not the view
 /// it came from.
@@ -775,14 +775,14 @@ fn setup_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
     keys
 }
 
-/// Control bar keys for the chart view: what works right now, most-needed
+/// Footer keys for the chart view: what works right now, most-needed
 /// first, since the bar is cut from the right.
 ///
 /// While the column Picker is open it owns the keys, so the bar says so; the
 /// rest of the time the bar leads with the direct chart-type switch and names
 /// what the focused row itself takes.
-/// Control bar keys for Value Counts: only those that act on what is on screen.
-/// Control bar keys for the hex view: its prompt's while one is open, Esc while a
+/// Footer keys for Value Counts: only those that act on what is on screen.
+/// Footer keys for the hex view: its prompt's while one is open, Esc while a
 /// find reads, and otherwise the view's own, most used first.
 fn hex_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
     use crate::hex_view::PromptKind;

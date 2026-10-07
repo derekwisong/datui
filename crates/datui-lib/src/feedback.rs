@@ -31,7 +31,7 @@ impl ErrorModal {
 }
 
 /// A completion flash (the Feedback rules' second rung): one plain sentence on
-/// the control bar, cleared by the next keypress or after two seconds,
+/// the footer, cleared by the next keypress or after two seconds,
 /// whichever comes first. Every screen's completions go here, the home screen's
 /// included. The home screen's own status line beside the filter is for what a
 /// key could not do and why, which has to survive until it is read.

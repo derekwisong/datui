@@ -1,4 +1,4 @@
-//! The chip row: keys and their labels, one renderer for the control bar and
+//! The chip row: keys and their labels, one renderer for the footer and
 //! every Surface footer.
 
 use ratatui::buffer::Buffer;
@@ -34,7 +34,7 @@ pub struct HintBar<'a> {
 }
 
 impl<'a> HintBar<'a> {
-    /// A bar with explicit styles, for the control bar's background-filled row.
+    /// A bar with explicit styles, for the footer's background-filled row.
     pub fn with_styles(key_style: Style, label_style: Style, accent_label_style: Style) -> Self {
         Self {
             hints: Vec::new(),

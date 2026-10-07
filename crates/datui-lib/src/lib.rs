@@ -621,7 +621,7 @@ pub type EventOutcome = Result<Option<AppEvent>, KeyEvent>;
 
 /// What <kbd>Enter</kbd> will do on the highlighted row.
 ///
-/// Written so the control bar and the details pane can say it before it happens.
+/// Written so the footer and the details pane can say it before it happens.
 /// Every directory has two doors and the labels no longer decide access, which is only
 /// worth anything if the screen says which key is which — a bar reading `Enter Open` on
 /// a row where `Enter` goes inside teaches the wrong thing on the first try, and the
@@ -850,7 +850,7 @@ enum Leaving {
     Home,
 }
 
-/// An export under way, for the control bar: the file, its phase, and the bytes
+/// An export under way, for the footer: the file, its phase, and the bytes
 /// written once writing has started.
 #[derive(Clone, Debug)]
 pub struct ExportProgress {
@@ -984,7 +984,7 @@ pub struct App {
     /// The count as it stood when this frame began, or `None` if no pass was running.
     ///
     /// Taken once because the pass is running on other threads while the frame is
-    /// drawn. The loading body and the control bar are painted a millisecond apart,
+    /// drawn. The loading body and the footer are painted a millisecond apart,
     /// and when each read the counter for itself they printed different numbers for
     /// one wait — and the bar could print a phase's flat percentage beside a count
     /// that had finished between the two reads.
@@ -1235,7 +1235,7 @@ pub struct App {
     cache_writes: CacheWrites,
     view_manager: Views,
     active_view_id: Option<String>, // ID of currently applied view
-    /// An export under way, which the control bar reports.
+    /// An export under way, which the footer reports.
     export_progress: Option<ExportProgress>,
     theme: Theme, // Color theme for UI rendering
     /// `a` is waiting on the confirmation to read every row.
@@ -1350,8 +1350,9 @@ pub struct App {
     /// status message while work is running. Cleared once the held keys have been
     /// replayed.
     input_dropped: bool,
-    throbber_frame: u8, // Spinner frame index (0..3) for control bar
-    /// Status text for the control bar, at the table view. Shown whether or not the app
+    /// The spinner's frame, counting up; each spinner takes it modulo its own frames.
+    throbber_frame: u8,
+    /// Status text for the footer, at the table view. Shown whether or not the app
     /// is busy: an End waiting on a remote row count parks without setting `busy`.
     status_message: Option<String>,
     analysis_computation: Option<AnalysisComputationState>,
@@ -2486,7 +2487,7 @@ impl App {
         true
     }
 
-    /// Show a completion flash on the control bar.
+    /// Show a completion flash on the footer.
     fn flash_note(&mut self, message: String) {
         self.flash = Some(Flash::new(message));
     }
@@ -2496,7 +2497,7 @@ impl App {
         self.flash = Some(Flash::path(prefix, path));
     }
 
-    /// The completion flash on the control bar, if one is showing.
+    /// The completion flash on the footer, if one is showing.
     pub fn flash_message(&self) -> Option<&str> {
         self.flash.as_ref().map(|f| f.message.as_str())
     }
@@ -2537,7 +2538,7 @@ impl App {
         true
     }
 
-    /// What the control bar says about the follow of the dataset on screen.
+    /// What the footer says about the follow of the dataset on screen.
     fn follow_mark(&self) -> Option<crate::render::footer::FollowMark> {
         use crate::follow::Standing;
         // The hex view shows a file's bytes, not the table the follow moves.
@@ -2671,7 +2672,7 @@ impl App {
         false
     }
 
-    /// Show the next Polars user warning on the control bar, once per session, when the
+    /// Show the next Polars user warning on the footer, once per session, when the
     /// bar is free. Returns true when the frame must redraw.
     pub fn flash_polars_warning(&mut self) -> bool {
         if !self.bar_is_free() {
@@ -3073,8 +3074,8 @@ impl App {
     /// Not the same question as whether a pass is running. The counter is shared with
     /// every open, and abandoning one does not stop it: without this, giving up on a
     /// large local directory and going back to the dataset you had would leave that
-    /// dataset's control bar counting footers belonging to the directory you left.
-    /// Whether the row count on the control bar is on its way, so a spinner stands in
+    /// dataset's footer counting footers belonging to the directory you left.
+    /// Whether the row count on the footer is on its way, so a spinner stands in
     /// for it. Asked by the bar, and by the run loop, which turns the spinner: the
     /// two disagreed while a dataset read its own footers, and the spinner sat still.
     pub fn row_count_pending(&self) -> bool {
@@ -3163,7 +3164,7 @@ impl App {
         self.loading.awaiting_dataset()
     }
 
-    /// What the loading screen and the control bar say about the open in flight: its
+    /// What the loading screen and the footer say about the open in flight: its
     /// phase, the flat percentage beside it, the path it names and that path's size.
     pub(crate) fn load_shown(&self) -> Option<(&str, u16, Option<&Path>, u64)> {
         self.loading.current().map(|load| {
@@ -3247,7 +3248,7 @@ impl App {
     }
 
     /// Put down what the app keeps for a load the loader has retired: its jobs, whose
-    /// answers are for a screen nobody is on, their lines on the control bar, and the
+    /// answers are for a screen nobody is on, their lines on the footer, and the
     /// question about its download.
     fn put_down_load(&mut self, retired: loading::Retired) {
         let id = retired.id;
@@ -3495,7 +3496,7 @@ impl App {
     /// for a literal, and without clearing a message that belongs to something else.
     const COUNTING_FOR_END: &'static str = "Counting rows to find the end...";
 
-    /// What the control bar says while a path is being looked at. Named so the answer can
+    /// What the footer says while a path is being looked at. Named so the answer can
     /// take down its own line without clearing one that belongs to something else.
     const LOOKING: &'static str = "Looking...";
 
@@ -10016,7 +10017,7 @@ impl App {
                 // A newer look replaces an older one.
                 self.jobs
                     .supersede(|job| matches!(job, Job::LookAtDirectory { .. }));
-                // The same words the loading screen shows, so the control bar and the
+                // The same words the loading screen shows, so the footer and the
                 // screen above it do not name the wait two different ways.
                 // Unleased. A lease exists to make a bump wait for an answer that
                 // would otherwise be stranded — and this answer is *meant* to be
@@ -10093,7 +10094,7 @@ impl App {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| looking.display().to_string());
-                // The home screen's own line, because the control bar's is the table's.
+                // The home screen's own line, because the footer's is the table's.
                 self.home.status = Some(format!("Looking at {name}..."));
                 self.spawn_job(look, Some(Self::LOOKING), move |_| {
                     // Every one of these can sit forever on a share that has gone away,
@@ -10817,7 +10818,7 @@ impl App {
         pivot || rows
     }
 
-    /// What the control bar says while a query's first rows are read over the frame on
+    /// What the footer says while a query's first rows are read over the frame on
     /// screen, from the read's job record. The rows drawn meanwhile are the view it
     /// replaces, under columns it may have changed.
     pub(crate) fn query_reading(&self) -> Option<&str> {
@@ -10850,7 +10851,7 @@ impl App {
     /// next holds them before anything else can look.
     ///
     /// What the job held is put down here, for every job alike: a job the user waited
-    /// on gives the keys back, and its line on the control bar goes with it, unless the
+    /// on gives the keys back, and its line on the footer goes with it, unless the
     /// answer goes on to a continuation, which keeps the wait up across the gap.
     fn job_ended(&mut self, ticket: Ticket) -> Option<AppEvent> {
         let jobs::Ended {
@@ -13246,7 +13247,7 @@ impl App {
             menu.render(main_area, buf, &ctx);
         }
 
-        // Status messages are shown inline in the control bar (no overlay popups).
+        // Status messages are shown inline in the footer (no overlay popups).
 
         if self.confirmation_modal.active {
             crate::render::overlays::render_confirmation_modal(

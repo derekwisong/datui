@@ -371,7 +371,7 @@ fn the_join_does_not_keep_a_width_measured_on_the_frame_it_replaced() {
 /// A dataset stops saying a count is coming once one has arrived.
 ///
 /// While a pass is reading its footers the dataset declines to count itself, because
-/// that pass is bringing the count — and the control bar shows a spinner in place of
+/// that pass is bringing the count — and the footer shows a spinner in place of
 /// a number it would otherwise print as fact. When the pass lands on a view built on
 /// the scan the columns have to wait, but the row groups describe the same files the
 /// frame is already reading, so the number need not: without this the user watches

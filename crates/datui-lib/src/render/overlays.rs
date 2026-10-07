@@ -30,7 +30,7 @@ fn message_popup(area: Rect, message: &str, extra_rows: u16, max_width: u16) -> 
     crate::render::layout::centered_rect(area, width, height)
 }
 
-/// The confirmation modal's keys: its footer, and the control bar while it is up.
+/// The confirmation modal's keys: its footer, and the footer while it is up.
 pub fn confirmation_keys() -> Vec<(&'static str, &'static str)> {
     vec![
         ("Enter", "Confirm"),

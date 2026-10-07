@@ -238,7 +238,7 @@ impl DataTableState {
         self.len_generation
     }
 
-    /// Returns the cached row count when valid (same value shown in the control bar). Use this to
+    /// Returns the cached row count when valid (same value shown in the footer). Use this to
     /// avoid an extra full scan for analysis/describe when the table has already been collected.
     pub fn num_rows_if_valid(&self) -> Option<usize> {
         if self.num_rows_valid {
@@ -279,7 +279,7 @@ impl DataTableState {
         }
     }
 
-    /// Keep the pristine frame's count for the control bar's "417 of 1,000". Only a
+    /// Keep the pristine frame's count for the footer's "417 of 1,000". Only a
     /// count already resolved for the data as loaded — never a reason to run one.
     pub(super) fn remember_pristine_count(&mut self) {
         if self.num_rows_valid && self.error.is_none() && self.is_pristine() {
@@ -287,7 +287,7 @@ impl DataTableState {
         }
     }
 
-    /// The dataset's full row count for the control bar, when the rows on screen are a
+    /// The dataset's full row count for the footer, when the rows on screen are a
     /// subset of it: a sidebar filter, a query in any bar or a drill-down is active and
     /// the count from before it was applied is known. A pivot or melt makes rows that
     /// are not the dataset's, so the comparison would mislead and none is offered.
@@ -904,7 +904,7 @@ impl DataTableState {
 
     /// The lake format whose plain files this dataset is, if it is one.
     ///
-    /// For the chip in the control bar. The note says the same at length; this is what
+    /// For the chip in the footer. The note says the same at length; this is what
     /// keeps the row count from reading as the table's.
     pub fn not_the_table(&self) -> Option<&'static str> {
         self.not_the_table

@@ -22,7 +22,7 @@
 //!   [`Jobs::supersede`] cancels others. A superseded job stops holding the
 //!   generation at once; its worker runs on, and its outcome still arrives, stale, so
 //!   whatever it carries is dropped then.
-//! - **Keys.** A job the user waits on holds the keys, with the line the control bar
+//! - **Keys.** A job the user waits on holds the keys, with the line the footer
 //!   says meanwhile, until it ends or is superseded; [`Jobs::quiet`] lets them go and
 //!   [`Jobs::wait_on`] takes them for a job already running. A page asked for while
 //!   the generation is held is owed ([`Jobs::owe`]): it holds the keys, and no
@@ -512,7 +512,7 @@ pub(crate) struct Ended {
     pub(crate) job: Job,
     /// Not superseded: the answer is the one the app is waiting for.
     pub(crate) current: bool,
-    /// What the control bar said while the user waited on it, if they did and still
+    /// What the footer said while the user waited on it, if they did and still
     /// do.
     pub(crate) keys: Option<String>,
     pub(crate) outcome: Outcome,
@@ -535,7 +535,7 @@ struct Record {
     /// Where its worker puts the outcome. `None` for a job that is owed: asked for,
     /// with no worker yet.
     slot: Option<Slot>,
-    /// What the control bar says while the user waits on it. Set, keys wait for it.
+    /// What the footer says while the user waits on it. Set, keys wait for it.
     keys: Option<String>,
     /// When it was superseded. Its answer is stale, and it holds neither the
     /// generation nor the keys.
@@ -783,7 +783,7 @@ impl Jobs {
     }
 
     /// Record `job` as started on the current generation. With `keys`, the user waits
-    /// on it: keys are held until it ends or is superseded, and the control bar says
+    /// on it: keys are held until it ends or is superseded, and the footer says
     /// `keys` meanwhile. The caller runs it, or, in a test, ends it.
     pub(crate) fn start(&mut self, job: Job, keys: Option<&str>) -> Started {
         let ticket = self.ticket(&job);
@@ -917,7 +917,7 @@ impl Jobs {
             .max_by_key(|(since, _)| *since)
     }
 
-    /// Whether a job still holding the keys shows `status` on the control bar.
+    /// Whether a job still holding the keys shows `status` on the footer.
     pub(crate) fn shows(&self, status: &str) -> bool {
         self.records
             .iter()
@@ -965,7 +965,7 @@ impl Jobs {
             .is_some_and(|r| r.keys.is_some())
     }
 
-    /// What the control bar says for the newest job `which` picks that the user waits
+    /// What the footer says for the newest job `which` picks that the user waits
     /// on, running or owed.
     pub(crate) fn waiting_status(&self, which: impl Fn(&Job) -> bool) -> Option<&str> {
         self.records
@@ -976,7 +976,7 @@ impl Jobs {
     }
 
     /// The user waits on the running job `which` picks from now on, with `status` on
-    /// the control bar: a load-ahead a scroll has caught up with. Whether there was
+    /// the footer: a load-ahead a scroll has caught up with. Whether there was
     /// one.
     pub(crate) fn wait_on(&mut self, which: impl Fn(&Job) -> bool, status: &str) -> bool {
         let Some(record) = self

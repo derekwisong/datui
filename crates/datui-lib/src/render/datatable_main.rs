@@ -127,7 +127,7 @@ pub fn render(
             StatefulWidget::render(dt, table_area, buf, state);
             if let Some(status) = &query_reading {
                 // Drawn still, so the table keeps its size: the rows are the view the
-                // query replaces, under columns it may have changed. The control bar's
+                // query replaces, under columns it may have changed. The footer's
                 // words, so the two say one thing.
                 Working {
                     text: status,

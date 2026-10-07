@@ -464,7 +464,7 @@ impl App {
     }
 
     /// The Setup setting the Data Quality page on screen lacks before it can show
-    /// anything; Enter opens it, and the control bar says so.
+    /// anything; Enter opens it, and the footer says so.
     pub(crate) fn quality_page_setup(&self) -> Option<data_quality::QualitySetup> {
         let modal = &self.analysis_modal;
         data_quality::page_setup(

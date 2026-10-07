@@ -279,7 +279,7 @@ impl<'a> AnalysisWidget<'a> {
                 ])
                 .split(area);
 
-            // The breadcrumb carries the name alone; the control bar says Esc.
+            // The breadcrumb carries the name alone; the footer says Esc.
             let title_text = format!("Distribution Analysis: {}", dist.column_name);
             let header_row_style = header_style(self.theme, "controls_bg", "table_header");
             Paragraph::new(title_text)
@@ -450,7 +450,7 @@ impl<'a> AnalysisWidget<'a> {
             .constraints([Constraint::Length(1), Constraint::Fill(1)])
             .split(area);
 
-        // The breadcrumb carries the pair alone; the control bar says Esc.
+        // The breadcrumb carries the pair alone; the footer says Esc.
         let title_text = format!(
             "Correlation: {} vs {}",
             matrix.columns[row], matrix.columns[col]

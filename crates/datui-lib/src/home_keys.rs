@@ -187,7 +187,7 @@ impl App {
                 // anywhere does.
                 Some(directory) => {
                     // The heading Enter leaves, for the same reason: this is the door
-                    // the control bar advertises on a lake row, and arriving inside one
+                    // the footer advertises on a lake row, and arriving inside one
                     // with no explanation is the silent wrong answer #237 is about.
                     if let Some(format) = self
                         .home

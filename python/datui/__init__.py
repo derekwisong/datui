@@ -50,7 +50,8 @@ def _to_path_strings(data: str | Path | list[PathLike] | tuple[PathLike, ...]) -
 
 
 # The Python polars release paired with the Rust polars this wheel embeds. Plans it writes
-# are the ones the wheel is tested against; move it with the Rust polars bump.
+# are the ones the wheel is tested against; other releases may write or read plans that
+# differ (2.0 cannot read 0.55's). Move it with the Rust polars bump.
 PAIRED_POLARS = "1.43"
 
 # Where the DSL schema hash sits in a versioned plan: after the DSL_VERSION magic bytes
@@ -75,26 +76,41 @@ def _splice_own_dsl_hash(payload: bytes) -> bytes:
     return payload[:_DSL_HASH_OFFSET] + own[_DSL_HASH_OFFSET:end] + payload[end:]
 
 
-def _deserialize_captured(payload: bytes) -> pl.LazyFrame:
-    """Turn the captured plan bytes handed back by the TUI into a LazyFrame."""
+def _captured_frame(captured) -> pl.LazyFrame:
+    """Turn the view the TUI captured into a LazyFrame.
+
+    `captured` has `plan()`, the view's plan bytes, and `__arrow_c_stream__`, its rows.
+    The plan is read when this polars can; a polars whose plans differ from the
+    paired release's (2.0 does) gets the rows instead, collected now, with a warning.
+    """
+    payload = captured.plan()
     try:
         return pl.LazyFrame.deserialize(io.BytesIO(_splice_own_dsl_hash(payload)))
     except Exception as e:
-        version = getattr(pl, "__version__", "unknown")
+        unreadable = e
+    version = getattr(pl, "__version__", "unknown")
+    warnings.warn(
+        f"polars {version} cannot read datui's plan (datui writes plans for polars "
+        f"{PAIRED_POLARS}); the captured view is its rows, collected now, not a plan.",
+        UserWarning,
+        stacklevel=3,
+    )
+    try:
+        return pl.DataFrame(captured).lazy()
+    except Exception as e:
         raise RuntimeError(
-            f"polars {version} cannot read the view datui returned; this datui writes "
-            f"plans for polars {PAIRED_POLARS}. Install polars {PAIRED_POLARS}, or "
-            "export from inside datui (press e) instead."
-        ) from e
+            f"polars {version} cannot read the view datui returned, as a plan or as rows: {e}. "
+            "Export from inside datui (press e) instead."
+        ) from unreadable
 
 
 def _view_frame(
     lf: pl.LazyFrame, *, options: DatuiOptions | None, capture: bool = False
-) -> bytes | None:
+) -> object | None:
     """Serialize the LazyFrame plan and launch the TUI.
 
-    Returns the captured view's plan bytes when capture is requested and a dataset
-    was open at quit, else None.
+    Returns the captured view when capture is requested and a dataset was open at
+    quit, else None.
 
     The binary plan is tried first; the deprecated JSON plan only if binary is refused.
     Only a refused plan (ValueError) moves on: a RuntimeError is the TUI itself failing
@@ -125,8 +141,8 @@ def _view_frame(
     version = getattr(pl, "__version__", "unknown")
     raise ValueError(
         f"datui cannot read this LazyFrame: it was serialized by polars {version}, and this "
-        f"datui is built for polars {PAIRED_POLARS}. Install polars {PAIRED_POLARS}, or pass "
-        "a file path to datui.view() instead."
+        f"datui is built for polars {PAIRED_POLARS}. Pass the collected frame "
+        f"(datui.view(lf.collect())) or a file path instead, or install polars {PAIRED_POLARS}."
     ) from binary_error
 
 
@@ -153,9 +169,12 @@ def view(
     a plan, not a snapshot: collecting it executes the plan again, so file-backed
     sources are reread and must remain available, and a plan over an in-memory
     frame can carry (and copy) the frame's data even when the final result would be
-    small. Views over files datui downloaded or decompressed into temporary files
-    are refused (RuntimeError); export from inside datui (press e) instead — that
-    also remains the way to write rows out without capture.
+    small. A polars that cannot read the plans this datui writes (PAIRED_POLARS is
+    the release it pairs with; 2.0 differs) gets the view's rows instead, collected
+    at quit, with a UserWarning; that holds every row of the view in memory. Views
+    over files datui downloaded or decompressed into temporary files are refused
+    (RuntimeError); export from inside datui (press e) instead — that also remains
+    the way to write rows out without capture.
 
     Options are datui.OPTION_NAMES: the open's own (format, table, delimiter,
     no_header, header_rows, skip_rows, ...) and config keys' (comment, null_values,
@@ -193,8 +212,13 @@ def view(
                 "If you switched Python/ABI: remove that file so the venv install is used, "
                 "or run: cd python && maturin develop"
             )
-        payload = datui._datui.view_paths(_to_path_strings(data), options=opts, capture=capture)
-        return _deserialize_captured(payload) if payload is not None else None
+        captured = datui._datui.view_paths(_to_path_strings(data), options=opts, capture=capture)
+        return _captured_frame(captured) if captured is not None else None
+
+    # A DataFrame crosses over the Arrow C stream, which no polars release changes.
+    if isinstance(data, pl.DataFrame):
+        captured = datui._datui.view_from_arrow(data, options=opts, capture=capture)
+        return _captured_frame(captured) if captured is not None else None
 
     if hasattr(data, "lazy") and callable(getattr(data, "lazy", None)):
         lf = data.lazy()
@@ -207,7 +231,7 @@ def view(
         )
 
     try:
-        payload = _view_frame(lf, options=opts, capture=capture)
+        captured = _view_frame(lf, options=opts, capture=capture)
     except AttributeError as e:
         raise TypeError("data must be a LazyFrame or DataFrame") from e
-    return _deserialize_captured(payload) if payload is not None else None
+    return _captured_frame(captured) if captured is not None else None

@@ -203,28 +203,73 @@ def test_splice_own_dsl_hash_is_identity_on_own_plans():
     assert datui._splice_own_dsl_hash(payload) == payload
 
 
-def test_deserialize_captured_reads_a_plan():
-    """The captured-plan decoder returns a working LazyFrame."""
+class _FakeCaptured:
+    """Stands in for the extension's Captured: a plan, and rows over the Arrow C stream."""
+
+    def __init__(self, plan, frame):
+        self._plan = plan
+        self._frame = frame
+
+    def plan(self):
+        return self._plan
+
+    def __arrow_c_stream__(self, requested_schema=None):
+        if self._frame is None:
+            raise RuntimeError("no rows")
+        return self._frame.__arrow_c_stream__(requested_schema)
+
+
+def test_captured_frame_reads_a_plan():
+    """A plan this polars reads comes back as that plan, with no warning."""
+    import warnings
+
     import datui
 
     payload = polars.DataFrame({"a": [1, 2]}).lazy().serialize()
     if not isinstance(payload, bytes):
         pytest.skip("binary serialization unavailable")
-    lf = datui._deserialize_captured(payload)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        lf = datui._captured_frame(_FakeCaptured(payload, None))
     assert lf.collect().to_dict(as_series=False) == {"a": [1, 2]}
 
 
-def test_deserialize_captured_wraps_garbage_in_a_clear_error():
-    """Bytes polars cannot read raise RuntimeError naming the paired polars, never ValueError."""
+def test_captured_frame_falls_back_to_rows():
+    """A plan this polars cannot read gives the rows instead, with a warning naming the
+    paired polars."""
     import datui
 
-    with pytest.raises(RuntimeError, match=f"polars {datui.PAIRED_POLARS}"):
-        datui._deserialize_captured(b"not a plan at all")
+    rows = polars.DataFrame({"a": [1, 2], "b": ["x", None]})
+    with pytest.warns(UserWarning, match=f"plans for polars {datui.PAIRED_POLARS}"):
+        lf = datui._captured_frame(_FakeCaptured(b"not a plan at all", rows))
+    assert lf.collect().equals(rows)
+
+
+def test_captured_frame_without_plan_or_rows_is_a_runtime_error():
+    """Neither a plan nor rows: RuntimeError, never ValueError."""
+    import datui
+
+    with pytest.warns(UserWarning), pytest.raises(RuntimeError, match="as a plan or as rows"):
+        datui._captured_frame(_FakeCaptured(b"not a plan at all", None))
+
+
+def test_view_from_arrow_refuses_a_stream_that_is_not_a_table():
+    """A frame crosses over the Arrow C stream; one that is not a table is a ValueError
+    before any TUI starts."""
+    import datui._datui
+
+    with pytest.raises(ValueError, match="not a table"):
+        datui._datui.view_from_arrow(polars.Series("a", [1, 2]))
+
+
+def _polars_major():
+    return int(polars.__version__.split(".")[0])
 
 
 def _capture_through_the_tui(tmp_path, frame_code, env=None):
     """Run `datui.view(<frame_code>, capture=True)` in a child on a pty, press q once
-    the table is drawn, and return the captured rows (None when nothing came back)."""
+    the table is drawn, and return what came back: `rows` (None when nothing did),
+    `same` (it equals the frame, dtypes included) and `warned` (it came back as rows)."""
     import fcntl
     import json
     import os
@@ -237,13 +282,21 @@ def _capture_through_the_tui(tmp_path, frame_code, env=None):
 
     out = tmp_path / "result.json"
     script = (
-        "import json\n"
+        "import datetime, decimal, json, warnings\n"
         "import polars as pl\n"
         "import datui\n"
-        f"res = datui.view({frame_code}, capture=True)\n"
-        "rows = None if res is None else res.collect().to_dicts()\n"
+        f"frame = {frame_code}\n"
+        "with warnings.catch_warnings(record=True) as caught:\n"
+        "    warnings.simplefilter('always')\n"
+        "    res = datui.view(frame, capture=True)\n"
+        "got = None if res is None else res.collect()\n"
+        "result = {\n"
+        "    'rows': None if got is None else got.to_dicts(),\n"
+        "    'same': got is not None and got.equals(frame.lazy().collect()),\n"
+        "    'warned': any('cannot read datui' in str(w.message) for w in caught),\n"
+        "}\n"
         f"with open({str(out)!r}, 'w') as f:\n"
-        "    json.dump(rows, f)\n"
+        "    json.dump(result, f, default=str)\n"
     )
     master, slave = pty.openpty()
     # A fresh pty is 0x0; give the TUI a real screen to draw on.
@@ -312,10 +365,12 @@ def _capture_through_the_tui(tmp_path, frame_code, env=None):
 def test_capture_round_trip_through_the_tui(tmp_path):
     """view(lf, capture=True) hands the frame back after a plain q, and it collects
     after the TUI (and its temp state) is gone — the in-memory round trip."""
-    rows = _capture_through_the_tui(
+    got = _capture_through_the_tui(
         tmp_path, 'pl.DataFrame({"a": [1, 2, 3], "b": ["x", "y", "z"]}).lazy()'
     )
-    assert rows == [
+    # Polars 2 cannot read the plans the embedded Rust polars writes, so it gets rows.
+    assert got["warned"] == (_polars_major() >= 2)
+    assert got["rows"] == [
         {"a": 1, "b": "x"},
         {"a": 2, "b": "y"},
         {"a": 3, "b": "z"},
@@ -348,16 +403,50 @@ def test_a_saved_view_applies_to_a_frame_by_its_columns(tmp_path):
         },
     }
     (config / "views" / "view_0000000000000680.json").write_text(json.dumps(view))
-    rows = _capture_through_the_tui(
+    got = _capture_through_the_tui(
         tmp_path,
         'pl.DataFrame({"a": [1, 3, 2], "b": ["x", "z", "y"]}).lazy()',
         env={"DATUI_CONFIG_DIR": str(config), "DATUI_CACHE_DIR": str(tmp_path / "cache")},
     )
-    assert rows == [
+    assert got["rows"] == [
         {"a": 3, "b": "z"},
         {"a": 2, "b": "y"},
         {"a": 1, "b": "x"},
     ]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="pty is not available on Windows")
+def test_a_dataframe_round_trips_over_arrow_with_its_dtypes(tmp_path):
+    """A DataFrame goes in over the Arrow C stream and comes back equal, dtypes
+    included, whichever way the capture returns it."""
+    frame = (
+        "pl.DataFrame({"
+        "'i': [1, None, 3],"
+        "'f': [1.5, None, -2.0],"
+        "'s': ['x', None, 'z'],"
+        "'t': [True, False, None],"
+        "'d': [datetime.date(2026, 10, 7), None, datetime.date(1970, 1, 1)],"
+        "'ts': pl.Series([datetime.datetime(2026, 10, 7, 12), None, datetime.datetime(2000, 1, 1)])"
+        ".dt.replace_time_zone('America/New_York'),"
+        "'dur': [datetime.timedelta(seconds=5), None, datetime.timedelta(days=1)],"
+        "'cat': pl.Series(['a', 'b', None], dtype=pl.Categorical),"
+        "'enum': pl.Series(['lo', 'hi', 'lo'], dtype=pl.Enum(['lo', 'hi'])),"
+        "'dec': pl.Series([decimal.Decimal('1.25'), None, decimal.Decimal('-3.50')], dtype=pl.Decimal(10, 2)),"
+        "'list': [[1, 2], None, []],"
+        "'struct': [{'k': 1}, {'k': None}, None],"
+        "'bin': [b'a', None, b'c'],"
+        "})"
+    )
+    got = _capture_through_the_tui(tmp_path, frame)
+    assert got["warned"] == (_polars_major() >= 2)
+    assert got["same"], got["rows"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="pty is not available on Windows")
+def test_an_empty_dataframe_round_trips(tmp_path):
+    """No rows still crosses over Arrow with its columns."""
+    got = _capture_through_the_tui(tmp_path, "pl.DataFrame({'a': [], 'b': []}, schema={'a': pl.Int64, 'b': pl.String})")
+    assert got["rows"] == []
 
 
 def test_python_api_reference_lists_every_option():

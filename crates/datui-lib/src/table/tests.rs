@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(feature = "sql")]
+use crate::sql_plan::asks_per_row;
 
 thread_local! {
     /// Calls of `compact_rows` on this thread: a test's own thread is the UI thread.

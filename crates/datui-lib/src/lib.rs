@@ -192,6 +192,8 @@ pub mod sqlite;
 // statement the prompt runs.
 #[cfg(feature = "sql")]
 pub mod sql_group;
+#[cfg(feature = "sql")]
+mod sql_plan;
 pub mod startup;
 pub mod statistics;
 pub mod stdin;

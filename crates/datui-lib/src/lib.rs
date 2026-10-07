@@ -4791,7 +4791,17 @@ impl App {
                 self.display.background_query |= self.app_config.theme.follow;
                 None
             }
-            _ => None,
+            // Taken before they reach here: a press becomes a key in `handle_event`;
+            // the terminal, a wake, an exit, a crash and a missing named path in the event
+            // pump; the settings in `run`. An update asks for a frame and nothing else.
+            AppEvent::Press(_)
+            | AppEvent::Terminal(_)
+            | AppEvent::Wake
+            | AppEvent::SettingsRead(_)
+            | AppEvent::NamedPathMissing(_)
+            | AppEvent::Exit
+            | AppEvent::Crash(_)
+            | AppEvent::Update => None,
         }
     }
 

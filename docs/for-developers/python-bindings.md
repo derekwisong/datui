@@ -10,20 +10,24 @@ not a member of the Cargo workspace. For the installed package, see
 ## Set up
 
 ```bash,repo
-python -m venv .venv
-.venv/bin/pip install maturin "polars==1.43.*" "pytest>=7.0"
+./scripts/dev/test.sh setup --wheel
 ```
 
-It also needs Rust and the Python headers (`python3-dev` on Debian and Ubuntu).
-The [setup script](contributing.md) installs these into `.venv` too.
+It installs maturin, pytest and the pinned Polars into `.venv`. The build also
+needs Rust and the Python headers (`python3-dev` on Debian and Ubuntu).
 
 <a id="building-locally"></a>
 <a id="testing"></a>
 
 ## Build and test
 
-The `datui` command the wheel installs runs a bundled binary, found beside the
-package rather than on `PATH`. Build it, copy it in, then build the extension:
+```bash,repo
+./scripts/dev/test.sh python
+```
+
+That is what CI's Python job runs. The `datui` command the wheel installs runs a
+bundled binary, found beside the package rather than on `PATH`, so by hand:
+build it, copy it in, then build the extension:
 
 ```bash,repo
 cargo build
@@ -71,9 +75,12 @@ fields, so it cannot read the plans 0.55 writes.
 
 A capture comes back as a `Captured`: `plan()` gives the plan bytes, and
 `__arrow_c_stream__` collects the view and streams its rows. The wrapper reads
-the plan, and takes the rows with a `UserWarning` when its Polars cannot. CI
-runs the Python tests against the pinned 1.43 and again against 2.x, where
-captures come back as rows.
+the plan, and takes the rows with a `UserWarning` when its Polars cannot, when
+`plan()` fails (an anonymous scan or opaque function has no plan form), or
+without asking for the plan when its Polars is another major release. On the
+paired release an unreadable plan raises instead: it is a bug. CI runs the
+Python tests against the pinned 1.43, the 1.38 floor and 2.x, where captures
+come back as rows, and the docs' Python examples against 2.x too.
 
 When the Rust Polars moves, change these together:
 

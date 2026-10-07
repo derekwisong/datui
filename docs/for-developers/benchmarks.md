@@ -6,12 +6,12 @@
 [Performance](../reference/performance.md) reports them.
 
 ```bash,repo
-./scripts/dev/setup-test-data.sh
+./scripts/dev/test.sh setup
 cargo build --release --locked -p datui
 .venv/bin/python scripts/bench/startup.py table --datui target/release/datui --data ~/tmp/datui-bench --remote --compare
 ```
 
-`setup-test-data.sh` makes the `.venv` with Polars and NumPy, once.
+`setup` makes the `.venv` with Polars and NumPy, once.
 
 | Option | Default | Effect |
 |---|---|---|

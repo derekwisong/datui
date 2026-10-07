@@ -1409,31 +1409,41 @@ fn await_scan_outcome(rx: &mpsc::Receiver<AppEvent>) -> AppEvent {
         .expect("background scan should report an outcome")
 }
 
+/// An object store URL is scanned on a worker, and a failure names the store.
 #[test]
-fn test_open_s3_url_returns_crash_or_loads() {
-    let (tx, rx) = mpsc::channel();
-    let mut app = App::new(tx, common::test_runtime());
-    let path = PathBuf::from("s3://my-bucket/path/to/file.parquet");
-    // The scan is spawned, so this returns nothing; the outcome comes over the channel.
-    assert!(
-        app.event(AppEvent::Open(vec![path], OpenOptions::default()))
-            .is_none(),
-        "scan should be spawned, not run inline"
-    );
-
-    let ended = await_scan_outcome(&rx);
-    assert!(
-        matches!(ended, AppEvent::JobEnded(t) if t.kind() == JobKind::Load),
-        "expected a scan outcome for an S3 URL"
-    );
-    // With cloud feature and valid credentials/bucket, the scan can succeed.
-    let _ = app.event(ended);
-    if let Some(message) = app.error_message() {
-        // Either way, the error names the s3:// URL.
+fn test_open_object_store_urls_scan_on_a_worker_and_name_the_store() {
+    for (url, names) in [
+        ("s3://my-bucket/path/to/file.parquet", &["s3"][..]),
+        (
+            "gs://my-bucket/path/file.parquet",
+            &["gcs", "gs://", "not enabled"][..],
+        ),
+    ] {
+        let (tx, rx) = mpsc::channel();
+        let mut app = App::new(tx, common::test_runtime());
+        // The scan is spawned, so this returns nothing; the outcome comes over the channel.
         assert!(
-            message.to_lowercase().contains("s3"),
-            "error should mention S3: {message}"
+            app.event(AppEvent::Open(
+                vec![PathBuf::from(url)],
+                OpenOptions::default()
+            ))
+            .is_none(),
+            "{url}: scan should be spawned, not run inline"
         );
+        let ended = await_scan_outcome(&rx);
+        assert!(
+            matches!(ended, AppEvent::JobEnded(t) if t.kind() == JobKind::Load),
+            "{url}: expected a scan outcome"
+        );
+        // With the feature and real credentials the scan can succeed.
+        let _ = app.event(ended);
+        if let Some(message) = app.error_message() {
+            let lower = message.to_lowercase();
+            assert!(
+                names.iter().any(|name| lower.contains(name)),
+                "{url}: the error names the store: {message}"
+            );
+        }
     }
 }
 
@@ -1480,31 +1490,6 @@ fn test_multiple_remote_paths_returns_error() {
             m
         ),
         _ => panic!("expected Crash when opening multiple HTTP URLs"),
-    }
-}
-
-#[test]
-fn test_open_gs_url_returns_friendly_error_or_attempts_load() {
-    let (tx, rx) = mpsc::channel();
-    let mut app = App::new(tx, common::test_runtime());
-    let path = PathBuf::from("gs://my-bucket/path/file.parquet");
-    assert!(
-        app.event(AppEvent::Open(vec![path], OpenOptions::default()))
-            .is_none(),
-        "scan should be spawned, not run inline"
-    );
-
-    let ended = await_scan_outcome(&rx);
-    assert!(
-        matches!(ended, AppEvent::JobEnded(t) if t.kind() == JobKind::Load),
-        "expected a scan outcome for a gs:// URL"
-    );
-    let _ = app.event(ended);
-    if let Some(message) = app.error_message() {
-        assert!(
-            message.contains("GCS") || message.contains("gs://") || message.contains("not enabled"),
-            "error should mention GCS or gs:// or not enabled: {message}"
-        );
     }
 }
 
@@ -7114,57 +7099,41 @@ fn test_a_filter_leaves_out_the_rows_its_column_is_not_read_from() {
 /// from the file's own path.
 #[test]
 fn test_a_column_that_starts_partway_through_says_where_it_starts() {
-    let dir = tempfile::tempdir().unwrap();
-    write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
-    write_parquet(
-        dir.path(),
-        "date=2024-01-02",
-        df!("id" => &[2i64], "fee" => &[10i64]).unwrap(),
-    );
-    write_parquet(
-        dir.path(),
-        "date=2024-01-03",
-        df!("id" => &[3i64], "fee" => &[30i64]).unwrap(),
-    );
-
-    let app = open_local_dataset(dir.path());
-    let state = app.data_table_state.as_ref().unwrap();
-    let notes = state.notes();
-    let about_fee = notes
-        .iter()
-        .find(|note| note.summary.starts_with("fee is in"))
-        .unwrap_or_else(|| panic!("no note about `fee`: {notes:#?}"));
-    assert_eq!(
-        about_fee.summary,
-        "fee is in 2 of 3 files, none before date=2024-01-02; absent from the rest, \
-         not null"
-    );
-}
-
-/// And a column that belongs to one partition is named by that partition.
-#[test]
-fn test_a_column_only_one_partition_has_says_which() {
-    let dir = tempfile::tempdir().unwrap();
-    write_parquet(dir.path(), "date=2024-03-01", df!("id" => &[1i64]).unwrap());
-    write_parquet(
-        dir.path(),
-        "date=2024-03-02",
-        df!("id" => &[2i64], "oops" => &["x"]).unwrap(),
-    );
-    write_parquet(dir.path(), "date=2024-03-03", df!("id" => &[3i64]).unwrap());
-
-    let app = open_local_dataset(dir.path());
-    let state = app.data_table_state.as_ref().unwrap();
-    let notes = state.notes();
-    let about_oops = notes
-        .iter()
-        .find(|note| note.summary.starts_with("oops is in"))
-        .unwrap_or_else(|| panic!("no note about `oops`: {notes:#?}"));
-    assert_eq!(
-        about_oops.summary,
-        "oops is in 1 of 3 files, only date=2024-03-02; absent from the rest, \
-         not null"
-    );
+    // And a column that belongs to one partition is named by that partition.
+    for (dates, column, files, expected) in [
+        (
+            ["2024-01-01", "2024-01-02", "2024-01-03"],
+            "fee",
+            [false, true, true],
+            "fee is in 2 of 3 files, none before date=2024-01-02; absent from the rest, \
+             not null",
+        ),
+        (
+            ["2024-03-01", "2024-03-02", "2024-03-03"],
+            "oops",
+            [false, true, false],
+            "oops is in 1 of 3 files, only date=2024-03-02; absent from the rest, not null",
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        for (i, (date, has)) in dates.iter().zip(files).enumerate() {
+            let id = i as i64 + 1;
+            let df = if has {
+                df!("id" => &[id], column => &[id * 10]).unwrap()
+            } else {
+                df!("id" => &[id]).unwrap()
+            };
+            write_parquet(dir.path(), &format!("date={date}"), df);
+        }
+        let app = open_local_dataset(dir.path());
+        let state = app.data_table_state.as_ref().unwrap();
+        let notes = state.notes();
+        let about = notes
+            .iter()
+            .find(|note| note.summary.starts_with(&format!("{column} is in")))
+            .unwrap_or_else(|| panic!("no note about `{column}`: {notes:#?}"));
+        assert_eq!(about.summary, expected);
+    }
 }
 
 /// Files in the directory that are not Parquet are counted, so a silent drop is not one.

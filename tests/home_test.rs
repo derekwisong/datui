@@ -132,27 +132,26 @@ fn test_recognises_data_extensions() {
             "{name} should be data"
         );
     }
-    for name in ["readme.md", "script.py", "noext", "a.tar", ".hidden"] {
+    // A compression suffix must not hide the format under it.
+    for name in ["sales.csv.gz", "sales.json.zst", "compounds.sdf.gz"] {
+        assert!(
+            discover::is_data_file(std::path::Path::new(name)),
+            "{name} should be data"
+        );
+    }
+    for name in [
+        "readme.md",
+        "script.py",
+        "noext",
+        "a.tar",
+        ".hidden",
+        "backup.tar.gz",
+    ] {
         assert!(
             !discover::is_data_file(std::path::Path::new(name)),
             "{name} should not be data"
         );
     }
-}
-
-#[test]
-fn test_recognises_compressed_data() {
-    // `sales.csv.gz` is still a CSV; the compression suffix must not hide it.
-    assert!(discover::is_data_file(std::path::Path::new("sales.csv.gz")));
-    assert!(discover::is_data_file(std::path::Path::new(
-        "sales.json.zst"
-    )));
-    assert!(discover::is_data_file(std::path::Path::new(
-        "compounds.sdf.gz"
-    )));
-    assert!(!discover::is_data_file(std::path::Path::new(
-        "backup.tar.gz"
-    )));
 }
 
 // ---------------------------------------------------------------------------
@@ -180,80 +179,45 @@ fn test_hive_directory_is_one_dataset() {
     assert_eq!(datui::home::look_into(&entries[0]).kind, EntryKind::Hive);
 }
 
+/// Files of one format make a dataset; two formats, or a few data files among many
+/// others, or a single file, make a directory to walk into.
 #[test]
-fn test_homogeneous_directory_is_a_multi_file_dataset() {
+fn test_what_makes_a_directory_one_dataset() {
+    let cases: [(&str, &[&str], EntryKind); 6] = [
+        (
+            "exports",
+            &["jan.parquet", "feb.parquet"],
+            EntryKind::MultiFile,
+        ),
+        // A directory holding a CSV and a spreadsheet is a directory, not a table.
+        ("stuff", &["a.csv", "b.parquet"], EntryKind::Directory),
+        // Compression is not a format: `Path::extension` answers `gz` for both, and
+        // comparing extensions offered a directory of two formats as one table.
+        ("mixed", &["a.csv.gz", "b.json.gz"], EntryKind::Directory),
+        // Agreeing under compression still agrees.
+        ("same", &["a.csv.gz", "b.csv.gz"], EntryKind::MultiFile),
+        // Two stray CSVs must not turn a source tree into a dataset, hiding the
+        // directory behind a table that cannot be opened.
+        (
+            "project",
+            &[
+                "a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "one.csv", "two.csv",
+            ],
+            EntryKind::Directory,
+        ),
+        ("solo", &["only.parquet"], EntryKind::Directory),
+    ];
     let tmp = TempDir::new().unwrap();
-    touch(tmp.path(), "exports/jan.parquet");
-    touch(tmp.path(), "exports/feb.parquet");
-
-    assert_eq!(
-        discover::classify_directory(&tmp.path().join("exports")),
-        EntryKind::MultiFile
-    );
-}
-
-#[test]
-fn test_mixed_extensions_are_not_a_dataset() {
-    // A directory holding a CSV and a spreadsheet is a directory, not a table.
-    let tmp = TempDir::new().unwrap();
-    touch(tmp.path(), "stuff/a.csv");
-    touch(tmp.path(), "stuff/b.parquet");
-
-    assert_eq!(
-        discover::classify_directory(&tmp.path().join("stuff")),
-        EntryKind::Directory
-    );
-}
-
-/// Compression is not a format: `.csv.gz` and `.json.gz` are two kinds of file.
-///
-/// `Path::extension` answers `gz` for both, so comparing extensions made every
-/// compressed directory look homogeneous whatever was in it — and a directory of two
-/// formats was then offered as one table.
-#[test]
-fn test_compressed_files_are_compared_by_what_they_hold() {
-    let tmp = TempDir::new().unwrap();
-    touch(tmp.path(), "mixed/a.csv.gz");
-    touch(tmp.path(), "mixed/b.json.gz");
-
-    assert_eq!(
-        discover::classify_directory(&tmp.path().join("mixed")),
-        EntryKind::Directory,
-        "two formats under one compression suffix are still two formats"
-    );
-
-    // And the other half of the same rule: agreeing under compression still agrees.
-    touch(tmp.path(), "same/a.csv.gz");
-    touch(tmp.path(), "same/b.csv.gz");
-    assert_eq!(
-        discover::classify_directory(&tmp.path().join("same")),
-        EntryKind::MultiFile
-    );
-}
-
-#[test]
-fn test_directory_of_mostly_other_files_is_not_a_dataset() {
-    // Two stray CSVs in a source tree must not turn the source tree into a dataset —
-    // that would hide the directory behind a table that cannot be opened.
-    let tmp = TempDir::new().unwrap();
-    let project = tmp.path().join("project");
-    for name in ["a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs"] {
-        touch(&project, name);
+    for (dir, files, kind) in cases {
+        for file in files {
+            touch(&tmp.path().join(dir), file);
+        }
+        assert_eq!(
+            discover::classify_directory(&tmp.path().join(dir)),
+            kind,
+            "{dir}: {files:?}"
+        );
     }
-    touch(&project, "one.csv");
-    touch(&project, "two.csv");
-
-    assert_eq!(discover::classify_directory(&project), EntryKind::Directory);
-}
-
-#[test]
-fn test_single_data_file_directory_is_navigable() {
-    let tmp = TempDir::new().unwrap();
-    touch(tmp.path(), "solo/only.parquet");
-    assert_eq!(
-        discover::classify_directory(&tmp.path().join("solo")),
-        EntryKind::Directory
-    );
 }
 
 #[test]
@@ -363,16 +327,11 @@ fn test_fuzzy_matches_subsequences() {
     assert!(fuzzy_score("SAL", "sales.parquet").is_some());
     assert!(fuzzy_score("", "anything").is_some());
     assert!(fuzzy_score("zzz", "sales.parquet").is_none());
-}
 
-#[test]
-fn test_fuzzy_prefers_tighter_matches() {
+    // Higher is better, as in fzf: a tight match beats a loose one.
     let tight = fuzzy_score("sale", "sales.parquet").unwrap();
     let loose = fuzzy_score("sale", "s_a_l_zzzzzzzz_e.parquet").unwrap();
-    assert!(
-        tight > loose,
-        "tight {tight} should beat loose {loose}; higher is better, as in fzf"
-    );
+    assert!(tight > loose, "tight {tight} should beat loose {loose}");
 }
 
 #[test]

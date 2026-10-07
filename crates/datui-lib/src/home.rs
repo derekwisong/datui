@@ -1430,7 +1430,8 @@ pub enum Row<'a> {
     /// that keys a map by row path would write the door's answer into the directory's
     /// slot.
     Door { section: usize, entry: &'a Entry },
-    /// What the cap on `RECENT` is hiding: `… 13 more in 5 places`.
+    /// What a cap is hiding: `RECENT`'s, `… 13 more in 5 places`, or a directory's
+    /// at the root listing, `… 4,958 more files` (`places` is 0).
     More {
         section: usize,
         hidden: usize,
@@ -1440,6 +1441,9 @@ pub enum Row<'a> {
     /// hidden: `… 10 files with no reader`. Without it a directory of notes looks
     /// empty, or broken. `Enter` shows them, as `Ctrl+A` does.
     Hidden { section: usize, count: usize },
+    /// The way up, first in a directory's section: `..`. Enter goes to the parent:
+    /// the directory above the one browsed, as Backspace does, or above a root.
+    Up { section: usize },
 }
 
 impl Row<'_> {
@@ -1450,7 +1454,8 @@ impl Row<'_> {
             | Row::Door { section, .. }
             | Row::Place { section, .. }
             | Row::More { section, .. }
-            | Row::Hidden { section, .. } => *section,
+            | Row::Hidden { section, .. }
+            | Row::Up { section } => *section,
         }
     }
 }
@@ -1508,6 +1513,7 @@ struct ViewKey {
     sort: SortMode,
     hide_unreadable: bool,
     recent_expanded: bool,
+    shown_whole: std::collections::HashSet<String>,
     view_height: usize,
     browsing: Option<PathBuf>,
     folds: std::collections::HashMap<String, bool>,
@@ -1521,6 +1527,7 @@ impl ViewKey {
             sort: home.sort,
             hide_unreadable: home.hide_unreadable,
             recent_expanded: home.recent_expanded,
+            shown_whole: home.shown_whole.clone(),
             view_height: home.view_height,
             browsing: home.browsing.clone(),
             folds: home.folds.clone(),
@@ -1587,6 +1594,7 @@ pub enum RowKey {
     Place(PathBuf),
     More(String),
     Hidden(String),
+    Up(String),
 }
 
 /// Home screen state.
@@ -1711,6 +1719,9 @@ pub struct HomeState {
     /// `RECENT` shows every place, however many rows that takes. Set by `Enter` on the
     /// `… N more` row, for the session.
     pub recent_expanded: bool,
+    /// Directory sections shown whole rather than cut to their first rows, by title,
+    /// for the session. See [`HomeState::show_all`].
+    pub shown_whole: std::collections::HashSet<String>,
     /// The listings the user went inside from, outermost first: where to put the
     /// cursor back on the way out. See [`HomeState::leave_mark`].
     pub trail: Vec<Mark>,
@@ -1882,6 +1893,7 @@ impl Default for HomeState {
             search: SearchState::default(),
             known: Default::default(),
             recent_expanded: false,
+            shown_whole: Default::default(),
             trail: Vec::new(),
             returning: None,
             returning_line: None,
@@ -3279,6 +3291,7 @@ impl HomeState {
             Row::Header { section, .. } => RowKey::Header(title(section)?),
             Row::More { section, .. } => RowKey::More(title(section)?),
             Row::Hidden { section, .. } => RowKey::Hidden(title(section)?),
+            Row::Up { section } => RowKey::Up(title(section)?),
             Row::Entry { entry, .. } => RowKey::Entry(entry.path.clone()),
             Row::Door { entry, .. } => RowKey::Door(entry.path.clone()),
             Row::Place { path, .. } => RowKey::Place(path),
@@ -3322,7 +3335,8 @@ impl HomeState {
             (Row::Place { path, .. }, RowKey::Place(wanted)) => path == wanted,
             (Row::Header { section, .. }, RowKey::Header(title))
             | (Row::More { section, .. }, RowKey::More(title))
-            | (Row::Hidden { section, .. }, RowKey::Hidden(title)) => self
+            | (Row::Hidden { section, .. }, RowKey::Hidden(title))
+            | (Row::Up { section }, RowKey::Up(title)) => self
                 .sections
                 .get(*section)
                 .is_some_and(|s| s.title == *title),
@@ -3335,8 +3349,9 @@ impl HomeState {
             RowKey::Entry(path) | RowKey::Place(path) => rows.iter().position(|row| {
                 matches!(row, Row::More { section, .. }
                 if self.sections.get(*section).is_some_and(|s| {
-                    s.grouped_by_place
-                        && s.rows.iter().any(|r| r.path == *path || place_of(&r.path) == *path)
+                    s.rows.iter().any(|r| {
+                        r.path == *path || (s.grouped_by_place && place_of(&r.path) == *path)
+                    })
                 }))
             }),
             _ => None,
@@ -4098,6 +4113,30 @@ impl HomeState {
         self.changed();
     }
 
+    /// Show the whole of the section the `more` row at `section` cuts.
+    pub fn show_all(&mut self, section: usize) {
+        match self.sections.get(section) {
+            Some(s) if s.grouped_by_place => self.recent_expanded = true,
+            Some(s) => {
+                self.shown_whole.insert(s.title.clone());
+            }
+            None => {}
+        }
+    }
+
+    /// Cut the section the cursor is in back to its first rows, the cursor on the row
+    /// standing for the rest. Says whether it was shown whole.
+    pub fn cut_again(&mut self, section: usize) -> bool {
+        let Some(title) = self.sections.get(section).map(|s| s.title.clone()) else {
+            return false;
+        };
+        if !self.shown_whole.remove(&title) {
+            return false;
+        }
+        self.reselect(Some(RowKey::More(title)));
+        true
+    }
+
     /// The sections, to change in place. The rows are listed again from them on the
     /// next read.
     pub fn sections_mut(&mut self) -> &mut Vec<Section> {
@@ -4277,9 +4316,37 @@ impl HomeState {
             // fuzzy filter matches for most of the alphabet — `sal` found it beside
             // `sales.parquet` — so it steps out of the way and comes back when the
             // filter is cleared.
+            // The way up comes first of all, as `..` does in any listing.
+            let root = section.root.as_deref();
+            if self.filter.is_empty()
+                && root
+                    .is_some_and(|root| self.browsing.is_some() || parent_location(root).is_some())
+            {
+                out.push(Slot::Plain(Row::Up { section: si }));
+            }
             if has_door {
                 out.push(Slot::Door { section: si });
             }
+            // A directory of thousands would bury every section below it, the way
+            // into the cloud and the catalogs: at the root listing it shows its first
+            // rows, a share of the list's height, and one row standing for the rest.
+            // A filter searches them all.
+            let shown = match root {
+                Some(_)
+                    if self.browsing.is_none()
+                        && self.filter.is_empty()
+                        && self.view_height > 0
+                        && !self.shown_whole.contains(&section.title) =>
+                {
+                    (self.view_height * 2 / 5).max(8)
+                }
+                _ => usize::MAX,
+            };
+            let cut = if matched.len() > shown.saturating_add(1) {
+                matched.split_off(shown).len()
+            } else {
+                0
+            };
             if section.grouped_by_place {
                 self.slots_by_place(si, section, &matched, &mut out);
             } else {
@@ -4294,6 +4361,13 @@ impl HomeState {
                     index,
                     nested: in_order && self.bookmark(&entry(index).path).is_some(),
                     hit,
+                }));
+            }
+            if cut > 0 {
+                out.push(Slot::Plain(Row::More {
+                    section: si,
+                    hidden: cut,
+                    places: 0,
                 }));
             }
             if hidden > 0 {
@@ -5600,6 +5674,7 @@ mod holds_flow_tests {
             .collect();
         home.probe_ready(root.clone(), rows, false);
         home.browsing = Some(root.clone());
+        home.view_height = 10;
         home.rebuild(&[]);
         // One already answered, and one with a request already out.
         home.cloud_kinds

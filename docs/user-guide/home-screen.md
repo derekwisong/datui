@@ -57,6 +57,13 @@ then types). Letters type into the filter, so
 | `ELSEWHERE` | Directories your desktop recorded (freedesktop `recently-used.xbel`); starts folded |
 | `Found` | [Search](#search-below-the-current-directory) results, while you type |
 
+A directory's section starts with `..`: <kbd>Enter</kbd> on it goes up a
+level, as <kbd>Backspace</kbd> does inside a directory. A directory too big for
+the list beside the other sections shows its first rows (about two fifths of the
+list's height) and `… 4,958 more files`: <kbd>Enter</kbd> or <kbd>→</kbd> there
+shows them all, and <kbd>←</kbd> cuts it back. Its heading counts every row, and
+a typed filter searches them all.
+
 Folds last between runs. A heading says why its section is listed and how it
 stands: `catalog.toml`, `catalog` or `built in` for a catalog; `nfs4`, `listing`
 (then `1,200 so far` as a slow share answers), `unavailable`, or `first 5,000`

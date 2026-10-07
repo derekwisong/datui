@@ -1290,6 +1290,8 @@ pub struct PerformanceConfig {
     pub max_buffered: ByteSize,
     /// Use the Polars streaming engine for collects where it applies.
     pub streaming: bool,
+    /// Most threads Polars computes with; 0 for every core. Applied once, at startup.
+    pub threads: usize,
 }
 
 impl PerformanceConfig {
@@ -1961,6 +1963,7 @@ impl Default for PerformanceConfig {
             max_buffered_rows: crate::table::DEFAULT_MAX_BUFFERED_ROWS,
             max_buffered: ByteSize::mib(512),
             streaming: true,
+            threads: 0,
         }
     }
 }

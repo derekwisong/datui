@@ -14310,7 +14310,8 @@ fn test_enter_on_the_more_row_expands_recent() {
         !app.home
             .visible()
             .iter()
-            .any(|r| matches!(r, datui::home::Row::More { .. }))
+            .any(|r| matches!(r, datui::home::Row::More { places: 1.., .. })),
+        "RECENT is whole"
     );
 }
 

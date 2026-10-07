@@ -1,3 +1,4 @@
+use crate::quality_memory::QualityCopyJob;
 use crate::*;
 use std::sync::mpsc;
 

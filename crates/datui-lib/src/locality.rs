@@ -45,7 +45,7 @@ pub const NETWORK_FILESYSTEMS: &[&str] = &[
 const MEMORY_FILESYSTEMS: &[&str] = &["tmpfs", "ramfs", "devtmpfs"];
 
 /// How a dataset is reached, in the terms that predict what opening it costs.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Locality {
     /// A disk on this machine.
     Local,

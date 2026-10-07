@@ -257,6 +257,26 @@ Where format specs and dictionaries are found.
 .TP
 \fBformats.path\fR (\fIlist\fR)
 Directories of format specs and dictionaries, searched after ~/.config/datui/formats and $DATUI_FORMATS_PATH. Adds up across imports. Default: \fB[]\fR.
+.SS "[limits]"
+The most of a file some readers take in. Past one, the rest is left out or the file refused, and the note or error names the key that raises it.
+.TP
+\fBlimits.indexed_records\fR (\fIinteger\fR)
+Most records one pass indexes: a flight log's messages, a candump's frames, a text file's lines, a format spec's tagged records. Default: \fB67108864\fR.
+.TP
+\fBlimits.elf_symbols\fR (\fIinteger\fR)
+Most symbols read from an ELF file. Default: \fB10000000\fR.
+.TP
+\fBlimits.midi_bytes\fR (\fIsize\fR)
+Largest MIDI file read; a larger one is refused. Default: \fB"64MiB"\fR.
+.TP
+\fBlimits.midi_events\fR (\fIinteger\fR)
+Most events read from MIDI files, all files of one open together. Default: \fB10000000\fR.
+.TP
+\fBlimits.journal_bytes\fR (\fIsize\fR)
+Most journal JSON read into memory, all files of one open together; the records past it are left out, and the Notes tab says how much. Default: \fB"1GiB"\fR.
+.TP
+\fBlimits.detail_rows\fR (\fIinteger\fR)
+Most rows of a list on an Info panel tab (symbols, sections, metadata); one more row says how many were left out. Default: \fB10000\fR.
 .SS "[log]"
 .TP
 \fBlog.file\fR (\fIpath\fR)

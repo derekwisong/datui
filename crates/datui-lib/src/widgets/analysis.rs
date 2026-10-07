@@ -20,7 +20,7 @@ use crate::numfmt::{self, NumberFormatSettings};
 use crate::render::context::RenderContext;
 use crate::statistics::{
     AnalysisContext, AnalysisResults, CategoricalStatistics, ColumnStatistics, CorrelationMethod,
-    DistributionAnalysis, DistributionType, NumericStatistics, TemporalStatistics,
+    DistributionAnalysis, DistributionType, HistogramKey, NumericStatistics, TemporalStatistics,
 };
 use crate::table::DataTableState;
 use crate::widgets::axes::{AxisSpec, PlotAxes};
@@ -911,51 +911,15 @@ fn render_distribution_table(
         .unwrap_or(header_len);
     let locked_col_width = max_col_name_len.max(header_len).max(10);
 
-    // Scan all data to find maximum width needed for each column (excluding Column)
-    for dist_analysis in &results.distribution_analyses {
-        // Outlier count with percentage
-        let outlier_text = if dist_analysis.outliers.total_count > 0 {
-            format!(
-                "{} ({:.1}%)",
-                dist_analysis.outliers.total_count, dist_analysis.outliers.percentage
-            )
-        } else {
-            "0 (0.0%)".to_string()
-        };
-
-        // Shapiro-Wilk statistic and p-value formatting
-        let sw_stat_text = dist_analysis
-            .characteristics
-            .shapiro_wilk_stat
-            .map(|s| format!("{:.3}", s))
-            .unwrap_or_else(|| "N/A".to_string());
-        let sw_pvalue_text = dist_analysis
-            .characteristics
-            .shapiro_wilk_pvalue
-            .map(format_pvalue)
-            .unwrap_or_else(|| "N/A".to_string());
-
-        let pvalue_text = verdict_pvalue(dist_analysis);
-
-        // Update minimum widths based on content (skip column name)
-        let col_values = [
-            format!("{}", dist_analysis.distribution_type),
-            pvalue_text.clone(),
-            sw_stat_text.clone(),
-            sw_pvalue_text.clone(),
-            format!(
-                "{:.4}",
-                dist_analysis.characteristics.coefficient_of_variation
-            ),
-            outlier_text.clone(),
-            format_num(dist_analysis.characteristics.skewness),
-            format_num(dist_analysis.characteristics.kurtosis),
-        ];
-
-        for (idx, value) in col_values.iter().enumerate() {
-            let value_len = value.chars().count() as u16;
-            let header_len = column_names[idx].chars().count() as u16;
-            min_col_widths[idx] = min_col_widths[idx].max(value_len).max(header_len);
+    // Each row's values, formatted once for the widths and the cells both.
+    let texts: Vec<[String; 8]> = results
+        .distribution_analyses
+        .iter()
+        .map(stat_texts)
+        .collect();
+    for row in &texts {
+        for (idx, value) in row.iter().enumerate() {
+            min_col_widths[idx] = min_col_widths[idx].max(value.chars().count() as u16);
         }
     }
 
@@ -981,7 +945,7 @@ fn render_distribution_table(
     }
     let header_row_style = header_style(theme, "controls_bg", "table_header");
     let header_row = Row::new(header_cells).style(header_row_style);
-    for dist_analysis in &results.distribution_analyses {
+    for (dist_analysis, texts) in results.distribution_analyses.iter().zip(texts) {
         // The verdict in the colors of its p-value; no clear fit in the rejected one.
         let type_color = match dist_analysis.distribution_type {
             DistributionType::Unknown => theme.get("outlier_marker"),
@@ -989,16 +953,6 @@ fn render_distribution_table(
             _ => pvalue_style(dist_analysis.confidence, theme)
                 .fg
                 .unwrap_or_else(|| theme.get("text_primary")),
-        };
-
-        // Outlier count with percentage
-        let outlier_text = if dist_analysis.outliers.total_count > 0 {
-            format!(
-                "{} ({:.1}%)",
-                dist_analysis.outliers.total_count, dist_analysis.outliers.percentage
-            )
-        } else {
-            "0 (0.0%)".to_string()
         };
 
         // Relaxed outlier color thresholds - red only for very high percentages that might indicate data errors
@@ -1035,20 +989,7 @@ fn render_distribution_table(
             Style::default()
         };
 
-        let pvalue_text = verdict_pvalue(dist_analysis);
         let pvalue_style = pvalue_style(dist_analysis.confidence, theme);
-
-        // Shapiro-Wilk statistic and p-value formatting
-        let sw_stat_text = dist_analysis
-            .characteristics
-            .shapiro_wilk_stat
-            .map(|s| format!("{:.3}", s))
-            .unwrap_or_else(|| "N/A".to_string());
-        let sw_pvalue_text = dist_analysis
-            .characteristics
-            .shapiro_wilk_pvalue
-            .map(format_pvalue)
-            .unwrap_or_else(|| "N/A".to_string());
 
         // Color coding for SW p-value: same semantics as p-value column
         // Green = normal (>0.05), Yellow = moderate (0.01-0.05), Red = non-normal (≤0.01)
@@ -1073,33 +1014,26 @@ fn render_distribution_table(
                 .style(Style::default().fg(theme.get("text_primary"))),
         ];
 
-        // Add visible statistic values
+        let cv_style = if dist_analysis.characteristics.coefficient_of_variation > 1.0 {
+            // High variability.
+            Style::default().fg(theme.get("distribution_skewed"))
+        } else {
+            Style::default()
+        };
+        let styles = [
+            Style::default().fg(type_color),
+            pvalue_style,
+            Style::default(),
+            sw_pvalue_style,
+            cv_style,
+            outlier_style,
+            skewness_style,
+            kurtosis_style,
+        ];
+        let mut texts = texts.map(Some);
         for &stat_idx in &visible_stats {
-            let cell = match stat_idx {
-                0 => Cell::from(format!("{}", dist_analysis.distribution_type))
-                    .style(Style::default().fg(type_color)),
-                1 => Cell::from(pvalue_text.clone()).style(pvalue_style),
-                2 => Cell::from(sw_stat_text.clone()),
-                3 => Cell::from(sw_pvalue_text.clone()).style(sw_pvalue_style),
-                4 => Cell::from(format!(
-                    "{:.4}",
-                    dist_analysis.characteristics.coefficient_of_variation
-                ))
-                .style(
-                    if dist_analysis.characteristics.coefficient_of_variation > 1.0 {
-                        Style::default().fg(theme.get("distribution_skewed")) // High variability
-                    } else {
-                        Style::default()
-                    },
-                ),
-                5 => Cell::from(outlier_text.clone()).style(outlier_style),
-                6 => Cell::from(format_num(dist_analysis.characteristics.skewness))
-                    .style(skewness_style),
-                7 => Cell::from(format_num(dist_analysis.characteristics.kurtosis))
-                    .style(kurtosis_style),
-                _ => Cell::from(""),
-            };
-            cells.push(cell);
+            let text = texts[stat_idx].take().unwrap_or_default();
+            cells.push(Cell::from(text).style(styles[stat_idx]));
         }
 
         rows.push(Row::new(cells));
@@ -1129,6 +1063,35 @@ fn render_distribution_table(
         (start_stat, end_stat, num_stats),
         theme,
     );
+}
+
+/// One distribution's values in the table's column order, after its name.
+fn stat_texts(dist_analysis: &DistributionAnalysis) -> [String; 8] {
+    let characteristics = &dist_analysis.characteristics;
+    let outliers = if dist_analysis.outliers.total_count > 0 {
+        format!(
+            "{} ({:.1}%)",
+            dist_analysis.outliers.total_count, dist_analysis.outliers.percentage
+        )
+    } else {
+        "0 (0.0%)".to_string()
+    };
+    [
+        dist_analysis.distribution_type.to_string(),
+        verdict_pvalue(dist_analysis),
+        characteristics
+            .shapiro_wilk_stat
+            .map(|s| format!("{:.3}", s))
+            .unwrap_or_else(|| "N/A".to_string()),
+        characteristics
+            .shapiro_wilk_pvalue
+            .map(format_pvalue)
+            .unwrap_or_else(|| "N/A".to_string()),
+        format!("{:.4}", characteristics.coefficient_of_variation),
+        outliers,
+        format_num(characteristics.skewness),
+        format_num(characteristics.kurtosis),
+    ]
 }
 
 /// The column the cursor's rail sits in, kept whether or not the table has focus
@@ -1721,9 +1684,6 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
 
     let n = sorted_data.len();
 
-    // Determine bin range: use percentile-based robust range (P1-P99) for all distributions
-    // This is a best practice that gives more visual space to the bulk of data while
-    // still showing outliers in edge bins. Matches professional tools like Observable Canvases.
     let data_min = sorted_data[0];
     let data_max = sorted_data[n - 1];
     let data_range = data_max - data_min;
@@ -1736,17 +1696,9 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
         return;
     }
 
-    // Use unified X-axis range (strict data range, no padding or extensions)
-    // This keeps both Q-Q plot and histogram in sync and ensures log scale works correctly
-    let (hist_min, hist_max, hist_range) = if let Some((unified_min, unified_max)) = unified_x_range
-    {
-        // Use unified range directly - it's already the strict data range
-        let range = unified_max - unified_min;
-        (unified_min, unified_max, range)
-    } else {
-        // Fallback: use actual data range (shouldn't happen if unified_x_range is always provided)
-        (data_min, data_max, data_range)
-    };
+    // The range the Q-Q plot shares, so both plots read the same values at the same
+    // column.
+    let (hist_min, hist_max) = unified_x_range.unwrap_or((data_min, data_max));
 
     // Calculate dynamic number of bins based on available width
     // This ensures bars fill the horizontal space and look dense at all widths
@@ -1777,7 +1729,7 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
     // Use log-scale binning if user has selected log scale and data is positive
     // Log-scale binning is standard practice for power law distributions and wide dynamic ranges
     // Check actual data values, not histogram range (which may include padding or theoretical bounds)
-    let all_data_positive = sorted_data.iter().all(|&v| v > 0.0);
+    let all_data_positive = data_min > 0.0;
     // For log scale, ensure hist_min is positive (adjust if needed)
     let (log_hist_min, log_hist_max) =
         if matches!(histogram_scale, HistogramScale::Log) && all_data_positive {
@@ -1799,109 +1751,32 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
         && log_hist_min > 0.0
         && log_hist_max > log_hist_min;
 
-    let (bin_boundaries, bin_width): (Vec<f64>, f64) = if use_log_scale {
-        // Log-scale binning: bins with equal width in log space
-        // This ensures each bin represents roughly equal multiplicative range
-        // Use adjusted range based on actual data values
-        let log_min = log_hist_min.ln();
-        let log_max = log_hist_max.ln();
-        let log_range = log_max - log_min;
-        let log_bin_width = log_range / num_bins as f64;
-
-        let boundaries: Vec<f64> = (0..=num_bins)
-            .map(|i| {
-                let log_value = log_min + (i as f64) * log_bin_width;
-                log_value.exp()
-            })
-            .collect();
-
-        // For log scale, calculate average bin width for use in theoretical PDF calculations
-        // This is approximate but needed for compatibility
-        let log_range_linear = log_hist_max - log_hist_min;
-        let avg_bin_width = log_range_linear / num_bins as f64;
-        (boundaries, avg_bin_width)
-    } else {
-        // Linear binning for all other distributions
-        let bin_width = hist_range / num_bins as f64;
-        let boundaries: Vec<f64> = (0..=num_bins)
-            .map(|i| hist_min + (i as f64) * bin_width)
-            .collect();
-        (boundaries, bin_width)
-    };
-
-    // Count data points in each bin
-    let mut data_bin_counts = vec![0; num_bins];
-    for &val in sorted_data {
-        for (i, boundaries) in bin_boundaries.windows(2).enumerate().take(num_bins) {
-            if val >= boundaries[0]
-                && (val < boundaries[1] || (i == num_bins - 1 && val <= boundaries[1]))
-            {
-                data_bin_counts[i] += 1;
-                break;
-            }
-        }
-    }
-
-    // Expected counts from the fit every view of this family uses, by the CDF across
-    // each bin: exact for log-scaled and whole-number bins, where a density at the
-    // center is not. A family that does not apply draws no overlay.
-    let fitted = dist
-        .fit(dist_type)
-        .and_then(|outcome| outcome.test())
-        .map(|test| test.fitted);
-    let theory_probs: Vec<f64> = match &fitted {
-        Some(fitted) => bin_boundaries
-            .windows(2)
-            .enumerate()
-            .map(|(i, edges)| {
-                let upper = if i + 1 == num_bins {
-                    fitted.cdf(edges[1])
-                } else {
-                    fitted.cdf_below(edges[1])
-                };
-                (upper - fitted.cdf_below(edges[0])).max(0.0)
-            })
-            .collect(),
-        None => vec![0.0; num_bins],
-    };
-
-    // Convert probabilities to expected counts
-    let theory_bin_counts: Vec<f64> = theory_probs.iter().map(|&prob| prob * n as f64).collect();
-
-    // Normalize values for display (find the maximum for scaling)
-    let max_data = data_bin_counts.iter().cloned().fold(0, usize::max);
-    let max_theory = theory_bin_counts.iter().cloned().fold(0.0, f64::max);
-    // Even, so the middle label is a whole count.
-    let global_max = (max_data.max(max_theory.ceil() as usize).max(1) as f64 / 2.0).ceil() * 2.0;
+    // The fit's expected counts are drawn behind the bars, sampled densely enough
+    // that braille renders them as a line.
+    let histogram = dist.histogram(HistogramKey {
+        family: dist_type,
+        bins: num_bins,
+        log: use_log_scale,
+        range: if use_log_scale {
+            (log_hist_min, log_hist_max)
+        } else {
+            (hist_min, hist_max)
+        },
+        samples: (available_width as usize * 15).clamp(1500, 10000),
+    });
+    let global_max = histogram.top;
 
     // Use the shared label width calculated in the caller
     // This ensures both histogram and Q-Q plot use the same padding for alignment
     let y_axis_label_width = shared_y_axis_label_width;
 
-    // On Log the bins are equal in log space, and so is the x axis: a position is the
-    // log of the value it stands for, and a bin's center is its geometric middle.
-    let position = |x: f64| if use_log_scale { x.ln() } else { x };
-    let bin_centers: Vec<f64> = (0..num_bins)
-        .map(|i| {
-            let (lo, hi) = (bin_boundaries[i], bin_boundaries[i + 1]);
-            if use_log_scale {
-                (lo * hi).sqrt()
-            } else {
-                (lo + hi) / 2.0
-            }
-        })
-        .collect();
-
     // Each bin's bar on the 0-100 scale the curve and the count labels use. No value
     // or label: the axes say what a bar's height and place mean.
-    let data_bars: Vec<Bar> = data_bin_counts
+    let data_bars: Vec<Bar> = histogram
+        .counts
         .iter()
         .map(|&data_count| {
-            let data_height = if global_max > 0.0 {
-                ((data_count as f64 / global_max) * 100.0) as u64
-            } else {
-                0
-            };
+            let data_height = ((data_count as f64 / global_max) * 100.0) as u64;
             Bar::default()
                 .value(data_height)
                 .text_value(String::new())
@@ -1965,37 +1840,6 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
         })
         .collect();
 
-    // The fit's expected counts, drawn behind the bars; sampled densely enough that
-    // braille renders it as a line.
-    let num_samples = (available_width as usize * 15).clamp(1500, 10000);
-
-    let height = |count: f64| {
-        if global_max > 0.0 {
-            count / global_max * 100.0
-        } else {
-            0.0
-        }
-    };
-    let theory_points: Vec<(f64, f64)> = match &fitted {
-        // A continuous family on linear bins is drawn as its density, scaled to a bin's
-        // count: a smooth curve rather than a staircase.
-        Some(fitted) if !fitted.discrete() && !use_log_scale && hist_range > 0.0 => (0
-            ..num_samples)
-            .map(|i| {
-                let x = hist_min + i as f64 / (num_samples - 1) as f64 * hist_range;
-                (x, height(fitted.density(x) * bin_width * n as f64))
-            })
-            .filter(|(_, y)| y.is_finite())
-            .collect(),
-        // Counts, and log-scaled bins, by each bin's expected count at its center.
-        Some(_) => bin_centers
-            .iter()
-            .zip(&theory_bin_counts)
-            .map(|(center, count)| (position(*center), height(*count)))
-            .collect(),
-        None => Vec::new(),
-    };
-
     // Dense points in the line mark read as a continuous curve.
     let marker = g.plot.line;
 
@@ -2004,7 +1848,7 @@ fn render_distribution_histogram(config: DistributionPlotConfig, buf: &mut Buffe
         .marker(marker)
         .graph_type(GraphType::Scatter)
         .style(Style::default().fg(theme.get("dimmed")))
-        .data(&theory_points);
+        .data(&histogram.curve);
 
     let theory_chart = Chart::new(vec![theory_dataset])
         .hidden_legend_constraints((Constraint::Length(0), Constraint::Length(0)));
@@ -2323,7 +2167,6 @@ mod tests {
             column_name: "close".into(),
             distribution_type: DistributionType::Normal,
             confidence: 0.0,
-            fit_quality: 0.0,
             characteristics: DistributionCharacteristics {
                 shapiro_wilk_stat: None,
                 shapiro_wilk_pvalue: None,
@@ -2357,6 +2200,7 @@ mod tests {
             is_sampled: false,
             fits: Vec::new(),
             qq: Vec::new(),
+            histogram: Default::default(),
         }
     }
 
@@ -2469,6 +2313,23 @@ mod tests {
         );
         let plain = labels(&settings("thousands", false));
         assert_eq!(plain[0], grouped[0].replace(',', ""), "{plain:?}");
+    }
+
+    /// A histogram is counted and fitted once for a layout: frames that change
+    /// nothing reuse it, and a new width builds it again.
+    #[test]
+    fn a_histogram_is_built_once_per_layout() {
+        use crate::statistics::HISTOGRAMS_BUILT;
+        let dist = skewed_normal_fit();
+        let g = crate::glyphs::unicode();
+        let built = || HISTOGRAMS_BUILT.with(std::cell::Cell::get);
+        let before = built();
+        for _ in 0..3 {
+            render_distribution_plot(&dist, g, render_distribution_histogram);
+        }
+        assert_eq!(built() - before, 1);
+        render_distribution_plot_in(&dist, g, render_distribution_histogram, 70);
+        assert_eq!(built() - before, 2);
     }
 
     #[test]

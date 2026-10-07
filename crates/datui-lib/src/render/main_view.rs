@@ -695,9 +695,8 @@ fn trend_keys(modal: &crate::analysis_modal::AnalysisModal) -> Vec<(&'static str
     };
     let plan = modal.quality_result_plan();
     if plan.coarser_grain().is_some() {
-        let view = crate::quality_trends::trend_view(results, modal.data_quality_metric, 1);
-        let (unsampled, thin) = view.coverage();
-        if view.sampled && unsampled + thin > 0 {
+        let (sampled, unsampled, thin) = crate::quality_trends::segment_coverage(results);
+        if sampled && unsampled + thin > 0 {
             keys.push(("w", "Coarser"));
         }
     }

@@ -1,3 +1,4 @@
+use crate::chart_export::ChartExportFormat;
 use crate::chart_jobs::ChartCacheXY;
 use crate::chart_modal::{Aggregate, ChartFocus, Mark};
 use crate::*;

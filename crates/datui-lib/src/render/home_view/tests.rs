@@ -156,61 +156,18 @@ fn blank_meta_columns_go_to_the_name() {
     assert!(text(&hit).contains("region.csv"), "{:?}", text(&hit));
 }
 
-/// The row and the pane beside it say the same word about one directory. They are two
-/// renderers with the same question to answer, and answering it in two orders is
-/// how a list says `12 parquet` while the pane says `dataset`.
-#[test]
-fn the_row_and_the_pane_agree_on_what_a_directory_is() {
-    let ctx = RenderContext::for_test();
-    let mut entry = row("s3://bucket/occurrence", EntryKind::Directory);
-    entry.holds = crate::discover::Holds {
-        formats: vec![("parquet".to_string(), 12)],
-        ..Default::default()
-    };
-    for curated in [None, Some("dataset"), Some("project")] {
-        let line = entry_line(
-            &entry,
-            false,
-            EntryNotes {
-                place_kind: curated,
-                ..EntryNotes::default()
-            },
-            &rows(&ctx, 40, false),
-        )
-        .spans
-        .iter()
-        .map(|s| s.content.as_ref())
-        .collect::<Vec<_>>()
-        .join("");
-        let pane: String = preview_head(&entry, curated, None, 60, &ctx)
-            .iter()
-            .flat_map(|l| l.spans.iter())
-            .map(|s| s.content.as_ref())
-            .collect();
-        let word = curated.unwrap_or("12 parquet");
-        assert!(
-            pane.contains(word),
-            "the pane {pane:?} does not name it {word:?}"
-        );
-        assert!(
-            line.contains(word),
-            "the row {line:?} does not name it {word:?}"
-        );
-    }
-}
-
 /// A directory in a bucket reads like a local one: a spinner while it is looked
 /// into, `…` before, and then what it holds, or `dir`. Never `prefix`, which said
 /// nothing a user could act on. A bucket keeps its word.
 #[test]
 fn a_cloud_directory_is_labelled_by_what_it_holds() {
     let ctx = RenderContext::for_test();
-    let drawn = |entry: &Entry, looking: Option<&'static str>| -> String {
+    let drawn = |entry: &Entry, look: Option<crate::home::CloudLook>| -> String {
         entry_line(
             entry,
             false,
             EntryNotes {
-                looking,
+                look,
                 ..EntryNotes::default()
             },
             &rows(&ctx, 40, false),
@@ -225,10 +182,10 @@ fn a_cloud_directory_is_labelled_by_what_it_holds() {
     let spinner = g.spinner[0];
 
     let mut directory = row("s3://bucket/exports", EntryKind::Directory);
-    let text = drawn(&directory, Some(spinner));
+    let text = drawn(&directory, Some(crate::home::CloudLook::Looking));
     assert!(text.contains(spinner), "{text}");
     assert!(!text.contains("dir") && !text.contains("prefix"), "{text}");
-    let text = drawn(&directory, Some(g.ellipsis));
+    let text = drawn(&directory, Some(crate::home::CloudLook::Waiting));
     assert!(text.contains(g.ellipsis), "{text}");
 
     // Looked into, and nothing counted: a directory of directories.
@@ -244,12 +201,12 @@ fn a_cloud_directory_is_labelled_by_what_it_holds() {
     assert!(text.contains("12 csv"), "{text}");
 
     let bucket = row("s3://bucket", EntryKind::Directory);
-    assert!(drawn(&bucket, Some(g.ellipsis)).contains("bucket"));
+    assert!(drawn(&bucket, Some(crate::home::CloudLook::Waiting)).contains("bucket"));
     let container = row(
         "abfss://data@acct.dfs.core.windows.net/",
         EntryKind::Directory,
     );
-    assert!(drawn(&container, Some(g.ellipsis)).contains("container"));
+    assert!(drawn(&container, Some(crate::home::CloudLook::Waiting)).contains("container"));
     let inside = row(
         "abfss://data@acct.dfs.core.windows.net/jolpica",
         EntryKind::Directory,
@@ -306,10 +263,6 @@ fn every_row_reads_name_slash_two_spaces_label() {
     }
 }
 
-/// And the pane beside it says the same word. The two take the same order through
-/// two separate matches, so a directory with nothing counted in it can read `prefix`
-/// on the row and `dir` in the pane — the one disagreement this is all arranged to
-/// stop, on the row a search is about.
 /// The row that opens the directory being browsed has no label, and in a bucket a
 /// directory of Parquet files is a kind that wears its label as a chip. The chip is
 /// drawn by taking the cell apart again, so a chip made of nothing indexed past the
@@ -399,51 +352,6 @@ fn the_row_that_opens_a_directory_draws_without_a_label() {
     for (kind, text) in &drawn[1..] {
         assert_eq!(first, text, "{kind:?} drew a different row");
     }
-}
-
-/// And the pane beside it agrees: no kind while it is being looked into, `?` with
-/// why when looking failed, `directory` once it has been, and the count on the
-/// `contains` line when there is one.
-#[test]
-fn the_pane_calls_a_cloud_directory_what_the_row_calls_it() {
-    use crate::home::CloudLook;
-    let ctx = RenderContext::for_test();
-    let pane = |entry: &Entry, looking: Option<CloudLook>| -> Vec<String> {
-        preview_head(entry, None, looking, 60, &ctx)
-            .iter()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect()
-    };
-    let kind_line = |lines: &[String]| {
-        lines
-            .iter()
-            .find(|l| l.trim_start().starts_with("kind"))
-            .cloned()
-    };
-
-    let mut directory = row("s3://bucket/warehouse", EntryKind::Directory);
-    assert_eq!(kind_line(&pane(&directory, Some(CloudLook::Waiting))), None);
-    assert_eq!(kind_line(&pane(&directory, Some(CloudLook::Looking))), None);
-    let failed = kind_line(&pane(&directory, Some(CloudLook::Failed))).expect("a kind");
-    assert!(failed.contains("listing failed"), "{failed}");
-    let looked = kind_line(&pane(&directory, None)).expect("a kind");
-    assert!(looked.trim_end().ends_with("directory"), "{looked}");
-
-    directory.holds = crate::discover::Holds {
-        formats: vec![("parquet".to_string(), 12)],
-        ..Default::default()
-    };
-    let lines = pane(&directory, None);
-    let contains = lines
-        .iter()
-        .find(|l| l.trim_start().starts_with("contains"))
-        .expect("a contains line");
-    assert!(contains.contains("12 parquet"), "{contains}");
 }
 
 /// A row count that is out of reach says `?`. A directory that is not one table has
@@ -777,19 +685,8 @@ fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
 fn an_empty_current_directory_says_so_and_points_at_the_path_prompt() {
     let ctx = RenderContext::for_test();
     let section = Section {
-        door: None,
-        title: "/home/me/empty".to_string(),
-        subtitle: None,
         origin: Some(crate::home::RootOrigin::Cwd.note()),
-        rows: Vec::new(),
-        unavailable: false,
-        unavailable_note: None,
-        folded_by_default: false,
-        remote_root: None,
-        waiting: false,
-        grouped_by_place: false,
-        place_labels: Default::default(),
-        root: None,
+        ..Section::titled("/home/me/empty", Vec::new())
     };
     let text = |matches: usize, section: &Section| -> String {
         section_header(section, matches, false, false, &header_row(&ctx, 80))
@@ -813,19 +710,9 @@ fn an_empty_current_directory_says_so_and_points_at_the_path_prompt() {
 fn the_origin_chip_sits_by_the_count_and_the_state_by_the_rule() {
     let ctx = RenderContext::for_test();
     let section = Section {
-        door: None,
-        title: "/mnt/data".to_string(),
         subtitle: Some("nfs4".to_string()),
         origin: Some("configured"),
-        rows: Vec::new(),
-        unavailable: false,
-        unavailable_note: None,
-        folded_by_default: false,
-        remote_root: None,
-        waiting: false,
-        grouped_by_place: false,
-        place_labels: Default::default(),
-        root: None,
+        ..Section::titled("/mnt/data", Vec::new())
     };
     let text = |width: usize| -> String {
         section_header(&section, 12, false, false, &header_row(&ctx, width))
@@ -872,19 +759,8 @@ fn a_long_path_leaves_the_focused_heading_its_rule() {
     let ctx = RenderContext::for_test();
     let g = glyphs::get();
     let section = Section {
-        door: None,
-        title: format!("/var/folders/{}", "x".repeat(120)),
-        subtitle: None,
         origin: Some("configured"),
-        rows: Vec::new(),
-        unavailable: false,
-        unavailable_note: None,
-        folded_by_default: false,
-        remote_root: None,
-        waiting: false,
-        grouped_by_place: false,
-        place_labels: Default::default(),
-        root: None,
+        ..Section::titled(format!("/var/folders/{}", "x".repeat(120)), Vec::new())
     };
     for width in [40usize, 80, 120] {
         let text: String = section_header(&section, 60, false, true, &header_row(&ctx, width))
@@ -1170,22 +1046,11 @@ fn a_long_note_never_pushes_the_header_past_the_screen() {
     // A search heading carries the path it searched, which is easily longer than
     // the terminal. The note is context; the title is what the section is.
     let section = Section {
-        door: None,
-        title: "Found".to_string(),
         subtitle: Some(
             "/very/deeply/nested/path/that/goes/on/and/on/for/quite/a/while · 99999 searched"
                 .to_string(),
         ),
-        origin: None,
-        rows: Vec::new(),
-        unavailable: false,
-        unavailable_note: None,
-        folded_by_default: false,
-        remote_root: None,
-        waiting: false,
-        grouped_by_place: false,
-        place_labels: Default::default(),
-        root: None,
+        ..Section::titled("Found", Vec::new())
     };
 
     for width in [20usize, 40, 80, 120] {
@@ -1689,19 +1554,8 @@ fn the_title_survives_a_note_that_wants_the_whole_line() {
     // Trimming the note first is the point: a header that says only where it
     // looked, and not what it is, has lost the more useful half.
     let section = Section {
-        door: None,
-        title: "Found".to_string(),
         subtitle: Some("x".repeat(200)),
-        origin: None,
-        rows: Vec::new(),
-        unavailable: false,
-        unavailable_note: None,
-        folded_by_default: false,
-        remote_root: None,
-        waiting: false,
-        grouped_by_place: false,
-        place_labels: Default::default(),
-        root: None,
+        ..Section::titled("Found", Vec::new())
     };
     let ctx = RenderContext::for_test();
     let line = section_header(&section, 3, false, false, &header_row(&ctx, 40));

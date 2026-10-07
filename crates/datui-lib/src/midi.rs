@@ -31,12 +31,6 @@ pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
     ..crate::readers::BASE
 };
 
-/// The largest file read. MIDI files are kilobytes; a song with a dense controller
-/// stream is a few megabytes.
-pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
-/// The most events read, across every file of one open. Each is a row of a dozen
-/// columns held in memory.
-pub const MAX_EVENTS: usize = 10_000_000;
 /// The most bytes of a sysex or unknown meta event written out as hex.
 const HEX_SHOWN: usize = 256;
 /// The tempo until a file sets one: 120 beats per minute.
@@ -290,7 +284,7 @@ pub fn parse(bytes: &[u8]) -> Result<Smf<'_>> {
     })
 }
 
-/// One `MTrk` chunk's events. `events` counts across tracks, for [`MAX_EVENTS`].
+/// One `MTrk` chunk's events. `events` counts across tracks, for `limits.midi_events`.
 fn parse_track<'a>(body: &'a [u8], track: usize, events: &mut usize) -> Result<Vec<Event<'a>>> {
     let mut r = Bytes::new(body);
     let mut out = Vec::new();
@@ -389,9 +383,10 @@ fn parse_track<'a>(body: &'a [u8], track: usize, events: &mut usize) -> Result<V
             }
         };
         *events += 1;
-        if *events > MAX_EVENTS {
+        let most = crate::limits::get().midi_events;
+        if *events > most {
             return Err(eyre!(
-                "MIDI has more than {MAX_EVENTS} events; datui reads up to that many"
+                "MIDI has more than {most} events, the most datui reads; limits.midi_events raises it"
             ));
         }
         out.push(Event { tick, body });
@@ -946,21 +941,22 @@ fn frame(cols: Columns<'_>, many: bool) -> Result<LazyFrame> {
     Ok(DataFrame::new(rows, columns)?.lazy())
 }
 
-/// Read one file's bytes, refusing one past [`MAX_FILE_BYTES`].
+/// Read one file's bytes, refusing one past `limits.midi_bytes`.
 fn read_bytes(path: &Path) -> Result<Vec<u8>> {
     use std::io::Read;
     let file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
-    if len > MAX_FILE_BYTES {
+    let most = crate::limits::get().midi_bytes.bytes();
+    if len > most {
         let size = crate::widgets::info::format_bytes;
         return Err(eyre!(
-            "MIDI file is {}; datui reads MIDI files up to {}",
+            "MIDI file is {}; datui reads MIDI files up to {}, and limits.midi_bytes raises it",
             size(len),
-            size(MAX_FILE_BYTES)
+            size(most)
         ));
     }
     let mut bytes = Vec::with_capacity(len as usize);
-    file.take(MAX_FILE_BYTES).read_to_end(&mut bytes)?;
+    file.take(most).read_to_end(&mut bytes)?;
     Ok(bytes)
 }
 
@@ -1002,9 +998,10 @@ pub fn read_midi(paths: &[PathBuf]) -> Result<(LazyFrame, MidiSummary)> {
             }
         };
         let events = smf.tracks.iter().map(Vec::len).sum::<usize>();
-        if summary.events + events > MAX_EVENTS {
+        let most = crate::limits::get().midi_events;
+        if summary.events + events > most {
             return Err(eyre!(
-                "These MIDI files have more than {MAX_EVENTS} events; datui reads up to that many"
+                "These MIDI files have more than {most} events, the most datui reads; limits.midi_events raises it"
             ));
         }
         add_file(&smf, many.then_some(name.as_str()), &mut cols, &mut summary);
@@ -1516,13 +1513,16 @@ mod tests {
         // Sparse: the size is all that is read before the refusal.
         std::fs::File::create(&huge)
             .unwrap()
-            .set_len(MAX_FILE_BYTES + 1)
+            .set_len(crate::limits::get().midi_bytes.bytes() + 1)
             .unwrap();
         let err = read_midi(std::slice::from_ref(&huge))
             .err()
             .expect("a file too large is refused")
             .to_string();
-        assert!(err.contains("up to 64.0 MiB"), "{err}");
+        assert!(
+            err.contains("up to 64.0 MiB, and limits.midi_bytes"),
+            "{err}"
+        );
         let (lf, summary) = read_midi(&[huge, good]).unwrap();
         let df = lf.collect().unwrap();
         assert_eq!(df.height(), 1);

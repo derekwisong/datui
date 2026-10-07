@@ -359,6 +359,7 @@ fn run_impl(
     // doing UTF-8, box-drawing characters render as replacement boxes and make the
     // UI harder to read rather than prettier.
     glyphs::init_with_overrides(config.display.unicode, &config.glyphs.overrides);
+    crate::limits::set(config.limits);
 
     // Taken once the settings say so; handed back with the screen.
     pointer::capture(config.display.mouse, &mut std::io::stdout());

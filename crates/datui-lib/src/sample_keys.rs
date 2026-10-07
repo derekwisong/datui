@@ -620,29 +620,6 @@ impl App {
         }
     }
 
-    /// What a chart says under its plot about the rows it drew. A view with a sample
-    /// is charted from all of it: the note says which sample, with its seed, so the
-    /// chart can be drawn again.
-    pub(crate) fn chart_notes_of(
-        &self,
-        prepared: &crate::chart_jobs::ChartPrepared,
-        middot: &str,
-    ) -> Vec<String> {
-        let mut notes = prepared.notes(middot);
-        let sampled = self.data_table_state.as_ref().and_then(|s| s.sampled());
-        if let Some(sampled) = sampled {
-            let mut note = sampled.label();
-            if matches!(
-                sampled.sample().method,
-                sampling::SampleMethod::Spread | sampling::SampleMethod::PerPartition { .. }
-            ) {
-                note.push_str(&format!(" {middot} seed {}", sampled.sample().seed));
-            }
-            notes.insert(0, note);
-        }
-        notes
-    }
-
     /// Apply `view`, whose rows are a sample: the view goes back to its source, the
     /// view the sample was drawn through goes on, and the sample is drawn again from
     /// its seed, the way it was. The view's own steps go on the sample as it arrives.

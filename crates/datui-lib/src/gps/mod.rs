@@ -68,15 +68,9 @@ pub(crate) const NMEA: crate::readers::Reader = crate::readers::Reader {
 fn nmea_tables() -> Vec<crate::sqlite::Table> {
     nmea::Table::ALL
         .into_iter()
-        .map(|t| crate::sqlite::Table {
-            name: t.name().to_string(),
-            kind: "table".to_string(),
-            internal: false,
-            columns: t
-                .columns()
-                .into_iter()
-                .map(|(name, _)| (name.to_string(), String::new()))
-                .collect(),
+        .map(|t| {
+            let columns = t.columns().into_iter().map(|(name, _)| name);
+            crate::sqlite::Table::plain(t.name(), "table", columns)
         })
         .collect()
 }

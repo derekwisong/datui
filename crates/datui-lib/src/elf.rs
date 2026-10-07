@@ -10,9 +10,6 @@
 //! Only the headers and the symbol and string tables are read, through a map of the
 //! file, by the `object` crate; the table is small beside the file.
 
-use std::path::Path;
-use std::sync::Arc;
-
 use color_eyre::Result;
 
 use crate::error_display::{FileError, in_file};
@@ -61,24 +58,11 @@ pub fn looks_like(head: &[u8]) -> bool {
 
 /// The tables of an ELF file, for the home screen and `--table`.
 pub fn tables() -> Vec<Table> {
-    let table = |name: &str, columns: &[&str]| Table {
-        name: name.to_string(),
-        kind: "table".to_string(),
-        internal: false,
-        columns: columns
-            .iter()
-            .map(|c| (c.to_string(), String::new()))
-            .collect(),
-    };
+    let symbols = ["name", "addr", "size", "kind", "bind", "section", "region"];
+    let sections = ["name", "addr", "size", "flags", "kind", "region"];
     vec![
-        table(
-            SYMBOLS,
-            &["name", "addr", "size", "kind", "bind", "section", "region"],
-        ),
-        table(
-            SECTIONS,
-            &["name", "addr", "size", "flags", "kind", "region"],
-        ),
+        Table::plain(SYMBOLS, "table", symbols),
+        Table::plain(SECTIONS, "table", sections),
     ]
 }
 
@@ -332,9 +316,10 @@ pub fn read(data: &[u8]) -> std::result::Result<Elf, String> {
     })
 }
 
-/// Open the ELF file at `path` as the table `wanted` names: its symbols unless
-/// `--table sections` says otherwise.
-pub fn open(path: &Path, wanted: Option<&str>) -> Result<(LazyFrame, crate::members::Opened)> {
+/// The scan of an ELF file: the table `--table` names, its symbols by default.
+fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
+    let path = input.path();
+    let wanted = input.options.table.as_deref();
     let tables = tables();
     let picked = match wanted {
         None => SYMBOLS.to_string(),
@@ -347,13 +332,10 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<(LazyFrame, crate::memb
     let elf = read(bytes.as_slice()).map_err(|e| FileError::new(path, e))?;
     let mut notes = Vec::new();
     if elf.left_out > 0 {
-        notes.push(crate::text_formats::note(
-            format!(
-                "{} symbols left out: past the first {}",
-                crate::numfmt::group_chrome(elf.left_out),
-                crate::numfmt::group_chrome(MAX_SYMBOLS)
-            ),
-            "the symbol table".to_string(),
+        notes.push(format!(
+            "{} symbols left out: past the first {}",
+            crate::numfmt::group_chrome(elf.left_out),
+            crate::numfmt::group_chrome(MAX_SYMBOLS)
         ));
     }
     let df = if picked == SECTIONS {
@@ -361,25 +343,9 @@ pub fn open(path: &Path, wanted: Option<&str>) -> Result<(LazyFrame, crate::memb
     } else {
         elf.symbols
     };
-    Ok((
-        df.lazy(),
-        crate::members::Opened {
-            window: None,
-            detail: Some(Arc::new(elf.detail)),
-            other_tables: crate::members::others(&tables, &picked),
-            notes,
-            units: Vec::new(),
-            indexing: None,
-            numbering: None,
-        },
-    ))
-}
-
-/// The scan of an ELF file: the table `--table` names, its symbols by default.
-fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
-    let (lf, opened) = open(input.path(), input.options.table.as_deref())?;
-    input.report.opened = Some(Arc::new(opened));
-    Ok(lf.into())
+    let opened =
+        crate::members::Opened::for_table(elf.detail, &tables, &picked, notes, "the symbol table");
+    Ok(opened.scan(input, df.lazy()))
 }
 
 #[cfg(test)]

@@ -142,7 +142,7 @@ Where a dataset opens.
 | `Ctrl+↑ / Ctrl+↓` | Previous or next section |
 | `PgUp / PgDn` | A screenful, stopping at the first and last |
 | `Home / End` | The first or last row. The filter has no cursor to move: it is edited at its end |
-| `← / →` | Fold or unfold a section; → on a directory or a file of tables goes inside it, and on a file a format spec reads as record types lists them, one row each |
+| `← / →` | Fold or unfold a section; → on a directory or a file of tables goes inside it, and on a file a format spec reads as record types lists them, one row each. On a directory cut to its first rows, → on its more row shows them all and ← cuts it back |
 | `Space` | While the filter is empty: fold or unfold the section header under the cursor. With a filter typed, it types |
 | `Tab` | Cycle the sort; the footer names the order in effect when it has room |
 
@@ -150,7 +150,7 @@ Where a dataset opens.
 
 | Key | Action |
 |---|---|
-| `Enter` | What the footer says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them |
+| `Enter` | What the footer says on this row: "Open all" reads a whole directory as one table, "Inside" steps into it, "Open" loads a file, "Look" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on a more row, show the rest; on `..`, go up a level; on the hidden-files row, show them |
 | `Backspace` | Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a catalog's remote dataset, back here) |
 | `Esc` | Back out one layer: the path prompt, the filter (onto the first dataset), the directory (back to the row it was entered from), then to the open table |
 

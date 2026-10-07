@@ -689,8 +689,10 @@ pub enum WhatEnter {
     LooksFirst,
     /// Fold or unfold a section.
     FoldsSection,
-    /// Show the rest of `RECENT`.
+    /// Show the rest of `RECENT`, or of a directory cut short.
     ShowsMore,
+    /// Go up a level: the `..` row.
+    GoesUp,
     /// Show the files datui cannot open, as `Ctrl+A` does.
     ShowsHidden,
     /// Nothing to open and nowhere to go: an HTTP place, which has no listing to
@@ -718,6 +720,7 @@ impl App {
             }
             Some(home::Row::Header { .. }) => return WhatEnter::FoldsSection,
             Some(home::Row::More { .. }) => return WhatEnter::ShowsMore,
+            Some(home::Row::Up { .. }) => return WhatEnter::GoesUp,
             Some(home::Row::Hidden { .. }) => return WhatEnter::ShowsHidden,
             // "No match.": nothing to open and nothing to say about it.
             None => return WhatEnter::Nothing,
@@ -2566,9 +2569,10 @@ impl App {
             }
             InputMode::Chart => {
                 if self.chart_export_modal.active {
+                    // Every row is a choice or a text field.
                     self.chart_export_modal
-                        .input(self.chart_export_modal.focus)
-                        .is_some()
+                        .choice(self.chart_export_modal.focus)
+                        .is_none()
                 } else {
                     // The open column Picker narrows by typing, so it types.
                     self.chart_modal.picker.is_some()

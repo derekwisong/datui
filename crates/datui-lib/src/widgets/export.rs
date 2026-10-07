@@ -1,4 +1,4 @@
-//! Export modal rendering: one Surface, a FormRow per field in one column, the
+//! Export modal rendering: a FormView, a row per field in one column, the
 //! actions in the footer. Format is a Choice, so it is drawn as one: its values
 //! side by side on its row, where ←/→ visibly step along them.
 
@@ -6,8 +6,9 @@ use crate::CompressionFormat;
 use crate::app::pointer::FieldId;
 use crate::export::export_modal::{COMPRESSION_OPTIONS, ExportFocus, ExportFormat, ExportModal};
 use crate::render::context::RenderContext;
-use crate::widgets::ui::{FormRow, FormValue, HintBar, Surface};
+use crate::widgets::ui::{FormLine, FormValue, FormView, HintBar};
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 
 /// The value column's offset: past the longest labels, "Compression:" and
 /// "Source file:", plus two cells of air, which the format row's tint uses.
@@ -92,12 +93,6 @@ pub fn render_export_modal(
     };
     let footer = footer.key("Tab").weight(1).key("Esc").weight(4);
     crate::app::pointer::record(area, crate::app::pointer::Hit::Modal);
-    let content = Surface::new("Export Data")
-        .footer(&footer)
-        .render(area, buf, ctx);
-    if content.height < 1 || content.width < 4 {
-        return;
-    }
 
     modal
         .path_input
@@ -113,109 +108,68 @@ pub fn render_export_modal(
         .iter()
         .position(|f| *f == modal.selected_format)
         .unwrap_or(0);
-    let format_field = FieldId::of::<ExportModal>(ExportFocus::FormatSelector);
-    let compression_field = FieldId::of::<ExportModal>(ExportFocus::Compression);
     let compression = COMPRESSION_OPTIONS
         .iter()
         .position(|c| *c == modal.compression())
         .unwrap_or(0);
-    let fields = modal.focus_order();
-    for (i, &field) in fields.iter().enumerate() {
-        let y = content.y + i as u16;
-        if y >= content.bottom() {
-            break;
-        }
-        let (label, value) = match field {
-            ExportFocus::FormatSelector => (
-                "Format:",
-                FormValue::Options {
-                    items: &FORMAT_NAMES,
-                    selected,
-                    clicks: Some(format_field.clone()),
-                },
-            ),
-            ExportFocus::PathInput => ("Path:", FormValue::Input(&modal.path_input)),
-            ExportFocus::CsvDelimiter => {
-                ("Delimiter:", FormValue::Input(&modal.csv_delimiter_input))
-            }
-            ExportFocus::CsvIncludeHeader => {
-                ("Header:", FormValue::Toggle(modal.csv_include_header))
-            }
-            ExportFocus::Compression => (
-                "Compression:",
-                FormValue::Options {
-                    items: &COMPRESSION_NAMES,
-                    selected: compression,
-                    clicks: Some(compression_field.clone()),
-                },
-            ),
-            ExportFocus::SourceFile => ("Source file:", FormValue::Toggle(modal.source_file)),
-        };
-        let row = Rect {
-            y,
-            height: 1,
-            ..content
-        };
-        // The row first: the format's values, recorded as drawn, lie on top.
-        crate::app::pointer::record_field::<ExportModal>(row, field);
-        FormRow {
-            label,
-            value,
-            focused: modal.focus == field,
-            label_width: LABEL_WIDTH,
-        }
-        .render(row, buf, ctx);
-    }
+    let rows = modal
+        .focus_order()
+        .into_iter()
+        .map(|field| {
+            let (label, value) = match field {
+                ExportFocus::FormatSelector => (
+                    "Format:",
+                    FormValue::Options {
+                        items: &FORMAT_NAMES,
+                        selected,
+                        clicks: Some(FieldId::of::<ExportModal>(field)),
+                    },
+                ),
+                ExportFocus::PathInput => ("Path:", FormValue::Input(&modal.path_input)),
+                ExportFocus::CsvDelimiter => {
+                    ("Delimiter:", FormValue::Input(&modal.csv_delimiter_input))
+                }
+                ExportFocus::CsvIncludeHeader => {
+                    ("Header:", FormValue::Toggle(modal.csv_include_header))
+                }
+                ExportFocus::Compression => (
+                    "Compression:",
+                    FormValue::Options {
+                        items: &COMPRESSION_NAMES,
+                        selected: compression,
+                        clicks: Some(FieldId::of::<ExportModal>(field)),
+                    },
+                ),
+                ExportFocus::SourceFile => ("Source file:", FormValue::Toggle(modal.source_file)),
+            };
+            FormLine::Field(field, label, value)
+        })
+        .collect();
 
     // The reason the form cannot export yet, inline on the last line: a warning
     // at most, never a modal. Otherwise the line says how a format without
     // nesting writes the view's list and struct columns, or that Avro renames.
-    // The last line, not under the rows, so it stays put as rows come and go.
     let status = match modal.path_error.as_deref() {
-        Some(message) => Some((message, ctx.warning)),
+        Some(message) => (message, ctx.warning),
         None if modal.nested_columns && !modal.selected_format.holds_nesting() => {
-            Some((NESTED_NOTE, ctx.dimmed))
+            (NESTED_NOTE, ctx.dimmed)
         }
         None if modal.avro_renames && modal.selected_format == ExportFormat::Avro => {
-            Some((AVRO_NAMES_NOTE, ctx.dimmed))
+            (AVRO_NAMES_NOTE, ctx.dimmed)
         }
-        None => None,
+        None => ("", ctx.dimmed),
     };
-    let Some((message, color)) = status else {
-        return;
-    };
-    // A failed write's reason can run longer than the line: it wraps upward into
-    // the rows the format leaves free, keeping a blank under the last field, and
-    // is cut with an ellipsis past that.
-    let width = content.width.saturating_sub(1) as usize;
-    let first_free = content.y + fields.len() as u16 + 1;
-    let room = content.bottom().saturating_sub(first_free).max(1) as usize;
-    let mut lines = crate::widgets::info::wrap_to(message, width);
-    if lines.len() > room {
-        lines.truncate(room);
-        if let Some(last) = lines.last_mut() {
-            let cut = format!("{last} {}", crate::glyphs::get().ellipsis);
-            *last = crate::glyphs::fit(&cut, width);
-        }
+    FormView {
+        title: "Export Data",
+        screen: datui_cli::keys::Context::Export,
+        footer: Some(footer),
+        label_width: LABEL_WIDTH,
+        rows,
+        focused: Some(modal.focus),
+        picker: None,
+        status: Some((status.0.to_string(), Style::default().fg(status.1))),
     }
-    let top = content.bottom() - lines.len() as u16;
-    if top < content.y + fields.len() as u16 {
-        return;
-    }
-    for (i, line) in lines.iter().enumerate() {
-        // Under the labels, past the rail gutter.
-        ratatui::widgets::Widget::render(
-            ratatui::widgets::Paragraph::new(line.as_str())
-                .style(ratatui::style::Style::default().fg(color)),
-            Rect {
-                x: content.x + 1,
-                y: top + i as u16,
-                width: content.width - 1,
-                height: 1,
-            },
-            buf,
-        );
-    }
+    .render::<ExportModal>(area, buf, ctx);
 }
 
 #[cfg(test)]

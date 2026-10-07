@@ -2,7 +2,7 @@
 
 use crate::render::context::RenderContext;
 use crate::render::datatable_view::{ActiveSidebar, DatatableLayout};
-use crate::widgets::datatable::DataTable;
+use crate::table::DataTable;
 use crate::widgets::info::{DataTableInfo, InfoContext};
 use crate::widgets::ui::{HintBar, Working};
 use crate::widgets::{copy, export, pivot_melt};

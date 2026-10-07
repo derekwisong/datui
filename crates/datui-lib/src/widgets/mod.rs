@@ -7,7 +7,6 @@ pub mod column_widths;
 pub mod copy;
 pub mod crosshair;
 pub mod data_quality;
-pub mod datatable;
 pub mod debug;
 pub mod documentation;
 pub mod export;

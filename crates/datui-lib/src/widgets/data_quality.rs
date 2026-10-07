@@ -16,7 +16,7 @@ use crate::quality_trends::{
     GapCheck, GapKind, Gaps, TrendBar, TrendMeasure, TrendRow, TrendView, trend_view,
 };
 use crate::render::context::RenderContext;
-use crate::widgets::datatable::DataTableState;
+use crate::table::DataTableState;
 use crate::widgets::ui::{FormValue, Picker, Surface};
 use polars::prelude::{DataType, Schema};
 use ratatui::buffer::Buffer;

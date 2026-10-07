@@ -2,15 +2,15 @@
 //! it, and taking it away.
 //!
 //! The sample is a step of the view, between the source and the query
-//! ([`crate::widgets::datatable::Sampled`]). Its rows are drawn off the UI thread by a
+//! ([`crate::table::Sampled`]). Its rows are drawn off the UI thread by a
 //! [`Job::SampleDraw`], which keeps them in memory a chunk at a time
 //! ([`crate::table_sample`]); each chunk is laid under the view's frames as it lands,
 //! as a followed pipe's rows are.
 
 use crate::jobs::{Answer, Job, SampleDraw};
 use crate::sample_modal::SampleForm;
+use crate::table::DataTableState;
 use crate::table_sample::{Limit, MemoryCheck, MemoryProbe};
-use crate::widgets::datatable::DataTableState;
 use crate::{App, AppEvent, InputMode, form, sampling};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::sync::Arc;

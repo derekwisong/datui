@@ -2067,7 +2067,7 @@ mod tests {
             "k=2x/b.parquet",
             "k=3/m=2024-01-01/c.parquet",
         ];
-        let partitions = |state: &crate::widgets::datatable::DataTableState| {
+        let partitions = |state: &crate::table::DataTableState| {
             let columns = state.partition_columns().unwrap_or_default().to_vec();
             columns
                 .iter()
@@ -2286,7 +2286,7 @@ mod tests {
         )
         // As `build_schema_state` marks a prefix that is scanned where it lies.
         .map(|(state, facts)| {
-            state.with_open(crate::widgets::datatable::OpenFacts {
+            state.with_open(crate::table::OpenFacts {
                 remote_source: true,
                 ..facts
             })
@@ -3174,7 +3174,7 @@ mod tests {
         .map(|(state, facts)| state.with_open(facts))
         .expect("the prefix opens");
 
-        let said = |state: &crate::widgets::datatable::DataTableState| {
+        let said = |state: &crate::table::DataTableState| {
             state
                 .notes()
                 .iter()

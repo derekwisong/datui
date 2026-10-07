@@ -9,7 +9,7 @@ use crate::error_display::FileError;
 use crate::export_modal::ExportFormat;
 use crate::python_script::{self as py, Python};
 use crate::scan::Scan;
-use crate::widgets::datatable::DataTableState;
+use crate::table::DataTableState;
 
 /// A prefix of CSV in an object store, read with the flags the user gave as they are
 /// for a local file.

@@ -18,7 +18,7 @@ use crate::inspector_modal::{
 pub use crate::inspector_reader::Tone;
 use crate::inspector_reader::{self as reader, Content, TextForm, Window};
 use crate::render::context::RenderContext;
-use crate::widgets::datatable::{DataTableState, InspectField, InspectRow, NullKind, dtype_label};
+use crate::table::{DataTableState, InspectField, InspectRow, NullKind, dtype_label};
 use crate::widgets::ui::{HintBar, SectionRule, Surface};
 use polars::prelude::*;
 use ratatui::buffer::Buffer;

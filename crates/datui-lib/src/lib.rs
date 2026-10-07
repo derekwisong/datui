@@ -195,6 +195,7 @@ pub mod sql_group;
 pub mod startup;
 pub mod statistics;
 pub mod stdin;
+pub mod table;
 pub mod table_switch;
 pub mod tee;
 mod terminal;
@@ -248,11 +249,11 @@ use quality_memory::{QUALITY_RELEASED_REMEMBERED, QualityCacheEntry, QualityCopy
 use scan::Scan;
 use sort_filter_modal::SortFilterModal;
 use sort_modal::{SortColumn, order_with_hidden};
+use table::{DataTableState, DrillRow, OpenFacts};
 use terminal::{QuietTerminal, TakenTerminal, follow_focus, push_keyboard_flags, restore_terminal};
 pub use unfinished::ExitSweep;
 pub use view::{SavedView, ViewManager, Views};
 use widgets::column_widths::WidthChoice;
-use widgets::datatable::{DataTableState, DrillRow, OpenFacts};
 use widgets::debug::DebugState;
 use widgets::text_input::TextInput;
 use widgets::view_modal::{FormFocus, ViewModal, ViewModalMode, ViewRow};
@@ -802,7 +803,7 @@ struct QueryRun {
     /// The `len_generation` of the frame the query installed. Once that frame is gone
     /// (a sort, a filter, another dataset) the rollback no longer applies.
     frame: u64,
-    rollback: crate::widgets::datatable::ViewRollback,
+    rollback: crate::table::ViewRollback,
     /// The App's count markers as they were, for the frame the rollback restores.
     /// A count of that frame still running when the query began lands while the
     /// query's frame is installed; its answer goes into `rollback`.
@@ -962,7 +963,7 @@ pub(crate) enum Replayed {
     Planned,
     /// Stopped at the pivot, which has to be read before the steps after it can be
     /// planned.
-    Pivot(Box<crate::widgets::datatable::PivotJob>),
+    Pivot(Box<crate::table::PivotJob>),
 }
 
 /// What a cloud open was pointed at: the URL as the user gave it, the prefix to list,
@@ -1335,7 +1336,7 @@ pub struct App {
     /// a drill-down rather than at the data. Held rather than applied, because widening
     /// the scan under a query takes the query's own columns away, and offered again the
     /// moment the view comes back to the dataset itself.
-    footers_held: Option<(u64, crate::widgets::datatable::FootersFound)>,
+    footers_held: Option<(u64, crate::table::FootersFound)>,
     /// Fields a followed pipe's NDJSON brought after the open, held as footers are
     /// until the view is back on the data.
     followed_fields_held: Option<(u64, Vec<polars::prelude::Field>)>,
@@ -1597,7 +1598,7 @@ impl App {
             .iter()
             .map(|(name, dtype)| {
                 if matches!(dtype, polars::prelude::DataType::Binary) {
-                    polars::prelude::lit(widgets::datatable::binary_stub()).alias(name.clone())
+                    polars::prelude::lit(table::binary_stub()).alias(name.clone())
                 } else {
                     polars::prelude::col(name.clone())
                 }
@@ -5202,7 +5203,7 @@ impl App {
     fn record_footers(
         slot: &std::sync::Mutex<FootersReported>,
         generation: u64,
-        found: Option<crate::widgets::datatable::FootersFound>,
+        found: Option<crate::table::FootersFound>,
     ) -> bool {
         let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
         if slot.as_ref().is_some_and(|(held, _)| *held > generation) {
@@ -5928,7 +5929,7 @@ impl App {
 
     fn handle_scroll<F>(&mut self, scroll: F) -> Option<AppEvent>
     where
-        F: FnOnce(&mut crate::widgets::datatable::DataTableState) -> bool,
+        F: FnOnce(&mut crate::table::DataTableState) -> bool,
     {
         let needs = self.data_table_state.as_mut().is_some_and(scroll);
         if !needs || !self.spawn_async_collect(Self::LOADING_BUFFER) {
@@ -10475,7 +10476,7 @@ fn next_search_epoch() -> u64 {
 /// indexing looks whether it is still wanted.
 const INDEX_STEP: usize = 16 << 20;
 
-type FootersReported = Option<(u64, Option<crate::widgets::datatable::FootersFound>)>;
+type FootersReported = Option<(u64, Option<crate::table::FootersFound>)>;
 
 impl App {
     /// Schema for a local directory of Parquet files: every column any of them has, from
@@ -14928,9 +14929,9 @@ impl App {
                 };
                 // Cloned, not taken: a failed write reopens the dialog on the same counts.
                 let frame = match self.export_counts.clone() {
-                    Some(counts) => crate::widgets::datatable::ExportFrame::of(
-                        polars::prelude::IntoLazy::lazy(counts),
-                    ),
+                    Some(counts) => {
+                        crate::table::ExportFrame::of(polars::prelude::IntoLazy::lazy(counts))
+                    }
                     None => state.export_frame(request.options.source_file),
                 };
                 let streaming = state.polars_streaming();
@@ -15692,7 +15693,7 @@ impl App {
     fn view_planned(
         &mut self,
         view: &SavedView,
-        rollback: crate::widgets::datatable::ViewRollback,
+        rollback: crate::table::ViewRollback,
         why: Option<view::MatchReason>,
     ) {
         if let Some(path) = &self.path {
@@ -18679,7 +18680,7 @@ impl App {
     /// sort that orders ties differently on a second read cannot pass another row's
     /// fields off as this one's. `wait`: the user waits on it, as on Enter; a read
     /// that follows the rows does not hold the keys.
-    fn read_inspected_fields(&mut self, row: &crate::widgets::datatable::InspectRow, wait: bool) {
+    fn read_inspected_fields(&mut self, row: &crate::table::InspectRow, wait: bool) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };

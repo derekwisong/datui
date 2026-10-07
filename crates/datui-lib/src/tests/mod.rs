@@ -403,7 +403,7 @@ pub fn sample_data_dir() -> std::path::PathBuf {
 /// would be left with "Counting rows to find the end..." and no end.
 #[test]
 fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
-    use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
+    use crate::table::{DataTableState, FootersFound, RemoteFiles};
     use crate::{App, AppEvent, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -430,7 +430,7 @@ fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
         None,
     )
     .unwrap()
-    .with_open(crate::widgets::datatable::OpenFacts {
+    .with_open(crate::table::OpenFacts {
         remote_source: true,
         remote_files: Some(RemoteFiles {
             urls: Arc::new(vec!["one".to_string()]),
@@ -446,7 +446,7 @@ fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
                 file_rows: vec![100],
                 files: vec!["one".to_string()],
                 row_groups: vec![vec![100]],
-                remote: Some(crate::widgets::datatable::RemoteRead {
+                remote: Some(crate::table::RemoteRead {
                     urls: vec!["one".to_string()],
                     scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
                     count: Arc::new(|_| Ok(vec![vec![100]])),
@@ -509,7 +509,7 @@ fn a_sampled_dataset_shows_an_estimate_until_it_is_counted() {
     use crate::render::footer::Total;
     use crate::render::main_view::MainViewContent;
     use crate::schema_union::RowEstimate;
-    use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles, RemoteRead};
+    use crate::table::{DataTableState, FootersFound, RemoteFiles, RemoteRead};
     use crate::{App, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -532,7 +532,7 @@ fn a_sampled_dataset_shows_an_estimate_until_it_is_counted() {
     // A count that says it has read one footer of three, then waits to be let go.
     let (go, gate) = mpsc::channel::<()>();
     let gate = Arc::new(Mutex::new(gate));
-    let counter: crate::widgets::datatable::FileCounter = Arc::new(move |progress| {
+    let counter: crate::table::FileCounter = Arc::new(move |progress| {
         let pass = progress.pass(3);
         pass.advance();
         let _ = gate.lock().unwrap().recv();
@@ -551,7 +551,7 @@ fn a_sampled_dataset_shows_an_estimate_until_it_is_counted() {
         None,
     )
     .unwrap()
-    .with_open(crate::widgets::datatable::OpenFacts {
+    .with_open(crate::table::OpenFacts {
         remote_source: true,
         remote_files: Some(RemoteFiles {
             urls: Arc::new(urls()),
@@ -656,7 +656,7 @@ fn a_sampled_dataset_shows_an_estimate_until_it_is_counted() {
 /// so `#` counts the view there and the footer says so.
 #[test]
 fn row_numbers_over_a_sort_fall_back_to_the_view_in_a_store() {
-    use crate::widgets::datatable::{DataTableState, OpenFacts};
+    use crate::table::{DataTableState, OpenFacts};
     use polars::prelude::*;
 
     let frame = || df!("v" => [3i64, 1, 2]).unwrap().lazy();
@@ -706,7 +706,7 @@ fn row_numbers_over_a_sort_fall_back_to_the_view_in_a_store() {
 /// a key that collects — `Char('R')`, say.
 #[test]
 fn a_key_that_acts_while_busy_reads_nothing() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -827,7 +827,7 @@ fn a_key_that_acts_while_busy_reads_nothing() {
 /// user has only just opened jumping to its end on its own.
 #[test]
 fn end_pressed_at_one_dataset_does_not_move_the_next() {
-    use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
+    use crate::table::{DataTableState, FootersFound, RemoteFiles};
     use crate::{App, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -854,7 +854,7 @@ fn end_pressed_at_one_dataset_does_not_move_the_next() {
             None,
         )
         .unwrap()
-        .with_open(crate::widgets::datatable::OpenFacts {
+        .with_open(crate::table::OpenFacts {
             remote_source: true,
             remote_files: Some(RemoteFiles {
                 urls: Arc::new(vec!["one".to_string()]),
@@ -870,7 +870,7 @@ fn end_pressed_at_one_dataset_does_not_move_the_next() {
                     file_rows: vec![100],
                     files: vec!["one".to_string()],
                     row_groups: vec![vec![100]],
-                    remote: Some(crate::widgets::datatable::RemoteRead {
+                    remote: Some(crate::table::RemoteRead {
                         urls: vec!["one".to_string()],
                         scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(rows())),
                         count: Arc::new(|_| Ok(vec![vec![100]])),
@@ -915,7 +915,7 @@ fn end_pressed_at_one_dataset_does_not_move_the_next() {
 /// that is not running.
 #[test]
 fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
-    use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
+    use crate::table::{DataTableState, FootersFound, RemoteFiles};
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -946,7 +946,7 @@ fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
         None,
     )
     .unwrap()
-    .with_open(crate::widgets::datatable::OpenFacts {
+    .with_open(crate::table::OpenFacts {
         remote_source: true,
         remote_files: Some(RemoteFiles {
             urls: Arc::new(vec!["one".to_string()]),
@@ -962,7 +962,7 @@ fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
                 file_rows: vec![100],
                 files: vec!["one".to_string()],
                 row_groups: vec![vec![100]],
-                remote: Some(crate::widgets::datatable::RemoteRead {
+                remote: Some(crate::table::RemoteRead {
                     urls: vec!["one".to_string()],
                     scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(wide())),
                     count: Arc::new(|_| Ok(vec![vec![100]])),
@@ -1012,7 +1012,7 @@ fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
 /// the frame scans: here a compressed CSV's decompressed copy (#511).
 #[test]
 fn a_failed_read_names_the_file_opened_not_its_temp_copy() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, OpenOptions};
     use std::io::Write;
     use std::path::PathBuf;
@@ -1053,7 +1053,7 @@ fn a_failed_read_names_the_file_opened_not_its_temp_copy() {
 /// session, no windowed reads, and nothing on screen to say why.
 #[test]
 fn a_pass_that_cannot_read_the_footers_stops_the_dataset_waiting_for_it() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -1067,7 +1067,7 @@ fn a_pass_that_cannot_read_the_footers_stops_the_dataset_waiting_for_it() {
     let state =
         DataTableState::from_schema_and_lazyframe(schema, frame(), &OpenOptions::default(), None)
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 // The network was there for the open's two footers and gone for the rest.
                 footers_pending: Some(Arc::new(|_progress| None)),
                 ..Default::default()
@@ -1101,7 +1101,7 @@ fn a_pass_that_cannot_read_the_footers_stops_the_dataset_waiting_for_it() {
 /// asserts it is shown; this is the direction that goes wrong.
 #[test]
 fn a_count_not_yet_taken_is_not_printed_as_the_total() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, OpenOptions};
     use polars::prelude::*;
     use ratatui::buffer::Buffer;
@@ -1115,7 +1115,7 @@ fn a_count_not_yet_taken_is_not_printed_as_the_total() {
     let mut state =
         DataTableState::from_schema_and_lazyframe(schema, rows(), &OpenOptions::default(), None)
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 footers_pending: Some(Arc::new(|_| None)),
                 ..Default::default()
             });
@@ -1158,7 +1158,7 @@ fn a_count_not_yet_taken_is_not_printed_as_the_total() {
 /// it: a table with no rows in it until the next keypress.
 #[test]
 fn a_pass_that_brings_no_count_still_leaves_rows_on_screen() {
-    use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
+    use crate::table::{DataTableState, FootersFound, RemoteFiles};
     use crate::{App, AppEvent, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -1190,7 +1190,7 @@ fn a_pass_that_brings_no_count_still_leaves_rows_on_screen() {
         None,
     )
     .unwrap()
-    .with_open(crate::widgets::datatable::OpenFacts {
+    .with_open(crate::table::OpenFacts {
         remote_source: true,
         remote_files: Some(RemoteFiles {
             urls: Arc::new(vec!["one".to_string()]),
@@ -1251,7 +1251,7 @@ fn a_pass_that_brings_no_count_still_leaves_rows_on_screen() {
 /// the rows to find the end" about something the user never asked for.
 #[test]
 fn end_on_a_sorted_dataset_still_reading_its_footers_waits_for_the_pass() {
-    use crate::widgets::datatable::{DataTableState, RemoteFiles};
+    use crate::table::{DataTableState, RemoteFiles};
     use crate::{App, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -1263,7 +1263,7 @@ fn end_on_a_sorted_dataset_still_reading_its_footers_waits_for_the_pass() {
     let mut state =
         DataTableState::from_schema_and_lazyframe(schema, rows(), &OpenOptions::default(), None)
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 remote_source: true,
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(vec!["one".to_string()]),
@@ -1316,7 +1316,7 @@ fn end_on_a_sorted_dataset_still_reading_its_footers_waits_for_the_pass() {
 /// not count the rows to find the end" about a key pressed on a different frame.
 #[test]
 fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
-    use crate::widgets::datatable::{DataTableState, FootersFound, RemoteFiles};
+    use crate::table::{DataTableState, FootersFound, RemoteFiles};
     use crate::{App, AppEvent, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -1345,7 +1345,7 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
     let mut state =
         DataTableState::from_schema_and_lazyframe(schema, rows(), &OpenOptions::default(), None)
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 remote_source: true,
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(vec!["one".to_string()]),
@@ -1361,7 +1361,7 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
                         file_rows: vec![100],
                         files: vec!["one".to_string()],
                         row_groups: vec![vec![100]],
-                        remote: Some(crate::widgets::datatable::RemoteRead {
+                        remote: Some(crate::table::RemoteRead {
                             urls: vec!["one".to_string()],
                             scan: Arc::new(move |_u: &[String], _t: &[PlSmallStr]| Ok(wide())),
                             count: Arc::new(|_| Ok(vec![vec![100]])),
@@ -1454,7 +1454,7 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
 /// waiting on was still running and about to succeed.
 #[test]
 fn a_count_that_failed_for_another_frame_does_not_answer_for_this_end() {
-    use crate::widgets::datatable::{DataTableState, RemoteFiles};
+    use crate::table::{DataTableState, RemoteFiles};
     use crate::{App, AppEvent, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -1466,7 +1466,7 @@ fn a_count_that_failed_for_another_frame_does_not_answer_for_this_end() {
     let mut state =
         DataTableState::from_schema_and_lazyframe(schema, rows(), &OpenOptions::default(), None)
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 remote_source: true,
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(vec!["one".to_string()]),
@@ -1513,7 +1513,7 @@ fn a_count_that_failed_for_another_frame_does_not_answer_for_this_end() {
 ///
 /// The receiver comes back with it so a test can read what the App sent.
 fn uncounted_remote_app() -> (crate::App, std::sync::mpsc::Receiver<crate::AppEvent>) {
-    use crate::widgets::datatable::{DataTableState, RemoteFiles};
+    use crate::table::{DataTableState, RemoteFiles};
     use crate::{App, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -1524,7 +1524,7 @@ fn uncounted_remote_app() -> (crate::App, std::sync::mpsc::Receiver<crate::AppEv
     let mut state =
         DataTableState::from_schema_and_lazyframe(schema, frame(), &OpenOptions::default(), None)
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 remote_source: true,
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(vec!["one".to_string()]),
@@ -1872,7 +1872,7 @@ fn a_parked_end_does_not_put_its_message_on_the_home_screen() {
 /// of those two ever changed.
 #[test]
 fn a_parked_end_does_not_put_its_message_on_the_next_dataset() {
-    use crate::{OpenOptions, widgets::datatable::DataTableState};
+    use crate::{OpenOptions, table::DataTableState};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -2025,7 +2025,7 @@ fn the_bar_says_it_is_counting_for_an_end_and_says_when_that_failed() {
 /// when that count lands.
 #[test]
 fn an_end_pressed_on_the_dataset_they_left_does_not_move_the_next_one() {
-    use crate::widgets::datatable::{DataTableState, RemoteFiles};
+    use crate::table::{DataTableState, RemoteFiles};
     use crate::{App, AppEvent, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -2042,7 +2042,7 @@ fn an_end_pressed_on_the_dataset_they_left_does_not_move_the_next_one() {
             None,
         )
         .unwrap()
-        .with_open(crate::widgets::datatable::OpenFacts {
+        .with_open(crate::table::OpenFacts {
             remote_source: true,
             remote_files: Some(RemoteFiles {
                 urls: Arc::new(vec!["one".to_string()]),
@@ -2354,7 +2354,7 @@ fn a_superseded_scan_does_not_continue_the_load() {
     );
 
     // Nor does the first's dataset install, read after all.
-    let state = crate::widgets::datatable::DataTableState::from_lazyframe(
+    let state = crate::table::DataTableState::from_lazyframe(
         polars::df!("a" => [1i32]).unwrap().lazy(),
         &OpenOptions::default(),
     )
@@ -2800,7 +2800,7 @@ fn a_count_answers_however_its_worker_ends() {
 /// and holds the generation itself.
 #[test]
 fn an_open_holds_the_generation_before_the_errands_behind_it() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -3041,7 +3041,7 @@ fn uncapped_clipboard(app: &mut crate::App) {
 /// that asks, an unknown size or a large estimate collects without asking.
 #[test]
 fn a_capped_table_copy_asks_only_past_what_the_cap_could_hold() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -3061,7 +3061,7 @@ fn a_capped_table_copy_asks_only_past_what_the_cap_could_hold() {
             None,
         )
         .unwrap()
-        .with_open(crate::widgets::datatable::OpenFacts {
+        .with_open(crate::table::OpenFacts {
             column_bytes: footer_width
                 .map(|width| vec![("blob".to_string(), width)])
                 .unwrap_or_default(),
@@ -3097,7 +3097,7 @@ fn a_capped_table_copy_asks_only_past_what_the_cap_could_hold() {
 /// being read) must ask first, never collect an unknown amount unprompted.
 #[test]
 fn a_table_copy_with_no_size_yet_asks_first() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -3131,7 +3131,7 @@ fn a_table_copy_with_no_size_yet_asks_first() {
 /// footer measured ask, since the buffer only ever holds a stub for them (#429).
 #[test]
 fn a_table_copy_counts_binary_at_its_base64_size() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -3151,7 +3151,7 @@ fn a_table_copy_counts_binary_at_its_base64_size() {
             None,
         )
         .unwrap()
-        .with_open(crate::widgets::datatable::OpenFacts {
+        .with_open(crate::table::OpenFacts {
             column_bytes: footer_width
                 .map(|width| vec![("blob".to_string(), width)])
                 .unwrap_or_default(),
@@ -3271,7 +3271,7 @@ fn a_confirmation_keeps_its_keys_in_its_own_footer() {
 /// session.
 #[test]
 fn a_count_landing_during_a_load_does_not_bump_the_generation() {
-    use crate::widgets::datatable::{DataTableState, RemoteFiles};
+    use crate::table::{DataTableState, RemoteFiles};
     use crate::{App, AppEvent, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use polars::prelude::*;
@@ -3283,7 +3283,7 @@ fn a_count_landing_during_a_load_does_not_bump_the_generation() {
     let mut state =
         DataTableState::from_schema_and_lazyframe(schema, rows(), &OpenOptions::default(), None)
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 remote_source: true,
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(vec!["one".to_string()]),
@@ -3353,7 +3353,7 @@ fn a_count_landing_during_a_load_does_not_bump_the_generation() {
 /// the errand takes.
 #[test]
 fn a_dataset_owed_a_re_read_does_not_print_its_partial_as_the_total() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use ratatui::buffer::Buffer;
@@ -3367,7 +3367,7 @@ fn a_dataset_owed_a_re_read_does_not_print_its_partial_as_the_total() {
     let mut state =
         DataTableState::from_schema_and_lazyframe(schema, rows(), &OpenOptions::default(), None)
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 footers_pending: Some(Arc::new(|_| None)),
                 ..Default::default()
             });
@@ -3425,7 +3425,7 @@ fn a_dataset_owed_a_re_read_does_not_print_its_partial_as_the_total() {
 /// to take: a frame that is not the scan does not read footers for its count.
 #[test]
 fn a_query_over_a_dataset_still_reading_its_footers_is_counted() {
-    use crate::widgets::datatable::{DataTableState, RemoteFiles};
+    use crate::table::{DataTableState, RemoteFiles};
     use crate::{App, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -3437,7 +3437,7 @@ fn a_query_over_a_dataset_still_reading_its_footers_is_counted() {
     let mut state =
         DataTableState::from_schema_and_lazyframe(schema, rows(), &OpenOptions::default(), None)
             .unwrap()
-            .with_open(crate::widgets::datatable::OpenFacts {
+            .with_open(crate::table::OpenFacts {
                 remote_source: true,
                 remote_files: Some(RemoteFiles {
                     urls: Arc::new(vec!["one".to_string()]),
@@ -3482,7 +3482,7 @@ fn a_query_over_a_dataset_still_reading_its_footers_is_counted() {
 /// gaining a column from a different directory entirely.
 #[test]
 fn a_pass_from_the_dataset_before_this_one_joins_nothing_to_it() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -3517,9 +3517,9 @@ fn a_pass_from_the_dataset_before_this_one_joins_nothing_to_it() {
     let mut app = App::new(tx, crate::tests::test_runtime());
 
     // The first dataset, staged.
-    let state = state_of(first()).with_open(crate::widgets::datatable::OpenFacts {
+    let state = state_of(first()).with_open(crate::table::OpenFacts {
         footers_pending: Some(Arc::new(move |_progress| {
-            Some(crate::widgets::datatable::FootersFound {
+            Some(crate::table::FootersFound {
                 estimate: None,
                 dataset: dataset_of(its_columns()),
                 lf: its_columns(),
@@ -3566,7 +3566,7 @@ fn a_pass_from_the_dataset_before_this_one_joins_nothing_to_it() {
 /// while the export is still waiting on it.
 #[test]
 fn a_pass_that_failed_waits_for_work_already_asked_for() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -3650,7 +3650,7 @@ fn a_pass_that_failed_waits_for_work_already_asked_for() {
 /// certain to be inside that window.
 #[test]
 fn columns_arriving_during_work_already_asked_for_wait_for_it() {
-    use crate::widgets::datatable::{DataTableState, FootersFound};
+    use crate::table::{DataTableState, FootersFound};
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -3762,7 +3762,7 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
 /// go in: one directory's schema, scan and file list installed into another.
 #[test]
 fn columns_held_for_one_dataset_are_not_given_to_the_next() {
-    use crate::widgets::datatable::{DataTableState, FootersFound};
+    use crate::table::{DataTableState, FootersFound};
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -3841,7 +3841,7 @@ fn columns_held_for_one_dataset_are_not_given_to_the_next() {
 /// nothing to say so: the pass is over, so even the count in the bar is silent.
 #[test]
 fn a_late_event_from_an_old_pass_does_not_throw_away_the_live_answer() {
-    use crate::widgets::datatable::{DataTableState, FootersFound};
+    use crate::table::{DataTableState, FootersFound};
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -3929,7 +3929,7 @@ fn an_older_pass_finishing_late_does_not_displace_a_newer_one() {
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::widgets::datatable::FootersFound {
+        crate::table::FootersFound {
             estimate: None,
             dataset: crate::schema_union::union_sampled(1, &[0], &[Some(footer)]),
             lf,
@@ -3939,7 +3939,7 @@ fn an_older_pass_finishing_late_does_not_displace_a_newer_one() {
             remote: None,
         }
     };
-    let name_in = |slot: &Mutex<Option<(u64, Option<crate::widgets::datatable::FootersFound>)>>| {
+    let name_in = |slot: &Mutex<Option<(u64, Option<crate::table::FootersFound>)>>| {
         slot.lock().unwrap().as_ref().map(|(g, f)| {
             let f = f.as_ref().expect("recorded with something in it");
             (
@@ -3981,7 +3981,7 @@ fn an_older_pass_finishing_late_does_not_displace_a_newer_one() {
 /// columns are held, and get in when the view comes back to the data.
 #[test]
 fn columns_arriving_under_a_query_wait_rather_than_break_it() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -4030,7 +4030,7 @@ fn columns_arriving_under_a_query_wait_rather_than_break_it() {
     let generation = app.dataset_generation;
     app.footers_held = Some((
         generation,
-        crate::widgets::datatable::FootersFound {
+        crate::table::FootersFound {
             estimate: None,
             dataset: dataset_of(wider()),
             lf: wider(),
@@ -4083,7 +4083,7 @@ fn columns_arriving_under_a_query_wait_rather_than_break_it() {
 /// has since left cannot join its columns to the one that replaced it.
 #[test]
 fn a_staged_open_joins_what_its_footers_found() {
-    use crate::widgets::datatable::DataTableState;
+    use crate::table::DataTableState;
     use crate::{App, AppEvent, OpenOptions};
     use polars::prelude::*;
     use std::sync::Arc;
@@ -4139,10 +4139,10 @@ fn a_staged_open_joins_what_its_footers_found() {
         None,
     )
     .unwrap()
-    .with_open(crate::widgets::datatable::OpenFacts {
+    .with_open(crate::table::OpenFacts {
         // What the pass behind the open will find: one column more.
         footers_pending: Some(Arc::new(move |_progress| {
-            Some(crate::widgets::datatable::FootersFound {
+            Some(crate::table::FootersFound {
                 estimate: None,
                 dataset: dataset_of(counted()),
                 lf: counted(),

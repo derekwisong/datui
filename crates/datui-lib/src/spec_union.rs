@@ -41,7 +41,7 @@ pub(crate) fn read_head(file: &Path, options: &OpenOptions, spec: &Delimited) ->
     wanted.extend(spec.head_lines());
     wanted.sort_unstable();
     wanted.dedup();
-    let mut source = crate::widgets::datatable::DataTableState::text_source(file, None)?;
+    let mut source = crate::table::DataTableState::text_source(file, None)?;
     let lines = named_lines(&mut source, &wanted)?;
     let names = rows.map(|rows| {
         let picked: Vec<Vec<u8>> = rows
@@ -189,7 +189,7 @@ pub(crate) fn line_up(
         if *dtype != DataType::String {
             return Some(Some(dtype.clone()));
         }
-        let nulls = crate::widgets::datatable::DataTableState::csv_null_values_for(options, name);
+        let nulls = crate::table::DataTableState::csv_null_values_for(options, name);
         Some(match seen(&heads[file].window, at, &nulls) {
             Seen::Blank => None,
             Seen::Int if typed_by_inference(options, name) => Some(DataType::Int64),
@@ -229,8 +229,7 @@ pub(crate) fn line_up(
                 continue;
             }
             if *dtype == DataType::String {
-                let nulls =
-                    crate::widgets::datatable::DataTableState::csv_null_values_for(options, name);
+                let nulls = crate::table::DataTableState::csv_null_values_for(options, name);
                 casts.push(parsed(
                     name,
                     target.clone(),

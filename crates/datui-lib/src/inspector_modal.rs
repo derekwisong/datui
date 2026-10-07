@@ -9,7 +9,7 @@
 
 use crate::inspector_drill::{Drill, JsonWait, Level, Node};
 use crate::inspector_reader::{Reader, Wrap};
-use crate::widgets::datatable::{InspectField, InspectRow};
+use crate::table::{InspectField, InspectRow};
 use crate::widgets::inspector::Pane;
 use polars::prelude::DataFrame;
 use std::sync::Arc;

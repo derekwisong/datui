@@ -297,7 +297,7 @@ pub(crate) fn rebind(
         }
         _ => {}
     }
-    crate::widgets::datatable::for_each_input(plan, &mut |input| rebind(input, old, new));
+    crate::table::for_each_input(plan, &mut |input| rebind(input, old, new));
 }
 
 /// How a random sample of a stream was drawn: what makes the same seed draw the same

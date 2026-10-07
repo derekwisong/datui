@@ -174,7 +174,7 @@ pub struct OpenOptions {
     pub read_notes: Vec<crate::notes::Note>,
     /// The columns the read gave a type and the frame before, carried to the dataset
     /// as `left_out` is, for the count of the values that did not fit.
-    pub typing: crate::widgets::datatable::Typing,
+    pub typing: crate::table::Typing,
     /// `--hex`: show the file's bytes in the hex view, whatever it holds.
     pub hex: bool,
     /// `--hex-width N`: the bytes a row of the hex view holds.
@@ -504,7 +504,7 @@ pub struct ReadReport {
     /// See [`OpenOptions::read_notes`].
     pub read_notes: Vec<crate::notes::Note>,
     /// See [`OpenOptions::typing`].
-    pub typing: crate::widgets::datatable::Typing,
+    pub typing: crate::table::Typing,
 }
 
 /// A SQLite table opened in place, carried from the scan to the dataset.

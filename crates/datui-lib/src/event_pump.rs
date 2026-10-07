@@ -2899,7 +2899,7 @@ mod tests {
         (pump, dir)
     }
 
-    fn table(pump: &EventPump) -> &crate::widgets::datatable::DataTableState {
+    fn table(pump: &EventPump) -> &crate::table::DataTableState {
         pump.app.data_table_state.as_ref().expect("a dataset")
     }
 

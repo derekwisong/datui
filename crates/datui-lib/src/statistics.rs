@@ -890,11 +890,8 @@ const SAMPLE_POSITION: &str = "__datui_sample_position";
 
 /// Count a frame's rows.
 pub fn count_rows(lf: &LazyFrame, polars_streaming: bool) -> Result<usize> {
-    let count_df = collect_lazy(
-        crate::widgets::datatable::row_count_lf(lf),
-        polars_streaming,
-    )
-    .map_err(Report::from)?;
+    let count_df =
+        collect_lazy(crate::table::row_count_lf(lf), polars_streaming).map_err(Report::from)?;
     Ok(match count_df.get(0).and_then(|row| row.first().cloned()) {
         Some(AnyValue::UInt64(n)) => n as usize,
         Some(AnyValue::UInt32(n)) => n as usize,

@@ -230,3 +230,28 @@ Wall time after a library edit hardly moves: the library's own test executable
 folding saves is link work (2.8 s of CPU for these four), disk (820 MiB), and the
 cold build's link queue. A test edit costs the same. No cold build was measured
 for the pilot.
+
+### `config`, `home` and `repo`
+
+| Target | Modules (were) |
+|---|---|
+| `config` | `settings` (config_test), `flags` (config_integration_test), `themes` (theme_application_test), `colors` (color_parser_test), `indexed_colors` (indexed_color_test), `views` (views_test), `view_store` (view_store_test) |
+| `home` | `search` (search_test), `locality` (locality_test); `home_test.rs` stays apart for now |
+| `repo` | `desktop_entry`, `release_notes`, `wording` |
+
+The only test that set `NO_COLOR` (ignored, for that reason) is now a unit test
+that gives the parser `no_color` directly. The rest only remove it, and
+`DATUI_TEST_IMPORT_DIR` is read by the one test that sets it, so `config` runs
+them in one process. `stderr_log_test` and `startup_test` run child processes
+and stay apart, as do the cloud, live and AWS targets.
+
+| Measure | Before (after the data pilot) | After |
+|---|---|---|
+| Executables in the workspace | 33 | 24 (18 over 200 MiB), 6.8 GiB |
+| These twelve | 1,285 MiB (config group 944, home 316, repo 25) | 663 MiB (389 + 263 + 11) |
+| Rebuild after a one-line `datui-lib` edit | 11.1 s wall, 35 units, 33.2 s across the root test units | 10.1 s wall, 26 units, 24.7 s |
+| Rebuild after a one-line edit of one `config` module | 0.5 s | 0.6 s |
+| `scripts/dev/test.sh full`, built | 29.9 s wall, 38 binaries | 23.7 s wall, 26 binaries |
+
+The same 219 tests pass in the three targets, under `cargo test`, under nextest,
+and with `NO_COLOR=1` set for the run.

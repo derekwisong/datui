@@ -47,7 +47,8 @@ executables. `scripts/dev/test.sh --help` lists the scoped commands;
 | Home/search | `scripts/dev/test.sh integration home FILTER` (`search::`, `coming_back::`, …) |
 | Config/theme/views | `scripts/dev/test.sh integration config settings::` (or `colors::`, `themes::`, `views::`), plus the relevant App tests |
 | CLI definitions | `scripts/dev/test.sh check datui-cli`, then `scripts/dev/test.sh cli` |
-| A specific integration target | `scripts/dev/test.sh integration TARGET FILTER`: a `tests/*.rs` file without `.rs`, or a directory with a `main.rs` (`data`) |
+| Statistics/pivot/Excel | `scripts/dev/test.sh integration data statistics::` (or `distribution::`, `reshape::`, `excel::`) |
+| A specific integration target | `scripts/dev/test.sh integration TARGET FILTER`: a directory with a `main.rs` (`app`), or a `tests/*.rs` file without `.rs` |
 | Formatting/lint before submission | `scripts/dev/test.sh preflight` |
 | Broad validation | `scripts/dev/test.sh full` |
 
@@ -70,15 +71,26 @@ instead of exhausting memory together.
 
 Prepare fixtures once; do not clear `target/`, change compiler flags/features,
 or regenerate all fixtures to diagnose an ordinary failure. Live/cloud tests
-are opt-in. Put new integration cases in an existing domain target rather than
-adding a top-level test executable for each feature. Use small in-memory data
-for logic tests and preserve regression coverage. See
-`docs/for-developers/tests.md` for selection and
-`tests/ORGANIZATION.md` for the reorganization plan.
+are opt-in. Use small in-memory data for logic tests and preserve regression
+coverage.
+
+Root tests are mostly five executables by domain, `tests/{app,home,data,config,repo}/`,
+each a `main.rs` declaring modules; a filter selects a module (`integration app
+loading::`). Every test executable links the app (about 400 MiB, a second or more
+of link after each library edit), so add a test to the module that fits, never a
+new top-level file. A test that changes the process for everyone in it (an
+environment variable others read, fd 2, Polars' configuration) keeps its own
+target, as `quality_spill_test` and the cloud credential targets do; prefer
+giving the code the setting directly instead.
 
 Tests that drive an `App` wait on the work with the helpers in `tests/common/`
-(`pump_open_until_loaded`, `drain_events`, `next_event`, `work_pending`), never
-on a sleep or a quiet channel.
+(`pump_open_until_loaded`, `drain_events`, `next_event`, `work_pending`, and
+`wait_for_event` in a loop that draws frames), or wait for the frame's content,
+never on a sleep or a quiet channel. A sleep stays only where a real timer is the
+subject, with a comment saying so. Size statistical and large-data tests to the
+smallest input that still makes the assertion; they set their executable's run
+time. Measured costs and the layout's reasons: `tests/ORGANIZATION.md`; commands
+and helpers: `docs/for-developers/tests.md`.
 
 ## Layout
 

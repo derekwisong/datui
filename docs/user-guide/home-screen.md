@@ -334,8 +334,8 @@ heading of your own catalog shows its file and its `[home] hide` id.
 | Bitcoin and Ethereum | Blocks and transactions, partitioned by date | AWS sample-code license |
 | Overture Maps | Places, buildings, addresses, roads and boundaries, by release | ODbL; places CDLA Permissive 2.0 and Apache 2.0 |
 
-- A web file's row gives its format and size, `~` until measured. One under 50 MB downloads
-  without a question; if it passes 50 MB while downloading, it stops and
+- A web file's row gives its format and size, `~` until measured. One under 50 MiB downloads
+  without a question; if it passes 50 MiB while downloading, it stops and
   asks once. A URL typed at <kbd>~</kbd> is always asked about.
 - Once opened, a dataset comes back under Recent by its catalog name.
 - The pane gives the publisher, license and homepage; check the license

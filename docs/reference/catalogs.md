@@ -91,7 +91,7 @@ share a name or a location.
 | Local directory | Steps inside | |
 | Object-store file | Opens it | `auth` or `connection` |
 | Object-store directory | Steps inside. <kbd>Backspace</kbd> at its top comes back to the list | `auth` or `connection` |
-| HTTP(S) file | Downloads it, after asking, and opens it; a `public` file under 50 MB is downloaded without asking, and asks if it passes 50 MB | No login |
+| HTTP(S) file | Downloads it, after asking, and opens it; a `public` file under 50 MiB is downloaded without asking, and asks if it passes 50 MiB | No login |
 
 | Reading | Means |
 |---|---|
@@ -228,7 +228,7 @@ example of every key.
 >
 > Each entry is labeled with its actual scope, and must be readable without
 > credentials or requester-pays access. An HTTP(S) file gives its `size` in bytes, as
-> measured when it was added: its row shows it, and one under 50 MB is downloaded
+> measured when it was added: its row shows it, and one under 50 MiB is downloaded
 > without asking. A rolling file's size is a typical one.
 >
 > An entry may carry `documentation`: the publisher's documentation of its columns, and

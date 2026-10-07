@@ -1927,7 +1927,7 @@ pub(crate) fn delimited_format(path: &Path, options: &OpenOptions) -> Option<Fil
 /// Why a catalog file that started without a question asks partway.
 #[cfg(any(feature = "http", feature = "cloud"))]
 pub(crate) const PAST_LIMIT: &str =
-    "This catalog file passed 50 MB, more than it may download without asking.";
+    "This catalog file passed 50 MiB, more than it may download without asking.";
 
 /// Why a remote model is downloaded rather than read by its headers.
 #[cfg(any(feature = "http", feature = "cloud"))]

@@ -81,7 +81,7 @@ and how many have arrived since, and offers <kbd>t</kbd> and <kbd>Esc</kbd>.
 | The query, filters, sort, hidden columns | Apply to new rows. [Value counts](value-counts.md), [analysis](analysis-features.md) and [charts](charting.md) keep the rows they opened on; the bar counts the new ones, and <kbd>t</kbd> there reads them |
 | A row that does not fit the types of the first rows | Counted on the bar in the warning color; its values read as null. The follow goes on |
 | An NDJSON field the first rows did not have | In a file, the row is counted as not fitting. From standard input, the field joins as a column when the stream ends |
-| A refresh | Reads only the rows on screen, from a mark near them: a 10 GB file costs what a 10 MB one does. Under a filter, only the new rows are counted |
+| A refresh | Reads only the rows on screen, from a mark near them: a 10 GiB file costs what a 10 MiB one does. Under a filter, only the new rows are counted |
 | Truncation, rotation | The file is read again from its start, and the bar says so. A deleted file stops the follow; its rows stay |
 | How often | On Linux, as an append lands, at most every 250ms; elsewhere and on network file systems, the size is checked every 250ms. `read.follow_interval` changes it: `-c read.follow_interval=1s` |
 | Standard input | Written to its temporary file until it ends, or <kbd>Esc</kbd>, <kbd>Ctrl</kbd>+<kbd>O</kbd> or quitting stops it. The bar says when it ends. Without `-f` it is read the same way, but the cursor stays where it is |
@@ -113,7 +113,7 @@ The table reads FILE itself; there is no second copy.
 | Quit or <kbd>Ctrl</kbd>+<kbd>O</kbd> while the producer still sends | Asks: stop recording, or keep recording until the stream ends (after a quit, datui waits with the terminal handed back). <kbd>Esc</kbd> stays |
 | <kbd>Esc</kbd> at the table | Stops following; the recording goes on |
 | SIGTERM, SIGHUP | FILE is finished and closed, and datui exits |
-| A WAV stream | Its RIFF and `data` sizes are filled in when the stream ends, as RF64 past 4 GB when the producer left a `JUNK` chunk for it. `--tee-raw` leaves FILE exactly as it came |
+| A WAV stream | Its RIFF and `data` sizes are filled in when the stream ends, as RF64 past 4 GiB when the producer left a `JUNK` chunk for it. `--tee-raw` leaves FILE exactly as it came |
 
 Without `-f`, the whole stream is recorded before the table opens. With `-f`,
 a format that cannot be followed (WAV) shows what had arrived when it opened,

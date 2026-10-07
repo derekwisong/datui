@@ -1352,7 +1352,7 @@ fn an_unasked_download_past_its_limit_asks_once() {
 #[test]
 fn the_past_limit_note_names_the_limit() {
     assert_eq!(crate::UnaskedDownload::LIMIT, 50 * 1024 * 1024);
-    assert!(PAST_LIMIT.contains("50 MB"));
+    assert!(PAST_LIMIT.contains("50 MiB"));
 }
 
 /// A remote file is sized, put to the user, downloaded, then scanned under its URL;

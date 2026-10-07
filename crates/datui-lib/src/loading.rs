@@ -1,29 +1,23 @@
 //! Opening a dataset, from the request to its first rows, and its one owner.
 //!
-//! [`Loader`] holds the open in flight ([`Load`]): where it was asked from, the paths it
-//! was asked for, the phase it is in, what the loading screen says about it, and what
-//! it holds — its stop flag and footer counter, the download it fetched, the IPC file
-//! its Arrow streams were converted to, and the hold on the generation while the user
-//! is asked about a download. The app tells it what happened (an open asked for, a
-//! phase's worker answering or failing, the user's answer to the download question) and
-//! it says what to do next ([`Step`]). The app carries the step out, runs the workers
-//! and installs the dataset. Nothing else keeps a copy of the open's state.
+//! [`Loader`] holds the open in flight ([`Load`]): its origin, paths, phase, loading
+//! screen text, and what it holds (stop flag, footer counter, download, converted IPC
+//! file, the generation hold while a download is asked about). The app reports events
+//! (a request, a worker's answer or failure, the user's download answer) and carries
+//! out the [`Step`] it returns. Nothing else keeps the open's state.
 //!
-//! - **Identity.** Every load has a [`LoadId`], and the jobs of its phases carry it. An
-//!   answer is taken only while its load is the one in flight and in the phase that asked
-//!   for it: one from an open that was abandoned or replaced installs nothing and changes
-//!   no title, and its payload is dropped with it.
-//! - **Retirement.** Abandoning, replacing or failing a load drops what it holds: its
-//!   stop flag is raised, so a download or a conversion stops at its next chunk and
-//!   removes its file and a footer pass stops issuing reads; its download and converted
-//!   file are let go; its hold is released.
-//! - **Handover.** The dataset is built holding the load's download or converted file,
-//!   with everything else the open found ([`crate::table::OpenFacts`]), and
-//!   on install takes the load's footer counter. From then on they are the dataset's:
-//!   what is left of the load is the read of the first rows ([`Phase::FirstRows`]), and
-//!   abandoning that stops neither.
+//! - **Identity.** Each load has a [`LoadId`], carried by its phases' jobs. An answer
+//!   is taken only for the load in flight, in the phase that asked; others are dropped
+//!   with their payload.
+//! - **Retirement.** Abandoning, replacing or failing a load raises its stop flag (a
+//!   download or conversion stops at its next chunk and removes its file; a footer
+//!   pass stops reading), releases its files and its hold.
+//! - **Handover.** The dataset is built holding the load's download or converted file
+//!   and everything found ([`crate::table::OpenFacts`]), and takes the footer counter on
+//!   install; what remains is the first-rows read ([`Phase::FirstRows`]), whose
+//!   abandonment stops neither.
 //!
-//! The home screen's looks at a path, analyses and charts are not loads, and are not here.
+//! Home's looks, analyses and charts are not loads.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -81,9 +75,9 @@ pub(crate) enum PendingDownload {
         size: Option<u64>,
         options: OpenOptions,
     },
-    /// Arrow in S3, GCS or Azure, one object or a prefix: `objects` are what the
-    /// probe's listing chose, and `size` is its streams' bytes, which are downloaded
-    /// and converted; its IPC files are scanned where they are (`cloud_arrow`).
+    /// Arrow in S3, GCS or Azure, one object or a prefix: `objects` are what the probe
+    /// chose, `size` its streams' bytes (downloaded and converted); IPC files are scanned
+    /// in place (`cloud_arrow`).
     #[cfg(feature = "cloud")]
     Arrow {
         url: String,
@@ -181,17 +175,9 @@ pub(crate) struct OpenRequest {
 
 impl OpenRequest {
     /// The request for `paths`, asking the filesystem for the first one's size and
-    /// whether it is there.
-    ///
-    /// Every open records a recent, not just those started from the home screen — most
-    /// datasets are named on the command line, and those are exactly the ones worth
-    /// getting back to. An object-store URL counts doubly: `s3://bucket/warehouse/events`
-    /// is far more painful to retype than any local path, and it is recorded verbatim.
-    /// Kept as named, since what is installed may be a download's temporary copy.
-    ///
-    /// A table inside a file of tables, as the home screen lists one (`app.db/users`,
-    /// `run.npz/weights`), is the file opened with `--table`, and is recorded as the
-    /// table.
+    /// existence. Every open records a recent (command-line ones especially; URLs
+    /// verbatim), under the name given, not a download's temp copy. A table inside a file
+    /// (`app.db/users`) opens as the file with `--table` and is recorded as the table.
     pub(crate) fn named(
         mut paths: Vec<PathBuf>,
         mut options: OpenOptions,
@@ -578,9 +564,8 @@ pub(crate) enum Step {
         choice: crate::formats::Choice,
         options: OpenOptions,
     },
-    /// Convert `files` as `what` says into temporary IPC files written through
-    /// `writer`, counting the bytes read in `read`; `path` names them on screen and in
-    /// errors.
+    /// Convert `files` as `what` says into temp IPC files via `writer`, counting bytes read
+    /// in `read`; `path` names them on screen and in errors.
     Convert {
         what: Conversion,
         files: Vec<PathBuf>,
@@ -829,11 +814,9 @@ pub(crate) struct Retired {
 pub(crate) struct Loader {
     next_id: u64,
     load: Option<Load>,
-    /// The last remote file downloaded by an open that installed, kept so opening the
-    /// same URL again reads it rather than downloading it again: how `H` re-reads a
-    /// download. Let go when different data is opened; the dataset scanning it holds
-    /// the file too, so it is removed once both have let go. Standard input, read once,
-    /// is kept the same way.
+    /// The last remote file an installed open downloaded, kept so reopening the URL (`H`)
+    /// reads it instead of downloading again; released when other data opens, removed
+    /// once the scanning dataset also lets go. Stdin, read once, is kept the same way.
     kept: Option<Fetched>,
     /// The files every load's workers have written and not yet let go, for quitting to
     /// remove. See [`crate::unfinished`].
@@ -879,9 +862,8 @@ impl Loader {
             .is_some_and(|load| !matches!(load.phase, Phase::FirstRows))
     }
 
-    /// Whether the user waits on the open: keys are held while it works. Not while it
-    /// asks about a download, which the question's own keys answer, and not once the
-    /// dataset is up, when the read of its first rows holds them.
+    /// Whether the user waits on the open (keys held): not while it asks about a download
+    /// (the question takes the keys), nor once the dataset is up.
     pub(crate) fn waits(&self) -> bool {
         self.awaiting_dataset() && !self.asking()
     }
@@ -1067,9 +1049,8 @@ impl Loader {
         }
     }
 
-    /// Install the dataset the home screen's preview built: its scan, schema and first
-    /// page are read already, so the open goes straight to its first rows, which are
-    /// on hand.
+    /// Install the dataset home's preview built: scan, schema and first page are read, so
+    /// the open goes straight to its (on-hand) first rows.
     fn install_prepared(&mut self, prepared: crate::home_preview::Prepared) -> Step {
         let crate::home_preview::Prepared {
             state,
@@ -1286,10 +1267,8 @@ impl Loader {
         }
     }
 
-    /// Read a download: decompress it first if it is compressed CSV, TSV or PSV, else
-    /// scan it.
-    /// Either way the dataset is named by the URL, not the temporary file, and what
-    /// was piped in by `stdin`.
+    /// Read a download: decompress compressed CSV, TSV or PSV first, else scan it, named by
+    /// the URL (or `stdin`), not the temp file.
     fn read_download(&mut self, fetched: Fetched, mut options: OpenOptions) -> Step {
         if let Some(arrow) = &fetched.arrow {
             options.format = Some(FileFormat::Arrow);
@@ -1302,9 +1281,7 @@ impl Loader {
         let url = stdin::named(&fetched.url);
         let download = fetched.file.clone();
         load.download = Some(fetched);
-        // A compressed CSV, TSV or PSV has to be decompressed before it can be scanned,
-        // as it is when opened from disk; scanning the download directly read `.gz` as
-        // a format and refused it.
+        // Compressed delimited text must be decompressed before scanning, as from disk.
         let compressed = options
             .compression
             .or_else(|| CompressionFormat::from_extension(&file))
@@ -1407,9 +1384,8 @@ impl Loader {
                 Phase::Converting { .. },
             ) => {
                 let paths = vec![file.path().to_path_buf()];
-                // A download or a pipe's spool converted is kept as its copy, to be read
-                // again without converting, and the stream is let go rather than held
-                // beside the copy for the session.
+                // A converted download or pipe spool is kept as its copy, to reread without
+                // converting; the stream is released.
                 if let Some(fetched) = load.download.as_mut() {
                     fetched.file = file.clone();
                 }
@@ -1836,9 +1812,8 @@ impl Drop for Loader {
 const READING_LINES: &str = "Reading as lines";
 const READING_LINES_STATUS: &str = "Reading as lines...";
 
-/// Whether `paths` are read as lines, as `--format` or their names say: a name that
-/// says text may still hold a format its bytes say (a candump `.log`), so this is
-/// what the open expects, for its loading line.
+/// Whether `paths` are read as lines per `--format` or their names, for the loading line
+/// (bytes may still say otherwise, e.g. a candump `.log`).
 fn reads_lines(paths: &[PathBuf], options: &OpenOptions) -> bool {
     options
         .format
@@ -1849,13 +1824,9 @@ fn reads_lines(paths: &[PathBuf], options: &OpenOptions) -> bool {
         .is_some_and(FileFormat::is_lines)
 }
 
-/// The delimited format (CSV, TSV, PSV) or text `path` is read as, if it is one: `--format`
-/// when given, else the extension, looking through a compression suffix
-/// (`x.tsv.gz` is TSV).
-/// What reading `paths` would read whole into memory, by what their names and the
-/// options say (the bytes are not looked at here, on the event thread): the local
-/// files of a format read in memory, as [`FileFormat::read_mode`] says. `None` when
-/// none is.
+/// What reading `paths` would read whole into memory, by names and options only (not
+/// bytes, on the event thread): local files of an in-memory format
+/// ([`FileFormat::read_mode`]). `None` when none is.
 pub(crate) fn in_memory(paths: &[PathBuf], options: &OpenOptions) -> Option<InMemory> {
     let mut found: Option<InMemory> = None;
     for path in paths {
@@ -1929,6 +1900,8 @@ fn counts_footer(paths: &[PathBuf], options: &OpenOptions) -> bool {
         && paths.iter().all(|p| delimited_format(p, options).is_some())
 }
 
+/// The delimited format (CSV, TSV, PSV) or text `path` is read as, if any: `--format`,
+/// else the extension past any compression suffix (`x.tsv.gz` is TSV).
 pub(crate) fn delimited_format(path: &Path, options: &OpenOptions) -> Option<FileFormat> {
     let format = options.format.or_else(|| {
         FileFormat::from_path(path).or_else(|| {
@@ -1948,9 +1921,8 @@ pub(crate) const PAST_LIMIT: &str =
 #[cfg(any(feature = "http", feature = "cloud"))]
 pub(crate) const NO_RANGES: &str = "The server does not send byte ranges, so the model's header cannot be read without downloading the whole file.";
 
-/// The download a remote source needs before it can be read, if it needs one: an HTTP
-/// file always, and one object of a store that cannot be scanned in place. A format
-/// spec reads local bytes, so one object it reads is downloaded whatever its name.
+/// The download a remote source needs first, if any: always for HTTP, and for a store
+/// object that cannot be scanned in place, or one a format spec reads.
 #[cfg(any(feature = "http", feature = "cloud"))]
 fn remote_download(src: &source::InputSource, options: &OpenOptions) -> Option<PendingDownload> {
     #[cfg(feature = "cloud")]
@@ -1998,9 +1970,8 @@ fn remote_download(src: &source::InputSource, options: &OpenOptions) -> Option<P
     }
 }
 
-/// Arrow in a store, one object or a prefix the listing said holds it, but not a glob:
-/// the probe lists it and tells its streams, which are downloaded, from its IPC files,
-/// which are scanned in place.
+/// Arrow in a store (object or listed prefix, not a glob): the probe lists it, its
+/// streams are downloaded, its IPC files scanned in place.
 #[cfg(feature = "cloud")]
 fn cloud_arrow(src: &source::InputSource, options: &OpenOptions) -> Option<PendingDownload> {
     let url = match src {

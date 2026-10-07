@@ -98,17 +98,16 @@ pub struct MatchCriteria {
     pub schema_columns: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema_types: Option<Vec<String>>,
-    /// The table of a file of tables the view was saved on (`orders` of `shop.db`,
-    /// whether opened as `shop.db/orders` or with `--table orders`). Its path criteria
-    /// fit only that table: a URL or standard input names the file alone.
+    /// The table within a file of tables the view was saved on (`orders` of `shop.db`,
+    /// however opened); its path criteria fit only that table. URLs and stdin name the file
+    /// alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub table: Option<String>,
 }
 
 impl MatchCriteria {
-    /// Repair the paths of a view saved before URLs were told apart from local paths:
-    /// its exact path was the working directory joined to the URL, and its relative
-    /// path the URL itself. Both become the URL, as the exact path.
+    /// Repair paths of a view saved before URLs were distinguished from local paths (exact
+    /// path was cwd joined to the URL, relative path the URL): both become the URL, exact.
     fn unmangle_urls(&mut self) {
         if let Some(url) = self.exact_path.as_deref().and_then(unmangled_url) {
             self.exact_path = Some(url);
@@ -160,9 +159,9 @@ pub struct ViewSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub melt: Option<MeltSpec>,
-    /// The query, filters and sort the pivot or melt ran over, replayed before it. With
-    /// a reshape, `query`, `filters` and the sort are what ran on its result. Views
-    /// saved before this existed have none: their reshape ran over the data as loaded.
+    /// The query, filters and sort a pivot or melt ran over, replayed before it; `query`,
+    /// `filters` and sort then ran on its result. Older views have none (reshape over the
+    /// data as loaded).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub reshape_source: Option<ReshapeSource>,
@@ -252,14 +251,12 @@ pub struct SavedSample {
     /// Rows to keep: in all, or per value.
     pub rows: usize,
     pub seed: u64,
-    /// How a random sample of a stream was drawn: a reservoir, or row by row with
-    /// chance `rows / of`. Drawn the same way again, the same seed keeps the same
-    /// rows, whatever is counted by then.
+    /// How a stream's random sample was drawn (reservoir, or row by row with chance
+    /// `rows / of`); redrawn this way, the seed gives the same rows whatever is counted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<crate::table_sample::DrawPath>,
-    /// The view the sample was drawn through, when it was drawn from a view's rows
-    /// rather than the source: its query, filters, sort, column types and reshape,
-    /// replayed before the sample is drawn.
+    /// The view a sample was drawn through (its query, filters, sort, types and reshape),
+    /// replayed before drawing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub through: Option<Box<ViewSettings>>,
 }
@@ -334,9 +331,8 @@ pub struct BrokenView {
     pub error: String,
 }
 
-/// How long a read or a write of the views waits for another instance, the queue and
-/// the lock together. Long enough for a busy machine; it bounds the wait on a wedged
-/// peer, which a save on the UI thread pays, and is not meant to be met.
+/// How long a views read or write waits for another instance (queue and lock): bounds
+/// a wedged peer, paid by a save on the UI thread, not expected to be reached.
 const VIEWS_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// What is left of [`VIEWS_LOCK_TIMEOUT`] after `began`.
@@ -351,14 +347,10 @@ pub struct ViewManager {
     pub broken_views: Vec<BrokenView>,
 }
 
-/// The saved views, read on a worker from the moment `run` starts.
-///
-/// Reading them enumerates and parses a directory, which is a stall on a slow mount
-/// and tens of milliseconds for a few thousand views; neither belongs in front of the
-/// first frame. Nothing needs them until a dataset's schema is known (`--view` and
-/// auto-apply meet it there) or the views list opens, so the first use waits for the
-/// read if it is still going — a view the user asked for is never skipped by rows
-/// shown without it. Derefs to the [`ViewManager`].
+/// The saved views, read on a worker from `run`'s start (a directory parse that can
+/// stall on slow mounts). Nothing needs them until a schema is known (`--view`,
+/// auto-apply) or the list opens; first use waits if still reading, so a requested view
+/// is never skipped. Derefs to the [`ViewManager`].
 pub struct Views {
     ready: std::cell::OnceCell<ViewManager>,
     pending: std::cell::RefCell<Option<std::sync::mpsc::Receiver<ViewManager>>>,
@@ -434,9 +426,8 @@ impl std::ops::DerefMut for Views {
 }
 
 impl ViewManager {
-    /// The views in the config directory, or none: a directory that cannot be read
-    /// falls back to a temporary one, as the app always has, so startup never fails
-    /// on it.
+    /// The config directory's views, or none: an unreadable directory falls back to a
+    /// temporary one, so startup never fails on it.
     pub fn load_or_empty() -> Self {
         let config = ConfigManager::new(crate::APP_NAME).unwrap_or_else(|_| ConfigManager {
             config_dir: std::env::temp_dir().join(crate::APP_NAME).join("config"),
@@ -489,10 +480,8 @@ impl ViewManager {
             return Ok(());
         }
 
-        // Listed under the views lock, shared. A save renames a temp file over the
-        // view, and a listing taken meanwhile on btrfs can miss the view entirely: the
-        // new name takes a later directory slot than the listing reaches. A directory
-        // that will not take the lock file (read-only) is listed without it.
+        // Listed under the shared views lock: a save renames a temp file over the view, and a
+        // concurrent listing on btrfs can miss it. A read-only directory is listed unlocked.
         let began = std::time::Instant::now();
         let queue = crate::cache::lock_file(&self.views_queue(), VIEWS_LOCK_TIMEOUT)
             .ok()
@@ -602,9 +591,8 @@ impl ViewManager {
         Ok(())
     }
 
-    /// Count a use of the view: its stored file is bumped, not this instance's copy
-    /// written back, so an edit made by another instance since this one read the
-    /// views is kept, and a view deleted elsewhere stays deleted.
+    /// Count a use of the view by bumping its stored file (not writing this copy back), so
+    /// other instances' edits and deletions survive.
     pub fn record_use(&mut self, id: &str, file: &Path) -> Result<()> {
         let stored = self.locked(|| {
             let Some(mut stored) = self.read_stored(id)? else {
@@ -652,10 +640,8 @@ impl ViewManager {
         results
     }
 
-    /// The best view whose own criteria match this file — not merely the
-    /// best-scored one. Scores mix in usage and recency, so with no gate the
-    /// most-used view "matches" every dataset ever opened; `V` applying it
-    /// silently is how views lose the user's trust.
+    /// The best view whose own criteria match this file, not the best-scored (usage and
+    /// recency would make the most-used view "match" everything).
     pub fn get_most_relevant<'a>(
         &self,
         dataset: impl Into<Dataset<'a>>,
@@ -670,9 +656,8 @@ impl ViewManager {
             })
     }
 
-    /// A name for a view saved from this state: the file stem, or failing
-    /// that the query's first words — something the user will recognize in
-    /// the list, never a serial number. Numbered past the first collision.
+    /// A recognizable name for a view saved from this state: the file stem, else the
+    /// query's first words; numbered past the first collision.
     pub fn suggest_name(&self, path: Option<&Path>, query: Option<&str>) -> String {
         let base = path
             .and_then(|p| p.file_stem())
@@ -746,10 +731,9 @@ impl ViewManager {
         Ok(view)
     }
 
-    /// Save an edit of a view. Only what the edit changed from this instance's copy
-    /// is written, over the view as stored now, so another instance's edit to other
-    /// fields and its usage counts survive. A view deleted elsewhere is not brought
-    /// back: that is an error, and the view leaves this instance too.
+    /// Save an edit of a view: only what changed from this instance's copy, over the stored
+    /// view, so other instances' edits and usage survive. A view deleted elsewhere is an
+    /// error and leaves this instance too.
     pub fn update_view(&mut self, edited: &SavedView) -> Result<()> {
         let base = self.get_view_by_id(&edited.id).cloned();
         let stored = self.locked(|| {
@@ -819,9 +803,8 @@ fn merge_edit(stored: &mut SavedView, base: Option<&SavedView>, edited: &SavedVi
     }
 }
 
-/// Why a view's criteria fit the open file, in the words the list annotates
-/// rows with. The strongest reason wins: the same file beats the same columns
-/// beats a glob.
+/// Why a view's criteria fit the open file, worded as the list annotates rows; the
+/// strongest wins (same file over same columns over a glob).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchReason {
     SameFile,
@@ -839,9 +822,8 @@ impl MatchReason {
     }
 }
 
-/// What a view is matched against: where the dataset was read from, and which table
-/// of it. Standard input's `-` is a path no path criterion fits, so data piped in or a
-/// frame handed over is matched by its columns alone.
+/// What a view is matched against: the dataset's location and table. Stdin's `-` fits
+/// no path criterion, so piped data and handed frames match by columns alone.
 #[derive(Debug, Clone, Copy)]
 pub struct Dataset<'a> {
     pub path: &'a Path,
@@ -861,9 +843,8 @@ impl<'a> From<&'a PathBuf> for Dataset<'a> {
 }
 
 impl<'a> Dataset<'a> {
-    /// The path the view's path criteria are compared with, or None when none can fit:
-    /// the dataset has no path, or it is another table than the one the view was saved
-    /// on. A view saved before tables were recorded fits any.
+    /// The path compared with the view's path criteria, or `None` when none can fit (no
+    /// path, or another table than saved on; views predating table recording fit any).
     fn place_for(self, criteria: &MatchCriteria) -> Option<&'a Path> {
         let table_fits = criteria
             .table
@@ -873,9 +854,8 @@ impl<'a> Dataset<'a> {
     }
 }
 
-/// A dataset's location as a view records it: a URL as written, a local path made
-/// absolute and resolved. The save form offers this and matching compares with it,
-/// so the two are spelled alike.
+/// A dataset location as a view records it (URL as written, local path absolute and
+/// resolved), shared by the save form and matching.
 pub fn exact_location(path: &Path) -> PathBuf {
     if crate::source::is_remote_url(path) {
         return path.to_path_buf();
@@ -899,9 +879,8 @@ pub fn exact_location(path: &Path) -> PathBuf {
         .unwrap_or(absolute)
 }
 
-/// A path nothing on disk has, such as a table inside its file (`shop.db/orders`),
-/// with the part that is there resolved: opened through a link or from the home
-/// screen, it is spelled alike.
+/// A path nothing on disk has (a table inside its file, `shop.db/orders`) with its
+/// existing part resolved, so links and home spell it alike.
 fn canonical_prefix(path: &Path) -> Option<PathBuf> {
     let (there, canonical) = path
         .ancestors()
@@ -926,9 +905,8 @@ pub fn relative_location(path: &Path) -> Option<String> {
     (!relative.is_empty()).then_some(relative)
 }
 
-/// Whether the view's exact path names the dataset at `file_path`. A URL compares as
-/// text less any trailing slash, which is how a directory's URL may or may not end,
-/// and with its scheme in either case, as datui opens it.
+/// Whether the view's exact path names `file_path`. URLs compare as text, ignoring a
+/// trailing slash, with the scheme either way.
 pub fn exact_path_matches<'a>(criteria: &MatchCriteria, dataset: impl Into<Dataset<'a>>) -> bool {
     let (Some(stored), Some(file_path)) = (
         criteria.exact_path.as_deref(),
@@ -971,8 +949,7 @@ pub fn relative_path_matches<'a>(
 }
 
 /// Whether the view's path pattern fits `file_path`, as opened or as the save form
-/// spells it: a file opened by a relative path or through a link is still under the
-/// resolved directory its pattern was suggested from.
+/// spells it (relative or linked paths still sit under the resolved directory).
 pub fn path_pattern_matches<'a>(criteria: &MatchCriteria, dataset: impl Into<Dataset<'a>>) -> bool {
     let Some(file_path) = dataset.into().place_for(criteria) else {
         return false;
@@ -1002,10 +979,9 @@ pub fn filename_pattern_matches<'a>(
     })
 }
 
-/// Whether the view's own criteria match this file: a path or pattern hit,
-/// or every schema column the view asks for present. Distinct from the
-/// relevance score, which also carries usage and recency and so is never zero
-/// for a view that has been used — a ranking, not a claim of fit.
+/// Whether the view's own criteria match this file: a path or pattern hit, or every
+/// requested schema column present. Unlike the relevance score (a ranking, never zero
+/// for a used view), a claim of fit.
 pub fn criteria_match<'a>(
     view: &SavedView,
     dataset: impl Into<Dataset<'a>>,
@@ -1014,10 +990,8 @@ pub fn criteria_match<'a>(
     match_reason(view, dataset, schema).is_some()
 }
 
-/// The strongest criterion of the view's that fits this file, or None when
-/// none does. This is the same test `criteria_match` gates on, kept in one
-/// place so the list's "why it matches" annotation can never disagree with
-/// what `V` and auto-apply do.
+/// The strongest fitting criterion, or `None`: the same test as `criteria_match`, so
+/// the list's annotation never disagrees with `V` and auto-apply.
 pub fn match_reason<'a>(
     view: &SavedView,
     dataset: impl Into<Dataset<'a>>,
@@ -1126,9 +1100,7 @@ fn calculate_relevance(view: &SavedView, dataset: Dataset<'_>, schema: &Schema) 
             score += 2.0;
         }
     }
-    // No penalty for age since creation: a view is not worse for being old,
-    // and last-used recency above already separates the live from the stale.
-    // Charged anyway, a year-old view that fit showed a negative "score".
+    // No age penalty: recency above already separates live from stale views.
 
     score
 }
@@ -1145,9 +1117,8 @@ fn pattern_specificity_bonus(pattern: &str) -> f64 {
     }
 }
 
-/// Glob-like matching: `*` matches any sequence; anything else matches itself.
-/// (`?` gets no special treatment: it is rare in names, and a single-character
-/// wildcard is not worth a second wildcard rule in a five-field matcher.)
+/// Glob-like matching: `*` matches any sequence, anything else itself (`?` is not
+/// special).
 fn matches_pattern(text: &str, pattern: &str) -> bool {
     if pattern == "*" {
         return true;

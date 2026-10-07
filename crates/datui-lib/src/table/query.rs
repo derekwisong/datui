@@ -17,9 +17,8 @@ pub(super) fn pivot_agg_expr(agg: PivotAggregation, values: Expr) -> Expr {
     }
 }
 
-/// The most columns a pivot may make. Past it the table, the schema and every view
-/// of them slow to a crawl; a pivot on a column with this many values is almost
-/// always a mistake (an id or a timestamp picked for Columns).
+/// The most columns a pivot may make: past it everything crawls, and it is nearly
+/// always a mistake (an id or timestamp chosen for Columns).
 pub const PIVOT_COLUMN_LIMIT: usize = 10_000;
 
 /// A pivot of the view as it was when planned, to be read off the UI thread.
@@ -39,14 +38,11 @@ impl PivotJob {
         }
     }
 
-    /// The pivoted frame, in one pass over the view.
-    ///
-    /// The lazy pivot has to be told its new columns before it runs, which would mean a
-    /// distinct pass over the view and then the pivot over it again. Instead each cell is
-    /// aggregated by a group-by on the index and pivot columns in one pass; the new
-    /// columns are read off that result and the pivot runs over it in memory. The new
-    /// columns come out alphabetical with a trailing `null` column, as the eager pivot
-    /// ordered them, and index rows keep first-seen order.
+    /// The pivoted frame in one pass: a lazy pivot needs its new columns up front (a
+    /// distinct pass, then another pass), so cells are aggregated by one group-by on index
+    /// and pivot columns, new columns read from that, and the pivot done in memory. New
+    /// columns come alphabetical with a trailing `null` column, as the eager pivot did;
+    /// index rows keep first-seen order.
     pub fn run(self) -> Result<DataFrame> {
         let on = self.spec.pivot_column.as_str();
         let value = self.spec.value_column.as_str();
@@ -116,10 +112,9 @@ impl PivotJob {
         Ok(pivoted)
     }
 
-    /// Polars names the new columns by casting the pivot values to text, which
-    /// panics on a date past the calendar. When one is there, the values become
-    /// their text first, such a date its stored number, after they are ordered as
-    /// dates. Both frames are already in memory.
+    /// Polars names pivot columns by casting values to text, which panics on dates past the
+    /// calendar: such values become text first (the date its stored number), after
+    /// ordering as dates. Both frames are in memory.
     fn pivot_dates_as_text(
         cells: DataFrame,
         on_columns: DataFrame,
@@ -142,10 +137,9 @@ impl PivotJob {
     }
 }
 
-/// Which loaded column each shown column is, as (shown name, loaded name), so a
-/// delimited spec's unit stays on a column that holds the loaded values, renamed or
-/// not, and never lands on a computed column that reuses a name. `None` while every
-/// column is the loaded column of its name.
+/// Which loaded column each shown column is (shown, loaded), so a spec's unit stays
+/// with the loaded values, renamed or not, never on a computed column reusing a name.
+/// `None` while every column is its own loaded column.
 pub(super) type Lineage = Option<Arc<Vec<(String, String)>>>;
 
 /// `pairs`, each a shown name and the name of a column of a frame whose lineage is
@@ -204,12 +198,10 @@ pub(crate) fn fuzzy_token_regex(token: &str) -> String {
     format!("(?i).*{}.*", inner)
 }
 
-/// Options for a sort, one direction per column. Nulls go last in both directions, as
-/// in pandas, DuckDB and spreadsheets; Polars would otherwise put them first either way.
-/// Ties keep their order: each page is its own sort-then-slice, and an unstable sort
-/// orders ties differently for a slice at the top (a top-k) than for one further
-/// down, so pages would repeat and skip rows, and the inspector's one-row read would
-/// find another row.
+/// Sort options, one direction per column. Nulls last both ways (as pandas, DuckDB and
+/// spreadsheets; Polars defaults first). Stable, since each page sorts and slices
+/// separately, and an unstable sort orders ties differently at the top (top-k) than
+/// deeper, repeating or skipping rows.
 pub(super) fn sort_options(descending: Vec<bool>) -> SortMultipleOptions {
     let n = descending.len();
     SortMultipleOptions::default()
@@ -301,9 +293,8 @@ impl DataTableState {
         Ok(())
     }
 
-    /// A melt of dates with text casts the dates to text, which panics on one past
-    /// the calendar. Those columns become text first, such a date its stored
-    /// number, as the rows are read.
+    /// A melt mixing dates with text casts dates to text, which panics past the calendar:
+    /// those columns become text first (such dates their stored number).
     fn melt_dates_as_text(
         view: LazyFrame,
         spec: &MeltSpec,
@@ -520,9 +511,8 @@ impl DataTableState {
         Ok(())
     }
 
-    /// A saved view's column changes, in place of the view's own. A change whose column
-    /// this data does not have is left out, with a note; the names left out are
-    /// returned.
+    /// Replace the view's column changes with a saved view's; changes whose column is
+    /// missing are left out with a note, their names returned.
     pub fn set_column_changes(
         &mut self,
         changes: &[crate::column_types::ColumnChange],
@@ -609,10 +599,9 @@ impl DataTableState {
         self.apply_transformations();
     }
 
-    /// `lf` with the view's column changes, in order, and what the count of the values
-    /// they made null needs: the frame with only the made columns, and the typed
-    /// columns with the types they had there. A change whose column is not in `lf` is
-    /// passed over.
+    /// `lf` with the view's column changes in order, plus what counting their nulls
+    /// needs: the frame with only the made columns, and typed columns with their prior
+    /// types. Changes for missing columns are skipped.
     fn with_column_changes(
         &self,
         mut lf: LazyFrame,
@@ -852,9 +841,8 @@ impl DataTableState {
     /// Sort with a direction per column.
     pub fn sort_by(&mut self, columns: Vec<String>, descending: Vec<bool>) {
         debug_assert_eq!(columns.len(), descending.len());
-        // The one-direction flag lives on as the primary column's, for the places
-        // that still speak it: views written for older readers, and `r`'s
-        // natural-order fallback (which an empty sort leaves alone).
+        // The one-direction flag survives as the primary column's, for older view readers and
+        // `r`'s natural-order fallback.
         if let Some(first) = descending.first() {
             self.view.sort_ascending = !first;
         }
@@ -1084,9 +1072,8 @@ impl DataTableState {
         }
     }
 
-    /// The data a query runs against: the drilled group while drilled into one, else the
-    /// pivot/melt result while one is in effect, otherwise the data as loaded. Never the
-    /// sidebar filters or sort, which go on top, and never a previous SQL result.
+    /// The data a query runs against: the drilled group, else the pivot/melt result, else
+    /// the data as loaded; never the sidebar's filters or sort, nor a previous SQL result.
     pub(crate) fn query_root(&self) -> LazyFrame {
         if self.view.grouped.is_some() {
             // While drilled, `base_lf` is the group (see `drill_down_into_group`).
@@ -1127,12 +1114,9 @@ impl DataTableState {
         }
     }
 
-    /// Execute a SQL query against `query_root` (registered as table "df"): the drilled
-    /// group or the reshaped data when one is in effect, otherwise the data as loaded —
-    /// never the sidebar filters or a previous SQL result. Running a query starts a
-    /// fresh view: `install_query_result` clears the sidebar filters and sort, and they
-    /// are applied after it. Empty SQL resets to original state. Does not call
-    /// collect(); the event loop does that via AppEvent::Collect.
+    /// Run SQL against `query_root` (registered as table "df"), starting a fresh view:
+    /// `install_query_result` clears filters and sort, reapplied after. Empty SQL resets.
+    /// Does not collect; the event loop does (`AppEvent::Collect`).
     pub fn sql_query(&mut self, sql: String) {
         self.error = None;
         let trimmed = sql.trim();
@@ -1150,10 +1134,9 @@ impl DataTableState {
             ctx.register("df", root.clone());
             match ctx.execute(trimmed) {
                 Ok(mut result_lf) => {
-                    // First, so the schema and the group source read the plan that
-                    // runs. It changes expressions in place and only adds a projection
-                    // over a union's inputs: the nodes stable_order orders and the
-                    // filter count_subquery_values_once rewrites keep their shape.
+                    // First, so schema and group source read the plan that runs: it changes expressions in
+                    // place and only projects over union inputs, keeping the shapes `stable_order` and
+                    // `count_subquery_values_once` rely on.
                     crate::past_calendar::guard_plan(&mut result_lf.logical_plan);
                     // Read before datui orders the plan stably or by group keys: the
                     // marks say what the statement asked for.
@@ -1196,9 +1179,8 @@ impl DataTableState {
                         &schema,
                         root_lineage,
                     );
-                    // Groups sorted by their keys have no ties, and a statement simple
-                    // enough to trace holds nothing else that gives rows in any order.
-                    // Keeping the groups' order too would double the grouping's time.
+                    // Groups sorted by key have no ties, and a traceable statement has nothing else
+                    // unordered; ordering groups too would double the grouping's time.
                     if !group_source.as_ref().is_some_and(|(_, by_keys)| *by_keys) {
                         stable_order(&mut result_lf.logical_plan);
                     }
@@ -1239,12 +1221,10 @@ impl DataTableState {
         }
     }
 
-    /// What a SQL `GROUP BY` result was grouped from, when the statement is a grouping
-    /// of `df` simple enough to trace (see [`crate::sql_group`]). Plans without reading.
-    /// A grouping with no ORDER BY or LIMIT has its rows sorted by key, as a `by`
-    /// query's are: Polars returns groups in any order, and every read of the result
-    /// (each page, the row count, coming back from a drill) would otherwise be free to
-    /// shuffle them. Also says whether it sorted them.
+    /// What a SQL `GROUP BY` result was grouped from, when simple enough to trace (see
+    /// [`crate::sql_group`]), planned without reading. Without ORDER BY or LIMIT its rows
+    /// are sorted by key, as a `by` query's, so pages, counts and drills see one order.
+    /// Also says whether it sorted them.
     #[cfg(feature = "sql")]
     fn sql_group_source(
         ctx: &mut polars_sql::SQLContext,
@@ -1329,9 +1309,8 @@ impl DataTableState {
         self.view.group_source = Some(source);
     }
 
-    /// Fuzzy search: filter rows where any string column matches the query.
-    /// Query is split on whitespace; each token must match (in order, case-insensitive) in some string column.
-    /// Empty query resets to original_lf.
+    /// Fuzzy search: keep rows where every whitespace-separated token matches (in order,
+    /// case-insensitive) in some string column. An empty query resets.
     pub fn fuzzy_search(&mut self, query: String) {
         self.error = None;
         let trimmed = query.trim();

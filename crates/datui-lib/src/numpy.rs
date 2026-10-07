@@ -152,7 +152,7 @@ impl Literal {
 }
 
 /// Parse the Python literal `text`: strings, integers, `True`, `False`, `None`, lists,
-/// tuples and dicts, nested at most [`MAX_DEPTH`] deep.
+/// tuples and dicts, nested at most `MAX_DEPTH` deep.
 pub fn parse_literal(text: &str) -> std::result::Result<Literal, String> {
     let mut parser = Parser {
         text: text.as_bytes(),

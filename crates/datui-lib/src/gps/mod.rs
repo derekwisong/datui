@@ -4,7 +4,7 @@
 //! end, a piece at a time, and writes the rows to a temporary Arrow IPC file a batch
 //! at a time. The dataset scans that file lazily like any other, and memory stays at
 //! one batch however long the log. The file is claimed through the open's
-//! [`Writer`], so quitting or replacing the open removes it.
+//! `Writer`, so quitting or replacing the open removes it.
 //!
 //! A GPX file can find a new extension field a million points in: the rows after it
 //! go to a new segment, a second IPC file with the wider schema, and the frame is the

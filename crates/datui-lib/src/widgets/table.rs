@@ -42,7 +42,7 @@ pub struct DataTable {
     /// independent of `column_colors`, so stubs always read as "placeholder, not data".
     pub binary_col: Option<Color>,
     /// Names of columns that are binary in the source schema. Their cells hold the `‹binary›`
-    /// stub (see [`binary_stub`]) and are styled with `binary_col` + italic.
+    /// stub (see `binary_stub`) and are styled with `binary_col` + italic.
     pub binary_cols: std::collections::HashSet<String>,
     /// Display-time number formatting (digit grouping, separators, alignment).
     pub number_format: NumberFormatSettings,
@@ -209,10 +209,9 @@ pub(crate) struct Cells {
     has_values: bool,
 }
 
-/// The cells of the columns the last frame drew, kept for the next: a frame whose page
-/// did not change (a cursor move, a spinner) formats no value. A column's cells stay
-/// its own while it is the same series, cut at the same rows, formatted the same way
-/// with the same glyphs and null marks.
+/// The cells the last frame drew, reused when the page is unchanged (cursor move,
+/// spinner): a column's cells stand while it is the same series, cut, formatting,
+/// glyphs and null marks.
 #[derive(Default)]
 pub(crate) struct PageCells {
     columns: std::collections::HashMap<String, KeptCells>,
@@ -261,15 +260,13 @@ struct FittedColumns {
     cols: Vec<ColumnSlice>,
     widths: Vec<u16>,
     rows: usize,
-    /// The last column ends at the table's right edge with more columns after it:
-    /// its heading leaves its last cell to the off-screen hint, which would
-    /// otherwise cover the heading's last character or clip marker.
+    /// The last column ends at the right edge with more after it: its heading yields its
+    /// last cell to the off-screen hint.
     hint_cell: bool,
 }
 
-/// The least the scrolling side keeps beside frozen columns, and the most: a third of
-/// the table in between, and never over half. Enough for any number or timestamp whole,
-/// and for the start of a text column.
+/// The least and most the scrolling side keeps beside frozen columns: a third of the
+/// table between, never over half. Enough for any number or timestamp whole.
 const MIN_SCROLL_RESERVE: u16 = 12;
 
 const MAX_SCROLL_RESERVE: u16 = 40;
@@ -293,13 +290,11 @@ enum Side {
     Scrolling,
 }
 
-/// The width a column gets with `remaining` cells left, or `None` to leave it for the
-/// next scroll. The heading and the values are fitted separately: a long heading is
-/// clipped over values that fit whole, and never hides them. Text may be clipped, since
-/// a clipped string still reads as its start. A number or timestamp that does not fit
-/// is left for the scroll, as a cut one reads as a different value, unless it is the
-/// first scrolling column and nothing else would show: then it is drawn clipped,
-/// behind the clip marker.
+/// A column's width with `remaining` cells left, or `None` to leave it for the next
+/// scroll. Heading and values fit separately (a long heading clips, never hiding
+/// values). Text may clip; a number or timestamp that does not fit waits for the scroll
+/// (cut, it reads as another value), unless it is the first scrolling column and
+/// nothing else would show: then it is clipped behind the marker.
 fn fit_column(
     col: &ColumnSlice,
     remaining: u16,
@@ -319,11 +314,10 @@ fn fit_column(
     (side == Side::Scrolling && first && remaining > 0).then_some(remaining)
 }
 
-/// Fitted `spans` as one line of a `width`-cell column, flush right when `right`.
-/// ratatui places a span by its whole string's width, which can differ from the cells
-/// it draws (`لا` draws two, a halfwidth sound mark one): its right alignment then
-/// pushes the last grapheme off the cell, and a span after such a one overwrites it.
-/// So the padding is counted in drawn cells, and spans that disagree are drawn as one.
+/// Fitted `spans` as one line of a `width`-cell column, right-aligned when `right`.
+/// ratatui places spans by string width, which can differ from drawn cells (`لا`,
+/// halfwidth marks), so padding is counted in drawn cells and disagreeing spans are
+/// merged.
 fn cell_line<'a>(mut spans: Vec<Span<'a>>, width: u16, right: bool) -> Line<'a> {
     use unicode_width::UnicodeWidthStr;
     let drawn = |s: &Span| crate::glyphs::cell_width(&s.content);
@@ -346,9 +340,9 @@ fn cell_line<'a>(mut spans: Vec<Span<'a>>, width: u16, right: bool) -> Line<'a> 
     Line::from(spans)
 }
 
-/// The rows of `df` on screen: `len` of them from `offset`, or `None` past its end.
-/// As [`visible_slice`], or the frame's columns with no rows when none of its rows is
-/// on screen, so a table of no rows still draws its header.
+/// The on-screen rows of `df` (`len` from `offset`), as [`visible_slice`], or its
+/// columns with no rows when none are on screen, so an empty table draws its header;
+/// `None` past the end.
 fn visible_or_header(df: &DataFrame, offset: usize, len: usize) -> Option<DataFrame> {
     if df.width() == 0 {
         return None;
@@ -356,12 +350,9 @@ fn visible_or_header(df: &DataFrame, offset: usize, len: usize) -> Option<DataFr
     Some(visible_slice(df, offset, len).unwrap_or_else(|| df.clear()))
 }
 
-/// Whether a column whose value doesn't fully fit may be shown truncated. Textual columns
-/// (strings, raw bytes, categorical/enum labels) and nested previews (structs, lists,
-/// arrays) are fine to clip: a partial value still reads as a clipped string, and a
-/// nested value left whole would hold one long value's width on every page after it.
-/// Numeric, temporal and boolean columns are excluded: a truncated number or
-/// timestamp reads as a different (wrong) value, so those are dropped until scrolled into view.
+/// Whether a column may be shown truncated: text, bytes, categorical labels and nested
+/// previews (a clipped value still reads as its start; whole nested values would hold
+/// a huge width). Not numbers, temporals or booleans: cut, they read as wrong values.
 fn is_truncatable_dtype(dtype: &DataType) -> bool {
     match dtype {
         DataType::String | DataType::Binary => true,
@@ -458,9 +449,8 @@ impl DataTable {
         self
     }
 
-    /// The columns the view is sorted by, and which way each runs, for the header
-    /// marks. The stateful render fills this from the state itself; the builder is
-    /// for direct callers of `render_dataframe`, such as tests.
+    /// The sort columns and directions for the header marks; the stateful render fills
+    /// these itself, the builder is for direct `render_dataframe` callers like tests.
     pub fn with_sort(mut self, columns: Vec<String>, descending: Vec<bool>) -> Self {
         debug_assert_eq!(columns.len(), descending.len());
         self.sort_columns = columns;
@@ -468,9 +458,8 @@ impl DataTable {
         self
     }
 
-    /// The direction mark after a column's name when the view is sorted by it. Every
-    /// column of a multi-sort carries one — the mark alone, no position number — and
-    /// each shows its own column's direction. Empty for unsorted columns.
+    /// The direction mark after a sorted column's name; every column of a multi-sort gets
+    /// its own (no position number). Empty when unsorted.
     fn sort_mark_for(&self, column: &str) -> &'static str {
         if let Some(i) = self.sort_columns.iter().position(|c| c == column) {
             let g = self.glyphs;
@@ -494,9 +483,8 @@ impl DataTable {
         }
     }
 
-    /// Every column some file is missing, gathered once a frame. Most columns are in
-    /// every file, and this keeps them to one hash lookup rather than a walk of every
-    /// group's lists.
+    /// Every column some file lacks, gathered once a frame so most columns cost one hash
+    /// lookup.
     fn drifting_columns(&self) -> HashSet<&str> {
         self.drift_groups
             .iter()
@@ -505,9 +493,9 @@ impl DataTable {
             .collect()
     }
 
-    /// What a null in `column` draws as, per drift group: the plain null glyph, the
-    /// absent glyph for a group whose files never had the column, or the conflict
-    /// glyph for one whose files hold it in another type. Empty when nothing drifts.
+    /// What a null in `column` draws as per drift group: the null glyph, the absent glyph
+    /// (files without the column), or the conflict glyph (files with another type). Empty
+    /// when nothing drifts.
     fn null_glyphs_for(
         &self,
         column: &str,
@@ -531,9 +519,8 @@ impl DataTable {
             .collect()
     }
 
-    /// The selected row's style and tint, the rail colour, and the dim colour
-    /// for nulls. The style comes from the theme's `highlight_style` helper,
-    /// so this widget never invents a fallback of its own.
+    /// The selected row's style and tint, rail color, and dim null color, from the theme's
+    /// `highlight_style`; no fallbacks of its own.
     pub fn with_selection_colors(
         mut self,
         selection_style: Style,
@@ -548,8 +535,6 @@ impl DataTable {
         self
     }
 
-    /// Mark the cell a find landed on, drawn in `style` in place of the current cell's
-    /// style while the cursor is on it.
     /// Draw these cells (view row, column) as found: a find's matches as it is typed.
     pub fn with_match_cells(
         mut self,
@@ -559,6 +544,7 @@ impl DataTable {
         self
     }
 
+    /// Mark the cell a find landed on, drawn in `style` while the cursor is on it.
     pub fn with_find_cell(mut self, cell: Option<(usize, String)>, style: Style) -> Self {
         self.find_cell = cell;
         self.find_style = style;
@@ -607,11 +593,9 @@ impl DataTable {
         }
     }
 
-    /// Render `df` into `area` on its own, with widths learned from this page alone,
-    /// returning how many columns were shown. For tests of the layout rules.
-    ///
-    /// `leading_gap` keeps the first column one cell off the left edge: the columns right
-    /// of the frozen separator, which would otherwise touch it.
+    /// Render `df` into `area` alone with widths learned from this page, returning the
+    /// columns shown; for layout tests. `leading_gap` keeps the first column off the left
+    /// edge (right of the frozen separator).
     #[cfg(test)]
     pub(crate) fn render_dataframe(
         &self,
@@ -676,10 +660,9 @@ impl DataTable {
         (shown, columns, rows)
     }
 
-    /// Widen the last column drawn by the `room` left at the table's right edge, so a
-    /// long text on the far right runs to the edge rather than stopping at its cap.
-    /// Only a column drawn whole at an automatic width, and not a right-aligned number,
-    /// which would only move away from its heading. Returns the cells it took.
+    /// Widen the last drawn column by the `room` left at the right edge so long text runs
+    /// to the edge. Only an automatic-width, fully drawn, non-right-aligned column. Returns
+    /// the cells taken.
     fn fill_last_column(
         &self,
         fitted: &mut FittedColumns,
@@ -699,13 +682,10 @@ impl DataTable {
         Some(room)
     }
 
-    /// The frozen columns that fit beside a usable scrolling column, with their widths.
-    ///
-    /// `width` is the room right of the row numbers. Whenever anything scrolls, the
-    /// scrolling side keeps a third of the table (within bounds), so a wide frozen prefix
-    /// can never leave it a sliver; the frozen columns that do not fit in the rest are
-    /// the caller's to hand to the scrolling side, where each can be read whole. Only
-    /// the first frozen column is ever clipped to stay frozen, and never a number.
+    /// The frozen columns that fit beside a usable scrolling side, with widths (`width` is
+    /// right of the row numbers). The scrolling side keeps a third of the table (within
+    /// bounds); frozen columns that do not fit move to it. Only the first frozen column
+    /// may clip to stay frozen, never a number.
     fn fit_frozen_columns(
         &self,
         locked: &DataFrame,
@@ -737,10 +717,9 @@ impl DataTable {
         )
     }
 
-    /// Lay `df`'s columns out left to right in `width` cells, `lead` of them taken first,
-    /// formatting a column's first `rows` values only once it is reached. The one sizing
-    /// rule for frozen and scrolling columns alike: each column at its stable width,
-    /// learned from the rows on screen in terminal cells the first time it is drawn.
+    /// Lay `df`'s columns left to right in `width` cells (`lead` first), formatting a
+    /// column's first `rows` values only when reached. One rule for frozen and scrolling:
+    /// each at its stable width, learned in cells from the rows on screen when first drawn.
     fn fit_columns(
         &self,
         df: &DataFrame,
@@ -829,9 +808,8 @@ impl DataTable {
                 AnyValue::List(items) => Cow::Owned(crate::exact::list_preview(items)),
                 value => numfmt::format_any_value(col_fmt, value, scratch),
             };
-            // A break or a tab would vanish from a cell and run the text together.
-            // Only a cell's start can be drawn: measuring a huge value whole would
-            // cost every frame what the value costs.
+            // Breaks and tabs would vanish and run text together; only a cell's start is measured,
+            // not a huge value whole.
             let text = crate::exact::cell_preview(&text, g);
             value_width = value_width.max(crate::glyphs::cell_width(&text));
             cells.push(SliceCell::Value(text));
@@ -870,9 +848,8 @@ impl DataTable {
             self.column_type_color(dtype)
                 .map(|c| Style::default().fg(c))
         };
-        // Resolved once per column: dtype eligibility and the include/exclude globs never
-        // touch the per-cell path. A binary column holds the stub, not a number, so it is
-        // always passthrough.
+        // Resolved once per column (dtype eligibility, include/exclude globs). Binary columns
+        // hold the stub, so pass through.
         let col_fmt = if is_binary {
             CellFormatter::Passthrough
         } else {
@@ -883,9 +860,8 @@ impl DataTable {
         let right_align = self.number_format.align_numeric_right
             && !is_binary
             && numfmt::is_right_aligned_dtype(dtype);
-        // A null in this column means different things in different files: the data's
-        // own null, a file written without the column, or a file that stores it in
-        // another type. Resolved once per column, by group.
+        // A null here may be the data's, a file without the column, or a file storing it in
+        // another type: resolved once per column, by group.
         let null_glyph_by_group = self.null_glyphs_for(name, g, drifting);
 
         let rows = rows.min(col_data.len());
@@ -939,10 +915,8 @@ impl DataTable {
         let header_width = crate::glyphs::cell_width(name)
             + crate::glyphs::cell_width(drift_mark)
             + crate::glyphs::cell_width(sort_mark);
-        // The type row is part of the header, so a column is at least as wide as its
-        // type name; "datetime" under a column called "ts" would otherwise clip.
-        // A binary column's buffer holds the stub text; the type is the source's.
-        // A unit from a delimited spec's unit row sits beside the type: `f64 · deg F`.
+        // The type row is part of the header, so a column is at least as wide as its type name
+        // (or a spec unit beside it: `f64 · deg F`). Binary's type is the source's.
         let type_label = self.dtype_row.then(|| {
             let label = if is_binary {
                 dtype_label(&DataType::Binary)
@@ -980,10 +954,9 @@ impl DataTable {
         }
     }
 
-    /// Draw fitted columns into `area` as a table. Every heading, type and value is
-    /// fitted to its column here, at a grapheme boundary and marked where cut, so
-    /// ratatui never truncates one itself: it cuts a right-aligned value from the left,
-    /// which turns `1234567` into `34567`.
+    /// Draw fitted columns into `area`. Every heading, type and value is pre-fitted at a
+    /// grapheme boundary and marked where cut, so ratatui never truncates (it cuts
+    /// right-aligned values from the left: `1234567` to `34567`).
     fn draw_columns<'f>(
         &self,
         fitted: &'f FittedColumns,
@@ -1042,11 +1015,8 @@ impl DataTable {
         } else {
             Style::default().bg(self.header_bg).fg(self.header_fg)
         };
-        // The name takes the column's own colour, bold, so the header says what the
-        // cells say without a mark in front of it; the type row beneath repeats the
-        // colour in plain weight and spells the type out. Headings follow their
-        // column's alignment; a left-aligned heading over right-aligned digits reads
-        // as a rendering bug.
+        // The name takes its column's type color, bold; the type row repeats it plain. Headings
+        // follow their column's alignment.
         let last = fitted.cols.len().saturating_sub(1);
         // The column cursor, when its column is among these.
         let cursor = self
@@ -1139,9 +1109,7 @@ impl DataTable {
             .column_highlight_style(self.column_cursor_style)
             .cell_highlight_style(cell_style);
         if leading_gap {
-            // A blank selection column on every row: the Table offsets the header and
-            // the cells past it and paints each row's tint across it, so the gap
-            // stripes and highlights like the rest of the row.
+            // A blank selection column on every row, so the gap stripes and highlights with the row.
             table = table
                 .highlight_symbol(" ")
                 .highlight_spacing(HighlightSpacing::Always);
@@ -1181,10 +1149,8 @@ impl DataTable {
         )
     }
 
-    /// The width a scrolling column is drawn at: the width it was last drawn at in
-    /// this view, or, for one not drawn since, measured from the rows on screen in the
-    /// buffer held and learned as drawing it would learn it. What a sideways page is
-    /// planned with.
+    /// A scrolling column's drawn width: as last drawn in this view, or measured from the
+    /// held rows on screen as drawing would learn it. Sideways pages are planned with it.
     fn measure_column(
         &self,
         state: &mut DataTableState,
@@ -1274,9 +1240,8 @@ impl DataTable {
             let padding = max_width.saturating_sub(row_num_text.len());
             let padded_text = format!("{}{}", " ".repeat(padding), row_num_text);
 
-            // Match main table background: default when row is even (or no alternate);
-            // when alternate_row_bg is set, odd rows use that background. The selected
-            // row carries the same tint as the table's own highlight.
+            // Match the table background (alternate rows striped); the selected row carries the
+            // table's highlight tint.
             let is_selected = params.selected_row == Some(row_idx);
             let (fg, bg) = if is_selected {
                 (
@@ -1322,10 +1287,8 @@ impl StatefulWidget for DataTable {
         self.current_column = state.current_column().map(str::to_string);
         self.units = state.units();
         self.retyped = state.retyped_columns();
-        // One column on the left is the rail: blank on every row but the one the
-        // cursor is on, where it carries the accent. It also holds the "columns off to
-        // the left" hint in the header, so no header name ever gets a character
-        // overwritten.
+        // The leftmost column is the rail: accented on the cursor's row, blank elsewhere, and
+        // holding the "columns off to the left" hint in the header.
         let cap = self.text_cap(area.width);
         let whole = area;
         state.drawn = None;
@@ -1693,10 +1656,8 @@ impl StatefulWidget for DataTable {
             }
         }
 
-        // Hints that more columns exist off-screen. The left one sits in the rail,
-        // where nothing else lives. The right one says how many are hidden, and goes
-        // on the type row when that row is on (its short labels leave room), else on
-        // the name row, right-aligned into the slack after the last column.
+        // Off-screen hints: the left in the rail; the right counts hidden columns, on the type
+        // row if shown (short labels leave room), else the name row, after the last column.
         if let Some(cue) = scroll_indicator
             && cue.area.width > 0
             && cue.area.height > 0

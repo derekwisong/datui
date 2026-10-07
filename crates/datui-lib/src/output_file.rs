@@ -132,7 +132,7 @@ impl OutputFile {
     /// destination is a new file. Under [`Overwrite::Forbid`] a file that
     /// appeared meanwhile fails the commit with `AlreadyExists`, atomically where
     /// the filesystem has a no-replace rename or hard links (see
-    /// [`Self::persist_new`]).
+    /// `Self::persist_new`).
     pub fn commit(self) -> io::Result<()> {
         let Self {
             temp,

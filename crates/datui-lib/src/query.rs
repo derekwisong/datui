@@ -363,10 +363,9 @@ fn from_table_at(tokens: &[Token], i: usize) -> Option<(String, usize)> {
     Some((name, end))
 }
 
-/// The query body without q's `from df`, which may sit after the select list and
-/// `by`, before `where`. `from` stays an identifier, so it is the clause only
-/// where a column could not be: followed by a table name, then `where`, `by` or
-/// the end, outside brackets. A column named `from` reads as one elsewhere.
+/// The query body without q's `from df` (after the select list and `by`, before
+/// `where`). `from` is the clause only where a column cannot be: followed by a table
+/// name, then `where`, `by` or the end, outside brackets.
 fn strip_from(body: &[Token]) -> Result<Vec<Token>, String> {
     let mut depth = 0i32;
     let mut found: Option<(usize, usize)> = None;
@@ -407,9 +406,8 @@ fn strip_from(body: &[Token]) -> Result<Vec<Token>, String> {
     Ok(body)
 }
 
-/// Infix operators spelled as words (q's names). They stay ordinary identifiers
-/// everywhere else, so a column called `in` or `mod` still reads as one when it
-/// opens an expression or follows a `.`.
+/// Infix operators spelled as words (q's); ordinary identifiers elsewhere, so a column
+/// named `in` or `mod` still works at an expression's start or after `.`.
 const WORD_OPS: [&str; 5] = ["in", "like", "xbar", "mod", "wavg"];
 
 /// The infix operator at `tokens[i]`, if there is one: a symbol, or an operator
@@ -426,9 +424,8 @@ fn infix_op_at(tokens: &[Token], i: usize) -> Option<&str> {
     }
 }
 
-/// A parsed expression, before it is a Polars expression ([`Node::to_expr`]) or
-/// Python Polars code ([`Node::python`]). One parse serves both, so the code
-/// "Copy as Python" writes is the query datui ran.
+/// A parsed expression, before becoming a Polars expression ([`Node::to_expr`]) or
+/// Python ([`Node::python`]): one parse, so "Copy as Python" is the query datui ran.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Node {
     Col(String),
@@ -555,9 +552,8 @@ impl CastTo {
     }
 }
 
-/// The most nodes an expression may grow to. `wavg`, `xbar` and `in` repeat an
-/// operand, so nesting them multiplies its size at every level: two dozen nested
-/// `wavg` were billions of nodes. Found by the `parse_query` fuzz target.
+/// The most nodes an expression may grow to: `wavg`, `xbar` and `in` repeat operands,
+/// so nesting multiplies (found by the `parse_query` fuzz target).
 const MAX_EXPR_NODES: usize = 10_000;
 
 /// Err when `copies` of `node` would pass [`MAX_EXPR_NODES`].
@@ -683,10 +679,8 @@ impl Node {
         }
     }
 
-    /// Each `/` named as Polars runs it over `schema`, the data the expression reads.
-    /// Polars' `/` on two expressions (`Div`) floor-divides whole numbers and divides
-    /// anything else; Python has no such operator, so the script needs `//` or `/`,
-    /// picked by the type of the quotient.
+    /// Name each `/` as Polars runs it over `schema`: `Div` floor-divides integers and
+    /// divides otherwise, so Python needs `//` or `/` by the quotient's type.
     pub(crate) fn resolve_division(&mut self, schema: &Schema) {
         match self {
             Node::Bin(_, left, right) | Node::Coalesce(left, right) | Node::Filter(left, right) => {
@@ -718,9 +712,8 @@ impl Node {
         }
     }
 
-    /// Each timestamp literal that meets a column with a time zone, by a comparison,
-    /// arithmetic, `^` or the two sides of a `?`, takes that zone, so it reads as a clock
-    /// there; Polars refuses to compare a zoned datetime with a naive one.
+    /// Each timestamp literal meeting a zoned column (comparison, arithmetic, `^`, `?`
+    /// branches) takes that zone; Polars refuses zoned-naive comparisons.
     pub(crate) fn resolve_time_zones(&mut self, schema: &Schema) {
         match self {
             Node::Bin(_, left, right) | Node::Coalesce(left, right) => {
@@ -743,9 +736,8 @@ impl Node {
         }
     }
 
-    /// An error for the first comparison (`=`, `<`, … or `in`) of a temporal column with
-    /// quoted text. Quoted text is a string in q, never a date, so it stays an error; this
-    /// one says so in q's words. Only a column `schema` types; the rest is Polars'.
+    /// An error for the first comparison of a typed temporal column with quoted text (a
+    /// string in q, never a date), worded in q's terms.
     fn check_quoted_temporal(&self, schema: &Schema) -> Result<(), String> {
         match self {
             Node::Bin(op, left, right) => {
@@ -1083,9 +1075,8 @@ fn apply_op_expr(expr: Expr, op: &Op) -> Expr {
     }
 }
 
-/// An operand of `mod` or `xbar`. A whole number is an integer literal, so an
-/// integer column keeps its type: `5 xbar passenger_count` stays Int64 instead of
-/// becoming 5.0, 10.0.
+/// An operand of `mod` or `xbar`: whole numbers as integer literals, so integer columns
+/// keep their type (`5 xbar passenger_count` stays Int64).
 fn int_or_node(tokens: &[Token]) -> Result<Node, String> {
     let whole = |n: f64| n.fract() == 0.0 && n.abs() < i64::MAX as f64;
     match tokens {
@@ -1359,9 +1350,8 @@ fn is_function_name(name: &str) -> bool {
     name != "wavg" && (is_agg_function(&name) || SCALAR_FUNCTIONS.contains(&name.as_str()))
 }
 
-/// A function call, `fn[args]` or `fn args`. The name is checked before the
-/// arguments are parsed, so each argument is parsed once; trying aggregates and
-/// then scalars on the same arguments doubled the work at every nesting level.
+/// A call, `fn[args]` or `fn args`. The name is checked first so arguments parse once
+/// (trying aggregates then scalars doubled work per nesting level).
 fn parse_call(name: &str, args: &[Token]) -> Result<Node, String> {
     if is_agg_function(name) {
         parse_agg_function(name, args)
@@ -1398,9 +1388,8 @@ fn parse_agg_function(name: &str, args: &[Token]) -> Result<Node, String> {
         _ => return Err(format!("Unknown aggregation function: {}", name)),
     };
     let node = node.op(op);
-    // Left unnamed, two aggregates of one column collide ("avg salary, max salary"),
-    // so a bare-column aggregate is named {fn}_{column}, the convention the dot
-    // accessors already use. An explicit alias is applied later and overrides this.
+    // A bare-column aggregate is named `{fn}_{column}` so two aggregates of one column do
+    // not collide; an explicit alias overrides it later.
     match simple_column_name(args) {
         Some(column) => Ok(node.alias(format!("{}_{}", fn_name, column))),
         None => Ok(node),
@@ -1628,9 +1617,9 @@ fn parse_accessor_args(accessor: &str, tokens: &[Token]) -> Result<Vec<AccessorA
         .collect()
 }
 
-/// Parse optional dot accessors from remaining tokens. Returns (expr_with_accessors, remaining).
-/// When base_name is Some, each accessor result is aliased to {base}_{accessor} (or {base}_{acc1}_{acc2} for chained)
-/// to avoid duplicate column names.
+/// Parse optional dot accessors from the remaining tokens, returning
+/// (expr_with_accessors, remaining). With `base_name`, results are aliased
+/// `{base}_{accessor}` (chained: `{base}_{acc1}_{acc2}`) to avoid duplicates.
 fn parse_accessors<'a>(
     mut expr: Node,
     mut tokens: &'a [Token],
@@ -1781,33 +1770,18 @@ fn parse_term(tokens: &[Token]) -> Result<(Node, &[Token]), String> {
     }
 }
 
-/// Deepest chain of nested subexpressions the parser will follow.
-///
-/// Parsing is recursive descent, so nesting in the query becomes nesting on the stack:
-/// `select ------x` recurses once per sign and `select ((((x))))` once per parenthesis.
-/// Without a ceiling a long enough chain overflows the stack and takes the process with
-/// it, which is a crash rather than the error message a mistyped query deserves. Found
-/// by the `parse_query` fuzz target.
-///
-/// The ceiling is set by the smallest stack this runs on, not by what is expressible.
-/// One level of nesting costs a `parse_node` frame and a `parse_term` frame, and in an
-/// unoptimised build those come to roughly 10 KiB together — enough that a 2 MiB worker
-/// thread runs out somewhere around 200. 64 leaves a wide margin there and a far wider
-/// one in a release build, while staying far past any expression written by hand:
-/// commas and `where` are split off before this runs, so the count is nesting within a
-/// single expression.
+/// Deepest nesting the recursive-descent parser follows, so a long chain (`------x`,
+/// `((((x))))`) errors instead of overflowing the stack (found by the `parse_query`
+/// fuzz target). Each level costs about 10 KiB of stack in a debug build, so 64 is safe
+/// on a 2 MiB worker thread and far beyond handwritten nesting.
 const MAX_EXPR_DEPTH: u32 = 64;
 
 thread_local! {
     static EXPR_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
-/// Holds the recursion counter up for as long as it is alive.
-///
-/// Every recursive path in this module passes back through `parse_node`, so counting
-/// there alone bounds the whole cycle. `parse_node` returns from a dozen places, most
-/// of them through `?`, so the decrement is tied to the scope rather than written out
-/// at each exit.
+/// Holds the recursion counter up while alive: every recursive path passes through
+/// `parse_node`, which returns from many places, so the decrement is scoped.
 struct DepthGuard;
 
 impl DepthGuard {
@@ -1850,9 +1824,7 @@ fn parse_node(tokens: &[Token]) -> Result<Node, String> {
         && tokens.len() > 1
         && tokens[1] != Token::LBracket
     {
-        // Function call without brackets - parse the rest as the argument, going
-        // through the same builders as the bracketed form so both spellings get
-        // the same expression and the same auto-alias.
+        // A call without brackets: the rest is the argument, built as the bracketed form is.
         return parse_call(name, &tokens[1..]);
     }
 
@@ -1921,9 +1893,8 @@ fn parse_node(tokens: &[Token]) -> Result<Node, String> {
             Err("Expected operator".to_string())
         }
     } else {
-        // No operator found, parse as term. Every caller hands this a complete
-        // expression, so leftover tokens are a mistake in the query; dropping them
-        // here used to make `where x > 1 by dept` silently ignore `by dept`.
+        // No operator: a term. Callers pass complete expressions, so leftover tokens are an
+        // error (not silently dropped, as `where x > 1 by dept` once lost `by dept`).
         let (expr, remaining) = parse_term(tokens)?;
         if let Some(extra) = remaining.first() {
             if matches!(&tokens[0], Token::Identifier(w) if w == "wavg") {
@@ -1954,10 +1925,9 @@ pub struct ParsedQuery {
 }
 
 impl ParsedQuery {
-    /// The query with its casts to text and date parts safe on a date past the
-    /// calendar, where Polars panics ([`crate::past_calendar::guard_expr`]).
-    /// `schema` is the data the query runs against: with it, only operations on a
-    /// date or datetime change.
+    /// The query with text casts and date parts guarded for dates past the calendar,
+    /// where Polars panics ([`crate::past_calendar::guard_expr`]). With `schema`, only
+    /// date and datetime operations change.
     pub fn past_calendar_safe(self, schema: Option<&Schema>) -> Self {
         let guard = |e: Expr| crate::past_calendar::guard_expr(e, schema);
         Self {
@@ -2058,9 +2028,8 @@ impl QueryNodes {
             .map(|f| format!(".filter({})", f.python()))
     }
 
-    /// Python method calls doing what `DataTableState::query` does with the query:
-    /// the where clause, then the grouping (its rows ordered by the keys, which the
-    /// result names `key_names`) or the select list, then `distinct`.
+    /// Python calls doing what `DataTableState::query` does: the where clause, then the
+    /// grouping (ordered by keys named `key_names`) or the select list, then `distinct`.
     pub(crate) fn python_steps(&self, key_names: &[String]) -> Vec<String> {
         let mut steps: Vec<String> = self.python_filter().into_iter().collect();
         if !self.group_by.is_empty() {
@@ -2110,9 +2079,8 @@ pub fn parse_query(query: &str) -> Result<ParsedQuery, String> {
     parse_nodes(query).map(QueryNodes::into_parsed)
 }
 
-/// [`parse_query`] for data of `schema`: a timestamp literal compared with a column
-/// that has a time zone reads as a clock in that zone, and a temporal column compared
-/// with quoted text is an error.
+/// [`parse_query`] for data of `schema`: timestamp literals against zoned columns read
+/// in that zone, and temporal columns compared with quoted text are errors.
 pub fn parse_query_over(query: &str, schema: Option<&Schema>) -> Result<ParsedQuery, String> {
     let mut nodes = parse_nodes(query)?;
     if let Some(schema) = schema {
@@ -2134,9 +2102,8 @@ pub(crate) fn parse_nodes(query: &str) -> Result<QueryNodes, String> {
     if tokens.is_empty() || tokens[0] != Token::Select {
         return Err("Query must start with 'select'".to_string());
     }
-    // `distinct` right after `select` is the keyword unless what follows makes it
-    // a column or an alias (`select distinct: x`, `select distinct, a`, `distinct + 1`);
-    // col["distinct"] always names the column.
+    // `distinct` after `select` is the keyword unless it is a column or alias
+    // (`distinct: x`, `distinct, a`, `distinct + 1`); `col["distinct"]` always names it.
     let distinct = tokens.get(1) == Some(&Token::Identifier("distinct".to_string()))
         && !matches!(
             tokens.get(2),
@@ -2314,9 +2281,7 @@ pub(crate) fn parse_nodes(query: &str) -> Result<QueryNodes, String> {
             } else {
                 let expr = parse_node(&chunk)?;
                 group_by_cols.push(expr.clone());
-                // Try to extract column name from simple Expr
-                // For simple identifiers: [Token::Identifier(name)]
-                // For col[] syntax: [Token::Identifier("col"), Token::LBracket, Token::String/Identifier(name), Token::RBracket]
+                // The column name of a simple expression: `name`, or `col[name]`.
                 if chunk.len() == 1 {
                     if let Token::Identifier(name) = &chunk[0] {
                         group_by_col_names.push(name.clone());
@@ -2334,9 +2299,7 @@ pub(crate) fn parse_nodes(query: &str) -> Result<QueryNodes, String> {
                         _ => {}
                     }
                 } else {
-                    // For complex expressions without alias, we can't extract a simple name
-                    // The group_by_col_names will be incomplete, but that's okay -
-                    // we'll use the Expr itself for sorting
+                    // Complex expressions have no simple name; sorting uses the expression itself.
                 }
             }
         }

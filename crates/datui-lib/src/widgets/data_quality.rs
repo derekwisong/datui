@@ -386,9 +386,8 @@ enum SetupLine {
     Note(String, bool),
 }
 
-/// Data Quality Setup: every setting a run takes, in four sections, and what the
-/// run will read. Nothing here reads: the schema, the rows on screen and what
-/// earlier runs kept are all it knows. Staged edits wait for Enter.
+/// Data Quality Setup: every run setting in four sections, and what the run will read.
+/// Reads nothing (only schema, on-screen rows and kept runs); edits wait for Enter.
 fn render_setup(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buffer) {
     let plan = config.plan;
     let view = &config.setup;
@@ -985,9 +984,8 @@ fn copy_transfer(copy: CopyPlan, state: &DataTableState) -> Option<String> {
     }
 }
 
-/// What the declared intent costs, said before Run: nothing past the rows read, but
-/// a key on a sample speaks only for the sampled rows, and on a full scan it is a
-/// grouping of its own.
+/// What declared intent costs, said before Run: no extra rows, but a key on a sample
+/// covers only sampled rows, and on a full scan is a grouping of its own.
 fn intent_read_lines(plan: &DataQualityPlan, every_row: bool) -> Vec<String> {
     if plan.intent.is_empty() {
         return Vec::new();
@@ -1020,9 +1018,8 @@ fn intent_read_lines(plan: &DataQualityPlan, every_row: bool) -> Vec<String> {
     }
 }
 
-/// Collects a full run makes over its scope: one per check, and a count first when
-/// the scope's size is not known. How much each reads again depends on the
-/// source; that there are this many is the plan's.
+/// Collects a full run makes over its scope: one per check, plus a count first when the
+/// scope's size is unknown.
 fn full_passes(config: &DataQualityWidgetConfig<'_>) -> usize {
     let plan = config.plan;
     let state = config.state;
@@ -1243,9 +1240,9 @@ fn render_verdict(
 /// The label gutter of the coverage lines, as wide as its longest label and a gap.
 const COVERAGE_LABEL: usize = 8;
 
-/// The coverage under the verdict: checks, rows and limits, each a labeled line of
-/// facts that wraps between facts. Within `max_lines` the rows give way first, since
-/// the header states them too, and a section cut short counts what it left out.
+/// The coverage under the verdict (checks, rows, limits), each a labeled line wrapping
+/// between facts. Over `max_lines`, rows go first (the header states them); a cut
+/// section counts what it omitted.
 fn coverage_lines(
     coverage: &Coverage,
     width: u16,
@@ -1590,9 +1587,8 @@ fn check_lines(
         Outcome::Skipped(reason) => format!("skipped: {reason}"),
         Outcome::Unavailable(reason) => format!("unavailable: {reason}"),
     };
-    // Each column as wide as its widest entry across every check, so showing all
-    // of them moves nothing; what a check looks for takes the rest, and wraps under
-    // itself rather than being cut.
+    // Each column as wide as its widest entry across checks, so showing all moves nothing;
+    // what a check looks for takes the rest, wrapping under itself.
     let column = |text: &dyn Fn(&Check) -> String| {
         checks
             .iter()
@@ -1672,11 +1668,8 @@ fn check_lines(
     lines
 }
 
-/// `text` cut to `width` display columns, with the ellipsis glyph when anything was
-/// cut, so a truncated count never reads as a smaller one.
-/// A segment's label as the terminal draws it: the `∅` naming rows with no value
-/// is the null glyph, which `LANG=C` swaps for its ASCII twin. The label itself
-/// stays as it is, since evidence finds a segment's rows by it.
+/// A segment label as drawn: `∅` (no value) uses the null glyph (ASCII under `LANG=C`).
+/// The label itself is unchanged, since evidence finds rows by it.
 fn segment_text(label: &str) -> String {
     label.replace('∅', glyphs::get().null)
 }
@@ -2230,9 +2223,8 @@ fn render_segments(
         );
     }
 
-    // What there is for every segment without choosing anything: its rows, how
-    // much of it is empty, and the one change against its comparison that moved
-    // most. Enter shows the rest.
+    // Per segment without choosing anything: rows, emptiness, and its largest move against
+    // its comparison. Enter shows the rest.
     let rows_label = |segment: &crate::data_quality::SegmentQualityProfile| match segment.total_rows
     {
         Some(total) if total != segment.evaluated_rows => format!(
@@ -2294,9 +2286,8 @@ fn render_segments(
     StatefulWidget::render(table, sections[1], buf, table_state);
 }
 
-/// One segment's columns, every measure beside the segment it is compared with,
-/// the largest move first: the answer to "what changed here" without choosing a
-/// column or a measure first.
+/// One segment's columns with every measure beside its comparison, largest move first:
+/// "what changed here" without choosing a column or measure.
 fn render_segment_detail(
     config: &DataQualityWidgetConfig<'_>,
     table_state: &mut TableState,
@@ -2459,9 +2450,8 @@ fn share(count: usize, of: usize) -> String {
     }
 }
 
-/// Each interval in each segment, one row each: which, where, and the counts a
-/// glance needs. Enter opens every count it took, so nothing is lost to a narrow
-/// terminal.
+/// One row per interval per segment: which, where, and the key counts; Enter opens
+/// every count, so nothing is lost to a narrow terminal.
 fn render_intervals(
     config: &DataQualityWidgetConfig<'_>,
     table_state: &mut TableState,
@@ -2625,11 +2615,9 @@ fn render_intervals(
     StatefulWidget::render(table, body, buf, table_state);
 }
 
-/// One interval in one segment: its endpoints and every count it took, each out
-/// of what it is out of. Missing ends, text a format did not read, and negative
-/// durations are separate rows, never folded together. The counts with rows
-/// behind them take the cursor; Enter opens those rows. From the measurements the
-/// report holds: nothing here reads.
+/// One interval in one segment: endpoints and every count with its denominator.
+/// Missing ends, unparsed text and negative durations stay separate. Counts with rows
+/// take the cursor; Enter opens them. Reads nothing.
 fn render_interval_detail(
     config: &DataQualityWidgetConfig<'_>,
     table_state: &mut TableState,
@@ -2903,9 +2891,8 @@ fn render_interval_pairs(
 /// The width of the Trends table's range column.
 const TREND_RANGE: u16 = 20;
 
-/// The Trends table's name column and how many bars fit beside it and the range,
-/// in `width`, past the selector and the gaps between columns. The table and a
-/// bar's detail lay out the same, so a bar there is the bar the table drew.
+/// The Trends name column width and how many bars fit in `width`; shared with a bar's
+/// detail so both lay out the same.
 fn trend_layout(results: &DataQualityResults, width: u16) -> (u16, usize) {
     let name_width = results
         .columns
@@ -2950,10 +2937,9 @@ fn counted_unit(count: usize, unit: &str) -> String {
     format!("{} {unit}", numfmt::group_chrome(count))
 }
 
-/// A bar's mark in `line`: its level, the unsampled mark where the sample drew no
-/// row (so a bar of missed segments is never a short bar or a blank), and a blank
-/// where the measure has nothing to apply to. The exact rows line has a level for
-/// every bar.
+/// A bar's mark in `line`: its level, the unsampled mark where the sample drew no row
+/// (never a short or blank bar), or blank where the measure does not apply. The exact
+/// rows line has a level for every bar.
 fn bar_mark(line: &TrendRow, bar: &TrendBar, index: usize, g: &glyphs::Glyphs) -> &'static str {
     if bar.evaluated == 0 && line.measure != TrendMeasure::Rows {
         return g.unsampled;
@@ -3103,10 +3089,9 @@ fn gap_counts(check: &GapCheck) -> String {
     .join(", ")
 }
 
-/// Each column's measure across the segments as a line of bars, the rows each
-/// segment holds first. The whole range fits the width: a bar pools as many
-/// consecutive segments as it takes. Segments the sample missed are bars of their
-/// own mark, and the notes say how many, and what expected windows have no rows.
+/// Each column's measure across segments as a line of bars, segment rows first. The
+/// whole range fits: a bar pools consecutive segments. Missed segments get their own
+/// mark; notes count them and empty expected windows.
 fn render_trend_table(
     config: &DataQualityWidgetConfig<'_>,
     results: &DataQualityResults,
@@ -3191,11 +3176,9 @@ fn render_trend_table(
     StatefulWidget::render(table, table_area, buf, table_state);
 }
 
-/// One bar of one Trends line, the line drawn above it with a pointer under the
-/// bar: what it spans, how many segments it pools and how much of them the run
-/// read, its value with what it is out of, how sure a sample is of it, and how it
-/// stands against the bar it is compared with. From the report's measurements:
-/// nothing here reads. ↑↓ walk the bars.
+/// One bar of a Trends line, drawn under the line with a pointer: its span, segments
+/// pooled and read, value and denominator, sample confidence, and comparison. Reads
+/// nothing; ↑↓ walk the bars.
 fn render_trend_detail(
     config: &DataQualityWidgetConfig<'_>,
     table_state: &mut TableState,
@@ -3863,9 +3846,9 @@ struct FieldRow {
     value: String,
 }
 
-/// Rows in two aligned columns: the label padded to `label_width`, and the value
-/// in what is left, wrapped under itself; a value of several lines keeps each on
-/// its own. With `marks`, a two-column lead holds each row's mark, or nothing.
+/// Rows in two aligned columns: label padded to `label_width`, value wrapped under
+/// itself (multi-line values keep their lines). With `marks`, a two-column lead holds
+/// each row's mark.
 fn field_lines(
     rows: &[FieldRow],
     label_width: usize,
@@ -3932,9 +3915,8 @@ fn render_counted(mut lines: Vec<Line<'static>>, area: Rect, theme: &Theme, buf:
     Paragraph::new(lines).render(area, buf);
 }
 
-/// What was measured on a column, in the table's own formatting. A measurement
-/// that does not apply to its type is left out rather than shown as a dash, and
-/// what the header says (the rows checked, whether sampled) is not repeated.
+/// What was measured on a column, table-formatted. Measures not applying to its type
+/// are omitted (not dashed); header facts are not repeated.
 fn detail_measurements(
     ctx: &RenderContext,
     results: &DataQualityResults,
@@ -4350,9 +4332,8 @@ fn planned_read_bytes(state: &DataTableState, plan: &DataQualityPlan) -> Option<
     }
     let rows = match plan.compute {
         QualityCompute::Metadata => 0,
-        // The head reads what it keeps. Anything else is a ceiling: a spread sample
-        // is one Parquet or IPC file's few dozen short runs or one stream of the
-        // scope, and a per-partition one streams the scope.
+        // The head reads what it keeps; otherwise a ceiling: a spread sample is a few dozen
+        // runs of one file or one stream, and per-partition streams the scope.
         QualityCompute::Sample if plan.method == crate::sampling::SampleMethod::FirstRows => {
             planned_scope_rows(state, plan)?.min(dataset_rows(plan))
         }

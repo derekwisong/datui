@@ -12,7 +12,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 #[derive(Default)]
 pub struct InfoState {
     /// What Info's read found about the open file, with its `dataset_generation`.
-    /// Read on a worker ([`Job::FileFacts`]) when the panel opens and kept however it
+    /// Read on a worker ([`crate::jobs::Job::FileFacts`]) when the panel opens and kept however it
     /// ended, so drawing or reopening never reads again.
     pub(crate) file_facts: Option<(u64, FileFacts)>,
     /// What the dataset's columns mean, when a catalog that lists it says.

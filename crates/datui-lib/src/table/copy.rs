@@ -2,9 +2,8 @@
 
 use super::*;
 
-/// The grouped view and the pipeline state that produced it, saved by a drill-down so
-/// filters and sort inside the group work on the group and `drill_up` restores the
-/// grouped view as it was.
+/// The grouped view and pipeline state a drill-down saved, so filters and sort inside
+/// the group apply to it and `drill_up` restores the grouped view.
 #[derive(Clone)]
 pub(super) struct GroupedView {
     pub(super) lf: LazyFrame,
@@ -16,9 +15,8 @@ pub(super) struct GroupedView {
     pub(super) sort_columns: Vec<String>,
     pub(super) sort_descending: Vec<bool>,
     pub(super) sort_ascending: bool,
-    /// Whether `lf` carries the hidden drift column, and what its groups mean. Saved
-    /// with the frame so drilling back up restores the cells it explains, along with
-    /// the notes that explain them.
+    /// Whether `lf` has the hidden drift column and its groups' meaning, so drilling up
+    /// restores those cells and their notes.
     drift: bool,
     drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
     /// Whether `lf` numbers its rows itself (`#`).
@@ -40,10 +38,9 @@ pub(super) struct GroupedView {
     lineage: Lineage,
 }
 
-/// The rows a grouped result was computed from and how its keys were computed, so a
-/// drill-down can find a group's rows even when the result holds only aggregates.
-/// Recorded by the query that grouped rather than inferred from the result's columns,
-/// which may be renamed or computed.
+/// The rows a grouped result came from and how its keys were computed, so a drill-down
+/// finds a group's rows even from aggregates. Recorded by the grouping query, not
+/// inferred from (possibly renamed) columns.
 #[derive(Clone)]
 pub(super) struct GroupSource {
     /// The rows before grouping, after any filter the query applied first.
@@ -149,11 +146,9 @@ impl ExportFrame {
     /// The name of the column an export adds when asked to say where each row is from.
     pub const SOURCE_FILE_COLUMN: &'static str = "source_file";
 
-    /// The plan. Naming the files reads the schema, which may resolve the scan, so
-    /// this belongs off the UI thread.
-    ///
-    /// The names are mapped from the row index batch by batch, so a streamed export
-    /// still never holds every row.
+    /// The plan. Naming files reads the schema (possibly resolving the scan), so off the UI
+    /// thread; names map from the row index per batch, so streamed exports never hold
+    /// every row.
     pub fn into_lazy(self) -> PolarsResult<LazyFrame> {
         let Some(SourceFiles { names, starts }) = self.files else {
             return Ok(self.lf);
@@ -189,11 +184,8 @@ impl ExportFrame {
             .drop(by_name([index], true, false)))
     }
 
-    /// A name for the source-file column that no column already has.
-    ///
-    /// `source_file` is a name a dataset may well use itself — a directory of per-file
-    /// extracts is exactly this feature's audience — and adding a column by a name
-    /// already present replaces it, silently, in the file the user takes away.
+    /// A name for the source-file column no column has: `source_file` may exist already,
+    /// and adding a same-named column would silently replace it.
     fn free_name<'a>(taken: impl Iterator<Item = &'a str>) -> String {
         let taken: HashSet<&str> = taken.collect();
         std::iter::once(Self::SOURCE_FILE_COLUMN.to_string())
@@ -215,9 +207,8 @@ impl DataTableState {
         Some((columns, values))
     }
 
-    /// The columns of `df`, the table SQL runs against, with their types. From the
-    /// schema already known for the data as loaded; a drilled group or a reshape only
-    /// has its plan resolved, which reads nothing.
+    /// The columns and types of `df`, the table SQL runs against, from the known schema; a
+    /// drilled group or reshape only resolves its plan, reading nothing.
     pub fn sql_table_columns(&self) -> Vec<(String, DataType)> {
         let schema = if self.view.grouped.is_none() && self.view.reshaped_lf.is_none() {
             Some(self.original_schema.clone())
@@ -261,9 +252,8 @@ impl DataTableState {
         self.view.reshape_source.as_ref()
     }
 
-    /// Whether the view is a grouping's result (a `by` query, a SQL GROUP BY), so its
-    /// rows drill into groups. Recorded by the query, never inferred from list columns:
-    /// a table loaded with one is not grouped.
+    /// Whether the view is a grouping's result (a `by` query, SQL GROUP BY) whose rows drill
+    /// into groups; recorded by the query, never inferred from list columns.
     pub fn is_grouped(&self) -> bool {
         self.view.group_source.is_some()
     }
@@ -338,9 +328,8 @@ impl DataTableState {
             .saturating_sub(self.view.buffered_start_row)
     }
 
-    /// The first `limit` distinct non-null values of `column` among the rows already
-    /// buffered for display, as text. Reads nothing: a column the buffer lacks gives
-    /// none.
+    /// The first `limit` distinct non-null values of `column` in the display buffer, as
+    /// text. Reads nothing; a column not buffered gives none.
     pub(crate) fn buffered_values(&self, column: &str, limit: usize) -> Vec<String> {
         let Some(series) = [self.view.df.as_ref(), self.view.locked_df.as_ref()]
             .into_iter()
@@ -405,9 +394,8 @@ impl DataTableState {
         df.select(names).ok().map(|d| d.slice(offset as i64, 1))
     }
 
-    /// The rows on screen with every display column, raw, in display order and
-    /// untouched by the column scroll: a copy that lost the columns scrolled
-    /// past would deny exactly the identifiers that make the rows readable.
+    /// The rows on screen with every display column, raw, in display order, ignoring
+    /// column scroll (scrolled-past identifiers make the rows readable).
     pub fn copy_view_df(&self) -> Option<DataFrame> {
         let df = self.view.buffered_df.as_ref()?;
         let names: Vec<&str> = self.view.column_order.iter().map(|s| s.as_str()).collect();
@@ -422,11 +410,9 @@ impl DataTableState {
         (len > 0).then(|| selected.slice(offset as i64, len))
     }
 
-    /// The selected row's value in one column, exactly as stored (see
-    /// [`crate::exact`]): a float as the decimal that reads back to it, never
-    /// the table's rounded preview. A null is an empty string, like a null in
-    /// an export — never the UI's glyph. A list or struct is JSON, as in a CSV
-    /// export.
+    /// The selected row's value in `column`, exactly as stored ([`crate::exact`]): floats
+    /// as their round-tripping decimal, null as empty (as in exports), lists and structs as
+    /// JSON.
     pub fn copy_cell_value(&self, column: &str) -> Option<String> {
         let row = self.copy_row_df()?;
         crate::exact::copy_text(row.column(column).ok()?).ok()
@@ -437,10 +423,8 @@ impl DataTableState {
         Some(self.view.start_row + self.table_state.selected()? + self.row_start_index)
     }
 
-    /// Rows times estimated row width, for the copy guard: what collecting the whole
-    /// view would hold, with binary at the base64 size a copy writes. None until the
-    /// count has run, and while a binary column's width is unknown: the buffer holds a
-    /// stub for it, so only a footer says how wide it is.
+    /// Rows times estimated row width (binary at base64 size), for the copy guard. `None`
+    /// until counted, or while a binary column's width is unknown (only a footer says).
     pub fn estimated_copy_bytes(&self) -> Option<usize> {
         let rows = self.num_rows_if_valid()?;
         if rows == 0 {
@@ -473,22 +457,10 @@ impl DataTableState {
         Some(rows.saturating_mul(row))
     }
 
-    /// The drift group of each row from the top of the view down, for a frame
-    /// `frame_rows` tall, when the dataset's files differ.
-    ///
-    /// Sized by the frame about to be drawn rather than by `visible_rows`, which is
-    /// what the *last* frame drew and is 0 before there has been one. Taking it from
-    /// `visible_rows` left the opening frame of every drifting dataset — the one the
-    /// user is looking at when nothing has been pressed yet — with no groups at all,
-    /// so every absent cell fell back to the plain null glyph.
-    ///
-    /// Callers pass the whole frame's height, a header more than the rows it draws.
-    /// Deliberately: the table reads this by row index and ignores what it does not
-    /// reach, so a group too many costs a `u32` and a group too few costs a mark.
-    ///
-    /// Empty once a query or reshape has replaced the frame: those rows stand for no
-    /// file, so their nulls are ordinary nulls. A frame is a screen tall, so this is
-    /// a few dozen values.
+    /// Each row's drift group from the top of the view, for a frame `frame_rows` tall (the
+    /// whole frame, header included: extra entries are ignored, and `visible_rows` is 0
+    /// before the first frame). Empty once a query or reshape replaced the frame (its rows
+    /// stand for no file).
     pub fn display_drift(&self, frame_rows: usize) -> Vec<u32> {
         if !self.view.drift_column_present {
             return Vec::new();
@@ -646,19 +618,16 @@ impl DataTableState {
         }
     }
 
-    /// The frame that reads `columns` of row `row` of the view: for the inspector's
-    /// fields the buffer does not hold. One row, through the same window the buffer
-    /// reads, so a remote dataset reads only the file holding it. Run off this thread.
+    /// The frame reading `columns` of view row `row` for the inspector, through the
+    /// buffer's window (a remote dataset reads only that file). Run off this thread.
     pub fn inspect_read_lf(&self, row: usize, columns: &[String]) -> PolarsResult<LazyFrame> {
         let exprs = columns.iter().map(|c| col(c.as_str())).collect();
         self.window_lf(row, 1, exprs)
     }
 
-    /// What drilling into the group on row `group_index` of the view reads, or `None`
-    /// when the view is not grouped. The row is on screen, so the buffer holds it and
-    /// nothing is computed again. A column the buffer lacks (hidden, or a binary stub)
-    /// means reading the row, and one row of an aggregate is the whole aggregate, so the
-    /// caller reads it off the UI thread.
+    /// What drilling into the group on view row `group_index` reads, or `None` when not
+    /// grouped. The buffer holds the row; a missing column (hidden, binary stub) means
+    /// reading the row, which for an aggregate is the whole aggregate, so off the UI thread.
     pub fn drill_row(&self, group_index: usize) -> Option<DrillRow> {
         if !self.can_drill_down() {
             return None;
@@ -689,9 +658,8 @@ impl DataTableState {
         })
     }
 
-    /// Show the rows of the group on row `group_index` of the view, reading the row on
-    /// this thread if the buffer does not hold it. The app goes through
-    /// [`Self::drill_row`] instead, so that read never holds up a key.
+    /// Show the group on view row `group_index`, reading the row on this thread if not
+    /// buffered; the app uses [`Self::drill_row`] so keys never wait.
     pub fn drill_down_into_group(&mut self, group_index: usize) -> Result<()> {
         let row = match self.drill_row(group_index) {
             None => return Ok(()),
@@ -701,10 +669,9 @@ impl DataTableState {
         self.drill_down_with_row(group_index, &row)
     }
 
-    /// Show the rows of the group whose row `group_index` of the view is `row`, as
-    /// [`Self::drill_row`] gave it. A result that holds each group as lists shows those
-    /// lists as rows; one that holds only aggregates shows the source rows sharing the
-    /// group's keys, key columns first.
+    /// Show the group whose row `group_index` is `row` (from [`Self::drill_row`]): list
+    /// columns as rows, or for aggregates the source rows sharing the group's keys, key
+    /// columns first.
     pub fn drill_down_with_row(&mut self, group_index: usize, row: &DataFrame) -> Result<()> {
         if !self.can_drill_down() {
             return Ok(());
@@ -743,10 +710,9 @@ impl DataTableState {
         self.enter_group(group, group_index, false)
     }
 
-    /// Show the rows of the view holding `value` in `column` (null matching nulls),
-    /// as a drill into a group does: the breadcrumb names the value, and Esc comes
-    /// back to the view. Inside a group already, it narrows that group, and Esc goes
-    /// back to the view the group was drilled from.
+    /// Show the view's rows with `value` in `column` (null matches null), like a group
+    /// drill: breadcrumb names the value, Esc returns. Inside a group, it narrows that group
+    /// and Esc returns to the view it was drilled from.
     pub fn drill_into_value(&mut self, column: &str, value: AnyValue<'static>) -> Result<()> {
         let dtype = self
             .view
@@ -1013,10 +979,8 @@ impl DataTableState {
         self.view.view_numbered = view.view_numbered;
         self.view.notes = view.notes;
         self.view.group_source = view.group_source;
-        // The frame put back here already leaves out whatever its filter and sort left
-        // out, so the notes saying so have to come back with it. They are derived rather
-        // than saved, so they cannot go stale against a frame that changed while it was
-        // drilled into.
+        // The restored frame already excludes what its filter and sort excluded; rederive
+        // those notes so they cannot be stale.
         self.view.view_notes = self.view_notes_only();
         self.view.schema = view.schema;
         self.view.column_order = view.column_order;

@@ -172,7 +172,7 @@ impl DataTableState {
 
     /// Move the column cursor (`h` `l` `[` `]` `{` `}`), the view following only when
     /// the cursor would leave the screen. Reads nothing; a move that needs a column
-    /// not drawn yet waits for the next draw, in order, as [`Self::scroll_columns`]
+    /// not drawn yet waits for the next draw, in order, as `Self::scroll_columns`
     /// says.
     pub fn move_cursor(&mut self, mv: CursorMove) {
         if matches!(mv, CursorMove::First | CursorMove::Last) {

@@ -192,7 +192,7 @@ fn fill_temp(
 /// `write` on this thread, in order. Returns the bytes written.
 ///
 /// `open` gives the stream and its length, when known. `stop` is checked between
-/// chunks, and every [`STALL_CHECK`] while the store is silent; so is whether this
+/// chunks, and every `STALL_CHECK` while the store is silent; so is whether this
 /// side has stopped listening. Ends in an error, never a short success, when the
 /// open or a chunk fails, `write` refuses one, `stop` says so, or the runtime shuts
 /// down mid-transfer; the request is dropped with the stream then. Must not be
@@ -302,7 +302,7 @@ const READ_CHUNK: usize = 64 * 1024;
 ///
 /// The reads run at most [`QUEUED_CHUNKS`] ahead of the writes, and a server that
 /// stops sending holds that thread and not this one: `stop` is checked between
-/// chunks and every [`STALL_CHECK`] while nothing arrives. The reading thread ends at
+/// chunks and every `STALL_CHECK` while nothing arrives. The reading thread ends at
 /// its next chunk once this side has gone.
 pub fn read_into<R: std::io::Read>(
     open: impl FnOnce() -> Opened<R> + Send + 'static,

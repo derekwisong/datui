@@ -21,13 +21,9 @@ impl ConfigManager {
         Self { config_dir }
     }
 
-    /// Create a new ConfigManager for the given app name.
-    ///
-    /// `DATUI_CONFIG_DIR` overrides the location. The test suite sets it: views
-    /// live under the config directory, so without the override every App-level test
-    /// that saved one wrote it into the developer's own view list — dozens of
-    /// "pivot then break" entries were found there. As with the cache, a test that
-    /// reaches the real directory refuses rather than writes.
+    /// Create a ConfigManager for `app_name`. `DATUI_CONFIG_DIR` overrides the location;
+    /// the test suite sets it so tests never write into the developer's config (views
+    /// live there), and a test reaching the real directory refuses.
     pub fn new(app_name: &str) -> Result<Self> {
         #[cfg(test)]
         crate::cache::isolate_cache();
@@ -140,8 +136,7 @@ impl ConfigManager {
         let template = self.generate_default_config();
         write_private(&config_path, &template)?;
 
-        // The catalog is the user's own data, so it is written only when there is none,
-        // --force or not.
+        // The catalog is the user's data: written only when absent, even with --force.
         let catalog = self.config_path(crate::catalog::MINE_FILE);
         if !catalog.exists() {
             std::fs::write(&catalog, crate::catalog::MINE_TEMPLATE)?;
@@ -155,8 +150,8 @@ impl ConfigManager {
     }
 }
 
-/// One entry of `catalogs`: a catalog file's path, or a table naming it with an id and
-/// a label of its own, for a file that cannot be renamed or edited.
+/// One `catalogs` entry: a path, or a table giving a file an id and label of its
+/// own.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum CatalogRef {
@@ -244,8 +239,8 @@ pub struct AppConfig {
     /// Catalog files elsewhere, listed on the home screen besides `catalog.toml` and
     /// `catalogs/`: a path, or `{ path, id, label }`.
     pub catalogs: Vec<CatalogRef>,
-    /// The catalogs read: `catalog.toml`, then each of `catalogs`. Not a key: read by
-    /// [`AppConfig::read_catalog_files`] once the layers are merged.
+    /// The catalogs read (`catalog.toml`, then each of `catalogs`). Not a key: filled by
+    /// [`AppConfig::read_catalog_files`] after merging.
     #[serde(skip)]
     pub read_catalogs: Vec<crate::catalog::Catalog>,
     /// The directory `catalog.toml` was looked for in: the config file's.
@@ -276,9 +271,8 @@ pub struct AppConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CloudConfig {
-    /// The S3 endpoint, keys and region the environment gives (`AWS_*`): not keys of
-    /// the file, where a secret would sit in plain text. `[[cloud.connections]]` names
-    /// a store's variables instead.
+    /// The S3 endpoint, keys and region from the environment (`AWS_*`); never file keys,
+    /// where secrets would sit in plain text. `[[cloud.connections]]` names variables.
     #[serde(skip)]
     pub s3_endpoint_url: Option<String>,
     #[serde(skip)]
@@ -295,20 +289,20 @@ pub struct CloudConfig {
     /// Read an Azure account with its access keys when a sign-in has no data role, as
     /// the Portal does.
     pub use_azure_account_keys: bool,
-    /// Files to read cloud variables from, relative to the working directory: `.env`.
-    /// Only known cloud variable names are taken, and nothing is exported.
+    /// Files to read cloud variables from, relative to the working directory (`.env`).
+    /// Only known variable names are taken; nothing is exported.
     pub env_files: Vec<String>,
-    /// Use the identity of the cloud VM datui runs on (EC2, GCE, Azure). Finding it is a
-    /// request to a metadata service, so it is off unless the platform says so.
+    /// Use the identity of the cloud VM datui runs on (EC2, GCE, Azure). Off by default:
+    /// finding it queries a metadata service.
     pub instance_identity: bool,
     /// Which logins found on this machine become home-screen sources. Unset means all.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub discover: Option<CloudDiscover>,
-    /// List every source's buckets when the home screen opens. Off: a source is listed
-    /// when it is entered or on Ctrl+R, and its credential command runs only then.
+    /// List every source's buckets when home opens. Off: a source lists, and runs its
+    /// credential command, only when entered or on Ctrl+R.
     pub list_on_start: bool,
-    /// How the object-store datasets of the catalogs are read. Not a key: derived from
-    /// the catalogs by [`AppConfig`], so resolving a URL needs only this section.
+    /// How the catalogs' object-store datasets are read. Not a key: derived by
+    /// [`AppConfig`], so resolving a URL needs only this section.
     #[serde(skip)]
     pub dataset_access: Vec<DatasetAccess>,
 }
@@ -356,9 +350,7 @@ pub enum DatasetAuth {
 pub const CLOUD_DISCOVER_KINDS: [&str; 3] = ["s3", "gcs", "azure"];
 
 /// `[cloud] discover`: `true` or `"all"`, `false` or `"none"`, or a list of kinds.
-///
-/// `"all"` and `"none"` are words rather than list members, so no list can say both
-/// "everything" and "only s3".
+/// `"all"` and `"none"` are words, not list members.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "CloudDiscoverValue", into = "CloudDiscoverValue")]
 pub enum CloudDiscover {
@@ -445,8 +437,8 @@ impl From<CloudDiscover> for CloudDiscoverValue {
     }
 }
 
-/// One store in `[[cloud.connections]]`. Names and pointers only: a secret comes from the
-/// environment variable named here, never from the config file itself.
+/// One store in `[[cloud.connections]]`: names and pointers only; secrets come from
+/// the environment variables named here.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default)]
 pub struct CloudConnectionConfig {
@@ -511,9 +503,8 @@ const CLOUD_SOURCE_KEYS: &str = "name, label, kind, buckets, endpoint_url, regio
      configuration, project, account, account_key_env, sas_env, connection_string_env, \
      secret_command, credentials_file";
 
-/// Whether `id` can name a source: lowercase letters, digits and `-`, starting with a
-/// letter or digit, at most 40 characters. It goes into URLs and cache keys, so
-/// nothing that needs escaping is allowed in.
+/// Whether `id` can name a source: lowercase letters, digits and `-`, starting with
+/// a letter or digit, at most 40 characters (it goes into URLs and cache keys).
 pub fn is_valid_source_id(id: &str) -> bool {
     let bytes = id.as_bytes();
     !bytes.is_empty()
@@ -536,8 +527,7 @@ impl CloudConnectionConfig {
                  and '-', up to 40 characters"
             ));
         }
-        // A secret written into the file is refused with the way out, rather than as
-        // one more unknown key.
+        // A secret in the file is refused with the way out, not as an unknown key.
         for secret in ["access_key_id", "secret_access_key", "session_token"] {
             if self.unknown.contains_key(secret) {
                 return Err(eyre!(
@@ -734,22 +724,11 @@ impl CloudConnectionConfig {
     }
 }
 
-/// Write `contents` to `path`, readable only by the owner.
-///
-/// The generated config carries a `[cloud]` section inviting an S3 access key
-/// and secret. A plain `fs::write` creates the file at 0666 minus the umask,
-/// which on most systems is 0644: world-readable. On a machine with more than
-/// one account that hands the user's credentials to everybody, and it is not a
-/// choice the user made knowingly, since datui is the one that wrote the file.
-///
-/// The mode is applied twice on purpose. `OpenOptions::mode` only takes effect
-/// when the file is created, so it does nothing for `datui config init --force`
-/// over a config that already exists at 0644; `set_permissions` fixes that
-/// case. Creating with the mode still matters, because it closes the window
-/// where a new file exists at 0644 before the permissions are corrected.
-///
-/// Non-Unix platforms fall back to a plain write: Windows inherits ACLs from
-/// the containing directory, which is already per-user.
+/// Write `contents` to `path`, readable only by the owner: the generated config
+/// invites S3 credentials, and a plain write would be world-readable (0644). The mode
+/// is set on create (no 0644 window) and again with `set_permissions` (for `--force`
+/// over an existing file). Elsewhere a plain write: Windows ACLs are already
+/// per-user.
 fn write_private(path: &Path, contents: &str) -> Result<()> {
     #[cfg(unix)]
     {
@@ -773,22 +752,19 @@ fn write_private(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-/// The variables that name an S3 endpoint, in the order they are consulted. The AWS
-/// SDKs read the service-specific one first, then the general one; `AWS_ENDPOINT` is
-/// what `object_store` accepts.
+/// The variables naming an S3 endpoint, in lookup order: service-specific, general
+/// (as AWS SDKs read them), then `AWS_ENDPOINT` (what `object_store` accepts).
 pub const S3_ENDPOINT_VARS: [&str; 3] = ["AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT_URL", "AWS_ENDPOINT"];
 
-/// A value that says something. `AWS_ENDPOINT_URL=` in a shell, or an empty flag, is
-/// not an endpoint and must not erase the one in the config file.
+/// A value that says something: a blank variable or flag must not erase the config's.
 fn non_blank(value: String) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 impl CloudConfig {
-    /// The S3 settings the environment sets. The variable list lives here and nowhere
-    /// else, so discovery, listing and opening cannot disagree about it. `var` is the
-    /// environment, passed in so a test can supply one.
+    /// The S3 settings the environment sets; the one variable list, so discovery,
+    /// listing and opening agree. `var` is injectable for tests.
     pub fn from_env(var: &dyn Fn(&str) -> Option<String>) -> Self {
         let first = |keys: &[&str]| keys.iter().find_map(|key| var(key).and_then(non_blank));
         Self {
@@ -800,8 +776,8 @@ impl CloudConfig {
         }
     }
 
-    /// Lay the environment's S3 settings over these: each one `over` gives wins, and a
-    /// blank value says nothing. Nothing else in `over` is read.
+    /// Lay the environment's S3 settings over these: each one `over` gives wins; blanks
+    /// say nothing.
     pub fn overlay(&mut self, over: Self) {
         for (slot, value) in [
             (&mut self.s3_endpoint_url, over.s3_endpoint_url),
@@ -845,23 +821,22 @@ pub struct ReadConfig {
     pub decompress_in_memory: bool,
     /// Directory for decompression temp files. Unset: the system's (e.g. TMPDIR).
     pub temp_dir: Option<String>,
-    /// `--follow`: how often a followed file is checked; on Linux, where a change is
-    /// heard of as it happens, the least time between two reads. A burst of appends
-    /// within one interval is one refresh.
+    /// `--follow`: how often a followed file is checked (on Linux, where changes are
+    /// notified, the least time between reads). Appends within one interval are one
+    /// refresh.
     pub follow_interval: Interval,
-    /// A dataset of more files than this shows an estimated row count until asked to
-    /// count exactly. 0 always counts.
+    /// Datasets of more files than this show an estimated row count until asked to count
+    /// exactly. 0 always counts.
     pub exact_count_files: usize,
     /// Ask before reading more than this of a file whole into memory (JSON, Avro, ORC,
-    /// Excel and the other formats read in memory). 0 never asks.
+    /// Excel and other in-memory formats). 0 never asks.
     pub memory_warning: ByteSize,
     /// Integer audio samples as float in [-1, 1].
     pub audio_float: bool,
 }
 
 impl ReadConfig {
-    /// The bytes past which a read into memory is asked about first; `None` when
-    /// `memory_warning` is 0, which never asks.
+    /// The bytes past which an in-memory read asks first; `None` when 0.
     pub fn memory_warning(&self) -> Option<u64> {
         let bytes = self.memory_warning.bytes();
         (bytes > 0).then_some(bytes)
@@ -901,8 +876,8 @@ pub enum ParquetSchema {
     First,
 }
 
-/// The bounds of `[read] follow_interval`: faster than ten checks a second redraws
-/// for nothing anyone can read, and slower than a minute is not following.
+/// Bounds of `[read] follow_interval`: faster than ten a second redraws unreadably;
+/// slower than a minute is not following.
 const FOLLOW_INTERVAL: std::ops::RangeInclusive<std::time::Duration> =
     std::time::Duration::from_millis(10)..=std::time::Duration::from_secs(60);
 
@@ -953,12 +928,11 @@ pub struct DisplayConfig {
     pub column_colors: bool,
     /// Show a second header row naming each column's type. `D` toggles it for the session.
     pub type_row: bool,
-    /// Give the `i` key a quiet accent when datui has noticed something about the data
-    /// and the Info panel has not been opened since. The notes are collected either
-    /// way; this only decides whether the footer points at them.
+    /// Accent the `i` key when datui has notes about the data the Info panel has not
+    /// shown yet. Notes are collected either way.
     pub notes_accent: bool,
-    /// Take the mouse: the wheel scrolls and a click selects. The terminal's own text
-    /// selection then needs its bypass modifier (Shift in most terminals).
+    /// Take the mouse (wheel scrolls, click selects); terminal text selection then needs
+    /// its bypass modifier (usually Shift).
     pub mouse: bool,
     /// A fixed width for every sidebar (Info, Sort & Filter, Views, Pivot & Melt). None:
     /// each sidebar's own.
@@ -1085,18 +1059,8 @@ impl<'de> Deserialize<'de> for CellPadding {
     }
 }
 
-/// Number display settings: a preset name shorthand, or a full table.
-///
-/// Both forms are accepted:
-/// ```toml
-/// [display]
-/// number_format = "thousands"
-/// ```
-/// ```toml
-/// [display.number_format]
-/// grouping = "thousands"
-/// min_digits = 5
-/// ```
+/// Number display settings: a preset name (`number_format = "thousands"`) or a
+/// `[display.number_format]` table.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum NumberFormatConfig {
@@ -1113,8 +1077,8 @@ impl Default for NumberFormatConfig {
     }
 }
 
-/// Long-form number formatting options. Every field is optional; unset fields
-/// take their value from the preset named by `grouping` (or the default).
+/// Long-form number formatting options; unset fields take the value of the preset
+/// named by `grouping` (or the default).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct NumberFormatTable {
@@ -1130,13 +1094,8 @@ pub struct NumberFormatTable {
     pub float_precision: Option<u8>,
     /// Columns never formatted. Supports `*` and `?` globs.
     pub exclude_columns: Vec<String>,
-    /// Keys that are not recognised, captured rather than discarded.
-    ///
-    /// A misspelled key here would otherwise be invisible: every field has a
-    /// default, so the table resolves to "no formatting" — which is also what
-    /// the default config does. The user would see identical output whether
-    /// they typo'd the key or never wrote it. Capturing unknown keys lets
-    /// [`NumberFormatConfig::resolve`] name the offending one instead.
+    /// Unrecognized keys, kept so [`NumberFormatConfig::resolve`] can name a typo
+    /// (otherwise it would look like no formatting, the default).
     #[serde(flatten)]
     pub unknown: std::collections::BTreeMap<String, toml::Value>,
 }
@@ -1146,11 +1105,8 @@ const NUMBER_FORMAT_KEYS: &str =
     "grouping, group_separator, decimal_separator, floats, float_precision, exclude_columns";
 
 impl NumberFormatConfig {
-    /// Resolve into the runtime settings used by the renderer.
-    ///
-    /// Returns a descriptive error for unknown preset names, multi-character
-    /// separators, and a group separator equal to the decimal separator (which
-    /// would render `1.234.567` ambiguously).
+    /// Resolve into renderer settings. Errors on unknown presets, multi-character
+    /// separators, and a group separator equal to the decimal one.
     pub fn resolve(&self, align_numeric_right: bool) -> Result<NumberFormatSettings> {
         let (format, exclude) = match self {
             NumberFormatConfig::Preset(name) => (Self::lookup_preset(name)?, Vec::new()),
@@ -1196,11 +1152,8 @@ impl NumberFormatConfig {
             ));
         }
 
-        // Formatting starts on only if the user actually configured something.
-        // When they did not, `,` still needs a format to turn on, so the toggle
-        // target becomes Thousands grouping while keeping every other setting
-        // they chose (separators, min_digits, precision). Comma grouping is what
-        // the default user pressing `,` is asking for.
+        // Formatting is on only if the user configured something. Otherwise `,` still needs
+        // a target: Thousands grouping, keeping any other settings they chose.
         let enabled = !format.is_noop();
         let format = if enabled {
             format
@@ -1219,12 +1172,8 @@ impl NumberFormatConfig {
         })
     }
 
-    /// Override just the grouping style, keeping any long-form settings the
-    /// user configured.
-    ///
-    /// `--number-format thousands` should change the grouping without silently
-    /// discarding the `exclude_columns` / `min_digits` / precision a user set up
-    /// in `[display.number_format]`.
+    /// Override only the grouping style, keeping the user's long-form settings
+    /// (`exclude_columns`, `min_digits`, precision).
     pub fn with_grouping_override(&self, name: &str) -> Self {
         match self {
             NumberFormatConfig::Preset(_) => NumberFormatConfig::Preset(name.to_string()),
@@ -1238,14 +1187,12 @@ impl NumberFormatConfig {
 
     /// Resolve a preset name, expanding the opt-in `system` value.
     fn lookup_preset(name: &str) -> Result<NumberFormat> {
-        // "system" is the only environment-dependent value, and it is opt-in:
-        // data files are locale-neutral, so rendering does not follow the
-        // ambient locale unless the user explicitly asks for it.
+        // "system" is the only locale-dependent value, opt-in: data files are
+        // locale-neutral.
         let name = if name == "system" {
             match numfmt::system_locale_tag() {
                 Some(tag) => numfmt::preset_for_locale_tag(&tag),
-                // Unset or C/POSIX: no meaningful locale, so group plainly
-                // rather than silently doing nothing.
+                // Unset or C/POSIX: group plainly rather than do nothing.
                 None => "thousands",
             }
         } else {
@@ -1273,8 +1220,8 @@ impl NumberFormatConfig {
     }
 }
 
-/// Rows an analysis samples by default. Enough that a distribution's shape and a
-/// correlation are stable to two decimals; few enough to read in seconds.
+/// Rows an analysis samples by default: stable distributions and correlations to two
+/// decimals, read in seconds.
 pub const DEFAULT_ANALYSIS_SAMPLE_ROWS: usize = 100_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1285,8 +1232,8 @@ pub struct PerformanceConfig {
     pub pages_behind: usize,
     /// Most rows the table buffers between reads; 0 for no limit.
     pub max_buffered_rows: usize,
-    /// Most memory the buffered rows may take, estimated from the schema; 0 for no
-    /// limit. A cap on the rows kept between reads, not on the process.
+    /// Most memory buffered rows may take, estimated from the schema; 0 for no limit. Caps
+    /// rows kept between reads, not the process.
     pub max_buffered: ByteSize,
     /// Use the Polars streaming engine for collects where it applies.
     pub streaming: bool,
@@ -1295,8 +1242,7 @@ pub struct PerformanceConfig {
 }
 
 impl PerformanceConfig {
-    /// `max_buffered` in whole MiB, as the table counts it; a nonzero cap below one
-    /// MiB is one, not none.
+    /// `max_buffered` in whole MiB (rounded up, so a nonzero cap is at least one).
     pub fn max_buffered_mb(&self) -> usize {
         usize::try_from(self.max_buffered.bytes().div_ceil(1 << 20)).unwrap_or(usize::MAX)
     }
@@ -1314,20 +1260,18 @@ pub const MAX_CHART_ROW_LIMIT: usize = u32::MAX as usize;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AnalysisConfig {
-    /// The analysis sample's starting size: the rows every tool (Describe,
-    /// Distribution, Correlation, Data Quality) reads from a table with more, spread
-    /// across all of it. 0 starts at every row.
+    /// The analysis sample's starting size: rows every tool reads, spread across a larger
+    /// table. 0 starts at every row.
     pub sample_rows: usize,
-    /// Rows a chart reads: every row up to n, and a sample of n spread across the
-    /// table past it.
+    /// Rows a chart reads: all up to n, else a sample of n spread across the table.
     pub chart_rows: usize,
     /// Whether a chart starts with its grid at the major ticks.
     pub chart_grid: bool,
-    /// The most a Data Quality full scan of a remote dataset may copy into the cache
-    /// directory, to read the objects once instead of once per pass. 0 never copies.
+    /// The most a Data Quality full scan may copy of a remote dataset into the cache, to
+    /// read objects once instead of per pass. 0 never copies.
     pub quality_local_copy: ByteSize,
-    /// The most memory a view's sample may take. Unset: the memory available now
-    /// decides, before the draw and as it runs. 0: no warning and no stop.
+    /// The most memory a view's sample may take. Unset: available memory decides, before
+    /// and during the draw. 0: no warning, no stop.
     pub sample_memory_limit: Option<ByteSize>,
 }
 
@@ -1343,13 +1287,9 @@ impl Default for AnalysisConfig {
     }
 }
 
-/// Which set of built-in colour defaults to start from.
-///
-/// datui's stock chrome (header fills, row striping, borders, secondary text) has
-/// to sit *near* the terminal background without matching it. There is no ANSI
-/// colour that means "slightly off from the background", so those slots resolve to
-/// fixed values — and a set tuned for a dark terminal is unreadable on a light one.
-/// This selects which set to use.
+/// Which built-in color defaults to start from. Chrome colors (header fills, striping,
+/// borders) must sit near the background without matching it, which no ANSI color
+/// expresses, so they are fixed per set.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeMode {
@@ -1361,13 +1301,9 @@ pub enum ThemeMode {
 }
 
 impl ThemeMode {
-    /// Resolve `Auto` against the environment. `Dark` and `Light` pass through.
-    ///
-    /// Detection reads `COLORFGBG`, which several terminals set to `fg;bg` using
-    /// ANSI colour numbers — a background of 7 or 15 (white) means a light terminal.
-    /// Terminals that do not set it fall back to `Dark`. This is the guess before the
-    /// terminal is asked: its own answer about its background, when it gives one,
-    /// replaces it ([`crate::terminal_color`]).
+    /// Resolve `Auto` from the environment (`Dark` and `Light` pass through): `COLORFGBG`
+    /// with background 7 or 15 means light; otherwise dark. The terminal's own answer,
+    /// when it comes, replaces this (`crate::terminal_color`).
     pub fn resolve(self) -> Self {
         match self {
             Self::Auto => detect_terminal_mode(),
@@ -1392,81 +1328,60 @@ fn detect_terminal_mode() -> ThemeMode {
     }
 }
 
-/// Where datui looks for datasets on the home screen.
-///
-/// This is `PATH`-shaped: a short, stable list of *places*, not per-dataset
-/// metadata. datui records nothing about the datasets it finds there.
+/// Where datui looks for datasets on home: a short list of places, `PATH`-shaped; it
+/// records nothing about what it finds there.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HomeConfig {
-    /// Whether to also offer directories the desktop records you opening data from.
-    /// Only the directories are used, never the file names.
+    /// Also offer directories the desktop records you opening data from (never file
+    /// names).
     pub desktop_recents: bool,
-    /// Whether the home screen lists files datui has no reader for, dimmed, from the
-    /// start. `Ctrl+A` flips it for the session either way.
+    /// List unreadable files, dimmed, from the start; `Ctrl+A` flips it per session.
     pub show_unreadable: bool,
     /// Catalogs never shown on the home screen, by id: `mine`, `public`, or a listed
     /// file's name.
     pub hide: Vec<String>,
-    /// The largest local file whose first rows the home screen reads for its preview
-    /// (Parquet: its average row group). Those rows are the open's first page, so
-    /// opening the file reads them only once. 0 turns the preview off.
+    /// The largest local file whose first rows home reads for its preview (Parquet: its
+    /// average row group). Those rows are the open's first page, read once. 0 turns
+    /// previews off.
     pub preview_max: ByteSize,
     /// Recursive search of the working directory from the home screen's filter.
     pub search: SearchConfig,
 }
 
-/// Recursive search under the working directory, driven by the home screen's filter.
-///
-/// The walk happens once, in the background, the first time you type; every keystroke
-/// after that scores what it found, off the UI thread. The limits here bound that one
-/// walk and what is listed from it.
+/// Recursive search under the working directory, driven by home's filter: one
+/// background walk on first typing, then each keystroke scores its results off the
+/// UI thread. These limits bound the walk and the list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SearchConfig {
     /// Search below the working directory at all.
     pub enabled: bool,
-    /// How deep to descend. Data is rarely twelve directories down, and the cost of
-    /// looking is paid on every branch.
+    /// How deep to descend; data is rarely deep, and every branch pays.
     pub max_depth: usize,
-    /// List at most this many matches, best first; the heading counts the rest. The
-    /// walk itself keeps every data file it finds, so a match is never lost behind
-    /// files that do not match. The list is a way to find something, not an inventory.
+    /// List at most this many matches, best first; the heading counts the rest. The walk
+    /// keeps every data file, so no match is lost.
     pub max_results: usize,
-    /// Give up walking after this long and keep what was found. A cold or enormous
-    /// tree must degrade to partial results, never to a wait.
+    /// Stop walking after this long, keeping what was found: a huge tree degrades to
+    /// partial results, never a wait.
     pub time_budget: Interval,
-    /// Descend into directories on a different filesystem than the one started in.
-    ///
-    /// Off by default, and the most important limit here: it is what stops a walk
-    /// from wandering onto a network share, and on a machine using autofs it is what
-    /// stops the walk from *mounting* one by looking at it.
+    /// Descend into other filesystems. Off by default: it keeps the walk off network
+    /// shares, and off autofs mounts it would trigger.
     pub cross_filesystems: bool,
-    /// Obey `.gitignore`.
-    ///
-    /// Off by default, and deliberately: people gitignore data directories precisely
-    /// because the data is too big to commit, which is the same reason they want to
-    /// open it in datui. In datui's own repository, honouring it hides 38 real test
-    /// datasets while hiding 69 files of virtualenv noise — wrong in both directions.
-    /// The skip list below is the mechanism for the noise.
+    /// Obey `.gitignore`. Off by default: data directories are gitignored because they
+    /// are too big to commit, the reason to open them here. The skip list handles noise.
     pub follow_gitignore: bool,
     /// Directory names never descended into. Replaces the defaults entirely.
     pub skip: Vec<String>,
-    /// Directory names to skip *in addition* to the defaults, so adding one does not
-    /// mean restating the list.
+    /// Directory names to skip in addition to the defaults.
     pub skip_extra: Vec<String>,
-    /// File extensions searched for. Empty means every format datui can open, which
-    /// includes `json` and `txt` — noisy in a source tree, so narrow this if that
-    /// bothers you.
+    /// File extensions searched for. Empty: every format datui opens, `json` and `txt`
+    /// included (noisy in a source tree).
     pub extensions: Vec<String>,
 }
 
-/// Directories that are never data, and are always expensive.
-///
-/// Hidden directories are already skipped, which covers `.git`, `.venv`, `.tox` and
-/// the various caches. What is left is the offenders that are not hidden — and they
-/// matter: `node_modules` and `site-packages` are full of `.json`, which datui can
-/// open, so without this every package manifest on the machine is a search result.
+/// Directories that are never data and always expensive. Hidden ones are skipped
+/// already; these are the visible offenders, full of openable `.json`.
 pub const DEFAULT_SEARCH_SKIP: &[&str] = &[
     "node_modules",
     "target",
@@ -1507,8 +1422,7 @@ impl SearchConfig {
 impl Default for HomeConfig {
     fn default() -> Self {
         Self {
-            // On by default: it only ever contributes *places*, and it is the one
-            // thing that gives a fresh install somewhere to point you.
+            // On by default: it only adds places, giving a fresh install somewhere to point.
             desktop_recents: true,
             show_unreadable: false,
             hide: Vec::new(),
@@ -1521,8 +1435,8 @@ impl Default for HomeConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ThemeConfig {
-    /// Which mode's theme to use. `None` means the key was absent, which is treated
-    /// as `Auto`; a loaded config holds the resolved mode.
+    /// Which mode's theme to use; `None` (absent) means `Auto`. A loaded config holds the
+    /// resolved mode.
     pub mode: Option<ThemeMode>,
     /// The theme used when the terminal is dark: a built-in's name or a file's in
     /// `themes/`.
@@ -1530,19 +1444,19 @@ pub struct ThemeConfig {
     /// The theme used when the terminal is light.
     pub light: String,
     pub colors: ColorConfig,
-    /// The mode was `auto`: the palette follows what the terminal says about its
-    /// background, at startup and when asked again. Set by `from_layers`.
+    /// The mode was `auto`: the palette follows the terminal's background, at startup
+    /// and when asked again. Set by `from_layers`.
     #[serde(skip)]
     pub follow: bool,
-    /// The `theme.colors` slots the configuration set, laid over the active theme
-    /// whichever mode it is for.
+    /// The `theme.colors` slots the config set, laid over the active theme in either
+    /// mode.
     #[serde(skip)]
     pub overrides: toml::Table,
     /// The themes there are, read from the config directory's `themes/`.
     #[serde(skip)]
     pub library: crate::themes::Library,
-    /// The theme in use for each mode: `dark` and `light`, or the built-in when the
-    /// named one could not be used.
+    /// The theme in use for each mode: `dark` and `light`, or the built-in when the named
+    /// one could not be used.
     #[serde(skip)]
     pub dark_theme: String,
     #[serde(skip)]
@@ -1603,9 +1517,8 @@ impl ThemeConfig {
         broken.chain(problems).collect()
     }
 
-    /// Resolve `dark` and `light` against `library`, which it keeps. A name that
-    /// cannot be used falls back to its mode's built-in, with a line in `problems`
-    /// when that mode can be in use: either under `auto`, else only the pinned one.
+    /// Resolve `dark` and `light` against `library`, keeping it. An unusable name falls
+    /// back to its mode's built-in, noted in `problems` when that mode can be in use.
     pub fn use_library(&mut self, library: crate::themes::Library, active: ThemeMode) {
         self.problems.clear();
         self.fallbacks.clear();
@@ -1699,13 +1612,12 @@ pub struct ColorConfig {
     pub chart_10: String,
     /// The chart grid, a shade dimmer than `dimmed`.
     pub chart_grid: String,
-    /// The one colour that means "this is the thing": focused titles, key chips, the
-    /// selection rail.
+    /// The one color meaning "this is the thing": focused titles, key chips, the selection
+    /// rail.
     pub accent: String,
     /// A brighter accent for a focused title or a value that just changed.
     pub accent_bright: String,
-    /// Two stops for the wordmark on the home screen. Used nowhere else on purpose:
-    /// a gradient on data would be decoration.
+    /// Two stops for home's wordmark, used nowhere else: on data it would be decoration.
     pub gradient_start: String,
     pub gradient_end: String,
     /// Behind the cell a find landed on; its text takes black or white by contrast.
@@ -1747,8 +1659,7 @@ pub enum QueryMode {
 }
 
 impl QueryMode {
-    /// The languages this build offers. SQL is absent without the `sql` feature
-    /// rather than present and broken.
+    /// The languages this build offers; SQL only with the `sql` feature.
     pub fn available() -> &'static [QueryMode] {
         #[cfg(feature = "sql")]
         {
@@ -1836,16 +1747,14 @@ pub struct FormatsConfig {
     pub path: Vec<String>,
 }
 
-// Default implementations
 /// `[clipboard]`: how the copy dialog reaches the system clipboard.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClipboardConfig {
-    /// "auto", "native" (display server through arboard) or "osc52" (an
-    /// escape sequence the terminal applies; what works over SSH).
+    /// "auto", "native" (display server via arboard) or "osc52" (a terminal escape; works
+    /// over SSH).
     pub backend: String,
-    /// Longest OSC 52 payload to attempt, as base64. Terminals cap the sequences
-    /// they accept; a generous terminal's user can raise this.
+    /// Longest OSC 52 payload to attempt, as base64; terminals cap what they accept.
     pub osc52_limit: ByteSize,
 }
 
@@ -1858,12 +1767,9 @@ impl Default for ClipboardConfig {
     }
 }
 
-/// `[glyphs]`: per-slot overrides laid over the Unicode set, so a font that has
-/// more than the coverage floor gets to use it — `☁` back for the object-store
-/// mark, a Nerd Font icon for a checkbox. Keys are the slot names in
-/// `glyphs.rs`; values keep the display width of the glyph they replace.
-/// Overrides never touch the ASCII set, which stays the tested floor. Layered
-/// like every section: defaults, then each import, then the user's file.
+/// `[glyphs]`: per-slot overrides over the Unicode set, for fonts with more than the
+/// coverage floor. Keys are `glyphs.rs` slot names; values keep the replaced glyph's
+/// width. The ASCII set is never overridden. Layered like every section.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GlyphsConfig {
@@ -1876,8 +1782,7 @@ pub struct GlyphsConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LimitsConfig {
-    /// Records one pass indexes, all types together; four bytes each for a file under
-    /// 4 GiB, eight past it.
+    /// Records one pass indexes, all types together (4 bytes each under 4 GiB, 8 past).
     pub indexed_records: usize,
     pub elf_symbols: usize,
     pub midi_bytes: ByteSize,
@@ -1987,8 +1892,7 @@ impl Default for PerformanceConfig {
 }
 
 impl Default for ColorConfig {
-    /// Dark, preserving datui's historical defaults. Light is opt-in via
-    /// `theme.mode`, so no existing config changes appearance.
+    /// Dark, datui's historical defaults; light is opt-in via `theme.mode`.
     fn default() -> Self {
         Self::dark()
     }
@@ -2005,10 +1909,9 @@ impl ColorConfig {
 
     /// Defaults tuned for a dark terminal background.
     pub fn dark() -> Self {
-        // "Night Market": Tokyo Night's palette with one cyan accent. Chrome sits in
-        // three tiers a few percent apart (controls_bg, table_header_bg, the stripe)
-        // rather than one grey shared by everything, and the row under the cursor is
-        // tinted rather than reversed so cell colours survive on it.
+        // "Night Market": Tokyo Night's palette with one cyan accent. Chrome sits in three
+        // tiers a few percent apart, and the current row is tinted, not reversed, so cell
+        // colors survive.
         Self {
             chip_key: "#7dcfff".to_string(),
             chip_label: "#a9b1d6".to_string(),
@@ -2028,12 +1931,11 @@ impl ColorConfig {
             table_row_numbers: "#565f89".to_string(),
             table_column_separator: "#3b4261".to_string(),
             table_selected: "#283457".to_string(),
-            // A grey a step off the stripe for the column, and a lighter one where it
-            // crosses the current row, so the cell stands out from both.
+            // A grey a step off the stripe for the column, lighter where it crosses the current
+            // row.
             table_column_cursor: "#292e42".to_string(),
             table_cell_cursor: "#3b4261".to_string(),
-            // Box titles are drawn in the border colour, so this has to read as text:
-            // the theme's comment grey, not the hairline shade the rules use.
+            // Box titles use the border color, so it must read as text.
             sidebar_border: "#565f89".to_string(),
             modal_border_active: "#7dcfff".to_string(),
             modal_border_error: "#f7768e".to_string(),
@@ -2057,14 +1959,12 @@ impl ColorConfig {
             chart_5: "#7aa2f7".to_string(),
             chart_6: "#f7768e".to_string(),
             chart_7: "#ff9e64".to_string(),
-            // Tokyo Night's teal, a pink-magenta and a light yellow: apart from the
-            // seven by lightness as much as hue, so they stay apart under the common
+            // Teal, pink-magenta and light yellow: apart by lightness as well as hue, for common
             // color-vision deficiencies.
             chart_8: "#1abc9c".to_string(),
             chart_9: "#ff5fd2".to_string(),
             chart_10: "#f4ef8a".to_string(),
-            // Dimmer than `dimmed`, and still blue rather than black on a 16-color
-            // terminal, where black is the background.
+            // Dimmer than `dimmed`, but blue rather than black (the background) on 16 colors.
             chart_grid: "#3d4785".to_string(),
             accent: "#7dcfff".to_string(),
             accent_bright: "#a4daff".to_string(),
@@ -2080,17 +1980,11 @@ impl ColorConfig {
         }
     }
 
-    /// Defaults tuned for a light terminal background.
-    ///
-    /// The chrome shades are inverted rather than merely lightened: on a light
-    /// terminal the "slightly off from background" shades must be *darker* than the
-    /// background, where on a dark terminal they are lighter. Hues that are legible
-    /// on black and not on white (plain `cyan`, plain `yellow`) are replaced with
-    /// darker equivalents from the 256-colour cube.
+    /// Defaults for a light terminal: chrome shades darker than the background rather
+    /// than lighter, and hues illegible on white (plain cyan, yellow) replaced.
     pub fn light() -> Self {
-        // Tokyo Night's "day" variant: the same hues, darkened until every one of them
-        // clears 4.5:1 on a white or near-white background. The chrome tiers go the
-        // other way — a little darker than the terminal rather than lighter.
+        // Tokyo Night "day": the same hues, darkened to clear 4.5:1 on white; chrome tiers
+        // darker than the terminal.
         Self {
             chip_key: "#2e7de9".to_string(),
             chip_label: "#3760bf".to_string(),
@@ -2139,8 +2033,7 @@ impl ColorConfig {
             chart_8: "#118c74".to_string(),
             chart_9: "#d1188c".to_string(),
             chart_10: "#24357a".to_string(),
-            // The theme's cyan halfway to the background: a grey this light is white
-            // on a 16-color terminal, and the grid vanished into the background.
+            // The cyan halfway to the background: a lighter grey is white on 16 colors.
             chart_grid: "#70aabf".to_string(),
             accent: "#2e7de9".to_string(),
             accent_bright: "#1a6cd0".to_string(),
@@ -2167,26 +2060,19 @@ impl Default for QueryConfig {
     }
 }
 
-/// Maximum number of config files an `import` chain may stack up.
-///
-/// Chains this deep are a mistake rather than a use case; the cap turns a
-/// runaway (or merely confusing) graph into a clear error.
+/// Maximum depth of an `import` chain; deeper is a mistake, reported clearly.
 const MAX_IMPORT_DEPTH: usize = 8;
 
-/// Expand a leading `~` and any `$VAR` / `${VAR}` reference in a config path.
-///
-/// Unset variables expand to nothing, as in a shell. This is what lets a config
-/// name a path such as `~/.local/state/omarchy/current/theme/datui.toml` without
-/// hardcoding a home directory.
+/// Expand a leading `~` and any `$VAR` / `${VAR}` in a config path; unset variables
+/// expand to nothing, as in a shell.
 pub fn expand_config_path(raw: &str) -> PathBuf {
     expand_path(raw)
 }
 
-/// `path` with a leading `~` expanded, and nothing else. For a path from the command
-/// line: cmd, and PowerShell before 7.4, pass `~\data\a.csv` on as typed, as every
-/// shell does a quoted `"~/a.csv"`. A `$` there has been through the shell already
-/// and is part of a name. A path that is there as typed, such as a file named `~` in
-/// the working directory, is that path.
+/// `path` with a leading `~` expanded, nothing else: for command-line paths, which
+/// cmd, older PowerShell and quoting pass through with `~` (a `$` was already
+/// expanded and is part of a name). A path that exists as typed (a file named `~`)
+/// is kept.
 pub fn expand_home(path: &Path) -> PathBuf {
     expand_home_unless(path, |p| p.symlink_metadata().is_ok())
 }
@@ -2211,11 +2097,9 @@ fn home_path(text: &str) -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(rest))
 }
 
-/// `path` spelled one way, without asking the filesystem: rebuilt from its components,
-/// so separators compare as one (on Windows `~/a.csv` expands to `C:\Users\me\a.csv`
-/// and `$USERPROFILE/a.csv` to `C:\Users\me/a.csv`), with no `.` and a trailing
-/// separator dropped. A drive letter is one case and a UNC prefix takes backslashes.
-/// `..` stays: past a symlink it is not the parent the text names.
+/// `path` normalized without the filesystem: rebuilt from components so separators
+/// compare equal (Windows mixes `\` and `/` after expansion), `.` and a trailing
+/// separator dropped. `..` stays: past a symlink it is not the textual parent.
 pub(crate) fn path_place(path: &Path) -> PathBuf {
     use std::path::{Component, Prefix};
     let mut place = PathBuf::new();
@@ -2281,12 +2165,9 @@ pub(crate) fn expand_path(raw: &str) -> PathBuf {
     home_path(&expanded).unwrap_or_else(|| PathBuf::from(expanded))
 }
 
-/// One config file's settings as written: the keys it sets and nothing else.
-///
-/// Keeping a layer partial is what lets a later file set a value back to its
-/// default: `notes_accent = true` in your config undoes an import's `false`, and a
-/// file that leaves the key out changes nothing. [`AppConfig::from_layers`] fills in
-/// the defaults once, after every layer is merged.
+/// One config file's settings as written. Partial, so a later file can set a value
+/// back to its default and an omitted key changes nothing;
+/// [`AppConfig::from_layers`] fills defaults once after merging.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ConfigLayer {
     table: toml::Table,
@@ -2316,15 +2197,14 @@ impl std::fmt::Display for LayerSource {
 #[derive(Debug, Clone, Copy)]
 enum Combine {
     /// An array of tables matched by `name`: an entry replaces the earlier one of its
-    /// name whole, and a new name appends. Two of one name in one file are both kept,
-    /// for validation to name.
+    /// name, a new name appends; duplicates within one file are kept for validation.
     ByName,
     /// A list that adds up across files, without repeats.
     Union,
 }
 
-/// The keys that do not follow "a later layer's value replaces the earlier one".
-/// Tables merge key by key; everything else not listed here is replaced whole.
+/// Keys that do not simply replace: tables merge key by key, these combine; all else
+/// is replaced whole.
 const COMBINED_KEYS: &[(&str, Combine)] = &[
     ("formats.path", Combine::Union),
     ("catalogs", Combine::Union),
@@ -2334,9 +2214,8 @@ const COMBINED_KEYS: &[(&str, Combine)] = &[
     ("home.hide", Combine::Union),
 ];
 
-/// The line after a config file's mistake: how to get going again. An import that
-/// is not there is skipped, and `datui config init` writes a root file only where
-/// there is none.
+/// The line after a config mistake saying how to proceed: a missing import is
+/// skipped, and `datui config init` writes a root file only where there is none.
 pub fn way_out(imported: bool, what: &str) -> String {
     if imported {
         format!("Fix that {what}, or move the file aside: a missing import is skipped.")
@@ -2349,17 +2228,15 @@ pub fn way_out(imported: bool, what: &str) -> String {
 }
 
 impl ConfigLayer {
-    /// A layer from TOML text. Types are checked here, so a mistake is reported
-    /// against the file that holds it rather than after merging.
+    /// A layer from TOML text, type-checked here so a mistake names its file.
     pub fn parse(text: &str) -> Result<Self> {
         let typed: AppConfig = toml::from_str(text)?;
         let table: toml::Table = toml::from_str(text)?;
         Ok(Self::from_table(table, typed.import))
     }
 
-    /// The layer `-c KEY=VALUE` makes: each key at its place, the last of one key
-    /// winning. Keys and value shapes were checked as the command line was read; the
-    /// types are checked here, as a file's are.
+    /// The layer `-c KEY=VALUE` makes, the last of one key winning. Keys and shapes were
+    /// checked on the command line; types are checked here.
     pub fn from_overrides(overrides: &[datui_cli::settings::Override]) -> Result<Self> {
         let mut table = toml::Table::new();
         for o in overrides {
@@ -2388,9 +2265,8 @@ impl ConfigLayer {
         Self { table, imports }
     }
 
-    /// The layer in `path`, or `None` when there is no such file. A file that exists
-    /// but cannot be read or parsed is an error naming it, and `importer`, the file
-    /// that imported it, if any.
+    /// The layer in `path`, or `None` without the file. An unreadable or unparsable file
+    /// is an error naming it and its `importer`, if any.
     fn read(path: &Path, importer: Option<&Path>) -> Result<Option<Self>> {
         // On the first line, ahead of a parse error's excerpt of the file.
         let named = match importer {
@@ -2409,8 +2285,7 @@ impl ConfigLayer {
                 way_out(importer.is_some(), "line")
             )
         })?;
-        // Serde passes over a key it does not know; a renamed or misspelled one would
-        // otherwise change nothing without a word.
+        // Serde skips unknown keys; warn, or a typo changes nothing silently.
         for unknown in unknown_keys_in(&layer.table) {
             eprintln!("datui: warning: {}: {unknown}", path.display());
         }
@@ -2418,8 +2293,8 @@ impl ConfigLayer {
         Ok(Some(layer))
     }
 
-    /// Resolve relative format and catalog paths against `dir`, the directory of the
-    /// file that named them, before a layer from another directory can be merged.
+    /// Resolve relative format and catalog paths against `dir` (the naming file's
+    /// directory) before merging with layers from elsewhere.
     fn anchor_paths(&mut self, dir: &Path) {
         if let Some(toml::Value::Array(entries)) = self
             .table
@@ -2462,9 +2337,8 @@ impl ConfigLayer {
         Some(value)
     }
 
-    /// Lay `upper` over this layer: every key `upper` writes wins, except the
-    /// combined keys in [`COMBINED_KEYS`], and keys it leaves out keep this layer's
-    /// value. `upper`'s imports are not carried over.
+    /// Lay `upper` over this layer: its keys win (except `COMBINED_KEYS`); keys it
+    /// omits keep this layer's values. `upper`'s imports are not carried over.
     pub fn merge(&mut self, upper: ConfigLayer) {
         merge_tables(&mut self.table, upper.table, "");
     }
@@ -2487,9 +2361,9 @@ const RETIRED_KEYS: &[(&str, &str)] = &[
     ),
 ];
 
-/// The keys `table` writes that the option registry does not know, each with the
-/// nearest known keys, sorted. A registered key's value is not looked into: a table
-/// such as `[display.number_format]` or `[[cloud.connections]]` is that key's business.
+/// The keys `table` writes that the option registry does not know, each with its
+/// nearest known keys, sorted. Registered keys' values (tables like
+/// `[[cloud.connections]]`) are not inspected.
 fn unknown_keys_in(table: &toml::Table) -> Vec<String> {
     fn walk(table: &toml::Table, prefix: &str, out: &mut Vec<String>) {
         for (key, value) in table {
@@ -2506,8 +2380,8 @@ fn unknown_keys_in(table: &toml::Table) -> Vec<String> {
                 continue;
             }
             match value {
-                // A section, known or not: its keys are named one by one, so a renamed
-                // section's keys each find their new place.
+                // A section, known or not: its keys are named individually, so a renamed section's
+                // keys each find their place.
                 toml::Value::Table(inner) => walk(inner, &path, out),
                 _ => {
                     let near = datui_cli::settings::suggestions(&path);
@@ -2526,9 +2400,8 @@ fn unknown_keys_in(table: &toml::Table) -> Vec<String> {
     out
 }
 
-/// A TOML error with its reason and place on the first line, then the excerpt of the
-/// file under it. TOML puts the reason last, but some callers, such as the Python
-/// binding, show only the first line.
+/// A TOML error with reason and place on the first line, then the excerpt (some
+/// callers, like the Python binding, show only the first line).
 fn parse_reason(error: &color_eyre::eyre::Report) -> String {
     let Some(toml_error) = error.downcast_ref::<toml::de::Error>() else {
         return error.to_string();
@@ -2636,19 +2509,11 @@ impl AppConfig {
         }
     }
 
-    /// Load configuration rooted at `config_path`, resolving its `import` chain.
-    ///
-    /// Layers apply lowest precedence first: datui's defaults, then every file named
-    /// by `import` in declaration order (depth-first, so an imported file's own
-    /// imports land before it), then `config_path`'s own values. Each layer changes
-    /// only the keys it writes, so an imported theme restyles datui while anything
-    /// the user writes, a default value included, still wins.
-    ///
-    /// A missing root file means defaults. A root file that exists but cannot be read
-    /// or parsed is an error naming it: running on defaults would quietly discard every
-    /// setting in it. A missing import is skipped with a warning — the file is often
-    /// generated by a theme system that may not have run yet — but an import that
-    /// exists and cannot be read or parsed is an error too.
+    /// Load configuration rooted at `config_path` with its `import` chain. Layers, lowest
+    /// first: defaults, each import in order (depth-first), then the file; each changes
+    /// only the keys it writes. A missing root means defaults; an unreadable root or
+    /// existing import is an error; a missing import is skipped with a warning (a theme
+    /// system may not have generated it yet).
     pub fn load_from_file(config_path: &Path) -> Result<Self> {
         Self::load_from_file_with(config_path, &[])
     }
@@ -2662,9 +2527,9 @@ impl AppConfig {
         Self::from_read_layers(config_path, overrides, &layers)
     }
 
-    /// Every layer the configuration rooted at `config_path` is built from, lowest
-    /// precedence first: each import, depth-first, then the file, then `-c`. Each is
-    /// named by where it came from. A missing root file contributes nothing.
+    /// Every layer of the configuration at `config_path`, lowest first: imports
+    /// depth-first, the file, then `-c`, each named by its origin. A missing root adds
+    /// nothing.
     pub fn read_layers(
         config_path: &Path,
         overrides: &[datui_cli::settings::Override],
@@ -2686,8 +2551,8 @@ impl AppConfig {
         Ok(layers)
     }
 
-    /// The configuration `layers`, read by [`Self::read_layers`] for `config_path`,
-    /// describe: merged over the defaults and validated.
+    /// The configuration `layers` (from [`Self::read_layers`]) describe, merged over
+    /// defaults and validated.
     pub fn from_read_layers(
         config_path: &Path,
         overrides: &[datui_cli::settings::Override],
@@ -2731,11 +2596,8 @@ impl AppConfig {
         Ok(config)
     }
 
-    /// Append every file named by `imports` to `out`, depth-first, in order.
-    ///
-    /// `origin` is the file that declared them; relative paths resolve against its
-    /// directory. `stack` holds the canonical paths currently being loaded, so a
-    /// cycle is reported instead of followed.
+    /// Append every file `imports` names to `out`, depth-first, relative to `origin`'s
+    /// directory. `stack` holds the canonical paths being loaded, to report cycles.
     fn collect_imports(
         imports: &[String],
         origin: &Path,
@@ -2793,13 +2655,10 @@ impl AppConfig {
         Ok(())
     }
 
-    /// The configuration `layers` describe, lowest precedence first, over datui's
-    /// defaults. Defaults are resolved here, once: a layer holds only what it wrote.
-    ///
-    /// The colors start from the theme `theme.dark` or `theme.light` names for the
-    /// `theme.mode` the layers declare, built-ins only: `from_read_layers` adds the
-    /// theme files. `import` is left empty; `load_from_file` follows imports and
-    /// reports them. Not validated.
+    /// The configuration `layers` describe, lowest first, over the defaults (resolved
+    /// once here). Colors start from the built-in theme `theme.dark`/`theme.light` names
+    /// for the declared mode; `from_read_layers` adds theme files. `import` is left
+    /// empty. Not validated.
     pub fn from_layers(layers: impl IntoIterator<Item = ConfigLayer>) -> Result<Self> {
         let mut merged = ConfigLayer::default();
         for layer in layers {
@@ -2831,10 +2690,9 @@ impl AppConfig {
         Ok(config)
     }
 
-    /// Resolve `theme.dark` and `theme.light` with the theme files in `config_dir`'s
-    /// `themes/` as well as the built-ins. A file with a mistake, or a name that
-    /// cannot be used, is said on stderr and the log, and its mode falls back to
-    /// the built-in: as with catalogs, it never stops datui from starting.
+    /// Resolve `theme.dark` and `theme.light` with `config_dir`'s `themes/` files as well
+    /// as built-ins. A broken file or unusable name is reported and falls back to the
+    /// built-in; it never stops startup.
     pub fn read_theme_files(&mut self, config_dir: Option<&Path>) -> Result<()> {
         let library = crate::themes::Library::read(config_dir);
         let active = self.theme.mode.unwrap_or_default().resolve();
@@ -2847,9 +2705,8 @@ impl AppConfig {
         Ok(())
     }
 
-    /// Every catalog, hidden ones included: `catalog.toml`, the listed files in order,
-    /// then the bundled `examples` catalog, unless a listed file named `examples.toml`
-    /// replaces it.
+    /// Every catalog, hidden ones included: `catalog.toml`, the listed files, then the
+    /// bundled `examples` (unless a listed `examples.toml` replaces it).
     pub fn catalogs(&self) -> Vec<crate::catalog::Catalog> {
         let mut all = self.read_catalogs.clone();
         if !all.iter().any(|c| c.id == crate::catalog::EXAMPLES) {
@@ -2858,8 +2715,8 @@ impl AppConfig {
         all
     }
 
-    /// The catalogs the home screen shows: [`Self::catalogs`] less `[home] hide`, which
-    /// names a whole catalog by its id or one entry as `catalog/id`.
+    /// The catalogs home shows: [`Self::catalogs`] less `[home] hide` (a catalog id, or
+    /// `catalog/id` for one entry).
     pub fn shown_catalogs(&self) -> Vec<crate::catalog::Catalog> {
         self.catalogs()
             .into_iter()
@@ -2877,9 +2734,8 @@ impl AppConfig {
             .collect()
     }
 
-    /// The `[home] hide` names no catalog or entry has, each once.
-    /// Why `name` in `home.hide` hides nothing, with the fix when the name is the
-    /// bundled catalog's old id: `public` is now `examples`.
+    /// Why `name` in `home.hide` hides nothing, with the fix when it is the bundled
+    /// catalog's old id (`public`, now `examples`).
     pub fn hides_nothing(name: &str) -> String {
         let old = crate::catalog::OLD_EXAMPLES_ID;
         let renamed = match name.split_once('/') {
@@ -2895,6 +2751,7 @@ impl AppConfig {
         }
     }
 
+    /// The `[home] hide` names that match no catalog or entry, each once.
     pub fn unknown_hidden(&self) -> Vec<String> {
         let catalogs = self.catalogs();
         let mut out: Vec<String> = Vec::new();
@@ -2916,17 +2773,15 @@ impl AppConfig {
         out
     }
 
-    /// Read `catalog.toml` from `config_dir`, when there is one, every `*.toml` in its
-    /// `catalogs/` directory, by name, and every file `catalogs` lists. A listed file
-    /// that is not there is skipped with a warning, as a missing import is: it may be on
-    /// a share that is not mounted.
+    /// Read `catalog.toml` from `config_dir`, its `catalogs/*.toml` by name, and every
+    /// file `catalogs` lists. A missing listed file is skipped with a warning (it may be
+    /// on an unmounted share).
     pub fn read_catalog_files(&mut self, config_dir: Option<&Path>) -> Result<()> {
         use crate::catalog::{self, Origin};
         let mut read: Vec<catalog::Catalog> = Vec::new();
         let mut broken: Vec<catalog::Broken> = Vec::new();
         let connections = self.cloud.connections.clone();
-        // A file with a mistake is left out and said: one broken team file must not keep
-        // datui from starting.
+        // A broken file is left out and reported; it must not stop startup.
         let take = |found: std::result::Result<Option<catalog::Catalog>, catalog::Broken>,
                     read: &mut Vec<catalog::Catalog>,
                     broken: &mut Vec<catalog::Broken>|
@@ -3066,8 +2921,7 @@ impl AppConfig {
             ));
         }
 
-        // Resolve number formatting so bad preset names and separator clashes
-        // are reported at load time rather than silently ignored at render time.
+        // Resolve number formatting now so bad presets and separator clashes fail at load.
         self.display
             .number_format
             .resolve(self.display.right_align_numbers)?;
@@ -3272,12 +3126,10 @@ impl ColorParser {
     }
 }
 
-/// Whether a Windows console draws 24-bit color, where `supports_color` cannot tell.
-/// It reads `TERM` and `COLORTERM`, which Windows Terminal and conhost do not set, and
-/// so takes both for a 16-color terminal. Both draw 24-bit color once virtual
-/// terminal processing is on, which crossterm turns on where it can (`vt`); a legacy
-/// console refuses it and keeps the 16 colors. With `TERM` set (mintty, an MSYS2
-/// shell), or `FORCE_COLOR`, its answer stands.
+/// Whether a Windows console draws 24-bit color where `supports_color` cannot tell
+/// (it reads `TERM`/`COLORTERM`, unset by Windows Terminal and conhost). Both do once
+/// virtual terminal processing is on (`vt`); legacy consoles refuse it. With `TERM`
+/// set (mintty, MSYS2) or `FORCE_COLOR`, its answer stands.
 #[cfg(windows)]
 fn windows_console_true_color(env_says: bool, terminal: bool, vt: impl FnOnce() -> bool) -> bool {
     !env_says && terminal && vt()
@@ -3291,9 +3143,8 @@ impl Default for ColorParser {
 
 /// Parse hex color string (#ff0000) to RGB components
 fn parse_hex(s: &str) -> Result<(u8, u8, u8)> {
-    // `len()` counts bytes, so a seven-byte length is not seven characters and the
-    // fixed offsets below are only safe once the rest is known to be ASCII. "#\u{1f600}xy"
-    // is also seven bytes, and slicing it at 3 lands inside the emoji.
+    // `len()` counts bytes: slicing at fixed offsets is safe only once the rest is ASCII
+    // ("#\u{1f600}xy" is also seven bytes).
     let hex = s
         .strip_prefix('#')
         .filter(|hex| hex.len() == 6 && hex.is_ascii())
@@ -3314,13 +3165,10 @@ fn parse_hex(s: &str) -> Result<(u8, u8, u8)> {
     Ok((r, g, b))
 }
 
-/// Convert RGB to nearest 256-color palette index
-/// Uses standard xterm 256-color palette
+/// The nearest xterm 256-color palette index to an RGB color.
 pub fn rgb_to_256_color(r: u8, g: u8, b: u8) -> u8 {
-    // The nearest entry of the xterm palette, by distance in RGB. The cube's six
-    // levels are far apart (0, 95, 135, 175, 215, 255), so a dark tint like #262a3f
-    // is nearer a grey on the ramp than any cube colour; rounding each channel to
-    // a cube level instead sent every dark tint to the same navy or black.
+    // Nearest palette entry by RGB distance: the cube's levels are far apart, so dark
+    // tints are often nearer a ramp grey than any cube color.
     let dist = |cr: i32, cg: i32, cb: i32| -> i32 {
         let (dr, dg, db) = (cr - r as i32, cg - g as i32, cb - b as i32);
         dr * dr + dg * dg + db * db
@@ -3455,9 +3303,8 @@ impl Theme {
         let parser = ColorParser::new();
         let mut colors = HashMap::new();
         for (name, value) in config.colors.slots() {
-            // Left out of the map so a widget can ask `get_optional` and tell them apart:
-            // "reversed" swaps the current row's text and background instead of tinting
-            // it, and "default" is no stripe.
+            // Left out of the map so widgets can tell them apart via `get_optional`: "reversed"
+            // swaps the current row's colors, "default" is no stripe.
             let absent = match name.as_str() {
                 "table_selected" => value.trim().eq_ignore_ascii_case("reversed"),
                 "table_alternate_row" => value == "default",
@@ -3467,9 +3314,8 @@ impl Theme {
                 colors.insert(name, parser.parse(&value)?);
             }
         }
-        // Every sidebar and the input strip draw their resting border from
-        // `modal_border`, the slot the config calls `sidebar_border`; labels are
-        // secondary text.
+        // Sidebars and the input strip draw their resting border from `modal_border` (the
+        // config's `sidebar_border`); labels are secondary text.
         colors.insert("modal_border".to_string(), colors["sidebar_border"]);
         colors.insert("label".to_string(), colors["text_secondary"]);
         Ok(Self { colors })
@@ -3486,10 +3332,8 @@ impl Theme {
         self.colors.get(name).copied()
     }
 
-    /// The colors chart series are drawn in: `chart_1` to `chart_10` as this terminal
-    /// shows them, each once. Slots that come out the same (a theme that repeats a
-    /// color, a 16-color terminal, `NO_COLOR`) are one color, so two series never
-    /// share one: a chart draws at most this many.
+    /// The colors series are drawn in: `chart_1`..`chart_10` as this terminal shows them,
+    /// deduplicated so two series never share a color; a chart draws at most this many.
     pub fn series_colors(&self) -> Vec<Color> {
         let mut colors: Vec<Color> = Vec::with_capacity(CHART_SERIES_SLOTS);
         for i in 1..=CHART_SERIES_SLOTS {
@@ -3523,10 +3367,8 @@ impl Theme {
         cell_cursor_style(self.get_optional("table_cell_cursor"))
     }
 
-    /// Style of selected text in a field: the highlight tint, or reversed video
-    /// where the tint could match the terminal's own background. A 16-color
-    /// terminal turns the default tints into black or white and `NO_COLOR` into
-    /// none, and a field has no rail to show the selection instead.
+    /// Selected text in a field: the highlight tint, or reversed video where the tint
+    /// may match the background (16 colors, `NO_COLOR`); a field has no rail instead.
     pub fn text_selection_style(&self) -> ratatui::style::Style {
         match self.get_optional("table_selected") {
             Some(Color::Reset | Color::Black | Color::White) => {
@@ -3546,9 +3388,8 @@ impl Theme {
         }
     }
 
-    /// Text color for the solid cursor block: the `cursor_text` slot, or black or
-    /// white by the cursor color's luminance when the slot says "default". Lives
-    /// here so widgets never pick colors themselves.
+    /// Text color for the solid cursor block: `cursor_text`, or black/white by the
+    /// cursor's luminance when "default"; here so widgets never pick colors.
     pub fn cursor_text_for(&self, cursor: Color) -> Color {
         match self.get("input_cursor_text") {
             Color::Reset => contrasting_text(cursor),
@@ -3594,9 +3435,8 @@ fn contrasting_text(bg: Color) -> Color {
     }
 }
 
-/// A representative RGB for any terminal color, for luminance arithmetic. The
-/// named colors use the xterm defaults; the real palette is the terminal's, so
-/// this is an estimate — good enough to pick black or white.
+/// An approximate RGB for any terminal color (xterm defaults), good enough to pick
+/// black or white text.
 fn approx_rgb(color: Color) -> (u8, u8, u8) {
     match color {
         Color::Rgb(r, g, b) => (r, g, b),

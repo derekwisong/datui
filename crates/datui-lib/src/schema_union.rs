@@ -1,10 +1,6 @@
-//! The schema of a dataset made of many files.
-//!
-//! A dataset written over years is rarely uniform: a vendor adds a column one day,
-//! drops another for a week, or writes a number as text for a month. Reading the
-//! schema from one file makes those columns appear or vanish depending on which file
-//! is picked. This module takes every column any file has, from the footers the row
-//! count already reads, and decides one type per column:
+//! The schema of a dataset made of many files, which drift over time: every column
+//! any file has, from the footers the row count already reads, with one type per
+//! column:
 //!
 //! - equal types, or types that widen losslessly (`Int32` into `Int64`, `Float32` into
 //!   `Float64`, `ms` into `ns`), become the wider one;
@@ -41,8 +37,8 @@ impl Drop for Pass<'_> {
     }
 }
 
-/// A listing counting the objects it finds against a [`FooterProgress`], which stops
-/// saying so however it ends.
+/// A listing counting found objects against a [`FooterProgress`], which stops
+/// reporting however it ends.
 pub struct Listing<'a>(&'a FooterProgress);
 
 impl Listing<'_> {
@@ -78,10 +74,8 @@ impl Drop for Listing<'_> {
     }
 }
 
-/// What became of a footer pass, after it has finished saying so.
-///
-/// Hidden from the docs: nothing on screen reads it, and it is public only so the
-/// wiring between an open and its counter can be checked from a test.
+/// What became of a footer pass after it finished. Public only so tests can check the
+/// wiring between an open and its counter.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PassCount {
@@ -93,30 +87,23 @@ pub struct PassCount {
     pub total: usize,
 }
 
-/// How far a dataset's footer pass has got, for the loading screen to read.
-///
-/// Opening a directory of many files reads a footer from each before a row is shown, and
-/// on a few thousand files that is seconds of a screen that says only "Reading schema".
-/// The count is what makes the wait legible: a number that climbs is a wait, and a
-/// number that stops is a problem.
-///
-/// Shared with the threads doing the reading, which is why it is atomic and why it is
-/// only ever written by them and read by the render.
+/// How far a dataset's footer pass has got, for the loading screen: a climbing count
+/// on a directory of thousands of files. Atomic: written only by reading threads,
+/// read by the render.
 #[derive(Debug, Default)]
 pub struct FooterProgress {
     read: AtomicUsize,
     total: AtomicUsize,
-    /// Passes begun. The count itself is unobservable once a pass has finished —
-    /// read and total are both back to nothing — so without this there is no way to
-    /// tell a pass that reported from one that never started.
+    /// Passes begun: read and total reset when a pass ends, so this tells a finished pass
+    /// from one that never started.
     passes: AtomicUsize,
     /// What the last pass was over, kept after `done` for the same reason.
     last_total: AtomicUsize,
-    /// The load this counter belongs to was abandoned: passes stop issuing
-    /// reads. Shared out to the read tasks through [`Self::cancel_flag`].
+    /// The load was abandoned: passes stop issuing reads. Shared via
+    /// [`Self::cancel_flag`].
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// Objects a listing has found so far, while `listing` is set. A listing of a large
-    /// prefix is the longest wait before any footer, and it has no total to count to.
+    /// Objects listed so far while `listing` is set: a large prefix's listing is the
+    /// longest wait before any footer, with no total.
     listed: std::sync::Arc<AtomicUsize>,
     listing: std::sync::atomic::AtomicBool,
     /// Footers read at once by a pass against this counter; `0` is [`FOOTERS_AT_ONCE`].
@@ -125,8 +112,8 @@ pub struct FooterProgress {
     estimate: std::sync::Mutex<Option<RowEstimate>>,
 }
 
-/// A dataset's row count from a sample of its files' footers: the mean of the files
-/// read, times the files there are. Said as `~4.12B rows (est.)` until it is counted.
+/// A row count estimated from a sample of footers (mean rows per file read times the
+/// file count), shown as `~4.12B rows (est.)` until counted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RowEstimate {
     pub rows: u64,
@@ -137,8 +124,7 @@ pub struct RowEstimate {
 }
 
 impl RowEstimate {
-    /// The estimate from the `footers` read of a dataset of `files` files; `None`
-    /// when none read.
+    /// The estimate from the `footers` read of `files` files; `None` when none were read.
     pub fn of<'a>(
         files: usize,
         footers: impl IntoIterator<Item = &'a Option<FileFooter>>,
@@ -157,16 +143,15 @@ impl RowEstimate {
     }
 }
 
-/// Footers sampled at random for a dataset's first row estimate: enough for a mean
-/// within a few percent on any dataset whose files are alike, and one wave or a few.
+/// Footers sampled for the first estimate: a mean within a few percent for alike
+/// files, in one wave or a few.
 pub const ESTIMATE_SAMPLE: usize = 2_000;
 
-/// Footers read at once by a count: the exact count of a dataset of many files reads
-/// every footer it does not have, and on a store each is a round trip of waiting.
+/// Footers a count reads at once: each is a round trip on a store.
 pub const COUNT_AT_ONCE: usize = 256;
 
-/// `n` of the indices below `files`, ascending, drawn at random from `seed`: every
-/// index when there are no more than `n`. The same seed draws the same sample.
+/// `n` random indices below `files` from `seed`, ascending; all when `files <= n`.
+/// The same seed draws the same sample.
 pub fn random_sample(files: usize, n: usize, seed: u64) -> Vec<usize> {
     if files <= n {
         return (0..files).collect();
@@ -205,9 +190,8 @@ impl FooterProgress {
     /// Begin a pass over `total` footers. Any earlier pass's count is forgotten.
     pub fn begin(&self, total: usize) {
         self.read.store(0, Ordering::Relaxed);
-        // Released after the reset, and acquired in `reading`, so a render cannot pair
-        // this pass's total with the last one's count and report a pass as finished at
-        // the instant it starts.
+        // Released after the reset and acquired in `reading`, so a render never pairs this
+        // pass's total with the last one's count.
         self.last_total.store(total, Ordering::Relaxed);
         self.total.store(total, Ordering::Release);
         self.passes.fetch_add(1, Ordering::Relaxed);
@@ -223,24 +207,16 @@ impl FooterProgress {
         self.total.store(0, Ordering::Relaxed);
     }
 
-    /// A pass over `total` footers that says it has finished however it ends.
-    ///
-    /// A panic between `begin` and `done` would otherwise leave the count on screen
-    /// for as long as that counter is read — and the counter outlives the pass, since
-    /// the render holds it.
+    /// A pass over `total` footers that reports finished however it ends, so a panic
+    /// does not leave a count on screen (the render outlives the pass).
     pub fn pass(&self, total: usize) -> Pass<'_> {
         self.begin(total);
         Pass(self)
     }
 
-    /// What has become of the passes against this counter: how many have begun, how
-    /// many footers the last one has read, and how many it was over.
-    ///
-    /// All three outlive the pass, which is the point of them. A finished pass reports
-    /// nothing — read and total are both back to nothing — so from outside, a pass that
-    /// counted and a pass that never started look identical, and every line that does
-    /// the counting could be deleted with the tests green. Nothing on screen reads
-    /// this; it is here so the wiring can be checked.
+    /// What became of passes on this counter: how many began, and how many footers the
+    /// last read of how many. Kept after the pass so tests can check the wiring; nothing
+    /// on screen reads it.
     #[doc(hidden)]
     pub fn last_pass(&self) -> PassCount {
         PassCount {
@@ -256,8 +232,8 @@ impl FooterProgress {
         (total > 0).then(|| (self.read.load(Ordering::Relaxed).min(total), total))
     }
 
-    /// The load was abandoned: any pass on this counter stops issuing reads.
-    /// Cancelling is one-way; a new load gets a new counter.
+    /// The load was abandoned: passes stop issuing reads. One-way; a new load gets a new
+    /// counter.
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Relaxed);
     }
@@ -296,31 +272,25 @@ impl FooterProgress {
     }
 }
 
-/// What one file's footer said, short of the data: the one footer type, wherever the
-/// file is and whichever pass read it.
+/// What one file's footer said, short of the data: one type for every location and
+/// pass.
 #[derive(Debug, Clone)]
 pub struct FileFooter {
     pub schema: Arc<Schema>,
     /// Rows in each row group, in file order.
     pub row_group_rows: Vec<usize>,
-    /// Compressed bytes of each row group, in file order: what crosses the wire for
-    /// that group, not what it occupies once decoded.
-    ///
-    /// A row group is the unit a reader fetches: a page of rows anywhere inside one
-    /// costs the whole of it. How big they are is therefore what a remote dataset
-    /// costs to scroll, and it is in the footer datui already reads.
+    /// Compressed bytes of each row group in file order: what crosses the wire, since a
+    /// reader fetches whole groups, so it is what scrolling a remote dataset costs.
     pub row_group_bytes: Vec<usize>,
     /// The file's size on disk or in the store.
     pub file_bytes: usize,
-    /// Uncompressed bytes of each column, from [`parquet_column_bytes`]. Empty where
-    /// the read did not keep them: a dataset in a store does not, so its remembered
-    /// shape stays small.
+    /// Uncompressed bytes of each column ([`parquet_column_bytes`]); empty where not kept
+    /// (store datasets, to keep the remembered shape small).
     pub column_bytes: Vec<(String, usize)>,
 }
 
 impl FileFooter {
-    /// What a footer's metadata says about a file of `file_bytes`, with each column's
-    /// width where `widths` asks for it.
+    /// A footer's metadata for a file of `file_bytes`, with column widths when `widths`.
     pub fn from_metadata(
         schema: Schema,
         metadata: &polars_parquet::parquet::metadata::FileMetadata,
@@ -345,8 +315,8 @@ impl FileFooter {
         }
     }
 
-    /// The footer at the end of `tail`, which holds at least the file's last bytes up
-    /// to and including its footer.
+    /// The footer at the end of `tail`, which holds the file's last bytes through its
+    /// footer.
     pub fn from_tail(tail: &[u8], file_bytes: usize, widths: bool) -> color_eyre::Result<Self> {
         use polars::prelude::{ParquetReader, SchemaExt, SerReader};
         let mut cursor = std::io::Cursor::new(tail);
@@ -371,9 +341,8 @@ impl FileFooter {
     }
 }
 
-/// Uncompressed bytes of each column in a Parquet footer, summed over the row groups
-/// and a nested column's leaves. What a binary or string column holds is known only
-/// from here short of reading it.
+/// Uncompressed bytes of each column in a footer, summed over row groups and nested
+/// leaves: the only way to know a binary or string column's size short of reading it.
 pub fn parquet_column_bytes(
     schema: &Schema,
     metadata: &polars_parquet::parquet::metadata::FileMetadata,
@@ -392,8 +361,8 @@ pub fn parquet_column_bytes(
         .collect()
 }
 
-/// Uncompressed bytes per row of each column over the footers read. A file without a
-/// column counts its rows at nothing, since they read as null there.
+/// Uncompressed bytes per row of each column over the footers read; files without a
+/// column count its rows as zero (they read null).
 pub fn column_bytes_per_row(footers: &[Option<FileFooter>]) -> Vec<(String, usize)> {
     let rows: usize = footers.iter().flatten().map(FileFooter::rows).sum();
     if rows == 0 {
@@ -416,8 +385,8 @@ pub fn column_bytes_per_row(footers: &[Option<FileFooter>]) -> Vec<(String, usiz
         .collect()
 }
 
-/// Where a dataset's schema came from. Shown in the Info panel's Schema tab, so a
-/// column that is missing is traceable to the files that were looked at.
+/// Where a dataset's schema came from, shown in Info's Schema tab so a missing column
+/// traces to the files looked at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SchemaOrigin {
     /// Every file's footer was read.
@@ -427,11 +396,8 @@ pub enum SchemaOrigin {
 }
 
 impl SchemaOrigin {
-    /// How many files the dataset has, whether or not every footer was read.
-    ///
-    /// Not [`DatasetSchema::files`], which is how many footers were *read* — the
-    /// population every other count in the notes is taken over. One note needs the
-    /// other number, and the two are a keystroke apart, so this one says which.
+    /// How many files the dataset has, read or not; [`DatasetSchema::files`] is how many
+    /// footers were read.
     pub fn total_files(&self) -> usize {
         match self {
             SchemaOrigin::AllFooters(files) => *files,
@@ -480,12 +446,8 @@ impl ColumnDrift {
     }
 }
 
-/// Where a column that is not in every file sits, in the dataset's own partitions.
-///
-/// The count alone — "in 1 of 6,541 files" — says a column is unusual without saying
-/// where to look. These are the two shapes worth naming: a column that belongs to one
-/// partition, and one that starts partway through a dataset ordered by its partitions,
-/// which is what a field added to a feed looks like ever after.
+/// Where a column not in every file sits among the dataset's partitions: in one
+/// partition, or from some point onward (a field added to a feed).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ColumnRange {
     /// Every file that has it is under this one partition.
@@ -494,43 +456,25 @@ pub enum ColumnRange {
     NoneBefore(String),
 }
 
-/// What a dataset's listing walked past: files under the directory that are not read.
-///
-/// Split by whether anyone could have meant them as data, which is a question about
-/// where a file is rather than what it is called.
-///
-/// **A file beside the data** — a `.csv` in a directory that also holds Parquet — is one
-/// somebody may have expected in the table. That is worth saying.
-///
-/// **A file somewhere else** is infrastructure. Delta keeps its log in `_delta_log/`,
-/// Hudi in `.hoodie/`, Iceberg in a plain `metadata/` beside the data; a bucket made
-/// through a console is full of zero-byte folder markers. Naming those conventions one
-/// by one is a game with no end — the test that holds for all of them is that a directory
-/// with no Parquet in it is nobody's table, whatever it is called.
-///
-/// Not a complete accounting of the directory: a subtree that cannot be read, or one
-/// below the depth the walk stops at, is neither listed nor counted. What the note says
-/// is how many files were passed over among those it saw.
+/// Files a dataset's listing walked past. A file beside the data (a `.csv` beside
+/// Parquet) may have been meant as data and is worth saying; one elsewhere (Delta's
+/// `_delta_log/`, Hudi's `.hoodie/`, Iceberg's `metadata/`, folder markers) is
+/// infrastructure: a directory with no Parquet is nobody's table. Counts only what
+/// the walk saw.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SkippedFiles {
     /// Files a writer leaves beside the data: a name beginning `_` or `.`.
     pub bookkeeping: usize,
     /// Everything else that is not a Parquet file.
     pub not_parquet: usize,
-    /// Objects with nothing in them, whose name says they are data. Not a file anyone
-    /// left on purpose: a write that stopped, which is the skip most worth saying.
-    ///
-    /// A store's listing knows each size; a directory knows it from the stat past one
-    /// wave, or from the footer that would not read within one.
+    /// Empty objects whose names say data: likely a write that stopped, the skip most
+    /// worth saying. Sizes come from the store listing, a stat, or a failed footer read.
     pub empty: usize,
 }
 
 impl SkippedFiles {
-    /// Count one file the listing passed over.
-    ///
-    /// `bookkeeping` is the caller's, because only the caller knows where the file was.
-    /// A `.json` is a mistake beside the data and a record of the table inside
-    /// `_delta_log/` or `metadata/`, and its own name cannot say which.
+    /// Count one passed-over file. `bookkeeping` is the caller's call: only the location
+    /// tells a stray `.json` from a lake table's record.
     pub fn count(&mut self, bookkeeping: bool) {
         if bookkeeping {
             self.bookkeeping += 1;
@@ -540,18 +484,10 @@ impl SkippedFiles {
     }
 }
 
-/// The few reader settings that change what a sample of a file's columns comes back as.
-///
-/// The sample exists to say what the *open* will do, so it reads each file the way the
-/// open will. Guessing instead, and then standing down wherever the guess might be
-/// wrong, does not work: `OpenOptions::from_args_and_config` fills in
-/// `infer_schema_length` and `parse_strings` on every run with no flags at all, so a
-/// predicate over "did the user set anything" is true every time and the sample never
-/// runs. That shipped once — the notes about how a directory was stacked never appeared
-/// outside the tests, which built `OpenOptions::default()` and saw `None` in both.
-///
-/// [`Default`] is what Polars' own readers do, which is what the home screen's opens
-/// pass.
+/// The reader settings that change what a sample of a file's columns returns, taken
+/// from the open's actual options (`from_args_and_config` always fills
+/// `infer_schema_length` and `parse_strings`, so guessing from "did the user set
+/// anything" never works). [`Default`] matches Polars' readers, as home opens use.
 #[derive(Debug, Clone)]
 pub struct ReadAs {
     pub delimiter: Option<u8>,
@@ -567,8 +503,8 @@ pub struct ReadAs {
 }
 
 impl ReadAs {
-    /// The open's options that say the same, so the sample is configured by the
-    /// open's own reader setup rather than a copy of it.
+    /// The open's options for the same settings, so the sample uses the open's reader
+    /// setup.
     fn open_options(&self, format: crate::FileFormat) -> crate::OpenOptions {
         crate::OpenOptions {
             delimiter: self.delimiter.or(format.separator()),
@@ -588,14 +524,9 @@ impl ReadAs {
 }
 
 impl Default for ReadAs {
-    /// What a directory opened from the home screen is read with:
-    /// `OpenOptions::default()` plus `hive`, whose `csv_try_parse_dates()` is true
-    /// because `parse_strings` is unset there.
-    ///
-    /// Written out rather than derived. A derived `Default` gives `try_parse_dates:
-    /// false`, which is not what any caller wants and differs from what the read does —
-    /// two defaults for one thing, and the wrong one reachable by anybody typing
-    /// `ReadAs::default()`.
+    /// What a home-opened directory reads with: `OpenOptions::default()` plus `hive`,
+    /// where `csv_try_parse_dates()` is true since `parse_strings` is unset. Written out:
+    /// a derived default would give `try_parse_dates: false`.
     fn default() -> Self {
         Self {
             delimiter: None,
@@ -612,22 +543,11 @@ impl Default for ReadAs {
     }
 }
 
-/// The column names one data file holds, read as cheaply as its format allows.
-///
-/// The evidence [`is_nested`] wants, for the formats that have no footer. Parquet's
-/// answer comes from its footer and has its own path; this is for the rest, where the
-/// names are at the front of the file — a CSV header line, an NDJSON object's keys —
-/// and Polars' own schema inference is what reads them, so the names are the ones the
-/// open will use, separator and all.
-///
-/// `None` for a format whose schema cannot be had without reading the whole file, and
-/// for a file that would not parse. Both mean "no evidence", which every caller here
-/// treats as it treats an unreadable footer: the directory keeps the kind its names
-/// suggested, and the read that follows is lenient enough to survive being wrong.
-///
-/// Deliberately not JSON: a `.json` file is one document, and its keys are only known
-/// once it has been parsed. Sampling three of those in a listing pass is a read of
-/// three whole files for a label.
+/// The column names one data file holds, read as cheaply as its format allows: the
+/// header or first object's keys, via Polars' inference as the open will. For
+/// formats without footers ([`is_nested`]'s evidence). `None` when the schema needs
+/// the whole file (JSON documents) or the file will not parse: no evidence, so the
+/// directory keeps its name-based kind.
 pub fn column_schema_of(
     path: &std::path::Path,
     format: crate::FileFormat,
@@ -636,9 +556,7 @@ pub fn column_schema_of(
     use polars::prelude::{LazyFileListReader, LazyJsonLineReader};
     let lf = match format.descriptor().lines {
         Some(crate::cli::Lines::Delimited(_)) => {
-            // Read the way the open will read it. Where the header is and how far the
-            // reader looks before settling a type both change what comes back, and a
-            // sample that used its own answers would describe a file nobody opened.
+            // Read as the open will: header placement and inference length change the result.
             let options = as_read.open_options(format);
             let header = crate::readers::csv::csv_header_names_of(&options, path, None).ok()?;
             let reader = crate::readers::csv::configure_csv_reader(
@@ -665,10 +583,8 @@ pub fn column_schema_of(
         None => return None,
     };
     let schema = lf.clone().collect_schema().ok()?;
-    // Trimmed, because `trim_csv_column_names` trims what the read produces: one
-    // writer's `id, name` and another's `id,name` are the same two columns by the time
-    // they are on screen, and a sample that kept the space would call them different
-    // and say so in a note about a table that has no such difference.
+    // Trimmed, as `trim_csv_column_names` trims the read: `id, name` and `id,name` are the
+    // same columns on screen.
     let fields: Vec<(String, DataType)> = schema
         .iter()
         .map(|(name, dtype)| (name.trim().to_string(), dtype.clone()))
@@ -676,21 +592,10 @@ pub fn column_schema_of(
     Some(fields)
 }
 
-/// Whether a schema is what an empty file parses as, rather than a table.
-///
-/// No columns at all, or exactly one with no name. The second is the one that matters
-/// and it is not obvious: a writer that emits a header even on a day with no rows
-/// leaves a three-byte file holding `""`, which Polars reads as a single unnamed
-/// column — and a schema of one unnamed column is contained in *every* wider schema, so
-/// it nests inside anything and says a directory is one table however many tables are
-/// really in it.
-///
-/// Measured on a real share: a month of stock data holding dividends, splits, tickers
-/// and daily bars came back as one table because the files the spread landed on were
-/// the empty days.
-///
-/// An unnamed column inside a wider schema is ordinary — it is what a written-out index
-/// looks like — so only a schema that is *nothing but* one counts here.
+/// Whether a schema is an empty file's: no columns, or one unnamed column (a header
+/// written on a day with no rows reads as `""`). One unnamed column nests inside any
+/// schema and would make any directory one table; inside a wider schema it is an
+/// ordinary written-out index.
 fn is_an_empty_file(schema: &[(String, DataType)]) -> bool {
     match schema {
         [] => true,
@@ -734,29 +639,21 @@ pub struct Sampled {
     /// Whether a column one file has is missing from another. The table is then their
     /// union, and a row from a file without the column reads null.
     pub columns_differ: bool,
-    /// Whether a column they share is held in two different types. The half a name test
-    /// cannot see: `amount` is an Int64 in one file and a String in the next because
-    /// one row said `N/A`, and the read widens it to String for the whole directory
-    /// without a word unless this says so.
+    /// Whether a shared column has two types (`amount` Int64 in one file, String where a
+    /// row said `N/A`): the read silently widens it for the whole directory otherwise.
     pub types_differ: bool,
-    /// How many files were actually read, so a caller can say whether a count over them
-    /// is exact or a floor.
+    /// How many files were read, so a count over them is known exact or a floor.
     pub read: usize,
-    /// Whether the files appear to have no header row, so what came back as names is
-    /// each file's first row of *data*.
-    ///
-    /// datui reads a CSV as having a header, so such a directory cannot be read as one
-    /// table at all without `--no-header`: every file contributes its own first row as
-    /// column names and the union is a wide sheet of nulls. Neither a nesting verdict
-    /// nor a note about columns means anything here — this is the thing to say instead.
+    /// Whether the files seem headerless, so the "names" are each file's first data row.
+    /// Such a directory needs `--no-header` to read as one table; this replaces any
+    /// nesting verdict or column note.
     pub headerless: bool,
 }
 
 impl Sampled {
     /// How the files differ, for the note that says so.
     pub fn disagreement(&self) -> Disagreement {
-        // A headerless directory has one thing wrong with it, and the other two would be
-        // said about column names that are really data.
+        // Headerless: the other two would describe column names that are really data.
         if self.headerless {
             return Disagreement {
                 headerless: true,
@@ -771,12 +668,9 @@ impl Sampled {
     }
 }
 
-/// How a directory's files differed, as the read found them.
-///
-/// Two separate facts because they are two separate things to say, and a directory can be
-/// either, both or neither: a column some files lack is the ordinary shape of schema
-/// drift, and a column held in two types is what forces the whole directory to the wider
-/// one.
+/// How a directory's files differed, as read: a column some files lack (ordinary
+/// drift), and a column held in two types (forcing the wider). Either, both or
+/// neither.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Disagreement {
     pub columns: bool,
@@ -791,36 +685,22 @@ impl Disagreement {
     }
 }
 
-/// Read a spread of `files` and say what they are.
-///
-/// The ends and the middle, because names sort and a directory written table by table can
-/// start with several files of the same table. Three reads whatever the directory's size:
-/// this runs in a listing pass and on the way into an open, and a directory of forty
-/// thousand files must cost the same as a directory of four.
+/// Read a spread of `files` (the ends and the middle, since sorted names group each
+/// table's files) and say what they are. Bounded reads whatever the size: this runs
+/// in listing passes and on the way into an open.
 pub fn sample_files(
     files: &[std::path::PathBuf],
     format: crate::FileFormat,
     as_read: &ReadAs,
 ) -> Sampled {
-    // Enough files to see a disagreement, and a bound on the reads it takes to find
-    // them. A directory written daily has empty days in it — a Saturday's file of nothing
-    // — and those carry no columns, so a spread that lands on two of them learns
-    // nothing and the directory goes unjudged. Measured on a real share: a month of stock
-    // data holding three different tables came back as one, because the first and
-    // middle files of that month were a three-byte file and an empty one.
+    // Enough files to see a disagreement, with a bound on tries: daily directories have
+    // empty days, and a spread landing on them learns nothing.
     const WANTED: usize = 3;
     const TRIES: usize = 12;
     let last = files.len().saturating_sub(1);
-    // Three anchors — the ends and the middle — because names sort, so a directory
-    // written table by table holds each table in a contiguous run and the three land in
-    // different runs. Spreading the reads evenly instead is worse, and measurably: the
-    // first files that happen to be readable then come from one run, agree with each
-    // other, and the directory is called one table.
-    //
-    // From each anchor, step forward past files with nothing in them. A directory written
-    // daily has empty days in it — forty per cent of one real month — and an anchor
-    // that lands on one learns nothing, while a neighbour of it is in the same run and
-    // answers for that run.
+    // Three anchors (the ends and the middle) land in different runs of a table-by-table
+    // directory; evenly spread reads would cluster in one run and agree. From each
+    // anchor, step past empty files to a neighbor in the same run.
     const NEAR: usize = 4;
     let anchors = [0usize, last / 2, last];
 
@@ -839,8 +719,7 @@ pub fn sample_files(
             seen.push(i);
             let Some(file) = files.get(i) else { continue };
             tried += 1;
-            // A file with nothing in it has no columns to disagree about, and is not
-            // evidence about the directory either way. Its neighbour is asked instead.
+            // An empty file has no columns and is no evidence; ask its neighbor.
             if let Some(schema) = column_schema_of(file, format, as_read)
                 && !is_an_empty_file(&schema)
             {
@@ -868,12 +747,9 @@ pub fn sample_files(
         .iter()
         .map(|f| f.iter().map(|(n, _)| n.clone()).collect())
         .collect();
-    // A file whose "names" are its first row of data. Said rather than guessed around:
-    // the directory cannot be read as one table without `--no-header`, so there is no
-    // nesting verdict worth reaching and no note about columns worth writing. `nests`
-    // stays `Some(false)` so `Enter` steps inside rather than silently building a sheet
-    // of nulls, and the columns are dropped rather than offered to the search index as
-    // if `4` and `7` were names.
+    // First-row-as-names: no nesting verdict or column note is meaningful without
+    // `--no-header`. `nests` is `Some(false)` so `Enter` steps inside instead of building
+    // a sheet of nulls, and the "columns" (`4`, `7`) stay out of the search index.
     if names.iter().any(|f| !names_are_names(f)) {
         out.columns.clear();
         out.headerless = true;
@@ -894,37 +770,20 @@ pub fn sample_files(
             }
         }
     }
-    // Not `!nests`: a directory can nest and still be missing a column from one file,
-    // which is the ordinary shape of schema drift and exactly what the note is for.
+    // Not `!nests`: nested files can still miss a column, the ordinary drift the note is
+    // for.
     let widest = names.iter().map(|f| f.len()).max().unwrap_or(0);
     out.columns_differ = names.iter().any(|f| f.len() != widest) || !nests;
     out.types_differ = typed_apart;
     out
 }
 
-/// Whether every file's columns are contained in the widest file's.
-///
-/// The one shape schema evolution produces, and the one that reads cleanly as a union:
-/// a file written before a column existed has every column the widest file has, minus
-/// the ones added since. Nothing is scored and nothing is thresholded — a file either
-/// brings a column no other file has, or it does not.
-///
-/// This replaced a containment ratio against a 0.5 threshold. The ratio was measured
-/// and the threshold sat in a wide gap, but every counter-example found was a directory
-/// landing on the wrong side of a number: two tables joined on one key scored exactly
-/// 0.5, and a dataset grown from ten columns to fifty with one dropped along the way
-/// scored 0.196 — *below* the 0.200 of unrelated tables sharing a key. A dataset that
-/// drifted could not be told from tables that never agreed, by any statistic over
-/// column overlap, because the two produce the same overlaps. So the question changed
-/// instead of the number: not "how much do these agree" but "does any file bring
-/// something the others cannot account for".
-///
-/// A directory that fails this is not refused. It is one keystroke further away — the row
-/// goes inside instead of opening, and the `(all files)` row inside it opens the union
-/// anyway. That is what makes a strict rule affordable here.
-///
-/// Fewer than two files is one table by definition, and so is a directory whose files all
-/// have no columns to disagree about.
+/// Whether every file's columns are contained in the widest file's: the shape schema
+/// evolution produces, read cleanly as a union. No score or threshold: a file either
+/// brings a column no other has or not (overlap ratios cannot tell drift from
+/// unrelated tables sharing a key). Failing is not a refusal: the row goes inside,
+/// and `(all files)` still opens the union. Fewer than two files, or files without
+/// columns, are one table.
 pub fn is_nested(files: &[Vec<String>]) -> bool {
     let Some(widest) = files.iter().max_by_key(|f| f.len()) else {
         return true;
@@ -935,14 +794,9 @@ pub fn is_nested(files: &[Vec<String>]) -> bool {
         .all(|file| file.iter().all(|name| widest.contains(name.as_str())))
 }
 
-/// The top-level column names in a list of Parquet leaf paths.
-///
-/// A footer names every leaf, so a struct or a list arrives as `inputs.list.element.
-/// address` and its wrappers are an encoding choice: the same column written by
-/// parquet-mr and by Arrow gives different leaves. Comparing those would make a
-/// dataset whose writer changed look like two tables, so the comparison is over the
-/// columns a reader sees. Order is kept and duplicates dropped, since many leaves
-/// share one root.
+/// The top-level column names of Parquet leaf paths, in order, deduplicated. Leaf
+/// wrappers (`inputs.list.element.address`) differ by writer, so comparisons use the
+/// columns a reader sees.
 pub fn top_level_columns(leaves: &[String]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     leaves
@@ -958,65 +812,54 @@ pub fn top_level_columns(leaves: &[String]) -> Vec<String> {
 pub struct DatasetSchema {
     pub schema: Arc<Schema>,
     pub columns: Vec<ColumnDrift>,
-    /// Per file, in the order given, the columns not read from it and the type that
-    /// file holds each of them in. Empty for a file whose types all fit.
-    ///
-    /// The type is kept because it is the only way back to the values: reading such a
-    /// column as text means reading it from each file at the type that file wrote,
-    /// which the footers know and nothing else does.
+    /// Per file, the columns not read from it and the type it holds each in; empty when
+    /// all fit. The type is the only way back to the values: reading the column as text
+    /// reads each file at its own written type.
     pub omitted: Vec<Vec<(PlSmallStr, DataType)>>,
     /// Files whose footer could not be read, by index into the files given.
     pub unreadable: Vec<usize>,
     /// Files whose footer was read, readable or not.
     pub files: usize,
-    /// The distinct ways this dataset's files differ from its schema. Group 0 is
-    /// always "nothing missing", which is what a file not read counts as.
+    /// The distinct ways files differ from the schema; group 0 is "nothing missing", as
+    /// an unread file counts.
     pub groups: Vec<DriftGroup>,
     /// Per file, in the order given, its group in `groups`.
     pub file_group: Vec<u32>,
     pub origin: SchemaOrigin,
-    /// Columns being read as text from every file rather than as the type most rows
-    /// have. Empty for a dataset as its footers found it.
+    /// Columns read as text from every file instead of the majority type; empty as the
+    /// footers found it.
     pub read_as_text: Vec<PlSmallStr>,
     /// Files whose footer said they hold no rows, among those read.
     pub empty_files: usize,
-    /// The middle row group's compressed size, over every row group of every footer
-    /// read. `None` when no footer reported one.
+    /// The median row group's compressed size over all footers read; `None` if none
+    /// reported one.
     pub median_row_group_bytes: Option<usize>,
     /// The middle file's size, over the footers read. `None` when none was read.
     pub median_file_bytes: Option<usize>,
-    /// Where each column that is not in every file sits, for those whose files fall
-    /// into a shape worth naming. Empty for a dataset with no partitions, and for one
-    /// whose footers were sampled — a file whose footer was not read looks like a file
-    /// missing nothing, and a range drawn over those would be a guess.
+    /// Where each column not in every file sits, when its files form a nameable shape.
+    /// Empty without partitions, or when footers were sampled (an unread file looks
+    /// complete).
     pub column_ranges: HashMap<PlSmallStr, ColumnRange>,
-    /// The distinct ways the dataset's files are partitioned, and how many files are
-    /// laid out each way, commonest first. One entry, or none, for a dataset whose
-    /// directories agree — which is nearly all of them.
-    ///
-    /// From the names of every file, not from the footers: this is the one thing the
-    /// listing knows that reading a file cannot tell you.
+    /// The distinct partition layouts and their file counts, commonest first; usually
+    /// one or none. From every file's name, which the listing knows and the footers do
+    /// not.
     pub partition_layouts: Vec<(Vec<String>, usize)>,
-    /// The layouts past the ones kept, and the files under them. A dataset with a key
-    /// per file is not worth remembering in full, but a note that counts what it does
-    /// not name has to count all of it.
+    /// The layouts past those kept, and their files: not remembered in full, but counted.
     pub partition_layouts_dropped: (usize, usize),
-    /// What the listing passed over on the way to the files it read. From the listing,
-    /// which had to look at every name anyway.
+    /// What the listing passed over on the way to the files read.
     pub skipped: SkippedFiles,
-    /// How many file names were read to find the layouts, including the ones with no
-    /// partition keys at all.
+    /// File names read to find the layouts, including those without partition keys.
     pub listed_files: usize,
 }
 
-/// What a file is missing relative to the dataset's schema. Files that are missing the
-/// same things share a group, so a row need only carry its group to know how to draw.
+/// What a file is missing relative to the schema; files missing the same share a
+/// group, so a row carries only its group.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct DriftGroup {
     /// Columns the file does not have. Their cells are absent, not null.
     pub absent: Vec<PlSmallStr>,
-    /// Columns the file has in a type the dataset's column cannot hold, so they are
-    /// not read from it. Their cells are a conflict, not null.
+    /// Columns the file holds in a type the dataset's column cannot hold, so not read
+    /// from it: conflicts, not nulls.
     pub unread: Vec<PlSmallStr>,
 }
 
@@ -1033,30 +876,18 @@ impl DatasetSchema {
         self.columns.iter().filter(move |c| !c.is_uniform(readable))
     }
 
-    /// The dataset with the ways its files are partitioned counted from their names.
-    ///
-    /// `root` is the dataset as opened; the keys are taken from below it. A directory
-    /// above the root is not in dispute — opening `run=7/` for a dataset partitioned
-    /// by date does not make `run` one of the things its directories disagree about, and
-    /// counting it made every file look like it disagreed with every other.
-    ///
-    /// Keys are compared as a *set*: `y=1/m=1` and `m=2/y=2` partition by the same two
-    /// things and Polars matches hive columns by name, not position, so a dataset that
-    /// mixes the orders reads perfectly well and has nothing to disagree about.
+    /// The dataset with its partition layouts counted from file names, keys taken below
+    /// `root` (directories above the opened root are not in dispute). Keys compare as a
+    /// set: Polars matches hive columns by name, so `y=1/m=1` and `m=2/y=2` agree.
     pub fn with_partition_layouts(mut self, root: &str, paths: &[String]) -> DatasetSchema {
-        /// Layouts kept. The note names two and counts the rest, and a dataset with a
-        /// key per file would otherwise hold half a million of them for the life of
-        /// the frame to say "and 499,998 others".
+        /// Layouts kept: the note names two and counts the rest, so a key per file need not
+        /// hold half a million.
         const KEPT: usize = 64;
-        // Keyed by the spelling rather than scanned for: a dataset whose every file
-        // has its own layout is pathological, but it should be slow to read, not
-        // quadratic. At half a million files the scan took three minutes.
+        // Keyed by spelling, not scanned: a layout per file must be slow, not quadratic.
         let mut counts: HashMap<Vec<String>, usize> = HashMap::new();
         for path in paths {
-            // A path the root is not a prefix of is one this cannot place. Skipping it
-            // is the only safe answer: scanning the whole path instead would count the
-            // keys above the dataset, which both invents disagreements between files
-            // that agree and hides the real ones between files that do not.
+            // A path outside the root cannot be placed; scanning it whole would count keys above
+            // the dataset.
             let Some(below) = path.strip_prefix(root) else {
                 continue;
             };
@@ -1067,12 +898,9 @@ impl DatasetSchema {
             *counts.entry(keys).or_insert(0) += 1;
         }
         let mut counts: Vec<(Vec<String>, usize)> = counts.into_iter().collect();
-        // Commonest first, and by the keys themselves where two are equally common:
-        // a HashMap hands them back in no order at all, so without the tie-break the
-        // same dataset would name a different layout from one open to the next.
+        // Commonest first, ties by key, so the same dataset names the same layout every open.
         counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        // Counted before they are dropped, or the note's "and N other ways" would be
-        // the ways it happens to still be holding rather than the ways there are.
+        // Counted before dropping, so "and N other ways" counts them all.
         let dropped = &counts[counts.len().min(KEPT)..];
         self.partition_layouts_dropped =
             (dropped.len(), dropped.iter().map(|(_, files)| files).sum());
@@ -1083,39 +911,28 @@ impl DatasetSchema {
         self
     }
 
-    /// Where each column that is not in every file sits, by partition. See
-    /// [`ColumnRange`].
-    ///
-    /// Nothing for a sampled dataset: `file_group` says a file whose footer was not
-    /// read is missing nothing, which is the right answer for drawing cells and the
-    /// wrong one for saying where a column begins.
+    /// Where each column not in every file sits, by partition (see [`ColumnRange`]).
+    /// Nothing for a sampled dataset.
     fn ranges_of_columns(&self, root: &str, paths: &[String]) -> HashMap<PlSmallStr, ColumnRange> {
-        // A file whose footer was not read is recorded as missing nothing, which is the
-        // right answer for drawing its cells and the wrong one for saying where a
-        // column begins. That is true of a sampled dataset and equally true of a file
-        // whose footer would not parse, which is a file datui never opened either.
+        // An unread footer (sampled or unparsable) records "missing nothing", right for
+        // drawing cells but wrong for saying where a column begins.
         if matches!(self.origin, SchemaOrigin::FooterSample { .. })
             || !self.unreadable.is_empty()
             || self.file_group.len() != paths.len()
         {
             return HashMap::new();
         }
-        // Per column: the first file that has it, the last that does not, and the
-        // partitions of the files that do — two of them is already enough to know it is
-        // not "only" one, so the third is never kept.
+        // Per column: the first file having it, the last lacking it, and the partitions of
+        // files having it (two suffice to rule out "only").
         struct Seen {
             first_present: Option<usize>,
             last_absent: Option<usize>,
-            /// The partitions of the files that have it, and of the files that do not.
-            /// Two of the first is enough — more than one and the column is not "only"
-            /// anywhere. Two of the second is a sample: the test is whether any file
-            /// lacking it is somewhere the claim does not cover, and a sample can miss
-            /// one, which costs a note rather than makes a wrong one.
+            /// Partitions of files with it (two suffice: then it is not "only" anywhere) and
+            /// without it (a sample: missing one costs a note, never a wrong one).
             with: Vec<String>,
             without: Vec<String>,
-            /// A file that has it and sits under no partition at all — one at the root
-            /// beside the partition directories. There is no "all under" to be had then:
-            /// the column is somewhere this cannot name.
+            /// A file with it sits under no partition (at the root): no "all under" claim is
+            /// possible.
             unplaced: bool,
         }
         let partition_of = |index: usize| -> Option<String> {
@@ -1123,19 +940,15 @@ impl DatasetSchema {
             let values = partition_values_of(below);
             (!values.is_empty()).then(|| values.join("/"))
         };
-        // Whether "before" means the same thing to the listing and to a reader. The
-        // listing is sorted bytewise, which puts `part=10` before `part=2`; where the
-        // two disagree there is no honest way to say a column starts somewhere, so
-        // nothing does.
+        // Whether listing order matches reading order: bytewise sort puts `part=10` before
+        // `part=2`, and then no start can be named.
         let reads_in_order = (0..paths.len())
             .filter_map(&partition_of)
             .collect::<Vec<_>>()
             .windows(2)
             .all(|pair| natural_cmp(&pair[0], &pair[1]) != std::cmp::Ordering::Greater);
-        // The columns worth asking about, and for each group the ones it lacks — both
-        // settled once rather than per file. There are few groups and many files, and
-        // a scan of every column's name against every group's absent list, per file,
-        // is the shape of thing this file has been caught by before.
+        // The drifting columns, and each group's lacking ones, settled once: few groups,
+        // many files.
         let drifting: Vec<&ColumnDrift> = self
             .columns
             .iter()
@@ -1144,9 +957,8 @@ impl DatasetSchema {
         if drifting.is_empty() {
             return HashMap::new();
         }
-        // Built by walking each group's own absent list, not by asking every column
-        // whether it is in it: a dataset can have a group per file, and asking is a
-        // scan of the list per column per group.
+        // Built from each group's absent list, not by asking every column (a group per file
+        // is possible).
         let where_in_drifting: HashMap<&PlSmallStr, usize> = drifting
             .iter()
             .enumerate()
@@ -1166,9 +978,7 @@ impl DatasetSchema {
             })
             .collect();
         let none_missing: Vec<bool> = vec![false; drifting.len()];
-        // By index rather than by name: `drifting` already carries a stable position for
-        // every column, and a hash of the name per file per column is most of what this
-        // costs — measured at 134ms over twenty thousand files, against fifteen.
+        // By index, not name: hashing names per file per column dominated the cost.
         let mut seen: Vec<Seen> = (0..drifting.len())
             .map(|_| Seen {
                 first_present: None,
@@ -1209,13 +1019,11 @@ impl DatasetSchema {
             .filter_map(|(entry, column)| {
                 let name = column.name.clone();
                 let first = entry.first_present?;
-                // One partition holds every file that has it — and at least one file
-                // that does not is somewhere else, or "only" says nothing while
-                // sounding as though it does.
+                // One partition holds every file with it, and some file without it is elsewhere, or
+                // "only" says nothing.
                 if !entry.unplaced
                     && entry.with.len() == 1
-                    // Somewhere else, as a place rather than as a different string:
-                    // a file at `y=2024/m=03` is a file under `y=2024`.
+                    // Elsewhere as a place, not a string: `y=2024/m=03` is under `y=2024`.
                     && entry
                         .without
                         .iter()
@@ -1226,24 +1034,17 @@ impl DatasetSchema {
                 {
                     return Some((name, ColumnRange::Only(entry.with[0].clone())));
                 }
-                // Every file without it comes before every file with it — and the
-                // reader will check that against the partition values, not against the
-                // order the listing happened to be in.
+                // Every file without it comes before every file with it, checked against partition
+                // values by the reader.
                 let last_absent = entry.last_absent?;
-                // `unplaced` is not asked here, unlike above, and the difference is in
-                // what the two sentences claim. "Only X" is about where every file with
-                // the column is, so one that is nowhere nameable makes it false. "None
-                // before X" is about order: a file with no partition sorts where the
-                // listing puts it, and one after the boundary does not contradict a
-                // word of it. Refusing here would cost a true note to buy nothing.
+                // `unplaced` is not checked here: "none before X" is about order, which an
+                // unpartitioned file after the boundary does not contradict.
                 if last_absent > first || !reads_in_order {
                     return None;
                 }
                 let (ends, begins) = (partition_of(last_absent)?, partition_of(first)?);
-                // And the boundary is a boundary: a partition half of whose files have
-                // the column is not one the column begins at.
-                // And the boundary is a boundary: not the same place under another
-                // spelling, and not one directory inside the other.
+                // A real boundary: not the same place spelled differently, nor one directory inside
+                // the other.
                 (!same_place(&ends, &begins)
                     && !partition_holds(&begins, &ends)
                     && !partition_holds(&ends, &begins))
@@ -1258,16 +1059,10 @@ impl DatasetSchema {
         self
     }
 
-    /// This dataset as it reads with `as_text` read as text from every file.
-    ///
-    /// What the panel shows and what the table draws from, not what the scan is built
-    /// from — the scan needs the types the footers found, which is why `omitted` is
-    /// carried through untouched and why the caller keeps the original alongside.
-    ///
-    /// Those columns stop conflicting: their cells hold a value from every file, so
-    /// nothing is unread, nothing is left out of a filter or sort, and the note that
-    /// said the column was not read there has nothing left to say. `absent` is left
-    /// alone — a file that never had the column still has none to show.
+    /// This dataset as it reads with `as_text` read as text from every file: for the
+    /// panel and the table, not the scan (which needs the footer types, so `omitted` is
+    /// kept and the caller keeps the original). Those columns stop conflicting; `absent`
+    /// stays (a file without the column still shows none).
     pub fn reading_as_text(&self, as_text: &[PlSmallStr]) -> DatasetSchema {
         let mut out = self.clone();
         if as_text.is_empty() {
@@ -1279,10 +1074,8 @@ impl DatasetSchema {
                 column.dtype = DataType::String;
                 column.conflicting_files = 0;
                 column.conflicting_types.clear();
-                // `widened` is left alone. A file whose type merely widens into the
-                // column's is still read at the column's type — an integer in a float
-                // column still reads as `7.0` — so the note saying a type gave way is
-                // still true, and removing it would leave the `7.0` unexplained.
+                // `widened` stays: a widened value still reads at the column's type (`7.0`), so its
+                // note still explains it.
             }
         }
         for group in &mut out.groups {
@@ -1292,22 +1085,20 @@ impl DatasetSchema {
         out
     }
 
-    /// Whether any file is missing anything. When nothing is, the scan is one plain
-    /// read and rows need carry nothing.
+    /// Whether any file is missing anything; if not, the scan is plain and rows carry
+    /// nothing.
     pub fn drifts(&self) -> bool {
         self.groups.iter().any(|g| !g.is_empty())
     }
 }
 
-/// Footers read at once: one wave. A footer read is waiting, not computing — on a
-/// network mount or a store it is a few round trips — so this is not the core count.
-/// A dataset of more files than this opens from its ends and reads the rest behind.
+/// Footers read at once: one wave. Reads wait on round trips rather than compute, so
+/// this exceeds the core count. Larger datasets open from their ends and read the
+/// rest behind.
 pub const FOOTERS_AT_ONCE: usize = 64;
 
-/// Footers in the form the shape cache keeps them: the schemas gathered into a table
-/// and referred to by index, since a dataset of ten thousand files usually has one
-/// schema, and writing each file's columns out in full would make the cache larger
-/// than the footers it saves reading.
+/// Footers as the shape cache keeps them: schemas tabled and referenced by index,
+/// since ten thousand files usually share one schema.
 pub fn footers_to_cache(
     footers: &[Option<FileFooter>],
 ) -> (
@@ -1333,12 +1124,9 @@ pub fn footers_to_cache(
     (cached, schemas)
 }
 
-/// The footers a cache kept, as a fresh pass would have read them. `file_bytes` is
-/// each file's size from the listing, which the cache does not hold.
-///
-/// `None` for a file whose footer would not read, which is how the pass reports one
-/// and so how the cache has to give it back. The whole entry is refused when it
-/// disagrees with itself or with the listing.
+/// The cached footers as a fresh pass would read them, with `file_bytes` from the
+/// listing. `None` for an unreadable footer, as the pass reports it. Refused whole
+/// when inconsistent with itself or the listing.
 pub fn footers_from_cache(
     cached: &[crate::cache::CachedFooter],
     schemas: &[Vec<(String, DataType)>],
@@ -1383,9 +1171,8 @@ static FOOTER_HOOKS: std::sync::Mutex<Vec<(u64, std::path::PathBuf, FooterHook)>
 /// Whether any hook is set, so a read with none takes no lock.
 static FOOTER_HOOKS_SET: AtomicUsize = AtomicUsize::new(0);
 
-/// Run `hook` before each local footer read under `dir` until the guard drops. For
-/// tests: to count a pass's reads, or hold one to stand in for a slow filesystem.
-/// Keyed by directory so tests running side by side do not see each other's reads.
+/// Run `hook` before each local footer read under `dir` until the guard drops, for
+/// tests counting or stalling reads; keyed by directory so parallel tests stay apart.
 #[doc(hidden)]
 pub fn on_local_footer_read(
     dir: &std::path::Path,
@@ -1433,9 +1220,8 @@ pub(crate) fn before_local_footer_read(path: &std::path::Path) {
     }
 }
 
-/// Footers read before a dataset opens. Past this many files the reads cost more than
-/// the schema is worth, so a spread sample stands in for the rest. Documented in
-/// `docs/user-guide/large-datasets.md`; a fixed threshold, not a setting.
+/// Footers read before a dataset opens; past this a spread sample stands in. A fixed
+/// threshold documented in `docs/user-guide/large-datasets.md`.
 pub const MAX_FOOTER_READS: usize = 20_000;
 
 /// Which of a dataset's `files` footers to read: all of them, or — past
@@ -1453,13 +1239,9 @@ pub fn footers_to_read(files: usize) -> Vec<usize> {
     sample
 }
 
-/// The first file and the last, which is what a dataset opens from while the rest of
-/// its footers are still being read. Ascending, and one index when there is one file.
-///
-/// The last by name, not by date: the files are sorted by key, and a dataset whose
-/// partition values are not zero-padded puts `month=9` after `month=10`. The pair is a
-/// heuristic either way — between the oldest shape and a recent one lies most of what a
-/// dataset disagrees about — and everything it misses arrives with the rest.
+/// The first and last files, which a dataset opens from while the rest of its footers
+/// are read; ascending, one index for one file. Last by name, not date (unpadded
+/// partition values sort oddly): a heuristic, with the rest arriving later.
 pub fn ends_of(files: usize) -> Vec<usize> {
     match files {
         0 => Vec::new(),
@@ -1468,17 +1250,10 @@ pub fn ends_of(files: usize) -> Vec<usize> {
     }
 }
 
-/// The schema of a dataset of `files` files whose footers at the indices `read` were
-/// fetched, in that order.
-///
-/// The union is over the footers read; the scan is over every file, so the per-file
-/// findings are spread back across the full list. A file not read omits nothing.
-///
-/// [`DatasetSchema::files`] stays the number of footers *read*, not `files`, and every
-/// count taken against it — the notes' denominator, how many files hold no rows — is
-/// therefore over the sample. That is the honest population: datui knows nothing about
-/// a file it did not open. Only `omitted`, `file_group` and `unreadable`, which the
-/// scan indexes by file, are spread to the full length.
+/// The schema of a dataset of `files` files whose footers at indices `read` were
+/// fetched. The union is over the footers read; [`DatasetSchema::files`] stays that
+/// count (datui knows nothing of unopened files). Only `omitted`, `file_group` and
+/// `unreadable`, indexed by the scan, are spread to the full length.
 pub fn union_sampled(
     files: usize,
     read: &[usize],
@@ -1509,21 +1284,15 @@ pub fn union_sampled(
     union
 }
 
-/// The paths whose footers were read, out of the paths given.
-///
-/// A footer datui could not read is a file Polars cannot read either, and left in the
-/// scan it does not merely go unread: the first page takes the whole dataset down with
-/// it, so a directory with one file mid-write opens on an error rather than on the rows
-/// of its other files. The dataset still counts them — that is what the note is for — but
-/// the scan is over the ones that will open.
+/// The paths whose footers were read. An unreadable footer is a file Polars cannot
+/// read, and in the scan it would fail the first page for the whole dataset; it is
+/// still counted for the note.
 pub fn readable_paths<'a>(paths: &'a [String], unreadable: &[usize]) -> Cow<'a, [String]> {
     if unreadable.is_empty() {
         // Which is nearly always, and a dataset can be millions of paths.
         return Cow::Borrowed(paths);
     }
-    // `unreadable` is ascending — `union_file_schemas` collects it in order and
-    // `union_sampled` remaps it through an ascending sample — so this is a search
-    // rather than a scan of it per path.
+    // `unreadable` is ascending, so this is a search rather than a scan per path.
     debug_assert!(unreadable.windows(2).all(|pair| pair[0] < pair[1]));
     Cow::Owned(
         paths
@@ -1535,8 +1304,8 @@ pub fn readable_paths<'a>(paths: &'a [String], unreadable: &[usize]) -> Cow<'a, 
     )
 }
 
-/// Fold every file's footer into one schema. `files` is in scan order, so the last
-/// readable entry is the newest file; `None` is a file whose footer could not be read.
+/// Fold every file's footer into one schema. `files` is in scan order (the last
+/// readable is the newest); `None` is an unreadable footer.
 pub fn union_file_schemas(files: &[Option<FileFooter>], origin: SchemaOrigin) -> DatasetSchema {
     let unreadable = files
         .iter()
@@ -1602,9 +1371,8 @@ pub fn union_file_schemas(files: &[Option<FileFooter>], origin: SchemaOrigin) ->
         schema.with_column(name.clone(), chosen);
     }
 
-    // What each file is missing, and which files are missing the same things. Group 0
-    // is "nothing missing", so a file that was never read falls into it and draws as
-    // an ordinary file would.
+    // What each file is missing, grouped; group 0 is "nothing missing", where unread
+    // files fall.
     let mut groups: Vec<DriftGroup> = vec![DriftGroup::default()];
     let mut group_of: HashMap<DriftGroup, u32> = HashMap::from([(DriftGroup::default(), 0)]);
     let mut file_group = Vec::with_capacity(files.len());
@@ -1663,12 +1431,9 @@ pub fn union_file_schemas(files: &[Option<FileFooter>], origin: SchemaOrigin) ->
     }
 }
 
-/// Whether one partition path holds another: `y=2024` holds `y=2024/m=03`, and a file
-/// in the second is a file in the first.
-///
-/// Compared as places rather than as strings. `only y=2024` is a claim about a directory
-/// tree, so a file at `y=2024/m=03` without the column is a file under `y=2024`
-/// without it, and the claim is false — even though the two strings differ.
+/// Whether one partition path holds another, as places (`y=2024` holds
+/// `y=2024/m=03`), so "only y=2024" is false if a file without the column sits in
+/// `y=2024/m=03`.
 fn partition_holds(outer: &str, inner: &str) -> bool {
     inner == outer
         || inner
@@ -1676,12 +1441,8 @@ fn partition_holds(outer: &str, inner: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
-/// Whether two partition paths name the same place, however they are written.
-///
-/// `m=03` is March and so is `m=3`: a backfill that wrote one beside a job that wrote the
-/// other leaves two directories for one month. And hive columns are matched by name, so
-/// `y=2024/m=03` and `m=03/y=2024` are one partition written in two orders. Neither pair
-/// is equal as a string, and a claim about either is a claim about both.
+/// Whether two partition paths name one place however written: `m=03` is `m=3`, and
+/// key order does not matter (hive matches by name).
 fn same_place(a: &str, b: &str) -> bool {
     fn sorted(path: &str) -> Vec<&str> {
         let mut segments: Vec<&str> = path.split('/').collect();
@@ -1695,11 +1456,8 @@ fn same_place(a: &str, b: &str) -> bool {
             .all(|(x, y)| natural_cmp(x, y) == std::cmp::Ordering::Equal)
 }
 
-/// Compares partition values the way a reader does: `part=2` before `part=10`.
-///
-/// The listing is sorted bytewise, which puts `part=10` before `part=2`. A note saying
-/// "from `X` on" is read against the values, so where the two orders disagree the
-/// sentence is false — see [`ends_of`], which has to live with the same thing.
+/// Compares partition values as a reader does (`part=2` before `part=10`), where the
+/// bytewise listing does not; see [`ends_of`].
 fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     let (mut a, mut b) = (a.as_bytes(), b.as_bytes());
@@ -1711,9 +1469,7 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
             (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
                 let digits = |s: &[u8]| s.iter().take_while(|c| c.is_ascii_digit()).count();
                 let (na, nb) = (digits(a), digits(b));
-                // Leading zeros do not make a number bigger: `m=03` and `m=3` are one
-                // month, and this says so. Two directories spelling it both ways are two
-                // directories for one place, which `same_place` is about.
+                // Leading zeros do not change a number: `m=03` and `m=3` are one month.
                 let (xs, ys) = (&a[..na], &b[..nb]);
                 fn trim(s: &[u8]) -> &[u8] {
                     let lead = s.iter().take_while(|c| **c == b'0').count();
@@ -1738,16 +1494,9 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     }
 }
 
-/// The `key=value` segments of a path below the dataset's root, in the order they are
-/// written. The values as well as the keys, which is what tells one partition from
-/// another rather than one layout from another.
-///
-/// Not sorted and not deduplicated, unlike the keys: an order is a set of columns, a
-/// partition is a place, and a place is where the path says it is. One consequence is
-/// that `y=2024/m=03` and `m=03/y=2024` are written differently while naming one
-/// partition — hive matches its columns by name, not by position. Nothing else notices:
-/// the layouts note compares which keys a directory uses, not the order, so those two
-/// agree. `same_place` is what keeps a note off a place that is written down twice.
+/// The `key=value` segments of a path below the root, in written order, values
+/// included: a partition is a place. Key order is not normalized here;
+/// `same_place` handles places written twice.
 fn partition_values_of(path: &str) -> Vec<String> {
     #[cfg(windows)]
     let separators: &[char] = &['/', '\\'];
@@ -1767,15 +1516,11 @@ fn partition_values_of(path: &str) -> Vec<String> {
         .collect()
 }
 
-/// The hive partition keys in a path, in order: `a=1/b=2/f.parquet` is `[a, b]`.
-///
-/// A segment is a partition only if it has a key before the `=`. The file's own name
-/// is never one — `data/x=1/2024=05.parquet` partitions by `x`, not by `x` and `2024`.
+/// The hive partition keys in a path, in order (`a=1/b=2/f.parquet` is `[a, b]`).
+/// Only directory segments with a key count, never the file name.
 fn partition_keys_of(path: &str) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
-    // A backslash separates on Windows and is an ordinary character in a Linux file
-    // name, where splitting on it would both break a legitimate name and invent a
-    // layout difference out of one directory.
+    // A backslash separates only on Windows; on Linux it is a name character.
     #[cfg(windows)]
     let separators: &[char] = &['/', '\\'];
     #[cfg(not(windows))]
@@ -1789,20 +1534,14 @@ fn partition_keys_of(path: &str) -> Vec<String> {
             keys.push(key.to_string());
         }
     }
-    // A set, not a sequence: hive columns are matched by name, so `y=1/m=1` and
-    // `m=2/y=2` are the same two partitions written in two orders and nothing about
-    // them is in dispute. Sorted so the two spell the same, and deduplicated so a tree
-    // that repeats a key is one thing rather than two.
+    // A set: hive matches by name, so orders do not differ; sorted and deduplicated.
     keys.sort();
     keys.dedup();
     keys
 }
 
-/// The middle value of `sizes`, or the lower of the middle two. `None` when empty.
-///
-/// The middle rather than the mean: one file written by a different job, or one
-/// backfill that rewrote a year into a single row group, drags a mean somewhere no
-/// actual row group is, and the note would then describe a dataset that does not exist.
+/// The middle value of `sizes` (the lower of two middles); `None` when empty. A
+/// median, since one odd file would drag a mean to a size no row group has.
 fn median(sizes: impl Iterator<Item = usize>) -> Option<usize> {
     let mut sizes: Vec<usize> = sizes.collect();
     if sizes.is_empty() {
@@ -1812,11 +1551,9 @@ fn median(sizes: impl Iterator<Item = usize>) -> Option<usize> {
     Some(sizes[(sizes.len() - 1) / 2])
 }
 
-/// The type to read a column as, given every `(type, rows)` a file reported for it.
-///
-/// The widest lossless type when they all fit together; otherwise the type behind the
-/// most rows, preferring one that also covers other files. Ties go to the type seen
-/// first, which is the newest file's.
+/// The type to read a column as, from each file's `(type, rows)`: the widest lossless
+/// type when all fit, else the type behind the most rows (preferring one that covers
+/// other files), ties to the first seen (the newest file's).
 fn choose_dtype(seen: &[(DataType, usize)]) -> DataType {
     let mut distinct: Vec<DataType> = Vec::new();
     for (dtype, _) in seen {
@@ -1829,8 +1566,8 @@ fn choose_dtype(seen: &[(DataType, usize)]) -> DataType {
         [only] => return only.clone(),
         _ => {}
     }
-    // A type no file has can still be the answer: Int32 and Float32 files read as
-    // Float64. Offer the fold of everything each type widens with as a candidate too.
+    // A type no file has can still win (Int32 and Float32 read as Float64), so folds are
+    // candidates too.
     let mut candidates = distinct.clone();
     for dtype in &distinct {
         let folded = distinct
@@ -1861,15 +1598,14 @@ fn choose_dtype(seen: &[(DataType, usize)]) -> DataType {
     best.map(|(d, _, _)| d).unwrap_or(DataType::Null)
 }
 
-/// Whether a file storing `from` can be read into a column of `to` without loss. Mirrors
-/// the cast policy [`crate::cloud_hive::lenient_scan`] gives Polars; a type that does not
-/// fit would fail the scan, so the column is left unread in that file instead.
+/// Whether a file storing `from` reads into a `to` column losslessly, matching
+/// [`lenient_scan`]'s cast policy; otherwise the column is left
+/// unread in that file.
 pub fn fits(from: &DataType, to: &DataType) -> bool {
     widen(from, to).as_ref() == Some(to)
 }
 
-/// The narrowest type both `a` and `b` read into without loss, or `None` when there is
-/// none.
+/// The narrowest type `a` and `b` both read into losslessly, if any.
 pub fn widen(a: &DataType, b: &DataType) -> Option<DataType> {
     use DataType::*;
     if a == b {
@@ -1888,8 +1624,8 @@ pub fn widen(a: &DataType, b: &DataType) -> Option<DataType> {
     }
 }
 
-/// `Int32` and `Int64` widen to `Int64`; a signed and an unsigned type need one wide
-/// enough for both, which `UInt64` never is.
+/// Integers widen to the larger; signed with unsigned need a type wide enough for
+/// both, which `UInt64` never has.
 fn widen_integers(a: &DataType, b: &DataType) -> Option<DataType> {
     use DataType::*;
     let signed = |d: &DataType| matches!(d, Int8 | Int16 | Int32 | Int64 | Int128);
@@ -1920,8 +1656,8 @@ fn widen_integers(a: &DataType, b: &DataType) -> Option<DataType> {
     })
 }
 
-/// A struct has every field either side has; shared fields widen. Field order is `a`'s,
-/// then `b`'s additions, so the newest file's layout leads.
+/// A struct has every field of either side, shared fields widened; `a`'s order first,
+/// so the newest file's layout leads.
 fn widen_structs(a: &[Field], b: &[Field]) -> Option<DataType> {
     let mut fields: Vec<Field> = Vec::with_capacity(a.len() + b.len());
     for field in a {
@@ -1970,8 +1706,7 @@ pub fn with_partition_columns(
     merged
 }
 
-/// Partition column names from one file's path, in path order: every `key=value`
-/// segment, each key once.
+/// Partition column names from one file's path, in path order, each key once.
 pub fn partition_columns_of_key(key: &str) -> Vec<String> {
     let mut columns = Vec::new();
     let mut seen = HashSet::new();
@@ -1986,10 +1721,9 @@ pub fn partition_columns_of_key(key: &str) -> Vec<String> {
     columns
 }
 
-/// A listed dataset's partition columns and the values that type them, from its first
-/// and newest files' keys, `/`-separated. The newest names the columns, since a key
-/// added later is in it; both give values. Local directories and cloud prefixes derive
-/// them here alike, so a tree is the same table from either.
+/// A listed dataset's partition columns and typing values, from its first and newest
+/// files' `/`-separated keys (the newest names the columns, as later keys appear
+/// there). Shared by local and cloud listings so a tree reads the same.
 pub fn partitions_of_listing(first: &str, newest: &str) -> (Vec<String>, Vec<(String, String)>) {
     let values = [first, newest]
         .iter()
@@ -2000,15 +1734,12 @@ pub fn partitions_of_listing(first: &str, newest: &str) -> (Vec<String>, Vec<(St
     (partition_columns_of_key(newest), values)
 }
 
-/// A dataset's row count from its footers, each read once.
-///
-/// It starts from the footers the open already read — the two ends, or a sample — and
-/// reads only the rest. Once every file's footer is in, the whole set is handed back
-/// once, for the shape cache, so a reopen reads none.
+/// A dataset's row count from its footers, each read once: starting from those the
+/// open read and reading the rest. Once all are in, the set is handed back once for
+/// the shape cache, so a reopen reads none.
 pub struct FooterCount<F> {
     files: usize,
-    /// The files the count answers for, as indices, in order: those whose footer the
-    /// open could read.
+    /// The files counted, as ascending indices: those the open could read.
     counted: Vec<usize>,
     /// Every file's footer, where read. Emptied once the count is whole.
     footers: std::sync::Mutex<Vec<Option<F>>>,
@@ -2023,8 +1754,8 @@ pub struct Counted<F> {
 }
 
 impl<F: Clone> FooterCount<F> {
-    /// A count of `counted` among `files` files, starting from the footers `known`
-    /// already holds, given as each one's index.
+    /// A count of `counted` among `files` files, starting from the footers in `known`, by
+    /// index.
     pub fn new(
         files: usize,
         counted: Vec<usize>,
@@ -2043,11 +1774,9 @@ impl<F: Clone> FooterCount<F> {
         }
     }
 
-    /// Count, reading the footers not yet in with `read`, which answers in the order it
-    /// is asked, or `None` when the reads were abandoned. One that would not read before
-    /// is tried again: a read can fail for a moment's trouble as well as a broken file.
-    /// Holds the footers while it reads, so two counts at once do not both read the
-    /// same ones.
+    /// Count, reading missing footers with `read` (answering in asked order, `None` if
+    /// abandoned). Earlier failures are retried, since a read can fail transiently. Holds
+    /// the footers while reading so concurrent counts do not read the same ones.
     pub fn count(
         &self,
         read: impl FnOnce(&[usize]) -> Option<Vec<Option<F>>>,
@@ -2097,8 +1826,7 @@ impl<F: Clone> FooterCount<F> {
             Some(std::mem::take(footers))
         } else {
             if self.counted.iter().all(|&index| footers[index].is_some()) {
-                // Counted, but a file the open could not read stays unread, so there
-                // is nothing whole to keep and nothing more to hold on to.
+                // Counted, but a file the open could not read stays unread: nothing whole to keep.
                 footers.clear();
             }
             None
@@ -2110,10 +1838,9 @@ impl<F: Clone> FooterCount<F> {
     }
 }
 
-/// The column the scan writes each row's position in the dataset into, so a cell can be
-/// traced back to the file it came from and told whether that file had the column at
-/// all. Never shown, filtered, sorted or exported: it is in the buffer the display is
-/// sliced from, and the display only ever projects the column order.
+/// The column the scan writes each row's dataset position into, tracing a cell to
+/// its file and whether that file had the column. Never shown, filtered, sorted or
+/// exported: the display projects only the column order.
 pub const DRIFT_COLUMN: &str = "__datui_row";
 
 /// A file that is missing nothing, for a group id with no entry of its own.
@@ -2122,25 +1849,22 @@ static NOTHING_MISSING: DriftGroup = DriftGroup {
     unread: Vec::new(),
 };
 
-/// How a dataset's files differ, in the form the scan needs: what each file is missing,
-/// and where its rows begin in the dataset, by the path or URL the scan names it by.
+/// How files differ, as the scan needs it: what each lacks and where its rows begin,
+/// keyed by the path or URL the scan uses.
 #[derive(Debug, Clone, Default)]
 pub struct ScanDrift {
     group_of: HashMap<String, u32>,
-    /// Where each file's rows start in the dataset. The scan numbers a run's rows from
-    /// its first file's entry, so the numbering survives reading only a window of files.
+    /// Where each file's rows start; a run numbers rows from its first file's entry, so a
+    /// window of files still numbers right.
     row_of: HashMap<String, usize>,
-    /// Per file, the type it holds each of its conflicting columns in. Only files that
-    /// conflict have an entry, which is the few.
+    /// Per conflicting file, the type it holds each conflicting column in.
     stored_of: HashMap<String, Vec<(PlSmallStr, DataType)>>,
     pub groups: Vec<DriftGroup>,
 }
 
 impl ScanDrift {
-    /// `None` when every file agrees with the schema, or when the rows of each file are
-    /// not known — either way the scan is one plain read and rows carry nothing extra.
-    ///
-    /// `file_rows` is each file's row count, in the order of `paths`.
+    /// `None` when every file agrees or per-file row counts are unknown: the scan is then
+    /// plain. `file_rows` is each file's row count, in `paths` order.
     pub fn new(paths: &[String], dataset: &DatasetSchema, file_rows: &[usize]) -> Option<Self> {
         if !dataset.drifts() || file_rows.len() != paths.len() {
             return None;
@@ -2181,8 +1905,7 @@ impl ScanDrift {
         self.row_of.get(path).copied().unwrap_or(0)
     }
 
-    /// The type the file the scan names `path` holds `column` in, when that is not the
-    /// type the column is read as. `None` when the file agrees, or has no such column.
+    /// The type the file at `path` holds `column` in, when it differs from the read type.
     fn stored_type(&self, path: &str, column: &PlSmallStr) -> Option<&DataType> {
         self.stored_of
             .get(path)?
@@ -2201,40 +1924,22 @@ impl ScanDrift {
     }
 }
 
-/// A scan of `paths` into `schema` that reads files written at different times:
-/// columns and nested fields a file lacks are filled with nulls, ones it has beyond the
-/// schema are ignored, and integers, floats and datetime units widen. Polars'
-/// `scan_parquet` offers only the first of those, and a Bitcoin transactions file from
-/// 2015 fails against the 2026 schema without the rest.
+/// A scan of `paths` into `schema` across files written at different times: missing
+/// columns and fields fill with nulls, extras are ignored, and integers, floats and
+/// datetime units widen (`scan_parquet` alone only fills).
 ///
-/// When `drift` is given, every row carries its position in the dataset in
-/// [`DRIFT_COLUMN`], which is what lets a cell be traced to its file and a null told
-/// from a column that file never had.
+/// With `drift`, each row carries its dataset position in [`DRIFT_COLUMN`], tracing
+/// a cell to its file and telling a null from a column the file never had.
 ///
-/// The scan splits only where it has to: a column a file stores in another type must be
-/// left out of *that* file's read, so consecutive files omitting the same columns are
-/// one scan and the scans are concatenated in file order. A file merely missing a
-/// column needs no split — `MissingColumnsPolicy::Insert` already reads it as null —
-/// so the common case stays a single scan however many files disagree.
+/// The scan splits only where a file stores a column in a conflicting type, which
+/// must be left out of that file's read: consecutive files omitting the same columns
+/// form one run, and runs concatenate in file order. Missing columns need no split.
 ///
-/// `as_text` names columns to read as text from every file instead of leaving them out
-/// of the ones that disagree. Such a column is read at the type each file *disagrees*
-/// in and cast to text after, which is the only way to see the values a conflict hides:
-/// Polars' scan can widen an integer and change a datetime's unit, but it has no policy
-/// for reading a number as a string, and no way to hand back a column it was not told
-/// the type of. So the split is finer here — a run is a stretch of files that agree on
-/// the type of every `as_text` column as well as on what they are missing.
-///
-/// A file whose type merely *widens* into the column's is read at the column's type,
-/// not its own, because only conflicting types are recorded: an integer in a column
-/// read as a float reads as `7.0`. Nothing is hidden by that — a widened value was
-/// always on screen — but it is not the file's own spelling. The same goes for a file
-/// whose footer could not be read, and for one outside the sample on a dataset too
-/// large to read every footer: datui does not know what those hold, so it asks for the
-/// column's type and they are no better off than before.
-///
-/// A column [`can_read_as_text`] refuses, or that the schema does not have, is dropped
-/// from `as_text` and read as it was.
+/// `as_text` columns are read at each file's own type and cast to text after (Polars
+/// cannot read a number as a string), so runs also split on those columns' stored
+/// types. Widened or unknown-type files (no footer, outside a sample) read at the
+/// column's type. Columns [`can_read_as_text`] refuses, or the schema lacks, are read
+/// as before.
 pub fn lenient_scan(
     paths: &[String],
     schema: Arc<Schema>,
@@ -2245,10 +1950,8 @@ pub fn lenient_scan(
     let Some(drift) = drift else {
         return scan_run(paths, &schema, cloud_options, &[], None, &[]);
     };
-    // A column is read as text only where the schema has it and every type it is
-    // stored in can be shown as text. A caller that asks for more than that gets the
-    // column as it was rather than a scan that fails: the cast refusing would take
-    // the whole read with it, including the files that never disagreed.
+    // Only columns the schema has and every stored type of which casts to text; a
+    // refused cast would fail the whole read.
     let as_text: Vec<PlSmallStr> = as_text
         .iter()
         .filter(|name| {
@@ -2269,8 +1972,7 @@ pub fn lenient_scan(
             .cloned()
             .collect()
     };
-    // What a run must agree on: what it leaves out, and the type of everything read as
-    // text, since that is what its own read schema is built from.
+    // A run agrees on what it leaves out and on each as-text column's stored type.
     let key_of = |path: &str| -> (Vec<PlSmallStr>, Vec<Option<DataType>>) {
         (
             unread_of(path),
@@ -2321,18 +2023,11 @@ pub fn lenient_scan(
     }
 }
 
-/// Whether a column of this type can be shown as text.
-///
-/// Reading a conflicting column as text is a cast, and Polars cannot cast every type
-/// to a string: a duration and a list refuse outright, and binary refuses the moment
-/// its bytes are not UTF-8 — which is most of why a column is binary. A cast that
-/// refuses fails the whole scan, including the files that never disagreed, so this is
-/// asked before the offer is made rather than after it is taken.
-///
-/// Answered by type and not by value, so binary is refused whatever it holds: a
-/// column that renders for one page and fails on the next is worse than one that was
-/// never offered. `types_the_cast_agrees_with_are_exactly_the_ones_offered` keeps this
-/// honest against Polars itself.
+/// Whether a column of this type can be shown as text. Polars cannot cast durations
+/// or lists to strings, and binary fails on non-UTF-8, and a failed cast fails the
+/// whole scan, so this is decided by type before offering.
+/// `types_the_cast_agrees_with_are_exactly_the_ones_offered` checks it against
+/// Polars.
 pub fn can_read_as_text(dtype: &DataType) -> bool {
     match dtype {
         // Not text at all, and not convertible: the cast errors rather than escaping.
@@ -2340,8 +2035,7 @@ pub fn can_read_as_text(dtype: &DataType) -> bool {
         DataType::Duration(_) => false,
         // Nested sequences have no string form in Polars 0.55.
         DataType::List(_) | DataType::Array(_, _) => false,
-        // A struct prints as `{1,"a"}`, writing its fields itself rather than casting
-        // them, so it manages inner types a column of that type could not.
+        // A struct prints itself (`{1,"a"}`), handling inner types a column could not cast.
         DataType::Struct(_) => true,
         DataType::Unknown(_) => false,
         _ => true,
@@ -2349,21 +2043,15 @@ pub fn can_read_as_text(dtype: &DataType) -> bool {
 }
 
 impl ColumnDrift {
-    /// Whether this column can be read as text: every type any file holds it in has to
-    /// be one that can be shown as text, the one it is read as included. One file's
-    /// list column is enough to rule it out, because that file's cast is the one that
-    /// would fail.
+    /// Whether this column can be read as text: every type any file holds it in, and the
+    /// read type, must be castable.
     pub fn can_read_as_text(&self) -> bool {
         can_read_as_text(&self.dtype) && self.conflicting_types.iter().all(can_read_as_text)
     }
 }
 
-/// `schema` with every column in `as_text` spelled as text.
-///
-/// For a caller to say what it now holds — [`lenient_scan`] does not need it, since a
-/// run is read at its own files' types and the cast decides the result's. The columns
-/// keep their places: a column that moved when it was read differently would be a
-/// second change the user did not ask for.
+/// `schema` with every `as_text` column as text, for callers describing what they
+/// hold ([`lenient_scan`] does not need it). Columns keep their places.
 pub fn text_schema(schema: &Arc<Schema>, as_text: &[PlSmallStr]) -> Arc<Schema> {
     if as_text.is_empty() {
         return schema.clone();
@@ -2380,9 +2068,9 @@ pub fn text_schema(schema: &Arc<Schema>, as_text: &[PlSmallStr]) -> Arc<Schema> 
     Arc::new(out)
 }
 
-/// One run of files that are missing the same things. `stamp` is the group to write
-/// into [`DRIFT_COLUMN`], and its presence also means the run selects the dataset's
-/// column order so the runs concatenate.
+/// One run of files missing the same things. `stamp` is the group written into
+/// [`DRIFT_COLUMN`]; its presence also selects the dataset's column order so runs
+/// concatenate.
 fn scan_run(
     urls: &[String],
     schema: &Arc<Schema>,
@@ -2409,8 +2097,7 @@ fn scan_run(
             if omit.contains(name) {
                 continue;
             }
-            // Read at the type this run's files wrote, not the one it will be shown
-            // as: the reader has to be told what is actually in the file.
+            // Read at the type these files wrote, not the display type.
             let dtype = read_as
                 .iter()
                 .find(|(column, _)| column == name)
@@ -2443,9 +2130,8 @@ fn scan_run(
         },
         missing_columns_policy: MissingColumnsPolicy::Insert,
         extra_columns_policy: ExtraColumnsPolicy::Ignore,
-        // Numbering the rows from where this run begins costs one column and no extra
-        // read, and it is what survives a sort: a row keeps its place in the dataset
-        // however the view is reordered.
+        // Numbering rows from the run's start costs one column and no read, and survives
+        // sorting.
         row_index: first_row.map(|first| polars::io::RowIndex {
             name: DRIFT_COLUMN.into(),
             offset: first as polars::prelude::IdxSize,
@@ -2466,10 +2152,8 @@ fn scan_run(
         lf = lf.with_columns(nulls);
     }
     if !read_as.is_empty() {
-        // Now the values are in hand, they become text. Every run casts, including one
-        // whose files already agree: they are all being shown as text, and a run that
-        // skipped the cast would not concatenate with the rest. A date past the
-        // calendar, on which Polars' cast panics, becomes its stored number.
+        // Cast to text in every run so runs concatenate; a date past the calendar (which
+        // panics Polars' cast) becomes its stored number.
         let texts: Vec<Expr> = read_as
             .iter()
             .map(|(name, _)| {
@@ -2480,8 +2164,8 @@ fn scan_run(
         lf = lf.with_columns(texts);
     }
     if first_row.is_some() {
-        // Runs concatenate only if they agree on column order, and the row index
-        // arrives first, so put it back at the end where the state expects it.
+        // Runs concatenate only with the same column order; the row index arrives first, so
+        // move it to the end where the state expects it.
         let mut ordered: Vec<Expr> = schema.iter_names().map(|name| col(name.clone())).collect();
         ordered.push(col(DRIFT_COLUMN));
         lf = lf.select(ordered);

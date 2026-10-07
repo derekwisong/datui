@@ -5,12 +5,9 @@ use polars::prelude::*;
 use std::collections::HashMap;
 use std::ops::Range;
 
-/// Collects a LazyFrame into a DataFrame.
-///
-/// When the `streaming` feature is enabled and `use_streaming` is true, uses the Polars
-/// streaming engine (batch processing, lower memory). Otherwise collects normally.
-/// Returns `PolarsError` so callers that need to display or store the error (e.g.
-/// `DataTableState::error`) can do so without converting.
+/// Collect a LazyFrame, with the streaming engine when the `streaming` feature is on and
+/// `use_streaming` asks. Returns `PolarsError` for callers that store or show it
+/// (e.g. `DataTableState::error`).
 pub fn collect_lazy(
     lf: LazyFrame,
     use_streaming: bool,
@@ -46,13 +43,10 @@ pub fn may_stream(lf: &LazyFrame, wanted: bool) -> bool {
         })
 }
 
-/// Whether `lf` takes the first rows of an unstable sort by a single Decimal or Int128
-/// key. Polars 0.55's streaming engine runs that as a top-k, which panics on those
-/// dtypes ("not implemented for dtype Int128"); the in-memory engine sorts them. A
-/// format spec's `scale` reads as Decimal, so a query's `by price`, whose group sort
-/// is unstable, takes this for its first page. A stable sort (the table's own) carries
-/// a row index as a second key, and a full sort or a slice further in is no top-k:
-/// both stream.
+/// Whether `lf` takes the first rows of an unstable sort by one Decimal or Int128 key:
+/// Polars 0.55 streams that as a top-k, which panics on those dtypes, so it runs in
+/// memory. A spec's `scale` reads as Decimal and a query's `by` group sort is unstable.
+/// Stable sorts (with a row index key), full sorts and deeper slices still stream.
 #[cfg(feature = "streaming")]
 fn sorts_by_one_wide_key(lf: &LazyFrame) -> bool {
     use polars::lazy::dsl::DslPlan;

@@ -1,16 +1,11 @@
-//! A dataset of many Parquet files, wherever they are.
-//!
-//! [`DatasetFiles`] lists a dataset's files, stats them and reads their footers; a local
-//! directory ([`LocalFiles`]) and a prefix in an object store ([`StoreFiles`]) each
-//! implement it. Everything built on those three steps exists once, here: the open
-//! from the two ends past one wave of footers, the pass that reads the rest behind it,
-//! the count that reads only what neither read, and the shape and facts kept for the
-//! next open and the home screen.
-//!
-//! The two differ only where the medium does: a store lists in key ranges at once and
-//! carries each object's size and tag in its listing; a directory is walked a level at
-//! a time by the type each entry already gives, stat'ed only when the dataset is worth
-//! remembering, and its footers keep each column's width.
+//! A dataset of many Parquet files, wherever they are. [`DatasetFiles`] lists, stats
+//! and reads footers; [`LocalFiles`] (a directory) and [`StoreFiles`] (an object-store
+//! prefix) implement it. Built once on top: opening from the two ends past one wave of
+//! footers, the pass reading the rest behind, the count reading only what neither did,
+//! and the shape and facts kept for the next open and home. They differ only by
+//! medium: a store lists key ranges at once with sizes and tags; a directory is walked
+//! level by level, stat'ed only when worth remembering, and its footers keep column
+//! widths.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -35,15 +30,11 @@ pub struct DatasetFile {
     pub key: String,
     /// Its size, where the listing or a stat said; `0` until then.
     pub size: u64,
-    /// When it was last written, where the listing or a stat said. Part of the
-    /// fingerprint that decides whether what datui remembers about the dataset still
-    /// describes it.
+    /// When it was last written (listing or stat): part of the fingerprint deciding whether
+    /// remembered facts still apply.
     pub stamp: u64,
-    /// The store's own tag for this version of the object, where it gave one.
-    ///
-    /// The strongest part of that fingerprint, and free — it comes back in the same
-    /// listing response as the size. A size and a whole-second timestamp cannot see a
-    /// file overwritten within the same second at the same length; an ETag can.
+    /// The store's tag for this object version, if given: the strongest, free part of the
+    /// fingerprint (size and whole-second mtime miss same-length rewrites within a second).
     pub etag: Option<String>,
 }
 
@@ -61,9 +52,9 @@ pub trait DatasetFiles: Send + Sync {
     /// Fill in each file's size and stamp where the listing did not. `false` when a file
     /// went between the listing and its stat, or the open was abandoned.
     fn stat(&self, files: &mut [DatasetFile], progress: &FooterProgress) -> bool;
-    /// The footers of `files` at `read`, in that order, counted off against `progress`
-    /// and timed into `meter`. A footer that will not read is `None`: one file mid-write
-    /// must not stop the dataset from opening. `None` when the reads were abandoned.
+    /// The footers of `files` at `read`, in order, counted against `progress` and timed into
+    /// `meter`. An unreadable footer is `None` (a file mid-write must not block the open);
+    /// `None` overall when abandoned.
     fn read_footers(
         &self,
         files: &Arc<Vec<DatasetFile>>,
@@ -131,13 +122,10 @@ struct Opened {
     by_file: RemoteRead,
 }
 
-/// Open the dataset `source` lists, from its footers. `None` when it lists nothing
-/// readable, which sends the caller to the general scan.
-///
-/// Past one wave of files the two ends open the dataset and the rest are read behind
-/// it, joining when they land; up to a wave they cost one round of reads either way,
-/// so the dataset opens whole. A dataset whose listing has not changed since its
-/// footers were last all read opens from what they said then, reading none.
+/// Open the dataset `source` lists from its footers; `None` when nothing readable is
+/// listed (the caller falls back to the general scan). Past one wave, the two ends open
+/// it and the rest join behind; up to a wave it opens whole. An unchanged listing whose
+/// footers were all read before opens from memory, reading none.
 pub(crate) fn open(
     source: Arc<dyn DatasetFiles>,
     options: &crate::OpenOptions,
@@ -177,9 +165,8 @@ pub(crate) fn open(
             .source
             .read_footers(&files, &read, &report.progress, &report.meter)?,
     };
-    // Within a wave a directory is not stat'ed, so an empty file is found only by the
-    // footer that would not read: asked of those alone, and left out as the stat
-    // would have.
+    // Within a wave nothing is stat'ed, so empty files show up only as unreadable footers:
+    // check those and leave them out, as a stat would.
     if !staged && !from_cache {
         let empty: Vec<bool> = footers
             .iter()
@@ -266,9 +253,8 @@ pub(crate) fn open(
     if staged {
         let ends = read;
         facts.footers_pending = Some(Arc::new(move |progress: &Arc<FooterProgress>| {
-            // A random sample first, for a row estimate the footer says at once; then
-            // the spread the schema is read from. The ends were read by the open, and
-            // a footer is read once.
+            // A random sample first (a quick row estimate), then the schema's spread; the ends were
+            // read by the open, and no footer is read twice.
             let seed = crate::cache::stable_hash(listed.source.key().as_bytes());
             let sample = random_sample(files.len(), ESTIMATE_SAMPLE, seed);
             let first: Vec<usize> = sample
@@ -391,9 +377,8 @@ impl Listed {
             .map(|f| source.name_of(f))
             .collect::<Option<Vec<_>>>()?;
         let (first, newest) = (files.first()?, files.last()?);
-        // From the listing: the newest file names the columns and the two ends type
-        // them, so a tree is the same table from a disk or a bucket, and no directory
-        // is read twice to find them.
+        // From the listing: the newest file names the columns and the ends type them, so a tree
+        // reads alike from disk or bucket without rereading directories.
         let (partition_columns, values) = crate::schema_union::partitions_of_listing(
             &source.partition_path(first),
             &source.partition_path(newest),
@@ -525,20 +510,9 @@ impl Listed {
         crate::schema_union::footers_from_cache(&shape.files, &shape.schemas, &sizes)
     }
 
-    /// Keep what a pass learned: what the home screen shows for the dataset, and, with
-    /// `shape`, every footer — if every one was read and parsed.
-    ///
-    /// Every footer must have been read. A staged open has read two of them and a
-    /// sampled one a spread, and either kept as though it were the whole dataset would
-    /// hand the next open a smaller dataset than it asked for, with nothing to say that
-    /// is what happened.
-    ///
-    /// Every footer must have *parsed*. A footer read can fail because the file is
-    /// corrupt, and it can fail because the store throttled the request or a token
-    /// expired — and nothing here can tell those apart. Remembering the failure turns a
-    /// moment's trouble into a file that is missing from the dataset on every open from
-    /// now until something else changes. Read them again next time; the one that was
-    /// really corrupt costs a read and says the same thing.
+    /// Keep what a pass learned: home's facts and, with `shape`, every footer, only if all
+    /// were read (a staged or sampled read would shrink the next open's dataset) and all
+    /// parsed (a throttled or expired read would make a file vanish on every later open).
     fn remember(&self, read: &[usize], footers: &[Option<FileFooter>], shape: bool) {
         let Some(cache) = self.remembered.as_ref() else {
             return;
@@ -563,10 +537,9 @@ impl Listed {
                 },
             );
         }
-        // What the home screen reads, written behind the open: a sampled read still says
-        // what the columns are, where the shape wants every footer. A sampled read does
-        // not replace a whole one, though: the shape cache is the smaller of the two and
-        // forgets a dataset long before the index does.
+        // Home's facts are written behind the open, even from a sampled read (columns), but a
+        // sample never replaces a whole read: the shape cache forgets far sooner than the
+        // index.
         let path = PathBuf::from(self.source.key());
         if let Some(facts) = self.facts(read, footers) {
             let (cache, writing) = (cache.clone(), self.writing.clone());
@@ -617,9 +590,8 @@ impl Listed {
         Some(dataset)
     }
 
-    /// The dataset's column names as the union orders them, partition columns first,
-    /// without the union's typing: over each distinct schema once, which a dataset of a
-    /// hundred thousand files has a handful of. `None` when no footer read.
+    /// Column names as the union orders them, partition columns first, untyped, over each
+    /// distinct schema once; `None` when no footer read.
     fn column_names(&self, footers: &[Option<FileFooter>]) -> Option<Vec<String>> {
         // Each distinct schema once, in the order its files first come.
         let mut schemas: Vec<&Arc<polars::prelude::Schema>> = Vec::new();
@@ -695,9 +667,8 @@ impl Listed {
         })
     }
 
-    /// What the footers at `read` say about the dataset. Shared by the open, which may
-    /// have read only the two ends, and the pass that reads the rest: the two differ
-    /// only in how much they know. `None` when nothing could be read.
+    /// What the footers at `read` say of the dataset, shared by the open (maybe only the
+    /// ends) and the pass reading the rest. `None` when nothing could be read.
     fn dataset(self: &Arc<Self>, read: &[usize], footers: &[Option<FileFooter>]) -> Option<Opened> {
         let files = &self.files;
         let dataset = self.schema(read, footers)?;
@@ -713,10 +684,8 @@ impl Listed {
         } else {
             Vec::new()
         };
-        // Over the readable files only, as the scan is: a file mid-write is in neither.
-        // A footer sampled past or failed would count as no rows, which both
-        // undercounts and puts its rows out of reach of a windowed scan; the count
-        // reads it instead.
+        // Over readable files only, as the scan: a sampled-past or failed footer would count no
+        // rows and put its rows out of a windowed scan's reach; the count reads it instead.
         let row_groups: Vec<Vec<usize>> = if every_footer && footers.iter().all(Option::is_some) {
             footers
                 .iter()
@@ -726,14 +695,12 @@ impl Listed {
         } else {
             Vec::new()
         };
-        // A file that stores a column in a type the dataset's column cannot hold is not
-        // read for it; its rows are null there rather than failing the scan, and carry
-        // their file's drift group so the null can be told from a real one.
+        // A file holding a column in an incompatible type is not read for it: its rows are null
+        // there, tagged with its drift group to tell from real nulls.
         let drift = crate::schema_union::ScanDrift::new(&self.names, &dataset, &file_rows);
-        // The files that will open. One whose footer would not read is one Polars
-        // cannot read either, and left in the scan it takes the dataset down on the
-        // first page. A staged open can only leave out what it has read; the pass
-        // behind it finds the rest and the join swaps in a scan without them.
+        // The files that will open: an unreadable footer means Polars cannot read it either,
+        // failing the first page. A staged open excludes only what it read; the pass behind
+        // finds the rest and the join swaps the scan.
         let readable = crate::schema_union::readable_paths(&self.names, &dataset.unreadable);
         if readable.is_empty() {
             return None;
@@ -763,10 +730,8 @@ impl Listed {
         };
         let lf = scan(&readable, &[]).ok()?;
         let count: FileCounter = if row_groups.is_empty() {
-            // Over the same files as the scan: the counter answers one entry per file,
-            // which has to be the list beside it, or the answer is dropped on a length
-            // check and the dataset never learns its own size. Searched rather than
-            // scanned: a dataset can be hundreds of thousands of files.
+            // The same files as the scan: the counter answers one entry per file, matched by
+            // length. Binary search: datasets can have hundreds of thousands of files.
             let counted: Vec<usize> = (0..files.len())
                 .filter(|index| dataset.unreadable.binary_search(index).is_err())
                 .collect();
@@ -811,9 +776,8 @@ impl Listed {
             let counted = count
                 .count(
                     |missing| {
-                        // What an earlier count read of these files, still as they are,
-                        // is not read again; what this one reads is kept, though it is
-                        // stopped part way.
+                        // Footers an earlier count read of unchanged files are reused; this one's are kept even
+                        // if stopped partway.
                         let mut found = listed.cached_footers(missing);
                         let to_read: Vec<usize> = missing
                             .iter()
@@ -850,14 +814,9 @@ impl Listed {
     }
 }
 
-/// The footers of `files` at `read`, as the pass that settles the row count: timed into
-/// `meter` as that pass, once, and only when something parsed.
-///
-/// Counted against a meter of its own first, so that a pass the one-shot declines adds
-/// nothing to the dataset's figures: this runs again every time the count is
-/// invalidated, and a dataset explored for a few minutes would otherwise report an
-/// open that kept getting more expensive. Not recorded when nothing parsed: a pass
-/// that settled nothing must not take the one measurement this gets.
+/// The footers of `files` at `read` for the count pass, timed into `meter` once and only
+/// when something parsed. Counted on its own meter first, so repeated passes (each
+/// time the count is invalidated) do not inflate the open's figures.
 pub(crate) fn footers_for_count(
     source: &dyn DatasetFiles,
     files: &Arc<Vec<DatasetFile>>,
@@ -927,9 +886,8 @@ pub(crate) fn facts_of(
     Some((PathBuf::from(listed.source.key()), facts))
 }
 
-/// Every footer of the local directory `dir` as the last open that read them all left
-/// them, if its files are as they were then. Only a directory an open remembered is
-/// listed whole for this; any other costs one stat.
+/// Every footer of local `dir` as the last full read left them, if its files are
+/// unchanged. Only remembered directories are listed for this; others cost a stat.
 pub(crate) fn remembered_footers(
     dir: &Path,
     cache: &crate::cache::CacheManager,
@@ -945,9 +903,8 @@ pub(crate) fn remembered_footers(
     Some((files, footers))
 }
 
-/// Whether a record learned from an open should replace what the index has: anything
-/// replaces nothing, a whole read replaces anything, and a sampled read replaces only
-/// another sample.
+/// Whether a record should replace the index's: anything replaces nothing, a whole read
+/// replaces anything, a sample replaces only a sample.
 pub(crate) fn facts_worth_recording(
     existing: Option<&crate::cache::DatasetFacts>,
     new: &crate::cache::DatasetFacts,
@@ -981,12 +938,9 @@ impl LocalFiles {
     }
 
     /// Every Parquet file under the directory, sorted, and what the walk passed over,
-    /// counted off against `listing` as found.
-    ///
-    /// The directories are read many at once and classified afterwards, in one pass
-    /// that sees the tree as a serial walk would: on a network mount each directory is
-    /// a round trip, and a Hive tree is thousands of them. A cancelled listing stops
-    /// reading directories and returns what it had, which the caller drops.
+    /// counted against `listing`. Directories are read many at once (each a round trip on a
+    /// network mount) and classified afterwards, as a serial walk would. A cancelled listing
+    /// returns early, and the caller drops the result.
     pub fn walk(&self, listing: Option<&Listing<'_>>) -> (Vec<PathBuf>, SkippedFiles) {
         let mut files = Vec::new();
         let mut skipped = SkippedFiles::default();
@@ -1000,19 +954,15 @@ impl LocalFiles {
             MAX_DEPTH,
             false,
         );
-        // Load-bearing beyond reading in a predictable order. The scan hands these to
-        // Polars as they are, and Polars takes the hive schema from the first of them, so
-        // this decides whether a directory whose partition keys disagree opens with its
-        // partition column null or fails to open at all — see the two `directories_that`
-        // integration tests, which are the same directory differing by one file name.
+        // Load-bearing: Polars takes the hive schema from the first file, so order decides
+        // whether disagreeing partition keys open with a null partition column or fail (see the
+        // two `directories_that` integration tests).
         files.sort();
         (files, skipped)
     }
 
-    /// The first files of the directory, sorted, down `levels` levels: more than
-    /// `enough` of them when there are, which is how a caller tells a dataset too large
-    /// to measure from one it can. For the home screen, which looks at a dataset
-    /// rather than opening it.
+    /// The directory's first files, sorted, down `levels` levels: more than `enough` when
+    /// there are (telling a too-large dataset). For home, which looks rather than opens.
     pub fn first_files(&self, levels: usize, enough: usize) -> Vec<PathBuf> {
         let walked = walk_dirs(&self.dir, levels, None, Some(enough));
         let mut files = Vec::new();
@@ -1030,13 +980,9 @@ impl LocalFiles {
         files
     }
 
-    /// The directory's row count from every file's footer, for a dataset that opened
-    /// without listing its files: a directory read as one scan. `Err` when no footer
-    /// under it reads.
-    ///
-    /// Timed from before the walk: this pass has to find the files again before it
-    /// can read them, and what it cost is both halves. Only the first such pass counts
-    /// (see `Meter::counted_rows`); it runs again every time a filter is cleared.
+    /// The directory's row count from every footer, for a dataset opened as one scan without
+    /// listing its files; `Err` when no footer reads. Timed from before the walk (it must
+    /// find the files again); only the first such pass counts (`Meter::counted_rows`).
     pub fn count_rows(
         &self,
         meter: &Meter,
@@ -1194,9 +1140,8 @@ impl DatasetFiles for LocalFiles {
     }
 }
 
-/// A local file's own tag, as a store's ETag is: its inode and when its inode last
-/// changed, which a rewrite moves on a filesystem whose modification times are too
-/// coarse to see a rewrite within the same second. `None` where there is none.
+/// A local file's tag, like an ETag: its inode and inode change time, which catch a
+/// same-second rewrite coarse mtimes miss. `None` where unavailable.
 #[cfg(unix)]
 fn local_tag(meta: &std::fs::Metadata) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
@@ -1237,16 +1182,11 @@ pub(crate) fn local_footer(path: &Path) -> Option<FileFooter> {
 /// whether each is a directory. One that could not be read is absent.
 type WalkedDirs = HashMap<PathBuf, Vec<(PathBuf, bool)>>;
 
-/// Read every directory under `root` down to `max_depth` levels, a level at a time
-/// and many directories at once. Nothing is classified here, so the walk that does
-/// classify sees the tree exactly as reading it one directory at a time would.
-///
-/// With a `listing`, each directory's files are counted off against it as it is read,
-/// and an abandoned load stops the walk: what it has is incomplete and is not used.
-///
-/// With `enough`, the walk stops at the end of the level where it has seen more data
-/// files than that, and reads at most [`MAX_NAMES_PER_DIR`] entries of a directory: a
-/// look at a dataset rather than a listing of it.
+/// Read every directory under `root` to `max_depth`, a level at a time, many at once;
+/// unclassified, so the classifying walk sees what a serial read would. With `listing`,
+/// files are counted against it and an abandoned load stops the walk (its result
+/// unused). With `enough`, stop after the level that exceeds it, reading at most
+/// [`MAX_NAMES_PER_DIR`] entries per directory: a look, not a listing.
 fn walk_dirs(
     root: &Path,
     max_depth: usize,
@@ -1317,15 +1257,13 @@ fn walk_dirs(
     walked
 }
 
-/// Entries read from one directory by a walk that only looks. Past it the sample is
-/// over the names this listing saw rather than over the directory, and the row count
-/// is long out of reach either way.
+/// Entries read per directory by a looking walk; past it the sample covers only names
+/// seen, and the row count is out of reach anyway.
 const MAX_NAMES_PER_DIR: usize = 20_000;
 
-/// `work` for each index below `n`, on up to a wave of threads pulling the next index
-/// as each finishes, and the answers in index order. Sized for waiting on a disk or a
-/// network mount rather than for the cores; a worker that panics answers `None` for
-/// the indices it took.
+/// `work` for each index below `n` on up to a wave of threads, answers in index order.
+/// Sized for waiting on disk or network, not cores; a panicking worker answers `None`
+/// for its indices.
 fn each_at_once<T: Send>(
     n: usize,
     at_once: usize,
@@ -1366,12 +1304,9 @@ fn each_at_once<T: Send>(
     out
 }
 
-/// The data files `walked` found under `dir`, into `out`, counting what it passed over.
-///
-/// A directory of Parquet files often holds other things, and datui reads none of
-/// them. Which ones they are is the difference between bookkeeping and a mistake:
-/// `_SUCCESS` beside the data is a writer saying it finished, while three CSVs in
-/// the same directory are three files somebody expected to be in the table.
+/// The data files `walked` found under `dir` into `out`, counting what was passed over:
+/// `_SUCCESS` is a writer's bookkeeping, but CSVs beside Parquet were likely meant as
+/// data.
 fn collect_data_files(
     walked: &WalkedDirs,
     dir: &Path,
@@ -1379,23 +1314,18 @@ fn collect_data_files(
     skipped: &mut crate::schema_union::SkippedFiles,
     depth: usize,
     max_depth: usize,
-    // Carried down rather than read off each leaf: a `.json` is a mistake beside
-    // the data and a record of it inside `_delta_log`, and its own name cannot say
-    // which. Every file under a writer's directory is that writer's.
+    // Carried down: every file under a writer's directory (`_delta_log`) is the writer's,
+    // which a `.json`'s own name cannot say.
     under_bookkeeping: bool,
 ) -> (bool, usize) {
-    // A subtree too deep to walk reports no data, which makes everything above it
-    // read as plumbing. At sixty-four levels that is unreachable, and the rows were
-    // already missing before it also changed what they were called.
+    // Past the depth limit (sixty-four, unreachable in practice) a subtree reports no data.
     if depth >= max_depth {
         return (false, 0);
     }
     let Some(entries) = walked.get(dir) else {
         return (false, 0);
     };
-    // Held back until the directory has been read to the end: whether a file beside
-    // the data is worth mentioning depends on whether there is any data beside it,
-    // and that is not known until the last entry.
+    // Held until the directory is fully read: a stray is worth mentioning only beside data.
     let mut here: Vec<PathBuf> = Vec::new();
     let mut passed_over = 0usize;
     let mut data_below = false;
@@ -1418,20 +1348,15 @@ fn collect_data_files(
                 bookkeeping,
             );
             data_below |= below;
-            // A partition of this directory that holds no data of its own hands its
-            // strays up: a day that landed as CSV is part of the dataset, and only
-            // the directory above can see that it is.
+            // A partition with no data of its own hands its strays up (a day landed as CSV is part
+            // of the dataset).
             passed_over += deferred;
         } else if !bookkeeping
             && crate::discover::is_parquet_key(&crate::discover::directory_and_name(&child))
         {
-            // The same test the cloud listing uses, so a directory is the same table
-            // wherever it is read from. It gets the directory and the name rather
-            // than the whole path: one of the two shapes it knows lives in the
-            // directory name — Spark and GBIF write a dataset as
-            // `occurrence.parquet/part-00001`, where the part files have no extension
-            // of their own — and a whole path would reach it with backslashes on
-            // Windows, which that test does not split on.
+            // The cloud listing's test, so a directory is the same table anywhere. Given the
+            // directory and name, not the whole path: part files in `occurrence.parquet/` are known
+            // by the directory, and Windows backslashes would not split.
             here.push(child);
         } else if !bookkeeping {
             passed_over += 1;
@@ -1441,9 +1366,8 @@ fn collect_data_files(
     }
     let holds_data = data_below || !here.is_empty();
     out.append(&mut here);
-    // A directory whose own name carries a partition key is part of the dataset above
-    // it, whether or not its files turned out to be readable. Its strays go up to
-    // be judged there rather than written off here.
+    // A directory named with a partition key belongs to the dataset above; its strays go up
+    // to be judged there.
     let partition = dir
         .file_name()
         .map(|n| n.to_string_lossy())
@@ -1453,11 +1377,8 @@ fn collect_data_files(
     if depth > 0 && !holds_data && partition && !under_bookkeeping {
         return (false, passed_over);
     }
-    // A directory with data anywhere beneath it is part of somebody's table, so what
-    // else is in there is beside their data. A directory with none is somebody's
-    // infrastructure — a manifest directory, a directory of images, a log under a
-    // name no convention covers — and nothing in it was ever going to be in this
-    // table.
+    // With data beneath it, other files are beside someone's data; with none, the directory
+    // is infrastructure and nothing in it was meant for the table.
     for _ in 0..passed_over {
         skipped.count(!holds_data);
     }
@@ -1477,9 +1398,8 @@ pub struct StoreFiles {
     /// it matches, so everything downstream sees a plain list of files.
     pattern: Option<globset::GlobMatcher>,
     plan: crate::cloud_hive::ListShards,
-    /// The URL of the prefix: for a glob, everything before its star. The layout notes
-    /// take each file's path relative to it, so a root with a star in it is a prefix of
-    /// nothing and every note goes quietly empty.
+    /// The prefix URL (a glob's part before the star): layout notes take paths relative to
+    /// it, so a starred root would empty them all.
     root: String,
     cloud: CloudOptions,
     runtime: tokio::runtime::Handle,
@@ -1602,9 +1522,8 @@ impl DatasetFiles for StoreFiles {
         files.iter().map(|f| f.stamp).max().unwrap_or_default()
     }
 
-    /// The listing came back with the one object the URL names, which is what `--hive`
-    /// on a single object gets. The trailing slash is not asked about: this route is
-    /// entered for `--hive s3://bucket/sales` too.
+    /// The listing returned only the object the URL names (`--hive` on a single object,
+    /// with or without a trailing slash).
     fn is_one_object(&self, files: &[DatasetFile]) -> bool {
         files.len() == 1 && self.full.trim_end_matches('/').ends_with(&files[0].key)
     }

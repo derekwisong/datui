@@ -11,12 +11,8 @@ const DEFAULT_SAMPLE_ROWS: usize = 10_000;
 const DEFAULT_CHUNK_ROWS: usize = 1_000_000;
 const QUALITY_WINDOW_START: &str = "__datui_quality_window_start";
 pub const QUALITY_SOURCE_FILE_COLUMN: &str = "__datui_quality_source_file";
-/// How nearly unique a column's values must be before its repeats are worth naming.
-///
-/// A key that is not quite one is the interesting case: an id that repeats twice in a
-/// million rows is a fact about the data, while a category that repeats constantly is
-/// just a category. The line has to fall somewhere, and 95% puts it where a column is
-/// clearly meant to identify a row rather than to group them.
+/// How nearly unique a column must be before its repeats are worth naming: an id
+/// repeating twice in a million rows is a finding, a category repeating is not.
 pub const KEY_LIKE_UNIQUENESS: f64 = 0.95;
 /// Files named per drift observation, and values read from each of them. Both are the
 /// evidence, not the measurement: the counts above them cover every file.
@@ -215,19 +211,16 @@ pub struct QualitySourceContext {
     /// The distinct ways this dataset's files differ from its schema, as the footers
     /// found them. Group 0 is always "nothing missing".
     pub drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
-    /// Per file, the type it holds each of its unreadable columns in. Empty for a file
-    /// whose types all fit, which is why it is kept beside the groups rather than in
-    /// them: the type is the only way back to the values a conflict hides.
+    /// Per file, the type it holds each unreadable column in (empty when all fit); kept
+    /// beside the groups as the only way back to values a conflict hides.
     pub file_omitted: Vec<Vec<(PlSmallStr, DataType)>>,
     /// Rows in the whole loaded source, which is what closes the last file's range.
     pub dataset_rows: usize,
-    /// How many of the source's footers were read. Below the file count on a dataset
-    /// too large to read every footer, where a file nobody looked at is indistinguishable
-    /// from one missing nothing — so a count over the files is a floor, not a total.
+    /// How many footers were read: below the file count on a huge dataset, where an
+    /// unread file looks like one missing nothing, so file counts are floors.
     pub footers_read: usize,
-    /// How to read a column at the type a file wrote it in, for the values a type
-    /// conflict hides. `None` for a dataset whose files agree, and for a run whose
-    /// budget did not promise the extra reads.
+    /// How to read a column at a file's own type, for values a type conflict hides.
+    /// `None` when files agree, or the run's budget did not promise the reads.
     pub conflict_scan: Option<QualityConflictScan>,
 }
 
@@ -304,11 +297,10 @@ pub fn prepare_source_quality_scan(
     )
 }
 
-/// The rows of one partition value, a list of them (`2019,2021`), or an inclusive
-/// range (`2020..2022`). Each value is read as the column's own type, so years and
-/// dates compare as numbers and dates, `1.5` is a `Decimal(10, 2)` column's `1.50`,
-/// and the predicate stays one a file's statistics can answer; `∅` is the null
-/// partition. A value that does not read as the type says so.
+/// The rows of one partition value, a list (`2019,2021`), or an inclusive range
+/// (`2020..2022`), each read as the column's type (so a file's statistics can answer
+/// the predicate); `∅` is the null partition. A value that does not read as the type
+/// is an error.
 fn partition_predicate(column: &str, value: &str, schema: &Schema) -> Result<Expr> {
     let dtype = schema
         .get(column)
@@ -536,9 +528,8 @@ pub fn page_setup(
     match page {
         QualityPage::Segments if plan.grain == QualityGrain::Dataset => Some(QualitySetup::Grain),
         QualityPage::Trends if !shows_trend(plan, results) => Some(QualitySetup::Grain),
-        // Roles that make no interval want a pair chosen; otherwise, roles. Pairs
-        // that measured nothing (metadata only, text with no format) are not
-        // fixed by either, and the page says what is.
+        // Roles that make no interval want a pair chosen; otherwise, roles. Pairs measuring
+        // nothing are fixed by neither, and the page says what is.
         QualityPage::Intervals if results.temporal.is_empty() && has_time_columns => {
             if plan.candidate_pairs().is_empty() {
                 Some(QualitySetup::TimeRoles)
@@ -687,10 +678,9 @@ pub struct TemporalRoleAssignment {
     pub timezone: Option<String>,
 }
 
-/// The intervals a run measures when none are chosen, start role to end role: the
-/// pairs whose order the roles themselves state. Any other start and end is a
-/// choice under Intervals in Setup; a role in no interval measures nothing, and
-/// Setup says so before a run.
+/// The intervals measured when none are chosen: start role to end role, the pairs
+/// whose order the roles state. Others are chosen in Setup; a role in no interval
+/// measures nothing, as Setup says.
 pub const INTERVAL_PAIRS: [(TemporalRole, TemporalRole); 7] = [
     (TemporalRole::Event, TemporalRole::Published),
     (TemporalRole::Event, TemporalRole::Received),
@@ -706,9 +696,8 @@ pub fn interval_label((start, end): (TemporalRole, TemporalRole)) -> String {
     format!("{} to {}", start.label(), end.label())
 }
 
-/// Which time puts an interval in a window, when the grain is time windows: the
-/// grain's own column, or the interval's start or end. By the end, an interval is
-/// counted on the day it finished rather than the day it began.
+/// Which time puts an interval in a window under a time-window grain: the grain's
+/// column, or the interval's start or end (by end, counted on the day it finished).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum IntervalClock {
     #[default]
@@ -745,9 +734,8 @@ impl TimeKind {
     }
 }
 
-/// The formats Setup offers for reading text as time, the unambiguous ones first.
-/// Named formats rather than inference: a run reads every row the same way, and a
-/// value the format does not read is counted, not guessed at.
+/// The formats Setup offers for reading text as time, unambiguous first. Named, not
+/// inferred: every row reads the same way, and an unreadable value is counted.
 pub const TIME_FORMATS: [(TimeKind, &str); 16] = [
     (TimeKind::Datetime, "%Y-%m-%d %H:%M:%S"),
     (TimeKind::Datetime, "%Y-%m-%dT%H:%M:%S"),
@@ -769,10 +757,9 @@ pub const TIME_FORMATS: [(TimeKind, &str); 16] = [
     (TimeKind::Date, "%d.%m.%Y"),
 ];
 
-/// A text column read as a date or datetime for one study. Grain and time roles see
-/// the parsed value; every other check sees the text as stored, so a column's own
-/// findings keep their physical meaning. A value the format does not read is counted
-/// as unparsed, never folded into the column's missing values.
+/// A text column read as a date or datetime for one study: grain and time roles see
+/// the parsed value, other checks the stored text. Unreadable values count as
+/// unparsed, never as missing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TimeInterpretation {
     pub column: String,
@@ -918,9 +905,8 @@ pub struct CopyRead {
     pub fetched: bool,
 }
 
-/// A run's line to the screen: its stages as it enters them, the rows its reads
-/// have seen, and a stop the run checks between stages and its reads check between
-/// batches.
+/// A run's line to the screen: stages as entered, rows its reads have seen, and a
+/// stop checked between stages and between read batches.
 #[derive(Clone, Default)]
 pub struct QualityWatch {
     read: crate::sampling::ReadWatch,
@@ -988,11 +974,9 @@ impl QualityWatch {
         reads && self.copy.get().is_none()
     }
 
-    /// `lf`, watched: every batch that reaches its top is counted, and once the run
-    /// is cancelled the next one fails the query. On the streaming engine a collect
-    /// of it stops within a batch rather than at its end; in memory the scope
-    /// arrives as one batch, after the read. Projections and filters pass through
-    /// to the scan as they would without it.
+    /// `lf` watched: each batch reaching the top is counted, and after a cancel the next
+    /// fails the query (streaming stops within a batch; in memory the scope is one batch).
+    /// Projections and filters still push down.
     fn watched(&self, lf: &LazyFrame) -> LazyFrame {
         let read = self.read.clone();
         lf.clone().map(
@@ -1009,9 +993,8 @@ impl QualityWatch {
         )
     }
 
-    /// Enter `stage`. Said once however often it is entered, and refused once the run
-    /// is cancelled: between stages is where a run stops. Leaving a stage that read
-    /// the source adds the rows it counted to what was observed.
+    /// Enter `stage`: said once however often entered, refused after a cancel (runs stop
+    /// between stages). Leaving a source-reading stage adds its rows to what was observed.
     pub(crate) fn stage(
         &self,
         stage: QualityStage,
@@ -1079,18 +1062,16 @@ pub struct DataQualityPlan {
     pub latency_threshold_seconds: Option<i64>,
     /// Text columns read as time for this study, by grain and roles only.
     pub time_formats: Vec<TimeInterpretation>,
-    /// The time windows rows are expected in, when stated: what makes a window
-    /// with no rows a gap. Read from the segments a run counted, so it changes what
-    /// the report says, never what a run reads.
+    /// The time windows rows are expected in, when stated, making an empty window a gap.
+    /// Applied to counted segments: changes the report, never the read.
     pub expected: Option<ExpectedWindows>,
     /// What the columns must hold, declared: the key and each column's rules. Read
     /// from the rows the run reads; it decides no rows, so it is the report's.
     pub intent: crate::quality_intent::DeclaredIntent,
 }
 
-/// Which time windows a study expects rows in, as stated in Setup: every window of
-/// the grain, or Monday to Friday's only, from one time and before another. Unset,
-/// no window is called a gap: a quiet weekend is not a defect unless someone says so.
+/// Which windows a study expects rows in, from Setup: every window of the grain or
+/// weekdays only, within a range. Unset, no window is a gap.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExpectedWindows {
     /// Only Monday to Friday's hours or days are expected.
@@ -1214,13 +1195,9 @@ impl DataQualityPlan {
         }
     }
 
-    /// Take `sample` as the rows this plan reads. Metadata-only stays metadata-only;
-    /// otherwise every row is a full read and anything less a sampled one.
-    ///
-    /// Choosing equal rows per value of a column is choosing to look at that column's
-    /// values side by side, and the grain is what does that. Taken only when the
-    /// choice is new and the grain has not been set, so a grain chosen afterwards
-    /// stays chosen.
+    /// Take `sample` as this plan's rows: metadata-only stays so; else every row is a full
+    /// read, fewer a sampled one. Equal rows per value of a column sets that column as
+    /// the grain, only when the choice is new and no grain was set.
     pub fn adopt_sample(&mut self, sample: &crate::sampling::Sample) {
         if self.scope != sample.scope {
             self.baseline_segment = None;
@@ -1372,10 +1349,9 @@ impl DataQualityPlan {
         }
     }
 
-    /// Whether `other` measures what this plan measures: they differ, if at all, in
-    /// the windows they expect, which a report checks against the counts it already
-    /// holds, or in what its segments are compared with, which is worked out from the
-    /// segments it holds ([`DataQualityResults::compare_segments`]).
+    /// Whether `other` measures the same, differing at most in expected windows or
+    /// comparison, both worked out from the report's counts
+    /// ([`DataQualityResults::compare_segments`]).
     pub fn same_measurement(&self, other: &Self) -> bool {
         let measured = |plan: &Self| Self {
             expected: None,
@@ -1398,9 +1374,8 @@ impl DataQualityPlan {
             .flatten()
     }
 
-    /// The next coarser grain to offer when segments are thin: a day for an hour, a
-    /// week for a day, a month for a week, and a larger row chunk. Partitions and files
-    /// have none.
+    /// The next coarser grain for thin segments (hour→day→week→month, a larger row chunk);
+    /// none for partitions and files.
     pub fn coarser_grain(&self) -> Option<QualityGrain> {
         match &self.grain {
             QualityGrain::TimeWindows { column, every } => {
@@ -1654,8 +1629,8 @@ pub struct QualityObservation {
     pub fact: String,
     pub normalized_category: Option<String>,
     /// The files behind an [`ObservationKind::Absent`] or
-    /// [`ObservationKind::TypeConflict`] measurement, commonest first. Empty for every
-    /// check measured over values rather than over footers.
+    /// [`ObservationKind::TypeConflict`] measurement, commonest first; empty for checks
+    /// over values.
     pub files: Vec<QualityFileEvidence>,
     /// The format an [`ObservationKind::UnparsedTime`] measurement read the text with.
     pub time_format: Option<TimeInterpretation>,
@@ -1665,9 +1640,8 @@ pub struct QualityObservation {
 }
 
 impl QualityObservation {
-    /// The scope that holds the rows behind this observation, when they are a set of
-    /// files rather than a predicate over values. An absent or conflicting cell has no
-    /// value to filter on — the rows are simply the ones the files contributed.
+    /// The scope holding this observation's rows when they are a set of files (absent or
+    /// conflicting cells have no value to filter on).
     pub fn evidence_scope(&self) -> Option<QualityScope> {
         if !matches!(
             self.kind,
@@ -1681,9 +1655,8 @@ impl QualityObservation {
         ))
     }
 
-    /// The rows behind this observation, as a predicate over the rows the run read.
-    /// The engine counts with the same expression where it can, so the count and the
-    /// rows Enter opens agree.
+    /// The rows behind this observation as a predicate over the run's rows; the engine
+    /// counts with the same expression where it can, so count and rows agree.
     pub fn evidence_predicate(&self, results: &DataQualityResults) -> Option<Expr> {
         let value = col(&self.column);
         match self.kind {
@@ -1715,9 +1688,8 @@ impl QualityObservation {
                     .to_lowercase()
                     .eq(lit(self.normalized_category.clone()?)),
             ),
-            // Nearly unique and still repeating: the repeats are exactly the rows
-            // whose value is not the only one of its kind. Nulls are outside the
-            // measurement, so they are outside its rows too.
+            // Nearly unique yet repeating: the rows whose value repeats; nulls are outside the
+            // measurement.
             ObservationKind::KeyLike => {
                 Some(value.clone().is_duplicated().and(value.is_not_null()))
             }
@@ -1748,9 +1720,8 @@ impl QualityObservation {
             ObservationKind::UnparsedNumber => {
                 results.intent.as_ref()?.unparsed_number(&self.column)
             }
-            // Duplicates are rows equal to another, not rows a value picks out;
-            // absent and conflicting rows are named by their files, the column not
-            // being in those rows to be tested; an offset is in every sample.
+            // Duplicates are rows equal to another, not a predicate; absent and conflicting rows
+            // are named by files; an offset is in every sample.
             ObservationKind::DuplicateRows
             | ObservationKind::Absent
             | ObservationKind::TypeConflict
@@ -1842,9 +1813,8 @@ pub fn segment_order(results: &DataQualityResults, by_change: bool) -> Vec<usize
     order
 }
 
-/// Every column's measures in segment `index`: beside the segment it is compared
-/// with and largest move first, or on its own worst first. A measure that is zero
-/// on both sides says nothing and is left out.
+/// Every column's measures in segment `index`, beside its comparison segment largest
+/// move first, or alone worst first; zero on both sides is left out.
 pub fn segment_changes(results: &DataQualityResults, index: usize) -> Vec<SegmentChange> {
     let Some(segment) = results.segments.get(index) else {
         return Vec::new();
@@ -1910,9 +1880,8 @@ pub struct TemporalLatencyProfile {
     pub end_column: String,
     /// Rows in the segment.
     pub evaluated_rows: usize,
-    /// Rows with both endpoints present and read: the rows a duration is taken on,
-    /// and what negative, zero and threshold counts are out of. Not the rows less
-    /// the missing ones, since a row can miss both.
+    /// Rows with both endpoints present and read: what durations and their counts are out
+    /// of (not rows less missing ones, since a row can miss both).
     pub paired_rows: usize,
     pub missing_start: usize,
     pub missing_end: usize,
@@ -1977,11 +1946,9 @@ impl TemporalLatencyProfile {
         segment_predicate(plan, &grain, &self.segment, None).is_some()
     }
 
-    /// The rows behind `fact` in this interval's segment, as a predicate over the
-    /// scope `plan` measured: `None` when a segment cannot be told by its values
-    /// (row chunks, files) or the fact is not measured.
-    /// `schema` is the data's, where known: with it a partition segment compares in
-    /// its column's type.
+    /// The rows behind `fact` in this interval's segment, as a predicate over `plan`'s
+    /// scope; `None` for row-chunk or file segments, or an unmeasured fact. `schema`,
+    /// when known, lets a partition segment compare in its column's type.
     pub fn evidence_predicate(
         &self,
         fact: IntervalFact,
@@ -2068,13 +2035,8 @@ impl IntervalFact {
     }
 }
 
-/// The rows of the segment labeled `label` under `grain`, as a predicate: `Some(None)`
-/// for the whole scope, `None` where a segment is a stretch of rows or a file and not
-/// a value to filter on. Read back from the label, which names a partition's value
-/// as its segment was keyed and a window's start exactly.
-/// Each value of `column` as a segment label writes it, null where it is null. A
-/// cast to text writes a float or a datetime differently than the label does, and
-/// then the rows a label names would not be found.
+/// Each value of `column` written as a segment label writes it (null stays null): a
+/// cast to text formats floats and datetimes differently.
 fn label_text(column: &str) -> Expr {
     col(column).map(
         |values| {
@@ -2090,10 +2052,9 @@ fn label_text(column: &str) -> Expr {
     )
 }
 
-/// The rows of a partition segment whose label writes `value`. Where the column's
-/// type writes each value one way (text, flags, whole numbers, dates, decimals) and
-/// `value` reads back as that very label, a plain comparison, which file statistics
-/// can answer; otherwise, such as a float the label rounds, the label of each row.
+/// The rows of a partition segment labeled `value`: a plain comparison (answerable by
+/// file statistics) where the type writes each value one way and `value` reads back
+/// as that label, else each row's label (e.g. rounded floats).
 fn partition_label_predicate(column: &str, value: &str, schema: Option<&Schema>) -> Expr {
     let writes_each_once = |dtype: &&DataType| {
         dtype.is_integer()
@@ -2118,6 +2079,9 @@ fn partition_label_predicate(column: &str, value: &str, schema: Option<&Schema>)
     }
 }
 
+/// The rows of the segment labeled `label` under `grain` as a predicate: `Some(None)`
+/// for the whole scope, `None` for row stretches or files. Read back from the label,
+/// which names a partition value as keyed and a window's exact start.
 fn segment_predicate(
     plan: &DataQualityPlan,
     grain: &QualityGrain,
@@ -2156,9 +2120,8 @@ fn segment_predicate(
         QualityGrain::RowChunks(_) | QualityGrain::File => None,
     }
 }
-/// Columns that are null the same number of times, and how many rows are null in all
-/// of them at once. When the two counts agree, the columns go missing together: one
-/// fact about some rows, not one per column.
+/// Columns null the same number of times, and the rows null in all at once: when equal
+/// they go missing together, one fact rather than one per column.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SharedNulls {
     pub columns: Vec<String>,
@@ -2198,9 +2161,8 @@ pub struct DataQualityResults {
     /// Values behind text findings, from the rows the run kept; empty after a full
     /// scan.
     pub examples: Vec<FindingExamples>,
-    /// Segments a sampled run counted rows in but drew none of, in segment order:
-    /// the rows are there, the sample did not reach them. Not in `segments`, which
-    /// profile only what was read.
+    /// Segments a sampled run counted rows in but drew none from, in order; not in
+    /// `segments`, which profile only what was read.
     pub unsampled_segments: Vec<UnsampledSegment>,
     /// What the declared column intent found; `None` when nothing was declared.
     pub intent: Option<Box<crate::quality_intent::IntentResults>>,
@@ -2220,9 +2182,8 @@ pub struct UnsampledSegment {
 }
 
 impl DataQualityResults {
-    /// Memory the report holds, near enough to budget by: a profile per column, and
-    /// another per column of every segment, which is what grows, and the text it
-    /// keeps, whole in spellings and cut short in examples.
+    /// Approximate memory the report holds, for budgeting: profiles per column and per
+    /// segment column, plus kept text.
     pub fn estimated_bytes(&self) -> usize {
         let profile = |column: &ColumnQualityProfile| {
             std::mem::size_of::<ColumnQualityProfile>()
@@ -2393,14 +2354,10 @@ impl DataQualityResults {
     }
 }
 
-/// The rows a sampled run read, kept beside its results: an acquisition.
-///
-/// What decides these rows is the acquisition's identity — the dataset, the view, the
-/// scope, the method, the size and the seed — which the caller keys it by. Everything
-/// else a plan says (grain, comparison, time roles, text read as time, the latency
-/// threshold) is the report's, and a run that changes only those cuts these rows
-/// again rather than reading the source. Every column of the scope is kept, and where
-/// each row sat, so any role, format or row-chunk grain finds what it needs here.
+/// The rows a sampled run read, kept beside its results. Keyed by acquisition (dataset,
+/// view, scope, method, size, seed); other plan settings are the report's, so a run
+/// changing only those re-cuts these rows instead of reading the source. Every column
+/// and each row's position are kept.
 #[derive(Debug, Clone)]
 pub struct QualitySample {
     df: DataFrame,
@@ -2409,9 +2366,8 @@ pub struct QualitySample {
     precision: QualityPrecision,
     total_rows: Option<usize>,
     per_value: Option<crate::sampling::PerValue>,
-    /// Rows of the whole scope by segment key, by the grain they were counted for and
-    /// the format its column was read through, when it is text read as time. Keyed as
-    /// the key reads (`AnyValue::str_value`), `None` for null.
+    /// Rows of the whole scope by segment key, per grain and text-as-time format, keyed as
+    /// `AnyValue::str_value` reads (`None` for null).
     counted: Vec<(SegmentKey, SegmentCounts)>,
     /// Grains whose count stopped at [`crate::sampling::MAX_COUNTED_KEYS`], so a run
     /// of one again says so rather than reading to find out.
@@ -2432,9 +2388,8 @@ fn segment_key(plan: &DataQualityPlan) -> SegmentKey {
     (plan.grain.clone(), format)
 }
 
-/// How a full scan of a remote source gets its rows, as Setup says before Run: one
-/// fetch into a local copy that every pass reads, a copy fetched earlier, or a pass
-/// over the source for each check.
+/// How a remote full scan gets its rows, as Setup says: one fetch into a local copy
+/// all passes read, an earlier copy, or a source pass per check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CopyPlan {
     /// Not a full scan of a remote source read in place.
@@ -2506,11 +2461,10 @@ pub fn window_cadence(every: &str) -> &str {
     }
 }
 
-/// Whether windows of width `fine` nest exactly in windows of `coarse`: every hour in
-/// one day, every day in one week (weeks start on Monday) and one month. Windows are
-/// cut on the stored clock with no time zone (UTC for a zoned column; see
-/// [`time_window_start`]), where no day has 23 or 25 hours, so a sum of the finer
-/// counts is the coarser count. A week does not nest in a month.
+/// Whether windows of width `fine` nest exactly in `coarse`: hours in a day, days in a
+/// week (Monday start) and in a month; weeks not in months. Windows are cut on the
+/// zoneless stored clock (UTC for zoned; see `time_window_start`), so no day has
+/// 23 or 25 hours and finer counts sum to the coarser.
 pub fn window_nests(fine: &str, coarse: &str) -> bool {
     matches!(
         (fine, coarse),
@@ -2604,9 +2558,8 @@ pub fn segments_need_count(plan: &DataQualityPlan) -> bool {
     )
 }
 
-/// Whether the pass that samples `plan`'s rows also counts its segments: an
-/// equal-per-value sample by the column the grain splits by counts every value as it
-/// streams.
+/// Whether sampling `plan`'s rows also counts its segments: an equal-per-value sample
+/// by the grain's column counts every value as it streams.
 pub fn sampler_counts_segments(plan: &DataQualityPlan) -> bool {
     matches!(
         (&plan.grain, &plan.method),
@@ -2617,10 +2570,9 @@ pub fn sampler_counts_segments(plan: &DataQualityPlan) -> bool {
     )
 }
 
-/// Where a run of `plan` that reads a new sample gets its segment totals.
-/// `may_read_blocks` is whether the sample may be seeded runs of one file, which see
-/// too few rows to count; the head sees too few as well. Every other sample is one
-/// streamed pass over the scope, which counts the grain's key as it goes.
+/// Where a run reading a new sample gets segment totals. Seeded runs of one file
+/// (`may_read_blocks`) and the head see too few rows; any other sample is one streamed
+/// pass that counts the grain's key as it goes.
 pub fn fresh_segment_count(plan: &DataQualityPlan, may_read_blocks: bool) -> SegmentCount {
     if plan.compute != QualityCompute::Sample || !segments_need_count(plan) {
         return SegmentCount::NotNeeded;
@@ -2689,11 +2641,9 @@ pub(crate) fn compute_data_quality_kept(
 }
 
 /// The data quality of `lf` by `plan`, cutting `kept` instead of reading when it
-/// serves the plan. Names each stage to `watch` as it enters it and stops between
-/// stages, or inside a streamed read, once `watch` is cancelled.
-///
-/// The sample a sampled run read comes back whether or not the run finished: a run
-/// stopped after its read has still paid for it, and the next run can cut it.
+/// serves the plan. Names each stage to `watch` and stops between stages (or inside a
+/// streamed read) once cancelled. A sampled run's rows come back even if it stopped:
+/// the read is paid for, and the next run can cut it.
 pub fn compute_data_quality_watched(
     lf: &LazyFrame,
     total_rows: Option<usize>,
@@ -2813,20 +2763,17 @@ fn profile_quality(
         );
     }
 
-    // The shared analysis sampler, as every other tool reads: by default spread
-    // across the whole scope, so a file sorted by date is not judged by its first
-    // stretch. Every grain cuts its segments from this one sample, so a segmented
-    // run reads no more than the sample says and measures the rows every tool reads.
+    // The shared sampler, spread across the scope by default (a date-sorted file is not
+    // judged by its start); every grain cuts segments from this one sample.
     let kept = acquired.insert(match kept {
         Some(kept) => {
             watch.stage(QualityStage::ReusingSample, false, false)?;
             kept.clone()
         }
         None => {
-            // The first rows are one collect; every other method streams in batches
-            // or reads seeded runs, and stops between them. Without the streaming
-            // engine a streamed sample's batches come after its whole read; seeded
-            // runs still stop between runs, sooner than this promises.
+            // First rows are one collect; other methods stream in batches or read seeded runs,
+            // stopping between them (without the streaming engine, batches follow the whole
+            // read).
             let interruptible = plan.method != crate::sampling::SampleMethod::FirstRows
                 && cfg!(feature = "streaming");
             watch.stage(QualityStage::ReadingSample, true, interruptible)?;
@@ -2847,9 +2794,8 @@ fn profile_quality(
     let profile_df = attach_source_file(profile_df, source)?;
     watch.stage(QualityStage::ProfilingColumns, false, false)?;
     let mut columns = profile_columns(&profile_df, &schema, polars_streaming)?;
-    // The same Polars aggregations a full scan uses, over the rows the sample kept:
-    // they scale to any sample the shared form asks for, where a walk over rows did
-    // not, and a sample and a scan are measured the same way.
+    // The full scan's Polars aggregations over the kept rows, so sample and scan are
+    // measured alike and any sample size scales.
     let profile_lf = profile_df.clone().lazy();
     add_dominance_lazy(&profile_lf, &mut columns, polars_streaming)?;
     // Text read as time and the declared intent are counted over the rows in memory,
@@ -3010,14 +2956,10 @@ fn read_quality_sample(
     Ok(kept)
 }
 
-/// How many rows each segment of a sampled run holds, reading only what nothing has
-/// counted yet.
-///
-/// An equal-per-value sample counted every value as it streamed, so a grain by the
-/// same column is already counted, and a streamed sample counted the grain it was read
-/// for. A coarser window is summed from a finer window's count when it nests in it
-/// exactly. Anything else is counted by a read of its key, once: the count is kept with
-/// the sample for the next run.
+/// Rows per segment of a sampled run, reading only what is uncounted: an
+/// equal-per-value or streamed sample already counted its grain; a coarser window
+/// sums a nesting finer count; anything else is counted once by a read of its key
+/// and kept with the sample.
 fn sampled_segment_totals(
     lf: &LazyFrame,
     plan: &DataQualityPlan,
@@ -3074,9 +3016,8 @@ fn too_many_segments(plan: &DataQualityPlan) -> Report {
     ))
 }
 
-/// A finer window's counts summed into `every`'s windows, through the expression
-/// that cuts every window, so the sum lands where a count by `every` would. Exact only
-/// where [`window_nests`] says so; the caller asks it first.
+/// A finer window's counts summed into `every`'s windows through the window
+/// expression; exact only where [`window_nests`] says so (asked first).
 fn roll_up_windows(finer: &SegmentCounts, every: &str) -> Result<SegmentCounts> {
     let mut rolled = SegmentCounts::new();
     let mut starts = Vec::with_capacity(finer.len());
@@ -3186,9 +3127,8 @@ fn compute_full_quality(
         observations.extend(intent.observations());
     }
     crate::quality_intent::supersede(&mut observations, plan);
-    // Only a run that already reads every value pays for the conflicting values, and
-    // only that run's access plan promised the read. Each file is read on its own,
-    // so a cancel stops them between files.
+    // Only a run already reading every value pays for conflicting values, as its access
+    // plan promised; files are read one by one so a cancel stops between them.
     if let Some(source) = source {
         if source.conflict_scan.is_some() {
             watch.stage(QualityStage::ReadingConflicts, true, true)?;
@@ -3268,11 +3208,9 @@ fn shared_null_groups(columns: &[ColumnQualityProfile]) -> Vec<(usize, Vec<Strin
         .collect()
 }
 
-/// For every set of two or more columns with the same nonzero null count, how many
-/// rows are null in all of them.
-///
-/// Equal counts are only a hint; this is the check. It reads just those columns, once,
-/// and is skipped entirely when no two columns share a count.
+/// For each set of two or more columns with the same nonzero null count, the rows null
+/// in all of them: equal counts are only a hint. Reads just those columns once;
+/// skipped when no counts are shared.
 fn profile_shared_nulls(
     lf: &LazyFrame,
     columns: &[ColumnQualityProfile],
@@ -3307,9 +3245,8 @@ fn profile_shared_nulls(
         .collect())
 }
 
-/// The most common value of every column, in one pass. A scan per column would
-/// re-read the whole source once per column, which on a remote dataset is the
-/// difference between one read and sixty — and the access plan promises one.
+/// The most common value of every column in one pass (a pass per column would reread
+/// a remote source per column; the access plan promises one).
 fn add_dominance_lazy(
     lf: &LazyFrame,
     profiles: &mut [ColumnQualityProfile],
@@ -3462,9 +3399,8 @@ fn profile_identity_lazy(
 
 const DUPLICATE_COPIES: &str = "__datui_quality_copies";
 
-/// Groups of rows identical in every one of `keys`, with how many copies each has,
-/// most copies first and then first seen first: the grouping the duplicate check
-/// counts with.
+/// Groups of rows identical in every `keys` column with their copy counts, most copies
+/// then first seen first: the duplicate check's grouping.
 fn duplicate_groups(lf: LazyFrame, keys: &[PlSmallStr]) -> LazyFrame {
     lf.group_by_stable(keys.iter().map(|key| col(key.clone())).collect::<Vec<_>>())
         .agg([len().alias(DUPLICATE_COPIES)])
@@ -3477,11 +3413,9 @@ fn duplicate_groups(lf: LazyFrame, keys: &[PlSmallStr]) -> LazyFrame {
         )
 }
 
-/// The rows the duplicate check counted: every row equal to another in every one of
-/// `keys`, copies together, most copies first. One pass, grouping as the check did.
-///
-/// Copies are equal in every key, so each group's key is its rows: it is repeated as
-/// many times as it occurs rather than looked up in a second read.
+/// The rows the duplicate check counted: rows equal to another in every `keys` column,
+/// copies together, most first, in one pass. Each group's key is its rows, repeated
+/// by count rather than looked up again.
 pub fn duplicate_rows(
     lf: LazyFrame,
     keys: &[PlSmallStr],
@@ -3762,9 +3696,8 @@ fn group_by_value(df: &DataFrame, column: &str, prefix: &str) -> Result<Vec<Segm
         .into_iter()
         .map(|(label, indices)| SegmentRows { label, indices })
         .collect();
-    // Rows the grain could not place carry no order, so they follow the ones it
-    // could — the same rule the scanned path applies. Sorting "∅" by codepoint
-    // would put it before any value that outranks U+2205.
+    // Unplaced rows follow placed ones, as on the scanned path (sorting "∅" by codepoint
+    // would misplace it).
     if !missing.is_empty() {
         result.push(SegmentRows {
             label: format!("{prefix}∅"),
@@ -3774,10 +3707,9 @@ fn group_by_value(df: &DataFrame, column: &str, prefix: &str) -> Result<Vec<Segm
     Ok(result)
 }
 
-/// Where a row's window starts. Both the sampled and the full-scan path bucket
-/// through this one expression, so a week never starts on a different day
-/// depending on how much of it was read. A date past the calendar's range falls
-/// in no window, as a null does: truncating it overflows.
+/// Where a row's window starts: the one expression both sampled and full paths
+/// bucket by, so weeks start alike. A date past the calendar falls in no window, like
+/// a null (truncating it overflows).
 fn time_window_start(value: Expr, every: &str) -> Expr {
     value
         .map(
@@ -3871,13 +3803,9 @@ struct SegmentSampleProvenance<'a> {
     totals: &'a BTreeMap<String, usize>,
 }
 
-/// Segment sizes known without reading them: a file's rows from its footer, when
-/// the scope holds whole files, and a row chunk's from the scope's size. Others are
-/// unknown on a sample, and are left unknown rather than estimated.
-///
-/// Partitions and time windows are counted instead: a grouped count reads only
-/// the grain's column, a small read beside the sample's, and a day whose rows fell
-/// by half is the first thing a daily check is for.
+/// Segment sizes known without reading: a file's rows from its footer (whole-file
+/// scopes) and a row chunk's from the scope size. Partitions and windows are counted
+/// with a grouped read of the grain's column; other sizes stay unknown on a sample.
 fn counted_segment_totals(
     lf: &LazyFrame,
     plan: &DataQualityPlan,
@@ -3954,9 +3882,8 @@ fn profile_segments(
     polars_streaming: bool,
 ) -> Result<(Vec<SegmentQualityProfile>, Vec<UnsampledSegment>)> {
     let groups = segment_rows(df, plan, sample.positions)?;
-    // Every segment in one grouped query, keyed by the segment each row fell in.
-    // A query per segment is thousands of them for a daily grain over years, and
-    // each pays Polars' planning cost for a few dozen rows.
+    // Every segment in one grouped query: a query per segment would pay Polars' planning
+    // thousands of times for a daily grain over years.
     let mut segment_of = vec![0u32; df.height()];
     for (index, group) in groups.iter().enumerate() {
         for row in &group.indices {
@@ -4040,9 +3967,8 @@ fn profile_segments(
     Ok((profiles, unsampled))
 }
 
-/// Segments in the order their names count: year=9 before year=10, part-2 before
-/// part-10, and the rows no segment could place (`∅`) last. "Previous" means the
-/// segment before in this order, so it has to be the order a person would read.
+/// Segments in natural name order (year=9 before year=10), unplaced (`∅`) last, since
+/// "previous" means the one a person would read before.
 fn order_segments(segments: &mut [SegmentQualityProfile]) {
     segments.sort_by(|left, right| segment_cmp(&left.label, &right.label));
 }
@@ -4318,9 +4244,8 @@ fn apply_comparisons(
 /// percentage points.
 pub(crate) const MATERIAL_CHANGE_PP: f64 = 1.0;
 
-/// How many standard errors apart two sampled rates must be before the difference
-/// is named. A segment is dozens of columns and measures, and a daily grain is
-/// thousands of segments: at three, sampling alone would name a change most days.
+/// Standard errors apart two sampled rates must be before a difference is named: with
+/// dozens of measures and thousands of segments, three would name noise daily.
 const NOISE_Z: f64 = 4.0;
 
 /// Whether rates `a` of `n_a` rows and `b` of `n_b` rows differ by more than two
@@ -4335,9 +4260,8 @@ pub fn beyond_noise(a: f64, n_a: usize, b: f64, n_b: usize) -> bool {
     error > 0.0 && (a - b).abs() / error >= NOISE_Z
 }
 
-/// The rates a segment is compared on. A distinct share is not one of them: it
-/// falls as a segment grows, so two segments of different sizes differ by it
-/// whatever their data.
+/// The rates segments are compared on. Not distinct share, which falls as a segment
+/// grows.
 const CHANGE_MEASURES: [QualityMetric; 4] = [
     QualityMetric::NullRate,
     QualityMetric::EmptyRate,
@@ -4345,15 +4269,10 @@ const CHANGE_MEASURES: [QualityMetric; 4] = [
     QualityMetric::NonFiniteRate,
 ];
 
-/// The clearest move between two segments, and its size.
-///
-/// #196 asks where a column's null rate or range shifts sharply, which is a
-/// question about the sharpest single move rather than about the average of all of
-/// them: one column going from never-null to always-null is the finding, and a mean
-/// over sixty columns buries it. A row count that halved or doubled comes first:
-/// for a feed split by day it is the loudest thing that can go wrong. On a sample,
-/// a move is named only past sampling noise; a range that moved only on an exact
-/// profile, since a sample's minimum and maximum move with the draw.
+/// The clearest move between two segments and its size: the sharpest single move,
+/// not an average (one column going all-null is the finding). A halved or doubled row
+/// count comes first. On a sample, only moves past sampling noise; range moves only
+/// on exact profiles (a sample's min and max move with the draw).
 fn largest_material_change(
     segment: &SegmentQualityProfile,
     baseline: &SegmentQualityProfile,
@@ -4375,10 +4294,8 @@ fn largest_material_change(
     let mut largest: Option<(f64, String)> = None;
     let mut range: Option<String> = None;
     for (index, column) in segment.columns.iter().enumerate() {
-        // Both profiles are built by walking the same schema, so the columns line up.
-        // A linear search per column per segment is a square over the column count,
-        // which is paid exactly where this feature is for: thousands of file segments
-        // over hundreds of columns.
+        // Both profiles walk the same schema, so columns line up; a search per column per
+        // segment would be quadratic where thousands of segments meet hundreds of columns.
         let Some(prior) = baseline
             .columns
             .get(index)
@@ -4458,9 +4375,8 @@ struct ResolvedInterval {
     grain: QualityGrain,
 }
 
-/// The measured intervals whose two roles sit on columns the run can read as time.
-/// A role on text with no format measures nothing: its interval is left out rather
-/// than read as all missing.
+/// The measured intervals whose roles sit on columns readable as time; a role on text
+/// without a format measures nothing and is left out.
 fn resolved_intervals(plan: &DataQualityPlan, schema: &Schema) -> Vec<ResolvedInterval> {
     let usable = |role| {
         plan.role_column(role)
@@ -4501,9 +4417,8 @@ pub fn interval_passes(plan: &DataQualityPlan, schema: &Schema) -> usize {
     interval_grains(&resolved_intervals(plan, schema)).len()
 }
 
-/// End minus start per row, as a duration: null where either is missing or unread.
-/// Dates are midnight; a zoned time is its instant in UTC, and a time with no zone
-/// is read as if it were UTC.
+/// End minus start per row as a duration, null when either is missing or unread.
+/// Dates are midnight; zoned times their UTC instant; zoneless times read as UTC.
 fn interval_duration(plan: &DataQualityPlan, start: &str, end: &str) -> Expr {
     let as_time = |column: &str| {
         plan.time_value(column)
@@ -4524,9 +4439,8 @@ fn profile_temporal(
     plan: &DataQualityPlan,
     sample_positions: Option<&[IdxSize]>,
 ) -> Result<Vec<TemporalLatencyProfile>> {
-    // Resolved before the rows are grouped, as the lazy path does: the default plan
-    // assigns no roles at all, and splitting the sample into ten thousand segments to
-    // discover that costs a DataFrame copy per segment and answers nothing.
+    // Resolved before grouping, as the lazy path does: the default plan assigns no roles,
+    // and splitting into segments to learn that copies a frame per segment.
     let resolved = resolved_intervals(plan, df.schema());
     if resolved.is_empty() {
         return Ok(Vec::new());
@@ -4764,9 +4678,8 @@ fn profile_temporal_lazy(
     let mut ordered = Vec::new();
     for (interval, mut segments) in resolved.iter().zip(profiles) {
         segments.sort_by(|left, right| left.segment.cmp(&right.segment));
-        // The zero padding exists so a lexicographic sort orders chunks numerically,
-        // and comes off once it has. Segments does the same thing in the same place;
-        // leaving it on here had Trends and Segments name one chunk two ways.
+        // Strip the zero padding used for sorting chunks, as Segments does, so both name a
+        // chunk alike.
         if matches!(interval.grain, QualityGrain::RowChunks(_)) {
             for profile in &mut segments {
                 profile.segment = pretty_chunk_label(&profile.segment);
@@ -4932,9 +4845,8 @@ fn text_expr(column: Expr, dtype: &DataType) -> Expr {
     }
 }
 
-/// One count the profile pass takes of each column it applies to: the alias suffix
-/// it is read back by, its expression, and the profile field it fills. The pass and
-/// the reader both go through [`MEASURES`], so a name cannot drift between them.
+/// One count the profile pass takes per column: the alias suffix it is read back by,
+/// its expression, and the field it fills. Pass and reader both use [`MEASURES`].
 struct Measure {
     name: &'static str,
     applies: fn(&DataType) -> bool,
@@ -5096,9 +5008,8 @@ fn build_profile_exprs(schema: &Schema) -> Vec<Expr> {
     exprs
 }
 
-/// Whether text parses as `reading`: the test the profile counts with, so a count
-/// and the rows it opens agree. A whole number is counted among the decimals, and
-/// fails where they fail.
+/// Whether text parses as `reading`: the test the profile counts with, so counts and
+/// opened rows agree. Whole numbers count among decimals.
 fn parses_as(text: Expr, reading: TextReading) -> Expr {
     // Named formats, not inference: "parses as an ISO date" has to mean the same
     // thing on every column, including one where nothing does.
@@ -5190,9 +5101,8 @@ fn parse_profiles_at(
         .collect()
 }
 
-/// The share of non-null text values that must parse before a text column is said
-/// to hold numbers or dates. Below it the column is text that happens to contain a
-/// few numbers, which is not a finding.
+/// The share of non-null text that must parse before a column is said to hold numbers
+/// or dates.
 pub const TEXT_READING_SHARE: f64 = 0.95;
 
 /// What the values of a text column parse as, most specific first.
@@ -5219,11 +5129,8 @@ impl TextReading {
     }
 }
 
-/// The one typed reading a text column's values support, with how many parse.
-///
-/// A whole number also parses as a decimal and a datetime string may also parse as a
-/// date, so the column gets one answer rather than three rows saying overlapping
-/// things. Numbers are whole only when every number is.
+/// The one typed reading a text column supports, with how many parse: the most
+/// specific of overlapping readings. Whole only when every number is.
 pub fn text_reading(profile: &ColumnQualityProfile) -> Option<(usize, TextReading)> {
     let non_null = profile.non_null_rows();
     if non_null == 0 {
@@ -5283,16 +5190,9 @@ fn observations_from_profiles(
         if let Some((parsed, _)) = text_reading(profile) {
             observations.push(observation(ObservationKind::ParseableText, profile, parsed));
         }
-        // Near-unique and still repeating. Both numbers are already measured, so this
-        // check costs the comparison and nothing else.
-        //
-        // Only on an exact profile: a distinct count does not extrapolate the way a
-        // null rate does. An order id repeating ten times in a billion rows is unique
-        // in every 50,000-row sample of it, and "sampled" under a claim that a column
-        // is nearly a key does not take the claim back.
-        //
-        // Only where a key can live: integers and text. A float measure or a timestamp
-        // is nearly unique by nature, and its repeats are coincidences, not duplicates.
+        // Near-unique yet repeating, from numbers already measured. Exact profiles only
+        // (distinct counts do not extrapolate from samples), and only integers and text (a
+        // float or timestamp is nearly unique by nature).
         if precision == QualityPrecision::Exact
             && (profile.dtype.is_integer()
                 || matches!(profile.dtype, DataType::String | DataType::Categorical(..)))
@@ -5300,9 +5200,8 @@ fn observations_from_profiles(
                 (profile.distinct_count, profile.uniqueness_rate())
             && (KEY_LIKE_UNIQUENESS..1.0).contains(&uniqueness)
         {
-            // Rows beyond one per value, as `DuplicateRows` counts extras. Not the
-            // rows that share a value, which is what the drill-in opens and always
-            // more; the detail pane says which is which.
+            // Rows beyond one per value, as `DuplicateRows` counts extras (not all rows sharing a
+            // value, which the drill-in opens).
             let extras = profile.non_null_rows().saturating_sub(distinct);
             if extras > 0 {
                 observations.push(observation(ObservationKind::KeyLike, profile, extras));
@@ -5312,12 +5211,8 @@ fn observations_from_profiles(
     observations
 }
 
-/// How many one-column file reads a full run makes for the values type conflicts hide,
-/// so the access plan can promise them before anything is read.
-///
-/// Over the footers rather than over a [`QualitySourceContext`]: the access plan asks
-/// this on every frame it is open, and building a context to answer would clone a file
-/// list per frame.
+/// How many one-column file reads a full run makes for conflict-hidden values, so the
+/// access plan can promise them. From the footers, since it is asked every frame.
 pub(crate) fn conflict_reads(
     file_group: &[u32],
     groups: &[crate::schema_union::DriftGroup],
@@ -5337,9 +5232,8 @@ pub(crate) fn conflict_reads(
         .sum()
 }
 
-/// Reads named columns of named files at the type each file wrote, which is the only
-/// way back to the values a type conflict hides. Given to a run that already reads
-/// every value, so the extra read is one column of the few files that disagree.
+/// Reads named columns of named files at each file's own type, the only way back to
+/// conflict-hidden values: one column of the few disagreeing files.
 #[derive(Clone)]
 pub struct QualityConflictScan(pub crate::table::FileScan);
 
@@ -5349,19 +5243,9 @@ impl std::fmt::Debug for QualityConflictScan {
     }
 }
 
-/// Absent columns and type conflicts, from the footers datui already read.
-///
-/// Both are facts about which files hold which columns, so they are measured over the
-/// whole loaded source however the run was scoped: no value in a scope can say
-/// anything about a column its file never had, and a conflicting column is not read
-/// into the scope at all. The detail pane says so rather than leaving the reader to
-/// notice that these two denominators are not the others.
-/// What one column loses to the files that disagree: every one of them counted, and
-/// the largest few kept by name.
-///
-/// A dataset of 6,541 files can have a column missing from nearly all of them, so the
-/// names are pruned as they arrive. Holding one entry per file per column is how a
-/// measurement that costs nothing to compute ends up costing hundreds of megabytes.
+/// What one column loses to disagreeing files: all counted, the largest few kept by
+/// name, pruned as they arrive (one entry per file per column would cost hundreds of
+/// megabytes on thousands of files).
 #[derive(Default)]
 struct DriftTally {
     files: usize,
@@ -5392,6 +5276,9 @@ impl DriftTally {
     }
 }
 
+/// Absent columns and type conflicts, from the footers already read. Measured over
+/// the whole loaded source however the run was scoped (a scope's values say nothing
+/// of columns its files lack); the detail pane notes the different denominator.
 fn drift_observations(
     source: &QualitySourceContext,
     conflicts: Option<&QualityConflictScan>,
@@ -5480,12 +5367,9 @@ fn drift_observations(
     observations
 }
 
-/// The first values each conflicting file holds, read at that file's own type.
-///
-/// One scan per file, of one column, limited to the first few rows: a conflict is a
-/// property of the file rather than of any row, so the first values it holds are as
-/// good evidence as any and stop the read at once. A file that cannot be read this way
-/// keeps its count and loses only its examples.
+/// The first values each conflicting file holds, at its own type: one limited scan of
+/// one column per file (a conflict is the file's, so its first values suffice). A
+/// file that cannot be read keeps its count, losing only examples.
 fn read_conflict_examples(
     scan: &QualityConflictScan,
     column: &str,
@@ -5520,10 +5404,8 @@ fn read_conflict_examples(
     }
 }
 
-/// Read every sample of `audio` once and add what a recording's quality turns on to
-/// `results`: clipping, runs of exact zeros, and DC offset, per channel. Only for a
-/// full run whose scope is every frame of the file, which the caller decides: the
-/// read is of the file, not of the view.
+/// Read every sample of `audio` once and add clipping, zero runs and DC offset per
+/// channel to `results`; only for a full run over every frame (the caller decides).
 pub fn add_signal_observations(
     results: &mut DataQualityResults,
     audio: &crate::audio::AudioSource,

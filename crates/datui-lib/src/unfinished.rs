@@ -202,7 +202,7 @@ impl Writer {
 }
 
 /// Dropped after the app, removes what the app's opens were still writing. See the
-/// [module](self).
+/// module.
 #[must_use]
 pub struct ExitSweep(pub(crate) Unfinished);
 

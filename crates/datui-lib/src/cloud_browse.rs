@@ -1,25 +1,12 @@
-//! Finding the object stores this machine can already read, and listing what is in
-//! them.
+//! Finding the object stores this machine can already read, and listing their
+//! contents, so buckets can be browsed like local directories. Two rules:
 //!
-//! datui could open a `gs://` or `s3://` URL long before this module existed, but only
-//! if you already knew the URL and typed it. That is a poor fit for how object storage
-//! is actually used: the bucket names live in somebody's head, or in a console tab, and
-//! the thing you want on a home screen is the same thing you want for a local
-//! directory — a list of what is there.
+//! **Never list a provider datui cannot then read.** Discovery looks only at the
+//! credentials `object_store` will use to open a file (not, say, `gcloud`'s own),
+//! so every listed bucket opens.
 //!
-//! Two rules shape everything here.
-//!
-//! **Never list a provider datui cannot then read.** Discovery deliberately looks at
-//! exactly the credentials `object_store` will use when the file is opened, and nowhere
-//! else. It would be easy to enumerate buckets through `gcloud`, which is authenticated
-//! on most developer machines when nothing else is, and the result would be a screen of
-//! buckets that every `Enter` fails on. A provider that is invisible because its
-//! credentials are missing is a smaller problem than one that lies.
-//!
-//! **Nothing here runs on the thread that draws.** Every function that touches the
-//! network is `async` and is driven from a worker, the same arrangement remote
-//! filesystem roots use. A bucket list is a network round trip, and a round trip on the
-//! event thread is a frozen interface.
+//! **Nothing here runs on the drawing thread.** Every network function is `async` and
+//! driven from a worker, as remote filesystem roots are.
 
 use crate::cloud_sources::{S3Settings, Signing, Source};
 use crate::config::CloudConfig;
@@ -35,20 +22,18 @@ pub struct Provider {
     pub label: String,
     /// Which credentials were found.
     pub note: String,
-    /// The GCP project whose buckets get listed. Google's API cannot enumerate buckets
-    /// without one, so a GCS provider with no project can still open a URL you type but
-    /// cannot offer you a list.
+    /// The GCP project whose buckets are listed: Google cannot enumerate buckets without
+    /// one (typed URLs still open).
     pub project: Option<String>,
     /// The AWS profile in use, when one is named.
     pub profile: Option<String>,
-    /// Set when the endpoint is not the provider's own, which is what makes this MinIO
-    /// or another S3-compatible service rather than AWS.
+    /// Set when the endpoint is not the provider's own (MinIO or another S3-compatible
+    /// service).
     pub endpoint: Option<String>,
 }
 
 impl Provider {
-    /// Shown beside the section title: the account the buckets belong to, when there
-    /// is one to name. The title already says which store this is.
+    /// Beside the section title: the account the buckets belong to, when nameable.
     pub fn detail(&self) -> Option<String> {
         match (&self.project, &self.profile) {
             (Some(project), _) => Some(format!("project: {project}")),
@@ -57,11 +42,8 @@ impl Provider {
         }
     }
 
-    /// True when this provider can enumerate its own buckets.
-    ///
-    /// Being unable to is not an error and not a reason to hide it. A GCS provider
-    /// without a project, or an S3 provider whose credentials are scoped to one bucket,
-    /// still opens anything you point it at.
+    /// Whether this provider can enumerate its buckets. Not an error otherwise: a GCS
+    /// provider without a project, or a one-bucket S3 credential, still opens URLs.
     pub fn can_list_buckets(&self) -> bool {
         match self.kind {
             ProviderKind::Gcs => self.project.is_some(),
@@ -70,21 +52,15 @@ impl Provider {
     }
 }
 
-/// Everything discovery is allowed to look at, gathered in one place so it can be
-/// supplied verbatim by a test.
-///
-/// Discovery is otherwise a function of the whole machine — environment, home
-/// directory, config file — and a function of the whole machine cannot be tested. The
-/// real one is [`Environment::current`].
+/// Everything discovery may look at, in one place so a test can supply it;
+/// [`Environment::current`] is the real one.
 pub struct Environment<'a> {
     /// Reads an environment variable.
     pub var: &'a dyn Fn(&str) -> Option<String>,
-    /// True when the path exists. This is how a credential file is detected; deciding
-    /// whether a provider is worth showing does not need its contents.
+    /// Whether a path exists: detecting a credential file needs no contents.
     pub exists: &'a dyn Fn(&Path) -> bool,
-    /// Reads a file, for the one case that needs it: the project id inside the gcloud
-    /// credentials file. Returns `None` on any failure, so an unreadable or malformed
-    /// file costs the project and nothing else.
+    /// Reads a file, for the one case needing it (the project id in gcloud's credentials);
+    /// `None` on any failure, costing only the project.
     pub read: &'a dyn Fn(&Path) -> Option<String>,
     /// The user's home directory, if there is one.
     pub home: Option<PathBuf>,
@@ -94,8 +70,8 @@ pub struct Environment<'a> {
     pub run: &'a crate::cloud_command::Runner<'a>,
     /// Every environment variable, for the ones named by pattern: `MC_HOST_<alias>`.
     pub all_vars: &'a dyn Fn() -> Vec<(String, String)>,
-    /// The entries of a directory, for tools that keep one file per login: `gcloud`
-    /// configurations. Empty when it cannot be read.
+    /// A directory's entries, for tools keeping one file per login (`gcloud`
+    /// configurations); empty when unreadable.
     pub list: &'a dyn Fn(&Path) -> Vec<PathBuf>,
 }
 
@@ -121,10 +97,8 @@ impl Environment<'_> {
     }
 }
 
-/// Object stores this machine can read, in the order they should appear.
-///
-/// Empty is the normal answer on a machine with no cloud credentials, and it is not a
-/// failure. Nothing here prompts, installs or logs in.
+/// Object stores this machine can read, in display order. Empty is normal without
+/// cloud credentials; nothing prompts, installs or logs in.
 pub fn detect(config: &CloudConfig, env: &Environment<'_>) -> Vec<Provider> {
     let mut providers = Vec::new();
     if let Some(gcs) = detect_gcs(config, env) {
@@ -138,8 +112,8 @@ pub fn detect(config: &CloudConfig, env: &Environment<'_>) -> Vec<Provider> {
 
 /// Google Cloud Storage, when credentials `object_store` accepts are present.
 fn detect_gcs(config: &CloudConfig, env: &Environment<'_>) -> Option<Provider> {
-    // Order matters only for the note: an explicit service account is worth naming
-    // ahead of the ambient developer login, because it is the one someone chose.
+    // An explicit service account is named ahead of the ambient developer login: someone
+    // chose it.
     let note = if (env.var)("GOOGLE_SERVICE_ACCOUNT").is_some()
         || (env.var)("GOOGLE_SERVICE_ACCOUNT_PATH").is_some()
     {
@@ -149,9 +123,8 @@ fn detect_gcs(config: &CloudConfig, env: &Environment<'_>) -> Option<Provider> {
     } else if (env.var)("GOOGLE_APPLICATION_CREDENTIALS").is_some() {
         "GOOGLE_APPLICATION_CREDENTIALS"
     } else if adc_path(env).is_some() {
-        // Short on purpose. This sits beside the section title in a fixed half of the
-        // line, and "gcloud application default credentials" truncated from the front
-        // to "…lication default credentials" says less than one word does.
+        // Short: it sits beside the title in a fixed half of the line, where a long phrase
+        // would be cut.
         "gcloud"
     } else if instance_identity(config, env).gcp {
         "instance identity"
@@ -169,12 +142,11 @@ fn detect_gcs(config: &CloudConfig, env: &Environment<'_>) -> Option<Provider> {
     })
 }
 
-/// Which clouds' VM or platform identity may be used. Finding one is a request to a
-/// metadata service that hangs on some networks, so it is only made when the config
-/// asks, or where the platform itself says it is there: `K_SERVICE` on Cloud Run and
-/// Cloud Functions, `IDENTITY_ENDPOINT` or `MSI_ENDPOINT` on Azure App Service,
-/// Functions and Container Apps. ECS and EKS need neither: they are found by their
-/// own variables.
+/// Which clouds' VM or platform identity may be used. Finding one queries a metadata
+/// service that can hang, so only when configured or signaled by the platform
+/// (`K_SERVICE` on Cloud Run/Functions; `IDENTITY_ENDPOINT` or `MSI_ENDPOINT` on Azure
+/// App Service, Functions, Container Apps). ECS and EKS are found by their own
+/// variables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct InstanceIdentity {
     pub aws: bool,
@@ -192,9 +164,9 @@ pub fn instance_identity(config: &CloudConfig, env: &Environment<'_>) -> Instanc
     }
 }
 
-/// The credential type of a Google login object_store cannot read, when that is what the
-/// environment or the application-default file holds: workload identity federation,
-/// an impersonated service account.
+/// The credential type of a Google login `object_store` cannot read (workload identity
+/// federation, an impersonated service account), when the environment or ADC file has
+/// one.
 pub fn unreadable_google_login(env: &Environment<'_>) -> Option<String> {
     let path = (env.var)("GOOGLE_APPLICATION_CREDENTIALS")
         .map(PathBuf::from)
@@ -202,10 +174,9 @@ pub fn unreadable_google_login(env: &Environment<'_>) -> Option<String> {
     crate::gcloud::unsupported_credential_type(&(env.read)(&path)?)
 }
 
-/// The application default credentials file, where `object_store` reads it:
-/// `%APPDATA%\gcloud\` on Windows, `$HOME/.config/gcloud/` elsewhere. Kept in step with
-/// `object_store::gcp` deliberately: discovery must agree with the code that will later
-/// do the opening, and looking under the home directory on Windows found nothing.
+/// The application default credentials file where `object_store` reads it
+/// (`%APPDATA%\gcloud\` on Windows, `$HOME/.config/gcloud/` elsewhere), kept in step so
+/// discovery agrees with opening.
 pub fn adc_path(env: &Environment<'_>) -> Option<PathBuf> {
     const FILE: &str = "application_default_credentials.json";
     let path = if env.windows {
@@ -218,20 +189,10 @@ pub fn adc_path(env: &Environment<'_>) -> Option<PathBuf> {
     (env.exists)(&path).then_some(path)
 }
 
-/// The project whose buckets to list.
-///
-/// An environment variable wins, because it is the one someone set for this shell. The
-/// fallback is the `quota_project_id` that `gcloud auth application-default login`
-/// writes into the credentials file, which is what makes the common case work with no
-/// configuration at all: a developer who has logged in has a project, and asking them
-/// to restate it in an environment variable to see their own buckets would be a poor
-/// welcome.
-///
-/// `gcloud`'s active project setting is deliberately not consulted. It lives in a
-/// private sqlite database rather than a documented file, and reading another tool's
-/// internal state is the kind of cleverness that breaks silently when that tool
-/// changes. The credentials file is different: it is a documented format, and
-/// `object_store` already reads it.
+/// The project whose buckets to list: an environment variable, else the
+/// `quota_project_id` `gcloud auth application-default login` writes to the
+/// credentials file, so a logged-in developer needs no configuration. gcloud's
+/// active project is not read: it lives in a private sqlite database.
 pub(crate) fn gcp_project(env: &Environment<'_>) -> Option<String> {
     for key in [
         "DATUI_GCP_PROJECT",
@@ -250,11 +211,8 @@ pub(crate) fn gcp_project(env: &Environment<'_>) -> Option<String> {
     adc_quota_project(env)
 }
 
-/// The `quota_project_id` recorded in the application default credentials file.
-///
-/// Only that one field is taken. The file also holds a refresh token, which is none of
-/// this module's business: the token is `object_store`'s to use, and discovery has no
-/// reason to touch it.
+/// The `quota_project_id` in the ADC file; only that field (the refresh token is
+/// `object_store`'s).
 fn adc_quota_project(env: &Environment<'_>) -> Option<String> {
     let path = adc_path(env)?;
     let contents = (env.read)(&path)?;
@@ -266,13 +224,10 @@ fn adc_quota_project(env: &Environment<'_>) -> Option<String> {
     Some(project.to_string())
 }
 
-/// S3, or anything that speaks it, when credentials are present.
-///
-/// `config` is the effective one, with the environment and the command line already
-/// folded in (`OpenOptions::effective_cloud`). The endpoint is taken from it alone, so
-/// the section title names the host the listing and the open actually reach; the
-/// environment is consulted only for the credential evidence that never lives in a
-/// config file.
+/// S3, or anything speaking it, when credentials are present. `config` is effective
+/// (environment and command line folded in, `OpenOptions::effective_cloud`), so the
+/// title names the host listing and opening reach; the environment is consulted
+/// only for credential evidence.
 fn detect_s3(config: &CloudConfig, env: &Environment<'_>) -> Option<Provider> {
     let endpoint = config.s3_endpoint_url.clone();
 
@@ -282,11 +237,9 @@ fn detect_s3(config: &CloudConfig, env: &Environment<'_>) -> Option<Provider> {
     let shared_credentials = env.home.as_ref().is_some_and(|home| {
         (env.exists)(&home.join(".aws/credentials")) || (env.exists)(&home.join(".aws/config"))
     });
-    // A role rather than a key: ECS and Fargate hand credentials to a task over a
-    // loopback endpoint, and EKS hands them over as a projected web identity token.
-    // Neither leaves a key in the environment or a file in `~/.aws`, so a check for
-    // those alone would find nothing on exactly the machines that are most likely to be
-    // reading from S3 in the first place. `object_store` resolves both.
+    // A role rather than a key: ECS/Fargate serve credentials over a loopback endpoint,
+    // EKS via a projected web identity token; neither leaves a key or `~/.aws` file.
+    // `object_store` resolves both.
     let container_role = (env.var)("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI").is_some()
         || (env.var)("AWS_CONTAINER_CREDENTIALS_FULL_URI").is_some();
     let web_identity = (env.var)("AWS_WEB_IDENTITY_TOKEN_FILE").is_some();
@@ -306,19 +259,13 @@ fn detect_s3(config: &CloudConfig, env: &Environment<'_>) -> Option<Provider> {
     } else if instance_identity(config, env).aws {
         "instance role"
     } else {
-        // An EC2 instance role is the one credential source with no local evidence at
-        // all: the only way to know is to ask the instance metadata service, which is a
-        // network request to a link-local address that hangs rather than refuses on some
-        // networks. Doing that at startup on every machine to answer a question that is
-        // "no" almost everywhere is not a trade worth making, so an instance role is not
-        // discovered. Opening a URL still works; only the listing is missing, and
-        // setting AWS_PROFILE or writing an ~/.aws/config is enough to bring it back.
+        // An EC2 instance role has no local evidence; asking the metadata service can hang,
+        // so it is not discovered. URLs still open; AWS_PROFILE or `~/.aws/config` brings
+        // back the listing.
         return None;
     };
 
-    // Naming the service would be a guess. An endpoint is evidence that this is not
-    // AWS; it is not evidence of which of the dozen S3-compatible services it is, and
-    // labelling somebody's Ceph cluster "MinIO" is worse than not labelling it.
+    // An endpoint says "not AWS", not which S3-compatible service, so it is not named.
     let label = match endpoint.as_deref().and_then(endpoint_host) {
         Some(host) => format!("S3-compatible ({host})"),
         None => "Amazon S3".to_string(),
@@ -334,9 +281,8 @@ fn detect_s3(config: &CloudConfig, env: &Environment<'_>) -> Option<Provider> {
     })
 }
 
-/// The host and port of an endpoint URL, for display. Returns `None` for anything that
-/// does not look like a URL, so a malformed config line shows nothing rather than
-/// putting its raw contents in a section title.
+/// The host and port of an endpoint URL, for display; `None` for non-URLs, so a
+/// malformed config line never lands in a title.
 fn endpoint_host(endpoint: &str) -> Option<String> {
     let rest = endpoint
         .split_once("://")
@@ -349,17 +295,13 @@ fn endpoint_host(endpoint: &str) -> Option<String> {
     Some(host.to_string())
 }
 
-/// Bucket names from a Google Cloud Storage `storage/v1/b` response.
-///
-/// Tolerant on purpose. A response missing `items` means the project has no buckets,
-/// which is an answer rather than a failure, and an entry without a usable `name` is
-/// skipped rather than allowed to discard the rest of the page.
+/// Bucket names from a GCS `storage/v1/b` response. Tolerant: no `items` means no
+/// buckets, and an entry without a usable `name` is skipped.
 pub fn parse_gcs_buckets(body: &str) -> Result<Vec<String>, String> {
     let value: serde_json::Value =
         serde_json::from_str(body).map_err(|e| format!("not JSON: {e}"))?;
 
-    // An error response is JSON too, and its message is far more useful than "no
-    // buckets found" would be.
+    // An error response is JSON too, with a more useful message than "no buckets".
     if let Some(message) = value
         .get("error")
         .and_then(|e| e.get("message"))
@@ -388,13 +330,8 @@ pub fn gcs_next_page_token(body: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Bucket names from an S3 `ListBuckets` response.
-///
-/// The body is XML from a service the user pointed datui at, which for a custom
-/// endpoint is not necessarily a service they control. It is parsed with quick-xml
-/// rather than by hand for that reason, and the parser is told to stop at a depth no
-/// legitimate response reaches, so a hostile endpoint cannot answer with a billion
-/// nested elements.
+/// Bucket names from an S3 `ListBuckets` response. A custom endpoint may be hostile,
+/// so quick-xml parses it with a depth cap no legitimate response reaches.
 pub fn parse_s3_buckets(body: &str) -> Result<Vec<String>, String> {
     use quick_xml::events::Event;
 
@@ -423,17 +360,14 @@ pub fn parse_s3_buckets(body: &str) -> Result<Vec<String>, String> {
                     (Some(b"Name"), Some(b"Bucket")) if !value.is_empty() => {
                         buckets.push(value);
                     }
-                    // An Error document, which arrives with a 200 often enough to be
-                    // worth reading rather than assuming a well-formed list.
+                    // An Error document often arrives with a 200, so it is read.
                     (Some(b"Message"), Some(b"Error")) => error_message = Some(value),
                     _ => {}
                 }
             }
             Ok(Event::Eof) => {
-                // quick-xml reaches Eof happily on a truncated document, reporting
-                // whatever it managed to read. A body that ends mid-element is a
-                // truncated response, and reporting the buckets found before the cut as
-                // though they were the whole list is the one outcome worth refusing.
+                // quick-xml reaches Eof on a truncated document; a body ending mid-element is
+                // refused rather than its partial list reported as whole.
                 if !path.is_empty() {
                     return Err("response ended inside an element".to_string());
                 }
@@ -450,8 +384,7 @@ pub fn parse_s3_buckets(body: &str) -> Result<Vec<String>, String> {
     Ok(buckets)
 }
 
-/// No `ListBuckets` response has elements this deep. The cap exists so a response that
-/// does cannot be used to exhaust memory in the parser.
+/// No `ListBuckets` response nests this deep; the cap stops memory exhaustion.
 const MAX_XML_DEPTH: usize = 32;
 
 /// The innermost two element names of a path, for matching a leaf in its parent.
@@ -462,12 +395,8 @@ fn path_tail(path: &[Vec<u8>]) -> (Option<&[u8]>, Option<&[u8]>) {
     (last, parent)
 }
 
-/// How long any single cloud request may take before it is abandoned.
-///
-/// Bounded globally rather than per socket. A server that accepts the connection and
-/// then trickles one byte every twenty seconds defeats a read timeout and would hold a
-/// worker indefinitely; `timeout_global` covers the whole exchange, which is the only
-/// bound that actually ends.
+/// How long any cloud request may take. Global, not per socket: a server trickling a
+/// byte every twenty seconds defeats a read timeout.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 pub(crate) fn http_agent() -> ureq::Agent {
@@ -477,23 +406,13 @@ pub(crate) fn http_agent() -> ureq::Agent {
         .into()
 }
 
-/// The S3 builder datui uses everywhere, so that every path authenticates identically.
-///
-/// This existing separately matters more than it looks. The bucket listing needs the
-/// concrete `AmazonS3` in order to ask it for a credential, while opening an object
-/// needs only `dyn ObjectStore`; when the two built their own builders, the listing
-/// quietly dropped the configured endpoint and keys and authenticated from the
-/// environment instead. Against MinIO that fails every time, and against AWS it would
-/// silently use whichever account the environment happened to name.
-///
-/// `settings` are one source's (`cloud_sources::resolve`); nothing here reads the
-/// config or the command line again. The builder is addressed by bucket name, so only
-/// `s3://bucket/key` URLs are served; a virtual-hosted URL would need `with_url`, which
-/// nothing in datui produces.
+/// The one S3 builder, so listing and opening authenticate identically (separate
+/// builders once let the listing drop the configured endpoint and keys). `settings`
+/// are one source's (`cloud_sources::resolve`). Addressed by bucket name: only
+/// `s3://bucket/key` URLs.
 pub fn s3_builder(bucket: &str, settings: &S3Settings) -> object_store::aws::AmazonS3Builder {
-    // Only the default source borrows the shell's AWS variables. A source from the
-    // config names its own keys, and filling its gaps from the environment would sign
-    // its requests as whoever the shell happens to be.
+    // Only the default source borrows the shell's AWS variables; a configured source
+    // would otherwise sign as whoever the shell is.
     let builder = if settings.from_env && !settings.skip_signature {
         object_store::aws::AmazonS3Builder::from_env()
     } else {
@@ -507,8 +426,7 @@ pub fn s3_builder(bucket: &str, settings: &S3Settings) -> object_store::aws::Ama
         builder = builder.with_skip_signature(true);
     }
     if let Some(endpoint) = &settings.endpoint {
-        // `object_store` refuses plain `http` unless told otherwise, which is exactly
-        // what a MinIO container speaks; `https` endpoints are left alone.
+        // `object_store` refuses plain `http` unless told, which MinIO containers speak.
         builder = builder.with_endpoint(endpoint.clone());
         if endpoint.starts_with("http://") {
             builder = builder.with_allow_http(true);
@@ -520,9 +438,8 @@ pub fn s3_builder(bucket: &str, settings: &S3Settings) -> object_store::aws::Ama
     if let Some(region) = &settings.region {
         builder = builder.with_region(region.clone());
     }
-    // Each on its own, as the Polars scan applies them: the generated config suggests
-    // the key in the file and the secret from AWS_SECRET_ACCESS_KEY, and requiring the
-    // pair here left every store but Polars' own authenticating from the environment.
+    // Each on its own, as the Polars scan applies them (key in the file, secret in
+    // AWS_SECRET_ACCESS_KEY).
     if let Some(key) = &settings.access_key_id {
         builder = builder.with_access_key_id(key.clone());
     }
@@ -535,13 +452,9 @@ pub fn s3_builder(bucket: &str, settings: &S3Settings) -> object_store::aws::Ama
     builder
 }
 
-/// The object_store path for a key as the service stores it.
-///
-/// `Path::from` percent-encodes characters it considers unsafe, `%` among them, which
-/// is right for a name being made up and wrong for one that already exists: a key
-/// `100%.csv.gz` became `100%25.csv.gz` and was then encoded again on the way out, so
-/// the request asked for an object that is not there. A key from a listing or a URL is
-/// taken as it is, unless it cannot be a path at all.
+/// The object_store path for a key as stored. `Path::from` percent-encodes `%`, so
+/// `100%.csv.gz` became `100%25.csv.gz` and 404'd; existing keys are parsed as is,
+/// unless they cannot be a path.
 pub fn object_path(key: &str) -> object_store::path::Path {
     object_store::path::Path::parse(key).unwrap_or_else(|_| object_store::path::Path::from(key))
 }
@@ -585,8 +498,7 @@ fn gcs_store(
     google_token: Option<&str>,
     google_credentials: Option<&Path>,
 ) -> Result<object_store::gcp::GoogleCloudStorage, String> {
-    // Unsigned means no credential lookup at all, so a machine with no Google login
-    // never waits on a metadata service that is not there.
+    // Unsigned means no credential lookup, so no wait on an absent metadata service.
     let builder = match (unsigned, google_token) {
         (true, _) => object_store::gcp::GoogleCloudStorageBuilder::new().with_skip_signature(true),
         (false, Some(token)) => object_store::gcp::GoogleCloudStorageBuilder::new()
@@ -611,13 +523,12 @@ fn gcs_store(
         .map_err(|e| format!("Google Cloud Storage is not configured: {e}"))
 }
 
-/// How many entries one peek inside a directory reads: enough to tell partitions from
-/// files, and a single request however large the directory is.
+/// Entries one peek reads: enough to tell partitions from files, in one request.
 const PEEK_KEYS: usize = 100;
 
-/// What a cloud directory holds, from the first page of a delimited listing of it:
-/// `Hive` when its children are `key=value` partitions, `MultiFile` when they are
-/// Parquet files, else `Directory`. One request; nothing is read from any object.
+/// What a cloud directory holds, from the first page of a delimited listing: `Hive`
+/// for `key=value` children, `MultiFile` for Parquet files, else `Directory`. One
+/// request; no object is read.
 pub async fn peek_kind(
     url: &str,
     config: &CloudConfig,
@@ -672,19 +583,16 @@ async fn peek_page(
     if kind != crate::discover::EntryKind::MultiFile {
         return Ok((kind, holds));
     }
-    // The listing said these files share an extension. Whether they are one table is a
-    // question only their footers answer, and the objects just listed carry the sizes
-    // that make reading a footer a single ranged request. What the prefix holds is
-    // unchanged by the answer: the count is a count either way.
+    // The listing says the files share an extension; whether they are one table needs
+    // their footers (one ranged read each, with sizes known). The count is unchanged.
     Ok((
         verified_kind(resolved, &objects).await.unwrap_or(kind),
         holds,
     ))
 }
 
-/// Whether a directory the listing called `multi` holds one table, from a few of its
-/// footers. `None` when it could not be decided, and the listing's answer stands: the
-/// optimistic reading is the reversible one.
+/// Whether a `multi` directory is one table, from a few footers; `None` when
+/// undecided, leaving the listing's (reversible, optimistic) answer.
 async fn verified_kind(
     resolved: &crate::cloud_sources::Resolved,
     objects: &[(String, u64)],
@@ -736,16 +644,9 @@ async fn kind_from_footers(
     })
 }
 
-/// One page of a listing, and the token the store returned with it.
-///
-/// Split from the request that fetched it so the `+` can be tested: `peek_page` builds
-/// its store from a URL and cannot be handed one. The token comes in whole rather than
-/// already asked whether it is `Some`, because that question is the one thing here
-/// worth getting wrong: asked backwards, every single-page prefix reads `100+ parquet`
-/// and every prefix with more behind it reads an exact hundred nobody counted.
-///
-/// A prefix with more behind it counted what it saw and says so, the way a local
-/// directory past `MAX_ENTRIES_PER_DIR` does.
+/// One listing page with its continuation token, separate so the `+` is testable. A
+/// token means more lies behind: the count is a floor (`100+ parquet`), as past
+/// `MAX_ENTRIES_PER_DIR` locally.
 fn look_at_page(
     prefix: &str,
     directories: &[String],
@@ -757,8 +658,8 @@ fn look_at_page(
     (kind, holds)
 }
 
-/// The kind *and* what the listing found, by [`crate::discover::classify`], the rule a
-/// local directory is classified by. A prefix's row is labelled from the second.
+/// The kind and holdings of a listing by [`crate::discover::classify`], the local rule;
+/// a prefix's row label comes from the holdings.
 pub fn look_at_listing(
     prefix: &str,
     directories: &[String],
@@ -776,10 +677,8 @@ pub fn look_at_listing(
     let prefixes: Vec<String> = directories.iter().map(|d| last(d)).collect();
     let objects = objects.iter().filter_map(|(key, size)| {
         let name = last(key);
-        // Dropped before anything counts them: the prefix's own key, which a console
-        // writes to make a folder and the listing hands straight back, whatever its size
-        // (`cloud-samples-data` writes eleven bytes into its markers); and an empty
-        // object named like a prefix beside it, which is that prefix, counted once.
+        // Dropped first: the prefix's own key (a console's folder marker, of any size) and an
+        // empty object named like a sibling prefix.
         let stands_for_a_prefix = (!here.is_empty() && key.trim_matches('/') == here)
             || (*size == 0 && prefixes.contains(&name));
         (!name.is_empty() && !stands_for_a_prefix).then_some(Seen {
@@ -806,11 +705,9 @@ pub fn look_at_listing(
     crate::discover::classify(seen, &rules)
 }
 
-/// Split a `gs://` or `s3://` URL into its bucket and the prefix inside it.
-///
-/// The prefix comes back without a leading or trailing slash, and empty for the bucket
-/// root, which is the shape `object_store` wants. A source ID (`s3://<id>@bucket`) is
-/// not part of the bucket and is dropped.
+/// Split a `gs://` or `s3://` URL into bucket and prefix (no leading or trailing slash,
+/// empty for the root, as `object_store` wants). A source id (`s3://<id>@bucket`) is
+/// dropped.
 pub fn split_bucket_url(url: &str) -> Option<(ProviderKind, String, String)> {
     let (_, plain) = crate::source::split_source_id(url);
     let (scheme, rest) = plain.split_once("://")?;
@@ -834,9 +731,8 @@ pub fn split_bucket_url(url: &str) -> Option<(ProviderKind, String, String)> {
     ))
 }
 
-/// The most rows one level of a bucket lists, as for a local directory: past it the
-/// listing stops and says so. A prefix of 141,000 partitions is otherwise 141 requests
-/// and every one of them held in memory before the first row is drawn.
+/// The most rows one bucket level lists, as for a local directory; past it the listing
+/// stops and says so (141,000 partitions would be 141 requests held in memory).
 pub const MAX_LEVEL_ROWS: usize = crate::discover::MAX_ENTRIES_PER_DIR;
 
 /// What one level of a place listed.
@@ -869,12 +765,8 @@ impl Watch {
     }
 }
 
-/// One level of a bucket or prefix, as home-screen rows, up to [`MAX_LEVEL_ROWS`].
-///
-/// Uses a delimited listing, so a bucket holding a million objects under a hundred
-/// prefixes costs one request and returns a hundred rows. A recursive listing of the
-/// same bucket would be the wrong thing in every dimension: slower, larger, billed by
-/// the request, and unreadable on screen.
+/// One level of a bucket or prefix as home rows, up to [`MAX_LEVEL_ROWS`]. A delimited
+/// listing: a million objects under a hundred prefixes is one request, a hundred rows.
 pub async fn list_objects(
     url: &str,
     config: &CloudConfig,
@@ -884,15 +776,14 @@ pub async fn list_objects(
         .map(|level| level.rows)
 }
 
-/// [`list_objects`], a page at a time: `watch` sees the rows as they come and can stop
-/// the listing between pages.
+/// [`list_objects`] a page at a time: `watch` sees rows as they come and can stop
+/// between pages.
 pub async fn list_objects_watched(
     url: &str,
     config: &CloudConfig,
     watch: &Watch,
 ) -> Result<Level, String> {
-    // Resolving can run a credential command, which blocks; keep it off the runtime's
-    // own threads.
+    // Resolving can run a credential command, which blocks: off the runtime's threads.
     let resolved = {
         let (url, config) = (url.to_string(), config.clone());
         tokio::task::spawn_blocking(move || crate::cloud_sources::resolve(&url, &config))
@@ -943,8 +834,7 @@ pub async fn list_objects_watched(
     }
     match listed {
         Err(refused) if signing == Signing::Try && is_refusal(&refused) => {
-            // Perhaps public, and refused only because the request was signed by a
-            // login from somewhere else.
+            // Perhaps public, refused only because another login signed the request.
             let level = list_level(url, &resolved.unsigned(), watch)
                 .await
                 .map_err(|_| refused)?;
@@ -965,13 +855,10 @@ pub async fn list_objects_watched(
     }
 }
 
-/// The server-side prefix a home filter can ask a cut-short level for, or `None` when
-/// it cannot ask for one.
-///
-/// A name filter is fuzzy and the server's prefix is literal, so this asks for the names
-/// the filter most plausibly starts: the part `names` share up to their last separator
-/// (`STATION=`, `year=`), then the filter, in the case the names are written in. A
-/// filter already spelling that shared part is taken as typed.
+/// The server-side prefix a home filter can ask a cut-short level for, if any. The
+/// filter is fuzzy and the prefix literal, so it asks for the names' shared part up
+/// to their last separator (`STATION=`, `year=`) plus the filter, in the names'
+/// case; a filter already spelling the shared part is taken as typed.
 pub fn narrowing_prefix(filter: &str, names: &[&str]) -> Option<String> {
     let filter = filter.trim();
     if filter.is_empty() || filter.contains('/') {
@@ -991,8 +878,8 @@ pub fn narrowing_prefix(filter: &str, names: &[&str]) -> Option<String> {
     while !first.is_char_boundary(common) {
         common -= 1;
     }
-    // Back to the last separator: names sharing `STATION=A` share `STATION=`, and the
-    // `A` is only where the first page happened to end.
+    // Back to the last separator: `STATION=A` shares `STATION=`; the `A` is where the page
+    // ended.
     let shared = first[..common]
         .rfind(|c: char| !c.is_alphanumeric())
         .map_or("", |at| &first[..=at]);
@@ -1036,14 +923,9 @@ pub fn is_refusal(error: &str) -> bool {
     .any(|word| lower.contains(word))
 }
 
-/// A key that stands for something other than data a user could open: the receipts a job
-/// leaves behind, and the marker some tools write in place of a folder.
-///
-/// Narrower than [`crate::discover::is_bookkeeping`] on purpose. That one answers "does
-/// this count as data", which decides a directory's kind; this one answers "is there
-/// anything here to open", which decides whether a row is shown at all. A leading `_` is
-/// enough for the first and not for the second: `_manifest.parquet` is a real object
-/// somebody may want to look at, and the local listing has always shown its equivalent.
+/// A key that is not data to open: job receipts and folder markers. Narrower than
+/// [`crate::discover::is_bookkeeping`] (which decides a directory's kind): a leading
+/// `_` is not enough here, since `_manifest.parquet` may be worth opening.
 pub fn is_marker(name: &str) -> bool {
     name == "_SUCCESS"
         || name.starts_with("_committed_")
@@ -1051,13 +933,9 @@ pub fn is_marker(name: &str) -> bool {
         || name.ends_with("_$folder$")
 }
 
-/// Whether an object in one level of `prefix` is shown as a row.
-///
-/// A key ending in a slash is how consoles fake a folder. It is not data, and offering
-/// it as openable would be offering a zero-byte file. So is an empty object named like a
-/// directory beside it. And so is the directory's own key, whatever its size:
-/// `object_store` hands `census/` back as `census`, which names no object, so opening
-/// the row was a 404.
+/// Whether an object in one level of `prefix` is a row: not a console's fake folder
+/// (trailing slash, or an empty object named like a directory), nor the directory's
+/// own key (`census/` comes back as `census` and 404s).
 fn is_listed_object(location: &str, size: u64, prefix: &str, prefixes: &[String]) -> bool {
     let name = location.rsplit('/').next().unwrap_or(location);
     !(name.is_empty()
@@ -1075,8 +953,8 @@ async fn list_level(
 ) -> Result<Level, String> {
     let (pager, prefix) = store(resolved)?;
     let prefix = prefix.trim_matches('/').to_string();
-    // Rows keep the source the listing was asked for, so opening one reaches the same
-    // server. An Azure place is named by its canonical URL, a directory with its slash.
+    // Rows keep the listing's source so opening reaches the same server; Azure places by
+    // canonical URL, directories with their slash.
     let (base, directory_end) = match crate::source::azure_parts(&resolved.url) {
         Some((account, container, _)) => (crate::source::azure_url(&account, &container, ""), "/"),
         None => {
@@ -1117,8 +995,7 @@ async fn list_level(
                 let location = object.location.as_ref().to_string();
                 let name = location.rsplit('/').next().unwrap_or(&location).to_string();
                 let path = PathBuf::from(format!("{base}{location}"));
-                // No extension is left openable: a part file with none may well be
-                // Parquet.
+                // Extensionless keys stay openable: a part file may be Parquet.
                 let kind = if crate::discover::unreadable_by_name(&path) {
                     crate::discover::EntryKind::Other
                 } else {
@@ -1145,12 +1022,9 @@ fn object_row(
     row
 }
 
-/// One level under `prefix`, a page at a time, as `rows_of` makes each page into
-/// directories and objects; stopped at [`MAX_LEVEL_ROWS`], or when `watch` is
-/// cancelled.
-///
-/// Pages rather than `list_with_delimiter`, which asks for every page before it
-/// answers: 141 of them, one after another, for a prefix of 141,000 partitions.
+/// One level under `prefix` a page at a time (via `rows_of`), stopped at
+/// [`MAX_LEVEL_ROWS`] or a cancelled `watch`. Pages rather than `list_with_delimiter`,
+/// which fetches every page before answering.
 async fn list_pages(
     pager: &dyn object_store::list::PaginatedListStore,
     prefix: &str,
@@ -1228,8 +1102,8 @@ async fn list_pages(
     }
 }
 
-/// A source's first level, as the home screen lists it: buckets for S3 and Google
-/// Cloud, storage accounts for Azure.
+/// A source's first level as home lists it: buckets for S3 and Google, storage
+/// accounts for Azure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Listed {
     pub name: String,
@@ -1250,9 +1124,8 @@ pub async fn list_first_level(source: &Source) -> Result<Vec<Listed>, String> {
         .map_err(|e| format!("{e}"))?;
     }
     if source.kind != ProviderKind::Azure {
-        // The bucket listings send their request with a blocking client. On a thread
-        // of its own, a server that never answers holds up only its own source, not
-        // one of the runtime's few workers and everything queued behind it.
+        // The bucket listings use a blocking client, on their own thread so a silent server
+        // holds up only its source.
         let blocking = source.clone();
         let names = tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(list_buckets(&blocking))
@@ -1317,9 +1190,8 @@ pub async fn list_first_level(source: &Source) -> Result<Vec<Listed>, String> {
     .map_err(|e| format!("{e}"))?
 }
 
-/// Where Amazon S3 keeps `bucket`, from the `x-amz-bucket-region` header S3 sends with
-/// no credentials, whatever the status. Asked once per bucket per session, and `None`
-/// when S3 does not say.
+/// Where S3 keeps `bucket`, from the `x-amz-bucket-region` header sent unauthenticated
+/// whatever the status; once per bucket per session, `None` if unsaid.
 pub fn s3_bucket_region(bucket: &str) -> Option<String> {
     static REGIONS: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<String, Option<String>>>,
@@ -1351,7 +1223,7 @@ pub fn s3_bucket_region(bucket: &str) -> Option<String> {
 }
 
 /// A client for one short request whose status is the answer: errors are statuses,
-/// redirects are not followed.
+/// redirects not followed.
 fn probe_agent() -> ureq::Agent {
     crate::user_agent::ureq_config()
         .timeout_global(Some(std::time::Duration::from_secs(10)))
@@ -1361,11 +1233,9 @@ fn probe_agent() -> ureq::Agent {
         .into()
 }
 
-/// Whether the place `resolved` points at can be read with no signature: `Some(true)`
-/// when an unsigned request succeeds, `Some(false)` when it is refused, `None` when the
-/// answer says neither (no network, a missing object, a custom endpoint).
-///
-/// One request: a `HEAD` of an object, or a one-key listing of a prefix.
+/// Whether `resolved`'s place reads unsigned: `Some(true)` if an unsigned request
+/// succeeds, `Some(false)` if refused, `None` otherwise (no network, missing object,
+/// custom endpoint). One request: a `HEAD`, or a one-key listing.
 pub fn probe_unsigned(resolved: &crate::cloud_sources::Resolved) -> Option<bool> {
     let url = probe_url(resolved)?;
     let agent = probe_agent();
@@ -1385,8 +1255,8 @@ pub fn probe_unsigned(resolved: &crate::cloud_sources::Resolved) -> Option<bool>
     }
 }
 
-/// The plain HTTPS URL for an unsigned look at `resolved`'s place. `None` for a custom
-/// endpoint or an emulator, which are left to the signed path.
+/// The plain HTTPS URL for an unsigned look; `None` for custom endpoints and
+/// emulators.
 fn probe_url(resolved: &crate::cloud_sources::Resolved) -> Option<String> {
     let encode = |key: &str| key.split('/').map(urlencode).collect::<Vec<_>>().join("/");
     // The object, or for a prefix or glob the directory part to list one key from.
@@ -1518,14 +1388,9 @@ pub async fn list_account(
     .map_err(|e| format!("{e}"))?
 }
 
-/// Every bucket the provider's credentials can see.
-///
-/// Enumeration is per-provider because `object_store` is deliberately bucket-scoped:
-/// it will read and write objects but has no notion of "list the buckets". Both
-/// implementations below borrow that crate's credential handling rather than
-/// reimplementing a token exchange or a SigV4 signer, so there is no new cryptography
-/// here and, more importantly, the credentials used to list are the same ones used to
-/// open.
+/// Every bucket the provider's credentials can see. Per provider, since `object_store`
+/// is bucket-scoped; both borrow its credential handling (no new crypto), so listing
+/// and opening use the same credentials.
 pub async fn list_buckets(source: &Source) -> Result<Vec<String>, String> {
     if let Some(problem) = &source.problem {
         return Err(problem.clone());
@@ -1544,13 +1409,8 @@ pub async fn list_buckets(source: &Source) -> Result<Vec<String>, String> {
     }
 }
 
-/// GCS buckets, through the JSON API.
-///
-/// The bearer token comes from the store's own credential provider. Building a store
-/// requires a bucket name, and there is no bucket yet — that is what is being asked —
-/// so a placeholder is used. Nothing is addressed with it: the store is built only to
-/// be asked for a credential, and the request below goes to the project-scoped bucket
-/// listing endpoint.
+/// GCS buckets via the JSON API, with a bearer token from the store's credential
+/// provider (built with a placeholder bucket only to ask for the credential).
 async fn list_gcs_buckets(source: &Source) -> Result<Vec<String>, String> {
     let project = source.project.as_deref().ok_or_else(|| {
         "no GCP project is set, so there is nothing to list buckets for. Set \
@@ -1574,8 +1434,8 @@ async fn list_gcs_buckets(source: &Source) -> Result<Vec<String>, String> {
     Ok(buckets)
 }
 
-/// A bearer token for a Google source: from `gcloud` when it logs in through a
-/// configuration, else from object_store's own credential chain.
+/// A Google source's bearer token: from `gcloud` for a configuration login, else
+/// object_store's credential chain.
 async fn google_bearer(source: &Source) -> Result<String, String> {
     if let Some(problem) = &source.problem {
         return Err(problem.clone());
@@ -1587,8 +1447,7 @@ async fn google_bearer(source: &Source) -> Result<String, String> {
         .await
         .map_err(|e| format!("{e}"))?;
     }
-    // Building a store needs a bucket name, and there is none: the store is built only
-    // to be asked for a credential.
+    // A store needs a bucket name; this one exists only to yield a credential.
     let store = gcs_store(
         "datui-credential-probe",
         false,
@@ -1603,10 +1462,8 @@ async fn google_bearer(source: &Source) -> Result<String, String> {
         .map_err(|e| format!("could not obtain Google credentials: {e}"))
 }
 
-/// A Google source's projects, as the first level: every project Resource Manager
-/// finds, with the configured project first. When projects cannot be searched (no
-/// permission, or an application-default login without a quota project), the
-/// configured project alone.
+/// A Google source's projects as its first level: all Resource Manager finds,
+/// configured project first; the configured one alone when projects cannot be searched.
 async fn list_gcs_projects(source: &Source) -> Result<Vec<Listed>, String> {
     let bearer = google_bearer(source).await?;
     let searched = {
@@ -1657,16 +1514,13 @@ async fn list_gcs_projects(source: &Source) -> Result<Vec<Listed>, String> {
         .collect())
 }
 
-/// S3 buckets, through `ListBuckets` on the endpoint root.
-///
-/// Signed with `object_store`'s own `AwsAuthorizer`, which is the SigV4 implementation
-/// the rest of datui's S3 access already relies on. Hand-rolling a signer for this one
-/// request would be both more code and a worse idea.
+/// S3 buckets via `ListBuckets` on the endpoint root, signed with `object_store`'s
+/// `AwsAuthorizer` (the SigV4 implementation datui already relies on).
 async fn list_s3_buckets(settings: &S3Settings) -> Result<Vec<String>, String> {
     use object_store::aws::AwsAuthorizer;
 
-    // Same placeholder-bucket reasoning as the GCS path: the store exists to hold
-    // credentials and a region, and `ListBuckets` is not addressed to a bucket.
+    // As for GCS: the store holds credentials and region; `ListBuckets` is not addressed to
+    // a bucket.
     let s3 = s3_builder("datui-credential-probe", settings)
         .build()
         .map_err(|e| format!("S3 is not configured: {e}"))?;
@@ -1683,9 +1537,8 @@ async fn list_s3_buckets(settings: &S3Settings) -> Result<Vec<String>, String> {
         .unwrap_or_else(|| "us-east-1".to_string());
     let url = s3_list_buckets_url(settings);
 
-    // Signed as an `http::Request`, which is what the authorizer understands, and then
-    // replayed onto the agent datui already uses. The alternative is a second HTTP
-    // client in the tree for the sake of one request.
+    // Signed as an `http::Request` (what the authorizer takes), then replayed on the
+    // existing agent rather than adding a second HTTP client.
     let mut signed = http::Request::builder()
         .method("GET")
         .uri(&url)
@@ -1711,9 +1564,8 @@ async fn list_s3_buckets(settings: &S3Settings) -> Result<Vec<String>, String> {
     Ok(buckets)
 }
 
-/// Where `ListBuckets` is sent: the root of the effective endpoint, AWS when there is
-/// none. The same endpoint `s3_builder` opens objects against, so the section title,
-/// the listing and the open all name one host.
+/// Where `ListBuckets` goes: the effective endpoint's root (AWS if none), the same
+/// host `s3_builder` opens against.
 fn s3_list_buckets_url(settings: &S3Settings) -> String {
     let endpoint = settings
         .endpoint
@@ -1722,15 +1574,11 @@ fn s3_list_buckets_url(settings: &S3Settings) -> String {
     format!("{}/", endpoint.trim_end_matches('/'))
 }
 
-/// A paginating API that never stops handing back a token is a loop. Twenty pages of a
-/// thousand buckets is far past any real account.
+/// A cap on pages, since a token that never ends is a loop; far past real accounts.
 const MAX_BUCKET_PAGES: usize = 20;
 
-/// Percent-encode a query parameter value.
-///
-/// A project id or page token goes into a URL, and neither is guaranteed to be free of
-/// characters that mean something there. Small and local rather than a new dependency
-/// for two call sites.
+/// Percent-encode a query parameter value (project ids, page tokens); local rather than
+/// a dependency for two call sites.
 pub(crate) fn urlencode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.as_bytes() {

@@ -7,7 +7,7 @@
 //! the order a reader of logs looks for them. Every field stays. A file's records are
 //! read whole into memory, up to `limits.journal_bytes`, with the schema inferred from
 //! all of them, so a field first seen late is a column too. A pipe or a followed file is scanned as it grows
-//! ([`crate::follow::lines`]); a pipe's fields first seen after the open join once it
+//! (`crate::follow::lines`); a pipe's fields first seen after the open join once it
 //! ends.
 
 use std::path::PathBuf;

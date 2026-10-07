@@ -1,20 +1,15 @@
-//! Following a file that is still being written, as `tail -f` does: `--follow` and
-//! `t` at the table.
+//! Following a growing file, as `tail -f` does: `--follow` and `t` at the table.
 //!
-//! The frame scans the file as any delimited or NDJSON file is scanned, with a slice
-//! right above the scan that bounds it to the rows whose records are complete
-//! ([`bound`]). A watcher thread ([`Follow`]) checks the file's size every interval,
-//! reads only the bytes that arrived, counts the records they complete ([`Tail`]), and
-//! sends what it found as [`AppEvent::Followed`]. The app then moves the slice in every
-//! frame the view holds, so the query, filters and sort run over the new rows with no
-//! frame rebuilt, and reads the window on screen. A partial last line is never in the
-//! bound: it waits for its newline.
+//! The frame scans the file normally, with a slice just above the scan bounding it to
+//! complete records ([`bound`]). A watcher thread ([`Follow`]) checks the size every
+//! interval, reads only new bytes, counts the records they complete ([`Tail`]) and
+//! sends [`AppEvent::Followed`]. The app moves the slice in every frame the view holds,
+//! so query, filters and sort run over the new rows without rebuilding, then reads the
+//! window on screen. A partial last line waits for its newline.
 //!
-//! Standard input followed (`datui -f -`) is spooled to a file by a [`Spool`] that goes
-//! on copying after the first rows show; the file is followed like any other.
-//!
-//! An Arrow IPC stream is followed the same way, its record batches counted in place
-//! of records and read by a scan of its own ([`stream`]).
+//! Followed stdin (`datui -f -`) is spooled to a file by a [`Spool`] that keeps copying
+//! after the first rows show; that file is followed like any other. An Arrow IPC stream
+//! is followed the same way, counting record batches, read by its own scan (`stream`).
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -37,9 +32,9 @@ pub(crate) mod stream;
 #[doc(hidden)]
 pub use stream::stream_messages;
 
-/// How often the watcher checks the file, or where it hears of changes (Linux) the least
-/// time between two reads, unless `[read] follow_interval` says otherwise. A burst of
-/// appends inside one interval is one refresh.
+/// How often the watcher checks the file (on Linux, which is notified, the least time
+/// between reads), unless `[read] follow_interval` says otherwise. Appends within one
+/// interval are one refresh.
 pub const DEFAULT_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Bytes read from the file per step while counting records.
@@ -48,21 +43,18 @@ const CHUNK: usize = 1 << 20;
 /// A record longer than this is kept only in part: enough to classify it.
 const LONGEST_RECORD: usize = 16 << 20;
 
-/// A row's start is marked once this many rows, or this many bytes, have passed since
-/// the last mark: a window is read from the mark before it, so it costs at most this
-/// much beyond its own rows at any file size.
+/// A row start is marked every this many rows or bytes; a window reads from the mark
+/// before it, costing at most this much beyond its rows at any file size.
 pub(crate) const MARK_ROWS: u64 = 8192;
 const MARK_BYTES: u64 = 1 << 20;
 
-/// The most bytes a read from a mark takes in. A view that needs more (a filtered
-/// window far behind the last count, a count after a long pause) is read by Polars
-/// from the start of the file as before.
+/// The most a read from a mark takes in; beyond it (a filtered window far behind, a
+/// count after a long pause) Polars reads from the file's start.
 const MOST_FROM_A_MARK: u64 = 64 << 20;
 
-/// Why `format` cannot be followed, or `None` when it can. Only text read line by
-/// line, and an Arrow IPC stream (see [`followed_stream`]), can: a file whose footer is
-/// written last (Parquet, an Arrow IPC file, Excel) cannot be read before it is
-/// finished, and a compressed one cannot be read from the middle.
+/// Why `format` cannot be followed, or `None`. Only line-read text and Arrow IPC
+/// streams (see `followed_stream`) can: footer-last files (Parquet, IPC files, Excel)
+/// are unreadable until finished, and compressed ones cannot be read mid-way.
 pub fn refusal(format: Option<FileFormat>, options: &OpenOptions) -> Option<String> {
     let format = format.unwrap_or(FileFormat::TEXT);
     if format == FileFormat::Arrow {
@@ -176,10 +168,10 @@ pub(crate) fn format_of(path: &Path, found: Option<FileFormat>) -> FileFormat {
         .unwrap_or(FileFormat::TEXT)
 }
 
-/// An NDJSON file followed, scanned lazily rather than read whole as an unfollowed one
-/// is: the frame reads more of it as it grows, and only its complete lines
-/// ([`lines::LinesScan`]). The schema comes from the first `infer_schema_length` lines,
-/// or from every line there is when `every_line` (the journal, whose fields vary).
+/// A followed NDJSON file, scanned lazily over its complete lines
+/// ([`lines::LinesScan`]) rather than read whole. The schema comes from the first
+/// `infer_schema_length` lines, or every line with `every_line` (journals, whose fields
+/// vary).
 pub(crate) fn scan_lines(
     path: &Path,
     options: &OpenOptions,
@@ -308,9 +300,8 @@ struct NewMarks {
     last: Option<(u64, u64)>,
 }
 
-/// The complete records of a growing delimited or NDJSON file: where they end, and
-/// how many rows they hold. Extended with the bytes that arrive; a partial last record
-/// is not counted until its newline lands.
+/// The complete records of a growing delimited or NDJSON file: where they end and how
+/// many rows. A partial last record counts once its newline lands.
 #[derive(Clone, Debug)]
 pub struct Tail {
     /// The file counted.
@@ -483,11 +474,10 @@ impl Tail {
         self.arrived.clear();
     }
 
-    /// Mark where row `row`, whose record starts at byte `start`, is: the first row, and
-    /// then once enough has passed since the last mark. The first is marked so that no
-    /// page is read through a Polars slice with an offset, which counts an NDJSON
-    /// file's blank lines as rows (#672). A blank record is never marked: read first
-    /// from a mark, it could be taken for no row at all.
+    /// Mark row `row` starting at byte `start`: the first row, then once enough has passed.
+    /// The first is marked so no page needs a Polars slice offset (which counts NDJSON
+    /// blank lines as rows). Blank records are never marked: read first from a mark, one
+    /// could read as no row.
     fn mark(marks: &mut NewMarks, every: (u64, u64), row: u64, start: u64, blank: bool) {
         let (rows, bytes) = every;
         if blank
@@ -770,10 +760,9 @@ fn scans(plan: &polars::lazy::dsl::DslPlan, path: &str) -> bool {
     }
 }
 
-/// `lf` reading the file at `path` only up to its first `rows` rows. A scan of it with
-/// no bound gets one right above it; one bounded already has its bound moved. The
-/// frames built on a scan carry the scan in their plans, so moving its bound moves
-/// what every one of them reads.
+/// Bound `lf`'s scan of `path` to its first `rows` rows: an unbounded scan gets a slice
+/// just above it, a bounded one has its bound moved. Frames built on the scan carry it,
+/// so all of them follow.
 pub fn bound(lf: &mut LazyFrame, path: &Path, rows: usize) {
     let path = path.to_string_lossy();
     let rows = IdxSize::try_from(rows).unwrap_or(IdxSize::MAX);
@@ -865,10 +854,9 @@ fn read_through_plan(plan: &mut polars::lazy::dsl::DslPlan, path: &str, file: &F
     crate::table::for_each_input(plan, &mut |input| read_through_plan(input, path, file));
 }
 
-/// Where rows of a followed file start, every so many rows ([`MARK_ROWS`],
-/// [`MARK_BYTES`]), and where its complete records end: a window deep in the file is
-/// read from the mark before it rather than from the file's start. The watcher makes
-/// the marks in the pass that counts the new records, so they cost no read of their own.
+/// Where rows of a followed file start, every so many rows or bytes (`MARK_ROWS`,
+/// `MARK_BYTES`), and where complete records end, so a deep window reads from the
+/// preceding mark. Made by the watcher's counting pass, at no extra read.
 #[derive(Default)]
 pub struct Marks {
     inner: Mutex<MarksInner>,
@@ -909,10 +897,9 @@ impl Marks {
         inner.complete = 0;
     }
 
-    /// The bytes holding rows `[from, to)`: from the last mark at or before `from` to
-    /// the first at or after `to`, or to the end of the complete records. `None` before
-    /// the first mark (a blank first row) and when the bytes are more than
-    /// [`MOST_FROM_A_MARK`].
+    /// The bytes holding rows `[from, to)`: from the last mark at or before `from` to the
+    /// first at or after `to` (or the end of complete records). `None` before the first
+    /// mark and past [`MOST_FROM_A_MARK`].
     fn span(&self, from: u64, to: u64) -> Option<Span> {
         let inner = self.lock();
         let before = inner.at.partition_point(|&(row, _)| row <= from);
@@ -1042,10 +1029,9 @@ impl polars::prelude::AnonymousScan for Piece {
     }
 }
 
-/// `lf` with the bounded scan of the followed file at `path` reading only its rows
-/// `[from, to)` (`to` at most the bound, the bound when `None`), from the mark before
-/// them: whatever the view does above the scan is done to those rows alone. `None` when
-/// the marks do not reach them or the plan has no bounded scan of the file.
+/// `lf` with its bounded scan of `path` reading only rows `[from, to)` (`to` capped at
+/// the bound), from the preceding mark, so the view's work covers those rows alone.
+/// `None` if the marks do not reach them or there is no bounded scan.
 pub(crate) fn from_marks(
     lf: &LazyFrame,
     path: &Path,
@@ -1146,9 +1132,8 @@ pub(crate) fn bound_of(lf: &LazyFrame, path: &Path) -> Option<usize> {
     })
 }
 
-/// `root`, the frame of the followed NDJSON file at `path` read as `format` and bounded
-/// to `rows`, reading `fields` too, after the columns it has. `None` when it has no
-/// lines scan of the file, or `fields` brings no column it lacks.
+/// `root`, the bounded NDJSON frame of `path` as `format`, also reading `fields` after
+/// its columns. `None` without a lines scan of the file, or if `fields` adds nothing.
 pub(crate) fn widen(
     root: &LazyFrame,
     path: &Path,
@@ -1208,10 +1193,9 @@ fn replace_lines_scan(
     crate::table::for_each_input(plan, &mut |input| replace_lines_scan(input, path, with));
 }
 
-/// The windows of a followed file's view, each read from the mark before it. A view
-/// of the rows as they are reads its rows straight; one that only filters them reads
-/// on from `known`, a point where the rows of the view before it are known (view row,
-/// file row), and slices.
+/// The windows of a followed view, each read from the preceding mark. An unfiltered
+/// view reads its rows straight; a filtering one reads on from `known` (view row, file
+/// row) and slices.
 pub(crate) struct Window {
     pub(crate) lf: LazyFrame,
     pub(crate) path: PathBuf,
@@ -1296,9 +1280,8 @@ impl Shared {
         self.bell.ring();
     }
 
-    /// Wait until the file changes, as `notify` hears, or until poked or stopped. A
-    /// change is looked at no sooner than `interval` after the last look, `last`, so a
-    /// burst of appends is one look. Whether to go on.
+    /// Wait for a change (`notify`), a poke or a stop, looking no sooner than `interval`
+    /// after `last` so a burst is one look. Returns whether to go on.
     #[cfg(target_os = "linux")]
     fn wait_for_change(
         &self,
@@ -1412,9 +1395,8 @@ pub struct Follow {
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 impl Follow {
-    /// Follow the file `tail` counted, whose first `tail.rows()` rows the frame reads,
-    /// checking every `interval` and telling `events`. `spool` is standard input being
-    /// copied to it.
+    /// Follow the file `tail` counted (the frame reads its first `tail.rows()` rows),
+    /// checking every `interval` and telling `events`. `spool` is stdin being copied to it.
     pub fn start(
         mut tail: Tail,
         interval: Duration,
@@ -1831,10 +1813,9 @@ impl Watcher {
     }
 }
 
-/// Standard input being copied to a file while the file is read: the copy goes on
-/// after the first rows show, until the stream ends or the copy is stopped. The file is
-/// a temporary one, or the one `--tee` names, which the user keeps; with `--tee -`, a
-/// temporary one, and the stream is passed on to standard output too.
+/// Stdin copied to a file while it is read, the copy continuing after the first rows
+/// show until the stream ends or is stopped. The file is temporary or the one `--tee`
+/// names (kept); `--tee -` also passes the stream to stdout.
 pub struct Spool {
     stop: AtomicBool,
     bytes: AtomicU64,
@@ -2016,14 +1997,12 @@ impl Spool {
         Ok(true)
     }
 
-    /// End the copy, `reason` when it ended in an error, and finish the file: a WAV
-    /// header's sizes filled in for `--tee` (unless `--tee-raw`), and the file synced so
-    /// that saved means safe to copy. Once; later calls change nothing.
+    /// End the copy (`reason` if by error) and finish the file: a WAV header's sizes filled
+    /// for `--tee` (unless `--tee-raw`), synced so saved means safe. Once.
     fn finish(&self, reason: Option<String>) {
         let file = self.sink.lock().unwrap_or_else(|e| e.into_inner()).take();
-        // Closed, so the reader downstream sees the stream end. Held by a write a reader
-        // downstream is not taking, it is closed once that write returns: the copy then
-        // finds the file finished and finishes again.
+        // Close the passthrough so the downstream reader sees the end; if a blocked write
+        // holds it, it closes when that returns and the copy finishes again.
         if let Ok(mut pass) = self.pass.try_lock() {
             pass.take();
         }
@@ -2066,9 +2045,8 @@ impl Spool {
     }
 }
 
-/// The open's hold on a [`Spool`]: the copy stops when the last holder lets go, so a
-/// follow put down before its dataset arrived does not go on copying, and quitting
-/// finishes the file.
+/// The open's hold on a [`Spool`]: the copy stops when the last holder lets go (a
+/// follow put down early stops copying), and quitting finishes the file.
 pub struct SpoolHandle {
     spool: Arc<Spool>,
 }
@@ -2085,10 +2063,9 @@ impl Drop for SpoolHandle {
     }
 }
 
-/// Copy what `reader` sends into `spool` on a thread of its own, until it ends or the
-/// spool stops. Each chunk is written whole as it arrives into one buffer, reused:
-/// nothing is held back, and however long the stream runs the copy holds a megabyte.
-/// A producer faster than the disk waits on the pipe, not on datui's memory.
+/// Copy `reader` into `spool` on its own thread until it ends or the spool stops, each
+/// chunk written as it arrives through one reused buffer (about a megabyte however
+/// long the stream). A producer faster than the disk waits on the pipe.
 fn copy_on(mut reader: impl Read + Send + 'static, spool: Arc<Spool>) {
     let _ = std::thread::Builder::new()
         .name("datui-spool".to_string())
@@ -2127,16 +2104,11 @@ pub enum Spooled {
     Kept(PathBuf),
 }
 
-/// Copy standard input, from `open`, to the file `--tee` names or else a temporary
-/// file in the spool directory ([`crate::stdin::spool_dir`]) claimed through `writer`,
-/// until enough has arrived to show; the copy goes on behind the answer. Says what the
-/// file holds, as [`crate::stdin::spool`] does, with the copy carried in the options
-/// for the dataset to hold.
-///
-/// Not followed and not recorded, standard input is read as it arrives all the same,
-/// when what it holds can be (`OpenOptions::pipe`): the rows show as they come and stop
-/// coming at its end. What cannot be (Parquet, a compressed stream) is copied to its
-/// end first, as before.
+/// Copy stdin from `open` to the `--tee` file or a temp file in
+/// [`crate::stdin::spool_dir`] (claimed via `writer`) until enough has arrived to show;
+/// the copy continues behind. Reports what the file holds, as [`crate::stdin::spool`]
+/// does. Unfollowed stdin is still read as it arrives when its format allows
+/// (`OpenOptions::pipe`); otherwise (Parquet, compressed) it is copied to the end first.
 pub(crate) fn spool<R: Read + Send + 'static>(
     open: impl FnOnce() -> crate::download::Opened<R>,
     options: OpenOptions,

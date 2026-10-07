@@ -6,7 +6,7 @@
 //! like everything else. Nothing here is repeated per keystroke — a walk per
 //! character is how a file finder becomes slow on exactly the trees where it matters.
 //!
-//! Every limit exists because some real directory violates it. See [`Limits`].
+//! Every limit exists because some real directory violates it. See `Limits`.
 //!
 //! The walk keeps every data file it finds, and the filter is scored against that
 //! index off the UI thread ([`score`]). The cap on what is listed counts matches, not
@@ -80,7 +80,7 @@ where
 
 /// [`walk`], keeping the files `formats` reads as well, as the listing names them: by a
 /// spec's glob, or by its magic in the first bytes of a file whose name says nothing,
-/// at most [`crate::discover::MAX_SNIFFS_PER_DIR`] of them a directory.
+/// at most `crate::discover::MAX_SNIFFS_PER_DIR` of them a directory.
 pub fn walk_with_specs<F>(
     root: &Path,
     config: &SearchConfig,

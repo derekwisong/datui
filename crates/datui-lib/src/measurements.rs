@@ -1,15 +1,8 @@
-//! What opening a dataset cost, measured rather than guessed.
-//!
-//! Every number here is one datui produced itself: it timed its own listing, counted
-//! its own requests, and added up the bytes it received. Where Polars does the reading
-//! datui cannot count the requests or the bytes, and this module records nothing rather
-//! than record a figure it cannot stand behind. That is why so much of what it holds is
-//! optional: a stretch reports a file count, a request count and a byte count only
-//! where it has one, and `docs/user-guide/dataset-info.md` says which routes have
-//! which.
-//!
-//! The tallies are written by the threads doing the reading, which is why they are
-//! atomic, and read by the render, which is why nothing here ever blocks.
+//! What opening a dataset cost, measured rather than guessed: every figure is one datui
+//! produced itself (its own listing times, request counts, byte totals). Where Polars
+//! reads, datui cannot count, so nothing is recorded; hence the optional fields (see
+//! `docs/user-guide/dataset-info.md`). Written atomically by reading threads, read by
+//! the render without blocking.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -19,29 +12,18 @@ use std::time::Duration;
 pub struct Cost {
     /// How long it took, from the first request to the last answer.
     pub took: Duration,
-    /// The data files found, or the footers read — `None` where the stretch did the
-    /// work without ever learning a count.
-    ///
-    /// Every route that reaches a user today knows its count. The one that does not is
-    /// the walk to a prefix's two ends, which never lists what lies between them; that
-    /// route cannot currently be reached (see `schema_from_one_cloud_hive`), and this
-    /// is what keeps it from reporting the two ends as the size of the dataset if it
-    /// ever is.
+    /// Data files found or footers read; `None` where the stretch never learned a count
+    /// (only the unreachable two-ends walk, see `schema_from_one_cloud_hive`, so it never
+    /// reports two files as the dataset's size).
     pub files: Option<usize>,
-    /// Requests datui made itself and can count, with the bytes they returned.
-    ///
-    /// `None` on every listing, and not only the local ones: a directory is read rather
-    /// than requested, and a remote prefix is one call whose round trips happen inside
-    /// the object store, which does not say how many there were. A figure of zero would
-    /// read as "no data moved" rather than "not measured here".
+    /// Requests datui made and counted, with bytes returned. `None` on every listing (a
+    /// directory is read, not requested; a remote prefix pages inside the object store), so
+    /// zero never reads as "no data moved".
     pub over_the_wire: Option<OverTheWire>,
 }
 
-/// Two stretches' wire figures as one.
-///
-/// The requests add. The bytes add only where both stretches weighed theirs: one that
-/// did not leaves the pair unable to say what its requests brought back, and carrying
-/// the other's figure forward would present it as the bytes behind all of them.
+/// Two stretches' wire figures as one: requests add; bytes add only when both weighed
+/// theirs.
 fn combine_wire(a: OverTheWire, b: OverTheWire) -> OverTheWire {
     OverTheWire {
         requests: a.requests + b.requests,
@@ -63,20 +45,13 @@ pub struct Total {
 pub struct OverTheWire {
     /// Requests datui issued.
     pub requests: usize,
-    /// Bytes those requests returned, where datui counted them.
-    ///
-    /// Nothing reports requests without weighing them today — only the footer reads
-    /// report requests at all, and they weigh what comes back. It is optional so that a
-    /// stretch which one day counts round trips it does not read cannot be made to
-    /// claim a figure of zero, which would say they arrived empty.
+    /// Bytes those requests returned, where counted; optional so a stretch can never claim
+    /// zero for unweighed requests.
     pub bytes: Option<u64>,
 }
 
-/// A running tally of one kind of work.
-///
-/// `ran` is not redundant with the other fields: a listing that returned nothing still
-/// took time and is still a measurement, so zero cannot stand in for "this never
-/// happened".
+/// A running tally of one kind of work. `ran` matters: an empty listing still took time
+/// and is a measurement.
 #[derive(Debug, Default)]
 struct Tally {
     ran: AtomicBool,
@@ -87,11 +62,9 @@ struct Tally {
     live_bytes: AtomicU64,
     /// Whether anything recorded here counted bytes at all.
     counted_bytes: AtomicBool,
-    /// What those counters stood at when a pass last finished, which is what is shown.
-    ///
-    /// Separate from the live pair because the time and the file count only move when a
-    /// pass ends: showing the live figures beside them would put a pass's requests next
-    /// to the previous pass's time, and read as forty-one requests over two files.
+    /// The counters at the last finished pass, which are shown: time and file count move
+    /// only at a pass's end, so live counters would pair one pass's requests with the
+    /// previous pass's time.
     counted: AtomicBool,
     requests: AtomicUsize,
     bytes: AtomicU64,
@@ -100,16 +73,9 @@ struct Tally {
 }
 
 impl Tally {
-    /// Record a finished stretch of work, adding it to whatever this tally already
-    /// holds.
-    ///
-    /// Adding rather than replacing because one kind of work can happen in more than
-    /// one stretch. A cloud dataset past a wave of concurrent reads opens on two
-    /// footers and then reads every footer behind the open; a dataset whose open could
-    /// not settle its row count reads every footer again to take it. What the footers
-    /// cost is all of those passes, re-reads included, which is why the count this
-    /// keeps is footers read rather than files. A dataset being opened starts from a
-    /// tally that holds nothing, so nothing is carried over from the last one.
+    /// Record a finished stretch, added to the tally: one kind of work can span stretches
+    /// (a staged open's footer pass, a recount), so the count is footers read, not files.
+    /// Each dataset starts from an empty tally.
     fn record(&self, took: Duration, files: Option<usize>, over_the_wire: bool) {
         self.nanos.fetch_add(
             took.as_nanos().min(u64::MAX as u128) as u64,
@@ -120,16 +86,9 @@ impl Tally {
             self.counted_files.store(true, Ordering::Relaxed);
         }
         if over_the_wire {
-            // Read from the live counters here rather than taken from the caller: the
-            // caller would have had to read them a moment earlier, and a request landing
-            // in between would be written back out again.
-            // `fetch_max`, not `store`: were two metered passes ever to finish at
-            // once, whichever read the live counter first would write its lower figure
-            // back over the higher one. Today they cannot — a count is refused while
-            // the pass behind an open is still reading, and every other pair is
-            // serialized — so this guards an interleaving the rest of the design
-            // currently forbids. It costs nothing, and within a dataset these counters
-            // only climb, so taking the larger is correct whether or not that holds.
+            // Read from the live counters here, so a request landing meanwhile is not lost.
+            // `fetch_max`: concurrent passes cannot finish together today, but the counters only
+            // climb, so the larger is right regardless.
             self.requests.fetch_max(
                 self.live_requests.load(Ordering::Relaxed),
                 Ordering::Relaxed,
@@ -198,41 +157,25 @@ impl Tally {
     }
 }
 
-/// What an open reports as it goes: how far its footer pass has got, and what the work
-/// has cost so far.
-///
-/// The two travel together down every route an open can take, so they are handed down
-/// together. Both are shared with the threads doing the reading, and both belong to the
-/// open that created them — see [`Meter`] for why a new open builds new ones rather
-/// than clearing these.
+/// What an open reports as it goes: footer progress and cost so far, handed down every
+/// route together and owned by the open that made them (see [`Meter`]).
 #[derive(Debug, Clone, Default)]
 pub struct OpenReport {
     /// How far the footer pass has got, for the loading screen.
     pub progress: std::sync::Arc<crate::schema_union::FooterProgress>,
     /// What the work has cost, for the Info panel.
     pub meter: std::sync::Arc<Meter>,
-    /// Where to look for what a previous open of this dataset learned, and where to
-    /// leave what this one learns. `None` for a route with nowhere to keep it, and for
-    /// the tests that do not care.
-    ///
-    /// It travels with the other two because it belongs to the same moment — an open
-    /// reports what it is doing, records what it cost, and remembers what it found, and
-    /// all three are handed down the same routes.
+    /// Where to find what a previous open learned and leave what this one learns; `None`
+    /// for routes with nowhere to keep it, and for tests.
     pub remembered: Option<crate::cache::CacheManager>,
     /// Where what is remembered for the home screen is written, off the open's path:
     /// the app's, which the home listing settles before it reads.
     pub(crate) writes: crate::background::CacheWrites,
 }
 
-/// What the open on screen cost, as it is measured.
-///
-/// Shared with the threads that do the listing and the footer reads, which is why it is
-/// held behind an `Arc` and written through `&self`.
-///
-/// There is no way to clear one. Opening a dataset builds a new meter instead, for the
-/// reason the footer counter does: abandoning a load cancels nothing, so the reads of
-/// the directory that was walked away from are still running, and a meter they still held
-/// would go on adding their figures to the next dataset's.
+/// What the open on screen cost, as measured; shared with reading threads (`Arc`,
+/// written through `&self`). Never cleared: each open builds a new one, since an
+/// abandoned load's reads still run and would add to the next dataset's figures.
 #[derive(Debug, Default)]
 pub struct Meter {
     listing: Tally,
@@ -245,45 +188,31 @@ pub struct Meter {
 }
 
 impl Meter {
-    /// Finding the dataset's files took `took` and returned `files` of them.
-    ///
-    /// `over_the_wire` is always `false` here today, and the parameter is kept so the
-    /// two stretches record the same way. No listing route can count its requests: a
-    /// local walk makes none, and every remote one — the flat `list` and the
-    /// level-by-level walk a glob uses alike — hands the paging to the object store,
-    /// which does not say how many round trips it took.
+    /// Finding the files took `took` and found `files`. `over_the_wire` is always false
+    /// today (local walks make no requests; remote listings page inside the object store),
+    /// kept so both stretches record alike.
     pub fn listed(&self, took: Duration, files: Option<usize>, over_the_wire: bool) {
         self.listing.record(took, files, over_the_wire);
     }
 
-    /// A pass over `files` footers took `took`.
-    ///
-    /// `over_the_wire` publishes the requests counted by [`Self::footer_request`] since
-    /// the meter was made. A pass that read from a disk passes `false`: there were no
-    /// requests, and a zero would read as none having been needed.
+    /// A pass over `files` footers took `took`. `over_the_wire` publishes requests counted
+    /// by [`Self::footer_request`]; a disk pass passes false (no requests, not zero).
     pub fn read_footers(&self, took: Duration, files: Option<usize>, over_the_wire: bool) {
         self.footers.record(took, files, over_the_wire);
     }
 
-    /// A pass over `files` footers, run to settle the dataset's row count, took `took`.
-    ///
-    /// Recorded once and then never again, and the return says which happened. Counting
-    /// runs whenever the row count is invalidated — clearing a filter does it, so a few
-    /// minutes of exploring runs it several times — and those later passes are re-work
-    /// on a dataset that is already open. Adding them would make a section headed by
-    /// what opening the dataset cost climb for as long as the session lasted.
+    /// A count pass over `files` footers took `took`: recorded once only (the return says
+    /// whether), since counts rerun on every invalidation and would inflate the open's
+    /// cost.
     pub fn counted_rows(
         &self,
         took: Duration,
         files: Option<usize>,
         wire: Option<OverTheWire>,
     ) -> bool {
-        // Only for an open this meter measured, and checked before the one shot rather
-        // than after it. A dataset opened by a route that reports nothing — a directory
-        // handed straight to Polars because `single_spine_schema` is off — still has
-        // its rows counted afterwards, and that count writing here would raise a
-        // section out of nothing whose every figure is work done after the dataset was
-        // already on screen.
+        // Only for an open this meter measured (a route reporting nothing, like Polars-handed
+        // directories, must not gain a section of after-the-fact work), checked before the
+        // one-shot.
         if self.listing.cost().is_none() {
             return false;
         }
@@ -294,9 +223,7 @@ impl Meter {
         {
             return false;
         }
-        // Folded in only once the one-shot has been won. A pass that is declined must
-        // leave the counters alone, or its requests would be published by whichever
-        // pass records next.
+        // Folded in only after winning the one-shot, so a declined pass leaves counters alone.
         if let Some(w) = wire {
             self.footers.add_requests(w);
         }
@@ -304,18 +231,9 @@ impl Meter {
         true
     }
 
-    /// Reading the page now on screen took `took` and read `files` of the dataset's
-    /// files.
-    ///
-    /// Replaces rather than adds: this is the cost of the page a user is looking at,
-    /// and adding every page they have scrolled through would answer a question nobody
-    /// asked. `files` is `None` where Polars was handed the whole scan and decided for
-    /// itself what to read.
-    ///
-    /// No byte figure. Polars does this read and does not report what it fetched, and
-    /// the row-group sizes the footers hold would give the size of whole row groups for
-    /// every column — not the columns on screen, and not what crossed the wire. A
-    /// number that wrong is worse than none.
+    /// The page on screen took `took` and read `files` files (`None` when Polars chose).
+    /// Replaces rather than adds: the page being viewed. No byte figure: Polars does not
+    /// report what it fetched, and row-group sizes would overstate it.
     pub fn read_page(&self, took: Duration, files: Option<usize>) {
         self.last_page.replace(took, files);
     }
@@ -341,17 +259,9 @@ impl Meter {
         self.footers.cost()
     }
 
-    /// Everything measured so far, added up. `None` until something has been measured.
-    ///
-    /// No file count. The stretches count different things — the listing counts the
-    /// dataset's files, the footer pass counts footers read, which on a staged open is
-    /// more than there are files — so adding them gives a number that is not the size
-    /// of anything, sitting under the same word the listing row uses for the size of
-    /// the dataset.
-    ///
-    /// The wire figures are the sum of the stretches that counted them, and are `None`
-    /// when no stretch did: a local dataset's total is a time, not a time and a
-    /// pretence of nothing having been transferred.
+    /// Everything measured, added; `None` until something is. No file count (listing counts
+    /// files, footer passes count footers). Wire figures sum the stretches that counted
+    /// them, `None` when none did.
     pub fn total(&self) -> Option<Total> {
         // Listing and footers only. The page is not part of opening the dataset — it is
         // what looking at one costs, and it changes every time the view moves.
@@ -359,9 +269,7 @@ impl Meter {
             .into_iter()
             .flatten()
             .collect();
-        // Two stretches or none. One stretch's total is that stretch, printed twice
-        // under two labels — which a single remote object would do, having a footer to
-        // read and nothing to list.
+        // Two stretches or none: one stretch's total would repeat it under two labels.
         if parts.len() < 2 {
             return None;
         }

@@ -1,25 +1,14 @@
-//! The home screen.
+//! The home screen. Its design rules:
 //!
-//! # Design
+//! - **No boxes.** Structure comes from alignment and space, with one vertical rule
+//!   where two panes need separating.
+//! - **One accent**, in four places: the wordmark, section headers, the selection
+//!   marker and the prompt. Everything else is primary, secondary or dim text.
+//! - **Metadata right-aligns into columns**, so datasets compare at a glance.
+//! - **Typed columns**: the schema preview colors each type as the table does,
+//!   showing a dataset's shape before it is opened.
 //!
-//! This is the first screen datui has that is *designed* rather than assembled, so
-//! the choices are deliberate and worth stating:
-//!
-//! - **No boxes.** The default TUI look is borders around everything; it reads as
-//!   busy and dated. Structure comes from alignment and negative space instead, with
-//!   a single vertical rule where two panes genuinely need separating.
-//! - **One accent, spent carefully.** The theme's accent appears in four places: the
-//!   wordmark, section headers, the selection marker, and the prompt. Everything else
-//!   is primary, secondary or dim text. Restraint is what reads as professional.
-//! - **Metadata right-aligns into columns.** Ragged trailing text looks accidental;
-//!   a clean column looks designed, and it makes datasets comparable at a glance.
-//! - **Typed columns are the signature.** The schema preview colours each type with
-//!   the same palette the table uses. No file picker tells you the shape of your data
-//!   before you open it — this is the thing worth being known for, and it is why the
-//!   preview pane earns its width.
-//!
-//! Everything is drawn from the active theme, so on Omarchy this inherits the desktop
-//! palette and sits in the same visual family as the rest of the system.
+//! Everything is drawn from the active theme.
 
 use crate::discover::{self, Entry, EntryKind};
 use crate::formats::MatchChip;
@@ -35,37 +24,27 @@ use ratatui::widgets::{Clear, Paragraph, Widget};
 const META_WIDTH: u16 = 34;
 /// Width given to the preview pane when there is room for it.
 const PREVIEW_WIDTH: u16 = 40;
-/// Below this, showing the preview would squeeze the list under [`META_MIN_WIDTH`]
-/// and cost every row its size and shape. The scent is what the list is *for*, so the
-/// preview yields first.
+/// Below this the preview would squeeze the list under [`META_MIN_WIDTH`] and cost
+/// every row its size and shape, so the preview yields first.
 const PREVIEW_MIN_WIDTH: u16 = META_MIN_WIDTH + PREVIEW_WIDTH + 6;
 /// Below this even the metadata columns have to go.
 const META_MIN_WIDTH: u16 = 56;
 
-/// The three metadata columns, already padded to fixed widths so they align down the
-/// list. Empty strings where a fact is genuinely unknown — a CSV's row count cannot
-/// be had without scanning it, and inventing one would be worse than a blank.
-/// `unmeasured` puts an ellipsis where the shape would go: the row is a dataset
-/// nothing has read yet, and a blank there beside rows that have a shape reads as
-/// broken. The same admission the label makes for a directory nothing has looked into.
-///
-/// `hint` is what a catalog says the file weighs, shown as `~33.0 MiB` until something
-/// has measured it. `gone` takes the size's place for a web file that cannot be had
-/// (`HTTP 404`, `no answer`): beside the name, where the choice to open it is made.
+/// The three metadata columns, padded to fixed widths to align down the list. Empty
+/// where a fact is unknown (a CSV's row count needs a scan). `unmeasured` shows an
+/// ellipsis for a dataset nothing has read yet. `hint` is a catalog's size
+/// (`~33.0 MiB`) until measured; `gone` replaces the size for an unavailable web file
+/// (`HTTP 404`, `no answer`).
 fn meta_columns(entry: &Entry, unmeasured: bool, hint: Option<u64>, gone: Option<&str>) -> String {
-    // A dataset too large to count still knows its width. Showing `? x 158` says more
-    // than a blank, and the `?` is an admission rather than a guess.
+    // A dataset too large to count still knows its width: `? x 158`.
     let times = glyphs::get().times;
-    // A column count read from a spread of a directory rather than all of it is a floor,
-    // so it says so, the way the row count already says `?` when it is out of reach.
+    // A column count from a spread of a directory is a floor, marked `+`.
     let more = if entry.cols_sampled { "+" } else { "" };
     let shape = match (entry.rows, entry.cols) {
         (Some(r), Some(c)) => format!("{} {times} {c}{more}", discover::format_rows(r)),
-        // `?` says a count is out of reach. A directory that is not one table has no row
-        // count to be out of reach — a sum over unrelated tables is not a number — so
-        // it shows its width alone. Named, not multiplied: `× 72` in a column whose
-        // neighbours read `1.2M × 72` is an operator with nothing on its left, and a
-        // bare `72` reads as a row count.
+        // A directory that is not one table has no row count (a sum over unrelated tables),
+        // so its width is named alone: `72 cols`, not `× 72` or a bare `72` that reads as
+        // rows.
         (None, Some(c)) if entry.kind == EntryKind::Directory => format!("{c}{more} cols"),
         (None, Some(c)) => format!("? {times} {c}{more}"),
         _ if unmeasured => glyphs::get().ellipsis.to_string(),
@@ -84,8 +63,7 @@ fn meta_columns(entry: &Entry, unmeasured: bool, hint: Option<u64>, gone: Option
 pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) {
     Clear.render(area, buf);
 
-    // One column of breathing room, no more. Vertical space is the scarce thing in a
-    // terminal: every blank line here is a dataset the user cannot see.
+    // One column of breathing room: vertical space is scarce.
     let padded = Rect {
         x: area.x.saturating_add(1),
         y: area.y,
@@ -96,10 +74,8 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderCo
         return;
     }
 
-    // The wordmark costs two rows more than the title bar, and twenty-five columns
-    // beside the path. On a big terminal that is nothing; on a short one it is two
-    // datasets, and on a narrow one the path beside it is all ellipsis — so in
-    // either case the one-line bar comes back.
+    // The wordmark costs two rows and twenty-five columns over the title bar; on a short
+    // or narrow terminal the one-line bar comes back.
     let wordmark = glyphs::get()
         .wordmark
         .filter(|_| padded.height >= WORDMARK_MIN_HEIGHT && padded.width >= WORDMARK_MIN_WIDTH);
@@ -121,8 +97,8 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderCo
 
     let show_preview = padded.width >= PREVIEW_MIN_WIDTH;
     if show_preview {
-        // The list keeps a reading measure on a wide screen, so a row's size and age sit
-        // near its name; the pane, which has rows to show, takes the rest (#547 M8).
+        // The list keeps a reading measure on wide screens, so a row's facts sit near its
+        // name; the pane takes the rest.
         let list_w = padded
             .width
             .saturating_sub(3 + PREVIEW_WIDTH)
@@ -144,17 +120,15 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderCo
     }
 }
 
-/// The widest the list gets. Past it the facts on the right of a row drift away from
-/// its name, and the pane has better use for the columns.
+/// The widest the list gets: past it a row's facts drift from its name.
 const LIST_MAX_WIDTH: u16 = 84;
 
-/// The fewest rows the bottom strip is drawn in: its heading, the column names and
-/// two rows.
+/// The fewest rows the bottom strip is drawn in: heading, column names, two rows.
 const STRIP_MIN_HEIGHT: usize = 4;
 
-/// Below the pane's width, the selected file's first rows in the rows the list leaves
-/// free at the bottom of the screen. Never over the list: with no rows to spare there
-/// is no strip, and nothing is read for one.
+/// Below the pane's width, the selected file's first rows in rows the list leaves free
+/// at the bottom. Never over the list: with no spare rows there is no strip, and
+/// nothing is read.
 fn render_rows_strip(
     area: Rect,
     used: usize,
@@ -186,8 +160,8 @@ fn render_rows_strip(
     Paragraph::new(lines).render(strip, buf);
 }
 
-/// The `ROWS` block: a heading, the leading columns' names in their types' colors, and
-/// as many of the first rows as `room` lines leave, in columns as many as `width` fits.
+/// The `ROWS` block: a heading, the leading columns' names in their type colors, and
+/// as many first rows and columns as `room` and `width` fit.
 fn rows_block(
     preview: &crate::home_preview::PreviewRows,
     width: usize,
@@ -296,13 +270,11 @@ fn rows_heading(shown: usize, total: usize, width: usize, ctx: &RenderContext) -
 
 /// Below this many rows the wordmark gives way to the one-line title bar.
 const WORDMARK_MIN_HEIGHT: u16 = 28;
-/// Below this width, the wordmark's twenty-five columns leave the path beside it
-/// nothing but its own ellipsis.
+/// Below this width the wordmark leaves the path beside it only an ellipsis.
 const WORDMARK_MIN_WIDTH: u16 = 52;
 
-/// Interpolate two colours, when both are RGB. Anything else — a named ANSI colour,
-/// an indexed one, the terminal default — has no arithmetic, so the first stop is
-/// used for every column and the wordmark is simply the accent.
+/// Interpolate two colors when both are RGB; otherwise (named, indexed, default) the
+/// first stop, so the wordmark is the accent.
 fn mix(a: Color, b: Color, t: f32) -> Color {
     match (a, b) {
         (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
@@ -314,10 +286,8 @@ fn mix(a: Color, b: Color, t: f32) -> Color {
     }
 }
 
-/// The wordmark: three rows of box drawing, coloured column by column along the
-/// theme's gradient. Once, here, and nowhere else — a gradient on data would be
-/// decoration. The location sits beside the middle row where the title bar used to
-/// put it.
+/// The wordmark: three rows of box drawing colored along the theme's gradient (the
+/// one place it is used), with the location beside the middle row.
 fn render_wordmark(
     area: Rect,
     buf: &mut Buffer,
@@ -381,8 +351,8 @@ fn render_wordmark(
     }
 }
 
-/// A filled bar carrying the name and current location, mirroring the footer at
-/// the foot of the screen so the list sits between two anchors.
+/// A filled bar with the name and location, mirroring the footer so the list sits
+/// between two anchors.
 fn render_title_bar(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContext) {
     let location = app
         .home
@@ -416,9 +386,8 @@ fn render_title_bar(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &Render
 fn render_prompt(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContext) {
     let home = &app.home;
     let g = glyphs::get();
-    // Placeholders name what the field takes, rather than instructing you to type
-    // in the box the cursor is already sitting in. The filter one earns its space by
-    // saying the part that is not obvious: typing searches below here as well.
+    // Placeholders name what the field takes; the filter's says the non-obvious part
+    // (typing also searches below here).
     let (glyph, value, hint) = if home.path_input_active {
         (" ~ ", home.path_input.as_str(), "file or directory")
     } else {
@@ -449,8 +418,8 @@ fn render_prompt(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderCon
         ));
     }
     if let Some(status) = &home.status {
-        // Keep the tail: these read "\"<long path>\": <reason>", and the
-        // reason is the part worth the space. The name is already on the row.
+        // Keep the tail ("\"<long path>\": <reason>"): the reason matters; the row shows the
+        // name.
         let used: usize = spans
             .iter()
             .map(|s| glyphs::display_width(&s.content))
@@ -478,27 +447,23 @@ fn render_rule(area: Rect, buf: &mut Buffer, ctx: &RenderContext) {
     }
 }
 
-/// Draw the list; returns how many of its lines it used, or all of them when it
-/// drew a message rather than rows.
+/// Draw the list; returns the lines used, or all of them when a message was drawn.
 fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderContext) -> usize {
     if app.home.path_input_active {
         return render_path_list(area, buf, app, ctx);
     }
-    // Where this frame starts and how many rows it has room for. Settled before
-    // anything borrows the listing, because both the scroll below and the decision
-    // about what is worth looking into are made from it.
+    // This frame's start and row room, settled before borrowing the listing: the scroll
+    // and what to look into both derive from it.
     let height = area.height as usize;
-    // With room to spare, a blank line before every header but the first. At most
-    // five sections, so at most four lines, and below thirty the list is as dense as
-    // it can be. The spacers come off the height the cap on RECENT is a share of.
+    // With room, a blank line before every header but the first (at most four); under
+    // thirty lines the list is dense. Spacers come off the height RECENT's cap uses.
     let spaced = height >= SPACED_LIST_HEIGHT;
     let headers = app.home.header_rows().into_iter().filter(|h| *h).count();
     let spacers = if spaced { headers.saturating_sub(1) } else { 0 };
-    // The height first: the cap on RECENT is a share of it, and the cursor has to be
-    // put back on its row before the scroll is settled from it.
+    // Height first: RECENT's cap is a share of it, and the cursor must be back on its
+    // row before the scroll settles.
     app.home.set_view_height(height.saturating_sub(spacers));
-    // Where each row lands as a line, spacers counted, so the scroll is settled in
-    // lines and the selected row is on screen however many spacers sit above it.
+    // Each row's line, spacers counted, so the scroll keeps the selected row on screen.
     let row_lines: Vec<usize> = {
         let mut line = 0;
         app.home
@@ -523,8 +488,8 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         height,
         total,
     );
-    // As a row index, for the passes that look into what is on screen and for the
-    // next frame. A view that would open on a spacer opens on the header below it.
+    // As a row index, for the look-into passes and the next frame; a view starting on a
+    // spacer starts on the header below.
     app.home.scroll = row_lines.partition_point(|line| *line < first_line);
     let first_line = row_lines
         .get(app.home.scroll)
@@ -584,9 +549,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     }
 
     if visible.is_empty() && !app.home.filter.is_empty() {
-        // Browsed into a directory, the blank answer must say where it looked: a
-        // filter that misses a sibling of the current directory reads as a bug
-        // until the reader notices the header path.
+        // Browsing, the empty answer says where it looked, or a miss reads as a bug.
         let text = match &app.home.browsing {
             Some(dir) => format!("No match under {}.", crate::home::display_path(dir)),
             None => "No match.".to_string(),
@@ -599,13 +562,8 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         return area.height as usize;
     }
 
-    // Guidance shows whenever there is nothing openable — not only when the list is
-    // literally empty. A first run in a directory holding one subdirectory would
-    // otherwise present a bare listing with no hint of what datui is for, which is the
-    // worst possible first impression for a screen meant to be the way in.
-    //
-    // Counted over every section, folded or not: with everything folded the headers
-    // are the content, and a hint that says there is nothing here would be wrong.
+    // Guidance shows whenever nothing is openable, not only for an empty list, so a
+    // first run is never a bare listing. Counted over every section, folded or not.
     let has_dataset = app.home.has_any_dataset();
     // Cloud sources are something to browse too, so they count as content.
     let guidance = if has_dataset || !app.home.filter.is_empty() || !app.home.cloud.is_empty() {
@@ -647,8 +605,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         frame: app.throbber_frame as usize,
     };
     let mut lines: Vec<Line> = Vec::new();
-    // Only the rows on screen are drawn: a search can list a thousand, and building a
-    // line for each on every frame was most of what a keystroke cost.
+    // Only rows on screen are drawn: a search may list thousands.
     let last_line = first_line + height;
     for (idx, row) in visible.iter().enumerate() {
         let at = row_lines.get(idx).copied().unwrap_or(usize::MAX);
@@ -698,14 +655,11 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     entry,
                     selected,
                     EntryNotes {
-                        // When a row is here because of a column rather than its name,
-                        // say so: otherwise it reads as the filter having gone wrong.
+                        // A row matched by a column rather than its name says so.
                         matched_column: hit.column_of(entry),
                         marks: &hit.positions,
-                        // Sources a URL can name. Taken from the config rather than
-                        // from the sources listed so far, so a source that is hidden or
-                        // still being discovered is not reported as missing. Inside a
-                        // source the trail already names it.
+                        // Sources a URL can name, from the config (not those listed so far, so hidden or
+                        // undiscovered ones are not reported missing). Inside a source the trail names it.
                         known_sources: app
                             .home
                             .browsing
@@ -720,9 +674,8 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     &list,
                 ));
             }
-            // Drawn exactly like an entry, because to look at it is one: a row in
-            // the directory's list with a name, a shape and a size. What it is not is a
-            // row *of* the directory, which is why it arrives here by its own variant.
+            // Drawn like an entry, but arrives by its own variant: it is not a row of the
+            // directory.
             crate::home::Row::Door { entry, .. } => {
                 lines.push(entry_line(
                     entry,
@@ -784,8 +737,8 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
     used
 }
 
-/// While `~` is typed, the list is the directory being typed: its names that the last
-/// segment matches, best first, with the one ↑↓ picked on the rail (#547 M6).
+/// While `~` is typed, the list is the typed directory: names matching the last
+/// segment, best first, with the ↑↓ pick on the rail.
 fn render_path_list(
     area: Rect,
     buf: &mut Buffer,
@@ -891,36 +844,29 @@ fn render_path_list(
     used
 }
 
-/// How far a row under a place is drawn in. Two cells: enough to read as "under",
-/// not enough to cost a name its tail.
+/// How far a row under a place is indented: enough to read as "under".
 const NEST_INDENT: usize = 2;
 
-/// The list height from which a blank line precedes every section header but the
-/// first. Below it every row is content.
+/// The list height from which a blank line precedes each section header but the
+/// first.
 const SPACED_LIST_HEIGHT: usize = 30;
 
-/// What [`meta_columns`] draws: shape, size and age, each right-aligned in a fixed
-/// cell. A row that has no meta columns of its own is drawn to the same edge, so
-/// the width is named here rather than measured on every row.
+/// [`meta_columns`]' width: shape, size and age right-aligned in fixed cells. Rows
+/// without meta columns are drawn to the same edge.
 const META_COLUMNS_WIDTH: usize = 13 + 2 + 9 + 2 + 4;
 /// The shape cell and the gap after it, at the head of the meta columns.
 const SHAPE_COLUMNS_WIDTH: usize = 13 + 2;
 
-/// Where an entry row drawn with `name_width` ends: the marker, the name's cells, the
-/// meta columns when shown, and one cell of air. The rows that carry no meta columns
-/// of their own — a place, the `more` row — are drawn to this same edge.
+/// Where an entry row of `name_width` ends: marker, name, meta columns when shown,
+/// one cell of air. Place and `more` rows share this edge.
 fn row_width(name_width: usize, show_meta: bool) -> usize {
     let marker = glyphs::display_width(glyphs::get().selector_blank);
     marker + name_width + if show_meta { META_COLUMNS_WIDTH } else { 0 } + 1
 }
 
-/// The place a group of recents lives in: its path with a trailing slash, and at the
-/// far right the filesystem it is on.
-///
-/// Quiet on purpose. It is a heading for the rows under it, not a row to open in its
-/// own right, so it takes the secondary text color and no locality glyph, and the
-/// filesystem name is the one fact it carries: the same word the rows' glyph stands
-/// for, spelled out once for the group rather than once per row.
+/// A recents group's place: its path with a trailing slash and, at the right, its
+/// filesystem. Quiet (secondary text, no locality glyph): a heading, not a row to
+/// open.
 fn place_line(
     path: &std::path::Path,
     label: Option<&str>,
@@ -933,8 +879,8 @@ fn place_line(
     let chrome = RowChrome::new(selected, ctx);
     let width = row_width(name_width, show_meta);
     let source = source.unwrap_or("").to_string();
-    // Unknown or local: nothing to say. Only a place that could be slow or cost money
-    // names what it is on, which is the rule the rows' own glyph follows.
+    // Unknown or local: nothing to say. Only places that could be slow or cost money
+    // name their filesystem, as the rows' glyph does.
     let locality = crate::locality::Locality::of_fstype(&source);
     let source = match locality {
         crate::locality::Locality::Object
@@ -950,12 +896,11 @@ fn place_line(
     {
         name.push('/');
     }
-    // What the place itself is, when the dataset index remembers it: `hive`, `12
-    // parquet`. From the cache only; a place row never causes a directory read.
+    // What the dataset index remembers the place to be (`hive`, `12 parquet`); from the
+    // cache only.
     let label = label.map(|l| format!("  {l}")).unwrap_or_default();
-    // marker, name, [label,] at least one space, source, space. The padding is what
-    // puts the source on the right edge, and a name cut to fit still leaves it a cell
-    // of air. The label goes before the name is cut, since the name is the place.
+    // Marker, name, [label,] space, source, space: padding puts the source on the right
+    // edge; the label goes before the name is cut.
     let fixed = glyphs::display_width(chrome.marker) + glyphs::display_width(&source) + 1;
     let room = width.saturating_sub(fixed + 1).max(1);
     let label = if glyphs::display_width(&name) + glyphs::display_width(&label) <= room {
@@ -979,9 +924,8 @@ fn place_line(
     ])
 }
 
-/// What a cap is hiding, as one row: `RECENT`'s `… 13 more in 5 places`, or a
-/// directory's `… 4,958 more` (files and directories both), `· measuring` while a
-/// sort by rows still measures them.
+/// What a cap hides, as one row: `RECENT`'s `… 13 more in 5 places`, or a
+/// directory's `… 4,958 more`, with `· measuring` while a rows sort still measures.
 fn more_line(
     hidden: usize,
     places: usize,
@@ -1047,8 +991,7 @@ fn note_row(
     ])
 }
 
-/// What every row of the home list is drawn with in one frame, as opposed to what
-/// each row says.
+/// What every home row is drawn with in one frame.
 #[derive(Clone, Copy)]
 struct ListDraw<'f> {
     ctx: &'f RenderContext,
@@ -1066,8 +1009,7 @@ struct ListDraw<'f> {
 struct EntryNotes<'a> {
     /// The column the filter matched, when the name did not.
     matched_column: Option<&'a str>,
-    /// The characters the filter matched: in the name, or in `matched_column` when
-    /// there is one.
+    /// The matched characters: in the name, or in `matched_column` when set.
     marks: &'a [usize],
     /// Sources a URL may name; `None` where the trail already names it.
     known_sources: Option<&'a [crate::config::CloudConnectionConfig]>,
@@ -1081,8 +1023,8 @@ struct EntryNotes<'a> {
     gone: Option<&'a str>,
 }
 
-/// Section headers carry the collapse marker and the provenance note, so the list
-/// explains itself without a legend.
+/// Section headers carry the fold marker and provenance note, so the list explains
+/// itself.
 fn section_header<'a>(
     section: &'a crate::home::Section,
     matches: usize,
@@ -1095,8 +1037,7 @@ fn section_header<'a>(
     } = *list;
     let g = glyphs::get();
     let note = if section.unavailable {
-        // The reason when there is one. A refused bucket listing says what to fix; a
-        // share that has gone away has nothing to add beyond the word itself.
+        // The reason when there is one (a refused listing says what to fix).
         section
             .unavailable_note
             .clone()
@@ -1110,16 +1051,14 @@ fn section_header<'a>(
         && section.door.is_none()
         && section.origin == Some(crate::home::RootOrigin::Cwd.note())
     {
-        // Launched somewhere with nothing to open, the heading says so and where to go:
-        // the public rows below would otherwise read as this directory's (#547 D9).
+        // Launched with nothing to open: say so and how to go elsewhere, so the public rows
+        // below do not read as this directory's.
         format!("nothing to open here {} ~ types a path", g.middot)
     } else {
         section.subtitle.clone().unwrap_or_default()
     };
-    // The note is trimmed before the title is, and never takes more than half the
-    // line. A note is context; the title is what the section *is*, and a search
-    // heading carrying a long path would otherwise crowd the title out entirely.
-    // `Found`'s title is one short word, and its note is the answer to the search.
+    // The note is trimmed before the title and takes at most half the line (`Found`'s
+    // short title leaves its note, the answer, more).
     let note_room = if section.title == crate::home::HomeState::SEARCH_SECTION {
         width.saturating_sub(glyphs::display_width(&section.title) + 16)
     } else {
@@ -1131,10 +1070,8 @@ fn section_header<'a>(
     } else {
         glyphs::fit_start(&note, note_room)
     };
-    // A title that names a place keeps its case; only the word-like headings —
-    // "RECENT", "ELSEWHERE" — are shouted. A URL is a place, and uppercasing one turns
-    // `s3://datui-sales` into `S3://DATUI-SALES`, which is not the bucket's name and in
-    // a case-sensitive store is not even a valid one.
+    // Paths and URLs keep their case (`s3://datui-sales` uppercased is a different
+    // bucket); only word headings ("RECENT") are uppercased.
     let is_path = section.title.starts_with('/')
         || section.title.starts_with('~')
         || section.title.contains("://")
@@ -1146,18 +1083,16 @@ fn section_header<'a>(
         section.title.to_uppercase()
     };
     let marker = if collapsed { g.collapsed } else { g.expanded };
-    // Shown whether folded or not: how much is in a place is worth knowing before
-    // deciding to look in it, and a folded section would otherwise read as empty.
-    // Until the listing is in, a count would be a guess, and a zero reads as empty.
+    // The count shows folded or not; until the listing is in, a spinner instead of a
+    // guessed count.
     let chip = if section.waiting {
         let spinner = g.spinner;
         format!(" {} ", spinner[frame % spinner.len()])
     } else {
         format!(" {matches} ")
     };
-    // Why the section is here, right after the count: `current directory`,
-    // `configured`. A flat chip in the style of `hive`, since it is a word about the
-    // section the way that is a word about a row.
+    // Why the section is here (`current directory`, `configured`), as a flat chip after
+    // the count.
     let origin = section
         .origin
         .map(|origin| format!(" {origin} "))
@@ -1167,12 +1102,9 @@ fn section_header<'a>(
     } else {
         glyphs::display_width(&origin) + 1
     };
-    // marker, title, space, chip, space, [origin, space,] rule, space, note, space.
-    // The title gives way to the note only down to three cells; below that the note
-    // goes instead, since a heading that is all note and no title says nothing. The
-    // origin chip goes before the note does: it is the shorter word and the one that
-    // says what the section is. A cell of rule always stays: its weight is how
-    // the cursor shows on a heading, and a long path would otherwise take it all.
+    // Marker, title, chip, [origin,] rule, note. The title yields to the note down to
+    // three cells, then the note goes; the origin chip goes before the note. One cell of
+    // rule always stays: its weight shows the cursor on a heading.
     const MIN_RULE: usize = 1;
     let mut note = note;
     let mut origin = origin;
@@ -1203,10 +1135,8 @@ fn section_header<'a>(
     title = glyphs::fit_start(&title, width.saturating_sub(fixed));
     let rule_w = width.saturating_sub(fixed + glyphs::display_width(&title)) + MIN_RULE;
 
-    // A title on a rule, not a filled bar: the accent carries the title, the count
-    // sits in a flat chip, and the rule runs out to the provenance note. The section
-    // the cursor is in is brighter and its rule heavier, which is the whole of the
-    // focus language — nothing moves, one thing lights up.
+    // A title on a rule, not a filled bar: accented title, flat count chip, rule out to
+    // the note. The focused section is brighter with a heavier rule.
     let title_style = if selected {
         Style::default()
             .fg(ctx.accent_bright)
@@ -1252,10 +1182,8 @@ fn section_header<'a>(
     Line::from(spans)
 }
 
-/// Split `text` into spans, styling the characters at `positions` differently.
-///
-/// Consecutive positions are merged into one span, so a run of matched characters is
-/// a single styled stretch rather than a stutter of one-character spans.
+/// Split `text` into spans, styling the characters at `positions`; consecutive
+/// positions merge into one span.
 fn highlight_spans(
     text: &str,
     positions: &[usize],
@@ -1287,12 +1215,8 @@ fn highlight_spans(
     spans
 }
 
-/// A cloud source under `CLOUD`: its name, the API it speaks, how many buckets it
-/// has (or why it has none) and where its login came from.
-///
-/// A column layout of its own rather than a dataset's. A source has no rows, columns,
-/// size or age, and three blank metadata columns beside every source would say so on
-/// every line.
+/// A cloud source under `CLOUD`: name, API, bucket count (or why none) and the
+/// login's origin. Its own layout: a source has no rows, columns, size or age.
 fn source_line<'a>(
     entry: &'a Entry,
     source: Option<&crate::home::CloudSource>,
@@ -1321,8 +1245,8 @@ fn source_line<'a>(
     let failed = source.is_some_and(|s| s.failed());
     let note = source.map(|s| s.note.clone()).unwrap_or_default();
 
-    // marker, place, name, api, count, note. The name takes what it needs up to a
-    // third of the line, the count a fixed column, and the note whatever is left.
+    // Marker, place, name, api, count, note: the name up to a third of the line, the
+    // count a fixed column, the note the rest.
     const API_W: usize = 7;
     const COUNT_W: usize = 14;
     let place = format!("{} ", g.in_object_store);
@@ -1344,8 +1268,7 @@ fn source_line<'a>(
     }
     let name_pad = name_w.saturating_sub(name.chars().count());
     let note_w = width.saturating_sub(fixed + name_w);
-    // Cut from the end: the account or endpoint leads, and it is the part that tells
-    // two sources apart.
+    // Cut from the end: the leading account or endpoint tells sources apart.
     let note = glyphs::fit(&note, note_w);
 
     let mut spans = vec![
@@ -1374,11 +1297,8 @@ fn source_line<'a>(
     Line::from(spans)
 }
 
-/// What a home list line is drawn with for one row: the rail, and the tint of the
-/// selected row, carried to the edge so the bar is a bar.
-///
-/// Tinted rather than reversed, so the colours that say what a row is survive on the
-/// row you are looking at. A theme that asks for "reversed" gets the old look.
+/// A home line's rail and selected-row tint, carried to the edge. Tinted, not
+/// reversed, so a row's own colors survive; "reversed" in the theme gets the old look.
 struct RowChrome {
     selected: bool,
     base: Style,
@@ -1398,8 +1318,7 @@ impl RowChrome {
         RowChrome {
             selected,
             base,
-            // The loudest thing on screen, and the only thing that needs to be found
-            // instantly.
+            // The loudest thing on screen, found instantly.
             marker: if selected {
                 g.selector
             } else {
@@ -1442,8 +1361,8 @@ fn locality_glyph(locality: Option<crate::locality::Locality>) -> &'static str {
     }
 }
 
-/// Loud enough to find, quiet enough to ignore: somewhere that can stall or cost money
-/// is coloured, and a local disk, most rows, is dimmed so it reads as texture.
+/// Places that can stall or cost money are colored; local disk, most rows, is dimmed
+/// to texture.
 fn locality_color(locality: Option<crate::locality::Locality>, ctx: &RenderContext) -> Color {
     match locality {
         Some(crate::locality::Locality::Object) => ctx.keybind_hints,
@@ -1468,8 +1387,7 @@ fn entry_line<'a>(
     } = *list;
     let g = glyphs::get();
     let chrome = RowChrome::new(selected, ctx);
-    // A row under a place is drawn in, and the cells come off the name's side: the meta
-    // columns stay where every other row puts them.
+    // A row under a place is indented from the name's side; the meta columns stay put.
     let name_width = name_width.saturating_sub(notes.indent);
 
     let mut name = entry.name.clone();
@@ -1484,8 +1402,8 @@ fn entry_line<'a>(
         frame,
         notes.known_sources,
     );
-    // Where this row's data lives, immediately before its name: on an ultrawide the
-    // pane is far enough from the cursor that a cloud path reads as a local one.
+    // Where the data lives, right before its name: on an ultrawide the pane is too far
+    // to tell cloud from local.
     let locality = entry
         .cost
         .source
@@ -1503,8 +1421,7 @@ fn entry_line<'a>(
         place_w,
     );
 
-    // Marks only when the name is why the row is here: a row matched by a column would
-    // get marks over letters that had nothing to do with it.
+    // Marks only when the name matched; a column match would mark unrelated letters.
     let marks = if notes.matched_column.is_none() {
         notes.marks.to_vec()
     } else {
@@ -1515,8 +1432,7 @@ fn entry_line<'a>(
     let pad = name_width
         .saturating_sub(2 + glyphs::display_width(&name) + glyphs::display_width(&cell.text));
 
-    // A file datui cannot read is listed so the directory reads as it is, and dimmed so
-    // the eye passes over it to the data.
+    // Unreadable files are listed so the directory reads as it is, dimmed.
     let name_fg = if entry.kind == EntryKind::Other {
         ctx.dimmed
     } else {
@@ -1548,8 +1464,8 @@ fn entry_line<'a>(
         chrome.hit,
     ));
     match (&cell.column, notes.matched_column) {
-        // The column note is a substring match, so its highlight is one too; `kept`
-        // counts the note's own characters, so a cut one puts no mark on the ellipsis.
+        // The column note is a substring match, highlighted as one; `kept` counts the note's
+        // own characters so the ellipsis gets no mark.
         (Some((shown, kept)), Some(_)) => {
             spans.push(Span::styled(format!(" {}", g.middot), kind_style));
             let mut positions = notes.marks.to_vec();
@@ -1557,8 +1473,8 @@ fn entry_line<'a>(
             spans.extend(highlight_spans(shown, &positions, kind_style, chrome.hit));
         }
         _ if cell.chip => {
-            // One cell of the row's own background, then the chip. Stripped rather than
-            // sliced: a cell with nothing in it is a panic.
+            // One cell of row background, then the chip; stripped, not sliced (an empty cell
+            // would panic).
             spans.push(chrome.pad(1));
             let chip = cell.text.strip_prefix(' ').unwrap_or(&cell.text);
             spans.push(Span::styled(chip.to_string(), kind_style));
@@ -1570,8 +1486,7 @@ fn entry_line<'a>(
             spans.push(chrome.pad(pad));
             spans.push(Span::styled(meta, base.fg(ctx.dimmed)));
         }
-        // The meta columns went to the name: padded across them, so the selection bar
-        // still runs to the edge.
+        // The meta columns went to the name: pad across them so the bar reaches the edge.
         None if show_meta => spans.push(chrome.pad(pad)),
         None => {}
     }
@@ -1579,9 +1494,8 @@ fn entry_line<'a>(
     Line::from(spans)
 }
 
-/// The meta columns of an entry row, and the name's width once a row with nothing to
-/// say in them has given them to its name (#648): all of them, or the shape cells
-/// alone; size and age keep their columns.
+/// An entry row's meta columns, and the name's width once a row with nothing to show
+/// there gives them up (all, or the shape cells; size and age keep theirs).
 fn meta_cells(
     entry: &Entry,
     notes: &EntryNotes,
@@ -1589,9 +1503,8 @@ fn meta_cells(
     show_meta: bool,
     name_width: usize,
 ) -> (usize, Option<String>) {
-    // A recent from a store or a share that nothing has measured: the probe that
-    // measures remote rows runs over roots, and a recent's place is not one, so what it
-    // shows is what an open or a listing remembered, or that nothing is known.
+    // An unmeasured recent from a store or share (probes run over roots, not recents'
+    // places): shows what was remembered, or that nothing is known.
     let unmeasured = notes.indent > 0
         && notes.place_kind.is_none()
         && entry.rows.is_none()
@@ -1616,14 +1529,12 @@ struct KindCell {
     text: String,
     /// Hive and multi-file datasets wear their label as a flat chip.
     chip: bool,
-    /// The matched column as cut to fit, and how many of its characters are the
-    /// column's own rather than the ellipsis.
+    /// The matched column as cut to fit, and how many characters are the column's own.
     column: Option<(String, usize)>,
 }
 
-/// The cell beside a row's name: the column the filter matched, else its label, else
-/// how Enter reads it, cut or given up so the name keeps room and the meta columns their
-/// alignment.
+/// The cell beside a row's name: the matched column, else the label, else how Enter
+/// reads it; cut or dropped so the name keeps room and the meta columns align.
 fn fit_kind_cell(
     entry: &Entry,
     label: &crate::home::RowLabel,
@@ -1645,9 +1556,8 @@ fn fit_kind_cell(
         _ => format!("  {kind}"),
     };
     let ellipsis_len = g.ellipsis.chars().count();
-    // A column note says why the row is in the list and may not go, but it is as long
-    // as somebody's column name; its head identifies it, so the tail goes. Its length is
-    // carried so the marks in the cut tail go too, whichever glyph set's ellipsis it is.
+    // A column note (why the row is listed) stays but may be long: its tail goes, and
+    // marks in the cut tail go with it.
     let column = matched_column.map(|column| {
         let room = name_width.saturating_sub(2 + place_w + 1 + 2 + 2);
         let whole = column.chars().count();
@@ -1665,10 +1575,8 @@ fn fit_kind_cell(
     };
     let fits =
         |cell: &str| name_width.saturating_sub(2 + place_w + glyphs::display_width(cell) + 1) > 1;
-    // A label describes and the name identifies, so on a narrow screen the label goes.
-    // Not a column note (why the row is listed), not a source id or `source not found:`
-    // (which store, or a broken recent), not the curated word (the one mark of a
-    // curated place): those stay, a source id cut to the room left.
+    // On a narrow screen a plain label goes (it describes; the name identifies). A column
+    // note, source id, `source not found:` or curated word stays, a source id cut to fit.
     let is_label = matched_column.is_none() && !label.source && !label.curated;
     let (text, chip) = if fits(&text) {
         (text, chip)
@@ -1680,8 +1588,8 @@ fn fit_kind_cell(
     } else {
         (text, chip)
     };
-    // How Enter will read a file not scanned where it is, in the cell a file's empty
-    // label leaves, while the whole name still fits beside it: the pane says the same.
+    // How Enter reads a file not scanned in place, in an empty label's cell while the
+    // whole name still fits (the pane says the same).
     let text = match discover::how_read(entry).and_then(read_marker) {
         Some(marker) if matched_column.is_none() && text.is_empty() => {
             let cell = format!("  {marker}");
@@ -1697,10 +1605,9 @@ fn fit_kind_cell(
     KindCell { text, chip, column }
 }
 
-/// `name` cut to `budget`, never the metadata, with the match `positions` that survive
-/// moved to where they now fall. A path keeps its tail, where its leaf is; a filename
-/// its head. The door's name gives up the directory, which the section title says,
-/// before what Enter opens, which nothing else does.
+/// `name` cut to `budget` (never the metadata), surviving match `positions` shifted.
+/// A path keeps its tail, a filename its head; the door's name drops the directory
+/// (the section title says it) before what Enter opens.
 fn fit_name(
     name: String,
     mut positions: Vec<usize>,
@@ -1725,8 +1632,7 @@ fn fit_name(
             let kept: String = base.chars().take(room).collect();
             format!("{kept}{}{what}", g.ellipsis)
         } else {
-            // Narrower still: the directory goes entirely, and what Enter opens keeps
-            // its head.
+            // Narrower still: drop the directory; what Enter opens keeps its head.
             let what = what.trim_start();
             if what.chars().count() <= budget {
                 what.to_string()
@@ -1743,8 +1649,8 @@ fn fit_name(
     // A relative path too (a search hit under a directory): its leaf is the file.
     if name.starts_with('/') || name.starts_with('~') || name.trim_end_matches('/').contains('/') {
         let name = glyphs::fit_start(&name, budget);
-        // The tail survived: every position moves left by what was dropped, and right
-        // by the ellipsis standing in for it.
+        // The tail survived: positions shift left by what was dropped, right by the
+        // ellipsis.
         let dropped = length + ellipsis_len - name.chars().count();
         positions.retain(|p| *p >= dropped);
         for p in &mut positions {
@@ -1761,9 +1667,8 @@ fn fit_name(
     }
 }
 
-/// The word a file row carries for how opening it reads it: `converts` or `in memory`,
-/// or `downloads` for a remote file copied whole first. `None` for a file scanned where
-/// it is, which is most of them.
+/// A file row's word for how opening reads it: `converts`, `in memory`, or
+/// `downloads` (copied whole first). `None` when scanned in place, as most are.
 fn read_marker(how: discover::HowRead) -> Option<&'static str> {
     if how.download {
         return Some("downloads");
@@ -1771,8 +1676,7 @@ fn read_marker(how: discover::HowRead) -> Option<&'static str> {
     how.mode.marker()
 }
 
-/// The pane's `read` line: [`crate::ReadMode::label`], after the download when there
-/// is one.
+/// The pane's `read` line: [`crate::ReadMode::label`], after the download if any.
 fn read_words(how: discover::HowRead) -> String {
     let mode = how.mode.label();
     if how.download {
@@ -1782,17 +1686,14 @@ fn read_words(how: discover::HowRead) -> String {
     }
 }
 
-/// A filled heading inside the preview pane.
-///
-/// The same grammar as the list's section headers — a filled bar, not a box — so the
-/// two halves of the screen read as one program.
+/// A filled heading in the preview pane, the same grammar as the list's section
+/// headers.
 fn pane_heading(text: &str, width: usize, ctx: &RenderContext) -> Line<'static> {
     pane_heading_counted(text, None, width, ctx)
 }
 
-/// A pane heading with a flat chip after its title, as the list's sections carry
-/// their counts: `COLUMNS [20]`, `ROWS [5 of 20 columns]`. The title is always a
-/// noun, the count always in the chip.
+/// A pane heading with a flat count chip, as list sections carry: `COLUMNS [20]`,
+/// `ROWS [5 of 20 columns]`. The title is always a noun.
 fn pane_heading_counted(
     text: &str,
     chip: Option<&str>,
@@ -1828,9 +1729,8 @@ fn pane_heading_counted(
 /// The most column notes the details pane lists a line each.
 const CODEBOOK_ROWS: usize = 12;
 
-/// What a documented file's columns mean, in the details pane: each column and its
-/// note, wrapped when the pane has `room` rows for all of it, else a line a column cut
-/// to the pane. Ctrl+E shows the whole page.
+/// A documented file's column notes in the details pane: wrapped when `room` rows hold
+/// them all, else one cut line per column. Ctrl+E shows the whole page.
 fn column_notes_block(
     columns: &[(String, crate::catalog::ColumnNote)],
     width: usize,
@@ -1877,16 +1777,9 @@ fn column_notes_block(
     lines
 }
 
-/// How many rows a line takes once the pane has wrapped it.
-///
-/// Word-wrapped, the way `Wrap { trim: false }` does it: a word that will not fit goes
-/// whole to the next row, so dividing the width into the length is a floor and not an
-/// answer — and the one line this is asked about, `holds`, is a list of words.
-///
-/// A space at the end of a row is counted, where the renderer drops it, so this errs
-/// one high on a line that happens to break there. Which way it errs matters: what it
-/// feeds is a budget, and a row too few leaves a blank line where a row too many draws
-/// over the bottom of the pane.
+/// How many rows a line takes once the pane word-wraps it (as `Wrap { trim: false }`:
+/// a word that does not fit moves whole). Trailing spaces are counted, so it errs one
+/// high: it feeds a budget, where too few leaves a blank row and too many overflows.
 pub(crate) fn wrapped_rows(line: &Line<'_>, width: usize) -> usize {
     use unicode_width::UnicodeWidthStr;
     let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
@@ -1896,8 +1789,7 @@ pub(crate) fn wrapped_rows(line: &Line<'_>, width: usize) -> usize {
     let mut rows = 1;
     let mut used = 0;
     for word in text.split_inclusive(' ') {
-        // Cells, not characters: the pane wraps by what a glyph occupies, and a
-        // skipped file can be named in a script where one character is two cells.
+        // Cells, not characters: some scripts' characters are two cells.
         let len = UnicodeWidthStr::width(word);
         if used + len > width && used > 0 {
             rows += 1;
@@ -1913,12 +1805,8 @@ pub(crate) fn wrapped_rows(line: &Line<'_>, width: usize) -> usize {
     rows
 }
 
-/// As many of a schema's columns as `room` rows will hold, and how many that was.
-///
-/// Counted as they are built, because a schema line wraps too — `created_at
-/// datetime[μs, America/New_York]` is past the forty cells the pane has. Taking a
-/// column per row draws the tail past the bottom and sends the `… N more` line over
-/// the edge with it, which is the loss the count exists to report.
+/// As many of a schema's columns as `room` rows hold, and how many: counted as built,
+/// since a long type wraps, and the `… N more` line must stay on screen.
 fn schema_lines(
     schema: &[(String, polars::prelude::DataType)],
     name_w: usize,
@@ -1951,9 +1839,8 @@ fn schema_lines(
     (lines.len(), lines)
 }
 
-/// One `key   value` fact, with the value carrying the emphasis. A value longer than the
-/// pane wraps under itself, not under the key: a URL or a description that ran back to
-/// column 0 read as a new fact (#547 D6).
+/// One `key   value` fact, the value emphasized. A long value wraps under itself, not
+/// under the key.
 fn fact_lines(
     key: &str,
     value: String,
@@ -1984,8 +1871,7 @@ fn fact_lines(
         .collect()
 }
 
-/// The width of the key column for a pane's facts: one column for all of them, so the
-/// values line up down the pane.
+/// The key column width for a pane's facts, shared so values line up.
 fn key_column<'a>(keys: impl IntoIterator<Item = &'a str>) -> usize {
     keys.into_iter()
         .map(glyphs::display_width)
@@ -1993,10 +1879,8 @@ fn key_column<'a>(keys: impl IntoIterator<Item = &'a str>) -> usize {
         .unwrap_or(0)
 }
 
-/// A compression ratio, when it is worth stating.
-///
-/// Below about 1.2x the number is noise; above it, it is the difference between what
-/// a file weighs and what it will weigh once open.
+/// A compression ratio when worth stating: above about 1.2x, the difference between
+/// on-disk and open size.
 fn ratio_of(size: Option<u64>, uncompressed: Option<u64>) -> Option<f64> {
     let (on_disk, in_memory) = (size?, uncompressed?);
     if on_disk == 0 {
@@ -2006,10 +1890,8 @@ fn ratio_of(size: Option<u64>, uncompressed: Option<u64>) -> Option<f64> {
     (ratio >= 1.2).then_some(ratio)
 }
 
-/// The name, the path, and everything known about the dataset, its key column at least
-/// `key_w` wide so facts drawn below it line up with its own; and the key column used.
-///
-/// Split out from the pane so it can be checked without an application behind it.
+/// The name, path and every known fact, its key column at least `key_w` wide so later
+/// facts align; returns the key column used. Separate from the pane for testing.
 fn preview_head_keyed(
     entry: &Entry,
     place_kind: Option<&'static str>,
@@ -2027,16 +1909,15 @@ fn preview_head_keyed(
                 .fg(ctx.text_primary)
                 .add_modifier(Modifier::BOLD),
         )),
-        // One line, tail kept: a wrapped path costs three rows to say what the leaf
-        // already said.
+        // One line, tail kept: a wrapped path costs rows to repeat the leaf.
         Line::from(Span::styled(
             glyphs::fit_start(&crate::home::display_path(&entry.path), width),
             Style::default().fg(ctx.dimmed),
         )),
     ];
 
-    // One list, in the order a sidebar reads: what it is, where it lives, what is in
-    // it, what reading it will take, and when it last changed.
+    // In sidebar order: what it is, where, what is inside, what reading takes, when it
+    // changed.
     let mut facts: Vec<(&str, String, Style)> = Vec::new();
     let plain = Style::default().fg(ctx.text_secondary);
 
@@ -2044,8 +1925,8 @@ fn preview_head_keyed(
     if !kind.is_empty() {
         facts.push(("kind", kind, plain));
     }
-    // The spec that reads it, and what about the file says so: drawn after `kind`, a
-    // path cut in its middle and the conditions as chips, neither wrapped mid-word.
+    // The spec reading it and why: after `kind`, the path cut in the middle and the
+    // conditions as chips, never wrapped mid-word.
     let spec_at = facts.len();
     let spec_path = spec
         .and_then(|s| s.path.as_deref())
@@ -2060,9 +1941,7 @@ fn preview_head_keyed(
         .as_deref()
         .map(crate::locality::Source::from_fstype)
     {
-        // The filesystem's own name and nothing else. Colour carries the warning:
-        // a sentence explaining that a network is a network is a sentence the
-        // reader has to skip on every row they look at.
+        // The filesystem's own name; color carries the warning.
         let style = match source.locality {
             crate::locality::Locality::Network | crate::locality::Locality::Object => {
                 Style::default().fg(ctx.warning)
@@ -2072,15 +1951,11 @@ fn preview_head_keyed(
         };
         facts.push(("storage", source.label().to_string(), style));
     }
-    // What there is to open inside. Without the partition count when the `partitions`
-    // fact below carries one: they count the same thing under different caps, and two
-    // adjacent numbers that ought to agree and do not are worse than one.
-    //
-    // A directory that was looked into and holds nothing to open says so, rather than
-    // leaving the reader to wonder whether anything was looked at.
+    // What there is to open inside, without the partition count when the `partitions`
+    // fact carries one (they differ in caps). A looked-into directory with nothing to
+    // open says so.
     match entry.holds.line(entry.cost.partitions.is_none()) {
-        // One part to a line, under the one label: joined, `1 parquet · 1 csv · 1
-        // directory` broke in the middle of a count at the pane's width.
+        // One part per line under one label, so a count never breaks mid-line.
         Some(line) => {
             for (i, part) in line.split(" · ").enumerate() {
                 let key = if i == 0 { "contains" } else { "" };
@@ -2102,7 +1977,7 @@ fn preview_head_keyed(
         facts.push(("contains", format!("{n} {what}"), plain));
     }
     // A door that is not one table reads part of the directory: which part, and what it
-    // leaves out, where the user decides whether to press Enter.
+    // leaves out.
     if entry.opens_whole_directory
         && let Some((reads, skips)) = crate::home::door_reads(entry)
     {
@@ -2122,8 +1997,7 @@ fn preview_head_keyed(
         facts.push(("on disk", crate::numfmt::bytes(size), plain));
     }
     if let Some(uncompressed) = entry.cost.uncompressed {
-        // The one number nothing else here implies: 200 MB of zstd Parquet is two
-        // gigabytes once it is open.
+        // The number nothing else implies: 200 MB of zstd Parquet is gigabytes open.
         facts.push((
             "in memory",
             crate::numfmt::bytes(uncompressed),
@@ -2138,8 +2012,8 @@ fn preview_head_keyed(
         (None, None) => {}
     }
     if let Some(groups) = entry.cost.row_groups {
-        // One enormous row group cannot be read in parallel or skipped through; a
-        // thousand tiny ones cost more in overhead than they save.
+        // One huge row group cannot be read in parallel or skipped; thousands of tiny ones
+        // cost overhead.
         facts.push(("row groups", groups.to_string(), plain));
     }
     if let Some(parts) = &entry.cost.partitions {
@@ -2158,8 +2032,7 @@ fn preview_head_keyed(
             parts.first_key_values.last(),
         ) {
             let key = parts.keys.first().map(String::as_str).unwrap_or("");
-            // Spelled rather than drawn: an arrow glyph here would be the only one
-            // on the screen, and "to" reads the same on every terminal.
+            // "to", not an arrow glyph: reads the same everywhere.
             let range = if first == last {
                 first.clone()
             } else {
@@ -2216,10 +2089,9 @@ fn preview_head_keyed(
     (lines, key_w)
 }
 
-/// `path` in `width` columns, cut between its components so the file name stays:
-/// `~/…/formats/demo-mktdata.toml`. The first component stays when there is room for it;
-/// a name too long on its own keeps its end. Cut at the platform's separators (`\`
-/// as well as `/` on Windows), each kept as the path spells it.
+/// `path` in `width` columns, cut between components so the file name stays
+/// (`~/…/formats/demo-mktdata.toml`); the first component stays if room; a name too
+/// long alone keeps its end. Platform separators are kept as spelled.
 fn elide_path(path: &str, width: usize) -> String {
     if glyphs::display_width(path) <= width {
         return path.to_string();
@@ -2253,16 +2125,15 @@ fn elide_path(path: &str, width: usize) -> String {
     glyphs::fit_start(&path[last..], width)
 }
 
-/// Whether chips are drawn on the chrome tier: a UTF-8 terminal whose header tint
-/// shows. Otherwise they are bracketed, and text values quoted.
+/// Whether chips are drawn on the chrome tier (UTF-8 with a visible header tint);
+/// otherwise bracketed, text values quoted.
 fn chips_filled(ctx: &RenderContext) -> bool {
     glyphs::get().unicode && crate::config::tint_shows(Some(ctx.table_header_bg)).is_some()
 }
 
-/// One condition of a spec's match as spans, at most `room` columns: a flat chip on the
-/// header tier, name dimmed and value in its type's color, or `[name value]` where no
-/// tint shows. Too long for the line, the name is cut before the value, which keeps at
-/// least its first character.
+/// One spec match condition as spans within `room`: a flat chip (dim name, value in
+/// its type's color), or `[name value]` without a tint. The name is cut before the
+/// value, keeping at least its first character.
 fn chip_spans(
     chip: &MatchChip,
     room: usize,
@@ -2288,9 +2159,8 @@ fn chip_spans(
         glyphs::display_width(&value),
     );
     let inner = room.saturating_sub(3);
-    // A chip that says `exchange_feed_sequence_version` and not its number says
-    // nothing: the value keeps up to half the chip, the name what is left (a letter
-    // and the marker at least), and a long value takes what the name leaves.
+    // The value keeps up to half the chip, the name the rest (at least a letter and the
+    // marker).
     let name_floor = name_w.min(1 + glyphs::display_width(ellipsis));
     let name_room = name_w.min(inner.saturating_sub(value_w.min(inner / 2)).max(name_floor));
     let name = glyphs::fit_cells(&chip.name, name_room, ellipsis).into_owned();
@@ -2308,8 +2178,8 @@ fn chip_spans(
     (spans, width)
 }
 
-/// The `match` fact: its chips laid out under the value column, wrapping between whole
-/// chips and never inside one. `no match` when the spec has none.
+/// The `match` fact: chips under the value column, wrapping between whole chips; `no
+/// match` when the spec has none.
 fn chip_fact_lines(
     key: &str,
     chips: &[MatchChip],
@@ -2353,12 +2223,8 @@ fn chip_fact_lines(
         .collect()
 }
 
-/// The details pane for a cloud source: what it points at, how it logs in, and when
-/// its buckets were listed. When listing failed, the whole message, since the row only
-/// had room for a word of it.
-/// A catalog's heading: what the catalog is, where it comes from, and how to hide
-/// it. Delete hides only the catalog that comes with datui; any catalog hides for
-/// good by its id in `[home] hide`.
+/// A catalog heading's pane: what the catalog is, where it comes from, how to hide it
+/// (Delete hides only the bundled one; any hides by id in `[home] hide`).
 fn catalog_details(
     catalog: &crate::home::ShownCatalog,
     width: usize,
@@ -2407,6 +2273,8 @@ fn catalog_details(
     lines
 }
 
+/// The details pane for a cloud source: what it points at, how it logs in, when its
+/// buckets were listed, and a failed listing's whole message.
 fn source_details(
     entry: &Entry,
     source: &crate::home::CloudSource,
@@ -2510,8 +2378,7 @@ fn render_preview(
     screen_height: u16,
 ) {
     let width = area.width as usize;
-    // The list is the typed directory's meanwhile; a row's details would be about
-    // something not on screen.
+    // The list is the typed directory meanwhile; a row's details would be off screen.
     if app.home.path_input_active {
         return;
     }
@@ -2531,8 +2398,8 @@ fn render_preview(
         return;
     }
     let g = glyphs::get();
-    // What the source's listing said about this place: an Azure account's subscription,
-    // a catalog dataset's publisher. Drawn below the facts, in their key column.
+    // The source listing's details for this place (an Azure subscription, a publisher),
+    // below the facts in their key column.
     let place_details = app.home.place_details(&entry.path).map(<[_]>::to_vec);
     let key_w = place_details
         .as_ref()
@@ -2554,8 +2421,7 @@ fn render_preview(
         key_w,
         ctx,
     );
-    // That the row that reads a bucket directory whole cannot, before Enter is pressed:
-    // what it holds is on the row already, and Enter says why at length.
+    // That a bucket door cannot read the directory whole, before Enter (which says why).
     #[cfg(feature = "cloud")]
     if entry.opens_whole_directory && crate::App::why_a_door_reads_nothing(&entry).is_some() {
         lines.push(Line::from(Span::styled(
@@ -2573,9 +2439,8 @@ fn render_preview(
             lines.extend(fact_lines(&key, value, key_w, width, style, ctx));
         }
     }
-    // What the columns mean, merged as the Documentation page merges them: the
-    // catalog's note over the format spec's. A file inside a catalog dataset gets no
-    // catalog notes here: they are the dataset's columns, which need not be the file's.
+    // Column notes merged as the Documentation page does (catalog over spec). A file
+    // inside a catalog dataset gets none: the dataset's columns need not be the file's.
     if let Some((_, mut doc)) = app.home_documented_row().filter(|(p, _)| *p == entry.path) {
         if app.home.catalog_dataset(&entry.path).is_none()
             && app.home.bookmark(&entry.path).is_none()
@@ -2590,9 +2455,8 @@ fn render_preview(
         }
     }
 
-    // ---- Rows --------------------------------------------------------------------
-    // Before the schema: a few real values say more about a file than its types. At
-    // most the block's own rows, so the columns below keep their room.
+    // Rows before the schema (real values say more than types), at most the block's own
+    // rows.
     if let Some(preview) = app.home_preview_rows(&entry, screen_height) {
         let drawn: usize = lines.iter().map(|line| wrapped_rows(line, width)).sum();
         let room = (area.height as usize)
@@ -2621,10 +2485,8 @@ fn render_preview(
                 .max()
                 .unwrap_or(0)
                 .min(22);
-            // The rows the lines so far will *occupy*, not how many there are: the
-            // pane wraps, and a fact longer than its width takes two rows. Counting
-            // lines drew the tail of the schema past the bottom and reported `… N
-            // more` as if nothing had been lost.
+            // Rows the lines will occupy after wrapping, not their count, so the schema tail and
+            // `… N more` stay on screen.
             let drawn: usize = lines.iter().map(|line| wrapped_rows(line, width)).sum();
             let room = (area.height as usize).saturating_sub(drawn + 1);
             let (shown, mut schema_lines) = schema_lines(&schema, name_w, width, room, ctx);
@@ -2637,9 +2499,8 @@ fn render_preview(
             }
         }
         _ => {
-            // One fragment, or none. The details list above already says what this
-            // is, and the footer already says what Enter does; a sentence
-            // repeating either is a sentence to read past on every row.
+            // One fragment or none: the details and the footer already say what this is and what
+            // Enter does.
             let variants = spec
                 .as_deref()
                 .filter(|s| s.lists_variants())
@@ -2696,8 +2557,7 @@ fn render_preview(
         .render(area, buf);
 }
 
-/// What the pane says about opening a row that has no schema to show, beside what it
-/// knows of the row.
+/// What the pane says of opening a row whose schema it cannot show.
 #[derive(Clone, Copy)]
 struct NoteFacts<'a> {
     /// Its schema or rows are being read.
@@ -2715,7 +2575,7 @@ struct NoteFacts<'a> {
 }
 
 /// The pane's notes on what Enter does with a row whose schema it cannot show, and a
-/// warning to draw above them in place of notes.
+/// warning to draw instead of them.
 fn enter_notes(entry: &Entry, facts: &NoteFacts) -> (Vec<(&'static str, String)>, Option<String>) {
     let NoteFacts {
         reading,
@@ -2726,15 +2586,8 @@ fn enter_notes(entry: &Entry, facts: &NoteFacts) -> (Vec<(&'static str, String)>
         spec_columns,
     } = *facts;
     let g = glyphs::get();
-    // Whether there will actually be a door in there to point at. An empty
-    // directory gets none, nor does one holding only a writer's own markers, and
-    // promising a row that is not there is worse than saying nothing — it is
-    // the row a new user would go looking for on the strength of this sentence.
-    //
-    // The filter on *this* listing is not a reason to withhold it: stepping into
-    // a directory clears the filter before the listing inside it is built, so the
-    // door will be there — and a user with a filter typed is the one most likely
-    // to be lost.
+    // Whether a door will be inside to point at (none for an empty or markers-only
+    // directory). The current filter does not matter: stepping in clears it.
     let door_in_there = !crate::home::holds_nothing_to_open(&entry.holds);
     let footer_unreadable = entry.kind == EntryKind::File
         && entry.rows.is_none()
@@ -2744,8 +2597,7 @@ fn enter_notes(entry: &Entry, facts: &NoteFacts) -> (Vec<(&'static str, String)>
     let opens = discover::data_format(&entry.path)
         .and_then(|f| f.descriptor().tables.as_ref())
         .and_then(|t| t.opens);
-    // What → lists: a spec's variants are record types, a real file's members
-    // tables.
+    // What → lists: a spec's record types, or a file's tables.
     let inside = if entry.format_spec.is_some() {
         (g.arrow_right, "its record types".to_string())
     } else {
@@ -2753,8 +2605,7 @@ fn enter_notes(entry: &Entry, facts: &NoteFacts) -> (Vec<(&'static str, String)>
     };
     let step_in = |then: &str| format!("step in {} {then}", g.middot);
     let notes: Vec<(&'static str, String)> = match entry.kind {
-        // The door itself. It is the row the other notes point at, so it says
-        // what it does rather than where to find it.
+        // The door says what it does.
         _ if entry.opens_whole_directory => {
             let does = match crate::home::door_kind(entry) {
                 crate::home::DoorKind::Lake => DOOR_OF_A_LAKE_TABLE,
@@ -2765,13 +2616,9 @@ fn enter_notes(entry: &Entry, facts: &NoteFacts) -> (Vec<(&'static str, String)>
             };
             vec![("Enter", does.to_string())]
         }
-        // A web file a HEAD settled cannot be had: why, before Enter is pressed
-        // on it. A callout, as an unreadable footer is.
+        // A web file a HEAD showed unavailable: why, as a callout.
         _ if web_gone.is_some() => return (Vec::new(), web_gone.map(str::to_string)),
-        // Where the other door is. A directory datui will not read as one table
-        // is the row a new user is most likely to be stuck on — the label says
-        // what is in there, Enter steps into it, and nothing until now said that
-        // the way to read the whole of it is one row further in.
+        // Where the other door is, for a directory not read as one table: one row further in.
         EntryKind::Directory if door_in_there => {
             vec![("Enter", step_in(INSIDE_AND_THE_DOOR))]
         }
@@ -2785,8 +2632,7 @@ fn enter_notes(entry: &Entry, facts: &NoteFacts) -> (Vec<(&'static str, String)>
         EntryKind::File if entry.enter_lists_tables() => {
             vec![("Enter", "its tables".to_string())]
         }
-        // The spec's variants are the spec's to say, whatever a measurement or a
-        // cached record left in the row's count.
+        // Spec variants are the spec's to say, whatever count the row carries.
         EntryKind::File if variants.is_some() || entry.cost.tables.is_some_and(|n| n > 1) => {
             let opens = opens.filter(|_| entry.cost.opens_one);
             let mut notes = vec![
@@ -2804,9 +2650,8 @@ fn enter_notes(entry: &Entry, facts: &NoteFacts) -> (Vec<(&'static str, String)>
             vec![("Enter", step_in(INSIDE_A_LAKE_TABLE))]
         }
         k if k.is_lake_table() => vec![("Enter", step_in("log not read"))],
-        // Measured, and its footer said nothing: the open will most likely fail
-        // the same way, and saying so before Enter beats a pane promising columns
-        // (#547 D8). A callout rather than a fact: it is the surprise.
+        // Measured with an unreadable footer: the open will likely fail too, so say so as a
+        // callout before Enter.
         EntryKind::File if footer_unreadable => {
             return (Vec::new(), Some(FOOTER_UNREADABLE.to_string()));
         }
@@ -2816,17 +2661,15 @@ fn enter_notes(entry: &Entry, facts: &NoteFacts) -> (Vec<(&'static str, String)>
             vec![("schema", format!("{n} {what} (spec)"))]
         }
         _ if reading => vec![("schema", "reading...".to_string())],
-        // Only Parquet says its columns without being read; everything else is
-        // read when it is opened, which is nothing to warn about.
+        // Only Parquet gives columns unread; others are read on open, nothing to warn of.
         _ => vec![("schema", "on open".to_string())],
     };
     (notes, None)
 }
 
-/// What a spec says a file holds, under its `records` or `schema` line: its record
-/// types and their column counts packed under the value column (`Status 6 · OrderAdd 9
-/// · …`), wrapping between whole items; or each column and its type. As many as `room`
-/// rows hold.
+/// What a spec says a file holds, under `records` or `schema`: record types with column
+/// counts packed under the value column (`Status 6 · OrderAdd 9 · …`), or each column and
+/// type, as `room` rows hold.
 fn spec_schema_lines(
     variants: Option<&[crate::members::Table]>,
     columns: Option<&[(String, polars::prelude::DataType)]>,
@@ -2864,8 +2707,8 @@ fn spec_schema_lines(
     lines
 }
 
-/// A spec's variants as `name count` items under the value column, ` · ` between them,
-/// a line breaking only between items; `… N more` when `room` rows do not hold them.
+/// A spec's variants as `name count` items, ` · ` between, breaking only between
+/// items; `… N more` past `room` rows.
 fn variant_lines(
     variants: &[crate::members::Table],
     indent: usize,
@@ -2956,8 +2799,7 @@ const DOOR_OF_FILES_THAT_DIFFER: &str = "files stacked, columns matched by name"
 /// The same, where only part of the directory is read: the `reads` line says which.
 const DOOR_OF_A_MIX: &str = "matching files as one table";
 
-/// The pane for the row standing in for hidden files: which files they are, as many
-/// as fit, so the count is never all there is to go on.
+/// The pane for the hidden-files row: which files, as many as fit.
 fn hidden_details(
     names: &[&str],
     count: usize,
@@ -3004,8 +2846,8 @@ fn hidden_details(
     lines
 }
 
-/// The pane for a place under `RECENT`: what it is, where, and how many recents it
-/// holds. From what the listing already knows; a place is never read for this.
+/// The pane for a place under `RECENT`: what, where, how many recents. Never reads the
+/// place.
 fn place_details(
     path: &std::path::Path,
     source: Option<&str>,
@@ -3014,8 +2856,7 @@ fn place_details(
     ctx: &RenderContext,
 ) -> Vec<Line<'static>> {
     let plain = Style::default().fg(ctx.text_secondary);
-    // Named like any row: its last component, or the whole of it at a root or a
-    // bucket, which have none.
+    // Its last component, or the whole path at a root or bucket.
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -3055,24 +2896,16 @@ fn place_details(
     lines
 }
 
-/// Whether a row's name is drawn with a trailing slash.
-///
-/// A row nothing has looked into is still a place: a listing datui made itself only ever
-/// puts a directory on one, so `project.old` and `v1.2` keep their slash however many
-/// dots are in the name. A remote row — a bucket, an HTTP URL, a path on a share — is
-/// the one nothing can stat, and there the name is all there is — so a name with an extension is a file even when it is one datui does not
-/// read (`export.txt`), and everything else is a prefix.
-///
-/// Said up front so the name does not change shape a frame later when the label lands;
-/// the `…` beside it already carries the part that is not known.
+/// Whether a row's name gets a trailing slash, decided up front so it does not change
+/// when the label lands. An unexamined local row is a directory (`project.old`,
+/// `v1.2`); a remote row cannot be stat'ed, so a name with an extension is a file and
+/// anything else a prefix.
 fn shows_as_a_place(entry: &Entry) -> bool {
-    // The row that opens the directory being browsed is an action, not a place: → does
-    // nothing on it, so a trailing slash offers a step that is not there.
+    // The door is an action: → does nothing on it, so no slash.
     if entry.opens_whole_directory {
         return false;
     }
-    // A dataset that is a directory is still one: `events/  hive` reads as the place
-    // it is, the way `data/  3 dirs` does.
+    // A directory dataset is still a place: `events/  hive`.
     if matches!(
         entry.kind,
         EntryKind::Directory | EntryKind::Hive | EntryKind::MultiFile

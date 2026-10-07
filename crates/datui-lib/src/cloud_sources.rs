@@ -1,14 +1,9 @@
-//! Every object store datui can read, as a list of sources rather than one of each kind.
-//!
-//! A source is a store plus the login that reaches it: the default S3 settings, a
-//! Google login, or an entry in `[[cloud.connections]]`. Each has an ID, and the ID is what
-//! keeps two stores apart when their bucket names collide: two MinIO servers can both
-//! have a bucket called `data`, so a URL from an S3-compatible source names it,
-//! `s3://<id>@bucket/key`. Everywhere else the location is unambiguous and URLs stay the
-//! standard ones, so a URL copied out of datui still works in any other tool.
-//!
-//! Discovery here reads environment variables and asks whether files exist. It never
-//! touches the network: listing is `cloud_browse`'s job, and it runs on a worker.
+//! Every object store datui can read, as a list of sources: a store plus the login
+//! reaching it (default S3 settings, a Google login, a `[[cloud.connections]]` entry).
+//! Each has an id that tells apart same-named buckets on different S3-compatible stores
+//! (`s3://<id>@bucket/key`); elsewhere URLs stay standard, usable in other tools.
+//! Discovery reads only environment variables and file existence; listing is
+//! `cloud_browse`'s, on a worker.
 
 use crate::cloud_browse::Environment;
 use crate::config::{CloudConfig, CloudConnectionConfig, DatasetAccess, DatasetAuth};
@@ -60,9 +55,8 @@ pub struct S3Settings {
     /// `None` takes the endpoint's usual style: virtual-hosted for AWS, path-style for a
     /// custom endpoint.
     pub virtual_hosted: Option<bool>,
-    /// Fill gaps from the `AWS_*` environment. Only the default source does: a source
-    /// in the config names its own keys, and borrowing the shell's would sign its
-    /// requests as somebody else.
+    /// Fill gaps from `AWS_*` variables: only the default source, since a configured one
+    /// would otherwise sign as the shell's identity.
     pub from_env: bool,
     /// Send requests with no signature at all, as public data is read.
     pub skip_signature: bool,
@@ -83,10 +77,8 @@ impl S3Settings {
         }
     }
 
-    /// Whether requests put the bucket in the host name.
-    ///
-    /// A custom endpoint is almost always path-style: a MinIO container on localhost has
-    /// no wildcard DNS to give each bucket a subdomain of its own.
+    /// Whether requests put the bucket in the host name: not by default for custom
+    /// endpoints (a localhost MinIO has no wildcard DNS).
     pub fn virtual_hosted_style(&self) -> bool {
         self.virtual_hosted.unwrap_or(self.endpoint.is_none())
     }
@@ -234,12 +226,9 @@ pub fn endpoint_host(endpoint: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_string())
 }
 
-/// Every source this machine and the config describe, in display order.
-///
-/// `config` is the effective one, with the environment and command line folded in.
-/// A configured source whose name matches a detected one replaces it. Nothing here
-/// runs a command: credentials a profile gets from the AWS CLI are fetched when the
-/// source is used ([`Source::with_credentials`]).
+/// Every source this machine and the (effective) config describe, in display order; a
+/// configured source replaces a detected one of the same name. Runs no command: a
+/// profile's CLI credentials are fetched on use ([`Source::with_credentials`]).
 pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
     let profiles = crate::aws_profiles::load(env);
     let active = crate::aws_profiles::active_profile(env);
@@ -257,9 +246,8 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
                 project: provider.project,
                 ..Source::default_for(provider.kind, config, tier, provider.note.clone())
             };
-            // Found through a profile rather than keys: the active profile supplies the
-            // keys, and its endpoint and region fill whatever the config and the
-            // environment did not say.
+            // Found through a profile: it supplies the keys, and its endpoint and region fill what
+            // config and environment left unsaid.
             if provider.kind == ProviderKind::S3
                 && matches!(provider.note.as_str(), "AWS_PROFILE" | "~/.aws")
             {
@@ -280,9 +268,8 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
         })
         .collect();
 
-    // A credentials file named in the environment is passed along by path, so a value
-    // from `[cloud] env_files`, which object_store cannot see, reaches it too. Keys from
-    // the environment bring their session token the same way.
+    // Pass a credentials file by path, so one from `[cloud] env_files` (invisible to
+    // object_store) reaches it; environment keys bring their session token likewise.
     if let Some(google) = sources.iter_mut().find(|s| s.id == DEFAULT_GCS)
         && let Some(path) = (env.var)("GOOGLE_APPLICATION_CREDENTIALS")
     {
@@ -361,9 +348,9 @@ pub fn discover(config: &CloudConfig, env: &Environment<'_>) -> Vec<Source> {
     kept
 }
 
-/// Google through `gcloud`: the active configuration is the default login when
-/// object_store has none of its own, or one it cannot read; every configuration with
-/// another account is a source of its own.
+/// Google via `gcloud`: the active configuration is the default login when
+/// object_store has none (or one it cannot read); other accounts' configurations are
+/// sources of their own.
 fn gcloud_sources(sources: &mut Vec<Source>, env: &Environment<'_>) {
     let configurations = crate::gcloud::configurations(env);
     let active_name = crate::gcloud::active_name(env);
@@ -591,9 +578,8 @@ fn fill_from_profile(
 }
 
 impl Source {
-    /// This source with the keys it signs with filled in from its AWS profile, when it
-    /// logs in through one. Runs `credential_process` or the AWS CLI when the profile
-    /// needs them, so call it on a worker.
+    /// This source with its AWS profile's signing keys filled in, running
+    /// `credential_process` or the AWS CLI if needed: call on a worker.
     pub fn with_credentials(mut self, env: &Environment<'_>) -> Result<Source, String> {
         if let Some(problem) = &self.problem {
             return Err(problem.clone());
@@ -823,9 +809,8 @@ pub struct Resolved {
     pub gcloud: Option<(String, String)>,
     /// For a Google URL signed with a credentials file.
     pub google_credentials: Option<std::path::PathBuf>,
-    /// Why the login that would have signed is not signing: an expired session, a
-    /// missing CLI. The place is read unsigned instead, in case it is public; when it
-    /// is refused, this is the error to report, since it is the one to fix.
+    /// Why the signing login is not signing (expired session, missing CLI). The place is
+    /// tried unsigned; if refused, this is the error to report.
     pub login_error: Option<String>,
 }
 
@@ -835,9 +820,8 @@ pub enum Signing {
     Signed,
     /// No signature: public data, or no login for this provider at all.
     Unsigned,
-    /// Signed, by a login that may have nothing to do with this place. A refusal is
-    /// tried again with no signature, since the place may be public: Azure refuses a
-    /// public container to a token from another tenant.
+    /// Signed by a login perhaps unrelated to this place; a refusal is retried unsigned
+    /// (Azure refuses a public container to another tenant's token).
     Try,
 }
 
@@ -859,9 +843,9 @@ impl Resolved {
     }
 }
 
-/// The bucket or container `url` is in, as one string: `s3://bucket`, `s3://<id>@bucket`,
-/// `gs://bucket`, `abfss://container@account`. What is learned about signing is kept
-/// per place.
+/// The bucket or container `url` is in, as one string (`s3://bucket`,
+/// `s3://<id>@bucket`, `gs://bucket`, `abfss://container@account`); signing facts are
+/// kept per place.
 pub fn access_key(url: &str) -> Option<String> {
     if let Some((account, container, _)) = crate::source::azure_parts(url) {
         return Some(format!("abfss://{container}@{account}"));
@@ -911,9 +895,8 @@ pub fn remember_bucket(source: &Source, bucket: &str) {
     }
 }
 
-/// Buckets an earlier run listed, remembered as if listed now: a bucket under Recent
-/// opens with the login that found it before its source is listed again. Only S3:
-/// Google's first level is projects, and an Azure URL names its account.
+/// Remember an earlier run's buckets as listed now, so a Recent bucket opens with the
+/// login that found it. S3 only (Google lists projects; Azure URLs name their account).
 pub fn remember_listed(source: &Source, buckets: &[String]) {
     if source.kind != ProviderKind::S3 {
         return;
@@ -943,9 +926,8 @@ fn remembered(kind: ProviderKind, bucket: &str) -> Option<String> {
     bucket_sources().lock().ok()?.get(&key).cloned()
 }
 
-/// Resolve `url` against the sources in `config` and on this machine, with an Amazon
-/// S3 bucket's own region. May run a credential command and ask S3 where the bucket is,
-/// so call it on a worker.
+/// Resolve `url` against configured and local sources, with an S3 bucket's region. May
+/// run a credential command and ask S3: call on a worker.
 pub fn resolve(url: &str, config: &CloudConfig) -> Result<Resolved, String> {
     let sources = session_sources(config);
     let mut resolved = resolve_among(url, config, &sources, &Environment::current())?;
@@ -959,9 +941,8 @@ pub fn resolve(url: &str, config: &CloudConfig) -> Result<Resolved, String> {
     Ok(resolved)
 }
 
-/// As [`resolve`], for opening an object. A place whose signing is still [`Signing::Try`]
-/// is settled first with one unsigned request, since the libraries that open it make
-/// many requests and cannot retry them without a signature.
+/// As [`resolve`], for opening: a [`Signing::Try`] place is settled first with one
+/// unsigned request, since the opening libraries cannot retry unsigned.
 pub fn resolve_for_open(url: &str, config: &CloudConfig) -> Result<Resolved, String> {
     let resolved = settle_signing(resolve(url, config)?);
     // Read unsigned only because the login failed: when that is refused too, the
@@ -974,9 +955,8 @@ pub fn resolve_for_open(url: &str, config: &CloudConfig) -> Result<Resolved, Str
     Ok(with_azure_key_if_refused(resolved, config))
 }
 
-/// An Azure place signed with a sign-in's token that the account refuses for want of a
-/// data role: checked with one listing request, once per account, and read with the
-/// account's key from then on, when the fallback is on.
+/// An Azure place whose sign-in token lacks a data role: checked by one listing per
+/// account, then read with the account key, when that fallback is enabled.
 fn with_azure_key_if_refused(resolved: Resolved, config: &CloudConfig) -> Resolved {
     let enabled = config.use_azure_account_keys;
     if resolved.kind != ProviderKind::Azure
@@ -1033,10 +1013,9 @@ fn settle_signing(resolved: Resolved) -> Resolved {
     }
 }
 
-/// An `az://`, `adl://` or `azure://` URL, `container/path`, as its canonical `abfss://`
-/// form. These name no account, so it comes from where the URL was typed (inside an
-/// account on the home screen), the environment, or the one account in the config.
-/// Every other path comes back as it is.
+/// An `az://`, `adl://` or `azure://` URL (`container/path`) in canonical `abfss://`
+/// form, the account taken from where it was typed (inside an account on home), the
+/// environment, or the config's one account. Other paths pass through.
 pub fn expand_azure_short_url(
     path: &std::path::Path,
     config: &CloudConfig,
@@ -1090,9 +1069,9 @@ pub fn expand_azure_short_url(
     )))
 }
 
-/// How the catalogs say to read `url`: the innermost dataset URL holding it, and of two
-/// that are the same place, the one in the catalog listed first, so the user's catalogs
-/// outrank the bundled one. A URL naming its own source has said.
+/// How the catalogs say to read `url`: the innermost dataset URL holding it, the first
+/// listed catalog winning ties (user catalogs over bundled). A URL naming its source
+/// has already said.
 fn configured_access<'a>(url: &str, config: &'a CloudConfig) -> Option<&'a DatasetAccess> {
     let (id, plain) = crate::source::split_source_id(url);
     if id.is_some() {
@@ -1115,9 +1094,8 @@ pub fn resolve_with(
     resolve_among(url, config, &discover(config, env), env)
 }
 
-/// What discovery found, kept so that each resolve does not read every tool's files
-/// again: one is asked for per peek, per listing and per open. Kept for one config at a
-/// time; [`SessionSources::refresh`] looks again.
+/// Discovered sources, kept so each resolve (per peek, listing, open) does not reread
+/// every tool's files; one config at a time, [`SessionSources::refresh`] rediscovers.
 #[derive(Debug, Default)]
 pub struct SessionSources(Mutex<Option<(CloudConfig, Arc<[Source]>)>>);
 
@@ -1266,9 +1244,8 @@ fn resolve_among(
         {
             Some(source) => source,
             None => {
-                // The default source as discovered, when it was: that is what carries
-                // the active profile. Otherwise there is no login for this provider, and
-                // the settings are only where to send an unsigned request.
+                // The discovered default source carries the active profile; without one there is no
+                // login, only where to send an unsigned request.
                 let default = Source::default_for(kind, config, Tier::Environment, "");
                 owned = false;
                 no_login = find(&default.id).is_none();
@@ -1326,9 +1303,8 @@ fn resolve_among(
     })
 }
 
-/// The login that would sign `resolved` failed. A login that owns the place reports it;
-/// one that only might (`Signing::Try`) is no reason not to try the place unsigned,
-/// since it may be public, keeping the error for when it is not.
+/// The signing login failed: an owning login reports it; a `Signing::Try` one does not
+/// stop an unsigned try (keeping the error in case that is refused).
 fn login_failed(resolved: Resolved, error: String) -> Result<Resolved, String> {
     if resolved.signing != Signing::Try {
         return Err(error);
@@ -1339,9 +1315,8 @@ fn login_failed(resolved: Resolved, error: String) -> Result<Resolved, String> {
     })
 }
 
-/// An Azure URL: the account named in the environment when it is this one, else a
-/// signed-in `az`, else no signature at all, which is how public containers are read.
-/// `parts` are the URL's account, container and path.
+/// An Azure URL: the environment's account if it is this one, else a signed-in `az`,
+/// else unsigned (how public containers are read). `parts`: account, container, path.
 fn resolve_azure(
     (account, container, path): &(String, String, String),
     sources: &[Source],

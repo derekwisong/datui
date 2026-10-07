@@ -9,7 +9,7 @@
 //! pass: the first two as tables of their own, info and parameters on the Info tab.
 //!
 //! Every length is bounded: a message by its 16-bit size and the file's end, a field
-//! list by [`MAX_COLUMNS`], nesting by [`MAX_DEPTH`], the text kept by its counts.
+//! list by [`MAX_COLUMNS`], nesting by `MAX_DEPTH`, the text kept by its counts.
 //! A corrupt stretch is passed over to the next sync marker and counted.
 
 use std::collections::{BTreeMap, HashMap};

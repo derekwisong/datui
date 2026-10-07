@@ -12,7 +12,7 @@
 //! -327.68. Decimals are written as their exact text instead.
 //!
 //! And it writes names as they are, with an empty record name, but an Avro name
-//! is `[A-Za-z_][A-Za-z0-9_]*` and strict readers refuse the file. [`write`]
+//! is `[A-Za-z_][A-Za-z0-9_]*` and strict readers refuse the file. [`write()`]
 //! names the record and gives each column and struct field a valid name in the
 //! file's schema, with the original as the field's `doc`. It also writes the
 //! header once, where Polars' writer repeats it for every chunk, and cuts
@@ -114,7 +114,7 @@ const BLOCK_BYTES: usize = 1 << 20;
 
 /// Write `df`, prepared by [`lazy_for_avro`], as an uncompressed Avro file:
 /// Polars' `AvroWriter`'s encoding, with valid names, one header, and blocks
-/// of about [`BLOCK_BYTES`].
+/// of about `BLOCK_BYTES`.
 pub fn write(df: &mut DataFrame, mut writer: impl Write) -> PolarsResult<()> {
     // Serializing walks the columns' chunks together, so they must line up.
     df.align_chunks_par();

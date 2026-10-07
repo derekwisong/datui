@@ -1,10 +1,7 @@
-//! Prepare chart data from a LazyFrame: read the chart's columns, then turn them into
-//! points, bins or statistics.
-//!
-//! Every chart reads its rows through [`read_columns`]: up to a row limit of them,
-//! spread across the table by the sampler the analysis tools use, so a chart shows the
-//! table and not its first rows. What was read comes back as [`RowsRead`], so the chart
-//! can say when it shows a sample.
+//! Prepare chart data from a LazyFrame: read the chart's columns, then make points,
+//! bins or statistics. Every chart reads through `read_columns`: up to a row limit,
+//! spread across the table by the analysis sampler (not its first rows), returning
+//! [`RowsRead`] so the chart can say when it shows a sample.
 
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, NaiveTime};
 use color_eyre::Result;
@@ -80,12 +77,10 @@ pub(crate) fn x_time(v: f64) -> Option<NaiveTime> {
     )
 }
 
-/// An x tick at `level` of detail, 0 the fullest, or `None` past the shortest form.
-/// A narrow axis steps down until its labels fit: a date to year-month and then the
-/// year, or to month-day when both ends of the axis, `bounds`, fall in one year; a
-/// datetime first to its date, or to the minute when the axis spans one day; a time
-/// to the minute. A number, or a time past what it can stand for, is written in
-/// `numbers`.
+/// An x tick at detail `level` (0 fullest), `None` past the shortest form. Narrow axes
+/// step down until labels fit: a date to year-month then year (or month-day when
+/// `bounds` fall in one year); a datetime to its date (or the minute within one day);
+/// a time to the minute. Numbers, and times out of range, use `numbers`.
 pub fn x_axis_label_at(
     v: f64,
     kind: XAxisTemporalKind,
@@ -136,9 +131,9 @@ pub struct ChartSampling {
     /// The shared analysis seed, so a chart and Describe draw alike.
     pub seed: u64,
     pub streaming: bool,
-    /// Whether the view may be read whole, twice, for a line's envelope: not a scan
-    /// of an object store in place, where the sample reads a few row groups and the
-    /// envelope would download everything twice. See [`prepare_chart_data`].
+    /// Whether the view may be read whole twice for a line's envelope: not an in-place
+    /// object-store scan, where the envelope would download everything twice. See
+    /// [`prepare_chart_data`].
     pub full_passes: bool,
     /// The rows already read from this view.
     pub held: HeldRows,
@@ -161,10 +156,9 @@ impl ChartSampling {
     }
 }
 
-/// The rows a chart last read from one view. Another bin count, range, bandwidth or
-/// chart over columns already read draws from them instead of reading the table
-/// again, and every chart of the view describes the same sample. Shared with the
-/// worker that reads; whoever owns the view starts a new one when the view changes.
+/// The rows a chart last read from one view: other bins, ranges, bandwidths or charts
+/// over the same columns draw from them, describing one sample. Shared with the reading
+/// worker; the view's owner starts a new one when the view changes.
 #[derive(Clone, Default)]
 pub struct HeldRows(Arc<Mutex<Holding>>);
 
@@ -200,9 +194,8 @@ impl std::fmt::Debug for HeldRows {
 pub struct RowsRead {
     pub total_rows: usize,
     pub sample_size: Option<usize>,
-    /// A line chart over more rows than its sample size draws each of this many steps
-    /// along X as its lowest and highest value instead of sampling: see
-    /// [`prepare_chart_data`].
+    /// For a line over more rows than its sample size, the steps along X each drawn as
+    /// their low and high value instead of sampling (see [`prepare_chart_data`]).
     pub envelope_steps: Option<usize>,
     /// The seed the sample was drawn with, when it is a sample.
     pub seed: Option<u64>,
@@ -244,9 +237,8 @@ pub struct Clipped {
     pub outside: usize,
 }
 
-/// What a chart says under the plot about its input, one line each: that it is a
-/// sample, with the seed that draws it again, and how many values a range left out.
-/// Empty when it shows every row and every value. `middot` joins the seed on.
+/// The chart's notes under the plot, one line each: that it is a sample (with its
+/// seed) and how many values a range left out. Empty when it shows everything.
 pub fn chart_notes(rows: &RowsRead, clipped: Option<&Clipped>, middot: &str) -> Vec<String> {
     let mut notes = Vec::new();
     if let Some(steps) = rows.envelope_steps {
@@ -282,13 +274,10 @@ pub fn chart_notes(rows: &RowsRead, clipped: Option<&Clipped>, middot: &str) -> 
     notes
 }
 
-/// Read `columns` (each once, however often named) through the analysis sampler: every
-/// row up to the limit, and past it a seeded sample spread across the table — runs of
-/// one Parquet or IPC file, or one streamed pass over anything else — never its head.
-///
-/// Rows already held for the same size and seed are used as they are when they have
-/// the columns. Otherwise the read takes the held columns along, so going back to one
-/// does not read again.
+/// Read `columns` (each once) through the analysis sampler: every row up to the limit,
+/// past it a seeded spread (runs of one Parquet/IPC file, or one streamed pass), never
+/// the head. Held rows of the same size and seed are reused if they have the columns;
+/// otherwise held columns are read along so returning to one costs nothing.
 fn read_columns(
     lf: &LazyFrame,
     columns: &[&str],
@@ -666,17 +655,12 @@ pub struct HeatmapData {
     pub rows: RowsRead,
 }
 
-/// Prepares XY series from the current LazyFrame. X is cast to f64 (temporal types as
-/// ordinal). Nulls are dropped per series: a null X drops the row, a null Y drops that
-/// series' point and breaks its line. Points come in X order, so a line runs left to
-/// right whatever order the rows are in; ties keep table order.
-///
-/// With `envelope`, a view of more rows than the sample size is not sampled: X is cut
-/// into half that many steps and each step draws its lowest and highest Y. A random
-/// sample of a waveform or any long series joins points far apart and misses its peaks;
-/// the envelope keeps every peak, as many steps as a plot has columns. It reads the
-/// view twice, so only where [`ChartSampling::full_passes`] allows; both passes stop
-/// when [`ChartSampling::cancel`] is set.
+/// XY series from the LazyFrame, X cast to f64 (temporals as ordinals). Nulls drop per
+/// series (a null X drops the row, a null Y breaks that series' line). Points in X
+/// order, ties in table order. With `envelope`, a view larger than the sample size is
+/// cut into steps, each drawing its low and high Y, keeping peaks a sample would miss;
+/// it reads twice, so only where [`ChartSampling::full_passes`] allows, stopping on
+/// [`ChartSampling::cancel`].
 pub fn prepare_chart_data(
     lf: &LazyFrame,
     schema: &Schema,
@@ -801,10 +785,9 @@ fn envelope_pass(lf: LazyFrame, cancel: &Arc<AtomicBool>) -> Result<DataFrame> {
     })
 }
 
-/// Per Y column, half `limit` steps along X, each its lowest and highest finite Y at
-/// the step's lowest X, in X order. Two streamed passes over the view: the rows and
-/// X's bounds, then one group per step. A row with no X is left out whole; a step
-/// with rows where a series has no value breaks its line.
+/// Per Y column, half `limit` steps along X, each its lowest and highest finite Y at the
+/// step's lowest X, in X order: two streamed passes (rows and X bounds, then a group per
+/// step). Rows without X are dropped; a step without a series' value breaks its line.
 fn envelope_series(
     lf: &LazyFrame,
     x_column: &str,
@@ -964,10 +947,9 @@ pub fn prepare_histogram_data(
     prepare_histogram_by(lf, column, bins, range, false, None, sampling)
 }
 
-/// Prepare a histogram of `column`, split by `color` into groups on the same bins
-/// when given. With `share`, a bin is its share of its group's rows (of every row,
-/// unsplit), so groups of different sizes compare. The range is the whole
-/// column's, so every group is clipped alike.
+/// A histogram of `column`, split by `color` into groups on the same bins. With `share`,
+/// a bin is its share of its group's rows so groups of different sizes compare. The
+/// range is the whole column's, so every group clips alike.
 pub fn prepare_histogram_by(
     lf: &LazyFrame,
     column: &str,
@@ -1426,9 +1408,8 @@ impl BarValue {
 /// not a category, and a count per value would hold as much as the table.
 pub const COUNT_CATEGORY_CAP: usize = 100_000;
 
-/// One bar: its category (`None` for a null category) and its value. Split by a
-/// color, a bar is a row of bars, one per group (`None` where a group has no rows),
-/// and its value is their total.
+/// One bar: its category (`None` for null) and value. Split by color, a row of bars per
+/// group (`None` for an empty group), valued at their total.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bar {
     pub label: Option<String>,
@@ -1502,10 +1483,9 @@ fn sql_ident(name: &str) -> String {
     }
 }
 
-/// Prepare a bar chart: one bar per row, the category from `category`, the length from
-/// `value`. The chart takes a grouped result — one row per category — and refuses a
-/// category that repeats rather than guess how to combine its rows. A null category is
-/// a bar of its own; a null value leaves its category out, counted in `no_value`.
+/// A bar chart, one bar per row: category from `category`, length from `value`. Expects
+/// a grouped result and refuses a repeated category rather than guess. A null category
+/// is its own bar; a null value is left out, counted in `no_value`.
 pub fn prepare_bar_data(
     lf: &LazyFrame,
     category: &str,
@@ -1613,11 +1593,9 @@ fn label_order(categories: &Series) -> Vec<usize> {
         .collect()
 }
 
-/// Prepare a bar chart of how many rows each category has. The counts are exact: the
-/// whole view is counted, whatever the sample size, in one streamed pass that keeps a
-/// count per category and no rows. When the rows held are the whole view, those are
-/// counted instead. Past [`COUNT_CATEGORY_CAP`] categories the count stops, and says
-/// so rather than drawing part of the view as the whole.
+/// A bar chart of rows per category, exact: the whole view is counted in one streamed
+/// pass keeping only counts (or the held rows, if they are the whole view). Past
+/// [`COUNT_CATEGORY_CAP`] categories the count stops and says so.
 pub fn prepare_bar_counts(
     lf: &LazyFrame,
     category: &str,
@@ -1866,9 +1844,8 @@ fn group_counts(df: &DataFrame, category: &str, summed: bool) -> PolarsResult<Da
     DataFrame::new_infer_height(columns)
 }
 
-/// Count the view's categories in one streamed pass, stopping past `max` of them, or
-/// as soon as `cancel` is set: a pass over a large table can take minutes, and the
-/// next chart waits for it.
+/// Count categories in one streamed pass, stopping past `max` or on `cancel` (a large
+/// table can take minutes, and the next chart waits).
 fn stream_counts(
     lf: &LazyFrame,
     category: &str,
@@ -1908,9 +1885,8 @@ fn stream_counts(
 
 // ----- Color: one series per value -----
 
-/// A column a chart is split by, and the values given a group each, in color order.
-/// `None` is the rows with no value. With `other`, every other value's rows make one
-/// more group after them, [`OTHER`].
+/// A color split: the column and the values given a group each, in color order (`None`
+/// for nulls). With `other`, all other values form one more group, [`OTHER`].
 #[derive(Clone, Copy, Debug)]
 pub struct ColorSplit<'a> {
     pub column: &'a str,
@@ -1942,9 +1918,8 @@ pub fn group_label(value: &Option<String>) -> String {
     value.clone().unwrap_or_else(|| "null".to_string())
 }
 
-/// Each row's group: its place among `split.groups`, Other's after them, or `None`
-/// for a value that has none. Values are compared as text, as the value picker lists
-/// them.
+/// Each row's group: its index in `split.groups`, Other's after, or `None`. Compared as
+/// text, as the value picker lists them.
 fn row_groups(df: &DataFrame, split: ColorSplit<'_>) -> Result<Vec<Option<usize>>> {
     let text = text_labels(df, split.column)?;
     let index: std::collections::HashMap<Option<&str>, usize> = split
@@ -2150,9 +2125,8 @@ fn y_values(y: Expr, aggregate: crate::chart_modal::Aggregate) -> Expr {
 /// The row index first and last read the rows' order by.
 const ROW_ORDER: &str = "__i";
 
-/// `values`' aggregate in a plan. A quantile takes `quantile` percent; first and
-/// last go by [`ROW_ORDER`], which the plan must carry, so a group's rows keep the
-/// view's order whatever order the engine hands them over in.
+/// `values`' aggregate in a plan: quantiles at `quantile` percent; first and last by
+/// [`ROW_ORDER`] (which the plan must carry), so the view's order holds.
 fn aggregate_expr(values: Expr, aggregate: crate::chart_modal::Aggregate, quantile: u8) -> Expr {
     use crate::chart_modal::Aggregate;
     let in_order = || {
@@ -2189,13 +2163,9 @@ fn with_row_order(lf: &LazyFrame, aggregate: crate::chart_modal::Aggregate) -> L
     }
 }
 
-/// Collect an aggregate's plan, streamed whatever the setting: a group-by holds a
-/// row per group, and the streaming engine checks `cancel` between morsels. A plan
-/// the streaming engine cannot take runs in memory, where the check runs once and
-/// the pass goes to its end. A pass stopped by `cancel` is an error that says so.
-/// The rows a group-by aggregates: `select` (its keys and values), with the row
-/// order a first or last needs, and each row's color group as a key; rows with no
-/// group left out. Returns the plan and its keys.
+/// The rows a group-by aggregates: `select` (keys and values), with the row order first
+/// and last need and each row's color group as a key; ungrouped rows dropped. Returns
+/// the plan and its keys.
 fn group_plan(
     lf: &LazyFrame,
     (mut select, mut keys): (Vec<Expr>, Vec<Expr>),
@@ -2216,6 +2186,9 @@ fn group_plan(
     (plan, keys)
 }
 
+/// Collect an aggregate's plan, streamed regardless of setting (a group-by holds a row
+/// per group, and streaming checks `cancel` between morsels); a plan streaming cannot
+/// take runs in memory to the end. A cancelled pass errors saying so.
 fn aggregate_pass(lf: LazyFrame, sampling: &ChartSampling) -> Result<DataFrame> {
     crate::statistics::collect_lazy(lf, true).map_err(|e| {
         if sampling.cancel.load(Ordering::Relaxed) {
@@ -2229,9 +2202,8 @@ fn aggregate_pass(lf: LazyFrame, sampling: &ChartSampling) -> Result<DataFrame> 
 /// Rows of X a sample reads to judge how many values it has.
 const GROUPS_SAMPLE: usize = 20_000;
 
-/// Refuse, before the group-by, an X with more values than a chart can draw: a
-/// group per value of a column of nearly as many values as rows would hold the
-/// table. Judged from a sample of X: its distinct share, times the rows.
+/// Refuse, before grouping, an X with more values than a chart can draw (a group per
+/// near-unique value would hold the table), judged from a sample's distinct share.
 fn refuse_too_many_groups(
     lf: &LazyFrame,
     x: &str,
@@ -2261,17 +2233,12 @@ fn refuse_too_many_groups(
     Ok(())
 }
 
-/// A line or scatter chart of Y aggregated per X (per time bucket of a temporal X),
-/// and per color group: one lazy group-by over every row of the view. A count needs
-/// no Y column; any other aggregate draws a series per Y column, or per color group
-/// of the first.
-///
-/// With cumulative on, each point is the running total of the rows up to the end
-/// of its X (its bucket), per series, in X order: a running sum of Y, or Y's rates
-/// compounded, `(1 + y1)(1 + y2)... - 1` over every row. Each bucket carries its
-/// rows' sum (or the sum of `ln(1 + y)`, which compounds the same), and the totals
-/// run across buckets; the aggregate is not used, but a count runs as a count of
-/// rows.
+/// A line or scatter of Y aggregated per X (per time bucket for temporal X) and per
+/// color group, in one lazy group-by over the view. A count needs no Y; other aggregates
+/// draw a series per Y column (or color group of the first). Cumulative: each point is
+/// the running total through its X, per series: a running sum, or compounded rates
+/// `(1 + y1)(1 + y2)... - 1` (via summed `ln(1 + y)`); the aggregate is ignored, except
+/// a count runs as a row count.
 pub fn prepare_aggregate_xy(
     lf: &LazyFrame,
     schema: &Schema,
@@ -2426,9 +2393,8 @@ pub struct BarAggregate<'a> {
     pub cap: usize,
 }
 
-/// A bar chart of `value` aggregated per category (and per color group): one lazy
-/// group-by over every row of the view. A count needs no value column; one without
-/// a color is the exact count a bar chart of counts draws.
+/// A bar chart of `value` aggregated per category (and color group) in one lazy
+/// group-by; a count needs no value column, and uncolored is the exact count chart.
 pub fn prepare_bar_aggregate(
     lf: &LazyFrame,
     schema: &Schema,

@@ -3,7 +3,7 @@
 //! The copy itself is a [`crate::follow::Spool`] writing to FILE rather than to a
 //! temporary file; this module creates FILE and, when the stream ends, fills in what
 //! a producer writing to a pipe could not: a WAV file's sizes. `--tee -` passes the
-//! stream on to standard output instead ([`pass_stdout_on`]).
+//! stream on to standard output instead (`pass_stdout_on`).
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};

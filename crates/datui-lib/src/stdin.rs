@@ -1,7 +1,7 @@
 //! Data piped in: `cmd | datui` and `datui -`.
 //!
 //! Standard input is read once, to a temporary file, as a phase of the open
-//! ([`crate::loading`]); the scan of that file then stays lazy, as for any file. The
+//! (`crate::loading`); the scan of that file then stays lazy, as for any file. The
 //! format is read off the first bytes, since a pipe has no extension to go by, unless
 //! `--format` or `--compression` says. Keys come from the terminal meanwhile: Crossterm
 //! reads `/dev/tty` on Unix when standard input is not one, and `CONIN$` on Windows.
@@ -115,9 +115,9 @@ pub fn refuse(paths: &[PathBuf], piped: bool) -> Option<&'static str> {
 }
 
 /// The format and compression the first bytes of a file say it is: compression by its
-/// magic numbers, then whatever a format's signature says ([`crate::readers::sniff`]),
+/// magic numbers, then whatever a format's signature says (`crate::readers::sniff`),
 /// and text no format claims as JSON, CSV or TSV on evidence, lines otherwise
-/// ([`crate::lines::guess`]). `head` is all there is when it is shorter than [`HEAD`].
+/// ([`crate::lines::guess`]). `head` is all there is when it is shorter than `HEAD`.
 pub fn sniff(head: &[u8]) -> (FileFormat, Option<CompressionFormat>) {
     let (format, compression, _) = sniffed(head);
     (format, compression)

@@ -4,7 +4,7 @@
 //!
 //! None of those formats can be scanned in place, so an open reads the file once,
 //! start to end, a piece at a time through its [`BatchReader`], and writes its rows to
-//! temporary Arrow IPC segments (see [`crate::segments`]) that the dataset scans
+//! temporary Arrow IPC segments (see `crate::segments`) that the dataset scans
 //! lazily. Memory stays at one batch however long the file.
 
 use std::fs::File;

@@ -10,7 +10,7 @@ use polars::prelude::LazyFrame;
 use crate::table::DataTableState;
 use crate::{AppEvent, logging};
 
-/// The buffer collect in flight, the payload of [`Job::Rows`]. A collect already
+/// The buffer collect in flight, the payload of [`crate::jobs::Job::Rows`]. A collect already
 /// covering the view is left to land rather than restarted (the first frame's
 /// recollect would redo a row-group download), provided its job is current and the
 /// data unchanged (`len_generation` moves with every change to `lf`). Whether
@@ -266,7 +266,7 @@ impl Drop for OwedCount {
 }
 
 /// The answer a home worker owes its in-flight marker, sent instead if it panics
-/// first; unanswered, the marker stands for the session. Not a [`jobs::Jobs`] job:
+/// first; unanswered, the marker stands for the session. Not a [`crate::jobs::Jobs`] job:
 /// keyed by place and `home_generation`, no lease, no keys. The panic hook logs and
 /// flashes the panic itself.
 pub(crate) struct OwedAnswer {

@@ -13,7 +13,7 @@
 //!
 //! A nanosecond datetime is always in the calendar, but date math near the ends
 //! of its range (1677-09-21, 2262-04-11) overflows in Polars: a value it could
-//! move past them is null too ([`ns_within_reach`]).
+//! move past them is null too (`ns_within_reach`).
 
 use crate::exact::{calendar_without_out_of_range, stored_out_of_range};
 use polars::chunked_array::cast::CastOptions;
@@ -326,9 +326,9 @@ fn reads_calendar(function: &TemporalFunction) -> bool {
 /// a when/then/otherwise, which Polars casts to text itself, goes through
 /// [`text_expr`] too, but only with `schema`, which says the result is text. Date
 /// math that overflows near the ends of the nanosecond range reads from
-/// [`ns_edge_expr`]. A date cast to a datetime, or met with one in a coalesce, a
+/// `ns_edge_expr`. A date cast to a datetime, or met with one in a coalesce, a
 /// when/then/otherwise, `fill_null` or a horizontal min or max (the last ones only
-/// with `schema`), goes through [`countable_expr`].
+/// with `schema`), goes through `countable_expr`.
 pub fn guard_expr(expr: Expr, schema: Option<&Schema>) -> Expr {
     let may_leave = |e: &Expr| match (e, schema) {
         (Expr::Literal(_), _) => false,

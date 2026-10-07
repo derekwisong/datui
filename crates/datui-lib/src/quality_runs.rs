@@ -22,13 +22,13 @@ use std::sync::Arc;
 /// the evidence view's way back.
 #[derive(Default)]
 pub struct QualityRuns {
-    /// Reports, newest first, within [`QUALITY_MEMORY_BUDGET`].
+    /// Reports, newest first, within [`QUALITY_MEMORY_BUDGET`](crate::quality_memory::QUALITY_MEMORY_BUDGET).
     pub(crate) cache: Vec<QualityCacheEntry>,
-    /// See [`KeptQualitySample`]. Newest first, within [`QUALITY_MEMORY_BUDGET`].
+    /// See [`KeptQualitySample`]. Newest first, within [`QUALITY_MEMORY_BUDGET`](crate::quality_memory::QUALITY_MEMORY_BUDGET).
     pub(crate) samples: Vec<KeptQualitySample>,
     /// Acquisitions the budget released, newest first: (dataset, view, sample).
     pub(crate) released: Vec<(u64, u64, sampling::Sample)>,
-    /// [`QUALITY_MEMORY_BUDGET`], smaller in a test that fills it.
+    /// [`QUALITY_MEMORY_BUDGET`](crate::quality_memory::QUALITY_MEMORY_BUDGET), smaller in a test that fills it.
     pub(crate) memory_budget: usize,
     /// Local copies full scans read instead of a remote source, newest first, within
     /// `analysis.quality_local_copy`. Removed from disk when released, when the dataset
@@ -759,7 +759,7 @@ impl App {
         self.trim_quality_memory();
     }
 
-    /// Hold reports and retained rows to [`QUALITY_MEMORY_BUDGET`]. First to go: reports
+    /// Hold reports and retained rows to [`QUALITY_MEMORY_BUDGET`](crate::quality_memory::QUALITY_MEMORY_BUDGET). First to go: reports
     /// whose rows are retained (remade without reading); then the oldest rows (reread
     /// next run, as Setup says); last, row-less full-scan reports (dearest to remake).
     /// The newest report and rows always stay.

@@ -1,12 +1,8 @@
-//! The row inspector: every field of the table's selected row, and the focused
-//! field's whole value. A takeover over the table: one Surface titled with the
-//! row. Below 140 columns the fields are listed above the value; wider, the
-//! fields sit on the left, in as many columns as fit, and the value on the right
-//! at full height. Tab moves the focus between the list and the value, and the
-//! rail moves with it.
-//!
-//! The value pane reads any length: only the rows on screen are wrapped (see
-//! [`crate::inspector_reader`]), so the end of a 2 MiB value is a key away.
+//! The row inspector: every field of the selected row and the focused field's whole
+//! value, as one Surface titled with the row. Under 140 columns the fields list above
+//! the value; wider, fields fill columns on the left and the value runs full height on
+//! the right. Tab moves focus (and the rail). The value pane wraps only on-screen rows
+//! ([`crate::inspector_reader`]), so a 2 MiB value's end is a key away.
 
 use crate::column_types::dtype_label;
 use crate::copy_modal::thousands;
@@ -383,9 +379,8 @@ impl Unpacked {
     }
 }
 
-/// The pane for bytes: a hex dump, the text they hold, or escaped. UTF-8 is its
-/// own text; gzip and zstd are decompressed by a worker when their Text view is
-/// asked for (`unpack`), never while the pane is built.
+/// The pane for bytes: hex dump, text, or escaped. UTF-8 is its own text; gzip and zstd
+/// are decompressed by a worker when Text is asked for (`unpack`), never here.
 fn binary_pane(bytes: &[u8], choice: Option<View>, width: usize, unpacked: &Unpacked) -> Pane {
     let sniffed = inspector_bytes::sniff(bytes);
     let mut facts = vec!["binary".to_string(), size_text(bytes.len())];
@@ -599,9 +594,8 @@ fn empty_preview(value: &AnyValue) -> Option<String> {
     }
 }
 
-/// The table's one-line preview of a value, formatted as the table formats it,
-/// and only as much of it as `room` cells can show. A long text or bytes say
-/// their size after a cut preview, so a huge value shows before it is focused.
+/// The table's one-line preview of a value, as the table formats it, fitted to `room`;
+/// long text or bytes add their size after the cut.
 fn preview(field: &InspectField, value: &AnyValue, room: usize, ctx: &RenderContext) -> String {
     let g = crate::glyphs::get();
     let budget = room.saturating_mul(4).max(16);
@@ -794,9 +788,8 @@ pub fn refresh_list(modal: &mut InspectorModal, state: &DataTableState, row: Opt
     }
 }
 
-/// The fields listed, in the order listed: the order chosen, then the nulls toggle (or,
-/// comparing, only the fields that differ), then the find text — names first,
-/// then values.
+/// The fields listed, in order: the chosen order, then the nulls toggle (or, comparing,
+/// only differing fields), then the find (names, then values).
 pub fn visible_fields(
     modal: &InspectorModal,
     state: &DataTableState,
@@ -906,9 +899,8 @@ fn title(display_row: usize, state: &DataTableState, other: Option<&Compared>) -
     title
 }
 
-/// Where the list starts, given `cap` slots for `n` items with the focus on
-/// `sel` and the list last starting at `offset`; and whether the first slot
-/// counts the items above and the last the items below.
+/// Where the list starts for `cap` slots of `n` items, focus at `sel`, last start
+/// `offset`; and whether the first and last slots count items above and below.
 pub fn list_window(n: usize, sel: usize, offset: usize, cap: usize) -> (usize, bool, bool) {
     if n <= cap {
         return (0, false, false);
@@ -953,12 +945,10 @@ pub struct ListShape {
     pub bytes: bool,
 }
 
-/// The value pane's width side by side with the list in `width` cells and
-/// `rows` rows. It depends on the terminal and the row's fields, never on the
-/// focused one, so nothing moves as the focus does. A list longer than the
-/// screen takes the columns it needs, down to [`VALUE_FLOOR`] for the value;
-/// otherwise the value has its measure, or from [`WIDER`] a 32-byte hex row
-/// for a row with bytes.
+/// The value pane's width beside the list in `width` cells and `rows` rows, from the
+/// terminal and the row's fields, never the focus, so nothing moves. A long list takes
+/// what it needs down to [`VALUE_FLOOR`]; otherwise the value gets its measure, or from
+/// [`WIDER`] a 32-byte hex row when bytes are present.
 fn value_pane_width(width: usize, rows: usize, list: ListShape) -> usize {
     let mut max = (MEASURE + 1).min(width * 45 / 100);
     if list.bytes && !list.single && width >= WIDER {
@@ -988,13 +978,10 @@ pub struct Layout {
     pub value: Rect,
 }
 
-/// Lay out `content` for `fields` listed and a value that needs `value_need`
-/// rows. Below [`WIDE`] the list sits above the value and takes the rows it
-/// needs, leaving the value what its lines need. The split follows what the
-/// panes hold, never where the focus is, so Tab moves nothing. From [`WIDE`] the two
-/// sit side by side, each at full height, the value as wide as
-/// [`value_pane_width`] says, and fields flow into as many columns of
-/// `list.min_col` cells as fit.
+/// Lay out `content` for `fields` and a value needing `value_need` rows. Below
+/// [`WIDE`] the list sits above, taking what it needs; from [`WIDE`] side by side at
+/// full height, the value `value_pane_width` wide, fields in columns of
+/// `list.min_col`. By content, never focus, so Tab moves nothing.
 pub fn layout(content: Rect, fields: usize, value_need: usize, list: ListShape) -> Layout {
     let line = |y: u16, x: u16, width: u16| Rect {
         x,
@@ -1136,9 +1123,8 @@ fn field_pane(
     built
 }
 
-/// The id for a pane just built for `key`: the last one's while it shows the same
-/// value at another width, so the reader stays where it was; else a new one,
-/// which the reader starts at the top of.
+/// The id for a pane just built for `key`: the previous one's when it is the same
+/// value at another width (the reader keeps its place), else new (from the top).
 fn renewed(modal: &mut InspectorModal, key: &PaneKey, built: &Pane) -> u64 {
     match &modal.pane {
         Some((cached, old)) if cached.same_value(key) => {
@@ -1634,10 +1620,9 @@ struct ListOf<'a> {
     rule_used: Option<usize>,
 }
 
-/// The fields, in as many columns as the layout has: rail, name, type, the
-/// table's preview, and with Compare the other rows' previews in row order, a
-/// mark where they differ and the rows named over them on the rule. The first
-/// slot counts the fields above, the last those below.
+/// The fields in the layout's columns: rail, name, type, preview, and with Compare the
+/// other rows' previews, a mark where they differ, rows named on the rule. The first
+/// and last slots count fields above and below.
 fn draw_fields(
     buf: &mut Buffer,
     lay: &Layout,
@@ -1813,11 +1798,9 @@ fn draw_fields(
     }
 }
 
-/// Compare's rows named over their previews on the list's rule, `Row 41`: the
-/// row shown in the text color, the others dimmed. `rows` are each preview's
-/// cells into the rule and its row's number, and whether it is the row shown.
-/// A name is drawn where it fits its column and clears the rule's title and
-/// chip, the first `used` cells.
+/// Compare's row names over their previews on the list's rule (`Row 41`): the shown row
+/// in text color, others dimmed. Drawn where each fits its column and clears the
+/// rule's title and chip (the first `used` cells).
 fn draw_compare_labels(
     buf: &mut Buffer,
     rule: Rect,
@@ -1896,9 +1879,8 @@ fn draw_value(
             let name = crate::glyphs::fit_cells(name, width / 3, g.ellipsis);
             let name_w = crate::glyphs::cell_width(&name);
             let overflows = win.above || win.below;
-            // The position, at its widest plus its padding and a cell of rule after
-            // it, comes before the facts: reading a long value, where you are
-            // matters more than its size, and the facts must not shift as it changes.
+            // The position (at its widest, padded) before the facts: in a long value where you
+            // are matters more, and facts must not shift.
             let reserve = if overflows {
                 reader::Reader::position_width(&pane.content) + 3
             } else {
@@ -2103,9 +2085,8 @@ fn node_preview(node: &Node, room: usize, ctx: &RenderContext) -> (String, Style
     }
 }
 
-/// The title inside a drill: the row's, then each level's step. When it does not
-/// fit, the first steps after the row give way to an ellipsis: the row and where
-/// the drill is now stay.
+/// The title inside a drill: the row's, then each level's step; when too long, the
+/// first steps after the row yield to an ellipsis.
 fn drill_title(root: &str, labels: &[&str], max: usize) -> String {
     let g = crate::glyphs::get();
     let sep = format!(" {} ", g.trail);
@@ -2552,9 +2533,8 @@ fn draw_table(
     }
 }
 
-/// The row as one JSON object, field by field in the table's order: numbers
-/// exact, text and dates as strings, lists and structs as JSON, bytes as base64.
-/// Fields not read are left out and counted.
+/// The row as one JSON object in table order: exact numbers, text and dates as strings,
+/// lists and structs as JSON, bytes as base64. Unread fields are omitted and counted.
 pub fn row_json(
     fields: &[InspectField],
     row: &InspectRow,

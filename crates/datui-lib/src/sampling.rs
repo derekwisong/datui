@@ -78,9 +78,8 @@ pub fn parse_size(text: &str) -> Result<usize, SizeError> {
     Ok(rows)
 }
 
-/// A per-partition sample keeps at most this many partitions and rows in memory. Past
-/// the rows it keeps fewer of each value; past the partitions it is refused, which a
-/// column with that many values meets within its first few batches.
+/// A per-partition sample keeps at most this many partitions and rows; past the rows it
+/// keeps fewer per value, past the partitions it is refused (within a few batches).
 const MAX_GROUPS: usize = 10_000;
 const MAX_GROUP_ROWS: usize = 2_000_000;
 
@@ -181,11 +180,9 @@ pub(crate) fn with_count_key(lf: LazyFrame, count: Option<&Expr>) -> LazyFrame {
 /// What a read that was stopped says. Its work is dropped, never shown as a result.
 pub const CANCELLED: &str = "Cancelled";
 
-/// A read's line to the screen: told to stop, and telling how many rows it has seen.
-///
-/// Shared with the UI thread, which sets `stop` on a cancel and reads the count as
-/// it draws. A streamed read checks `stop` between batches and a seeded block read
-/// between blocks; a single collect cannot be stopped partway and runs to its end.
+/// A read's line to the screen: a stop flag set on cancel and a count of rows seen, both
+/// shared with the UI. Streamed reads check `stop` between batches, block reads between
+/// blocks; a single collect runs to its end.
 #[derive(Debug, Clone, Default)]
 pub struct ReadWatch {
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -200,7 +197,7 @@ pub struct ReadWatch {
     memory: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
-/// What [`ReadWatch::hold`] asks of the bytes a sampler holds and the rows they are.
+/// What `ReadWatch::hold` asks of the bytes a sampler holds and the rows they are.
 pub type HeldJudge = dyn Fn(u64, usize) -> Option<String> + Send + Sync;
 
 #[derive(Clone)]
@@ -367,9 +364,8 @@ impl Sample {
         }
     }
 
-    /// The summary, against the `rows` the scope is known to hold: a sample of at
-    /// least that many reads every one of them, and says so, `all 1,000 rows`,
-    /// rather than promising 100,000 from a table of 1,000.
+    /// The summary against the `rows` the scope holds: a sample at least that big reads them
+    /// all and says `all 1,000 rows`.
     pub fn summary_within(&self, rows: Option<usize>) -> String {
         match (rows, &self.method) {
             (Some(n), SampleMethod::Spread | SampleMethod::FirstRows) if n <= self.rows => {
@@ -384,9 +380,9 @@ impl Sample {
         }
     }
 
-    /// What was read, once it was: `sample of 100,000 of 36,839,175 rows`, then the
-    /// scope when it is not simply the table as shown. `per_value` is how many rows
-    /// an equal-per-value sample kept of each, when that was fewer than asked.
+    /// What was read: `sample of 100,000 of 36,839,175 rows`, then the scope unless it is
+    /// the table as shown. `per_value`: rows kept per value of an equal-per-value sample,
+    /// when fewer than asked.
     pub fn outcome(
         &self,
         total_rows: usize,
@@ -425,9 +421,9 @@ impl Sample {
     }
 }
 
-/// Where a tool's rows come from before its scope cuts them: the table as shown, or
-/// the loaded source with what its footers said. Built on the UI thread; cut in the
-/// worker, since preparing a source scan can read its schema.
+/// Where a tool's rows come from before scoping: the table as shown, or the loaded
+/// source with its footer facts. Built on the UI thread, cut on the worker (a source
+/// scan can read its schema).
 pub struct SampleSource {
     lf: LazyFrame,
     source: Option<QualitySourceContext>,
@@ -498,11 +494,9 @@ pub fn view_scope_rows(view_rows: Option<usize>, scope: &QualityScope) -> Option
     }
 }
 
-/// Read the rows `sample` asks for from a frame already cut to its scope.
-///
-/// `known_total` saves a count. The first-rows method reports the rows it read as the
-/// total when none is known, and says so through `sample_size: None`, rather than pay
-/// for a count the method exists to avoid.
+/// Read the rows `sample` asks for from a frame already scoped. `known_total` spares a
+/// count; without one, first-rows reports the rows read as the total (`sample_size:
+/// None`) rather than count.
 pub fn read(
     lf: &LazyFrame,
     sample: &Sample,
@@ -516,9 +510,8 @@ pub fn read(
     Ok(rows)
 }
 
-/// A chosen set of rows that matches nothing is a mistake to say, not an empty
-/// sample to analyze: a typed value that is not in the data, a range past its end.
-/// The table as shown may simply be empty, and says so itself.
+/// A chosen scope matching nothing is an error (a value not in the data, a range past
+/// its end), not an empty sample; the table as shown may simply be empty.
 pub fn no_rows_error(scope: &QualityScope) -> Report {
     if *scope == QualityScope::CurrentView {
         Report::msg("The table has no rows to sample")
@@ -561,9 +554,8 @@ pub(crate) struct SampledRows {
     pub counted: Option<Counted>,
 }
 
-/// [`read_rows_watched`], keeping each row's position, and counting every row by
-/// `count` when the read is one streamed pass over all of them: the pass is being
-/// paid for anyway, and a second read of the key is what this saves.
+/// [`read_rows_watched`] keeping row positions, and counting rows by `count` when the
+/// read is one streamed pass over all of them (saving a second read).
 pub(crate) fn acquire(
     lf: &LazyFrame,
     sample: &Sample,
@@ -634,11 +626,10 @@ pub(crate) fn acquire(
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PerValue {
     /// Rows kept of each value: the size asked for, or fewer when that many of every
-    /// value would pass [`MAX_GROUP_ROWS`].
+    /// value would pass `MAX_GROUP_ROWS`.
     pub kept: usize,
-    /// Every row of the scope, counted by value as it streamed past. Keyed as a
-    /// segment names a value (`AnyValue::str_value`), `None` for null, so a segment
-    /// by the same column finds its count here instead of in a second read.
+    /// Every scope row counted by value as it streamed, keyed as segments name values
+    /// (`AnyValue::str_value`, `None` for null), so a same-column segment finds its count.
     pub totals: std::collections::BTreeMap<Option<String>, usize>,
 }
 
@@ -651,15 +642,11 @@ struct GroupRead {
     counted: Option<Counted>,
 }
 
-/// Up to `n` seeded rows from each value of `column`, from one streamed pass, in table
-/// order, and how many rows there were, holding at most `limit` rows.
-///
-/// Never refused for keeping too many rows. Whether `n` of every value fits is only
-/// known once every value has been seen, which is the end of the read, and a read
-/// that ends in a refusal has been paid for and thrown away. So the size per value
-/// comes down as values arrive, to what [`MAX_GROUP_ROWS`] holds for all of them; each
-/// value keeps its lowest-ranked rows, which is a seeded uniform sample of it at any
-/// size, and [`PerValue::kept`] says what the size came down to.
+/// Up to `n` seeded rows per value of `column` from one streamed pass, in table order,
+/// with the total rows, holding at most `limit`. Never refused for size (that is only
+/// known at the end, after paying for the read): the per-value size drops as values
+/// arrive to what [`MAX_GROUP_ROWS`] holds, each value keeping its lowest-ranked rows
+/// (a seeded uniform sample at any size); [`PerValue::kept`] says the final size.
 fn per_group_sample_within(
     lf: &LazyFrame,
     column: &str,
@@ -829,9 +816,8 @@ impl GroupState {
             group.ranks.extend(ranks);
             self.held -= group.trim(self.cap)?;
         }
-        // Past the row limit, every value's share comes down to what fits. A quarter
-        // over before trimming, so a run of new values costs a trim now and then
-        // rather than one per value.
+        // Past the limit each value's share shrinks to fit; trimmed only a quarter over, so a
+        // run of new values trims occasionally, not per value.
         if self.held > self.limit.saturating_add(self.limit / 4) {
             self.cap = self.cap.min((self.limit / self.groups.len()).max(1));
             for group in self.groups.values_mut() {
@@ -873,21 +859,14 @@ pub fn count_rows(lf: &LazyFrame, polars_streaming: bool) -> Result<usize> {
     })
 }
 
-/// Read the rows an analysis works on: all of them when the table has no more than
-/// `sample_rows` (or `sample_rows` is `None`), and otherwise a seeded sample of that
-/// many, spread across the whole table rather than taken from its head.
+/// The rows an analysis works on: all when the table has at most `sample_rows` (or it
+/// is `None`), else a seeded sample spread across the table:
 ///
-/// Two ways to spread it, chosen by what the plan can do cheaply:
-///
-/// - A plan whose slices reach into a single Parquet or IPC scan reads
-///   [`SAMPLE_BLOCKS`] short runs at seeded places across the table. Each run is a
-///   row group or two, so a sample of a 400-million-row hive table reads a few dozen
-///   row groups, not the table. `known_total` saves the count; the footers give it
-///   cheaply otherwise.
-/// - Anything else — a filter, a query, a union of files, a CSV — is read once as a
-///   stream, keeping the rows whose seeded rank is lowest. That is a uniform sample
-///   in bounded memory, and the same pass counts the rows, so a filtered view is
-///   read once rather than counted and then read.
+/// - A plan whose slices reach into one Parquet or IPC scan reads `SAMPLE_BLOCKS`
+///   short runs at seeded places (a few dozen row groups of a huge table);
+///   `known_total` saves the count, else footers give it.
+/// - Anything else (filter, query, file union, CSV) streams once, keeping the
+///   lowest-ranked rows: uniform, bounded memory, counting rows in the same pass.
 pub fn analysis_rows(
     lf: &LazyFrame,
     sample_rows: Option<usize>,
@@ -898,9 +877,8 @@ pub fn analysis_rows(
     analysis_rows_watched(lf, sample_rows, known_total, seed, polars_streaming, None)
 }
 
-/// [`analysis_rows`], stopping when `watch` says to: the streamed pass between
-/// batches, the seeded runs between runs. A whole read is one collect, which runs to
-/// its end.
+/// [`analysis_rows`], stopping when `watch` says: between batches or runs; a whole read
+/// is one collect, run to its end.
 pub(crate) fn analysis_rows_watched(
     lf: &LazyFrame,
     sample_rows: Option<usize>,
@@ -921,10 +899,9 @@ pub(crate) fn analysis_rows_watched(
     .map(|read| read.rows)
 }
 
-/// [`analysis_rows_watched`], keeping where each row sat, and counting every row by
-/// `count` when the read sees every row: a streamed pass, or a table read whole
-/// because it is under twice the sample. Seeded runs see too few rows to count, and
-/// a read of the whole scope is not a sample, so neither counts.
+/// [`analysis_rows_watched`] keeping row positions and counting rows by `count` when it
+/// sees every row (a streamed pass, or a whole read of a table under twice the sample).
+/// Seeded runs see too few, and a whole-scope read is not a sample.
 pub(crate) fn sample_rows_counting(
     lf: &LazyFrame,
     sample_rows: Option<usize>,
@@ -989,18 +966,12 @@ pub(crate) fn sample_rows_counting(
     })
 }
 
-/// Whether a slice of this plan is read by the scan of one file, skipping what comes
-/// before it: true of a single Parquet or IPC file, which seeks by row group, with or
-/// without columns stubbed above it. Not of a filter or a CSV, whose slice reads
-/// everything ahead of it, nor of a scan of many files, where each slice opens the
-/// footer of every file before it — measured on 135 files in S3, fifty slices took
-/// longer than streaming all 37 million rows once.
-///
-/// Asked of the optimized plan because that is where the answer is, for every route a
-/// frame can have been built by: pushed into the scan, the slice is a property of the
-/// `SCAN` (`SLICE: Positive`); left above it, a node of its own (`SLICE[`). Should a
-/// Polars upgrade change how the plan is described, this says no and the streaming
-/// sampler takes over: slower, never wrong.
+/// Whether a slice of this plan is read by one file's scan skipping ahead: a single
+/// Parquet or IPC file (seeking by row group), stubbed columns allowed. Not a filter or
+/// CSV (reads everything before), nor many files (each slice opens every earlier
+/// footer; on 135 S3 files fifty slices beat streaming 37M rows). Asked of the
+/// optimized plan (`SLICE: Positive` in the `SCAN`, or a `SLICE[` node); if Polars
+/// changes its plan text, this says no and streaming takes over: slower, never wrong.
 pub fn slices_reach_into_the_scan(lf: &LazyFrame) -> bool {
     let Ok(plan) = lf.clone().slice(1, 1).describe_optimized_plan() else {
         return false;
@@ -1018,10 +989,9 @@ pub fn slices_reach_into_the_scan(lf: &LazyFrame) -> bool {
     one_source && total_scans == 1 && plan.contains("SLICE: Positive") && !plan.contains("SLICE[")
 }
 
-/// [`block_sample`] for a sample shown as it is drawn: each run goes to `on_run`, with
-/// where it starts, as it lands. A table under twice the sample is read whole and cut,
-/// and comes back as one frame instead. A stop ends the read with the runs so far
-/// delivered.
+/// [`block_sample`] shown as drawn: each run goes to `on_run` with its start as it
+/// lands. A table under twice the sample is read whole and cut, returned as one frame.
+/// A stop ends with the runs so far delivered.
 pub(crate) fn block_sample_live(
     lf: &LazyFrame,
     total_rows: usize,
@@ -1051,11 +1021,9 @@ struct Along<'a> {
 /// Told of each run of a block sample as it lands, with where it starts.
 pub(crate) type OnRun<'a> = dyn Fn(usize, &DataFrame) + Sync + 'a;
 
-/// `n` rows as [`SAMPLE_BLOCKS`] runs at seeded places across `total_rows`, in table
-/// order. Each run is collected on its own: as one union the runs share a subplan, and
-/// Polars caches a shared subplan whole. They are collected [`SAMPLE_READERS`] at a
-/// time, because on an object store each is a round trip and fifty in a row is the
-/// wait this exists to avoid.
+/// `n` rows as [`SAMPLE_BLOCKS`] seeded runs across `total_rows`, in order. Each run is
+/// collected alone (as one union they share a subplan, which Polars caches whole),
+/// [`SAMPLE_READERS`] at a time, since each is a round trip on an object store.
 fn block_sample(
     lf: &LazyFrame,
     total_rows: usize,
@@ -1069,9 +1037,8 @@ fn block_sample(
         count,
         on_run,
     } = along;
-    // Under twice the sample, reading the table is about as cheap as reading runs of
-    // it, and runs that must fit side by side would crowd or overlap. Read it and keep
-    // a seeded uniform `n` of it instead, counting `count`'s key from the rows read.
+    // Under twice the sample, reading the table costs about the same and runs would crowd:
+    // read it, keep a seeded uniform `n`, and count `count`'s key from it.
     if total_rows < 2 * n {
         let df = collect_lazy(lf.clone(), polars_streaming).map_err(Report::from)?;
         let counted = match count {
@@ -1188,11 +1155,9 @@ struct StreamRead {
     counted: Option<Counted>,
 }
 
-/// Stream `lf` through `on_batch` a batch at a time, until it ends, `on_batch` says
-/// true, or `watch` stops it; `watch` sees each batch before `on_batch` has it.
-/// Streaming whatever the setting: holding the table is what this is here to avoid.
-/// A build without the `streaming` feature has only the in-memory engine, which reads
-/// the whole result and hands it over as one batch: nothing stops that read partway.
+/// Stream `lf` through `on_batch` until it ends, `on_batch` returns true, or `watch`
+/// stops it (seeing each batch first). Streams regardless of setting, to avoid holding
+/// the table; without the `streaming` feature it is one unstoppable batch.
 pub(crate) fn stream_batches(
     lf: LazyFrame,
     watch: Option<&ReadWatch>,

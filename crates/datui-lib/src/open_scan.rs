@@ -38,7 +38,7 @@ pub struct OpenedSource {
     /// `--view NAME`, taken by the first install so later opens are not re-dressed.
     pub(crate) startup_view: Option<String>,
     /// The dataset whose downloaded shape is kept already. See
-    /// [`Self::remember_a_downloads_shape`].
+    /// [`crate::App::remember_a_downloads_shape`].
     pub(crate) shape_remembered: Option<u64>,
 }
 
@@ -100,7 +100,7 @@ impl App {
     }
 
     /// What the load is doing. While a footer pass runs its count stands in for the
-    /// phase, read once a frame from [`Self::footers_this_frame`] so callers agree.
+    /// phase, read once a frame from [`crate::counting::Counting::footers_this_frame`] so callers agree.
     pub(crate) fn loading_phase<'a>(&self, phase: &'a str) -> std::borrow::Cow<'a, str> {
         match self.counting.footers_this_frame {
             Some((read, total)) => std::borrow::Cow::Owned(format!(
@@ -457,7 +457,7 @@ impl App {
     }
 
     /// Enter the home screen, rebuilt, with the cursor on what is open, abandoning any
-    /// load. [`loading::Loader::retire`] supersedes the open's jobs (their answers are
+    /// load. `loading::Loader::retire` supersedes the open's jobs (their answers are
     /// dropped) and raises its stop flag, so downloads and cloud passes stop within a
     /// wave. Work not the open's (an export, an analysis, the screen's footer pass) is
     /// left running, with its progress and completion modal.

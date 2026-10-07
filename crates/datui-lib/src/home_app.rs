@@ -1238,7 +1238,7 @@ impl App {
     /// Ask a worker what the rows on screen are. Classifying reads the named directory
     /// (a round trip on a share, forever on a wedged mount), so only on-screen rows,
     /// on a detached thread, one pass at a time. It also measures remote rows, which
-    /// [`HomeState::unmeasured_visible`] leaves alone since probes return them
+    /// [`crate::home::HomeState::unmeasured_visible`] leaves alone since probes return them
     /// `Unknown`.
     pub(crate) fn request_home_classifications(&mut self) {
         if self.home.classify_in_flight {

@@ -153,6 +153,51 @@ pub struct DistributionAnalysis {
     /// Each fitted family's quantiles at the plotting positions of
     /// `sorted_sample_values`, for its Q-Q plot: computed with the fit, not per frame.
     pub qq: Vec<(DistributionType, Vec<f64>)>,
+    /// The histogram last drawn, kept for the next frame; see [`Self::histogram`].
+    pub histogram: HistogramCache,
+}
+
+/// What a histogram of [`DistributionAnalysis::sorted_sample_values`] is drawn for:
+/// one family's fit, a number of bins over a range of values, and the scale.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HistogramKey {
+    pub family: DistributionType,
+    pub bins: usize,
+    /// Bins equal in log space, the curve at each bin's geometric middle.
+    pub log: bool,
+    /// The values the bins span, positive on a log scale.
+    pub range: (f64, f64),
+    /// Points along a continuous family's density on linear bins.
+    pub samples: usize,
+}
+
+/// A histogram and its family's expected counts, ready to draw.
+#[derive(Debug)]
+pub struct Histogram {
+    /// Values in each bin.
+    pub counts: Vec<usize>,
+    /// The count axis's top: the tallest bar or expected count, rounded up to even
+    /// so the middle label is a whole count.
+    pub top: f64,
+    /// The fit's expected counts as a curve, x where the axis puts each point and y
+    /// on the 0-100 scale the bars stand on. Empty when the family does not apply.
+    pub curve: Vec<(f64, f64)>,
+}
+
+/// The last [`Histogram`] built for an analysis. A copy starts empty.
+#[derive(Debug, Default)]
+pub struct HistogramCache(std::sync::Mutex<Option<(HistogramKey, std::sync::Arc<Histogram>)>>);
+
+impl Clone for HistogramCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Histograms this thread has built, for the tests that count them.
+    pub(crate) static HISTOGRAMS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl DistributionAnalysis {
@@ -168,6 +213,120 @@ impl DistributionAnalysis {
             .iter()
             .find(|(fitted, _)| *fitted == family)
             .map(|(_, quantiles)| quantiles.as_slice())
+    }
+
+    /// The histogram for `key`: the one last built when the key is the same, so a
+    /// frame that changes nothing counts nothing and evaluates no CDF.
+    pub fn histogram(&self, key: HistogramKey) -> std::sync::Arc<Histogram> {
+        let mut cache = self
+            .histogram
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((cached, histogram)) = cache.as_ref()
+            && *cached == key
+        {
+            return std::sync::Arc::clone(histogram);
+        }
+        #[cfg(test)]
+        HISTOGRAMS_BUILT.with(|built| built.set(built.get() + 1));
+        let histogram = std::sync::Arc::new(self.build_histogram(key));
+        *cache = Some((key, std::sync::Arc::clone(&histogram)));
+        histogram
+    }
+
+    fn build_histogram(&self, key: HistogramKey) -> Histogram {
+        let HistogramKey {
+            family,
+            bins,
+            log,
+            range: (low, high),
+            samples,
+        } = key;
+        let sorted = &self.sorted_sample_values;
+        let n = sorted.len() as f64;
+        let edges: Vec<f64> = if log {
+            let (log_low, log_high) = (low.ln(), high.ln());
+            let width = (log_high - log_low) / bins as f64;
+            (0..=bins)
+                .map(|i| (log_low + i as f64 * width).exp())
+                .collect()
+        } else {
+            let width = (high - low) / bins as f64;
+            (0..=bins).map(|i| low + i as f64 * width).collect()
+        };
+        // Sorted, so a bin's count is the distance between where its edges fall:
+        // each bin holds its lower edge, the last its upper edge too.
+        let below = |edge: f64| sorted.partition_point(|value| *value < edge);
+        let counts: Vec<usize> = (0..bins)
+            .map(|i| {
+                let end = if i + 1 == bins {
+                    sorted.partition_point(|value| *value <= edges[i + 1])
+                } else {
+                    below(edges[i + 1])
+                };
+                end.saturating_sub(below(edges[i]))
+            })
+            .collect();
+
+        // Expected counts from the fit every view of this family uses, by the CDF
+        // across each bin: exact for log-scaled and whole-number bins, where a density
+        // at the center is not.
+        let fitted = self
+            .fit(family)
+            .and_then(|outcome| outcome.test())
+            .map(|test| &test.fitted);
+        let expected: Vec<f64> = match fitted {
+            Some(fitted) => edges
+                .windows(2)
+                .enumerate()
+                .map(|(i, edge)| {
+                    let upper = if i + 1 == bins {
+                        fitted.cdf(edge[1])
+                    } else {
+                        fitted.cdf_below(edge[1])
+                    };
+                    (upper - fitted.cdf_below(edge[0])).max(0.0) * n
+                })
+                .collect(),
+            None => vec![0.0; bins],
+        };
+        let tallest = counts.iter().copied().max().unwrap_or(0);
+        let expected_top = expected.iter().copied().fold(0.0, f64::max);
+        let top = (tallest.max(expected_top.ceil() as usize).max(1) as f64 / 2.0).ceil() * 2.0;
+        let height = |count: f64| count / top * 100.0;
+
+        let curve = match fitted {
+            // A continuous family on linear bins is drawn as its density, scaled to a
+            // bin's count: a smooth curve rather than a staircase.
+            Some(fitted) if !fitted.discrete() && !log && high > low => {
+                let bin_width = (high - low) / bins as f64;
+                (0..samples)
+                    .map(|i| {
+                        let x = low + i as f64 / (samples - 1) as f64 * (high - low);
+                        (x, height(fitted.density(x) * bin_width * n))
+                    })
+                    .filter(|(_, y)| y.is_finite())
+                    .collect()
+            }
+            // Counts, and log-scaled bins, by each bin's expected count at its center:
+            // on Log a position is the log of the value, and a center the geometric
+            // middle.
+            Some(_) => edges
+                .windows(2)
+                .zip(&expected)
+                .map(|(edge, count)| {
+                    let center = if log {
+                        (edge[0] * edge[1]).sqrt().ln()
+                    } else {
+                        (edge[0] + edge[1]) / 2.0
+                    };
+                    (center, height(*count))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        Histogram { counts, top, curve }
     }
 }
 
@@ -1283,6 +1442,7 @@ fn distribution_analysis(
         sample_size: actual_sample_size,
         fits: fit.fits,
         qq,
+        histogram: HistogramCache::default(),
     }
 }
 

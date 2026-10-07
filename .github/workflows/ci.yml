@@ -330,6 +330,33 @@ jobs:
           expect_exit_1 datui-no-such-file.csv "File not found: datui-no-such-file.csv"
           expect_exit_1 '~\datui-no-such-file.csv' "File not found: $USERPROFILE\\datui-no-such-file.csv"
 
+  # macOS on every pull request, kept cheap: the workspace compiles and the library
+  # and binary unit tests pass. The full suite stays on the macos job below
+  # (release versions) and on Nightly. No `needs`, like linux.
+  macos-pr:
+    name: macOS check and unit tests
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Its own cache key, as windows-pr has: it builds less than `tests` does.
+      - name: Set up the build
+        uses: ./.github/actions/setup
+        with:
+          cache-key: macos-pr
+          fixtures: true
+
+      - name: Check
+        run: cargo check --workspace --locked
+
+      - name: Run unit tests
+        run: cargo test --workspace --locked --lib --bins --no-fail-fast
+
   windows:
     runs-on: windows-latest
     needs: [check]
@@ -444,7 +471,7 @@ jobs:
     name: CI passed
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [check, no-default-features, fuzz, msrv, linux, python, windows-pr, windows, macos]
+    needs: [check, no-default-features, fuzz, msrv, linux, python, windows-pr, macos-pr, windows, macos]
     if: always()
     steps:
       - name: Check that every job passed or was skipped as intended

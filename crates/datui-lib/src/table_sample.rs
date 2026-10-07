@@ -644,7 +644,8 @@ mod tests {
     }
 
     /// Memory that will not hold the rest stops the draw and keeps the rows so far,
-    /// and says why, naming the setting.
+    /// and says why, naming the setting. Only the streaming engine reads in batches.
+    #[cfg(feature = "streaming")]
     #[test]
     fn low_memory_stops_the_draw_and_keeps_what_it_has() {
         let mut low = live();
@@ -704,6 +705,7 @@ mod tests {
 
     /// A reservoir holds its rows to the end: past the memory there is, it stops
     /// there, keeps what it holds, and says why as a live draw does.
+    #[cfg(feature = "streaming")]
     #[test]
     fn a_reservoir_past_the_memory_stops_and_keeps_what_it_holds() {
         let check = MemoryCheck {
@@ -726,6 +728,28 @@ mod tests {
         assert!(drawn.total.unwrap() < 500_000, "it stopped early");
         let reason = low.rows.stopped().unwrap();
         assert!(reason.contains(MEMORY_SETTING), "{reason}");
+    }
+
+    /// Without the streaming engine the read is one batch, whole before the draw sees
+    /// it: there is no partway to stop at, so the rows read are kept.
+    #[cfg(not(feature = "streaming"))]
+    #[test]
+    fn without_streaming_the_read_arrives_whole() {
+        let mut low = live();
+        low.memory = MemoryCheck {
+            limit: Limit::Available,
+            probe: Arc::new(|| Some(1)),
+        };
+        let sample = Sample {
+            method: SampleMethod::EveryRow,
+            ..Sample::default()
+        };
+        let parts: Vec<LazyFrame> = (0..5).map(|_| table(100_000)).collect();
+        let lf = concat(parts, UnionArgs::default()).unwrap();
+        let drawn = draw(&lf, &sample, Some(500_000), None, false, &low).unwrap();
+        assert!(!drawn.cut);
+        assert_eq!(low.rows.rows(), 500_000);
+        assert_eq!(low.rows.take_new().len(), 1, "one batch");
     }
 
     /// Before a draw, an estimate past the room is refused with the way through.

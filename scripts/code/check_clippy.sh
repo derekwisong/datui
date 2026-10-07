@@ -1,7 +1,3 @@
 #!/bin/bash
-# Run clippy linting checks
-# Exit code 0 if no warnings, 1 if warnings found
-
-set -e
-
-cargo clippy --workspace --all-targets --locked -- -D warnings
+# What CI calls; the command lives in scripts/dev/test.sh.
+exec "$(dirname "$0")/../dev/test.sh" clippy "$@"

@@ -760,7 +760,7 @@ impl App {
         let context = PlotContext {
             modal,
             spec: &request.spec,
-            numbers: &self.number_format,
+            numbers: &self.display.number_format,
             schema: Some(state.schema().as_ref()),
         };
         // A single X column has nothing to export.

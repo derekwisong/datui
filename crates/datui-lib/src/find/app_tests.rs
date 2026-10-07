@@ -75,7 +75,7 @@ fn cursor(app: &App) -> usize {
 
 fn find(app: &mut App, rx: &Receiver<AppEvent>, pattern: &str) {
     key(app, KeyCode::Char('f'));
-    assert_eq!(app.input_type, Some(InputType::Find));
+    assert_eq!(app.prompt.input_type, Some(InputType::Find));
     type_text(app, pattern);
     key(app, KeyCode::Enter);
     settle(app, rx);
@@ -92,7 +92,7 @@ fn an_emptied_find_clears_the_find() {
     key(&mut app, KeyCode::Char('f'));
     // The old pattern is selected, so Backspace empties the field.
     key(&mut app, KeyCode::Backspace);
-    assert_eq!(app.find.input.value(), "");
+    assert_eq!(app.prompt.find.input.value(), "");
     key(&mut app, KeyCode::Enter);
     assert_eq!(app.input_mode, InputMode::Normal);
     assert_eq!(app.find_mark(), None);
@@ -221,13 +221,18 @@ fn the_prompt_toggles_regex_and_column_and_says_why_a_regex_is_bad() {
     key(&mut app, KeyCode::Char('f'));
     key_with(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
     key_with(&mut app, KeyCode::Char('l'), KeyModifiers::CONTROL);
-    assert!(app.find.regex && app.find.in_column);
-    assert_eq!(app.find.column.as_deref(), Some("id"));
+    assert!(app.prompt.find.regex && app.prompt.find.in_column);
+    assert_eq!(app.prompt.find.column.as_deref(), Some("id"));
     type_text(&mut app, "(1");
     key(&mut app, KeyCode::Enter);
-    assert_eq!(app.input_type, Some(InputType::Find), "it stays open");
+    assert_eq!(
+        app.prompt.input_type,
+        Some(InputType::Find),
+        "it stays open"
+    );
     assert!(
-        app.find
+        app.prompt
+            .find
             .error
             .as_deref()
             .unwrap()
@@ -235,7 +240,7 @@ fn the_prompt_toggles_regex_and_column_and_says_why_a_regex_is_bad() {
     );
     key(&mut app, KeyCode::Backspace);
     key(&mut app, KeyCode::Backspace);
-    assert!(app.find.error.is_none(), "an edit clears the reason");
+    assert!(app.prompt.find.error.is_none(), "an edit clears the reason");
     // Only in `id`: "hay 12" in `v` is not a match for `^12$`.
     type_text(&mut app, "^12$");
     key(&mut app, KeyCode::Enter);
@@ -269,7 +274,7 @@ fn the_column_cursor_is_the_find_column_and_a_match_moves_it() {
     assert_eq!(current(&app).as_deref(), Some("v"));
     key(&mut app, KeyCode::Char('f'));
     key_with(&mut app, KeyCode::Char('l'), KeyModifiers::CONTROL);
-    assert_eq!(app.find.column.as_deref(), Some("v"));
+    assert_eq!(app.prompt.find.column.as_deref(), Some("v"));
     type_text(&mut app, "needle");
     key(&mut app, KeyCode::Enter);
     settle(&mut app, &rx);
@@ -285,7 +290,7 @@ fn the_column_cursor_is_the_find_column_and_a_match_moves_it() {
     assert_eq!(current(&app).as_deref(), Some("w"));
     // The next limited find opens on it.
     key(&mut app, KeyCode::Char('f'));
-    assert_eq!(app.find.column.as_deref(), Some("w"));
+    assert_eq!(app.prompt.find.column.as_deref(), Some("w"));
 }
 
 /// `n` and `N` go on from the cursor's cell: moved along the found row, the next

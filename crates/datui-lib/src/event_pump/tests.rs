@@ -895,7 +895,7 @@ fn stale_failures_leave_a_newer_open_alone() {
     assert!(!p.app.error_modal.active, "{}", p.app.error_modal.message);
     assert_ne!(p.app.dataset_generation, shown, "the open finished");
     assert!(!p.app.awaiting_dataset());
-    assert!(p.app.last_load_error.is_none());
+    assert!(p.app.home_app.last_load_error.is_none());
     assert!(p.app.nothing_loading());
 }
 
@@ -1063,7 +1063,7 @@ fn a_query_typed_while_busy_lands_in_the_query_bar() {
     p.app.busy = false;
     assert!(matches!(settle(&mut p), Drained::Continue { .. }));
     assert_eq!(p.app.input_mode, InputMode::Editing);
-    assert_eq!(p.app.query_input.value(), "hello");
+    assert_eq!(p.app.prompt.query_input.value(), "hello");
 
     p.app.busy = true;
     type_keys(&mut p, "query");
@@ -1072,7 +1072,7 @@ fn a_query_typed_while_busy_lands_in_the_query_bar() {
         matches!(settle(&mut p), Drained::Continue { .. }),
         "q did not quit"
     );
-    assert_eq!(p.app.query_input.value(), "helloquery");
+    assert_eq!(p.app.prompt.query_input.value(), "helloquery");
 }
 
 /// Ctrl+T typed at a spinner waits its turn like the letters around it: the
@@ -1092,12 +1092,12 @@ fn a_mode_chord_typed_while_busy_switches_before_the_text() {
     let mode = crate::QueryMode::Q.next();
     assert_eq!(p.app.query_prompt_mode(), Some(mode));
     let typed = match mode {
-        crate::QueryMode::Sql => &p.app.sql_input,
-        crate::QueryMode::Q => &p.app.query_input,
+        crate::QueryMode::Sql => &p.app.prompt.sql_input,
+        crate::QueryMode::Q => &p.app.prompt.query_input,
     };
     assert_eq!(typed.value(), "ada");
     if mode != crate::QueryMode::Q {
-        assert_eq!(p.app.query_input.value(), "");
+        assert_eq!(p.app.prompt.query_input.value(), "");
     }
 }
 
@@ -1114,7 +1114,7 @@ fn a_fresh_key_waits_behind_the_held_ones() {
     assert_eq!(p.app.input_mode, InputMode::Normal, "d waited its turn");
 
     settle(&mut p);
-    assert_eq!(p.app.query_input.value(), "abcd");
+    assert_eq!(p.app.prompt.query_input.value(), "abcd");
 }
 
 /// A held Enter runs its search before the key typed after it is offered: the G
@@ -1907,7 +1907,7 @@ fn keys_typed_before_the_app_existed_meet_the_loading_screen() {
 #[test]
 fn the_loading_screen_never_holds_keys() {
     let mut p = pump();
-    p.app.opened_from_home = true;
+    p.app.source.opened_from_home = true;
     p.app.set_loading_phase("Scanning input", 10);
     assert!(p.app.awaiting_dataset() && p.app.is_busy());
 
@@ -2701,14 +2701,14 @@ fn enter_in_the_help_never_types_into_a_field() {
     p.terminal_key(plain(KeyCode::Esc)).unwrap();
     p.terminal_key(plain(KeyCode::Esc)).unwrap();
     assert!(!p.app.help_visible());
-    assert_eq!(p.app.find.input.value(), "", "nothing was typed");
+    assert_eq!(p.app.prompt.find.input.value(), "", "nothing was typed");
 
     p.terminal_key(plain(KeyCode::Esc)).unwrap();
     p.terminal_key(plain(KeyCode::Char(':'))).unwrap();
     p.terminal_key(plain(KeyCode::F(1))).unwrap();
     run_from_help(&mut p, "screen's keys");
     settle(&mut p);
-    assert_eq!(p.app.query_input.value(), "", "? was not typed");
+    assert_eq!(p.app.prompt.query_input.value(), "", "? was not typed");
     assert!(p.app.help_visible(), "F1 opened the help again");
 }
 
@@ -2901,7 +2901,7 @@ fn the_footer_filters_and_query_are_clickable() {
     let at = on_screen(&mut p.app, " query ");
     assert!(p.terminal_mouse(click((at.0 + 1, at.1))).unwrap());
     assert_eq!(p.app.input_mode, InputMode::Editing);
-    assert_eq!(p.app.query_input.value(), "select age");
+    assert_eq!(p.app.prompt.query_input.value(), "select age");
 }
 
 /// A click outside a dialog does nothing: the table under the sidebar keeps its
@@ -3349,7 +3349,7 @@ fn a_background_count_redraws_at_the_idle_cadence() {
     let frames = |waited_on: bool| {
         let mut p = pump();
         // A count in flight that never reports: the spinner turns until the exit.
-        p.app.len_count_inflight = Some(p.app.task_generation());
+        p.app.counting.len_count_inflight = Some(p.app.task_generation());
         p.app.busy = waited_on;
         assert!(p.app.something_is_spinning());
         assert_eq!(p.app.is_busy(), waited_on);

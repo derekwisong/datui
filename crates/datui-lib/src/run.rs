@@ -14,6 +14,34 @@ use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
 use polars::prelude::LazyFrame;
 
+/// What datui hands to other programs: values to open, where they are written, and the
+/// clipboard.
+pub struct External {
+    /// A value the inspector wrote for another program, for the run loop to open:
+    /// it owns the terminal that a waiting program takes over.
+    pub(crate) open: Option<crate::external_open::ExternalOpen>,
+    /// Where those values are written; removed when the app is.
+    pub(crate) open_dir: Option<tempfile::TempDir>,
+    /// Where copies go. Built at the first copy and kept for the run: on
+    /// Wayland and X11 the clipboard offer dies with the process that owns it,
+    /// so this handle must live as long as the copy should.
+    pub(crate) clipboard: Option<Box<dyn crate::clipboard::Destination>>,
+}
+
+/// Standard input and output when datui sits in a pipe, and the recording of what it read.
+pub struct Pipes {
+    /// What `-` reads in place of standard input: a test's pipe.
+    pub(crate) stdin_reader: Option<Box<dyn std::io::Read + Send>>,
+    /// Where `--tee -` passes the stream on: standard output as the process got it.
+    pub(crate) stdout_pass: Option<Box<dyn std::io::Write + Send>>,
+    /// The follow mark as last drawn, so its clock redraws only when it changes.
+    pub(crate) follow_drawn: Option<crate::render::footer::FollowMark>,
+    /// A recording kept going after the user went home or quit, until its stream ends.
+    pub(crate) recording_on: Option<std::sync::Arc<crate::follow::SpoolHandle>>,
+    /// A recording's end has been said: once, in the bar or the error dialog.
+    pub(crate) recording_end_said: bool,
+}
+
 /// Restore the terminal, then turn how the loop ended into what `run_impl` returns.
 /// The reader stops first, so nothing typed after the screen is handed back is read
 /// here. The capture is taken after the screen is handed back, so a refused capture
@@ -384,7 +412,7 @@ fn run_impl(
     if let Some(out) = passed {
         app.pass_stdout_to(out);
     }
-    app.startup_view = opts.view.clone();
+    app.source.startup_view = opts.view.clone();
     // A developer's overlay: an environment variable, not a flag.
     let debug_env = std::env::var_os("DATUI_DEBUG").is_some_and(|v| !v.is_empty() && v != "0");
     if opts.debug || debug_env {

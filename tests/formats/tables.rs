@@ -44,17 +44,18 @@ fn footer(app: &mut App) -> String {
 fn pick(app: &mut App, label: &str) {
     assert_eq!(app.input_mode, InputMode::PickTable);
     let at = app
+        .pickers
         .table_picker
         .items()
         .iter()
         .position(|item| item == label)
-        .unwrap_or_else(|| panic!("{label} in {:?}", app.table_picker.items()));
-    while app.table_picker.selected_original() != Some(at) {
-        let before = app.table_picker.selected_original();
+        .unwrap_or_else(|| panic!("{label} in {:?}", app.pickers.table_picker.items()));
+    while app.pickers.table_picker.selected_original() != Some(at) {
+        let before = app.pickers.table_picker.selected_original();
         press(app, KeyCode::Down);
-        if app.table_picker.selected_original() == before {
+        if app.pickers.table_picker.selected_original() == before {
             // At the bottom: round from the top.
-            for _ in 0..app.table_picker.items().len() {
+            for _ in 0..app.pickers.table_picker.items().len() {
                 press(app, KeyCode::Up);
             }
         }
@@ -78,11 +79,14 @@ fn t_opens_another_worksheet_of_a_workbook() {
     let shown = lines(&mut app).join("\n");
     assert!(shown.contains("Table"), "{shown}");
     // Each sheet's range and size, the one open marked; the hidden one too.
-    assert_eq!(app.table_picker.items(), ["Orders", "2023", "Lookup"]);
+    assert_eq!(
+        app.pickers.table_picker.items(),
+        ["Orders", "2023", "Lookup"]
+    );
     assert!(shown.contains("A1:B4"), "{shown}");
     assert!(shown.contains("opened"), "{shown}");
     assert!(shown.contains("hidden"), "{shown}");
-    assert_eq!(app.table_picker.selected_original(), Some(0));
+    assert_eq!(app.pickers.table_picker.selected_original(), Some(0));
 
     pick(&mut app, "2023");
     open_picked(&mut app, &rx, &tx);
@@ -98,7 +102,7 @@ fn t_opens_another_worksheet_of_a_workbook() {
 
     // From there, the picker marks the sheet now open.
     press(&mut app, KeyCode::Char('T'));
-    assert_eq!(app.table_picker.selected_original(), Some(1));
+    assert_eq!(app.pickers.table_picker.selected_original(), Some(1));
 }
 
 #[test]
@@ -218,7 +222,7 @@ fn enter_on_the_schema_tab_retypes_and_on_the_excel_tab_opens() {
     }
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Enter);
-    assert!(app.retype.is_none(), "no type picker");
+    assert!(app.column_forms.retype.is_none(), "no type picker");
     assert_ne!(app.input_mode, InputMode::Retype);
 }
 
@@ -256,13 +260,13 @@ fn t_opens_another_table_of_a_database_and_leaves_the_query_behind() {
         app.error_message()
     );
     // Its own tables and views, each with its kind and columns; not SQLite's own.
-    let items = app.table_picker.items().to_vec();
+    let items = app.pickers.table_picker.items().to_vec();
     assert!(items.contains(&"orders".to_string()), "{items:?}");
     assert!(items.contains(&"big_orders".to_string()), "{items:?}");
     assert!(!items.iter().any(|i| i.starts_with("sqlite_")), "{items:?}");
     let shown = lines(&mut app).join("\n");
     assert!(shown.contains("5 columns"), "{shown}");
-    let current = &items[app.table_picker.selected_original().unwrap()];
+    let current = &items[app.pickers.table_picker.selected_original().unwrap()];
     assert_eq!(current, "customers");
 
     pick(&mut app, "orders");
@@ -333,8 +337,11 @@ fn t_opens_a_record_type_of_a_spec_file_and_the_whole_file_again() {
     assert!(app.offers_other_tables());
 
     press(&mut app, KeyCode::Char('T'));
-    assert_eq!(app.table_picker.items(), ["day.tape", "quote", "trade"]);
-    assert_eq!(app.table_picker.selected_original(), Some(0));
+    assert_eq!(
+        app.pickers.table_picker.items(),
+        ["day.tape", "quote", "trade"]
+    );
+    assert_eq!(app.pickers.table_picker.selected_original(), Some(0));
     let shown = lines(&mut app).join("\n");
     assert!(shown.contains("every record type"), "{shown}");
     assert!(shown.contains("4 columns"), "{shown}");
@@ -347,7 +354,7 @@ fn t_opens_a_record_type_of_a_spec_file_and_the_whole_file_again() {
 
     // Back to every record.
     press(&mut app, KeyCode::Char('T'));
-    assert_eq!(app.table_picker.selected_original(), Some(2));
+    assert_eq!(app.pickers.table_picker.selected_original(), Some(2));
     pick(&mut app, "day.tape");
     open_picked(&mut app, &rx, &tx);
     assert_eq!(current_rows(&app), 100);
@@ -365,8 +372,11 @@ fn t_opens_another_split_of_a_hugging_face_cache() {
     let (mut app, rx, tx) = open(vec![cache.clone()], options);
     assert!(app.offers_other_tables());
     press(&mut app, KeyCode::Char('T'));
-    assert_eq!(app.table_picker.items(), ["test", "train", "validation"]);
-    assert_eq!(app.table_picker.selected_original(), Some(1));
+    assert_eq!(
+        app.pickers.table_picker.items(),
+        ["test", "train", "validation"]
+    );
+    assert_eq!(app.pickers.table_picker.selected_original(), Some(1));
     pick(&mut app, "test");
     open_picked(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();

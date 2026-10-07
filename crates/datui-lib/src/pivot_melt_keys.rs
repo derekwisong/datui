@@ -24,7 +24,7 @@ impl App {
             .collect();
         let view_rows = state.num_rows_if_valid();
         let sorted = state.is_sorted();
-        modal.open(self.history_limit, &self.theme);
+        modal.open(self.display.history_limit, &self.theme);
         modal.preview.view_rows = view_rows;
         modal.preview.sorted = sorted;
         self.input_mode = InputMode::PivotMelt;

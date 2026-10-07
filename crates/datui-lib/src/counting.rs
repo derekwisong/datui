@@ -7,6 +7,127 @@ use crate::table::DataTableState;
 use crate::{App, AppEvent, logging};
 use std::sync::Arc;
 
+/// The dataset's row count, footer pass and line indexing, and what waits on them.
+pub struct Counting {
+    /// The footer counter of the dataset on screen, which its pass behind the open
+    /// reports to. Handed over by the load that installed it; a load in flight counts on
+    /// its own until then. See [`Self::footer_progress`].
+    pub(crate) footer_progress: Arc<crate::schema_union::FooterProgress>,
+    /// The count as it stood when this frame began, or `None` if no pass was running.
+    ///
+    /// Taken once because the pass is running on other threads while the frame is
+    /// drawn. The loading body and the footer are painted a millisecond apart,
+    /// and when each read the counter for itself they printed different numbers for
+    /// one wait — and the bar could print a phase's flat percentage beside a count
+    /// that had finished between the two reads.
+    pub(crate) footers_this_frame: Option<(usize, usize)>,
+    /// Where the last load-ahead was asked from. See [`App::load_ahead`].
+    pub(crate) loaded_ahead_from: Option<(u64, usize, usize, usize)>,
+    // `len_generation` of the in-flight background row-count, if any. Prevents re-spawning
+    // the (potentially minutes-long) count on every scroll while it's still running.
+    pub(crate) len_count_inflight: Option<u64>,
+    /// The `len_generation` of a count `len_count_inflight` promises that has not
+    /// started. A full count of a local frame competes with reading its first page for
+    /// the disk and the Polars workers, and that page's rows can make it unnecessary,
+    /// so it starts once a frame has painted them. See [`App::frame_painted`].
+    pub(crate) count_after_paint: Option<u64>,
+    /// Counts started, so a test can say none began before the page was painted.
+    #[cfg(test)]
+    pub(crate) counts_spawned: std::cell::Cell<usize>,
+    /// Times an installed dataset's own first rows were asked for, so a test can say a
+    /// view applied on open read them instead.
+    #[cfg(test)]
+    pub(crate) first_rows_asked: usize,
+    // `len_generation` whose background row-count failed. While this matches the current
+    // generation (and the count is still invalid) the row count is shown as "?" rather than a
+    // misleading provisional total.
+    pub(crate) len_count_failed: Option<u64>,
+    /// End was pressed on a remote dataset before its rows were counted: go there when
+    /// the count for this generation arrives, rather than to a guess.
+    pub(crate) end_after_count: Option<u64>,
+    /// What the pass behind a staged open found, for the frame that applies it: large
+    /// enough to be worth keeping out of the event, and discarded if the dataset it
+    /// belongs to has been replaced.
+    pub(crate) pending_footers_result: std::sync::Arc<std::sync::Mutex<FootersReported>>,
+    /// End was pressed while a dataset was still reading its footers, which is where
+    /// its end is coming from. Jump when they land — and only for that dataset, which
+    /// is what the generation is for: a directory the user pressed End on and then walked
+    /// away from must not move the view of the one they opened next. `end_after_count`
+    /// alongside keys itself the same way, to `len_generation`.
+    pub(crate) end_when_the_footers_land: Option<u64>,
+    /// End was pressed while a text file's lines were still being indexed: jump when
+    /// the last of them is, for that dataset alone.
+    pub(crate) end_when_indexed: Option<u64>,
+    /// Stops the indexing thread of the dataset on screen's lines.
+    pub(crate) indexing_stop: Arc<std::sync::atomic::AtomicBool>,
+    /// The lines being indexed, until they all are.
+    pub(crate) indexing_lines: Option<Arc<crate::lines::Lines>>,
+    /// The indexing waits while home is up.
+    pub(crate) indexing_paused: bool,
+    /// `:N` past the lines indexed so far, for that dataset: gone to once they all are.
+    pub(crate) goto_when_indexed: Option<(u64, usize)>,
+    /// The last count started: what it has read of the footers, and its stop (Esc).
+    pub(crate) count_progress: Arc<crate::schema_union::FooterProgress>,
+    /// The dataset (`dataset_generation`) an exact count was asked for (`c` in the
+    /// Info panel), of more files than the count reads unasked.
+    pub(crate) exact_count_asked: Option<u64>,
+    /// `c` was pressed while a stopped count was still winding down: count again when
+    /// its answer, for this `len_generation`, comes in.
+    pub(crate) count_after_stop: Option<u64>,
+    /// What a dataset's footers found while the user was looking at a query, a pivot or
+    /// a drill-down rather than at the data. Held rather than applied, because widening
+    /// the scan under a query takes the query's own columns away, and offered again the
+    /// moment the view comes back to the dataset itself.
+    pub(crate) footers_held: Option<(u64, crate::table::FootersFound)>,
+    /// Fields a followed pipe's NDJSON brought after the open, held as footers are
+    /// until the view is back on the data.
+    pub(crate) followed_fields_held: Option<(u64, Vec<polars::prelude::Field>)>,
+    /// A re-read the dataset is owed by a footer pass that came back empty-handed, held
+    /// back because the collect it goes through would bump the generation out from
+    /// under work already running. The pass that failed brings no columns to hold, so
+    /// `footers_held` has nothing to say about it, and the dataset still needs the
+    /// ordinary count the pass was going to save it — hence an errand of its own, tried
+    /// again after every event until the work it would cancel is done.
+    pub(crate) reread_owed: Option<u64>,
+    /// The objects a listing had found when this frame began, for the same reason.
+    pub(crate) listed_this_frame: Option<usize>,
+}
+
+impl Counting {
+    /// Forget what keys pressed at the dataset being replaced were waiting for: an End
+    /// on its footers or its count. A `len_generation` says nothing about which dataset
+    /// it belonged to, so a marker left here would act on the next one.
+    pub(crate) fn reset_for_dataset(&mut self) {
+        self.end_when_the_footers_land = None;
+        self.end_after_count = None;
+    }
+
+    /// The markers a running query keeps for the view it may roll back to.
+    pub(crate) fn markers(&self) -> CountMarkers {
+        CountMarkers {
+            len_count_inflight: self.len_count_inflight,
+            count_after_paint: self.count_after_paint,
+            len_count_failed: self.len_count_failed,
+        }
+    }
+
+    /// Put back the markers of a view a failed query rolled back to.
+    pub(crate) fn restore(&mut self, markers: CountMarkers) {
+        self.len_count_inflight = markers.len_count_inflight;
+        self.count_after_paint = markers.count_after_paint;
+        self.len_count_failed = markers.len_count_failed;
+    }
+}
+
+/// A frame's count markers: the count out for it, the one held for a paint, and the
+/// one that failed.
+#[derive(Clone, Copy)]
+pub(crate) struct CountMarkers {
+    pub(crate) len_count_inflight: Option<u64>,
+    pub(crate) count_after_paint: Option<u64>,
+    pub(crate) len_count_failed: Option<u64>,
+}
+
 /// Bytes of a text file indexed per step behind its first rows, between which the
 /// indexing looks whether it is still wanted.
 const INDEX_STEP: usize = 16 << 20;
@@ -35,7 +156,7 @@ impl App {
         // count because that pass is bringing one, so nothing is "in flight" — and the
         // number it holds meanwhile is only as far as the buffer reaches. Printed
         // plainly, a prefix of six thousand files reads `Rows: 70`.
-        self.len_count_inflight.is_some()
+        self.counting.len_count_inflight.is_some()
             || self.loading.awaiting_dataset()
             // A re-read owed to a dataset whose footers could not be read is a count
             // that is coming: the collect it is waiting to run is what starts one. The
@@ -44,7 +165,7 @@ impl App {
             // through to printing the number it happens to hold — which is only as far
             // as the buffer reached. A prefix of six thousand files reads `Rows: 70`,
             // plainly, for as long as the work in front of the errand takes.
-            || self.reread_owed.is_some()
+            || self.counting.reread_owed.is_some()
             || self
                 .data_table_state
                 .as_ref()
@@ -72,12 +193,12 @@ impl App {
     pub(crate) fn reread_after_the_footers_joined(&mut self) {
         // Any re-read satisfies one that was owed: this is the collect the errand was
         // waiting to run, whoever asked for it.
-        self.reread_owed = None;
+        self.counting.reread_owed = None;
         // End was pressed while the footers were still coming, and they are what the
         // end was waiting on. Taken either way: a flag left from a dataset that is gone
         // is not this one's to act on. The jump reads the page it lands on, so reading
         // the page here first would be one fetched to be thrown away.
-        if self.end_when_the_footers_land.take() == Some(self.dataset_generation) {
+        if self.counting.end_when_the_footers_land.take() == Some(self.dataset_generation) {
             self.status_message = None;
             if let Some(next) = self.jump_key(crate::Scroll::End) {
                 // The jump reads the page it lands on, so reading this one first would
@@ -135,12 +256,12 @@ impl App {
     /// phase then never wrote its file and said nothing about it. So the errand waits
     /// its turn, the way held columns already do.
     pub(crate) fn reread_when_the_work_allows(&mut self) {
-        let Some(generation) = self.reread_owed else {
+        let Some(generation) = self.counting.reread_owed else {
             return;
         };
         if generation != self.dataset_generation {
             // The dataset it was owed to is gone; so is the errand.
-            self.reread_owed = None;
+            self.counting.reread_owed = None;
             return;
         }
         if self.work_the_join_would_cancel() {
@@ -154,7 +275,7 @@ impl App {
     /// Only the flag and the message it put up: the jump itself is not re-issued. See
     /// the caller in `BackgroundLenReady` for why asking again is the wrong repair.
     fn retire_the_end_that_was_waiting(&mut self) {
-        self.end_after_count = None;
+        self.counting.end_after_count = None;
         self.take_down_the_counting_status();
     }
 
@@ -204,18 +325,18 @@ impl App {
     /// Returns whether the dataset took them, so the caller can re-read the rows on
     /// screen through the wider frame.
     pub(crate) fn join_held_footers(&mut self) -> bool {
-        let Some((generation, _)) = self.footers_held.as_ref() else {
+        let Some((generation, _)) = self.counting.footers_held.as_ref() else {
             return false;
         };
         if *generation != self.dataset_generation {
             // The dataset they belong to is gone; so are they.
-            self.footers_held = None;
+            self.counting.footers_held = None;
             return false;
         }
         if self.data_table_state.is_none() || self.work_the_join_would_cancel() {
             return false;
         }
-        let Some((generation, found)) = self.footers_held.take() else {
+        let Some((generation, found)) = self.counting.footers_held.take() else {
             return false;
         };
         let state = self
@@ -227,7 +348,7 @@ impl App {
         match state.join_dataset_schema(found) {
             Ok(()) => true,
             Err(found) => {
-                self.footers_held = Some((generation, *found));
+                self.counting.footers_held = Some((generation, *found));
                 false
             }
         }
@@ -248,9 +369,9 @@ impl App {
             return;
         };
         let generation = self.dataset_generation;
-        let slot = self.pending_footers_result.clone();
+        let slot = self.counting.pending_footers_result.clone();
         let tx = self.events.clone();
-        let progress = self.footer_progress.clone();
+        let progress = self.counting.footer_progress.clone();
         self.runtime.spawn_blocking(move || {
             // Reported either way. A pass that could not read them has to say so, or
             // the dataset waits for it for the rest of the session — and a waiting
@@ -269,8 +390,8 @@ impl App {
     /// the table works meanwhile, and a read of every line waits for them on its own
     /// worker. The last dataset's indexing, if it is still going, stops.
     pub(crate) fn start_indexing(&mut self) {
-        self.end_when_indexed = None;
-        self.goto_when_indexed = None;
+        self.counting.end_when_indexed = None;
+        self.counting.goto_when_indexed = None;
         self.index_lines();
     }
 
@@ -279,13 +400,13 @@ impl App {
     /// longer on screen stop for good, and the reads waiting on them give up.
     pub(crate) fn index_lines(&mut self) {
         use std::sync::atomic::Ordering;
-        self.indexing_stop.store(true, Ordering::Relaxed);
-        self.indexing_paused = false;
+        self.counting.indexing_stop.store(true, Ordering::Relaxed);
+        self.counting.indexing_paused = false;
         let lines = self
             .data_table_state
             .as_ref()
             .and_then(|state| state.lines_to_index().cloned());
-        if let Some(old) = self.indexing_lines.take()
+        if let Some(old) = self.counting.indexing_lines.take()
             && lines.as_ref().is_none_or(|lines| !Arc::ptr_eq(lines, &old))
         {
             old.stop_indexing();
@@ -293,9 +414,9 @@ impl App {
         let Some(lines) = lines.filter(|lines| lines.resume_indexing()) else {
             return;
         };
-        self.indexing_lines = Some(lines.clone());
+        self.counting.indexing_lines = Some(lines.clone());
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        self.indexing_stop = stop.clone();
+        self.counting.indexing_stop = stop.clone();
         let generation = self.dataset_generation;
         let tx = self.events.clone();
         let waiting = lines.clone();
@@ -324,7 +445,7 @@ impl App {
         // waits for more.
         if spawned.is_err() {
             waiting.stop_indexing();
-            self.indexing_lines = None;
+            self.counting.indexing_lines = None;
             if let Some(state) = self.data_table_state.as_mut() {
                 state.lines_indexed(waiting.rows());
             }
@@ -334,10 +455,11 @@ impl App {
     /// Home is up: the indexing waits, the reads waiting on it with it, until the
     /// table is back ([`Self::begin_frame`]).
     pub(crate) fn pause_indexing(&mut self) {
-        if self.indexing_lines.is_some() {
-            self.indexing_stop
+        if self.counting.indexing_lines.is_some() {
+            self.counting
+                .indexing_stop
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            self.indexing_paused = true;
+            self.counting.indexing_paused = true;
         }
     }
 
@@ -350,22 +472,22 @@ impl App {
         let Some(state) = self.data_table_state.as_mut() else {
             return;
         };
-        self.indexing_lines = None;
+        self.counting.indexing_lines = None;
         if !state.lines_indexed(rows) {
             // Set aside while the lines finished (the quality evidence view): they
             // land on the dataset that comes back.
-            if let Some(held) = self.quality_evidence_return.as_mut() {
+            if let Some(held) = self.quality.evidence_return.as_mut() {
                 held.lines_indexed(rows);
             }
             return;
         }
-        if let Some((goto, row)) = self.goto_when_indexed.take()
+        if let Some((goto, row)) = self.counting.goto_when_indexed.take()
             && goto == generation
         {
             self.take_down_the_counting_status();
             let _ = self.events.send(AppEvent::GoToLine(row));
         }
-        if self.end_when_indexed.take() == Some(generation) {
+        if self.counting.end_when_indexed.take() == Some(generation) {
             self.take_down_the_counting_status();
             if let Some(next) = self.jump_key(crate::Scroll::End) {
                 let _ = self.events.send(next);
@@ -385,7 +507,7 @@ impl App {
         let limit = self.app_config.read.exact_count_files;
         limit > 0
             && state.files_to_count().is_some_and(|files| files > limit)
-            && self.exact_count_asked != Some(self.dataset_generation)
+            && self.counting.exact_count_asked != Some(self.dataset_generation)
             && state.row_estimate(None).is_some()
     }
 
@@ -394,16 +516,17 @@ impl App {
     pub(crate) fn row_estimate(&self) -> Option<crate::schema_union::RowEstimate> {
         self.data_table_state
             .as_ref()?
-            .row_estimate(self.footer_progress.estimate())
+            .row_estimate(self.counting.footer_progress.estimate())
     }
 
     /// Whether the count running reads footers it can say it has read, and so can be
     /// stopped: `(read, of)`.
     pub(crate) fn footers_counted(&self) -> Option<(usize, usize)> {
-        self.len_count_inflight?;
-        self.count_progress
+        self.counting.len_count_inflight?;
+        self.counting
+            .count_progress
             .reading()
-            .filter(|_| !self.count_progress.is_cancelled())
+            .filter(|_| !self.counting.count_progress.is_cancelled())
     }
 
     /// `c` in the Info panel: count every row exactly, though the dataset has more
@@ -416,23 +539,25 @@ impl App {
             return;
         }
         let generation = state.len_generation();
-        self.exact_count_asked = Some(self.dataset_generation);
+        self.counting.exact_count_asked = Some(self.dataset_generation);
         // The footer pass is still bringing the count; the request holds for when it
         // lands.
         if state.counts_itself_later() {
             return;
         }
         // A count stopped before is asked again.
-        if self.len_count_failed == Some(generation) {
-            self.len_count_failed = None;
+        if self.counting.len_count_failed == Some(generation) {
+            self.counting.len_count_failed = None;
         }
         // One stopped and not yet wound down: again once it has.
-        if self.len_count_inflight == Some(generation) && self.count_progress.is_cancelled() {
-            self.count_after_stop = Some(generation);
+        if self.counting.len_count_inflight == Some(generation)
+            && self.counting.count_progress.is_cancelled()
+        {
+            self.counting.count_after_stop = Some(generation);
             return;
         }
-        if self.len_count_inflight != Some(generation) {
-            self.len_count_inflight = Some(generation);
+        if self.counting.len_count_inflight != Some(generation) {
+            self.counting.len_count_inflight = Some(generation);
             let job = LenCount::for_state(state);
             self.spawn_count(job);
         }
@@ -440,7 +565,7 @@ impl App {
 
     /// Esc while a count reads footers: stop it. What it read is kept for the next.
     pub(crate) fn stop_count(&mut self) {
-        self.count_progress.cancel();
+        self.counting.count_progress.cancel();
     }
 
     /// Put what a pass found in the slot, unless a later dataset's pass has answered
@@ -469,8 +594,10 @@ impl App {
     /// or `BackgroundLenFailed`.
     pub(crate) fn spawn_count(&mut self, job: LenCount) {
         #[cfg(test)]
-        self.counts_spawned.set(self.counts_spawned.get() + 1);
-        self.count_progress = job.progress.clone();
+        self.counting
+            .counts_spawned
+            .set(self.counting.counts_spawned.get() + 1);
+        self.counting.count_progress = job.progress.clone();
         let count = OwedCount::new(job, self.events.clone());
         self.runtime
             .spawn_blocking(move || count.answer(LenCount::run));
@@ -492,7 +619,8 @@ impl App {
     /// The run loop paints after every update; a test harness, which paints nothing,
     /// asks this to know when to say a frame was painted.
     pub fn count_waits_for_a_frame(&self) -> bool {
-        self.count_after_paint
+        self.counting
+            .count_after_paint
             .is_some_and(|generation| !self.waited_on_rows_pending(generation))
     }
 
@@ -518,25 +646,25 @@ impl App {
     /// are still being read; retire it if the frame it was for has gone or its rows
     /// already said how many there are.
     fn count_what_was_painted(&mut self) {
-        let Some(generation) = self.count_after_paint else {
+        let Some(generation) = self.counting.count_after_paint else {
             return;
         };
         if self.waited_on_rows_pending(generation) {
             return;
         }
-        self.count_after_paint = None;
+        self.counting.count_after_paint = None;
         let wanted = self
             .data_table_state
             .as_ref()
             .filter(|state| state.len_generation() == generation && !state.is_num_rows_valid());
         match wanted {
             Some(state) => {
-                self.len_count_inflight = Some(generation);
+                self.counting.len_count_inflight = Some(generation);
                 self.spawn_count(LenCount::for_state(state));
             }
             None => {
-                if self.len_count_inflight == Some(generation) {
-                    self.len_count_inflight = None;
+                if self.counting.len_count_inflight == Some(generation) {
+                    self.counting.len_count_inflight = None;
                 }
             }
         }
@@ -546,7 +674,7 @@ impl App {
     /// frame other than the one a count is waiting on: either way that count is not
     /// owed any more.
     pub(crate) fn retire_a_count_the_rows_answered(&mut self) {
-        let Some(generation) = self.count_after_paint else {
+        let Some(generation) = self.counting.count_after_paint else {
             return;
         };
         let answered = self
@@ -554,9 +682,9 @@ impl App {
             .as_ref()
             .is_none_or(|state| state.len_generation() != generation || state.is_num_rows_valid());
         if answered {
-            self.count_after_paint = None;
-            if self.len_count_inflight == Some(generation) {
-                self.len_count_inflight = None;
+            self.counting.count_after_paint = None;
+            if self.counting.len_count_inflight == Some(generation) {
+                self.counting.len_count_inflight = None;
             }
         }
     }
@@ -569,21 +697,21 @@ impl App {
                 num_rows,
                 file_row_groups,
             } => {
-                if self.len_count_inflight == Some(*len_generation) {
-                    self.len_count_inflight = None;
+                if self.counting.len_count_inflight == Some(*len_generation) {
+                    self.counting.len_count_inflight = None;
                 }
-                if self.len_count_failed == Some(*len_generation) {
-                    self.len_count_failed = None;
+                if self.counting.len_count_failed == Some(*len_generation) {
+                    self.counting.len_count_failed = None;
                 }
                 // A count of the view a running query replaced goes back with it.
-                if let Some(run) = self.query_running.as_mut() {
+                if let Some(run) = self.prompt.query_running.as_mut() {
                     run.rollback.count_landed(
                         *len_generation,
                         *num_rows,
                         file_row_groups.as_deref(),
                     );
-                    if run.len_count_inflight == Some(*len_generation) {
-                        run.len_count_inflight = None;
+                    if run.counts.len_count_inflight == Some(*len_generation) {
+                        run.counts.len_count_inflight = None;
                     }
                 }
                 // Apply the exact total only if the data hasn't changed since the count
@@ -594,12 +722,12 @@ impl App {
                     && state.count_landed(*len_generation, *num_rows, file_row_groups.as_deref())
                 {
                     // End was pressed before there was an end to go to.
-                    if self.end_after_count == Some(*len_generation) {
-                        self.end_after_count = None;
+                    if self.counting.end_after_count == Some(*len_generation) {
+                        self.counting.end_after_count = None;
                         self.status_message = None;
                         return self.jump_key(crate::Scroll::End);
                     }
-                } else if self.end_after_count == Some(*len_generation) {
+                } else if self.counting.end_after_count == Some(*len_generation) {
                     // This is the count End was waiting on, and it answers a frame that
                     // is gone — a join landed underneath it and took a fresh
                     // `len_generation` past it. Left here the flag is stranded on a
@@ -624,18 +752,18 @@ impl App {
                 None
             }
             AppEvent::BackgroundLenFailed { len_generation } => {
-                if self.len_count_inflight == Some(*len_generation) {
-                    self.len_count_inflight = None;
+                if self.counting.len_count_inflight == Some(*len_generation) {
+                    self.counting.len_count_inflight = None;
                 }
-                if self.count_after_stop.take() == Some(*len_generation) {
+                if self.counting.count_after_stop.take() == Some(*len_generation) {
                     self.count_exactly();
                     return None;
                 }
-                if let Some(run) = self.query_running.as_mut()
-                    && run.len_count_inflight == Some(*len_generation)
+                if let Some(run) = self.prompt.query_running.as_mut()
+                    && run.counts.len_count_inflight == Some(*len_generation)
                 {
-                    run.len_count_inflight = None;
-                    run.len_count_failed = Some(*len_generation);
+                    run.counts.len_count_inflight = None;
+                    run.counts.len_count_failed = Some(*len_generation);
                 }
                 // Mark this generation's count as failed so the row count renders as "?"
                 // instead of a misleading provisional total. Before the End handling
@@ -655,14 +783,14 @@ impl App {
                     .as_ref()
                     .is_some_and(|state| state.len_generation() == *len_generation)
                 {
-                    self.len_count_failed = Some(*len_generation);
+                    self.counting.len_count_failed = Some(*len_generation);
                 }
                 // Only for the count End was actually waiting on. Taken unconditionally,
                 // a count that failed for one frame answered for an End pressed on
                 // another — printing "Could not count the rows to find the end" about a
                 // key the user pressed somewhere else entirely, and long since.
-                if self.end_after_count == Some(*len_generation) {
-                    self.end_after_count = None;
+                if self.counting.end_after_count == Some(*len_generation) {
+                    self.counting.end_after_count = None;
                     if self
                         .data_table_state
                         .as_ref()
@@ -692,6 +820,7 @@ impl App {
                 // that has already been and gone. An entry is also worth draining
                 // either way — it is a dataset's worth of schema and every file name.
                 let taken = self
+                    .counting
                     .pending_footers_result
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -718,11 +847,11 @@ impl App {
                         // export or an analysis may be waiting on the one it would bump
                         // past. `reread_when_the_work_allows` runs it the moment that
                         // work is done.
-                        self.reread_owed = Some(slot_generation);
+                        self.counting.reread_owed = Some(slot_generation);
                         self.reread_when_the_work_allows();
                         return None;
                     };
-                    self.footers_held = Some((slot_generation, found));
+                    self.counting.footers_held = Some((slot_generation, found));
                     if self.join_held_footers() {
                         self.reread_after_the_footers_joined();
                     }

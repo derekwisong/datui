@@ -662,9 +662,9 @@ impl App {
             self.flash_note(format!("{} is not read yet; Enter reads it", field.name));
             return;
         };
-        if self.open_dir.is_none() {
+        if self.external.open_dir.is_none() {
             match tempfile::Builder::new().prefix("datui-values-").tempdir() {
-                Ok(dir) => self.open_dir = Some(dir),
+                Ok(dir) => self.external.open_dir = Some(dir),
                 Err(e) => {
                     self.flash_note(format!("Could not open the value: {e}"));
                     return;
@@ -672,6 +672,7 @@ impl App {
             }
         }
         let dir = self
+            .external
             .open_dir
             .as_ref()
             .map(|d| d.path().to_path_buf())

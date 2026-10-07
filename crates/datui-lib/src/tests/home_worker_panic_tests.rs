@@ -13,7 +13,7 @@ fn app() -> (App, mpsc::Receiver<AppEvent>, tempfile::TempDir) {
 /// Kill the first worker that would owe `owed` in its place.
 fn dies_once(app: &mut App, owed: fn(&AppEvent) -> bool) {
     let mut died = false;
-    app.home_worker_dies = Some(Box::new(move |instead| {
+    app.home_app.worker_dies = Some(Box::new(move |instead| {
         let dies = !died && owed(instead);
         died |= dies;
         dies
@@ -40,7 +40,7 @@ fn pump(app: &mut App, rx: &mpsc::Receiver<AppEvent>, done: impl Fn(&App) -> boo
 fn a_stale_listing_leaves_the_current_one_in_flight() {
     let (mut app, _rx, _dir) = app();
     app.home_refresh();
-    let stale = app.home_generation;
+    let stale = app.home_app.generation;
     app.home_refresh();
     assert!(app.home.listing_in_flight);
     app.event(&AppEvent::HomeListingReady {
@@ -53,7 +53,7 @@ fn a_stale_listing_leaves_the_current_one_in_flight() {
     });
     assert!(app.home.listing_in_flight, "the current listing still runs");
     app.event(&AppEvent::HomeListingReady {
-        generation: app.home_generation,
+        generation: app.home_app.generation,
         listing: Box::default(),
         known: Default::default(),
         folds: None,
@@ -90,8 +90,8 @@ fn a_probe_whose_worker_dies_gives_its_slot_back_and_says_so() {
     dies_once(&mut app, |e| matches!(e, AppEvent::HomeProbeFailed { .. }));
     app.spawn_home_probes();
     let root = dir.path().to_path_buf();
-    assert!(app.home_probes_inflight.contains(&root));
-    pump(&mut app, &rx, |a| a.home_probes_inflight.is_empty());
+    assert!(app.home_app.probes_inflight.contains(&root));
+    pump(&mut app, &rx, |a| a.home_app.probes_inflight.is_empty());
     assert_eq!(
         app.home.probes.error(&root),
         Some("Could not read it; see the log")
@@ -121,7 +121,7 @@ fn a_search_whose_walk_dies_ends() {
     dies_once(&mut app, |e| matches!(e, AppEvent::HomeSearchDone { .. }));
     app.spawn_home_search();
     assert!(app.home.search.running);
-    pump(&mut app, &rx, |a| !a.home_search_inflight);
+    pump(&mut app, &rx, |a| !a.home_app.search_inflight);
     assert!(!app.home.search.running);
     assert!(app.home.search.done);
     assert_eq!(app.home.search.limited.as_deref(), Some("partial · failed"));

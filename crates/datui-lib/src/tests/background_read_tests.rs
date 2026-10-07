@@ -92,7 +92,7 @@ fn one_sidebar_apply_reads_one_page() {
     use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     let (mut app, rx, tx, _dir) = app();
     app.sync_sort_filter_modal();
-    let before = app.reads.pages;
+    let before = app.home_app.reads.pages;
     app.sort_filter_modal.filter.statements = vec![FilterStatement {
         columns: Vec::new(),
         column: "a".to_string(),
@@ -113,7 +113,11 @@ fn one_sidebar_apply_reads_one_page() {
         let _ = tx.send(next);
     }
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !crate::tests::work_pending(a));
-    assert_eq!(app.reads.pages - before, 1, "one read for one apply");
+    assert_eq!(
+        app.home_app.reads.pages - before,
+        1,
+        "one read for one apply"
+    );
     let state = app.data_table_state.as_ref().unwrap();
     let shown = state.display_df().unwrap().column("a").unwrap().get(0);
     assert_eq!(shown.unwrap(), AnyValue::Int64(29), "filtered and sorted");

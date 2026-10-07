@@ -18,6 +18,50 @@ use polars::prelude::LazyFrame;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// What Data Quality runs keep: results, samples and local copies within the memory budget, and
+/// the evidence view's way back.
+pub struct QualityRuns {
+    /// Reports, newest first, within [`QUALITY_MEMORY_BUDGET`].
+    pub(crate) cache: Vec<QualityCacheEntry>,
+    /// See [`KeptQualitySample`]. Newest first, within [`QUALITY_MEMORY_BUDGET`].
+    pub(crate) samples: Vec<KeptQualitySample>,
+    /// Acquisitions the budget released, newest first: (dataset, view, sample).
+    pub(crate) released: Vec<(u64, u64, sampling::Sample)>,
+    /// [`QUALITY_MEMORY_BUDGET`], smaller in a test that fills it.
+    pub(crate) memory_budget: usize,
+    /// Local copies Data Quality's full scans read instead of a remote source, newest
+    /// first, within `analysis.quality_local_copy`. Removed from disk when
+    /// released, when the dataset is opened again or replaced, and at exit.
+    pub(crate) copies: Vec<RetainedCopy>,
+    /// The dataset whose copy was released, so Setup says why Run fetches again.
+    pub(crate) copy_released: Option<u64>,
+    /// The dataset whose copy did not read as its source: its full scans read the
+    /// source, and Setup says why.
+    pub(crate) copy_unusable: Option<u64>,
+    /// Free bytes in the cache directory, and when they were asked: Setup redraws
+    /// often, and the answer only feeds a line of text until Run asks again.
+    pub(crate) copy_free: std::sync::Mutex<Option<(std::time::Instant, Option<u64>)>>,
+    /// The table an analysis drill left behind: Data Quality's matching rows or the
+    /// sample's, shown in its place until Esc brings it back.
+    pub(crate) evidence_return: Option<Box<DataTableState>>,
+    pub(crate) evidence_label: Option<String>,
+}
+
+impl QualityRuns {
+    /// Forget the last dataset's runs. The objects may have changed since they were
+    /// copied, so a run on the dataset opened now fetches them again.
+    pub(crate) fn reset_for_dataset(&mut self) {
+        self.cache.clear();
+        self.samples.clear();
+        self.released.clear();
+        self.copies.clear();
+        self.copy_released = None;
+        self.copy_unusable = None;
+        self.evidence_return = None;
+        self.evidence_label = None;
+    }
+}
+
 impl App {
     /// The finding under the cursor's rows: from the rows the run kept, at once, or
     /// staged as a read that says what it reads and waits for Enter. A finding with
@@ -277,8 +321,8 @@ impl App {
             }
         };
         if let Some(original) = self.data_table_state.replace(view) {
-            self.quality_evidence_return = Some(Box::new(original));
-            self.quality_evidence_label = Some(label);
+            self.quality.evidence_return = Some(Box::new(original));
+            self.quality.evidence_label = Some(label);
             self.analysis_modal.active = false;
             self.forget_the_rows_read();
             self.spawn_async_collect("Loading matching rows...");
@@ -287,13 +331,13 @@ impl App {
     }
 
     pub(crate) fn return_from_quality_evidence(&mut self, reopen_analysis: bool) -> bool {
-        let Some(original) = self.quality_evidence_return.take() else {
+        let Some(original) = self.quality.evidence_return.take() else {
             return false;
         };
         self.jobs.advance();
-        self.len_count_inflight = None;
+        self.counting.len_count_inflight = None;
         self.data_table_state = Some(*original);
-        self.quality_evidence_label = None;
+        self.quality.evidence_label = None;
         self.analysis_modal.active = reopen_analysis;
         self.busy = false;
         self.status_message = None;
@@ -311,7 +355,7 @@ impl App {
         if self.analysis_modal.quality.plan != data_quality::DataQualityPlan::default() {
             return;
         }
-        if let Some(cached) = self.quality_cache.iter().find(|entry| {
+        if let Some(cached) = self.quality.cache.iter().find(|entry| {
             entry.dataset_generation == self.dataset_generation
                 && entry.view_generation == view_generation
         }) {
@@ -408,6 +452,7 @@ impl App {
         scope: &data_quality::QualityScope,
     ) -> crate::quality_export::SourceIdentity {
         let format = self
+            .source
             .original_file_format
             .map(|format| format.as_str().to_string())
             .or_else(|| {
@@ -524,7 +569,8 @@ impl App {
         let sample = plan.sample();
         plan.compute == data_quality::QualityCompute::Sample
             && self
-                .quality_released
+                .quality
+                .released
                 .iter()
                 .any(|(dataset, view, released)| {
                     *dataset == self.dataset_generation
@@ -540,7 +586,7 @@ impl App {
             return false;
         };
         let columnar = matches!(
-            self.original_file_format,
+            self.source.original_file_format,
             Some(ExportFormat::Parquet | ExportFormat::Ipc)
         ) || self.path.as_ref().is_some_and(|path| {
             path.extension()
@@ -610,7 +656,7 @@ impl App {
         else {
             return false;
         };
-        self.quality_cache.iter().any(|entry| {
+        self.quality.cache.iter().any(|entry| {
             entry.dataset_generation == self.dataset_generation
                 && entry.view_generation == view_generation
                 && entry.plan.same_measurement(plan)
@@ -622,12 +668,14 @@ impl App {
     /// disk. `None` when there is neither.
     pub(crate) fn quality_kept_rows(&self) -> Option<widgets::data_quality::KeptRows> {
         let kept = self
-            .quality_samples
+            .quality
+            .samples
             .iter()
             .filter(|kept| kept.dataset_generation == self.dataset_generation)
             .collect::<Vec<_>>();
         let copy_bytes = self
-            .quality_copies
+            .quality
+            .copies
             .iter()
             .filter(|kept| kept.dataset_generation == self.dataset_generation)
             .map(|kept| kept.copy.bytes())
@@ -649,13 +697,13 @@ impl App {
             self.flash_note("Nothing kept to release".to_string());
             return;
         };
-        for released in std::mem::take(&mut self.quality_samples) {
-            self.quality_released.retain(|(dataset, view, sample)| {
+        for released in std::mem::take(&mut self.quality.samples) {
+            self.quality.released.retain(|(dataset, view, sample)| {
                 !(*dataset == released.dataset_generation
                     && *view == released.view_generation
                     && *sample == released.sample)
             });
-            self.quality_released.insert(
+            self.quality.released.insert(
                 0,
                 (
                     released.dataset_generation,
@@ -664,13 +712,14 @@ impl App {
                 ),
             );
         }
-        self.quality_released.truncate(QUALITY_RELEASED_REMEMBERED);
+        self.quality.released.truncate(QUALITY_RELEASED_REMEMBERED);
         // A run still reading the copy holds it until it ends; then the files go.
         let generation = self.dataset_generation;
-        self.quality_copies
+        self.quality
+            .copies
             .retain(|kept| kept.dataset_generation != generation);
         if kept.copy_bytes > 0 {
-            self.quality_copy_released = Some(generation);
+            self.quality.copy_released = Some(generation);
         }
         let rows = format!(
             "{} kept {} ({})",
@@ -698,7 +747,7 @@ impl App {
 
     fn kept_quality_entry(&self, sample: &sampling::Sample) -> Option<&KeptQualitySample> {
         let view_generation = self.data_table_state.as_ref()?.len_generation();
-        self.quality_samples.iter().find(|kept| {
+        self.quality.samples.iter().find(|kept| {
             kept.dataset_generation == self.dataset_generation
                 && kept.view_generation == view_generation
                 && &kept.sample == sample
@@ -711,13 +760,13 @@ impl App {
         if kept.dataset_generation != self.dataset_generation {
             return;
         }
-        self.quality_samples.retain(|entry| !entry.same_rows(kept));
-        self.quality_released.retain(|(dataset, view, sample)| {
+        self.quality.samples.retain(|entry| !entry.same_rows(kept));
+        self.quality.released.retain(|(dataset, view, sample)| {
             !(*dataset == kept.dataset_generation
                 && *view == kept.view_generation
                 && *sample == kept.sample)
         });
-        self.quality_samples.insert(0, kept.clone());
+        self.quality.samples.insert(0, kept.clone());
         self.trim_quality_memory();
     }
 
@@ -731,27 +780,30 @@ impl App {
     fn trim_quality_memory(&mut self) {
         loop {
             let used = self
-                .quality_cache
+                .quality
+                .cache
                 .iter()
                 .map(|entry| entry.bytes)
                 .sum::<usize>()
                 + self
-                    .quality_samples
+                    .quality
+                    .samples
                     .iter()
                     .map(|kept| kept.rows.estimated_bytes())
                     .sum::<usize>();
-            if used <= self.quality_memory_budget {
+            if used <= self.quality.memory_budget {
                 return;
             }
             let remakeable = self
-                .quality_cache
+                .quality
+                .cache
                 .iter()
                 .enumerate()
                 .skip(1)
                 .rev()
                 .find(|(_, entry)| {
                     entry.plan.compute == data_quality::QualityCompute::Sample
-                        && self.quality_samples.iter().any(|kept| {
+                        && self.quality.samples.iter().any(|kept| {
                             kept.dataset_generation == entry.dataset_generation
                                 && kept.view_generation == entry.view_generation
                                 && kept.sample == entry.plan.sample()
@@ -759,10 +811,10 @@ impl App {
                 })
                 .map(|(index, _)| index);
             if let Some(index) = remakeable {
-                self.quality_cache.remove(index);
-            } else if self.quality_samples.len() > 1 {
-                if let Some(released) = self.quality_samples.pop() {
-                    self.quality_released.insert(
+                self.quality.cache.remove(index);
+            } else if self.quality.samples.len() > 1 {
+                if let Some(released) = self.quality.samples.pop() {
+                    self.quality.released.insert(
                         0,
                         (
                             released.dataset_generation,
@@ -770,10 +822,10 @@ impl App {
                             released.sample,
                         ),
                     );
-                    self.quality_released.truncate(QUALITY_RELEASED_REMEMBERED);
+                    self.quality.released.truncate(QUALITY_RELEASED_REMEMBERED);
                 }
-            } else if self.quality_cache.len() > 1 {
-                self.quality_cache.pop();
+            } else if self.quality.cache.len() > 1 {
+                self.quality.cache.pop();
             } else {
                 return;
             }
@@ -789,7 +841,7 @@ impl App {
             return false;
         };
         let plan = self.analysis_modal.quality.plan.clone();
-        let Some(cached) = self.quality_cache.iter().find(|entry| {
+        let Some(cached) = self.quality.cache.iter().find(|entry| {
             entry.dataset_generation == self.dataset_generation
                 && entry.view_generation == view_generation
                 && entry.plan.same_measurement(&plan)
@@ -826,12 +878,12 @@ impl App {
         };
         // One report per measurement: a plan that only expects other windows
         // replaces it.
-        self.quality_cache.retain(|entry| {
+        self.quality.cache.retain(|entry| {
             !(entry.dataset_generation == self.dataset_generation
                 && entry.view_generation == view_generation
                 && entry.plan.same_measurement(&plan))
         });
-        self.quality_cache.insert(
+        self.quality.cache.insert(
             0,
             QualityCacheEntry {
                 dataset_generation: self.dataset_generation,
@@ -953,7 +1005,8 @@ impl App {
 
     /// Bytes on disk in the copies kept.
     pub fn quality_copy_bytes(&self) -> u64 {
-        self.quality_copies
+        self.quality
+            .copies
             .iter()
             .map(|kept| kept.copy.bytes())
             .sum()
@@ -962,7 +1015,8 @@ impl App {
     /// The copy this dataset's objects were fetched into this session, while kept.
     fn quality_copy_kept(&self) -> Option<&Arc<crate::local_copy::LocalCopy>> {
         let state = self.data_table_state.as_ref()?;
-        self.quality_copies
+        self.quality
+            .copies
             .iter()
             .find(|kept| {
                 kept.dataset_generation == self.dataset_generation
@@ -978,7 +1032,7 @@ impl App {
     /// Free bytes where copies are written, asked at most every few seconds.
     fn quality_copy_free_space(&self) -> Option<u64> {
         let root = self.quality_copies_root();
-        let Ok(mut cached) = self.quality_copy_free.lock() else {
+        let Ok(mut cached) = self.quality.copy_free.lock() else {
             return crate::local_copy::free_space(&root);
         };
         match *cached {
@@ -1017,7 +1071,7 @@ impl App {
         if limit == 0 {
             return CopyPlan::Passes(NoCopy::Off);
         }
-        if self.quality_copy_unusable == Some(self.dataset_generation) {
+        if self.quality.copy_unusable == Some(self.dataset_generation) {
             return CopyPlan::Passes(NoCopy::Unusable);
         }
         let Some((bytes, objects)) = state.remote_objects_size() else {
@@ -1035,7 +1089,7 @@ impl App {
 
     /// Whether this dataset's copy was released this session, so Run fetches again.
     pub(crate) fn quality_copy_released(&self) -> bool {
-        self.quality_copy_released == Some(self.dataset_generation)
+        self.quality.copy_released == Some(self.dataset_generation)
     }
 
     /// Keep a copy a run fetched, newest first. Older copies go past the budget;
@@ -1050,22 +1104,23 @@ impl App {
             return;
         }
         let Some(copy) = copy else {
-            self.quality_copies
+            self.quality
+                .copies
                 .retain(|kept| kept.dataset_generation != dataset_generation);
-            self.quality_copy_unusable = Some(dataset_generation);
+            self.quality.copy_unusable = Some(dataset_generation);
             return;
         };
-        self.quality_copies.insert(
+        self.quality.copies.insert(
             0,
             RetainedCopy {
                 dataset_generation,
                 copy,
             },
         );
-        self.quality_copy_released = None;
+        self.quality.copy_released = None;
         let limit = self.quality_copy_limit();
-        while self.quality_copies.len() > 1 && self.quality_copy_bytes() > limit {
-            self.quality_copies.pop();
+        while self.quality.copies.len() > 1 && self.quality_copy_bytes() > limit {
+            self.quality.copies.pop();
         }
     }
 

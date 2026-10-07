@@ -16,7 +16,7 @@ pub(crate) fn row_number(text: &str) -> Option<usize> {
 impl App {
     /// Keys while a prompt (the command line, find) is being edited.
     pub(crate) fn editing_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
-        match self.input_type {
+        match self.prompt.input_type {
             Some(InputType::Query) => self.command_line_key(event),
             Some(InputType::Find) => self.find_prompt_key(event),
             None => None,
@@ -32,12 +32,12 @@ impl App {
             && event.code == KeyCode::Char('t')
         {
             let text = self.query_prompt_text().unwrap_or_default().to_string();
-            let next = self.query_mode.next();
-            if next != self.query_mode {
+            let next = self.prompt.query_mode.next();
+            if next != self.prompt.query_mode {
                 self.query_input_mut().clear();
                 self.set_query_mode(next);
-                self.query_mode_chosen = Some(next);
-                let restored = self.query_text_restored;
+                self.prompt.query_mode_chosen = Some(next);
+                let restored = self.prompt.query_text_restored;
                 let input = self.query_input_mut();
                 input.set_value(text);
                 if restored {
@@ -47,7 +47,7 @@ impl App {
             return None;
         }
         if event.is_press() {
-            self.query_text_restored = false;
+            self.prompt.query_text_restored = false;
         }
         if event.is_press()
             && event.code == KeyCode::Tab
@@ -62,10 +62,10 @@ impl App {
         }
 
         self.sync_query_focus();
-        let mode = self.query_mode;
+        let mode = self.prompt.query_mode;
         let input = match mode {
-            QueryMode::Sql => &mut self.sql_input,
-            QueryMode::Q => &mut self.query_input,
+            QueryMode::Sql => &mut self.prompt.sql_input,
+            QueryMode::Q => &mut self.prompt.query_input,
         };
         match input.handle_key(event, Some(&self.cache)) {
             TextInputEvent::Submit => {
@@ -81,7 +81,7 @@ impl App {
             }
             TextInputEvent::Cancel => self.close_query_prompt(),
             TextInputEvent::HistoryChanged | TextInputEvent::None if event.is_press() => {
-                self.query_run_error = None;
+                self.prompt.query_run_error = None;
             }
             TextInputEvent::HistoryChanged | TextInputEvent::None => {}
         }

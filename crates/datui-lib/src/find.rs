@@ -693,19 +693,19 @@ impl App {
         if self.data_table_state.is_none() {
             return;
         }
-        self.find.column = self.find_column();
-        self.find.error = None;
-        match self.find.active.as_ref() {
+        self.prompt.find.column = self.find_column();
+        self.prompt.find.error = None;
+        match self.prompt.find.active.as_ref() {
             Some(active) => {
                 let pattern = active.spec.pattern.clone();
-                self.find.input.set_value(pattern);
-                self.find.input.select_all();
+                self.prompt.find.input.set_value(pattern);
+                self.prompt.find.input.select_all();
             }
-            None => self.find.input.clear(),
+            None => self.prompt.find.input.clear(),
         }
-        self.find.input.set_focused(true);
+        self.prompt.find.input.set_focused(true);
         self.input_mode = InputMode::Editing;
-        self.input_type = Some(InputType::Find);
+        self.prompt.input_type = Some(InputType::Find);
         self.refresh_live_matches();
     }
 
@@ -714,9 +714,9 @@ impl App {
     /// on a read, and only those near the view, so a buffer of a whole row group is not
     /// matched on every key.
     pub(crate) fn refresh_live_matches(&mut self) {
-        self.find.live = None;
-        self.find.live_rows = self.rows_on_hand_key();
-        let spec = self.find.prompt_spec();
+        self.prompt.find.live = None;
+        self.prompt.find.live_rows = self.rows_on_hand_key();
+        let spec = self.prompt.find.prompt_spec();
         if spec.pattern.trim().is_empty() || spec.check().is_err() {
             return;
         }
@@ -732,7 +732,7 @@ impl App {
                 .filter(|(name, _)| df.column(name).is_ok())
                 .collect();
         if columns.is_empty() {
-            self.find.live = Some(LiveMatches::default());
+            self.prompt.find.live = Some(LiveMatches::default());
             return;
         }
         let exprs: Vec<Expr> = columns
@@ -762,7 +762,7 @@ impl App {
                 cells.insert(name.clone(), rows);
             }
         }
-        self.find.live = Some(LiveMatches {
+        self.prompt.find.live = Some(LiveMatches {
             cells: Arc::new(cells),
         });
     }
@@ -790,8 +790,8 @@ impl App {
     /// hand or the view changed under it: a collect after the footer took a row, a
     /// follow's new rows, a resize. Whether it did.
     pub(crate) fn refresh_stale_live_matches(&mut self) -> bool {
-        let stale = self.input_type == Some(InputType::Find)
-            && self.find.live_rows != self.rows_on_hand_key();
+        let stale = self.prompt.input_type == Some(InputType::Find)
+            && self.prompt.find.live_rows != self.rows_on_hand_key();
         if stale {
             self.refresh_live_matches();
         }
@@ -801,7 +801,7 @@ impl App {
     /// The matches the prompt's pattern has among the rows on screen, while the
     /// prompt is open.
     pub fn live_on_screen(&self) -> Option<usize> {
-        let live = self.find.live.as_ref()?;
+        let live = self.prompt.find.live.as_ref()?;
         let state = self.data_table_state.as_ref()?;
         let start = state.start_row();
         Some(live.within(start..start + state.visible_rows))
@@ -809,8 +809,8 @@ impl App {
 
     /// The cells to light up: the prompt's matches while it is open.
     pub fn live_cells(&self) -> Option<Arc<MatchCells>> {
-        (self.input_type == Some(InputType::Find))
-            .then_some(self.find.live.as_ref())
+        (self.prompt.input_type == Some(InputType::Find))
+            .then_some(self.prompt.find.live.as_ref())
             .flatten()
             .map(|live| live.cells.clone())
     }
@@ -825,11 +825,11 @@ impl App {
     }
 
     fn close_find_prompt(&mut self) {
-        self.find.input.set_focused(false);
-        self.find.error = None;
-        self.find.live = None;
+        self.prompt.find.input.set_focused(false);
+        self.prompt.find.error = None;
+        self.prompt.find.live = None;
         self.input_mode = InputMode::Normal;
-        self.input_type = None;
+        self.prompt.input_type = None;
     }
 
     /// A key in the find prompt. Ctrl+R switches regex, Ctrl+T letters in order,
@@ -840,21 +840,21 @@ impl App {
         if event.is_press() && ctrl {
             match event.code {
                 KeyCode::Char('r') => {
-                    self.find.regex = !self.find.regex;
-                    self.find.fuzzy &= !self.find.regex;
-                    self.find.error = None;
+                    self.prompt.find.regex = !self.prompt.find.regex;
+                    self.prompt.find.fuzzy &= !self.prompt.find.regex;
+                    self.prompt.find.error = None;
                     self.refresh_live_matches();
                     return None;
                 }
                 KeyCode::Char('t') => {
-                    self.find.fuzzy = !self.find.fuzzy;
-                    self.find.regex &= !self.find.fuzzy;
-                    self.find.error = None;
+                    self.prompt.find.fuzzy = !self.prompt.find.fuzzy;
+                    self.prompt.find.regex &= !self.prompt.find.fuzzy;
+                    self.prompt.find.error = None;
                     self.refresh_live_matches();
                     return None;
                 }
                 KeyCode::Char('l') => {
-                    self.find.in_column = !self.find.in_column;
+                    self.prompt.find.in_column = !self.prompt.find.in_column;
                     self.refresh_live_matches();
                     return None;
                 }
@@ -862,28 +862,28 @@ impl App {
                 _ => {}
             }
         }
-        let before = self.find.input.value().to_string();
-        match self.find.input.handle_key(event, Some(&self.cache)) {
+        let before = self.prompt.find.input.value().to_string();
+        match self.prompt.find.input.handle_key(event, Some(&self.cache)) {
             TextInputEvent::Submit => {
-                let spec = self.find.prompt_spec();
+                let spec = self.prompt.find.prompt_spec();
                 if spec.pattern.is_empty() {
                     // An emptied field is how a find is taken back (#644).
-                    self.find.active = None;
+                    self.prompt.find.active = None;
                     self.close_find_prompt();
                     return None;
                 }
                 if let Err(reason) = spec.check() {
-                    self.find.error = Some(reason);
+                    self.prompt.find.error = Some(reason);
                     return None;
                 }
-                let _ = self.find.input.save_to_history(&self.cache);
+                let _ = self.prompt.find.input.save_to_history(&self.cache);
                 self.close_find_prompt();
                 self.start_find(spec, Direction::Next, true);
             }
             TextInputEvent::Cancel => self.close_find_prompt(),
             TextInputEvent::HistoryChanged | TextInputEvent::None => {
-                if self.find.input.value() != before {
-                    self.find.error = None;
+                if self.prompt.find.input.value() != before {
+                    self.prompt.find.error = None;
                     self.refresh_live_matches();
                 }
             }
@@ -894,12 +894,12 @@ impl App {
     /// Ctrl+G in the find prompt: keep only the rows that match, as a filter added to
     /// the sidebar's, and leave the find in effect for `n` and `N` among them.
     fn keep_matches(&mut self) -> Option<AppEvent> {
-        let spec = self.find.prompt_spec();
+        let spec = self.prompt.find.prompt_spec();
         if spec.pattern.trim().is_empty() {
             return None;
         }
         if let Err(reason) = spec.check() {
-            self.find.error = Some(reason);
+            self.prompt.find.error = Some(reason);
             return None;
         }
         let state = self.data_table_state.as_ref()?;
@@ -928,9 +928,9 @@ impl App {
         };
         let mut statements = state.view_filters().to_vec();
         let frame = state.len_generation();
-        let _ = self.find.input.save_to_history(&self.cache);
+        let _ = self.prompt.find.input.save_to_history(&self.cache);
         self.close_find_prompt();
-        self.find.active = Some(ActiveFind {
+        self.prompt.find.active = Some(ActiveFind {
             spec,
             dataset: self.dataset_generation,
             frame,
@@ -946,7 +946,7 @@ impl App {
 
     /// `n` / `N` at the table: the find in effect again, from the cursor's cell.
     pub(crate) fn find_again(&mut self, direction: Direction) {
-        match self.find.active.as_ref() {
+        match self.prompt.find.active.as_ref() {
             Some(active) if active.dataset == self.dataset_generation => {
                 let spec = active.spec.clone();
                 self.start_find(spec, direction, false);
@@ -957,7 +957,7 @@ impl App {
 
     /// The cell the find in effect landed on, while the view is the one it searched.
     pub fn find_hit(&self) -> Option<(usize, String)> {
-        let active = self.find.active.as_ref()?;
+        let active = self.prompt.find.active.as_ref()?;
         let state = self.data_table_state.as_ref()?;
         (active.dataset == self.dataset_generation && active.frame == state.len_generation())
             .then(|| active.hit.clone())
@@ -967,12 +967,12 @@ impl App {
     /// What the footer says about the find in effect: the pattern, and which
     /// match the cursor is on when that is known.
     pub fn find_mark(&self) -> Option<String> {
-        let active = self.find.active.as_ref()?;
+        let active = self.prompt.find.active.as_ref()?;
         // While it reads, the busy line names the pattern and the bar needs the room
         // for the rows read; while the prompt is open, the prompt is the find.
         if active.dataset != self.dataset_generation
             || self.finding()
-            || self.input_type == Some(InputType::Find)
+            || self.prompt.input_type == Some(InputType::Find)
         {
             return None;
         }
@@ -992,7 +992,8 @@ impl App {
 
     /// Whether a find is in effect on this dataset, so Esc at the table clears it.
     pub(crate) fn find_shown(&self) -> bool {
-        self.find
+        self.prompt
+            .find
             .active
             .as_ref()
             .is_some_and(|active| active.dataset == self.dataset_generation)
@@ -1024,7 +1025,7 @@ impl App {
         run.stop.store(true, Ordering::Relaxed);
         self.jobs.cancel(|job| matches!(job, Job::Find(_)));
         self.status_message = None;
-        self.find.read = None;
+        self.prompt.find.read = None;
         true
     }
 
@@ -1060,7 +1061,7 @@ impl App {
             }
         });
         let previous =
-            self.find.active.as_ref().filter(|a| {
+            self.prompt.find.active.as_ref().filter(|a| {
                 a.dataset == self.dataset_generation && a.frame == frame && a.spec == spec
             });
         // On the cell the last find landed on, the count of matches goes on from it.
@@ -1071,7 +1072,7 @@ impl App {
                 (*hit_row == row && at == Some(At::On(c))).then(|| (name.clone(), ordinal))
             });
         let start = Start { row, column: at };
-        self.find.active = Some(ActiveFind {
+        self.prompt.find.active = Some(ActiveFind {
             spec: spec.clone(),
             dataset: self.dataset_generation,
             frame,
@@ -1089,7 +1090,7 @@ impl App {
         };
         let rows = state.view_rows();
         let status = finding_status(&spec, None);
-        self.find.read = None;
+        self.prompt.find.read = None;
         self.spawn_job(Job::Find(run), Some(&status), move |worker| {
             let report = worker.reporter();
             let search = Search::new(rows, columns, stop, move |read| {
@@ -1101,8 +1102,8 @@ impl App {
 
     /// A find's progress: the rows it has read.
     pub(crate) fn find_progress(&mut self, rows: usize) {
-        self.find.read = Some(rows);
-        if let Some(active) = self.find.active.as_ref() {
+        self.prompt.find.read = Some(rows);
+        if let Some(active) = self.prompt.find.active.as_ref() {
             self.status_message = Some(finding_status(&active.spec, Some(rows)));
         }
     }
@@ -1114,8 +1115,8 @@ impl App {
         }
         // The line was the find's progress, which the job's own line no longer is.
         self.status_message = None;
-        self.find.read = None;
-        let Some(active) = self.find.active.as_mut() else {
+        self.prompt.find.read = None;
+        let Some(active) = self.prompt.find.active.as_mut() else {
             return;
         };
         let Some(state) = self.data_table_state.as_mut() else {
@@ -1170,7 +1171,7 @@ impl App {
             return;
         }
         self.status_message = None;
-        self.find.read = None;
+        self.prompt.find.read = None;
         if message != CANCELLED {
             self.flash_note(format!("Find failed: {message}"));
         }

@@ -11,13 +11,13 @@ fn the_directory_browsed_into_is_never_held_behind_the_cap() {
     app.home.network_check = |_| true;
     let dir = PathBuf::from("/pretend/share/raw");
     app.home.browsing = Some(dir.clone());
-    app.home_probes_inflight = (0..MAX_CONCURRENT_PROBES)
+    app.home_app.probes_inflight = (0..MAX_CONCURRENT_PROBES)
         .map(|i| PathBuf::from(format!("/pretend/slow{i}")))
         .collect();
 
     app.spawn_home_probes();
 
-    assert!(app.home_probes_inflight.contains(&dir));
+    assert!(app.home_app.probes_inflight.contains(&dir));
 }
 
 /// Rows read so far show, marked as still listing, until the listing lands; a batch
@@ -29,7 +29,7 @@ fn rows_so_far_show_until_the_listing_lands() {
     app.home.network_check = |_| true;
     let dir = PathBuf::from("/pretend/share/raw");
     app.home.browsing = Some(dir.clone());
-    app.home_probes_inflight = vec![dir.clone()];
+    app.home_app.probes_inflight = vec![dir.clone()];
     let row = |name: &str| discover::Entry::directory(&dir.join(name));
 
     app.event(&AppEvent::HomeProbeProgress {
@@ -72,7 +72,7 @@ fn an_answered_probe_frees_its_slot() {
     let roots: Vec<PathBuf> = (0..MAX_CONCURRENT_PROBES)
         .map(|i| PathBuf::from(format!("/pretend/remote{i}")))
         .collect();
-    app.home_probes_inflight = roots.clone();
+    app.home_app.probes_inflight = roots.clone();
 
     for (i, root) in roots.iter().enumerate() {
         // Alternate the two ways a probe can answer; both are answers.
@@ -85,9 +85,9 @@ fn an_answered_probe_frees_its_slot() {
     }
 
     assert!(
-        app.home_probes_inflight.is_empty(),
+        app.home_app.probes_inflight.is_empty(),
         "every probe answered, so nothing should still hold a slot: {:?}",
-        app.home_probes_inflight
+        app.home_app.probes_inflight
     );
 }
 
@@ -99,7 +99,7 @@ fn an_unanswered_probe_keeps_its_slot() {
 
     let wedged = PathBuf::from("/pretend/dead-mount");
     let answered = PathBuf::from("/pretend/live-mount");
-    app.home_probes_inflight = vec![wedged.clone(), answered.clone()];
+    app.home_app.probes_inflight = vec![wedged.clone(), answered.clone()];
 
     app.event(&AppEvent::HomeProbeReady {
         root: answered,
@@ -108,7 +108,7 @@ fn an_unanswered_probe_keeps_its_slot() {
     });
 
     assert_eq!(
-        app.home_probes_inflight,
+        app.home_app.probes_inflight,
         vec![wedged],
         "a thread still stuck on a dead mount must keep costing a slot"
     );
@@ -125,8 +125,8 @@ fn without_cloud_a_bucket_says_it_cannot_be_listed() {
     app.home.browsing = Some(bucket.clone());
     app.home.network_check = |_| true;
     app.spawn_home_probes();
-    assert!(app.home_probes_inflight.contains(&bucket));
-    while !app.home_probes_inflight.is_empty() {
+    assert!(app.home_app.probes_inflight.contains(&bucket));
+    while !app.home_app.probes_inflight.is_empty() {
         let event = rx
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("the probe answers");
@@ -148,10 +148,10 @@ fn batches_read_before_a_frame_are_listed_once() {
     app.home.network_check = |_| true;
     let dir = PathBuf::from("/pretend/share/raw");
     app.home.browsing = Some(dir.clone());
-    app.home_probes_inflight = vec![dir.clone()];
+    app.home_app.probes_inflight = vec![dir.clone()];
     let row = |name: &str| discover::Entry::directory(&dir.join(name));
 
-    let generation = app.home_generation;
+    let generation = app.home_app.generation;
     for name in ["a", "b", "c"] {
         app.event(&AppEvent::HomeProbeProgress {
             root: dir.clone(),
@@ -159,7 +159,7 @@ fn batches_read_before_a_frame_are_listed_once() {
         });
     }
     assert_eq!(
-        app.home_generation, generation,
+        app.home_app.generation, generation,
         "nothing listed between frames"
     );
     let names: Vec<&str> = app
@@ -173,7 +173,7 @@ fn batches_read_before_a_frame_are_listed_once() {
     assert_eq!(names, ["a", "b", "c"]);
 
     app.request_what_the_frame_needs();
-    assert_eq!(app.home_generation, generation.wrapping_add(1));
+    assert_eq!(app.home_app.generation, generation.wrapping_add(1));
     app.request_what_the_frame_needs();
-    assert_eq!(app.home_generation, generation.wrapping_add(1));
+    assert_eq!(app.home_app.generation, generation.wrapping_add(1));
 }

@@ -22,8 +22,8 @@ use crate::statistics::{
     AnalysisContext, AnalysisResults, CategoricalStatistics, ColumnStatistics, CorrelationMethod,
     DistributionAnalysis, DistributionType, NumericStatistics, TemporalStatistics,
 };
+use crate::table::DataTableState;
 use crate::widgets::axes::{AxisSpec, PlotAxes};
-use crate::widgets::datatable::DataTableState;
 use crate::widgets::ui::Surface;
 use polars::prelude::{AnyValue, DataType};
 

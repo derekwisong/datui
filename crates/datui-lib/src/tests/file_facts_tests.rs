@@ -1,4 +1,4 @@
-use crate::widgets::datatable::DataTableState;
+use crate::table::DataTableState;
 use crate::*;
 use polars::prelude::{IntoLazy, ParquetWriter};
 use std::sync::atomic::{AtomicUsize, Ordering};

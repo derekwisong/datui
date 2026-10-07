@@ -199,11 +199,7 @@ pub(crate) fn scan_lines(
     };
     let spool = options.spool.as_ref().map(|handle| handle.spool().clone());
     let lf = lines::LinesScan::open(path, infer, true, spool)?.lazy()?;
-    crate::widgets::datatable::DataTableState::apply_parse_dates_to_json_lazyframe(
-        lf,
-        options,
-        read_python,
-    )
+    crate::readers::polars::apply_parse_dates_to_json_lazyframe(lf, options, read_python)
 }
 
 /// `lf`, the scan of `path` read as `format`, bounded to the rows of the file's complete
@@ -812,7 +808,7 @@ fn bound_plan(plan: &mut polars::lazy::dsl::DslPlan, path: &str, rows: IdxSize) 
         }
         _ => {}
     }
-    crate::widgets::datatable::for_each_input(plan, &mut |input| bound_plan(input, path, rows));
+    crate::table::for_each_input(plan, &mut |input| bound_plan(input, path, rows));
 }
 
 /// `lf` reading the file at `path` through `file`, an open handle on it, rather than by
@@ -861,9 +857,7 @@ fn read_through_plan(plan: &mut polars::lazy::dsl::DslPlan, path: &str, file: &F
         }
         _ => {}
     }
-    crate::widgets::datatable::for_each_input(plan, &mut |input| {
-        read_through_plan(input, path, file)
-    });
+    crate::table::for_each_input(plan, &mut |input| read_through_plan(input, path, file));
 }
 
 /// Where rows of a followed file start, every so many rows ([`MARK_ROWS`],
@@ -1130,7 +1124,7 @@ fn replace_bound(
         }
         _ => {}
     }
-    crate::widgets::datatable::for_each_input(plan, &mut |input| replace_bound(input, path, with));
+    crate::table::for_each_input(plan, &mut |input| replace_bound(input, path, with));
 }
 
 /// How many rows the frame `lf` reads of the followed file at `path`: its bound.
@@ -1206,9 +1200,7 @@ fn replace_lines_scan(
         }
         return;
     }
-    crate::widgets::datatable::for_each_input(plan, &mut |input| {
-        replace_lines_scan(input, path, with)
-    });
+    crate::table::for_each_input(plan, &mut |input| replace_lines_scan(input, path, with));
 }
 
 /// The windows of a followed file's view, each read from the mark before it. A view

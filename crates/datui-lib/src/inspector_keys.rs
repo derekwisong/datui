@@ -880,7 +880,7 @@ impl App {
     /// sort that orders ties differently on a second read cannot pass another row's
     /// fields off as this one's. `wait`: the user waits on it, as on Enter; a read
     /// that follows the rows does not hold the keys.
-    fn read_inspected_fields(&mut self, row: &crate::widgets::datatable::InspectRow, wait: bool) {
+    fn read_inspected_fields(&mut self, row: &crate::table::InspectRow, wait: bool) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };

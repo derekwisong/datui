@@ -159,7 +159,7 @@ pub mod table_sample;
 // Public so the fuzz targets in `fuzz/` can reach `parse_query`. The parser is
 // hand-written and runs on whatever the user types, so it is fuzzed directly.
 pub mod query;
-mod readers;
+pub mod readers;
 mod render;
 pub mod sanitize;
 mod scan;
@@ -178,9 +178,12 @@ pub mod sqlite;
 // statement the prompt runs.
 #[cfg(feature = "sql")]
 pub mod sql_group;
+#[cfg(feature = "sql")]
+mod sql_plan;
 pub mod startup;
 pub mod statistics;
 pub mod stdin;
+pub mod table;
 pub mod table_switch;
 pub mod tee;
 mod terminal;
@@ -234,10 +237,10 @@ use quality_memory::{QUALITY_RELEASED_REMEMBERED, QualityCacheEntry, QualityCopy
 use scan::Scan;
 use sort_filter_modal::SortFilterModal;
 use sort_modal::{SortColumn, order_with_hidden};
+use table::{DataTableState, DrillRow, OpenFacts};
 pub use unfinished::ExitSweep;
 pub use view::{SavedView, ViewManager, Views};
 use widgets::column_widths::WidthChoice;
-use widgets::datatable::{DataTableState, DrillRow, OpenFacts};
 use widgets::debug::DebugState;
 use widgets::text_input::TextInput;
 use widgets::view_modal::{FormFocus, ViewModal, ViewModalMode, ViewRow};
@@ -784,7 +787,7 @@ struct QueryRun {
     /// The `len_generation` of the frame the query installed. Once that frame is gone
     /// (a sort, a filter, another dataset) the rollback no longer applies.
     frame: u64,
-    rollback: crate::widgets::datatable::ViewRollback,
+    rollback: crate::table::ViewRollback,
     /// The App's count markers as they were, for the frame the rollback restores.
     /// A count of that frame still running when the query began lands while the
     /// query's frame is installed; its answer goes into `rollback`.
@@ -944,7 +947,7 @@ pub(crate) enum Replayed {
     Planned,
     /// Stopped at the pivot, which has to be read before the steps after it can be
     /// planned.
-    Pivot(Box<crate::widgets::datatable::PivotJob>),
+    Pivot(Box<crate::table::PivotJob>),
 }
 
 /// What a cloud open was pointed at: the URL as the user gave it, the prefix to list,
@@ -1317,7 +1320,7 @@ pub struct App {
     /// a drill-down rather than at the data. Held rather than applied, because widening
     /// the scan under a query takes the query's own columns away, and offered again the
     /// moment the view comes back to the dataset itself.
-    footers_held: Option<(u64, crate::widgets::datatable::FootersFound)>,
+    footers_held: Option<(u64, crate::table::FootersFound)>,
     /// Fields a followed pipe's NDJSON brought after the open, held as footers are
     /// until the view is back on the data.
     followed_fields_held: Option<(u64, Vec<polars::prelude::Field>)>,
@@ -1579,7 +1582,7 @@ impl App {
             .iter()
             .map(|(name, dtype)| {
                 if matches!(dtype, polars::prelude::DataType::Binary) {
-                    polars::prelude::lit(widgets::datatable::binary_stub()).alias(name.clone())
+                    polars::prelude::lit(table::binary_stub()).alias(name.clone())
                 } else {
                     polars::prelude::col(name.clone())
                 }
@@ -1674,7 +1677,7 @@ impl App {
         if partitions.is_empty()
             && let Some(dir) = self.path.as_ref().filter(|path| path.is_dir())
         {
-            partitions = DataTableState::discover_hive_partition_columns(dir)
+            partitions = crate::readers::hive::discover_hive_partition_columns(dir)
                 .into_iter()
                 .filter(|column| schema.get(column).is_some())
                 .collect();
@@ -2936,7 +2939,7 @@ impl App {
         // and small next to opening the dataset.
         if let Some(dir) = self.path.as_ref().filter(|path| path.is_dir()) {
             if partition_columns.is_empty() {
-                partition_columns = DataTableState::discover_hive_partition_columns(dir)
+                partition_columns = crate::readers::hive::discover_hive_partition_columns(dir)
                     .into_iter()
                     .filter(|column| state.schema().get(column).is_some())
                     .collect();
@@ -5184,7 +5187,7 @@ impl App {
     fn record_footers(
         slot: &std::sync::Mutex<FootersReported>,
         generation: u64,
-        found: Option<crate::widgets::datatable::FootersFound>,
+        found: Option<crate::table::FootersFound>,
     ) -> bool {
         let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
         if slot.as_ref().is_some_and(|(held, _)| *held > generation) {
@@ -5910,7 +5913,7 @@ impl App {
 
     fn handle_scroll<F>(&mut self, scroll: F) -> Option<AppEvent>
     where
-        F: FnOnce(&mut crate::widgets::datatable::DataTableState) -> bool,
+        F: FnOnce(&mut crate::table::DataTableState) -> bool,
     {
         let needs = self.data_table_state.as_mut().is_some_and(scroll);
         if !needs || !self.spawn_async_collect(Self::LOADING_BUFFER) {
@@ -6841,7 +6844,10 @@ impl App {
             .format
             .and_then(FileFormat::separator)
             .unwrap_or(b',');
-        DataTableState::from_delimited_for_open(path, separator, options, writer)
+        DataTableState::from_read(
+            crate::readers::csv::read_delimited(path, separator, options, writer)?,
+            options,
+        )
     }
 
     /// Polars' view of one source's S3 settings, for `scan_parquet`.
@@ -7620,9 +7626,13 @@ impl App {
                         .or_else(|| CompressionFormat::from_extension(&file))
                         .ok_or_else(|| format!("{} is not compressed", path.display()))?;
                     let temp_dir = options.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
-                    let copy =
-                        DataTableState::decompress_to_copy(&file, compression, &temp_dir, &writer)
-                            .map_err(failed)?;
+                    let copy = crate::readers::csv::decompress_to_copy(
+                        &file,
+                        compression,
+                        &temp_dir,
+                        &writer,
+                    )
+                    .map_err(failed)?;
                     Ok(Answer::Load(Box::new(LoadAnswer::DecompressedRecords {
                         copy,
                         path,
@@ -7682,9 +7692,10 @@ impl App {
                     let lines = options.delimited.is_none()
                         && options.format.is_some_and(FileFormat::is_lines);
                     let (state, opened) = if lines {
-                        let (state, opened) =
-                            DataTableState::from_lines_decompressed(&file, &options, &writer)
+                        let (read, opened) =
+                            crate::readers::csv::from_lines_decompressed(&file, &options, &writer)
                                 .map_err(failed)?;
+                        let state = DataTableState::from_read(read, &options).map_err(failed)?;
                         (state, Some(opened))
                     } else {
                         let state = Self::decompressed_delimited_state(&file, &options, &writer)
@@ -7973,7 +7984,7 @@ pub(crate) fn hoist_partition_columns(
 /// indexing looks whether it is still wanted.
 const INDEX_STEP: usize = 16 << 20;
 
-type FootersReported = Option<(u64, Option<crate::widgets::datatable::FootersFound>)>;
+type FootersReported = Option<(u64, Option<crate::table::FootersFound>)>;
 
 impl App {
     /// Schema for a local directory of Parquet files: every column any of them has, from
@@ -8165,7 +8176,7 @@ impl App {
             .map_err(color_eyre::eyre::Report::from)?;
         let partition_columns =
             match path.filter(|p| options.hive && (p.is_dir() || source::expands_as_glob(p))) {
-                Some(p) => DataTableState::discover_hive_partition_columns(p)
+                Some(p) => crate::readers::hive::discover_hive_partition_columns(p)
                     .into_iter()
                     .filter(|c| schema.contains(c.as_str()))
                     .collect::<Vec<_>>(),
@@ -8605,7 +8616,7 @@ impl App {
     /// The inputs of an Arrow read as one table, in order: each IPC file scanned where
     /// it is, in a bucket or on disk, and each run of streams as its rows of
     /// `converted`, the IPC file they were converted to. Stacked as the files of a
-    /// directory are ([`DataTableState::union_of_files`]).
+    /// directory are ([`crate::readers::polars::union_of_files`]).
     fn scan_arrow_parts(
         cloud: &crate::config::CloudConfig,
         converted: Option<&PathBuf>,
@@ -8685,7 +8696,7 @@ impl App {
             1 => Ok(frames.remove(0)),
             _ => Ok(polars::prelude::concat(
                 frames.as_slice(),
-                DataTableState::union_of_files(),
+                crate::readers::polars::union_of_files(),
             )?),
         }
     }
@@ -9236,7 +9247,7 @@ impl App {
                 if use_parquet_hive {
                     // Only build the LazyFrame here; schema and partition discovery are the
                     // schema phase's ("Reading schema").
-                    return DataTableState::scan_parquet_hive(path).map(Scan::from);
+                    return crate::readers::hive::scan_parquet_hive(path).map(Scan::from);
                 }
                 return Err(color_eyre::eyre::eyre!(
                     "With --hive use a directory or a glob pattern for Parquet (e.g. path/to/dir or path/**/*.parquet)"
@@ -12053,9 +12064,9 @@ impl App {
                 };
                 // Cloned, not taken: a failed write reopens the dialog on the same counts.
                 let frame = match self.export_counts.clone() {
-                    Some(counts) => crate::widgets::datatable::ExportFrame::of(
-                        polars::prelude::IntoLazy::lazy(counts),
-                    ),
+                    Some(counts) => {
+                        crate::table::ExportFrame::of(polars::prelude::IntoLazy::lazy(counts))
+                    }
                     None => state.export_frame(request.options.source_file),
                 };
                 let streaming = state.polars_streaming();
@@ -12817,7 +12828,7 @@ impl App {
     fn view_planned(
         &mut self,
         view: &SavedView,
-        rollback: crate::widgets::datatable::ViewRollback,
+        rollback: crate::table::ViewRollback,
         why: Option<view::MatchReason>,
     ) {
         if let Some(path) = &self.path {

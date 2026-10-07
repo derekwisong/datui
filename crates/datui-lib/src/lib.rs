@@ -748,7 +748,7 @@ impl App {
     /// Whether a dataset held `download` because it came from a remote `path` (the
     /// URL it is shown by): a local stream's conversion and standard input's spool are
     /// held the same way.
-    fn fetched(download: Option<&crate::download::TempDownload>, path: Option<&Path>) -> bool {
+    fn was_fetched(download: Option<&crate::download::TempDownload>, path: Option<&Path>) -> bool {
         download.is_some() && path.is_some_and(source::is_remote_url)
     }
 }
@@ -1225,7 +1225,7 @@ impl App {
     /// The newest cancelled analysis or sample read still running, and whether it was
     /// cancelled during a read nothing can stop.
     fn cancelled_analysis(&self) -> Option<(std::time::Instant, bool)> {
-        let (since, job) = self.jobs.cancelled_running(Self::reads_for_analysis)?;
+        let (since, job) = self.jobs.cancelled_running(Self::is_analysis_read)?;
         let runs_out = match job {
             Job::Analysis(run) => run.runs_out,
             _ => true,
@@ -1234,7 +1234,7 @@ impl App {
     }
 
     /// A read for the Analysis tools: a run, or the sample read to show as a table.
-    fn reads_for_analysis(job: &Job) -> bool {
+    fn is_analysis_read(job: &Job) -> bool {
         matches!(job, Job::Analysis(_) | Job::SampleRows)
     }
 
@@ -1388,7 +1388,7 @@ impl App {
             .jobs
             .current(|job| matches!(job, Job::SampleRows))
             .is_some();
-        self.jobs.cancel(Self::reads_for_analysis);
+        self.jobs.cancel(Self::is_analysis_read);
         self.jobs.advance();
         // Keys typed while it ran were typed at the run, which is gone: an impatient
         // second Enter replayed now would start it again behind the Esc.
@@ -1651,7 +1651,7 @@ impl App {
     }
 
     /// Where `key` takes the user out of the dataset: quitting, or home.
-    fn leaves(&self, key: &KeyEvent) -> Option<Leaving> {
+    fn leaving_by(&self, key: &KeyEvent) -> Option<Leaving> {
         if !key.is_press() {
             return None;
         }
@@ -2742,7 +2742,7 @@ impl App {
     /// its phases answer. Its jobs are [`Job::Load`] with the id returned.
     #[cfg(test)]
     pub(crate) fn open_for_tests(&mut self, path: &str) -> loading::LoadId {
-        self.make_way_for_an_open();
+        self.put_down_load_in_flight();
         let _ = self.loading.open(loading::OpenRequest {
             paths: vec![PathBuf::from(path)],
             options: OpenOptions::default(),
@@ -2765,7 +2765,7 @@ impl App {
         options: &OpenOptions,
         debug_label: Option<String>,
     ) -> bool {
-        self.make_way_for_an_open();
+        self.put_down_load_in_flight();
         let _ = self
             .loading
             .open_frame(LazyFrame::default(), options.clone());
@@ -4286,7 +4286,7 @@ impl App {
         match event {
             AppEvent::Key(key) => {
                 // Leaving while standard input is still being recorded asks first.
-                if let Some(leaving) = self.leaves(&key)
+                if let Some(leaving) = self.leaving_by(&key)
                     && !self.confirmation_modal.active
                     && self.recording().is_some_and(|spool| spool.live())
                 {
@@ -4411,7 +4411,7 @@ impl App {
                 let formats = self.formats.clone();
                 // The open's first phase. Unleased, as the look is: an answer for an open
                 // the user has left (Ctrl+O) is thrown away by the loader, not waited for.
-                self.make_way_for_an_open();
+                self.put_down_load_in_flight();
                 let load = self.loading.look_at_paths();
                 self.spawn_job(Job::OpenNamed(load), Some("Scanning input..."), move |_| {
                     if let Some(missing) = Self::missing_named_path(&paths, &formats) {
@@ -4440,7 +4440,7 @@ impl App {
                 // is the whole of what doing this on the event thread cost.
                 let looking = dir;
                 let options = options;
-                self.make_way_for_an_open();
+                self.put_down_load_in_flight();
                 let load = self.loading.look_at_directory(looking.clone());
                 // A newer look replaces an older one.
                 self.jobs
@@ -5137,7 +5137,7 @@ impl App {
             outcome,
             ..
         } = self.jobs.end(ticket)?;
-        let cancelled_analysis = !current && Self::reads_for_analysis(&job);
+        let cancelled_analysis = !current && Self::is_analysis_read(&job);
         let waited = keys.is_some();
         let out = match outcome {
             Outcome::Answered(answer) => self.answered(job, current, waited, *answer),
@@ -5596,12 +5596,19 @@ impl App {
                 self.find_answered(run, current, found);
                 None
             }
-            (job, Answer::HexOpened(source)) => {
-                self.hex_opened(job, current, *source);
+            (
+                Job::HexOpen {
+                    origin,
+                    fallback,
+                    record_size,
+                },
+                Answer::HexOpened(source),
+            ) if current => {
+                self.hex_opened(origin, fallback, record_size, *source);
                 None
             }
-            (job, Answer::HexFound(hit)) => {
-                self.hex_found(job, current, hit);
+            (Job::HexFind(run), Answer::HexFound(hit)) if current => {
+                self.hex_found(run, hit);
                 None
             }
             (_, Answer::ValueCounts(counts)) => {

@@ -73,18 +73,13 @@ impl App {
     }
 
     /// The file is mapped: the view opens on it.
-    pub(crate) fn hex_opened(&mut self, job: Job, current: bool, source: HexSource) {
-        let Job::HexOpen {
-            origin,
-            fallback,
-            record_size,
-        } = job
-        else {
-            return;
-        };
-        if !current {
-            return;
-        }
+    pub(crate) fn hex_opened(
+        &mut self,
+        origin: Origin,
+        fallback: bool,
+        record_size: Option<usize>,
+        source: HexSource,
+    ) {
         self.hex_view.serial += 1;
         let mut view = HexView::new(source, origin, fallback, self.hex_view.serial);
         view.record_size = record_size.map(|n| n.clamp(1, MAX_RECORD_SIZE));
@@ -395,13 +390,7 @@ impl App {
     }
 
     /// A find answered: the cursor goes to the match.
-    pub(crate) fn hex_found(&mut self, job: Job, current: bool, hit: HexHit) {
-        let Job::HexFind(run) = job else {
-            return;
-        };
-        if !current {
-            return;
-        }
+    pub(crate) fn hex_found(&mut self, run: HexFindRun, hit: HexHit) {
         self.status_message = None;
         let Some(view) = self.hex_view.view.as_mut().filter(|v| v.serial == run.view) else {
             return;

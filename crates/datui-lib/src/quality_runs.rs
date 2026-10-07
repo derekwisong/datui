@@ -375,7 +375,7 @@ impl App {
         if partitions.is_empty()
             && let Some(dir) = self.path.as_ref().filter(|path| path.is_dir())
         {
-            partitions = crate::readers::hive::discover_hive_partition_columns(dir)
+            partitions = crate::formats::readers::hive::discover_hive_partition_columns(dir)
                 .into_iter()
                 .filter(|column| schema.get(column).is_some())
                 .collect();
@@ -1416,7 +1416,7 @@ impl App {
             let audio = (plan.compute == data_quality::QualityCompute::Full)
                 .then(|| state.window_for_quality(&plan.scope))
                 .flatten()
-                .and_then(crate::audio::recording);
+                .and_then(crate::formats::audio::recording);
             let view_generation = state.len_generation();
             let dataset_generation = self.dataset_generation;
             let kept_entry = self.kept_quality_entry(&plan.sample());

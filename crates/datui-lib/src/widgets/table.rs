@@ -17,8 +17,8 @@ use ratatui::{
     },
 };
 
-use crate::column_types::dtype_label;
 use crate::error_display::user_message_from_polars;
+use crate::formats::column_types::dtype_label;
 use crate::numfmt::{self, CellFormatter, NumberFormatSettings};
 use crate::table::{DataTableState, DrawnTable, visible_slice};
 use crate::widgets::column_paging::{OnScreen, Room};
@@ -60,7 +60,7 @@ pub struct DataTable {
     /// or when the rows no longer stand for rows of a file.
     pub drift_rows: Vec<u32>,
     /// What each drift group is missing. Indexed by the values in `drift_rows`.
-    pub drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
+    pub drift_groups: Arc<Vec<crate::formats::schema_union::DriftGroup>>,
     /// Columns the view is sorted by; each carries a direction mark in the header.
     /// Filled from the state at render, so the marks always describe the frame drawn.
     pub sort_columns: Vec<String>,
@@ -442,7 +442,7 @@ impl DataTable {
     pub fn with_drift(
         mut self,
         rows: Vec<u32>,
-        groups: Arc<Vec<crate::schema_union::DriftGroup>>,
+        groups: Arc<Vec<crate::formats::schema_union::DriftGroup>>,
     ) -> Self {
         self.drift_rows = rows;
         self.drift_groups = groups;

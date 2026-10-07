@@ -192,7 +192,7 @@ fn every_format_and_compression_round_trips() {
 /// Fixed records export on the streaming route, decoded a batch at a time.
 #[test]
 fn fixed_records_export_with_streaming_asked_for() {
-    use crate::fixed_records::{Bytes, ColumnLayout, FixedRecords, Physical};
+    use crate::formats::fixed_records::{Bytes, ColumnLayout, FixedRecords, Physical};
     let records = || {
         let bytes = std::sync::Arc::new(Bytes::Owned((0u8..32).collect()));
         let column = ColumnLayout::new("a", 0, 4, Physical::Unsigned(4), 4);

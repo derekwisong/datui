@@ -103,14 +103,18 @@ pub fn several(state: &DataTableState, paths: &[PathBuf], options: &OpenOptions)
 
 /// A workbook's worksheets or a database's tables, as its tab of the Info panel lists
 /// them: what that says of each, less that it is the one opened, which the picker marks.
-fn from_detail(file: PathBuf, detail: &crate::text_formats::Detail, asked: Option<&str>) -> Tables {
+fn from_detail(
+    file: PathBuf,
+    detail: &crate::formats::text_formats::Detail,
+    asked: Option<&str>,
+) -> Tables {
     let said = |name: &str| {
         detail
             .list
             .iter()
             .find(|(key, _)| key == name)
             .map(|(_, value)| match value {
-                crate::model_files::MetaValue::Text(text) => text
+                crate::formats::model_files::MetaValue::Text(text) => text
                     .split(", ")
                     .filter(|part| *part != "opened")
                     .collect::<Vec<_>>()
@@ -148,10 +152,14 @@ fn record_types(file: PathBuf, spec: &crate::formats::Spec) -> Tables {
             .unwrap_or_else(|| file.display().to_string()),
         detail: "every record type".to_string(),
     };
-    let types = crate::members::variant_tables(spec)
+    let types = crate::formats::members::variant_tables(spec)
         .into_iter()
         .map(|t| Table {
-            detail: crate::text_formats::count(t.columns.len() as u64, "column", "columns"),
+            detail: crate::formats::text_formats::count(
+                t.columns.len() as u64,
+                "column",
+                "columns",
+            ),
             table: Some(t.name.clone()),
             label: t.name,
         });

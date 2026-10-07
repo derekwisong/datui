@@ -241,7 +241,7 @@ impl Node {
     /// The type as the item list names it.
     pub fn type_label(&self) -> String {
         match self {
-            Node::Native(s) => crate::column_types::dtype_label(s.dtype()),
+            Node::Native(s) => crate::formats::column_types::dtype_label(s.dtype()),
             Node::Json { .. } => json_kind(self.json().unwrap_or(&Value::Null)).to_string(),
         }
     }

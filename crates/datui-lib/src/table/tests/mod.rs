@@ -35,8 +35,12 @@ impl DataTableState {
 
     /// `path` read as delimited text split on `delimiter`, as an open reads one.
     fn from_delimited(path: &Path, delimiter: u8, options: &OpenOptions) -> Result<Self> {
-        let read =
-            crate::readers::csv::read_delimited(path, delimiter, options, &Default::default())?;
+        let read = crate::formats::readers::csv::read_delimited(
+            path,
+            delimiter,
+            options,
+            &Default::default(),
+        )?;
         Self::from_read(read, options)
     }
 
@@ -264,14 +268,14 @@ fn the_join_drops_the_rows_read_through_the_frame_it_replaced() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![2],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
 
     let mut state = DataTableState::from_schema_and_lazyframe(
@@ -331,14 +335,14 @@ fn the_join_does_not_keep_a_width_measured_on_the_frame_it_replaced() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![2],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
 
     let mut state = DataTableState::from_schema_and_lazyframe(
@@ -393,14 +397,14 @@ fn a_count_that_has_arrived_is_not_held_back_with_the_columns() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![100],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
 
     let mut state = DataTableState::from_schema_and_lazyframe(
@@ -473,14 +477,14 @@ fn a_column_the_second_pass_could_not_see_leaves_the_order() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![1],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
 
     let mut state = DataTableState::from_schema_and_lazyframe(
@@ -586,12 +590,12 @@ fn a_file_of_no_rows_neither_makes_a_run_nor_splits_one() {
 fn file_schema(
     columns: &[(&str, polars::prelude::DataType)],
     rows: usize,
-) -> Option<crate::schema_union::FileFooter> {
+) -> Option<crate::formats::schema_union::FileFooter> {
     let mut schema = polars::prelude::Schema::with_capacity(columns.len());
     for (name, dtype) in columns {
         schema.with_column((*name).into(), dtype.clone());
     }
-    Some(crate::schema_union::FileFooter {
+    Some(crate::formats::schema_union::FileFooter {
         schema: Arc::new(schema),
         row_group_rows: vec![rows],
         file_bytes: 0,
@@ -1479,7 +1483,7 @@ fn a_window_passes_over_empty_files() {
 #[test]
 fn a_local_dataset_reads_the_values_a_type_conflict_hides() {
     use crate::data_quality::{DataQualityPlan, ObservationKind, QualityCompute, QualityScope};
-    use crate::schema_union::{DatasetSchema, SchemaOrigin, union_file_schemas};
+    use crate::formats::schema_union::{DatasetSchema, SchemaOrigin, union_file_schemas};
     use polars::prelude::{DataType, ParquetWriter, df};
 
     let dir = tempfile::tempdir().unwrap();
@@ -1509,8 +1513,8 @@ fn a_local_dataset_reads_the_values_a_type_conflict_hides() {
         SchemaOrigin::AllFooters(2),
     );
     let file_rows = vec![3usize, 2];
-    let drift = crate::schema_union::ScanDrift::new(&files, &dataset, &file_rows);
-    let lf = crate::schema_union::lenient_scan(
+    let drift = crate::formats::schema_union::ScanDrift::new(&files, &dataset, &file_rows);
+    let lf = crate::formats::schema_union::lenient_scan(
         &files,
         dataset.schema.clone(),
         None,
@@ -1575,7 +1579,7 @@ fn a_local_dataset_reads_the_values_a_type_conflict_hides() {
 /// schema.
 #[test]
 fn a_remote_dataset_reads_a_conflicting_column_as_text_on_every_window() {
-    use crate::schema_union::{DatasetSchema, SchemaOrigin, union_file_schemas};
+    use crate::formats::schema_union::{DatasetSchema, SchemaOrigin, union_file_schemas};
     use polars::prelude::{DataType, IntoLazy, df};
 
     let urls: Vec<String> = vec!["a".to_string(), "b".to_string()];
@@ -1591,14 +1595,14 @@ fn a_remote_dataset_reads_a_conflicting_column_as_text_on_every_window() {
                     df!(
                         "id" => &[0i64, 1, 2],
                         "n" => &[10i64, 20, 30],
-                        crate::schema_union::DRIFT_COLUMN => &[0u32, 1, 2],
+                        crate::formats::schema_union::DRIFT_COLUMN => &[0u32, 1, 2],
                     )
                     .unwrap()
                 } else {
                     df!(
                         "id" => &[3i64, 4],
                         "n" => &["sixty", "seventy"],
-                        crate::schema_union::DRIFT_COLUMN => &[3u32, 4],
+                        crate::formats::schema_union::DRIFT_COLUMN => &[3u32, 4],
                     )
                     .unwrap()
                 };

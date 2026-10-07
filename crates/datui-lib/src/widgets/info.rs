@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use polars::prelude::*;
 
-use crate::parquet_footer::Footer;
+use crate::formats::parquet_footer::Footer;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::Stylize;
@@ -206,8 +206,8 @@ fn wrap_words(text: &str, width: usize) -> Vec<String> {
 }
 
 /// One metadata value as text: an array that was listed, or how long it is.
-pub(crate) fn meta_text(value: &crate::model_files::MetaValue) -> String {
-    use crate::model_files::MetaValue;
+pub(crate) fn meta_text(value: &crate::formats::model_files::MetaValue) -> String {
+    use crate::formats::model_files::MetaValue;
     match value {
         MetaValue::Text(text) => text.clone(),
         MetaValue::List { of, len, items } if items.len() as u64 == *len && *len > 0 => {
@@ -230,7 +230,7 @@ pub(crate) const VALUE_SHOWN_BYTES: usize = 64 * 1024;
 /// newlines and wrapped to the rest of `width`; past [`VALUE_SHOWN_BYTES`] a line says
 /// how much more.
 pub(crate) fn metadata_lines(
-    metadata: &[(String, crate::model_files::MetaValue)],
+    metadata: &[(String, crate::formats::model_files::MetaValue)],
     width: usize,
 ) -> Vec<(String, String)> {
     use unicode_width::UnicodeWidthStr;
@@ -249,7 +249,7 @@ pub(crate) fn metadata_lines(
         // Borrowed, not copied: this runs every frame.
         let listed;
         let text = match value {
-            crate::model_files::MetaValue::Text(text) => text.as_str(),
+            crate::formats::model_files::MetaValue::Text(text) => text.as_str(),
             other => {
                 listed = meta_text(other);
                 listed.as_str()
@@ -307,7 +307,7 @@ pub enum InfoTab {
     Schema,
     /// A delimited spec's metadata line, as key and value.
     Metadata,
-    /// What the file says besides its rows ([`crate::text_formats::Detail`]): a model's
+    /// What the file says besides its rows ([`crate::formats::text_formats::Detail`]): a model's
     /// totals, a VCD header. Titled by the detail.
     Format,
     Resources,
@@ -556,7 +556,7 @@ impl InfoModal {
 }
 
 /// What the open file says beyond its rows: its size and, where its reader has a facts
-/// read (`crate::readers::Reader::facts`), its tab and the footer behind it. Read on a
+/// read (`crate::formats::readers::Reader::facts`), its tab and the footer behind it. Read on a
 /// worker once per dataset: a stat or footer read on a dead mount hangs its thread.
 #[derive(Debug, Clone)]
 pub enum FileFacts {
@@ -570,7 +570,7 @@ pub enum FileFacts {
         /// format without one.
         footer: Option<Footer>,
         /// The format's tab, made from what the read found.
-        detail: Option<Arc<crate::text_formats::Detail>>,
+        detail: Option<Arc<crate::formats::text_formats::Detail>>,
     },
     /// The read failed, and why. Kept for the dataset rather than asked again: a file
     /// that could not be read a moment ago is not worth a read per frame.
@@ -582,7 +582,7 @@ impl FileFacts {
     /// Failures are short for the panel's line; the full error is logged.
     pub(crate) fn read(
         path: &Path,
-        facts: Option<crate::readers::Facts>,
+        facts: Option<crate::formats::readers::Facts>,
     ) -> std::result::Result<Self, String> {
         let io = |e: std::io::Error| {
             log::warn!(target: "datui", "file size of {}: {e}", path.display());
@@ -612,7 +612,7 @@ impl FileFacts {
                 log::warn!(target: "datui", "footer of {}: {e}", path.display());
                 "unreadable footer".to_string()
             })?,
-            None => crate::readers::FormatFacts::default(),
+            None => crate::formats::readers::FormatFacts::default(),
         };
         Ok(Self::Read {
             size: Some(meta.len()),
@@ -658,7 +658,7 @@ impl<'a> InfoContext<'a> {
     }
 
     /// The format's tab the facts made, once it has landed.
-    fn facts_detail(&self) -> Option<&'a crate::text_formats::Detail> {
+    fn facts_detail(&self) -> Option<&'a crate::formats::text_formats::Detail> {
         match self.facts? {
             FileFacts::Read { detail, .. } => detail.as_deref(),
             FileFacts::Reading | FileFacts::Failed(_) => None,
@@ -685,7 +685,7 @@ pub struct DataTableInfo<'a> {
     /// The Documentation tab's page, when a catalog lists the dataset.
     pub documentation: Option<&'a mut crate::widgets::documentation::DocState>,
     /// The row count from a sample of the dataset's footers, until it is counted.
-    pub estimate: Option<crate::schema_union::RowEstimate>,
+    pub estimate: Option<crate::formats::schema_union::RowEstimate>,
 }
 
 /// The Resources tab's `Read:` value: how the open reads the data, and that a remote
@@ -717,7 +717,7 @@ fn rows_and_columns(rows: Option<usize>, columns: usize) -> String {
 /// [`rows_and_columns`] for a count estimated from a sample of footers, with how many
 /// were read and the key that counts them all.
 fn estimated_rows_and_columns(
-    estimate: crate::schema_union::RowEstimate,
+    estimate: crate::formats::schema_union::RowEstimate,
     columns: usize,
 ) -> String {
     let middot = crate::glyphs::get().middot;
@@ -909,7 +909,10 @@ impl<'a> DataTableInfo<'a> {
         });
         let has_files = presence.is_some();
         let compression = self.ctx.footer().map(|m| {
-            crate::parquet_footer::column_compression(m.as_ref(), self.state.schema().as_ref())
+            crate::formats::parquet_footer::column_compression(
+                m.as_ref(),
+                self.state.schema().as_ref(),
+            )
         });
         // Kept for a file whose footer is still out, so the columns do not re-proportion
         // when it lands.
@@ -1345,19 +1348,25 @@ impl<'a> DataTableInfo<'a> {
         if let Some(file) = &read.facts_from {
             lines.push((format!("From {file}"), Style::default()));
         }
-        let shown: Vec<(String, crate::model_files::MetaValue)> = if metadata.pairs.is_empty() {
-            let line = read.delimited().metadata_line.unwrap_or(1);
-            vec![(
-                format!("line {line}"),
-                crate::model_files::MetaValue::Text(metadata.raw.clone()),
-            )]
-        } else {
-            metadata
-                .pairs
-                .iter()
-                .map(|(k, v)| (k.clone(), crate::model_files::MetaValue::Text(v.clone())))
-                .collect()
-        };
+        let shown: Vec<(String, crate::formats::model_files::MetaValue)> =
+            if metadata.pairs.is_empty() {
+                let line = read.delimited().metadata_line.unwrap_or(1);
+                vec![(
+                    format!("line {line}"),
+                    crate::formats::model_files::MetaValue::Text(metadata.raw.clone()),
+                )]
+            } else {
+                metadata
+                    .pairs
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            crate::formats::model_files::MetaValue::Text(v.clone()),
+                        )
+                    })
+                    .collect()
+            };
         self.render_detail(area, buf, &lines, "Metadata", &shown);
     }
 
@@ -1405,7 +1414,7 @@ impl<'a> DataTableInfo<'a> {
         buf: &mut Buffer,
         lines: &[(String, Style)],
         title: &str,
-        list: &[(String, crate::model_files::MetaValue)],
+        list: &[(String, crate::formats::model_files::MetaValue)],
     ) {
         self.render_detail_list(area, buf, lines, title, list, false);
     }
@@ -1418,7 +1427,7 @@ impl<'a> DataTableInfo<'a> {
         buf: &mut Buffer,
         lines: &[(String, Style)],
         title: &str,
-        list: &[(String, crate::model_files::MetaValue)],
+        list: &[(String, crate::formats::model_files::MetaValue)],
         pick: bool,
     ) {
         if area.height == 0 || area.width < 8 {
@@ -1991,7 +2000,7 @@ mod tests {
             .finish(&mut df)
             .unwrap();
         let parquet_len = std::fs::metadata(&parquet).unwrap().len();
-        let facts = crate::readers::of(crate::FileFormat::Parquet).facts;
+        let facts = crate::formats::readers::of(crate::FileFormat::Parquet).facts;
 
         assert!(matches!(
             FileFacts::read(&csv, None),
@@ -2532,9 +2541,9 @@ mod tests {
     /// rule with a count, and says how much of the list is out of view.
     #[test]
     fn the_format_tab_shows_its_lines_and_list() {
-        use crate::model_files::MetaValue;
+        use crate::formats::model_files::MetaValue;
+        use crate::formats::text_formats::Detail;
         use crate::table::{DataTableState, OpenFacts};
-        use crate::text_formats::Detail;
         use polars::prelude::*;
 
         let theme = RenderContext::for_test();
@@ -2749,7 +2758,7 @@ mod tests {
     /// array listed and a long one counted.
     #[test]
     fn metadata_values_wrap_whole_under_their_key() {
-        use crate::model_files::MetaValue;
+        use crate::formats::model_files::MetaValue;
         let meta = vec![
             (
                 "a".to_string(),

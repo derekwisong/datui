@@ -1,12 +1,12 @@
 //! A column's type changed in the table, and a datetime made from columns: the same
-//! names, formats and rules a delimited spec's `[columns]` takes ([`crate::column_types`]),
+//! names, formats and rules a delimited spec's `[columns]` takes ([`crate::formats::column_types`]),
 //! as a view step before the filters.
 //!
 //! [`RetypeModal`] picks the type, then, for a date, time or datetime, a format that
 //! reads the column's first values, or one typed. [`CombineModal`] is the spec's
 //! `{ from = [...], as = "datetime" }`.
 
-use crate::column_types::{ColumnType, DerivedKind, TYPE_NAMES, dtype_label};
+use crate::formats::column_types::{ColumnType, DerivedKind, TYPE_NAMES, dtype_label};
 use crate::widgets::ui::PickerState;
 use polars::prelude::DataType;
 
@@ -128,16 +128,16 @@ impl RetypeModal {
     /// it, after a line that infers the format; every format when none reads it.
     fn offer_formats(&mut self, dtype: DataType) {
         let first = self.examples.first().cloned().unwrap_or_default();
-        let mut fitting = crate::column_types::formats_reading(&dtype, &first);
+        let mut fitting = crate::formats::column_types::formats_reading(&dtype, &first);
         if fitting.is_empty() {
             fitting = match dtype {
-                DataType::Date => crate::column_types::DATE_FORMATS.to_vec(),
-                DataType::Time => crate::column_types::TIME_FORMATS.to_vec(),
-                _ => crate::column_types::DATETIME_FORMATS.to_vec(),
+                DataType::Date => crate::formats::column_types::DATE_FORMATS.to_vec(),
+                DataType::Time => crate::formats::column_types::TIME_FORMATS.to_vec(),
+                _ => crate::formats::column_types::DATETIME_FORMATS.to_vec(),
             };
         }
         let arrow = crate::glyphs::get().arrow_right;
-        let shown = |ty: &ColumnType| match crate::column_types::preview(ty, &first) {
+        let shown = |ty: &ColumnType| match crate::formats::column_types::preview(ty, &first) {
             Some(read) if !first.is_empty() => format!("  {first} {arrow} {read}"),
             _ => String::new(),
         };
@@ -172,7 +172,7 @@ impl RetypeModal {
             return None;
         }
         let first = self.examples.first()?;
-        let read = crate::column_types::preview(
+        let read = crate::formats::column_types::preview(
             &ColumnType {
                 dtype: ty.clone(),
                 format: Some(typed.to_string()),
@@ -277,12 +277,12 @@ impl CombineModal {
     }
 
     /// The derived column it makes, as a spec's `[columns]` entry would.
-    pub fn derived(&self) -> Result<crate::column_types::Derived, String> {
+    pub fn derived(&self) -> Result<crate::formats::column_types::Derived, String> {
         let name = self.name.value().trim();
         if name.is_empty() {
             return Err("the new column needs a name".to_string());
         }
-        Ok(crate::column_types::Derived {
+        Ok(crate::formats::column_types::Derived {
             name: name.to_string(),
             from: self.from(),
             kind: self.kind,

@@ -9,13 +9,13 @@ use ratatui::widgets::TableState;
 
 use crate::OpenOptions;
 use crate::filter_modal::FilterStatement;
+use crate::formats::readers::csv::Decompressed;
+use crate::formats::readers::{Read, Typing};
 use crate::local_copy::RemoteObject;
 use crate::numfmt::{self};
 use crate::pivot_melt_modal::{MeltSpec, PivotAggregation, PivotSpec, ReshapeSource};
 use crate::python_script::{SidebarFilter, Step};
 use crate::query::{ParsedQuery, parse_query_over};
-use crate::readers::csv::Decompressed;
-use crate::readers::{Read, Typing};
 #[cfg(feature = "sql")]
 use crate::sql_plan::{
     count_subquery_values_once, leftover_subquery_value_columns, ordered_by, stable_order,
@@ -92,7 +92,7 @@ pub(crate) struct View {
     drift_column_present: bool,
     /// What each drift group is missing, shared with the renderer (no per-frame
     /// allocation), indexed by the drift column.
-    drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
+    drift_groups: Arc<Vec<crate::formats::schema_union::DriftGroup>>,
     /// The sorted or filtered view numbers its own rows (`#` on, data with no source
     /// position): a row index over the base, under filters and sort. Only while `#` is on,
     /// since it blocks filter pushdown.
@@ -124,7 +124,7 @@ pub(crate) struct View {
     base_steps: Vec<Step>,
     /// The view's column types and derived columns in order: a step of `lf` before the
     /// filters, as a spec's `[columns]` would say.
-    column_changes: Vec<crate::column_types::ColumnChange>,
+    column_changes: Vec<crate::formats::column_types::ColumnChange>,
     /// Bumped per change to `column_changes`, so a null count answers for its changes.
     changes_version: u64,
     /// Steps of a saved view whose columns this data does not have.
@@ -195,19 +195,19 @@ pub struct DataTableState {
     remote_objects: Option<Arc<std::collections::HashMap<String, RemoteObject>>>,
     /// What the footers said of a many-file dataset's columns (schema origin, columns not
     /// in every file); `None` for one file.
-    dataset_schema: Option<crate::schema_union::DatasetSchema>,
+    dataset_schema: Option<crate::formats::schema_union::DatasetSchema>,
     /// The two above as the dataset was opened, so a reset returns to them.
     drift_at_open: bool,
-    groups_at_open: Arc<Vec<crate::schema_union::DriftGroup>>,
+    groups_at_open: Arc<Vec<crate::formats::schema_union::DriftGroup>>,
     /// The data as loaded carries each row's source position in the hidden row index
     /// (lines), shown by `#` while the frame is the scan's.
     source_rows_at_open: bool,
     /// Lines still being indexed behind the first rows: the frames grow as they are.
-    indexing: Option<Arc<crate::lines::Lines>>,
+    indexing: Option<Arc<crate::formats::lines::Lines>>,
     /// The lines of several files, which `#` numbers by their line in their own file.
-    numbering: Option<Arc<crate::lines::Lines>>,
+    numbering: Option<Arc<crate::formats::lines::Lines>>,
     /// The dataset's row count from a sample of its footers, until it is counted.
-    row_estimate: Option<crate::schema_union::RowEstimate>,
+    row_estimate: Option<crate::formats::schema_union::RowEstimate>,
     /// The notes the lines gave when they opened, replaced once they are all indexed.
     indexing_notes: Vec<crate::notes::Note>,
     /// Whether the open guessed the lines were text, which their notes say.
@@ -220,7 +220,7 @@ pub struct DataTableState {
     drift_dataset_rows: usize,
     /// The dataset as its footers found it, kept because reading a column as text needs
     /// the per-file types the view no longer has.
-    dataset_at_open: Option<crate::schema_union::DatasetSchema>,
+    dataset_at_open: Option<crate::formats::schema_union::DatasetSchema>,
     /// Columns read as text from every file instead of the majority type; empty as opened.
     read_as_text: Vec<PlSmallStr>,
     /// Each file's path or URL in scan order, to trace rows and name them in exports.
@@ -240,15 +240,15 @@ pub struct DataTableState {
     /// What a read through a format spec found: the spec, why, and its notes.
     format_read: Option<Arc<crate::formats::Read>>,
     /// What a read through a delimited spec found: units and metadata.
-    delimited: Option<Arc<crate::delimited_spec::DelimitedRead>>,
+    delimited: Option<Arc<crate::formats::delimited_spec::DelimitedRead>>,
     /// The fixed records the data as loaded is, while pristine: a window starts decoding
     /// at the window, not row 0.
-    fixed_window: Option<Arc<dyn crate::pushdown::Windowed>>,
+    fixed_window: Option<Arc<dyn crate::formats::pushdown::Windowed>>,
     /// A source that runs the sidebar's filters and sort itself (a SQLite table), while
     /// the data as loaded is the root: see [`Self::pushed_view`].
-    pushdown: Option<Arc<dyn crate::pushdown::Pushdown>>,
+    pushdown: Option<Arc<dyn crate::formats::pushdown::Pushdown>>,
     /// Stops what the source runs when this state goes.
-    source_hold: Option<crate::sqlite::Hold>,
+    source_hold: Option<crate::formats::sqlite::Hold>,
     /// How the open reads the data. See [`crate::OpenOptions::read_mode`].
     read_mode: Option<crate::ReadMode>,
     /// The format the open read. See [`OpenFacts::read_as`].
@@ -256,7 +256,7 @@ pub struct DataTableState {
     /// The data was downloaded from a remote source before it was read.
     fetched: bool,
     /// What the file said besides its rows. See [`OpenFacts::detail`].
-    detail: Option<Arc<crate::text_formats::Detail>>,
+    detail: Option<Arc<crate::formats::text_formats::Detail>>,
     /// Each loaded column's unit, from the file. See [`OpenFacts::units`].
     file_units: Arc<Vec<(String, String)>>,
     /// Uncompressed bytes per row of each column from the footer, for `bytes_per_row`
@@ -417,7 +417,7 @@ pub struct OpenFacts {
     /// What a read through a format spec found.
     pub format_read: Option<Arc<crate::formats::Read>>,
     /// What a read through a delimited spec found.
-    pub delimited: Option<Arc<crate::delimited_spec::DelimitedRead>>,
+    pub delimited: Option<Arc<crate::formats::delimited_spec::DelimitedRead>>,
     /// The downloaded file the frame scans, held for as long as the state lives.
     pub download: Option<crate::download::TempDownload>,
     /// The files a GPS log was read into, which the frame scans.
@@ -426,9 +426,9 @@ pub struct OpenFacts {
     /// Info's Schema tab. Empty for a file of one.
     pub other_tables: Vec<String>,
     /// A source that runs the sidebar's filters and sort itself: a SQLite table.
-    pub pushdown: Option<Arc<dyn crate::pushdown::Pushdown>>,
+    pub pushdown: Option<Arc<dyn crate::formats::pushdown::Pushdown>>,
     /// What stops that source's statements when the dataset goes.
-    pub hold: Option<crate::sqlite::Hold>,
+    pub hold: Option<crate::formats::sqlite::Hold>,
     /// How the open reads the data. See [`crate::OpenOptions::read_mode`].
     pub read_mode: Option<crate::ReadMode>,
     /// The format the open read as, after sniffing and spec matching (which the name may
@@ -438,23 +438,23 @@ pub struct OpenFacts {
     /// stdin spool, though held the same way).
     pub fetched: bool,
     /// What the file said besides its rows, for the Info panel.
-    pub detail: Option<Arc<crate::text_formats::Detail>>,
+    pub detail: Option<Arc<crate::formats::text_formats::Detail>>,
     /// Rows decoded straight from the file by a reader (NumPy array, audio frames), and
     /// how many: deep pages and the count need no row index.
-    pub records: Option<(Arc<dyn crate::pushdown::Windowed>, usize)>,
+    pub records: Option<(Arc<dyn crate::formats::pushdown::Windowed>, usize)>,
     /// Each column's unit, where the file says one.
     pub units: Vec<(String, String)>,
     /// Lines still being indexed behind the first rows: the frames grow as they are.
-    pub indexing: Option<Arc<crate::lines::Lines>>,
+    pub indexing: Option<Arc<crate::formats::lines::Lines>>,
     /// The lines of several files, which `#` numbers by their line in their own file.
-    pub numbering: Option<Arc<crate::lines::Lines>>,
+    pub numbering: Option<Arc<crate::formats::lines::Lines>>,
     /// The columns the read gave a type, for the count of what did not fit.
     pub typing: Typing,
 }
 
 /// The footers' account of a dataset of many files.
 pub struct DatasetAtOpen {
-    pub schema: crate::schema_union::DatasetSchema,
+    pub schema: crate::formats::schema_union::DatasetSchema,
     /// Each file's row count in scan order; empty unless all are known (when the scan
     /// numbers rows).
     pub file_rows: Vec<usize>,
@@ -552,11 +552,11 @@ impl DataTableState {
     /// `schema` without the hidden row index, and whether it had one (the rows' source
     /// position, which `#` shows).
     fn without_source_rows(schema: Arc<Schema>) -> (Arc<Schema>, bool) {
-        if !schema.contains(crate::schema_union::DRIFT_COLUMN) {
+        if !schema.contains(crate::formats::schema_union::DRIFT_COLUMN) {
             return (schema, false);
         }
         let mut schema = (*schema).clone();
-        schema.shift_remove(crate::schema_union::DRIFT_COLUMN);
+        schema.shift_remove(crate::formats::schema_union::DRIFT_COLUMN);
         (Arc::new(schema), true)
     }
 
@@ -797,7 +797,7 @@ impl DataTableState {
         self.not_the_table = not_the_table;
         self.fixed_window = format_read
             .as_ref()
-            .map(|read| read.records.clone() as Arc<dyn crate::pushdown::Windowed>);
+            .map(|read| read.records.clone() as Arc<dyn crate::formats::pushdown::Windowed>);
         if let Some(read) = &format_read {
             // The reader counted records from the file size; a frame count would build the whole
             // row index.
@@ -827,8 +827,8 @@ impl DataTableState {
             self.indexing_guessed = self
                 .open_notes
                 .iter()
-                .any(|n| n.summary.starts_with(crate::lines::GUESSED));
-            self.indexing_notes = crate::lines::notes(lines, self.indexing_guessed);
+                .any(|n| n.summary.starts_with(crate::formats::lines::GUESSED));
+            self.indexing_notes = crate::formats::lines::notes(lines, self.indexing_guessed);
         }
         self.indexing = indexing;
         self.file_units = Arc::new(units);
@@ -1034,7 +1034,7 @@ impl DataTableState {
         let too_many = self
             .pristine_rows
             .or(self.num_rows_if_valid())
-            .is_some_and(|rows| rows > crate::row_index::MAX_ROWS);
+            .is_some_and(|rows| rows > crate::formats::row_index::MAX_ROWS);
         self.scan_is_the_root()
             && self.follow.is_none()
             && !self.remote_source
@@ -1109,7 +1109,7 @@ pub(crate) struct ViewSnapshot {
     reshape: String,
     grouped: (bool, bool),
     drill: (Option<usize>, Option<Vec<String>>, Option<Vec<String>>),
-    drift: (bool, Arc<Vec<crate::schema_union::DriftGroup>>),
+    drift: (bool, Arc<Vec<crate::formats::schema_union::DriftGroup>>),
     notes: (Vec<crate::notes::Note>, bool, Vec<crate::notes::Note>),
     selection: (Option<usize>, usize, usize),
     count: (usize, bool, u64),

@@ -14,7 +14,7 @@ use crate::table::{DataTableState, OpenFacts};
 #[cfg(feature = "cloud")]
 use crate::wait_on_runtime;
 use crate::{
-    App, AppEvent, UNSUPPORTED, catalog, cli, dataset_files, discover, home, loading,
+    App, AppEvent, UNSUPPORTED, catalog, cli, discover, formats::dataset_files, home, loading,
     quality_report, source,
 };
 use color_eyre::Result;
@@ -79,7 +79,7 @@ pub(crate) fn hoist_partition_columns(
         )
         .collect();
     if drifts {
-        exprs.push(col(crate::schema_union::DRIFT_COLUMN));
+        exprs.push(col(crate::formats::schema_union::DRIFT_COLUMN));
     }
     lf.select(exprs)
 }
@@ -563,10 +563,10 @@ impl App {
         if kind == discover::EntryKind::File
             && discover::unreadable_by_name(&path)
             && !a_spec_may_read
-            && crate::members::split(&path).is_none()
-            && crate::members::holder(&path).is_none()
-            && crate::members::split_variant(&path, &self.formats).is_none()
-            && crate::hf_splits::split_place(&path).is_none()
+            && crate::formats::members::split(&path).is_none()
+            && crate::formats::members::holder(&path).is_none()
+            && crate::formats::members::split_variant(&path, &self.formats).is_none()
+            && crate::formats::hf_splits::split_place(&path).is_none()
         {
             self.home.status = Some(discover::NO_READER.to_string());
             return None;
@@ -676,8 +676,8 @@ impl App {
                     && !crate::stdin::is_stdin(path)
                     && !source::expands_as_glob(path)
                     && !path.exists()
-                    && crate::members::split(path).is_none()
-                    && crate::members::split_variant(path, formats).is_none()
+                    && crate::formats::members::split(path).is_none()
+                    && crate::formats::members::split_variant(path, formats).is_none()
             })
             .cloned()
     }
@@ -811,9 +811,13 @@ impl App {
             return Ok(options);
         };
         delimited.apply(&mut options);
-        let chosen =
-            crate::delimited_spec::DelimitedRead::chosen(choice.spec, choice.by, choice.also);
-        let read = crate::delimited_spec::read_facts(&chosen, &[file.to_path_buf()], &options)?;
+        let chosen = crate::formats::delimited_spec::DelimitedRead::chosen(
+            choice.spec,
+            choice.by,
+            choice.also,
+        );
+        let read =
+            crate::formats::delimited_spec::read_facts(&chosen, &[file.to_path_buf()], &options)?;
         options.delimited = Some(Arc::new(read));
         Ok(options)
     }
@@ -831,7 +835,7 @@ impl App {
             .and_then(FileFormat::separator)
             .unwrap_or(b',');
         DataTableState::from_read(
-            crate::readers::csv::read_delimited(path, separator, options, writer)?,
+            crate::formats::readers::csv::read_delimited(path, separator, options, writer)?,
             options,
         )
     }
@@ -1290,15 +1294,15 @@ impl App {
                     });
                     let crate::remote_model::Read { lf, summary, notes } = match read {
                         Ok(read) => read,
-                        Err(crate::model_files::RangeError::NoRanges) => {
+                        Err(crate::formats::model_files::RangeError::NoRanges) => {
                             return Ok(Answer::Load(Box::new(LoadAnswer::NoRanges { options })));
                         }
                         // The URL in the message may carry a password or a signature.
-                        Err(crate::model_files::RangeError::Failed(message)) => {
+                        Err(crate::formats::model_files::RangeError::Failed(message)) => {
                             return Err(crate::logging::redact(&message, &[]));
                         }
                     };
-                    let opened = Arc::new(crate::model_files::opened(&summary));
+                    let opened = Arc::new(crate::formats::model_files::opened(&summary));
                     let options = OpenOptions {
                         format: Some(format),
                         opened: Some(opened.clone()),
@@ -1558,7 +1562,7 @@ impl App {
                         .or_else(|| CompressionFormat::from_extension(&file))
                         .ok_or_else(|| format!("{} is not compressed", path.display()))?;
                     let temp_dir = options.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
-                    let copy = crate::readers::csv::decompress_to_copy(
+                    let copy = crate::formats::readers::csv::decompress_to_copy(
                         &file,
                         compression,
                         &temp_dir,
@@ -1623,9 +1627,10 @@ impl App {
                     let lines = options.delimited.is_none()
                         && options.format.is_some_and(FileFormat::is_lines);
                     let (state, opened) = if lines {
-                        let (read, opened) =
-                            crate::readers::csv::from_lines_decompressed(&file, &options, &writer)
-                                .map_err(failed)?;
+                        let (read, opened) = crate::formats::readers::csv::from_lines_decompressed(
+                            &file, &options, &writer,
+                        )
+                        .map_err(failed)?;
                         let state = DataTableState::from_read(read, &options).map_err(failed)?;
                         (state, Some(opened))
                     } else {
@@ -1679,7 +1684,7 @@ impl App {
                     };
                     let converted = match what {
                         loading::Conversion::Streams => {
-                            let converted = crate::ipc_stream::convert(
+                            let converted = crate::formats::ipc_stream::convert(
                                 &files,
                                 options.temp_dir.as_deref(),
                                 &writer,
@@ -1693,8 +1698,8 @@ impl App {
                         }
                         loading::Conversion::Text(format) => {
                             let display = path.clone().unwrap_or_else(|| files[0].clone());
-                            let (converted, detail) =
-                                crate::readers::convert(&crate::readers::ConvertIn {
+                            let (converted, detail) = crate::formats::readers::convert(
+                                &crate::formats::readers::ConvertIn {
                                     files: &files,
                                     display: &display,
                                     format,
@@ -1702,8 +1707,9 @@ impl App {
                                     formats: &formats,
                                     writer: &writer,
                                     read: &read,
-                                })
-                                .map_err(named)?;
+                                },
+                            )
+                            .map_err(named)?;
                             loading::Converted::Frame {
                                 files: converted.files,
                                 lf: Box::new(converted.lf),
@@ -2008,7 +2014,7 @@ impl App {
             .map_err(color_eyre::eyre::Report::from)?;
         let partition_columns =
             match path.filter(|p| options.hive && (p.is_dir() || source::expands_as_glob(p))) {
-                Some(p) => crate::readers::hive::discover_hive_partition_columns(p)
+                Some(p) => crate::formats::readers::hive::discover_hive_partition_columns(p)
                     .into_iter()
                     .filter(|c| schema.contains(c.as_str()))
                     .collect::<Vec<_>>(),
@@ -2039,7 +2045,7 @@ impl App {
         // is likely a data row, which `H` reads as data.
         let names_look_like_data = options.format.and_then(FileFormat::separator).is_some()
             && options.has_header != Some(false)
-            && !crate::schema_union::names_are_names(
+            && !crate::formats::schema_union::names_are_names(
                 &state
                     .schema()
                     .iter_names()
@@ -2092,7 +2098,7 @@ impl App {
         // from their download (`cloud_arrow`).
         facts.remote_source = match &options.arrow_parts {
             Some(parts) => parts.iter().any(|part| {
-                matches!(part, crate::ipc_stream::Part::InPlace(p) if source::is_remote_url(p))
+                matches!(part, crate::formats::ipc_stream::Part::InPlace(p) if source::is_remote_url(p))
             }),
             None => path.is_some_and(source::scans_in_place),
         };
@@ -2133,8 +2139,8 @@ impl App {
         } else {
             PlRefPath::new(url)
         };
-        let scan = crate::readers::of(format).bucket_scan?;
-        Some(scan(crate::readers::BucketIn {
+        let scan = crate::formats::readers::of(format).bucket_scan?;
+        Some(scan(crate::formats::readers::BucketIn {
             url,
             path: pl_path,
             cloud: cloud_opts,
@@ -2259,7 +2265,8 @@ impl App {
             DataTableState::from_schema_and_lazyframe(footer.schema.clone(), lf, options, None)?;
         // Record it in the dataset index, as the prefix route does.
         Self::record_cloud_object_facts(report.remembered.as_ref(), &full, &footer);
-        let column_bytes = crate::schema_union::column_bytes_per_row(&[Some(footer.clone())]);
+        let column_bytes =
+            crate::formats::schema_union::column_bytes_per_row(&[Some(footer.clone())]);
         let facts = OpenFacts {
             remote_objects: vec![crate::local_copy::RemoteObject {
                 url: full,
@@ -2377,7 +2384,7 @@ impl App {
             .iter()
             .map(|f| f.file_name().and_then(|n| n.to_str()).unwrap_or_default())
             .collect();
-        let (chosen, splits) = crate::hf_splits::choose(&names, options.table.as_deref())
+        let (chosen, splits) = crate::formats::hf_splits::choose(&names, options.table.as_deref())
             .map_err(|e| color_eyre::eyre::eyre!("{}: {e}", dir.display()))?;
         report.splits = Some(Arc::new(splits));
         Ok(chosen.into_iter().map(|i| files[i].clone()).collect())
@@ -2407,13 +2414,13 @@ impl App {
 
     /// The inputs of an Arrow read as one table, in order: IPC files scanned in place,
     /// and each run of streams as its rows of the `converted` IPC file. Stacked as a
-    /// directory's files are ([`crate::readers::polars::union_of_files`]).
+    /// directory's files are ([`crate::formats::readers::polars::union_of_files`]).
     fn scan_arrow_parts(
         cloud: &crate::config::CloudConfig,
         converted: Option<&PathBuf>,
-        parts: &[crate::ipc_stream::Part],
+        parts: &[crate::formats::ipc_stream::Part],
     ) -> Result<LazyFrame> {
-        use crate::ipc_stream::Part;
+        use crate::formats::ipc_stream::Part;
         #[cfg(not(feature = "cloud"))]
         let _ = cloud;
         let scan = |path: &Path| -> Result<LazyFrame> {
@@ -2487,7 +2494,7 @@ impl App {
             1 => Ok(frames.remove(0)),
             _ => Ok(polars::prelude::concat(
                 frames.as_slice(),
-                crate::readers::polars::union_of_files(),
+                crate::formats::readers::polars::union_of_files(),
             )?),
         }
     }
@@ -2503,7 +2510,7 @@ impl App {
         formats: &crate::formats::Registry,
     ) -> Result<Scan> {
         let listed: Vec<&str> = splits.iter().map(String::as_str).collect();
-        let mut picked = crate::hf_splits::pick(&listed, options.table.as_deref())
+        let mut picked = crate::formats::hf_splits::pick(&listed, options.table.as_deref())
             .map_err(|e| color_eyre::eyre::eyre!("{}: {e}", dir.display()))?;
         let split = dir.join(picked.split.as_deref().unwrap_or_default());
         let inner = OpenOptions {
@@ -2520,12 +2527,12 @@ impl App {
 
     /// Whether the files about to be read as one table differ in columns, for a note.
     /// Only footerless formats (Parquet's footers give the exact version), and only
-    /// the [`crate::schema_union::sample_files`] spread, since the user is waiting.
+    /// the [`crate::formats::schema_union::sample_files`] spread, since the user is waiting.
     fn files_disagree(
         files: &[PathBuf],
         options: &OpenOptions,
         found: FileFormat,
-    ) -> crate::schema_union::Disagreement {
+    ) -> crate::formats::schema_union::Disagreement {
         // The format the read will use: `--format` outranks the names, and judging with
         // another reader would describe a read that never happened.
         let format = options.format.unwrap_or(found);
@@ -2537,15 +2544,16 @@ impl App {
         if options.null_values.is_some() {
             return Default::default();
         }
-        crate::schema_union::sample_files(files, format, &Self::read_as(options)).disagreement()
+        crate::formats::schema_union::sample_files(files, format, &Self::read_as(options))
+            .disagreement()
     }
 
     /// The reader settings a sample copies to describe what the open will do, from the
     /// open's actual options (`from_args_and_config` always fills
     /// `infer_schema_length` and `parse_strings`, so "did the user set anything" is
     /// always true).
-    pub(crate) fn read_as(options: &OpenOptions) -> crate::schema_union::ReadAs {
-        crate::schema_union::ReadAs {
+    pub(crate) fn read_as(options: &OpenOptions) -> crate::formats::schema_union::ReadAs {
+        crate::formats::schema_union::ReadAs {
             delimiter: options.delimiter,
             has_header: options.has_header,
             skip_rows: options.skip_rows,
@@ -2592,8 +2600,8 @@ impl App {
             if options.table.is_some() && options.splits.is_none() {
                 // Named by an input the user knows, never the converted copy.
                 let named = parts.first().map(|part| match part {
-                    crate::ipc_stream::Part::InPlace(path) => path.as_path(),
-                    crate::ipc_stream::Part::Converted { source, .. } => source.as_path(),
+                    crate::formats::ipc_stream::Part::InPlace(path) => path.as_path(),
+                    crate::formats::ipc_stream::Part::Converted { source, .. } => source.as_path(),
                 });
                 return Err(Self::one_table(named, Some(FileFormat::Arrow)));
             }
@@ -2764,7 +2772,9 @@ impl App {
         if options.delimited.is_none()
             && options.format.is_none()
             && found.separator().is_some()
-            && let Some(first) = files.iter().find(|f| !crate::nul_tail::holds_nothing(f))
+            && let Some(first) = files
+                .iter()
+                .find(|f| !crate::formats::nul_tail::holds_nothing(f))
             && let Some(choice) = Self::delimited_spec_of(first, options, formats)?
         {
             let nested = OpenOptions {
@@ -2821,11 +2831,13 @@ impl App {
             ));
         };
         delimited.apply(&mut nested);
-        nested.delimited = Some(Arc::new(crate::delimited_spec::DelimitedRead::chosen(
-            choice.spec,
-            choice.by,
-            choice.also,
-        )));
+        nested.delimited = Some(Arc::new(
+            crate::formats::delimited_spec::DelimitedRead::chosen(
+                choice.spec,
+                choice.by,
+                choice.also,
+            ),
+        ));
         Self::build_local_lazyframe(paths, &nested, report, formats)
     }
 
@@ -2859,7 +2871,9 @@ impl App {
             && source::expands_as_glob(pattern)
         {
             let files = crate::local_glob::expand(pattern);
-            if let Some(first) = files.iter().find(|f| !crate::nul_tail::holds_nothing(f))
+            if let Some(first) = files
+                .iter()
+                .find(|f| !crate::formats::nul_tail::holds_nothing(f))
                 && let Some(choice) = Self::delimited_spec_of(first, options, formats)?
             {
                 let format = FileFormat::from_path(first).filter(|f| f.separator().is_some());
@@ -2914,7 +2928,7 @@ impl App {
             && report.delimited.is_none()
             && path.is_file()
         {
-            report.delimited = Some(Arc::new(crate::delimited_spec::read_facts(
+            report.delimited = Some(Arc::new(crate::formats::delimited_spec::read_facts(
                 read, paths, options,
             )?));
         }
@@ -2927,7 +2941,7 @@ impl App {
             if !is_single_file {
                 // The directory's contents pick the reader.
                 if path.is_dir()
-                    && let Some(splits) = crate::hf_splits::dataset_dict(path)
+                    && let Some(splits) = crate::formats::hf_splits::dataset_dict(path)
                 {
                     return Self::dataset_dict_split(path, &splits, options, report, formats);
                 }
@@ -2993,7 +3007,7 @@ impl App {
                     path.is_dir() || path.as_os_str().to_string_lossy().contains(".parquet");
                 if use_parquet_hive {
                     // Only the LazyFrame here; schema and partition discovery are the schema phase's.
-                    return crate::readers::hive::scan_parquet_hive(path).map(Scan::from);
+                    return crate::formats::readers::hive::scan_parquet_hive(path).map(Scan::from);
                 }
                 return Err(color_eyre::eyre::eyre!(
                     "With --hive use a directory or a glob pattern for Parquet (e.g. path/to/dir or path/**/*.parquet)"
@@ -3022,7 +3036,7 @@ impl App {
             .or_else(|| {
                 named.filter(|f| !f.is_lines()).map(|f| {
                     (!compressed)
-                        .then(|| crate::readers::refined(path, f))
+                        .then(|| crate::formats::readers::refined(path, f))
                         .flatten()
                         .unwrap_or(f)
                 })
@@ -3032,8 +3046,8 @@ impl App {
                     && crate::discover::is_parquet_key(&path.to_string_lossy()))
                 .then_some(FileFormat::Parquet)
             })
-            // Any other unnamed format, by its first bytes (see `crate::readers`).
-            .or_else(|| crate::readers::sniff_open(path, options.compression))
+            // Any other unnamed format, by its first bytes (see `crate::formats::readers`).
+            .or_else(|| crate::formats::readers::sniff_open(path, options.compression))
             .or(named);
         // Text no signature claims: JSON, CSV or TSV on evidence, lines otherwise; non-text
         // bytes are shown raw.
@@ -3041,8 +3055,8 @@ impl App {
             && let [file] = paths
             && file.is_file()
         {
-            effective_format = crate::lines::guess_file(file, options.compression)
-                .map(|f| crate::lines::as_asked(f, options));
+            effective_format = crate::formats::lines::guess_file(file, options.compression)
+                .map(|f| crate::formats::lines::as_asked(f, options));
             report.guessed = effective_format.is_some();
         }
         report.format = effective_format;
@@ -3086,7 +3100,7 @@ impl App {
             }
             return Err(color_eyre::eyre::eyre!(match paths.len() {
                 1 => UNSUPPORTED.to_string(),
-                _ => crate::readers::many_files_refused(),
+                _ => crate::formats::readers::many_files_refused(),
             }));
         };
         // The same question home asks (`reads_many_files`) before offering a directory, so
@@ -3099,7 +3113,9 @@ impl App {
                 )
                 .into());
             }
-            return Err(color_eyre::eyre::eyre!(crate::readers::many_files_refused()));
+            return Err(color_eyre::eyre::eyre!(
+                crate::formats::readers::many_files_refused()
+            ));
         }
         let guessed;
         let options = if report.guessed {
@@ -3111,7 +3127,7 @@ impl App {
         } else {
             options
         };
-        crate::readers::scan(crate::readers::ScanIn {
+        crate::formats::readers::scan(crate::formats::readers::ScanIn {
             format,
             paths,
             options,

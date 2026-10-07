@@ -162,7 +162,7 @@ impl Tally {
 #[derive(Debug, Clone, Default)]
 pub struct OpenReport {
     /// How far the footer pass has got, for the loading screen.
-    pub progress: std::sync::Arc<crate::schema_union::FooterProgress>,
+    pub progress: std::sync::Arc<crate::formats::schema_union::FooterProgress>,
     /// What the work has cost, for the Info panel.
     pub meter: std::sync::Arc<Meter>,
     /// Where to find what a previous open learned and leave what this one learns; `None`

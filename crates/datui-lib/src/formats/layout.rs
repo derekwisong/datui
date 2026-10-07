@@ -280,8 +280,8 @@ fn read_fields(
                 count: count as usize,
             };
             let layout = layout_of(spec, field, name, place, read)?;
-            let column =
-                crate::fixed_records::decode(bytes, &layout, 1).map_err(|e| e.to_string())?;
+            let column = crate::formats::fixed_records::decode(bytes, &layout, 1)
+                .map_err(|e| e.to_string())?;
             let value = column.get(0).map_err(|e| e.to_string())?.into_static();
             if footer {
                 read.footer.push((name.clone(), value));
@@ -406,14 +406,14 @@ pub fn symbols(bytes: &[u8], format: LookupFormat) -> Vec<String> {
         }
         LookupFormat::Fixed(n) => bytes
             .chunks(n as usize)
-            .map(crate::fixed_records::text)
+            .map(crate::formats::fixed_records::text)
             .collect(),
     }
 }
 
 /// The rows a spec reads, however they are framed: what the table, a window of it,
 /// `formats check` and the fuzz target read through.
-pub trait SpecRecords: crate::pushdown::Windowed + std::fmt::Debug {
+pub trait SpecRecords: crate::formats::pushdown::Windowed + std::fmt::Debug {
     fn rows(&self) -> usize;
     fn schema(&self) -> SchemaRef;
     /// The frame: a scan that decodes only what a query asks for.
@@ -450,21 +450,21 @@ impl SpecRecords for FixedRecords {
     }
 }
 
-impl SpecRecords for crate::framed_records::FramedRecords {
+impl SpecRecords for crate::formats::framed_records::FramedRecords {
     fn rows(&self) -> usize {
-        crate::framed_records::FramedRecords::rows(self)
+        crate::formats::framed_records::FramedRecords::rows(self)
     }
     fn schema(&self) -> SchemaRef {
-        crate::framed_records::FramedRecords::schema(self)
+        crate::formats::framed_records::FramedRecords::schema(self)
     }
     fn into_lazy(self: Arc<Self>) -> PolarsResult<LazyFrame> {
-        Ok(crate::framed_records::FramedRecords::lazy(&self))
+        Ok(crate::formats::framed_records::FramedRecords::lazy(&self))
     }
     fn collect(&self, rows: usize) -> PolarsResult<DataFrame> {
-        crate::framed_records::FramedRecords::collect(self, rows)
+        crate::formats::framed_records::FramedRecords::collect(self, rows)
     }
     fn sources(&self) -> &[Arc<Bytes>] {
-        crate::framed_records::FramedRecords::sources(self)
+        crate::formats::framed_records::FramedRecords::sources(self)
     }
 }
 
@@ -500,6 +500,6 @@ pub(crate) fn trailing_note(what: &str, bytes: &[u8]) -> String {
         "{what}: {} trailing {} left out, not a whole record: {}{more}",
         bytes.len(),
         if bytes.len() == 1 { "byte" } else { "bytes" },
-        crate::fixed_records::hex(shown),
+        crate::formats::fixed_records::hex(shown),
     )
 }

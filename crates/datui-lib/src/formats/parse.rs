@@ -440,8 +440,16 @@ impl Reader<'_> {
     pub(crate) fn delimited(
         &self,
         top: &BTreeMap<&str, &Value<'_>>,
-    ) -> Result<(crate::delimited_spec::Delimited, Vec<(String, ColumnNote)>), SpecError> {
-        use crate::delimited_spec::{Delimited, Derived, DerivedKind, HeaderRows, MAX_HEAD_LINE};
+    ) -> Result<
+        (
+            crate::formats::delimited_spec::Delimited,
+            Vec<(String, ColumnNote)>,
+        ),
+        SpecError,
+    > {
+        use crate::formats::delimited_spec::{
+            Delimited, Derived, DerivedKind, HeaderRows, MAX_HEAD_LINE,
+        };
         let line = |value: &Value<'_>, what: &str| -> Result<usize, SpecError> {
             let n = self.integer(value, what)?;
             if n < 1 || n as usize > MAX_HEAD_LINE {
@@ -486,7 +494,7 @@ impl Reader<'_> {
         }
         if let Some(v) = top.get("comment") {
             let text = self.string(v, "comment")?;
-            crate::csv_dialect::check_comment_char(&text)
+            crate::formats::csv_dialect::check_comment_char(&text)
                 .map_err(|e| self.error(&v.span(), format!("comment: {e}")))?;
             spec.comment_char = Some(text);
         }
@@ -616,8 +624,9 @@ impl Reader<'_> {
                             .get("format")
                             .map(|f| self.string(f, &format!("{what}.format")))
                             .transpose()?;
-                        let ty = crate::column_types::ColumnType::named(&type_name, format)
-                            .map_err(|e| self.error(&t.span(), format!("{what}.type: {e}")))?;
+                        let ty =
+                            crate::formats::column_types::ColumnType::named(&type_name, format)
+                                .map_err(|e| self.error(&t.span(), format!("{what}.type: {e}")))?;
                         Some(ty)
                     }
                     None => None,

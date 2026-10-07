@@ -1043,7 +1043,7 @@ fn test_a_local_hive_past_one_wave_opens_from_its_ends_and_reads_each_footer_onc
     // a slow filesystem, held still.
     let gate = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
     let held = gate.clone();
-    let _holding = datui::schema_union::on_local_footer_read(dir.path(), move |path| {
+    let _holding = datui::formats::schema_union::on_local_footer_read(dir.path(), move |path| {
         if path == first || path == last {
             return;
         }
@@ -1180,7 +1180,7 @@ fn test_a_local_hive_reopened_unchanged_reads_no_footers() {
 #[test]
 fn test_a_local_hive_past_the_sample_reads_each_footer_once_and_reopens_reading_none() {
     let dir = tempfile::tempdir().unwrap();
-    let files = datui::schema_union::MAX_FOOTER_READS + 5_000;
+    let files = datui::formats::schema_union::MAX_FOOTER_READS + 5_000;
     let mut bytes = Vec::new();
     ParquetWriter::new(&mut bytes)
         .finish(&mut df!("v" => [1i64, 2, 3]).unwrap())
@@ -1234,7 +1234,7 @@ fn test_a_local_hive_past_the_sample_reads_each_footer_once_and_reopens_reading_
 #[test]
 fn test_a_local_hive_reopened_unchanged_pages_from_only_the_files_holding_its_rows() {
     let dir = tempfile::tempdir().unwrap();
-    let (days, rows) = (datui::schema_union::FOOTERS_AT_ONCE + 6, 50);
+    let (days, rows) = (datui::formats::schema_union::FOOTERS_AT_ONCE + 6, 50);
     let mut files = Vec::new();
     for day in 0..days {
         let v: Vec<i64> = (0..rows).map(|r| (day * rows + r) as i64).collect();
@@ -4843,7 +4843,7 @@ fn test_a_directory_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
     let said = datui::notes::from_the_open(
         &[],
         None,
-        datui::schema_union::Disagreement {
+        datui::formats::schema_union::Disagreement {
             headerless: true,
             ..Default::default()
         },

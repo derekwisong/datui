@@ -115,9 +115,9 @@ pub fn refuse(paths: &[PathBuf], piped: bool) -> Option<&'static str> {
 }
 
 /// The format and compression the first bytes of a file say it is: compression by its
-/// magic numbers, then whatever a format's signature says (`crate::readers::sniff`),
+/// magic numbers, then whatever a format's signature says (`crate::formats::readers::sniff`),
 /// and text no format claims as JSON, CSV or TSV on evidence, lines otherwise
-/// ([`crate::lines::guess`]). `head` is all there is when it is shorter than `HEAD`.
+/// ([`crate::formats::lines::guess`]). `head` is all there is when it is shorter than `HEAD`.
 pub fn sniff(head: &[u8]) -> (FileFormat, Option<CompressionFormat>) {
     let (format, compression, _) = sniffed(head);
     (format, compression)
@@ -131,7 +131,11 @@ pub(crate) fn sniff_for(
 ) -> (FileFormat, Option<CompressionFormat>, bool) {
     let (format, compression, guessed) = sniffed(head);
     match guessed {
-        true => (crate::lines::as_asked(format, options), compression, true),
+        true => (
+            crate::formats::lines::as_asked(format, options),
+            compression,
+            true,
+        ),
         false => (format, compression, false),
     }
 }
@@ -148,10 +152,12 @@ fn sniffed(head: &[u8]) -> (FileFormat, Option<CompressionFormat>, bool) {
         // What is inside is looked at once it is on disk ([`inside`]).
         return (FileFormat::TEXT, Some(*compression), false);
     }
-    if let Some(format) = crate::readers::sniff(head, None, crate::readers::Asked::Pipe, |_| true) {
+    if let Some(format) =
+        crate::formats::readers::sniff(head, None, crate::formats::readers::Asked::Pipe, |_| true)
+    {
         return (format, None, false);
     }
-    let format = crate::lines::guess(head, head.len() < HEAD).unwrap_or(FileFormat::TEXT);
+    let format = crate::formats::lines::guess(head, head.len() < HEAD).unwrap_or(FileFormat::TEXT);
     (format, None, true)
 }
 
@@ -162,22 +168,22 @@ fn inside(file: &Path, compression: CompressionFormat) -> (FileFormat, bool) {
     let Some(head) = crate::formats::head_of(file, Some(compression), HEAD as u64) else {
         return (FileFormat::TEXT, false);
     };
-    if let Some(format) = crate::readers::sniff(
+    if let Some(format) = crate::formats::readers::sniff(
         &head,
         None,
-        crate::readers::Asked::Pipe,
+        crate::formats::readers::Asked::Pipe,
         FileFormat::reads_into,
     ) {
         return (format, false);
     }
-    let format = crate::lines::guess(&head, head.len() < HEAD)
+    let format = crate::formats::lines::guess(&head, head.len() < HEAD)
         .filter(|f| f.decompressed_once())
         .unwrap_or(FileFormat::TEXT);
     (format, true)
 }
 
 /// Bytes [`sniff`] looks at.
-const HEAD: usize = crate::readers::HEAD;
+const HEAD: usize = crate::formats::readers::HEAD;
 
 /// Where what comes in on standard input is copied: `--temp-dir`, else `spool` in the
 /// cache directory, on disk, rather than the system's temp directory, which is memory
@@ -265,7 +271,7 @@ pub(crate) fn described(file: &Path, options: OpenOptions) -> Result<OpenOptions
         (format, guessed) = inside(file, compression);
     }
     if guessed {
-        format = crate::lines::as_asked(format, &options);
+        format = crate::formats::lines::as_asked(format, &options);
     }
     Ok(match (options.format, options.compression) {
         // A delimited format named and compression not: the bytes say whether it is

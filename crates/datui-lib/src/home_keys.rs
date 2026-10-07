@@ -81,8 +81,8 @@ impl App {
                     }
                     // Before the prompt closes, so a typo is fixed in place.
                     if !path.exists()
-                        && crate::members::split(&path).is_none()
-                        && crate::members::split_variant(&path, &self.formats).is_none()
+                        && crate::formats::members::split(&path).is_none()
+                        && crate::formats::members::split_variant(&path, &self.formats).is_none()
                     {
                         self.home.status = Some(format!("No such path: {}", path.display()));
                         return None;

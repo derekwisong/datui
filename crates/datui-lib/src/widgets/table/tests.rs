@@ -487,7 +487,7 @@ fn the_sort_mark_composes_with_the_drift_mark() {
         .with_sort(vec!["age".to_string()], vec![false])
         .with_drift(
             Vec::new(),
-            Arc::new(vec![crate::schema_union::DriftGroup {
+            Arc::new(vec![crate::formats::schema_union::DriftGroup {
                 absent: vec!["age".into()],
                 unread: Vec::new(),
             }]),

@@ -108,7 +108,7 @@ impl App {
     pub(crate) fn retype_column(
         &mut self,
         column: &str,
-        ty: Option<crate::column_types::ColumnType>,
+        ty: Option<crate::formats::column_types::ColumnType>,
     ) {
         let Some(state) = self.data_table_state.as_mut() else {
             return;

@@ -63,7 +63,7 @@ fn screen(app: &mut App) -> String {
 }
 
 /// The MIDI tab of the dataset on screen.
-fn midi_tab(app: &App) -> datui::text_formats::Detail {
+fn midi_tab(app: &App) -> datui::formats::text_formats::Detail {
     let detail = app
         .data_table_state
         .as_ref()

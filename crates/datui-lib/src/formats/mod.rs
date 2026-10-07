@@ -2,12 +2,50 @@
 //! spec names its format (`acme.l2feed`), says which files match (glob, magic, header
 //! values), and lays out header and records. Specs are data (no expressions or code:
 //! fields refer to earlier ones by name), and every size read from a file is bounded.
-//! Decoding is [`crate::fixed_records`]' for fixed-size records and
-//! [`crate::framed_records`]' otherwise; [`files`] reads a directory of one spec's
+//! Decoding is [`crate::formats::fixed_records`]' for fixed-size records and
+//! [`crate::formats::framed_records`]' otherwise; [`files`] reads a directory of one spec's
 //! files. This module turns a spec and a file into that reader's columns.
 
+pub mod audio;
+pub mod candump;
+pub mod column_types;
+pub mod columns;
+pub mod csv_dialect;
+pub mod dataflash;
+pub(crate) mod dataset_files;
+pub mod dbc;
+pub mod delimited_spec;
+pub mod elf;
+pub mod excel;
+pub mod fix;
+pub mod fixed_records;
+pub mod framed_records;
+pub mod gps;
+pub mod hf_splits;
+pub mod indexed;
+pub mod ipc_stream;
+pub mod journal;
+pub mod lines;
+pub mod members;
+pub mod midi;
+pub mod model_files;
+pub mod nul_tail;
+pub mod numpy;
+pub mod parquet_footer;
+pub mod pushdown;
+pub mod readers;
+pub mod row_index;
+pub mod schema_union;
+pub mod sdf;
+pub(crate) mod segments;
+pub(crate) mod spec_union;
+pub mod sqlite;
+pub mod text_formats;
+pub mod ulog;
+pub mod vcd;
+
 use crate::catalog::ColumnNote;
-use crate::fixed_records::{Bytes, ColumnLayout, FixedRecords, Logical, Null, Physical};
+use crate::formats::fixed_records::{Bytes, ColumnLayout, FixedRecords, Logical, Null, Physical};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use polars::prelude::{
     AnyValue, DataFrame, LazyFrame, PlSmallStr, PolarsResult, SchemaRef, TimeUnit,
@@ -683,7 +721,7 @@ pub struct Spec {
     pub records: Records,
     /// For `kind = "delimited"`: the reading options of a CSV-like file. A delimited
     /// spec has no header or record fields.
-    pub delimited: Option<Arc<crate::delimited_spec::Delimited>>,
+    pub delimited: Option<Arc<crate::formats::delimited_spec::Delimited>>,
     pub footer: Option<Footer>,
     pub blocks: Option<Blocks>,
     pub capture: Option<Capture>,

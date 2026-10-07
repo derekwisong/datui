@@ -239,7 +239,7 @@ impl DataTableState {
                 .filter(|n| {
                     n != &spec.pivot_column
                         && n != &spec.value_column
-                        && n != crate::schema_union::DRIFT_COLUMN
+                        && n != crate::formats::schema_union::DRIFT_COLUMN
                 })
                 .collect()
         } else {
@@ -385,7 +385,9 @@ impl DataTableState {
 
     /// What is left to count of the values the read's types made null: the frame
     /// before the types, and the columns. `None` once counted, or with nothing typed.
-    pub(crate) fn unfit_to_count(&self) -> Option<(LazyFrame, Vec<crate::column_types::Typed>)> {
+    pub(crate) fn unfit_to_count(
+        &self,
+    ) -> Option<(LazyFrame, Vec<crate::formats::column_types::Typed>)> {
         if self.unfit_notes.is_some() || self.typing.typed.is_empty() {
             return None;
         }
@@ -393,7 +395,7 @@ impl DataTableState {
     }
 
     /// The view's column types and made columns, in the order asked.
-    pub fn column_changes(&self) -> &[crate::column_types::ColumnChange] {
+    pub fn column_changes(&self) -> &[crate::formats::column_types::ColumnChange] {
         &self.view.column_changes
     }
 
@@ -402,7 +404,7 @@ impl DataTableState {
         self.view
             .column_changes
             .iter()
-            .filter(|c| matches!(c.change, crate::column_types::Change::Typed(_)))
+            .filter(|c| matches!(c.change, crate::formats::column_types::Change::Typed(_)))
             .map(|c| c.name.clone())
             .collect()
     }
@@ -450,20 +452,27 @@ impl DataTableState {
     }
 
     /// The type the view gives `column`, if it gives one.
-    pub fn column_type_of(&self, column: &str) -> Option<&crate::column_types::ColumnType> {
+    pub fn column_type_of(
+        &self,
+        column: &str,
+    ) -> Option<&crate::formats::column_types::ColumnType> {
         self.view
             .column_changes
             .iter()
             .find_map(|c| match &c.change {
-                crate::column_types::Change::Typed(ty) if c.name == column => Some(ty),
+                crate::formats::column_types::Change::Typed(ty) if c.name == column => Some(ty),
                 _ => None,
             })
     }
 
     /// `column` as `ty`, or as read again with `None`. The view's own type wins over
     /// what the read gave the column. Lazy: the next rows read are typed.
-    pub fn set_column_type(&mut self, column: &str, ty: Option<crate::column_types::ColumnType>) {
-        use crate::column_types::{Change, ColumnChange};
+    pub fn set_column_type(
+        &mut self,
+        column: &str,
+        ty: Option<crate::formats::column_types::ColumnType>,
+    ) {
+        use crate::formats::column_types::{Change, ColumnChange};
         self.view
             .column_changes
             .retain(|c| !(c.name == column && matches!(c.change, Change::Typed(_))));
@@ -480,9 +489,9 @@ impl DataTableState {
     /// column it is made from, which stays. Its name may not be taken.
     pub fn add_made_column(
         &mut self,
-        derived: crate::column_types::Derived,
+        derived: crate::formats::column_types::Derived,
     ) -> std::result::Result<(), String> {
-        use crate::column_types::{Change, ColumnChange};
+        use crate::formats::column_types::{Change, ColumnChange};
         if self.view.schema.contains(&derived.name) {
             return Err(format!("a column is named {} already", derived.name));
         }
@@ -515,7 +524,7 @@ impl DataTableState {
     /// missing are left out with a note, their names returned.
     pub fn set_column_changes(
         &mut self,
-        changes: &[crate::column_types::ColumnChange],
+        changes: &[crate::formats::column_types::ColumnChange],
     ) -> Vec<String> {
         self.view.column_changes = Vec::new();
         let base = self.view.base_schema.clone();
@@ -523,8 +532,8 @@ impl DataTableState {
         let mut dropped = Vec::new();
         for change in changes {
             let fits = match &change.change {
-                crate::column_types::Change::Typed(_) => known.contains(&change.name),
-                crate::column_types::Change::Made { from, .. } => {
+                crate::formats::column_types::Change::Typed(_) => known.contains(&change.name),
+                crate::formats::column_types::Change::Made { from, .. } => {
                     from.iter().all(|f| known.contains(f)) && change.derived().is_some()
                 }
             };
@@ -552,7 +561,7 @@ impl DataTableState {
         };
         // The made columns go before their first source, as they did when made.
         for change in &self.view.column_changes {
-            if let crate::column_types::Change::Made { from, .. } = &change.change
+            if let crate::formats::column_types::Change::Made { from, .. } = &change.change
                 && !self.view.column_order.contains(&change.name)
             {
                 let at = self
@@ -607,9 +616,9 @@ impl DataTableState {
         mut lf: LazyFrame,
     ) -> (
         LazyFrame,
-        Option<(LazyFrame, Vec<crate::column_types::Typed>)>,
+        Option<(LazyFrame, Vec<crate::formats::column_types::Typed>)>,
     ) {
-        use crate::column_types::Change;
+        use crate::formats::column_types::Change;
         if self.view.column_changes.is_empty() {
             return (lf, None);
         }
@@ -625,7 +634,7 @@ impl DataTableState {
                         continue;
                     };
                     lf = lf.with_column(ty.expr(&change.name, &from).alias(name.clone()));
-                    typed.push(crate::column_types::Typed {
+                    typed.push(crate::formats::column_types::Typed {
                         column: change.name.clone(),
                         ty: ty.clone(),
                         from,
@@ -653,7 +662,7 @@ impl DataTableState {
     /// frame, the columns and the version of the changes it is for.
     pub(crate) fn changes_unfit_to_count(
         &self,
-    ) -> Option<(LazyFrame, Vec<crate::column_types::Typed>, u64)> {
+    ) -> Option<(LazyFrame, Vec<crate::formats::column_types::Typed>, u64)> {
         if self
             .changes_unfit
             .as_ref()
@@ -670,7 +679,7 @@ impl DataTableState {
     pub(crate) fn changes_unfit_counted(
         &mut self,
         version: u64,
-        unfit: &[crate::column_types::Unfit],
+        unfit: &[crate::formats::column_types::Unfit],
     ) {
         if version == self.view.changes_version {
             // Something new to say: the `i` chip lights again.
@@ -679,17 +688,17 @@ impl DataTableState {
             }
             self.changes_unfit = Some((
                 version,
-                crate::column_types::unfit_notes(unfit, "the view's column types"),
+                crate::formats::column_types::unfit_notes(unfit, "the view's column types"),
             ));
         }
     }
 
     /// The counts of the values the types made null, as notes.
-    pub(crate) fn unfit_counted(&mut self, unfit: &[crate::column_types::Unfit]) {
+    pub(crate) fn unfit_counted(&mut self, unfit: &[crate::formats::column_types::Unfit]) {
         if !unfit.is_empty() {
             self.view.notes_seen = false;
         }
-        self.unfit_notes = Some(crate::column_types::unfit_notes(
+        self.unfit_notes = Some(crate::formats::column_types::unfit_notes(
             unfit,
             "counted over every row",
         ));
@@ -703,7 +712,7 @@ impl DataTableState {
                 .view
                 .column_changes
                 .iter()
-                .map(crate::column_types::ColumnChange::to_toml)
+                .map(crate::formats::column_types::ColumnChange::to_toml)
                 .collect();
             steps.push(Step::Unreproducible(format!(
                 "datui typed columns as a format spec would: {}",
@@ -756,7 +765,7 @@ impl DataTableState {
             .schema
             .iter_names()
             .map(|s| s.as_str())
-            .filter(|s| *s != crate::schema_union::DRIFT_COLUMN));
+            .filter(|s| *s != crate::formats::schema_union::DRIFT_COLUMN));
         if !in_order {
             steps.push(Step::Select(self.view.column_order.clone()));
         }
@@ -799,7 +808,7 @@ impl DataTableState {
         let mut lf = self.with_column_changes(self.view.base_lf.clone()).0;
         self.view.view_numbered = self.row_numbers && self.wants_view_numbers();
         if self.view.view_numbered {
-            lf = lf.with_row_index(crate::schema_union::DRIFT_COLUMN, None);
+            lf = lf.with_row_index(crate::formats::schema_union::DRIFT_COLUMN, None);
         }
         if let Some(e) = crate::python_script::filters_expr(&self.typed_filters()) {
             lf = lf.filter(e);

@@ -6,8 +6,8 @@
 //! Motorola bits, signed and multiplexed. Never a panic, and every decoded table has a
 //! row per frame of its message.
 
-use datui_lib::candump::{Decoded, Layers, Listing, index};
-use datui_lib::fixed_records::Bytes;
+use datui_lib::formats::candump::{Decoded, Layers, Listing, index};
+use datui_lib::formats::fixed_records::Bytes;
 use std::sync::Arc;
 
 pub fn run(bytes: &[u8]) {
@@ -16,8 +16,8 @@ pub fn run(bytes: &[u8]) {
         None => (bytes, &b""[..]),
     };
     let dbc = String::from_utf8_lossy(dbc);
-    let dbc = datui_lib::dbc::parse(&dbc, "fuzz", None).ok();
-    let _ = datui_lib::candump::looks_like(log);
+    let dbc = datui_lib::formats::dbc::parse(&dbc, "fuzz", None).ok();
+    let _ = datui_lib::formats::candump::looks_like(log);
     let Ok(index) = index(log) else {
         return;
     };

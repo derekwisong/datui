@@ -9,9 +9,9 @@ pub(crate) mod fixtures;
 
 #[cfg(feature = "cloud")]
 mod cloud_recent_facts {
-    use crate::dataset_files::DatasetFile;
     use crate::discover::EntryKind;
-    use crate::schema_union::FileFooter;
+    use crate::formats::dataset_files::DatasetFile;
+    use crate::formats::schema_union::FileFooter;
     use polars::prelude::{DataType, Field, Schema};
     use std::sync::Arc;
 
@@ -33,7 +33,7 @@ mod cloud_recent_facts {
     ) -> Option<(std::path::PathBuf, crate::cache::DatasetFacts)> {
         static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
         let runtime = RUNTIME.get_or_init(|| tokio::runtime::Runtime::new().unwrap());
-        let source = crate::dataset_files::StoreFiles::new(
+        let source = crate::formats::dataset_files::StoreFiles::new(
             full,
             String::new(),
             None,
@@ -41,7 +41,7 @@ mod cloud_recent_facts {
             Default::default(),
             runtime.handle(),
         );
-        crate::dataset_files::facts_of(Arc::new(source), files.to_vec(), read, footers)
+        crate::formats::dataset_files::facts_of(Arc::new(source), files.to_vec(), read, footers)
     }
 
     fn footer(rows: &[usize]) -> Option<FileFooter> {
@@ -132,20 +132,22 @@ mod cloud_recent_facts {
             cols_sampled: true,
             ..Default::default()
         };
-        assert!(crate::dataset_files::facts_worth_recording(None, &sample));
-        assert!(crate::dataset_files::facts_worth_recording(
+        assert!(crate::formats::dataset_files::facts_worth_recording(
+            None, &sample
+        ));
+        assert!(crate::formats::dataset_files::facts_worth_recording(
             Some(&sample),
             &sample
         ));
-        assert!(crate::dataset_files::facts_worth_recording(
+        assert!(crate::formats::dataset_files::facts_worth_recording(
             Some(&sample),
             &whole
         ));
-        assert!(crate::dataset_files::facts_worth_recording(
+        assert!(crate::formats::dataset_files::facts_worth_recording(
             Some(&whole),
             &whole
         ));
-        assert!(!crate::dataset_files::facts_worth_recording(
+        assert!(!crate::formats::dataset_files::facts_worth_recording(
             Some(&whole),
             &sample
         ));
@@ -312,14 +314,14 @@ fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![100],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
 
     let mut state = DataTableState::from_schema_and_lazyframe(
@@ -406,9 +408,9 @@ fn end_pressed_while_the_footers_are_coming_jumps_when_they_land() {
 /// estimate stands until a count lands exact.
 #[test]
 fn a_sampled_dataset_shows_an_estimate_until_it_is_counted() {
+    use crate::formats::schema_union::RowEstimate;
     use crate::render::footer::Total;
     use crate::render::main_view::MainViewContent;
-    use crate::schema_union::RowEstimate;
     use crate::table::{DataTableState, FootersFound, RemoteFiles, RemoteRead};
     use crate::{App, OpenOptions};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -419,14 +421,14 @@ fn a_sampled_dataset_shows_an_estimate_until_it_is_counted() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![40],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(3, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(3, &[0], &[Some(footer)])
     };
     let urls = || vec!["a".to_string(), "b".to_string(), "c".to_string()];
     // A count that says it has read one footer of three, then waits to be let go.
@@ -737,14 +739,14 @@ fn end_pressed_at_one_dataset_does_not_move_the_next() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![100],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
     let staged = move || {
         let mut state = DataTableState::from_schema_and_lazyframe(
@@ -829,14 +831,14 @@ fn a_staged_open_does_not_leave_a_count_running_that_never_ran() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![100],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
 
     let mut state = DataTableState::from_schema_and_lazyframe(
@@ -931,7 +933,8 @@ fn a_failed_read_names_the_file_opened_not_its_temp_copy() {
         ..OpenOptions::default()
     };
     let read =
-        crate::readers::csv::read_delimited(&gz, b',', &options, &Default::default()).unwrap();
+        crate::formats::readers::csv::read_delimited(&gz, b',', &options, &Default::default())
+            .unwrap();
     let state = DataTableState::from_read(read, &options).unwrap();
     let copy = state.temp_files()[0].to_path_buf();
     assert!(copy.starts_with(scratch.path()));
@@ -1075,14 +1078,14 @@ fn a_pass_that_brings_no_count_still_leaves_rows_on_screen() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![100],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
 
     let mut state = DataTableState::from_schema_and_lazyframe(
@@ -1234,14 +1237,14 @@ fn a_count_the_join_orphaned_does_not_strand_end_or_speak_for_a_later_one() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![100],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
     let mut lf = rows();
     let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
@@ -3394,14 +3397,14 @@ fn a_pass_from_the_dataset_before_this_one_joins_nothing_to_it() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![1],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
     let state_of = |lf: LazyFrame| {
         DataTableState::from_schema_and_lazyframe(
@@ -3479,14 +3482,14 @@ fn a_pass_that_failed_waits_for_work_already_asked_for() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![1],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
 
     let (tx, _rx) = std::sync::mpsc::channel();
@@ -3562,14 +3565,14 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![1],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
 
     let (tx, _rx) = std::sync::mpsc::channel();
@@ -3686,14 +3689,14 @@ fn columns_held_for_one_dataset_are_not_given_to_the_next() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![1],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
     let state_of = |lf: LazyFrame| {
         DataTableState::from_schema_and_lazyframe(
@@ -3764,14 +3767,14 @@ fn a_late_event_from_an_old_pass_does_not_throw_away_the_live_answer() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![1],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
     let found = || FootersFound {
         estimate: None,
@@ -3830,14 +3833,14 @@ fn a_footer_answer_survives_an_open_that_fails() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![1],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
     let found = FootersFound {
         estimate: None,
@@ -3923,7 +3926,7 @@ fn a_journal_reread_for_a_replaced_dataset_is_dropped() {
             .unwrap()
     };
     let detail = || {
-        Answer::JournalDescribed(Some(Box::new(crate::text_formats::Detail {
+        Answer::JournalDescribed(Some(Box::new(crate::formats::text_formats::Detail {
             tab: "Journal",
             ..Default::default()
         })))
@@ -3979,14 +3982,14 @@ fn columns_arriving_under_a_query_wait_rather_than_break_it() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![2],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
 
     let (tx, _rx) = std::sync::mpsc::channel();
@@ -4084,14 +4087,14 @@ fn a_staged_open_joins_what_its_footers_found() {
     let dataset_of = |lf: LazyFrame| {
         let mut lf = lf;
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![2],
             file_bytes: 0,
             row_group_bytes: Vec::new(),
             column_bytes: Vec::new(),
         };
-        crate::schema_union::union_sampled(1, &[0], &[Some(footer)])
+        crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)])
     };
 
     // The wider frame counts every time it is read, so the join can be asked

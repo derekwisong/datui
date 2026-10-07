@@ -17,7 +17,7 @@ use polars::prelude::LazyFrame;
 
 use crate::FileFormat;
 use crate::error_display::file_message;
-use crate::model_files::{self, ModelSummary, RangeError, RangeSource, Remote};
+use crate::formats::model_files::{self, ModelSummary, RangeError, RangeSource, Remote};
 use crate::source::{self, InputSource};
 
 /// A remote model read: its table, its summary, and what the read noticed.
@@ -646,7 +646,7 @@ mod tests {
     /// names the file in the one shape: the URL asked for, or the shard that failed.
     #[test]
     fn errors_name_the_file() {
-        let shard = |json: &str| crate::model_files::tests::safetensors_bytes(json, 0);
+        let shard = |json: &str| crate::formats::model_files::tests::safetensors_bytes(json, 0);
         let index = br#"{"weight_map":{"a":"bad.safetensors"}}"#.to_vec();
         let (base, _) = scripted(move |request| {
             let path = request.split_whitespace().nth(1).unwrap_or_default();
@@ -706,7 +706,7 @@ mod tests {
             let message = reading(name, format);
             eprintln!("{message}");
             let path = format!("{base}/{file}");
-            crate::readers::bad_input::assert_shape(&message, Path::new(&path));
+            crate::formats::readers::bad_input::assert_shape(&message, Path::new(&path));
             assert!(message.contains(says), "{name}: {message}");
         }
         let url = format!("{base}/missing.gguf");
@@ -718,14 +718,14 @@ mod tests {
             &|| false,
         );
         let message = fetched.expect_err("a 404 is refused");
-        crate::readers::bad_input::assert_shape(&message, Path::new(&url));
+        crate::formats::readers::bad_input::assert_shape(&message, Path::new(&url));
     }
 
     /// A sharded checkpoint over HTTP: the index, then each shard in one request of
     /// its first 64 KiB, several under way at once, the table in the index's order.
     #[test]
     fn shards_over_http_take_one_request_each() {
-        let n = crate::model_files::SHARD_READS * 2;
+        let n = crate::formats::model_files::SHARD_READS * 2;
         let names: Vec<String> = (1..=n)
             .map(|i| format!("model-{i:05}-of-{n:05}.safetensors"))
             .collect();
@@ -737,7 +737,7 @@ mod tests {
         let index = format!(r#"{{"weight_map":{{{}}}}}"#, map.join(","));
         let shards: Vec<Vec<u8>> = (0..n)
             .map(|i| {
-                crate::model_files::tests::safetensors_bytes(
+                crate::formats::model_files::tests::safetensors_bytes(
                     &format!(r#"{{"t{i}":{{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}}}"#),
                     4,
                 )
@@ -776,7 +776,7 @@ mod tests {
         assert_eq!(seen.len(), 1 + n, "the index, and one request a shard");
         let first = format!(
             "bytes=0-{}",
-            crate::model_files::FIRST_SAFETENSORS_RANGE - 1
+            crate::formats::model_files::FIRST_SAFETENSORS_RANGE - 1
         );
         assert!(
             seen.iter()

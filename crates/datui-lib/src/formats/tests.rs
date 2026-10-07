@@ -645,7 +645,7 @@ const LOG_TEXT: &str = "#device_info, log_version=\"1.03\", model=\"X\"\n#yyyy-m
 
 #[test]
 fn the_delimited_example_parses() {
-    use crate::delimited_spec::{DerivedKind, HeaderRows};
+    use crate::formats::delimited_spec::{DerivedKind, HeaderRows};
     let spec = Spec::parse(LOG, None).unwrap();
     assert!(spec.is_delimited());
     assert_eq!(spec.magic, b"#device_info");

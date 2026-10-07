@@ -600,7 +600,7 @@ async fn kind_from_footers(
         let (key, size) = parquet[index].clone();
         let (store, meter) = (store.clone(), meter.clone());
         reads.spawn(async move {
-            let file = crate::dataset_files::DatasetFile {
+            let file = crate::formats::dataset_files::DatasetFile {
                 key,
                 size,
                 stamp: 0,

@@ -780,9 +780,9 @@ fn hugging_face_files(paths: &[PathBuf], table: Option<&str>) -> Option<Vec<Stri
         return None;
     }
     // A DatasetDict's split is a directory of its own.
-    let dict_split = crate::hf_splits::dataset_dict(path).and_then(|splits| {
+    let dict_split = crate::formats::hf_splits::dataset_dict(path).and_then(|splits| {
         let listed: Vec<&str> = splits.iter().map(String::as_str).collect();
-        crate::hf_splits::pick(&listed, table).ok()?.split
+        crate::formats::hf_splits::pick(&listed, table).ok()?.split
     });
     let dict = dict_split.is_some();
     let table = if dict { None } else { table };
@@ -805,7 +805,7 @@ fn hugging_face_files(paths: &[PathBuf], table: Option<&str>) -> Option<Vec<Stri
             .iter()
             .map(|f| f.file_name().and_then(|n| n.to_str()).unwrap_or_default())
             .collect();
-        let (chosen, _) = crate::hf_splits::choose(&names, table).ok()?;
+        let (chosen, _) = crate::formats::hf_splits::choose(&names, table).ok()?;
         inside = chosen.into_iter().map(|i| inside[i].clone()).collect();
     }
     Some(
@@ -861,7 +861,7 @@ fn format_extension(format: FileFormat) -> Option<&'static str> {
 }
 
 /// How Copy as Python reads a format with Polars: part of its reader
-/// ([`crate::readers::Reader::python`]).
+/// ([`crate::formats::readers::Reader::python`]).
 pub(crate) struct Python {
     /// The Polars function: `pl.scan_parquet`.
     pub call: &'static str,
@@ -951,7 +951,7 @@ pub(crate) fn ndjson_arguments(call: &mut Call<'_>) -> Option<Source> {
 }
 
 fn python_of(format: FileFormat) -> Option<&'static Python> {
-    crate::readers::of(format).python.as_ref()
+    crate::formats::readers::of(format).python.as_ref()
 }
 
 /// Parquet: hive partitions under a directory or prefix, and S3 settings.
@@ -1064,8 +1064,8 @@ pub(crate) fn arrow_arguments(call: &mut Call<'_>) -> Option<Source> {
             parts
                 .iter()
                 .map(|part| match part {
-                    crate::ipc_stream::Part::InPlace(p) => (p, false),
-                    crate::ipc_stream::Part::Converted { source, .. } => (source, true),
+                    crate::formats::ipc_stream::Part::InPlace(p) => (p, false),
+                    crate::formats::ipc_stream::Part::Converted { source, .. } => (source, true),
                 })
                 .map(|(p, stream)| (without_secrets(&p.to_string_lossy()).0, stream))
                 .collect(),

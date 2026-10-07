@@ -1,6 +1,6 @@
 use super::*;
-use crate::schema_union::partition_columns_of_key as partition_columns_from_prefix;
-use crate::schema_union::{FOOTERS_AT_ONCE, lenient_scan, with_partition_columns};
+use crate::formats::schema_union::partition_columns_of_key as partition_columns_from_prefix;
+use crate::formats::schema_union::{FOOTERS_AT_ONCE, lenient_scan, with_partition_columns};
 use polars::prelude::{NamedFrom, Series};
 
 /// [`list_dataset_files_reporting`] with no progress to report.
@@ -8,8 +8,8 @@ async fn list_dataset_files(
     store: &Arc<dyn ObjectStore>,
     prefix: &str,
     pattern: Option<&globset::GlobMatcher>,
-) -> Result<(Vec<DatasetFile>, crate::schema_union::SkippedFiles)> {
-    let progress = crate::schema_union::FooterProgress::default();
+) -> Result<(Vec<DatasetFile>, crate::formats::schema_union::SkippedFiles)> {
+    let progress = crate::formats::schema_union::FooterProgress::default();
     let listing = progress.listing();
     list_dataset_files_reporting(
         store,
@@ -26,13 +26,13 @@ async fn list_dataset_files(
 ///
 /// Every column any file has, from the footers the row count already reads, so a column
 /// a vendor added for a month is visible rather than hidden behind whichever file the
-/// schema was taken from. See [`crate::schema_union`] for the ordering and the type
+/// schema was taken from. See [`crate::formats::schema_union`] for the ordering and the type
 /// rules; [`lenient_scan`] does the reading.
 fn dataset_schema_from_footers(
     files: &[DatasetFile],
     read: &[usize],
     footers: &[Option<FileFooter>],
-) -> Result<(crate::schema_union::DatasetSchema, Vec<String>)> {
+) -> Result<(crate::formats::schema_union::DatasetSchema, Vec<String>)> {
     let (first, newest) = match files {
         [] => {
             return Err(color_eyre::eyre::eyre!(
@@ -42,7 +42,7 @@ fn dataset_schema_from_footers(
         [only] => (only, only),
         [first, .., last] => (first, last),
     };
-    let mut union = crate::schema_union::union_sampled(files.len(), read, footers);
+    let mut union = crate::formats::schema_union::union_sampled(files.len(), read, footers);
     if union.schema.is_empty() {
         return Err(color_eyre::eyre::eyre!(
             "No readable parquet footer in cloud prefix"
@@ -50,7 +50,7 @@ fn dataset_schema_from_footers(
     }
 
     let (partition_columns, values) =
-        crate::schema_union::partitions_of_listing(&first.key, &newest.key);
+        crate::formats::schema_union::partitions_of_listing(&first.key, &newest.key);
     union.schema = Arc::new(with_partition_columns(
         &union.schema,
         &partition_columns,
@@ -70,7 +70,7 @@ async fn footers_of_files(
         store,
         files,
         read,
-        &crate::schema_union::FooterProgress::default(),
+        &crate::formats::schema_union::FooterProgress::default(),
         meter,
     )
     .await
@@ -104,7 +104,7 @@ fn partition_columns_from_prefix_empty() {
 async fn schema_of(
     store: &Arc<dyn ObjectStore>,
     files: &[DatasetFile],
-) -> (crate::schema_union::DatasetSchema, Vec<String>) {
+) -> (crate::formats::schema_union::DatasetSchema, Vec<String>) {
     let read: Vec<usize> = (0..files.len()).collect();
     let footers = footers_of_files(
         store,
@@ -371,7 +371,7 @@ fn a_listing_counts_what_it_finds() {
                 .await
                 .unwrap();
         }
-        let progress = crate::schema_union::FooterProgress::default();
+        let progress = crate::formats::schema_union::FooterProgress::default();
         {
             let listing = progress.listing();
             let (files, _skipped) = list_dataset_files_reporting(
@@ -433,7 +433,7 @@ fn a_cancelled_pass_reads_no_footers() {
         }
         let (files, _skipped) = list_dataset_files(&store, "data/", None).await.unwrap();
         let read: Vec<usize> = (0..files.len()).collect();
-        let progress = crate::schema_union::FooterProgress::default();
+        let progress = crate::formats::schema_union::FooterProgress::default();
         progress.cancel();
         let meter = Arc::new(crate::measurements::Meter::default());
         let footers = footers_of_files_reporting(&store, &files, &read, &progress, &meter).await;
@@ -638,7 +638,7 @@ fn a_cloud_open_counts_its_footers_against_the_counter_it_is_given() {
     // in-memory one cannot be handed to that, but above the choice of route — so
     // a prefix reaching the globbing route, or either route being handed a fresh
     // counter instead of this one, fails here.
-    let progress = Arc::new(crate::schema_union::FooterProgress::default());
+    let progress = Arc::new(crate::formats::schema_union::FooterProgress::default());
     let _ = crate::App::schema_state_from_cloud_hive_with(
         "memory://data/".to_string(),
         "data/".to_string(),
@@ -694,7 +694,7 @@ fn a_cloud_count_that_read_nothing_leaves_the_measurement_for_the_one_that_does(
     let meter = Arc::new(crate::measurements::Meter::default());
     // As the open leaves it: a count belongs to an open this meter measured.
     meter.listed(std::time::Duration::from_millis(1), Some(1), false);
-    let source = crate::dataset_files::StoreFiles::new(
+    let source = crate::formats::dataset_files::StoreFiles::new(
         "memory://data/",
         "data/".to_string(),
         None,
@@ -702,7 +702,7 @@ fn a_cloud_count_that_read_nothing_leaves_the_measurement_for_the_one_that_does(
         polars::prelude::cloud::CloudOptions::default(),
         rt.handle(),
     );
-    crate::dataset_files::footers_for_count(
+    crate::formats::dataset_files::footers_for_count(
         &source,
         &Arc::new(files),
         &[0],
@@ -730,7 +730,7 @@ fn a_cloud_count_that_read_nothing_leaves_the_measurement_for_the_one_that_does(
         stamp: 0,
         etag: None,
     }];
-    let footers = crate::dataset_files::footers_for_count(
+    let footers = crate::formats::dataset_files::footers_for_count(
         &source,
         &Arc::new(files),
         &[0],
@@ -805,7 +805,7 @@ fn a_footer_pass_survives_the_cache_and_comes_back_the_same() {
         None,
     ];
 
-    let (cached, schemas) = crate::schema_union::footers_to_cache(&original);
+    let (cached, schemas) = crate::formats::schema_union::footers_to_cache(&original);
     let sizes = [10, 20, 30, 0];
     assert_eq!(
         schemas.len(),
@@ -814,7 +814,7 @@ fn a_footer_pass_survives_the_cache_and_comes_back_the_same() {
     );
     assert_eq!(cached[3].schema, None, "and the unreadable one says so");
 
-    let back = crate::schema_union::footers_from_cache(&cached, &schemas, &sizes)
+    let back = crate::formats::schema_union::footers_from_cache(&cached, &schemas, &sizes)
         .expect("the table is consistent");
     assert_eq!(back.len(), original.len());
     for (before, after) in original.iter().zip(&back) {
@@ -840,7 +840,7 @@ fn a_footer_pass_survives_the_cache_and_comes_back_the_same() {
         column_bytes: Vec::new(),
     }];
     assert!(
-        crate::schema_union::footers_from_cache(&broken, &schemas, &[1]).is_none(),
+        crate::formats::schema_union::footers_from_cache(&broken, &schemas, &[1]).is_none(),
         "an entry that points at a schema it does not have is refused whole"
     );
 }
@@ -886,7 +886,7 @@ fn a_dataset_read_behind_the_open_is_remembered_by_the_pass_that_read_it() {
     let dir = tempfile::tempdir().unwrap();
     let cache = crate::cache::CacheManager::with_dir(dir.path().to_path_buf());
     let report = || crate::measurements::OpenReport {
-        progress: Arc::new(crate::schema_union::FooterProgress::default()),
+        progress: Arc::new(crate::formats::schema_union::FooterProgress::default()),
         meter: Arc::new(crate::measurements::Meter::default()),
         remembered: Some(cache.clone()),
         writes: Default::default(),
@@ -921,7 +921,9 @@ fn a_dataset_read_behind_the_open_is_remembered_by_the_pass_that_read_it() {
     let pending = state
         .and_then(|(_, facts)| facts.footers_pending)
         .expect("a staged open leaves a pass behind it");
-    let _ = pending(&Arc::new(crate::schema_union::FooterProgress::default()));
+    let _ = pending(&Arc::new(
+        crate::formats::schema_union::FooterProgress::default(),
+    ));
 
     let (_, second) = open();
     assert_eq!(
@@ -978,7 +980,7 @@ fn a_footer_that_would_not_read_is_not_remembered_as_unreadable() {
             &crate::OpenOptions::default(),
             rt.handle(),
             &crate::measurements::OpenReport {
-                progress: Arc::new(crate::schema_union::FooterProgress::default()),
+                progress: Arc::new(crate::formats::schema_union::FooterProgress::default()),
                 meter: meter.clone(),
                 remembered: Some(cache.clone()),
                 writes: Default::default(),
@@ -1046,7 +1048,7 @@ fn a_dataset_opened_again_is_not_read_again() {
             &crate::OpenOptions::default(),
             rt.handle(),
             &crate::measurements::OpenReport {
-                progress: Arc::new(crate::schema_union::FooterProgress::default()),
+                progress: Arc::new(crate::formats::schema_union::FooterProgress::default()),
                 meter: meter.clone(),
                 remembered: Some(cache.clone()),
                 writes: Default::default(),
@@ -1135,7 +1137,7 @@ fn a_glob_reaches_the_route_that_lists_and_reads_it() {
         &crate::OpenOptions::default(),
         rt.handle(),
         &crate::measurements::OpenReport {
-            progress: Arc::new(crate::schema_union::FooterProgress::default()),
+            progress: Arc::new(crate::formats::schema_union::FooterProgress::default()),
             meter: meter.clone(),
             remembered: None,
             writes: Default::default(),
@@ -1276,7 +1278,7 @@ fn a_directory_is_the_same_table_from_a_disk_or_a_bucket() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, body()).unwrap();
     }
-    let (local, _skipped) = crate::dataset_files::LocalFiles::new(dir.path()).walk(None);
+    let (local, _skipped) = crate::formats::dataset_files::LocalFiles::new(dir.path()).walk(None);
     let mut from_disk: Vec<String> = local
         .iter()
         .map(|p| {
@@ -1356,7 +1358,7 @@ fn partitions_are_the_same_from_a_disk_or_a_bucket() {
         std::fs::write(&path, body()).unwrap();
     }
     let report = || crate::measurements::OpenReport {
-        progress: Arc::new(crate::schema_union::FooterProgress::default()),
+        progress: Arc::new(crate::formats::schema_union::FooterProgress::default()),
         meter: Arc::new(crate::measurements::Meter::default()),
         remembered: None,
         writes: Default::default(),
@@ -1455,7 +1457,7 @@ fn a_cloud_open_measures_what_its_listing_and_its_footers_cost() {
         &crate::OpenOptions::default(),
         rt.handle(),
         &crate::measurements::OpenReport {
-            progress: Arc::new(crate::schema_union::FooterProgress::default()),
+            progress: Arc::new(crate::formats::schema_union::FooterProgress::default()),
             meter: meter.clone(),
             remembered: None,
             writes: Default::default(),
@@ -1543,7 +1545,7 @@ fn a_column_only_a_middle_file_has_joins_after_the_open() {
         }
     });
 
-    let progress = Arc::new(crate::schema_union::FooterProgress::default());
+    let progress = Arc::new(crate::formats::schema_union::FooterProgress::default());
     let mut state = crate::App::schema_state_from_cloud_hive_with(
         "memory://data/".to_string(),
         "data/".to_string(),
@@ -1705,7 +1707,7 @@ fn an_object_only_the_pass_finds_corrupt_is_left_out_by_the_pass() {
         }
     });
 
-    let progress = Arc::new(crate::schema_union::FooterProgress::default());
+    let progress = Arc::new(crate::formats::schema_union::FooterProgress::default());
     let mut state = crate::App::schema_state_from_cloud_hive_with(
         "memory://data/".to_string(),
         "data/".to_string(),
@@ -1788,7 +1790,7 @@ fn a_dataset_of_one_wave_of_footers_opens_whole() {
         }
     });
 
-    let progress = Arc::new(crate::schema_union::FooterProgress::default());
+    let progress = Arc::new(crate::formats::schema_union::FooterProgress::default());
     let state = crate::App::schema_state_from_cloud_hive_with(
         "memory://data/".to_string(),
         "data/".to_string(),
@@ -1926,7 +1928,7 @@ fn a_lenient_scan_reads_files_written_years_apart() {
 fn open_dataset(
     files: Vec<(String, Vec<u8>)>,
 ) -> (
-    crate::schema_union::DatasetSchema,
+    crate::formats::schema_union::DatasetSchema,
     polars::prelude::DataFrame,
     tempfile::TempDir,
 ) {
@@ -1965,13 +1967,13 @@ fn open_dataset(
         .iter()
         .map(|f| dir.path().join(&f.key).to_string_lossy().into_owned())
         .collect();
-    let drift = crate::schema_union::ScanDrift::new(&urls, &dataset, &file_rows);
+    let drift = crate::formats::schema_union::ScanDrift::new(&urls, &dataset, &file_rows);
     let mut df = lenient_scan(&urls, dataset.schema.clone(), None, drift.as_ref(), &[])
         .unwrap()
         .collect()
         .unwrap();
     // The hidden drift column is the state's business, not this test's.
-    let _ = df.drop_in_place(crate::schema_union::DRIFT_COLUMN);
+    let _ = df.drop_in_place(crate::formats::schema_union::DRIFT_COLUMN);
     (dataset, df, dir)
 }
 
@@ -2095,23 +2097,29 @@ fn one_corrupt_file_does_not_stop_the_dataset_opening() {
         .iter()
         .map(|(key, _)| dir.path().join(key).to_string_lossy().into_owned())
         .collect();
-    let readable = crate::schema_union::readable_paths(&paths, &dataset.unreadable);
+    let readable = crate::formats::schema_union::readable_paths(&paths, &dataset.unreadable);
     assert_eq!(
         readable.len(),
         2,
         "the one that will not parse is not scanned"
     );
-    let rows =
-        crate::schema_union::lenient_scan(&readable, dataset.schema.clone(), None, None, &[])
-            .and_then(|lf| lf.collect());
+    let rows = crate::formats::schema_union::lenient_scan(
+        &readable,
+        dataset.schema.clone(),
+        None,
+        None,
+        &[],
+    )
+    .and_then(|lf| lf.collect());
     assert_eq!(
         rows.map(|df| df.height()).ok(),
         Some(2),
         "the two readable files' rows"
     );
     // The same scan over every listed path is the failure this avoids.
-    let all = crate::schema_union::lenient_scan(&paths, dataset.schema.clone(), None, None, &[])
-        .and_then(|lf| lf.collect());
+    let all =
+        crate::formats::schema_union::lenient_scan(&paths, dataset.schema.clone(), None, None, &[])
+            .and_then(|lf| lf.collect());
     assert!(
         all.is_err(),
         "left in, it takes the readable files down with it"
@@ -2164,7 +2172,7 @@ fn the_count_reads_only_what_the_open_did_not_and_remembers_the_dataset() {
     ));
     let mut planted = sampled[0].clone().unwrap();
     planted.row_group_rows = vec![999];
-    let source = Arc::new(crate::dataset_files::StoreFiles::new(
+    let source = Arc::new(crate::formats::dataset_files::StoreFiles::new(
         full,
         "data/".to_string(),
         None,
@@ -2172,7 +2180,7 @@ fn the_count_reads_only_what_the_open_did_not_and_remembers_the_dataset() {
         polars::prelude::cloud::CloudOptions::default(),
         rt.handle(),
     ));
-    let count = crate::dataset_files::counter_for(
+    let count = crate::formats::dataset_files::counter_for(
         source,
         files.to_vec(),
         [(0, Some(planted)), (4, sampled[1].clone())],
@@ -2201,7 +2209,7 @@ fn the_count_reads_only_what_the_open_did_not_and_remembers_the_dataset() {
     assert_eq!(shape.files.len(), 5);
 
     // A reopen finds it, and reads no footers.
-    let progress = Arc::new(crate::schema_union::FooterProgress::default());
+    let progress = Arc::new(crate::formats::schema_union::FooterProgress::default());
     let reopen = Arc::new(crate::measurements::Meter::default());
     let (state, facts) = crate::App::schema_state_from_cloud_hive_with(
         full.to_string(),
@@ -2262,7 +2270,7 @@ fn a_dataset_with_a_corrupt_object_still_counts_the_rest() {
         }
     });
 
-    let progress = Arc::new(crate::schema_union::FooterProgress::default());
+    let progress = Arc::new(crate::formats::schema_union::FooterProgress::default());
     let mut state = crate::App::schema_state_from_cloud_hive_with(
         "memory://data/".to_string(),
         "data/".to_string(),
@@ -2429,7 +2437,7 @@ fn a_staged_open_does_not_lose_what_the_listing_passed_over() {
             .unwrap();
     });
 
-    let progress = Arc::new(crate::schema_union::FooterProgress::default());
+    let progress = Arc::new(crate::formats::schema_union::FooterProgress::default());
     let mut state = crate::App::schema_state_from_cloud_hive_with(
         "memory://data/".to_string(),
         "data/".to_string(),
@@ -2515,7 +2523,7 @@ fn the_listing_counts_what_it_passes_over() {
     );
     assert_eq!(
         skipped,
-        crate::schema_union::SkippedFiles {
+        crate::formats::schema_union::SkippedFiles {
             not_parquet: 2,
             empty: 1,
             bookkeeping: 3,
@@ -2565,7 +2573,7 @@ fn a_footer_from_a_tail_reads_row_groups_and_column_widths() {
         footer.row_group_rows
     );
     assert_eq!(footer.row_group_rows.iter().sum::<usize>(), 1000);
-    let widths = crate::schema_union::column_bytes_per_row(&[Some(footer.clone())]);
+    let widths = crate::formats::schema_union::column_bytes_per_row(&[Some(footer.clone())]);
     let width = |column: &str| {
         widths
             .iter()

@@ -12,7 +12,7 @@ use std::sync::Arc;
 pub struct Counting {
     /// The footer counter of the dataset on screen, reported to by its pass behind the
     /// open; handed over by the installing load. See [`Self::footer_progress`].
-    pub(crate) footer_progress: Arc<crate::schema_union::FooterProgress>,
+    pub(crate) footer_progress: Arc<crate::formats::schema_union::FooterProgress>,
     /// The count when this frame began, or `None` with no pass running. Read once per
     /// frame so the loading body and footer, painted moments apart while the pass
     /// runs, print the same number.
@@ -49,13 +49,13 @@ pub struct Counting {
     /// Stops the indexing thread of the dataset on screen's lines.
     pub(crate) indexing_stop: Arc<std::sync::atomic::AtomicBool>,
     /// The lines being indexed, until they all are.
-    pub(crate) indexing_lines: Option<Arc<crate::lines::Lines>>,
+    pub(crate) indexing_lines: Option<Arc<crate::formats::lines::Lines>>,
     /// The indexing waits while home is up.
     pub(crate) indexing_paused: bool,
     /// `:N` past the lines indexed so far, for that dataset: gone to once they all are.
     pub(crate) goto_when_indexed: Option<(u64, usize)>,
     /// The last count started: what it has read of the footers, and its stop (Esc).
-    pub(crate) count_progress: Arc<crate::schema_union::FooterProgress>,
+    pub(crate) count_progress: Arc<crate::formats::schema_union::FooterProgress>,
     /// The `dataset_generation` an exact count was asked for (`c` in Info) despite
     /// having more files than are counted unasked.
     pub(crate) exact_count_asked: Option<u64>,
@@ -82,7 +82,10 @@ impl Counting {
     /// pass stops, and Ends or `:N`s waiting on its footers, count or lines are
     /// forgotten: a `len_generation` does not say which dataset, so a leftover would
     /// act on the next.
-    pub(crate) fn reset_for_dataset(&mut self, footers: Arc<crate::schema_union::FooterProgress>) {
+    pub(crate) fn reset_for_dataset(
+        &mut self,
+        footers: Arc<crate::formats::schema_union::FooterProgress>,
+    ) {
         self.footer_progress.cancel();
         self.footer_progress = footers;
         self.end_when_the_footers_land = None;
@@ -399,7 +402,7 @@ impl App {
 
     /// The row count estimated from a sample of footers while uncounted: the dataset's
     /// own, or what its footer pass has said so far.
-    pub(crate) fn row_estimate(&self) -> Option<crate::schema_union::RowEstimate> {
+    pub(crate) fn row_estimate(&self) -> Option<crate::formats::schema_union::RowEstimate> {
         self.data_table_state
             .as_ref()?
             .row_estimate(self.counting.footer_progress.estimate())
@@ -696,13 +699,13 @@ impl App {
             }
             self.spawn_job(Job::UnfitCount { dataset, version }, None, move |_| {
                 let counted = crate::statistics::collect_lazy(
-                    crate::column_types::unfit_frame(source, &typed),
+                    crate::formats::column_types::unfit_frame(source, &typed),
                     streaming,
                 )
                 .map_err(|e| crate::error_display::user_message_from_polars(&e))?;
-                Ok(Answer::UnfitCounted(crate::column_types::unfit_counts(
-                    &counted, &typed,
-                )))
+                Ok(Answer::UnfitCounted(
+                    crate::formats::column_types::unfit_counts(&counted, &typed),
+                ))
             });
         }
     }

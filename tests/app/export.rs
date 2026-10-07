@@ -2265,7 +2265,7 @@ fn a_retype_is_saved_in_a_view_and_exported() {
     );
     pump_until_idle(&mut app, &rx, &tx);
     let ty = |name: &str, format: Option<&str>| {
-        datui::column_types::ColumnType::named(name, format.map(String::from)).unwrap()
+        datui::formats::column_types::ColumnType::named(name, format.map(String::from)).unwrap()
     };
     {
         let state = app.data_table_state.as_mut().unwrap();

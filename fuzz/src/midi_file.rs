@@ -5,7 +5,7 @@
 //! an error: never a panic, an overflow, or an allocation sized by a number the file
 //! made up. A file that parses must build its table, one row per event.
 
-use datui_lib::midi::{build, looks_like_midi, parse};
+use datui_lib::formats::midi::{build, looks_like_midi, parse};
 
 pub fn run(bytes: &[u8]) {
     let _ = looks_like_midi(bytes);

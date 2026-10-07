@@ -15,7 +15,6 @@ use ratatui::widgets::{Block, Clear};
 
 mod analysis_keys;
 pub mod analysis_modal;
-pub mod audio;
 pub mod avro_types;
 #[cfg(feature = "cloud")]
 pub mod aws_profiles;
@@ -23,7 +22,6 @@ pub mod aws_profiles;
 pub mod azure;
 mod background;
 pub mod cache;
-pub mod candump;
 pub mod canonical;
 pub mod catalog;
 pub mod chart_data;
@@ -49,8 +47,6 @@ mod cloud_hive;
 #[cfg(feature = "cloud")]
 pub mod cloud_sources;
 pub mod codebook;
-pub mod column_types;
-pub mod columns;
 pub mod commands;
 pub mod config;
 pub mod config_command;
@@ -58,22 +54,15 @@ pub mod context_menu;
 mod copy_keys;
 pub mod copy_modal;
 mod counting;
-pub mod csv_dialect;
 pub mod data_quality;
-pub mod dataflash;
-mod dataset_files;
-pub mod dbc;
-pub mod delimited_spec;
 pub mod discover;
 pub mod distribution_fit;
 mod documentation_keys;
 pub mod download;
 mod editing_keys;
-pub mod elf;
 pub mod error_display;
 pub mod event_pump;
 pub mod exact;
-pub mod excel;
 pub mod export;
 mod export_keys;
 pub mod export_modal;
@@ -82,27 +71,21 @@ mod feedback;
 pub mod filter_modal;
 pub mod find;
 mod first_rows_trace;
-pub mod fix;
-pub mod fixed_records;
 pub mod follow;
 mod footer_state;
 pub mod form;
 pub mod formats;
-pub mod framed_records;
 pub mod fuzzy;
 #[cfg(feature = "cloud")]
 pub mod gcloud;
 pub mod glyphs;
-pub mod gps;
 pub mod help;
 mod hex_keys;
 pub mod hex_view;
-pub mod hf_splits;
 pub mod home;
 mod home_app;
 mod home_keys;
 pub mod home_preview;
-pub mod indexed;
 mod info_keys;
 pub mod inspector_bytes;
 pub mod inspector_drill;
@@ -110,11 +93,8 @@ mod inspector_keys;
 pub mod inspector_modal;
 pub mod inspector_reader;
 pub mod intent_modal;
-pub mod ipc_stream;
 mod jobs;
-pub mod journal;
 pub mod limits;
-pub mod lines;
 pub mod link_open;
 mod loading;
 pub mod local_copy;
@@ -122,26 +102,19 @@ pub(crate) mod local_glob;
 pub mod locality;
 pub mod logging;
 pub mod measurements;
-pub mod members;
-pub mod midi;
-pub mod model_files;
 pub mod nested_json;
 pub mod notes;
-pub mod nul_tail;
 pub mod numfmt;
-pub mod numpy;
 mod open_options;
 mod open_scan;
 pub mod output_file;
 mod overlay;
 pub use overlay::Overlay;
-pub mod parquet_footer;
 pub mod past_calendar;
 mod picker_keys;
 mod pivot_melt_keys;
 pub mod pivot_melt_modal;
 pub mod pointer;
-pub mod pushdown;
 pub mod python_script;
 pub mod quality_export;
 mod quality_form_keys;
@@ -156,7 +129,6 @@ mod query_prompt;
 mod remote_model;
 mod retype_keys;
 pub mod retype_modal;
-pub mod row_index;
 mod run;
 pub use run::{ended_by_signal, run, run_captured};
 #[cfg(feature = "cloud")]
@@ -168,21 +140,15 @@ pub mod sampling;
 pub mod table_sample;
 // Public for the fuzz targets in `fuzz/`.
 pub mod query;
-pub mod readers;
 mod render;
 pub mod sanitize;
 mod scan;
-pub mod schema_union;
-pub mod sdf;
 pub mod search;
-pub(crate) mod segments;
 mod sort_filter_keys;
 pub mod sort_filter_modal;
 pub mod sort_modal;
 pub mod source;
-pub(crate) mod spec_union;
 mod sql_assist;
-pub mod sqlite;
 // Public for the `sql_group_plan` fuzz target.
 #[cfg(feature = "sql")]
 pub mod sql_group;
@@ -197,16 +163,13 @@ pub mod tee;
 mod terminal;
 mod terminal_color;
 pub mod terminal_input;
-pub mod text_formats;
 pub mod themes;
 pub mod typed_value;
-pub mod ulog;
 mod unfinished;
 pub mod user_agent;
 pub mod value_counts;
 mod value_counts_keys;
 pub mod value_counts_modal;
-pub mod vcd;
 pub mod view;
 mod view_apply;
 mod view_keys;
@@ -592,7 +555,7 @@ type HomeWorkerDies = Box<dyn FnMut(&AppEvent) -> bool + Send>;
 /// Stands in for [`FileFacts::read`]; see `App::file_facts_reader`.
 #[cfg(test)]
 type FileFactsReader = Arc<
-    dyn Fn(&Path, Option<crate::readers::Facts>) -> std::result::Result<FileFacts, String>
+    dyn Fn(&Path, Option<crate::formats::readers::Facts>) -> std::result::Result<FileFacts, String>
         + Send
         + Sync,
 >;
@@ -1401,7 +1364,7 @@ impl App {
         let dataset = self.dataset_generation;
         self.spawn_job(Job::JournalDetail { dataset }, None, move |_| {
             Ok(Answer::JournalDescribed(
-                crate::journal::summary(&lf).ok().map(Box::new),
+                crate::formats::journal::summary(&lf).ok().map(Box::new),
             ))
         });
     }
@@ -2202,7 +2165,7 @@ impl App {
 
     /// The footer counter: the open's while one is on its way, else the dataset's. Each
     /// open counts on its own, so a replaced one cannot count under another's name.
-    pub fn footer_progress(&self) -> &Arc<crate::schema_union::FooterProgress> {
+    pub fn footer_progress(&self) -> &Arc<crate::formats::schema_union::FooterProgress> {
         self.loading
             .progress()
             .unwrap_or(&self.counting.footer_progress)
@@ -4613,14 +4576,14 @@ impl App {
 
     /// Facts read for the dataset's single file stored as its format says (a stream or
     /// compressed copy has no footer).
-    fn facts_of_open(&self) -> Option<(FileFormat, crate::readers::Facts)> {
+    fn facts_of_open(&self) -> Option<(FileFormat, crate::formats::readers::Facts)> {
         let hive = self
             .source
             .opened
             .as_ref()
             .is_some_and(|(_, options)| options.hive);
         let format = self.opened_format()?;
-        let facts = crate::readers::of(format).facts?;
+        let facts = crate::formats::readers::of(format).facts?;
         let state = self.data_table_state.as_ref()?;
         let plain = state
             .read_mode()

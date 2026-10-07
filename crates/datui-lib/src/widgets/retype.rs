@@ -119,11 +119,11 @@ pub fn render_combine(area: Rect, buf: &mut Buffer, modal: &CombineModal, ctx: &
         .weight(1)
         .key("Esc")
         .weight(4);
-    let kinds: Vec<&str> = crate::column_types::DerivedKind::ALL
+    let kinds: Vec<&str> = crate::formats::column_types::DerivedKind::ALL
         .iter()
         .map(|k| k.name())
         .collect();
-    let kind_at = crate::column_types::DerivedKind::ALL
+    let kind_at = crate::formats::column_types::DerivedKind::ALL
         .iter()
         .position(|k| *k == modal.kind)
         .unwrap_or(0);
@@ -185,7 +185,7 @@ mod tests {
         assert!(shown.contains("Type of when, read as str"), "{shown}");
         assert!(shown.contains("as read"), "{shown}");
         assert!(shown.contains("datetime"), "{shown}");
-        let date = crate::column_types::TYPE_NAMES
+        let date = crate::formats::column_types::TYPE_NAMES
             .iter()
             .position(|n| *n == "date")
             .unwrap();

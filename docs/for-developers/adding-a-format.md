@@ -9,7 +9,7 @@ exhaustively, so a format missing one does not compile.
 | A variant | `FileFormat` in `crates/datui-cli/src/formats.rs`, and its place in `FileFormat::ALL` |
 | A descriptor | A `const` beside the others, spread from `BASE`, `DELIMITED`, `READ_INTO` or `MODEL`, and its line in `FileFormat::descriptor` |
 | A parser and a `READER` | A module of its own in `crates/datui-lib/src/`; a format Polars reads goes in `readers/polars.rs` |
-| Its line in the registry | `readers::of` in `crates/datui-lib/src/readers/mod.rs` |
+| Its line in the registry | `readers::of` in `crates/datui-lib/src/formats/readers/mod.rs` |
 | Its docs page | A heading for it on a family page in `docs/formats/`, and its line in `format_page` in `crates/datui-cli/src/docgen.rs` |
 | Generated docs | `cargo run -p datui-cli --bin gen_docs -- write`: the format table, the format count, `--format`'s and `--table`'s help |
 

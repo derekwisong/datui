@@ -1815,7 +1815,7 @@ fn a_long_field_name_is_cut_before_its_value() {
 fn variants_pack_densely_and_break_between_items() {
     let ctx = RenderContext::for_test();
     let table = |name: &str, n: usize| {
-        crate::members::Table::plain(name, "record type", (0..n).map(|i| format!("c{i}")))
+        crate::formats::members::Table::plain(name, "record type", (0..n).map(|i| format!("c{i}")))
     };
     let variants = [
         table("Status", 6),

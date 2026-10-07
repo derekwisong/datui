@@ -494,7 +494,7 @@ fn grid_columns(
                     )),
                 })
                 .collect();
-            let type_label = crate::column_types::dtype_label(dtype);
+            let type_label = crate::formats::column_types::dtype_label(dtype);
             let widest = cells
                 .iter()
                 .map(|c| c.as_deref().map_or(1, crate::glyphs::cell_width))

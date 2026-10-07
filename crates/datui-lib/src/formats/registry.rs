@@ -25,7 +25,7 @@ pub struct Registry {
 /// A DBC file found on the search path.
 #[derive(Debug, Clone)]
 pub struct DbcFound {
-    pub dbc: Arc<crate::dbc::Dbc>,
+    pub dbc: Arc<crate::formats::dbc::Dbc>,
     /// The file it was found as: the `.dbc`, or the TOML that names it.
     pub path: PathBuf,
 }
@@ -33,7 +33,7 @@ pub struct DbcFound {
 /// A FIX dictionary found on the search path, and the copies of the same name it hides.
 #[derive(Debug, Clone)]
 pub struct FixFound {
-    pub dict: Arc<crate::fix::dict::Dictionary>,
+    pub dict: Arc<crate::formats::fix::dict::Dictionary>,
     pub overrides: Vec<PathBuf>,
 }
 
@@ -153,7 +153,7 @@ impl Registry {
                     e.eq_ignore_ascii_case("dbc") || e.eq_ignore_ascii_case("toml")
                 });
                 if dbc_like {
-                    match crate::dbc::load(&file) {
+                    match crate::formats::dbc::load(&file) {
                         Ok(Some(dbc)) => {
                             registry.dbc.push(DbcFound {
                                 dbc: Arc::new(dbc),
@@ -168,7 +168,7 @@ impl Registry {
                         Ok(None) => {}
                     }
                 }
-                match crate::fix::dict::Dictionary::load(&file) {
+                match crate::formats::fix::dict::Dictionary::load(&file) {
                     Ok(Some(dict)) => {
                         registry.add_fix(dict, file);
                         continue;
@@ -207,7 +207,7 @@ impl Registry {
         }
     }
 
-    fn add_fix(&mut self, dict: crate::fix::dict::Dictionary, file: PathBuf) {
+    fn add_fix(&mut self, dict: crate::formats::fix::dict::Dictionary, file: PathBuf) {
         if let Some(found) = self.fix.iter_mut().find(|f| f.dict.name == dict.name) {
             found.overrides.push(file);
         } else {
@@ -219,7 +219,7 @@ impl Registry {
     }
 
     /// The FIX dictionary named `name`.
-    pub fn fix_dict(&self, name: &str) -> Option<&Arc<crate::fix::dict::Dictionary>> {
+    pub fn fix_dict(&self, name: &str) -> Option<&Arc<crate::formats::fix::dict::Dictionary>> {
         self.fix
             .iter()
             .find(|f| f.dict.name == name)
@@ -412,7 +412,11 @@ impl Registry {
             out.push_str(&format!(
                 "{}  ({}{})\n  {}\n",
                 dbc.name,
-                crate::text_formats::count(dbc.messages.len() as u64, "message", "messages"),
+                crate::formats::text_formats::count(
+                    dbc.messages.len() as u64,
+                    "message",
+                    "messages"
+                ),
                 dbc.interface
                     .as_ref()
                     .map(|i| format!(", interface {i}"))

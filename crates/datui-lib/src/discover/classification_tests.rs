@@ -1091,7 +1091,7 @@ fn signed_files_are_sniffed_by_their_first_bytes() {
     let text = dir.path().join("notes");
     std::fs::write(&text, b"just some text").unwrap();
     assert_eq!(sniff_format(&gguf), Some(crate::FileFormat::Gguf));
-    let opened = |path: &Path| crate::readers::sniff_open(path, None);
+    let opened = |path: &Path| crate::formats::readers::sniff_open(path, None);
     assert_eq!(opened(&st), Some(crate::FileFormat::Safetensors));
     assert_eq!(opened(&text), None);
     let midi = dir.path().join("song.bin");

@@ -5,8 +5,8 @@
 //! whether or not it ends in a newline; indexed in two parts, as a followed file grows,
 //! it must match an index of the whole; and every row decodes.
 
-use datui_lib::fixed_records::Bytes;
-use datui_lib::lines::{LineIndex, Lines, guess};
+use datui_lib::formats::fixed_records::Bytes;
+use datui_lib::formats::lines::{LineIndex, Lines, guess};
 use std::sync::Arc;
 
 pub fn run(bytes: &[u8]) {

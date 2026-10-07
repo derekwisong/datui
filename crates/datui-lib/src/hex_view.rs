@@ -1,6 +1,6 @@
 //! The hex view: any local file as its bytes, a row of them at a time.
 //!
-//! The file is memory-mapped by a worker ([`crate::fixed_records::Bytes::map`]) and
+//! The file is memory-mapped by a worker ([`crate::formats::fixed_records::Bytes::map`]) and
 //! never read whole: drawing slices the map for the rows on screen, and a find reads it
 //! on a worker, a window at a time, so a stop is seen between windows. How many bytes a
 //! row holds is decided at draw time from the width (8, 16, 32 or 64), unless a record
@@ -9,7 +9,7 @@
 //! Everything here is pure: the layout, the cursor's moves, the parsers for an offset
 //! and a pattern, the search, and the byte inspector's readings. The App drives it.
 
-use crate::fixed_records::Bytes;
+use crate::formats::fixed_records::Bytes;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -814,11 +814,11 @@ pub struct Reading {
 }
 
 fn unsigned(bytes: &[u8], big: bool) -> u64 {
-    crate::fixed_records::read_unsigned(bytes, big)
+    crate::formats::fixed_records::read_unsigned(bytes, big)
 }
 
 fn signed(bytes: &[u8], big: bool) -> i64 {
-    crate::fixed_records::read_signed(bytes, big)
+    crate::formats::fixed_records::read_signed(bytes, big)
 }
 
 /// A LEB128 varint at the front of `bytes`: its value and the bytes it took.

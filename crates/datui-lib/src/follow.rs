@@ -104,7 +104,7 @@ pub(crate) fn followed_stream(
         && options.compression.is_none()
         && options.spec_name.is_none()
         && options.spec_file.is_none()
-        && crate::ipc_stream::is_stream_file(path)
+        && crate::formats::ipc_stream::is_stream_file(path)
 }
 
 /// Why `paths` cannot be followed as `options` ask, before anything is read: only one
@@ -177,7 +177,7 @@ pub(crate) fn scan_lines(
     };
     let spool = options.spool.as_ref().map(|handle| handle.spool().clone());
     let lf = lines::LinesScan::open(path, infer, true, spool)?.lazy()?;
-    crate::readers::polars::apply_parse_dates_to_json_lazyframe(lf, options, read_python)
+    crate::formats::readers::polars::apply_parse_dates_to_json_lazyframe(lf, options, read_python)
 }
 
 /// `lf`, the scan of `path` read as `format`, bounded to the rows of the file's complete
@@ -757,7 +757,7 @@ pub fn bound(lf: &mut LazyFrame, path: &Path, rows: usize) {
 
 fn bound_plan(plan: &mut polars::lazy::dsl::DslPlan, path: &str, rows: IdxSize) {
     use polars::lazy::dsl::DslPlan;
-    if crate::lines::bound(plan, rows) {
+    if crate::formats::lines::bound(plan, rows) {
         return;
     }
     match plan {
@@ -1150,7 +1150,7 @@ pub(crate) fn widen(
         // The journal names every column it shows: built again from the scan.
         let mut raw = raw;
         bound(&mut raw, path, rows);
-        return Some(crate::journal::derive(raw, &schema).0);
+        return Some(crate::formats::journal::derive(raw, &schema).0);
     }
     let mut out = root.clone();
     out.logical_plan = plan;
@@ -1189,7 +1189,7 @@ pub(crate) struct Window {
     pub(crate) known: Option<Vec<(usize, usize)>>,
 }
 
-impl crate::pushdown::Windowed for Window {
+impl crate::formats::pushdown::Windowed for Window {
     fn window(&self, start: usize, len: usize) -> PolarsResult<LazyFrame> {
         let read = match &self.known {
             None => from_marks(&self.lf, &self.path, &self.marks, start, Some(start + len)),
@@ -2274,7 +2274,7 @@ mod tests {
         ] {
             let message = failed_message(Some(path), doing, &e);
             eprintln!("{message}");
-            crate::readers::bad_input::assert_shape(&message, path);
+            crate::formats::readers::bad_input::assert_shape(&message, path);
             assert!(message.contains(&doing[1..]), "{message}");
         }
         let e = std::io::Error::from(std::io::ErrorKind::UnexpectedEof);
@@ -2575,7 +2575,7 @@ mod tests {
             assert_eq!(whole.height(), rows);
             for start in (0..rows + 3).step_by(5) {
                 for len in [1, 6, 40] {
-                    let read = crate::pushdown::Windowed::window(&window, start, len)
+                    let read = crate::formats::pushdown::Windowed::window(&window, start, len)
                         .unwrap()
                         .collect()
                         .unwrap();
@@ -2650,7 +2650,7 @@ mod tests {
         let legacy = dir.path().join("legacy.arrows");
         std::fs::write(
             &legacy,
-            crate::ipc_stream::tests::stream(&arrow_rows(0, 10), None, true),
+            crate::formats::ipc_stream::tests::stream(&arrow_rows(0, 10), None, true),
         )
         .unwrap();
         let (lf, tail) = bound_to_complete(
@@ -2709,7 +2709,7 @@ mod tests {
             known: Some(vec![(0, 0), (known, 200)]),
         };
         for start in [0, 10, known - 1, known, known + 5, whole.height() - 3] {
-            let read = crate::pushdown::Windowed::window(&window, start, 4)
+            let read = crate::formats::pushdown::Windowed::window(&window, start, 4)
                 .unwrap()
                 .collect()
                 .unwrap();

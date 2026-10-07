@@ -354,7 +354,7 @@ fn a_large_log_is_indexed_behind_its_first_rows() {
     for i in 1..=lines {
         bytes.extend_from_slice(format!("line {i}\n").as_bytes());
     }
-    assert!(bytes.len() > datui::lines::FIRST_BYTES);
+    assert!(bytes.len() > datui::formats::lines::FIRST_BYTES);
     let path = write(dir.path(), "big.log", &bytes);
     let (mut app, rx) = app();
     // Up to the first rows, and End pressed at once: while lines are still being

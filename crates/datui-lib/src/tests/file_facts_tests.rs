@@ -23,7 +23,7 @@ fn gated(app: &mut App) -> Gate {
     let ui = std::thread::current().id();
     let (counted, misplaced) = (calls.clone(), on_ui_thread.clone());
     app.file_facts_reader = Some(Arc::new(
-        move |_path: &Path, _facts: Option<crate::readers::Facts>| {
+        move |_path: &Path, _facts: Option<crate::formats::readers::Facts>| {
             counted.fetch_add(1, Ordering::SeqCst);
             if std::thread::current().id() == ui {
                 misplaced.fetch_add(1, Ordering::SeqCst);
@@ -357,7 +357,7 @@ fn nothing_moves_when_the_footer_lands() {
     assert_eq!(row_of(&waiting, "Resources"), bar, "{waiting}");
     assert!(waiting.contains("reading..."), "{waiting}");
 
-    let facts = crate::readers::of(crate::FileFormat::Parquet).facts;
+    let facts = crate::formats::readers::of(crate::FileFormat::Parquet).facts;
     gate.answer.send(FileFacts::read(&file, facts)).unwrap();
     super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !reading(a) && !a.is_busy());
     let landed = screen(&mut app);

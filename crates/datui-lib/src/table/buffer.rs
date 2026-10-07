@@ -373,7 +373,7 @@ pub(super) fn files_holding(offsets: &[usize], start: usize, len: usize) -> Opti
 pub(super) fn window_of(
     lf: &LazyFrame,
     files: Option<&RemoteFiles>,
-    records: Option<&dyn crate::pushdown::Windowed>,
+    records: Option<&dyn crate::formats::pushdown::Windowed>,
     read_as_text: &[PlSmallStr],
     start: usize,
     len: usize,
@@ -411,7 +411,7 @@ pub(crate) struct ViewRows {
     lf: LazyFrame,
     files: Option<RemoteFiles>,
     /// See [`DataTableState::window_now`].
-    records: Option<Arc<dyn crate::pushdown::Windowed>>,
+    records: Option<Arc<dyn crate::formats::pushdown::Windowed>>,
     read_as_text: Vec<PlSmallStr>,
     /// The buffer on hand and the view row it starts at.
     pub(crate) buffer: Option<(DataFrame, usize)>,
@@ -1052,7 +1052,7 @@ impl DataTableState {
         };
         let columns: Vec<String> = schema
             .iter_names()
-            .filter(|name| name.as_str() != crate::schema_union::DRIFT_COLUMN)
+            .filter(|name| name.as_str() != crate::formats::schema_union::DRIFT_COLUMN)
             .map(|name| name.to_string())
             .collect();
         // What the table measured, when it measured these columns.
@@ -1075,7 +1075,7 @@ impl DataTableState {
     pub(super) fn buffer_lf(&self, start: usize, len: usize) -> PolarsResult<LazyFrame> {
         let mut all_columns = self.binary_stub_exprs();
         if self.carries_source_rows() {
-            all_columns.push(col(crate::schema_union::DRIFT_COLUMN));
+            all_columns.push(col(crate::formats::schema_union::DRIFT_COLUMN));
         }
         self.window_lf(start, len, all_columns)
     }
@@ -1096,7 +1096,7 @@ impl DataTableState {
             .buffered_df
             .as_ref()
             .filter(|_| self.carries_source_rows())
-            .and_then(|df| df.column(crate::schema_union::DRIFT_COLUMN).ok())
+            .and_then(|df| df.column(crate::formats::schema_union::DRIFT_COLUMN).ok())
             .and_then(|column| {
                 let offset = start.checked_sub(self.view.buffered_start_row)?;
                 let len = rows.min(column.len().saturating_sub(offset));

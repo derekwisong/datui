@@ -168,7 +168,7 @@ pub struct ViewSettings {
     /// Column types and columns made from others, as a spec's `[columns]` entries:
     /// `{ "name": "zip", "type": "str" }`. Applied after the query, before the filters.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub columns: Vec<crate::column_types::ColumnChange>,
+    pub columns: Vec<crate::formats::column_types::ColumnChange>,
     /// The view's sample: drawn again from its seed when the view is applied, under
     /// the query, filters and sort above. Its settings only, never its rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]

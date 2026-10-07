@@ -443,10 +443,13 @@ impl Spec {
                 };
                 (value, ChipKind::Magic)
             } else if self.magic.len() > CHIP_MAGIC_BYTES {
-                let head = crate::fixed_records::hex(&self.magic[..CHIP_MAGIC_BYTES]);
+                let head = crate::formats::fixed_records::hex(&self.magic[..CHIP_MAGIC_BYTES]);
                 (format!("{head} {ellipsis}"), ChipKind::Hex)
             } else {
-                (crate::fixed_records::hex(&self.magic), ChipKind::Hex)
+                (
+                    crate::formats::fixed_records::hex(&self.magic),
+                    ChipKind::Hex,
+                )
             };
             chips.push(MatchChip {
                 name: "magic".to_string(),
@@ -524,7 +527,9 @@ impl Spec {
     /// records of one file whose fields take nothing from the file (no sizes, symbols or
     /// dates from its header). `None` when the open has to read the file to know.
     pub fn static_columns(&self) -> Option<Vec<(String, polars::prelude::DataType)>> {
-        if self.is_delimited() || self.layout != Layout::Rows || crate::framed_records::needed(self)
+        if self.is_delimited()
+            || self.layout != Layout::Rows
+            || crate::formats::framed_records::needed(self)
         {
             return None;
         }
@@ -649,7 +654,7 @@ impl Spec {
         for (name, note) in &self.notes {
             add(name, note.clone());
         }
-        let tables = crate::members::variant_tables(self);
+        let tables = crate::formats::members::variant_tables(self);
         let record_types: Vec<RecordType> = self
             .records
             .variants

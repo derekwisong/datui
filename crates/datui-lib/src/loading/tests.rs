@@ -1024,7 +1024,7 @@ fn a_database_of_several_tables_lands_on_them() {
 fn a_path_inside_a_database_opens_the_database() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("shop.db");
-    let mut header = crate::sqlite::MAGIC.to_vec();
+    let mut header = crate::formats::sqlite::MAGIC.to_vec();
     header.resize(512, 0);
     std::fs::write(&db, header).unwrap();
     let request = OpenRequest::named(
@@ -1234,8 +1234,8 @@ fn arrow_in_a_bucket_is_listed_first() {
     assert_eq!(
         options.arrow_parts.as_deref(),
         Some(&vec![
-            crate::ipc_stream::Part::InPlace(PathBuf::from("s3://lake/hf/a.arrow")),
-            crate::ipc_stream::Part::InPlace(PathBuf::from("s3://lake/hf/b.arrow")),
+            crate::formats::ipc_stream::Part::InPlace(PathBuf::from("s3://lake/hf/a.arrow")),
+            crate::formats::ipc_stream::Part::InPlace(PathBuf::from("s3://lake/hf/b.arrow")),
         ])
     );
     let (mut loader, _) = open("s3://lake/hf/", Some(FileFormat::Arrow));

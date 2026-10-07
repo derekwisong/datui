@@ -210,7 +210,7 @@ pub struct QualitySourceContext {
     pub file_group: Vec<u32>,
     /// The distinct ways this dataset's files differ from its schema, as the footers
     /// found them. Group 0 is always "nothing missing".
-    pub drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
+    pub drift_groups: Arc<Vec<crate::formats::schema_union::DriftGroup>>,
     /// Per file, the type it holds each unreadable column in (empty when all fit); kept
     /// beside the groups as the only way back to values a conflict hides.
     pub file_omitted: Vec<Vec<(PlSmallStr, DataType)>>,
@@ -227,14 +227,16 @@ pub struct QualitySourceContext {
 impl QualitySourceContext {
     /// What the file at `file` is missing. Group 0 for a file that agrees with the
     /// dataset's schema, and for a dataset whose files were never grouped.
-    fn group_of_file(&self, file: usize) -> Option<&crate::schema_union::DriftGroup> {
+    fn group_of_file(&self, file: usize) -> Option<&crate::formats::schema_union::DriftGroup> {
         let group = *self.file_group.get(file)? as usize;
         self.drift_groups.get(group)
     }
 
     /// The files this dataset is missing something from, by 1-based inventory number,
     /// paired with what each is missing. Only files that differ have an entry.
-    fn drifting_files(&self) -> impl Iterator<Item = (usize, &crate::schema_union::DriftGroup)> {
+    fn drifting_files(
+        &self,
+    ) -> impl Iterator<Item = (usize, &crate::formats::schema_union::DriftGroup)> {
         (0..self.file_names.len()).filter_map(move |file| {
             let group = self.group_of_file(file)?;
             (!group.is_empty()).then_some((file, group))
@@ -275,7 +277,7 @@ pub fn prepare_source_quality_scan(
         .iter()
         .filter_map(|(name, dtype)| {
             let column = name.as_str();
-            if column == crate::schema_union::DRIFT_COLUMN
+            if column == crate::formats::schema_union::DRIFT_COLUMN
                 && !source.is_some_and(|context| context.row_index_column == column)
             {
                 return None;
@@ -5215,7 +5217,7 @@ fn observations_from_profiles(
 /// access plan can promise them. From the footers, since it is asked every frame.
 pub(crate) fn conflict_reads(
     file_group: &[u32],
-    groups: &[crate::schema_union::DriftGroup],
+    groups: &[crate::formats::schema_union::DriftGroup],
 ) -> usize {
     let mut per_column = BTreeMap::<&str, usize>::new();
     for group in file_group {
@@ -5408,7 +5410,7 @@ fn read_conflict_examples(
 /// channel to `results`; only for a full run over every frame (the caller decides).
 pub fn add_signal_observations(
     results: &mut DataQualityResults,
-    audio: &crate::audio::AudioSource,
+    audio: &crate::formats::audio::AudioSource,
     watch: &QualityWatch,
 ) -> Result<()> {
     watch.stage(QualityStage::CheckingSignal, true, true)?;
@@ -5421,10 +5423,10 @@ pub fn add_signal_observations(
     Ok(())
 }
 
-/// Observations from [`crate::audio::SignalReport`]s: a channel with runs at full
+/// Observations from [`crate::formats::audio::SignalReport`]s: a channel with runs at full
 /// scale, runs of exact zeros, or a mean 1% of full scale or more from zero.
 pub fn signal_observations(
-    reports: &[crate::audio::SignalReport],
+    reports: &[crate::formats::audio::SignalReport],
     sample_rate: f64,
 ) -> Vec<QualityObservation> {
     let mut observations = Vec::new();

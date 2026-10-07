@@ -6,8 +6,8 @@
 //! file made up. A header that parses must give columns inside the bytes on hand, and
 //! the rows it counts must decode.
 
-use datui_lib::fixed_records::Bytes;
-use datui_lib::numpy::{looks_like, open_in, parse_header, parse_literal};
+use datui_lib::formats::fixed_records::Bytes;
+use datui_lib::formats::numpy::{looks_like, open_in, parse_header, parse_literal};
 use std::sync::Arc;
 
 pub fn run(bytes: &[u8]) {

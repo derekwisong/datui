@@ -8,7 +8,7 @@
 //! as the file reader does.
 
 use datui_lib::FileFormat;
-use datui_lib::model_files::{
+use datui_lib::formats::model_files::{
     RangeError, RangeSource, build, read_gguf, read_header_ranged_from, read_safetensors,
 };
 

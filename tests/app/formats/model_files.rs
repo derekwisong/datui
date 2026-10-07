@@ -6,8 +6,8 @@
 
 use crate::common::{self, drain_events, pump_open_until_loaded};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use datui::model_files::MetaValue;
-use datui::text_formats::Detail;
+use datui::formats::model_files::MetaValue;
+use datui::formats::text_formats::Detail;
 use datui::{App, AppEvent, OpenOptions, Overlay};
 use polars::prelude::*;
 use ratatui::buffer::Buffer;
@@ -344,7 +344,7 @@ mod remote {
     use super::{frame, meta, model_tab, models, says, strings};
     use crate::common::{next_event, pump_open_until_loaded};
     use crate::fake_s3::FakeS3;
-    use datui::model_files::FIRST_SAFETENSORS_RANGE;
+    use datui::formats::model_files::FIRST_SAFETENSORS_RANGE;
     use datui::{App, AppConfig, AppEvent, OpenOptions};
     use std::collections::BTreeMap;
     use std::path::PathBuf;

@@ -191,7 +191,7 @@ impl App {
     pub(crate) fn switch_table(&mut self, table: Option<String>) -> Option<AppEvent> {
         let (paths, options) = self.source.opened.clone()?;
         let shown = match &table {
-            Some(name) => crate::members::place(&paths[0], name),
+            Some(name) => crate::formats::members::place(&paths[0], name),
             None => paths[0].clone(),
         };
         let options = OpenOptions {

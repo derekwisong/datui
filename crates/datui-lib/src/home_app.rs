@@ -422,7 +422,7 @@ impl App {
         let loading::LoadAnswer::Scanned { lf, path, options } = scanned else {
             return None;
         };
-        let progress = Arc::<crate::schema_union::FooterProgress>::default();
+        let progress = Arc::<crate::formats::schema_union::FooterProgress>::default();
         let report = crate::measurements::OpenReport {
             progress: progress.clone(),
             meter: Arc::new(crate::measurements::Meter::default()),
@@ -1448,7 +1448,7 @@ impl App {
             }
             home::Row::Entry { entry, .. } => (entry.table.is_none()
                 && !home::is_cloud_place(&entry.path)
-                && crate::members::split(&entry.path).is_none())
+                && crate::formats::members::split(&entry.path).is_none())
             .then(|| (entry.path.clone(), entry.name.clone())),
             home::Row::Header { section, .. } => {
                 let root = self.home.sections.get(section)?.root.clone()?;

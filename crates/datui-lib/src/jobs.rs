@@ -448,7 +448,7 @@ pub(crate) enum Answer {
     /// [`Job::HexFind`]: where the pattern is, if anywhere.
     HexFound(crate::hex_view::HexHit),
     /// [`Job::UnfitCount`]: the columns whose types made values null.
-    UnfitCounted(Vec<crate::column_types::Unfit>),
+    UnfitCounted(Vec<crate::formats::column_types::Unfit>),
     /// A test's answer, which says when it is dropped.
     #[cfg(test)]
     Probe(Arc<()>),
@@ -456,7 +456,7 @@ pub(crate) enum Answer {
     /// dataset stops waiting.
     FootersJoined(Option<Box<crate::table::FootersFound>>),
     /// [`Job::JournalDetail`]: the journal's Info tab, when it could be read.
-    JournalDescribed(Option<Box<crate::text_formats::Detail>>),
+    JournalDescribed(Option<Box<crate::formats::text_formats::Detail>>),
     /// [`Job::IndexLines`]: every line is indexed, this many rows of them.
     LinesIndexed(usize),
 }

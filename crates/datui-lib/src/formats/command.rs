@@ -393,7 +393,7 @@ pub(crate) fn check(
     }
     out.push_str(&format!("  matches {}\n", match_words(&spec)));
     if spec.is_delimited() {
-        return crate::delimited_spec::check(&spec, file, CHECK_ROWS, options)
+        return crate::formats::delimited_spec::check(&spec, file, CHECK_ROWS, options)
             .map(|rest| out.clone() + &rest)
             .map_err(|rest| out.clone() + &rest);
     }
@@ -469,10 +469,10 @@ pub(crate) fn check(
 fn fix_dict_named(
     named: &str,
     registry: &Registry,
-) -> Result<Option<Arc<crate::fix::dict::Dictionary>>, String> {
+) -> Result<Option<Arc<crate::formats::fix::dict::Dictionary>>, String> {
     let as_file = Path::new(named);
     if as_file.is_file() {
-        return match crate::fix::dict::Dictionary::load(as_file) {
+        return match crate::formats::fix::dict::Dictionary::load(as_file) {
             Ok(dict) => Ok(dict.map(Arc::new)),
             Err(e) => Err(format!("error: {e}\n")),
         };
@@ -482,7 +482,10 @@ fn fix_dict_named(
 
 /// The DBC file `named` names: a `.dbc` file, a `kind = "dbc"` TOML file, or one on the
 /// search path by its name.
-fn dbc_named(named: &str, registry: &Registry) -> Result<Option<Arc<crate::dbc::Dbc>>, String> {
+fn dbc_named(
+    named: &str,
+    registry: &Registry,
+) -> Result<Option<Arc<crate::formats::dbc::Dbc>>, String> {
     let as_file = Path::new(named);
     if as_file.is_file() {
         // Any other file would parse as an empty DBC: only these two kinds are asked.
@@ -492,7 +495,7 @@ fn dbc_named(named: &str, registry: &Registry) -> Result<Option<Arc<crate::dbc::
         if !dbc_like {
             return Ok(None);
         }
-        return match crate::dbc::load(as_file) {
+        return match crate::formats::dbc::load(as_file) {
             Ok(dbc) => Ok(dbc.map(Arc::new)),
             Err(e) => Err(format!("error: {e}\n")),
         };
@@ -507,7 +510,7 @@ fn dbc_named(named: &str, registry: &Registry) -> Result<Option<Arc<crate::dbc::
 /// `formats check` of a DBC file: its messages and signals, what it passed over and
 /// the interface it applies to; with `file`, a candump log, how many of its frames it
 /// names and which messages.
-fn check_dbc(dbc: &Arc<crate::dbc::Dbc>, file: Option<&Path>) -> Result<String, String> {
+fn check_dbc(dbc: &Arc<crate::formats::dbc::Dbc>, file: Option<&Path>) -> Result<String, String> {
     use std::io::Read;
     let mut out = format!("{}: ok\n", dbc.name);
     if let Some(from) = &dbc.path {
@@ -519,8 +522,8 @@ fn check_dbc(dbc: &Arc<crate::dbc::Dbc>, file: Option<&Path>) -> Result<String, 
     let signals: usize = dbc.messages.iter().map(|m| m.signals.len()).sum();
     out.push_str(&format!(
         "  {}, {}\n",
-        crate::text_formats::count(dbc.messages.len() as u64, "message", "messages"),
-        crate::text_formats::count(signals as u64, "signal", "signals"),
+        crate::formats::text_formats::count(dbc.messages.len() as u64, "message", "messages"),
+        crate::formats::text_formats::count(signals as u64, "signal", "signals"),
     ));
     for note in &dbc.notes {
         out.push_str(&format!("warning: {note}\n"));
@@ -532,18 +535,18 @@ fn check_dbc(dbc: &Arc<crate::dbc::Dbc>, file: Option<&Path>) -> Result<String, 
         |out: &str, e: &dyn std::fmt::Display| format!("{out}error: {}: {e}\n", file.display());
     let read = std::sync::atomic::AtomicU64::new(0);
     let mut bytes = Vec::new();
-    crate::text_formats::open_reader(file, &crate::OpenOptions::default(), &read)
+    crate::formats::text_formats::open_reader(file, &crate::OpenOptions::default(), &read)
         .and_then(|mut reader| reader.read_to_end(&mut bytes).map_err(Into::into))
         .map_err(|e| failed(&out, &e))?;
-    let index = crate::candump::index(&bytes).map_err(|e| failed(&out, &e))?;
-    let layers = crate::candump::Layers {
+    let index = crate::formats::candump::index(&bytes).map_err(|e| failed(&out, &e))?;
+    let layers = crate::formats::candump::Layers {
         dbcs: vec![dbc.clone()],
     };
-    let listing = crate::candump::Listing::resolve(&index, layers);
+    let listing = crate::formats::candump::Listing::resolve(&index, layers);
     let frames = index.keys.len();
     out.push_str(&format!(
         "{}, {} of them named by {}\n",
-        crate::text_formats::count(frames as u64, "frame", "frames"),
+        crate::formats::text_formats::count(frames as u64, "frame", "frames"),
         frames - listing.unknown,
         dbc.name
     ));
@@ -561,7 +564,7 @@ fn check_dbc(dbc: &Arc<crate::dbc::Dbc>, file: Option<&Path>) -> Result<String, 
 /// `formats check` of a FIX dictionary: what it names and matches; with `file`, how
 /// many of the log's messages it applies to and the tags it names there.
 fn check_fix(
-    dict: &Arc<crate::fix::dict::Dictionary>,
+    dict: &Arc<crate::formats::fix::dict::Dictionary>,
     file: Option<&Path>,
 ) -> Result<String, String> {
     use std::io::Read;
@@ -579,9 +582,13 @@ fn check_fix(
         return Ok(out);
     };
     let read = std::sync::atomic::AtomicU64::new(0);
-    let mut reader = crate::text_formats::open_reader(file, &crate::OpenOptions::default(), &read)
-        .map_err(|e| format!("{out}error: {}: {e}\n", file.display()))?;
-    let mut log = crate::fix::FixReader::new(crate::fix::dict::Layers::new(vec![dict.clone()]));
+    let mut reader =
+        crate::formats::text_formats::open_reader(file, &crate::OpenOptions::default(), &read)
+            .map_err(|e| format!("{out}error: {}: {e}\n", file.display()))?;
+    let mut log =
+        crate::formats::fix::FixReader::new(crate::formats::fix::dict::Layers::new(vec![
+            dict.clone(),
+        ]));
     let mut chunk = vec![0u8; 1 << 16];
     loop {
         let n = reader

@@ -79,7 +79,7 @@ impl Scan {
         let converted = options.arrow_parts.as_ref().is_some_and(|parts| {
             parts
                 .iter()
-                .any(|part| matches!(part, crate::ipc_stream::Part::Converted { .. }))
+                .any(|part| matches!(part, crate::formats::ipc_stream::Part::Converted { .. }))
         });
         match self {
             Scan::Frame(_) if spec => spec_read(Stored::Plain),

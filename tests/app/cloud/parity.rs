@@ -119,7 +119,7 @@ fn same(bucket: &str, objects: &[(String, Vec<u8>)]) -> Outcome {
         .count();
     if local
         .footers_read
-        .is_some_and(|n| n <= datui::schema_union::FOOTERS_AT_ONCE)
+        .is_some_and(|n| n <= datui::formats::schema_union::FOOTERS_AT_ONCE)
     {
         assert_eq!(
             local.reopen_footers_read, local.footers_read,

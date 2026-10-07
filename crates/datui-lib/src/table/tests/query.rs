@@ -28,7 +28,7 @@ fn anything_built_on_the_scan_holds_the_arriving_columns_off() {
     let found = || {
         let mut lf = wider();
         let schema = Arc::new((*lf.collect_schema().unwrap()).clone());
-        let footer = crate::schema_union::FileFooter {
+        let footer = crate::formats::schema_union::FileFooter {
             schema,
             row_group_rows: vec![2],
             file_bytes: 0,
@@ -37,7 +37,7 @@ fn anything_built_on_the_scan_holds_the_arriving_columns_off() {
         };
         FootersFound {
             estimate: None,
-            dataset: crate::schema_union::union_sampled(1, &[0], &[Some(footer)]),
+            dataset: crate::formats::schema_union::union_sampled(1, &[0], &[Some(footer)]),
             lf: wider(),
             file_rows: Vec::new(),
             files: Vec::new(),
@@ -1523,7 +1523,7 @@ fn test_by_query_computed_group_key_sorted_by_result_column() {
 #[test]
 fn absent_columns_and_type_conflicts_are_measured_from_the_footers() {
     use crate::data_quality::{DataQualityPlan, ObservationKind, QualityCompute, QualityScope};
-    use crate::schema_union::{DatasetSchema, SchemaOrigin, union_file_schemas};
+    use crate::formats::schema_union::{DatasetSchema, SchemaOrigin, union_file_schemas};
     use polars::prelude::{DataType, IntoLazy, df};
 
     let urls: Vec<String> = vec!["a".to_string(), "b".to_string(), "c".to_string()];
@@ -1538,7 +1538,7 @@ fn absent_columns_and_type_conflicts_are_measured_from_the_footers() {
                     "id" => &[0i64, 1, 2],
                     "n" => &[10i64, 20, 30],
                     "fee" => &[1.5f64, 2.5, 3.5],
-                    crate::schema_union::DRIFT_COLUMN => &[0u32, 1, 2],
+                    crate::formats::schema_union::DRIFT_COLUMN => &[0u32, 1, 2],
                 )
                 .unwrap()
                 .lazy()
@@ -1552,7 +1552,7 @@ fn absent_columns_and_type_conflicts_are_measured_from_the_footers() {
                         "id" => &[3i64, 4],
                         "n" => &["sixty", "seventy"],
                         "fee" => &[4.5f64, 5.5],
-                        crate::schema_union::DRIFT_COLUMN => &[3u32, 4],
+                        crate::formats::schema_union::DRIFT_COLUMN => &[3u32, 4],
                     )
                     .unwrap()
                     .lazy();
@@ -1566,7 +1566,7 @@ fn absent_columns_and_type_conflicts_are_measured_from_the_footers() {
                 _ => df!(
                     "id" => &[5i64, 6],
                     "n" => &[50i64, 60],
-                    crate::schema_union::DRIFT_COLUMN => &[5u32, 6],
+                    crate::formats::schema_union::DRIFT_COLUMN => &[5u32, 6],
                 )
                 .unwrap()
                 .lazy()
@@ -1581,7 +1581,7 @@ fn absent_columns_and_type_conflicts_are_measured_from_the_footers() {
                         DataType::Int64
                     }),
                     col("fee"),
-                    col(crate::schema_union::DRIFT_COLUMN),
+                    col(crate::formats::schema_union::DRIFT_COLUMN),
                 ]),
             })
             .collect();
@@ -1735,7 +1735,8 @@ fn absent_columns_and_type_conflicts_are_measured_from_the_footers() {
         "the file that has no `fee`, and only that file"
     );
     assert!(
-        rows.column(crate::schema_union::DRIFT_COLUMN).is_err(),
+        rows.column(crate::formats::schema_union::DRIFT_COLUMN)
+            .is_err(),
         "the hidden scan index is never handed back as user data"
     );
 }

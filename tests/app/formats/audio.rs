@@ -76,7 +76,7 @@ fn screen(app: &mut App, width: u16, height: u16) -> String {
 }
 
 /// The Audio tab of the dataset on screen.
-fn audio_tab(app: &App) -> datui::text_formats::Detail {
+fn audio_tab(app: &App) -> datui::formats::text_formats::Detail {
     let detail = app
         .data_table_state
         .as_ref()
@@ -89,13 +89,13 @@ fn audio_tab(app: &App) -> datui::text_formats::Detail {
 }
 
 /// The markers on an Audio tab, in order.
-fn marker_values(detail: &datui::text_formats::Detail) -> Vec<&str> {
+fn marker_values(detail: &datui::formats::text_formats::Detail) -> Vec<&str> {
     detail
         .list
         .iter()
         .filter(|(k, _)| k.starts_with("marker "))
         .map(|(_, v)| match v {
-            datui::model_files::MetaValue::Text(text) => text.as_str(),
+            datui::formats::model_files::MetaValue::Text(text) => text.as_str(),
             other => panic!("a marker is text: {other:?}"),
         })
         .collect()

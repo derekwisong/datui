@@ -6,7 +6,7 @@
 //! by a number the file made up; a header that parses must give frames that lie inside
 //! the file, and decoding any of them must work.
 
-use datui_lib::audio::{AudioSource, read_header};
+use datui_lib::formats::audio::{AudioSource, read_header};
 
 /// The most frames decoded per input, at each end.
 const WINDOW: u64 = 4096;

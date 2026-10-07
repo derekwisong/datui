@@ -5,7 +5,7 @@
 //! panic or hold more than its bounds: the rows add up to the records, the fields stay
 //! within their limit, and no value is longer than a value may be.
 
-use datui_lib::sdf::{self, CORE, MAX_VALUE, SdfReader};
+use datui_lib::formats::sdf::{self, CORE, MAX_VALUE, SdfReader};
 
 pub fn run(bytes: &[u8]) {
     let Some((&first, rest)) = bytes.split_first() else {

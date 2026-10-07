@@ -234,7 +234,7 @@ impl App {
 
     /// The format and facts read the Info worker made for the dataset on screen, once
     /// asked.
-    pub(crate) fn info_facts(&self) -> Option<(FileFormat, crate::readers::Facts)> {
+    pub(crate) fn info_facts(&self) -> Option<(FileFormat, crate::formats::readers::Facts)> {
         match self.file_facts()? {
             // A directory, which has no footer of its own.
             FileFacts::Read {

@@ -18,7 +18,7 @@ pub(super) struct GroupedView {
     /// Whether `lf` has the hidden drift column and its groups' meaning, so drilling up
     /// restores those cells and their notes.
     drift: bool,
-    drift_groups: Arc<Vec<crate::schema_union::DriftGroup>>,
+    drift_groups: Arc<Vec<crate::formats::schema_union::DriftGroup>>,
     /// Whether `lf` numbers its rows itself (`#`).
     view_numbered: bool,
     notes: Vec<crate::notes::Note>,
@@ -156,7 +156,7 @@ impl ExportFrame {
         let mut lf = self.lf;
         let schema = lf.collect_schema()?;
         let name = Self::free_name(schema.iter_names().map(|n| n.as_str()));
-        let index = crate::schema_union::DRIFT_COLUMN;
+        let index = crate::formats::schema_union::DRIFT_COLUMN;
         let file_of = move |rows: Column| -> PolarsResult<Column> {
             let rows = rows.strict_cast(&DataType::UInt64)?;
             let named: StringChunked = rows
@@ -219,7 +219,7 @@ impl DataTableState {
             .map(|schema| {
                 schema
                     .iter()
-                    .filter(|(name, _)| name.as_str() != crate::schema_union::DRIFT_COLUMN)
+                    .filter(|(name, _)| name.as_str() != crate::formats::schema_union::DRIFT_COLUMN)
                     .map(|(name, dtype)| (name.to_string(), dtype.clone()))
                     .collect()
             })
@@ -468,7 +468,7 @@ impl DataTableState {
         let Some(df) = self.view.buffered_df.as_ref() else {
             return Vec::new();
         };
-        let Ok(column) = df.column(crate::schema_union::DRIFT_COLUMN) else {
+        let Ok(column) = df.column(crate::formats::schema_union::DRIFT_COLUMN) else {
             return Vec::new();
         };
         let offset = self
@@ -550,7 +550,7 @@ impl DataTableState {
             .schema
             .iter()
             .filter(|(name, _)| {
-                name.as_str() != crate::schema_union::DRIFT_COLUMN
+                name.as_str() != crate::formats::schema_union::DRIFT_COLUMN
                     && !self.view.column_order.iter().any(|c| c == name.as_str())
             })
             .map(|(name, dtype)| InspectField {
@@ -580,7 +580,7 @@ impl DataTableState {
         let drift_group = self
             .view
             .drift_column_present
-            .then(|| df.column(crate::schema_union::DRIFT_COLUMN).ok())
+            .then(|| df.column(crate::formats::schema_union::DRIFT_COLUMN).ok())
             .flatten()
             .and_then(|c| c.get(offset).ok())
             .and_then(|v| v.extract::<usize>())

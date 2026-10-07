@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use polars::prelude::LazyFrame;
 
 use crate::download::TempDownload;
-use crate::schema_union::FooterProgress;
+use crate::formats::schema_union::FooterProgress;
 use crate::table::DataTableState;
 use crate::unfinished::{Unfinished, Writer};
 use crate::{CompressionFormat, FileFormat, OpenOptions, source, stdin};
@@ -189,7 +189,7 @@ impl OpenRequest {
         let mut table = None;
         if local
             && paths.len() == 1
-            && let Some((db, name)) = crate::members::split(&first)
+            && let Some((db, name)) = crate::formats::members::split(&first)
         {
             table = Some(first.clone());
             options.table = Some(name);
@@ -197,13 +197,13 @@ impl OpenRequest {
         } else if local
             && first.is_file()
             && let Some(name) = options.table.as_deref()
-            && crate::members::holder(&first).is_some()
+            && crate::formats::members::holder(&first).is_some()
         {
-            table = Some(crate::members::place(&first, name));
+            table = Some(crate::formats::members::place(&first, name));
         } else if local
             && paths.len() == 1
             && options.table.is_none()
-            && let Some((dir, split)) = crate::hf_splits::split_place(&first)
+            && let Some((dir, split)) = crate::formats::hf_splits::split_place(&first)
         {
             // A split of a Hugging Face cache, as the home screen lists it.
             table = Some(first.clone());
@@ -212,7 +212,7 @@ impl OpenRequest {
         } else if local
             && first.is_dir()
             && let Some(split) = options.table.as_deref()
-            && crate::hf_splits::cache_splits(&first)
+            && crate::formats::hf_splits::cache_splits(&first)
                 .iter()
                 .any(|s| s == split)
         {
@@ -220,7 +220,7 @@ impl OpenRequest {
         } else if local
             && paths.len() == 1
             && options.table.is_none()
-            && let Some((file, variant)) = crate::members::split_variant(&first, formats)
+            && let Some((file, variant)) = crate::formats::members::split_variant(&first, formats)
         {
             // A variant of a file a spec reads as several, as the home screen lists it.
             table = Some(first.clone());
@@ -231,7 +231,7 @@ impl OpenRequest {
             && first.is_file()
             && formats.variants_of(&first).is_some()
         {
-            table = Some(crate::members::place(&first, variant));
+            table = Some(crate::formats::members::place(&first, variant));
         }
         let first = &paths[0];
         let size = if local {
@@ -406,8 +406,8 @@ struct Fetched {
 
 #[derive(Clone)]
 struct KeptArrow {
-    parts: Arc<Vec<crate::ipc_stream::Part>>,
-    splits: Option<Arc<crate::hf_splits::Splits>>,
+    parts: Arc<Vec<crate::formats::ipc_stream::Part>>,
+    splits: Option<Arc<crate::formats::hf_splits::Splits>>,
     table: Option<String>,
 }
 
@@ -655,7 +655,7 @@ pub(crate) enum Converted {
     /// The streams in one IPC file, and where each input's rows are: scanned next.
     Streams {
         file: TempDownload,
-        parts: Vec<crate::ipc_stream::Part>,
+        parts: Vec<crate::formats::ipc_stream::Part>,
     },
     /// The logs' IPC files and the frame over them, which only needs its schema read,
     /// and what reading them noticed.
@@ -665,7 +665,7 @@ pub(crate) enum Converted {
         notes: Vec<crate::notes::Note>,
         other_tables: Vec<String>,
         /// What the file says besides its rows, for the Info panel.
-        detail: Option<Arc<crate::text_formats::Detail>>,
+        detail: Option<Arc<crate::formats::text_formats::Detail>>,
     },
 }
 
@@ -679,7 +679,7 @@ pub(crate) struct Made {
     pub(crate) converted: Vec<TempDownload>,
     pub(crate) notes: Vec<crate::notes::Note>,
     pub(crate) other_tables: Vec<String>,
-    pub(crate) detail: Option<Arc<crate::text_formats::Detail>>,
+    pub(crate) detail: Option<Arc<crate::formats::text_formats::Detail>>,
 }
 
 /// A failed open: why, and whether it was chosen on the home screen.
@@ -1843,8 +1843,8 @@ pub(crate) fn in_memory(paths: &[PathBuf], options: &OpenOptions) -> Option<InMe
                 .file_stem()
                 .and_then(|stem| FileFormat::from_path(Path::new(stem))),
             None => match FileFormat::from_path(path) {
-                Some(named) => Some(crate::readers::refined(path, named).unwrap_or(named)),
-                None => crate::readers::sniff_open(path, None),
+                Some(named) => Some(crate::formats::readers::refined(path, named).unwrap_or(named)),
+                None => crate::formats::readers::sniff_open(path, None),
             },
         });
         let Some(format) = format else {

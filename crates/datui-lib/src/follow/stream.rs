@@ -247,7 +247,7 @@ impl AnonymousScan for StreamScan {
     }
 
     fn scan(&self, mut args: AnonymousScanArgs) -> PolarsResult<DataFrame> {
-        args.predicate = crate::pushdown::evaluable(args.predicate.take());
+        args.predicate = crate::formats::pushdown::evaluable(args.predicate.take());
         let file = match &self.held {
             Some(held) => held.try_clone()?,
             None => File::open(&self.path)?,

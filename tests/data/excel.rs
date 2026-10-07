@@ -166,7 +166,7 @@ fn a_bad_sheet_error_names_the_sheets_that_exist() {
             table: Some(sheet.to_string()),
             ..OpenOptions::default()
         };
-        datui::excel::read(&path, &options)
+        datui::formats::excel::read(&path, &options)
     };
 
     let msg = match from_excel("99") {
@@ -230,7 +230,7 @@ fn the_excel_tab_lists_the_sheets() {
         .list
         .iter()
         .map(|(k, v)| match v {
-            datui::model_files::MetaValue::Text(t) => (k.clone(), t.clone()),
+            datui::formats::model_files::MetaValue::Text(t) => (k.clone(), t.clone()),
             other => panic!("{other:?}"),
         })
         .collect();

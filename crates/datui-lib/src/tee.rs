@@ -274,8 +274,9 @@ mod tests {
             400,
             "100 frames of 4 bytes"
         );
-        let header =
-            crate::audio::read_header(&std::fs::read(_dir.path().join("take.wav")).unwrap());
+        let header = crate::formats::audio::read_header(
+            &std::fs::read(_dir.path().join("take.wav")).unwrap(),
+        );
         assert!(header.is_ok(), "{header:?}");
         assert_eq!(fix_wav_sizes(&mut file).unwrap(), Fixed::Nothing, "once");
     }

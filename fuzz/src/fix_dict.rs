@@ -4,7 +4,7 @@
 //! Neither may panic; a dictionary that parses keeps its names within bounds and can
 //! be layered under the built-in one.
 
-use datui_lib::fix::dict::{Dictionary, Layers, MAX_NAME, is_fix_toml};
+use datui_lib::formats::fix::dict::{Dictionary, Layers, MAX_NAME, is_fix_toml};
 use std::sync::Arc;
 
 pub fn run(bytes: &[u8]) {

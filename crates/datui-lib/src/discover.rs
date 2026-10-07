@@ -511,9 +511,9 @@ mod parquet_key_tests {
 /// What a file with no usable extension is, from its first bytes (Parquet, Arrow,
 /// Avro and ORC carry signatures; CSV and JSON have none and are not guessed). Asked
 /// only of a directory being opened, never one being looked at; which signatures a
-/// listing trusts is each format's call (`crate::readers::Trusted::listing`).
+/// listing trusts is each format's call (`crate::formats::readers::Trusted::listing`).
 pub fn sniff_format(path: &Path) -> Option<crate::FileFormat> {
-    crate::readers::sniff_file(path, crate::readers::Asked::Listing)
+    crate::formats::readers::sniff_file(path, crate::formats::readers::Asked::Listing)
 }
 
 /// What a listing finds a file to be by its first bytes.
@@ -528,7 +528,7 @@ pub enum Sniffed {
 /// [`sniff_format`], else the format spec an open would pick (by glob, else by magic
 /// and `match.where`), from one read of the file's head.
 pub fn sniff_listed(path: &Path, formats: &crate::formats::Registry) -> Option<Sniffed> {
-    use crate::readers::{Asked, HEAD, head_of, sniff};
+    use crate::formats::readers::{Asked, HEAD, head_of, sniff};
     let head = head_of(path)?;
     if sniff(&head, Some(path), Asked::Listing, |_| true).is_some() {
         return Some(Sniffed::Format);
@@ -1102,10 +1102,12 @@ pub fn classify(seen: impl Iterator<Item = Seen>, rules: &Rules) -> (EntryKind, 
             .filter(|f| !f.is_lines())
             // A sharded checkpoint's index counts as JSON, so the label counts shards; the read
             // still uses it.
-            .map(|f| match crate::model_files::is_safetensors_index(name) {
-                true => FileFormat::Json,
-                false => f,
-            })
+            .map(
+                |f| match crate::formats::model_files::is_safetensors_index(name) {
+                    true => FileFormat::Json,
+                    false => f,
+                },
+            )
             // Data by where it sits rather than by its name: see [`is_data_file`].
             .or_else(|| is_parquet_key(&key).then_some(FileFormat::Parquet))
             .or_else(|| {
@@ -1126,7 +1128,7 @@ pub fn classify(seen: impl Iterator<Item = Seen>, rules: &Rules) -> (EntryKind, 
         if found == FileFormat::Json && is_hugging_face_metadata(&s.name) {
             hugging_face.push(s.name.clone());
         }
-        dict_file |= found == FileFormat::Json && s.name == crate::hf_splits::DATASET_DICT;
+        dict_file |= found == FileFormat::Json && s.name == crate::formats::hf_splits::DATASET_DICT;
         data_files += 1;
         parquet += usize::from(is_parquet_key(&key));
         match counts.iter_mut().find(|(f, _)| *f == found) {
@@ -1142,7 +1144,7 @@ pub fn classify(seen: impl Iterator<Item = Seen>, rules: &Rules) -> (EntryKind, 
     }
     holds.dataset_dict = rules.in_bucket && dict_file && holds.directories > 0;
     if holds.dataset_dict {
-        hugging_face.push(crate::hf_splits::DATASET_DICT.to_string());
+        hugging_face.push(crate::formats::hf_splits::DATASET_DICT.to_string());
     }
     if let Some((_, n)) = counts.iter_mut().find(|(f, _)| *f == FileFormat::Json) {
         *n -= hugging_face.len();
@@ -1377,13 +1379,13 @@ const MAX_FOOTERS_PER_DATASET: usize = 64;
 /// Fill in row and column counts from Parquet footers: one file, or a bounded sum for
 /// hive and multi-file datasets. Non-Parquet keeps `None`, a blank in the UI.
 pub fn enrich(entry: &mut Entry) {
-    enrich_as(entry, &crate::schema_union::ReadAs::default())
+    enrich_as(entry, &crate::formats::schema_union::ReadAs::default())
 }
 
 /// As [`enrich`], reading files as the following open will: where the header is
 /// decides what the names are, so judging with other settings would misjudge (e.g.
 /// `--no-header`).
-pub fn enrich_as(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
+pub fn enrich_as(entry: &mut Entry, as_read: &crate::formats::schema_union::ReadAs) {
     enrich_with(entry, as_read, None)
 }
 
@@ -1391,7 +1393,7 @@ pub fn enrich_as(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
 /// unchanged, instead of sampling footers.
 pub fn enrich_with(
     entry: &mut Entry,
-    as_read: &crate::schema_union::ReadAs,
+    as_read: &crate::formats::schema_union::ReadAs,
     remembered: Option<&crate::cache::CacheManager>,
 ) {
     match entry.kind {
@@ -1411,7 +1413,7 @@ pub fn enrich_with(
 /// Sum footers across a bounded set of Parquet files under `entry`.
 fn enrich_dataset(
     entry: &mut Entry,
-    as_read: &crate::schema_union::ReadAs,
+    as_read: &crate::formats::schema_union::ReadAs,
     remembered: Option<&crate::cache::CacheManager>,
 ) {
     // A directory whose own files are a format this cannot count is not described by
@@ -1451,7 +1453,7 @@ fn enrich_dataset(
     // Past the budget, footers an open kept are used if the listing still matches.
     if files.len() > MAX_FOOTERS_PER_DATASET
         && let Some((listed, footers)) = remembered
-            .and_then(|cache| crate::dataset_files::remembered_footers(&entry.path, cache))
+            .and_then(|cache| crate::formats::dataset_files::remembered_footers(&entry.path, cache))
     {
         measure_from_footers(entry, &listed, &footers);
         return;
@@ -1463,7 +1465,7 @@ fn enrich_dataset(
         let names: Vec<Vec<String>> = sampled.iter().map(column_names).collect();
         let tops: Vec<Vec<String>> = names
             .iter()
-            .map(|n| crate::schema_union::top_level_columns(n))
+            .map(|n| crate::formats::schema_union::top_level_columns(n))
             .collect();
         if entry.kind == EntryKind::MultiFile && one_table_from(&tops) == Some(false) {
             // One-table is asked of the subtree (what opening unions), but holdings count only
@@ -1516,7 +1518,7 @@ fn enrich_dataset(
     let mut uncompressed = 0u64;
     let mut row_groups = 0usize;
     for file in &files {
-        let Some(meta) = crate::parquet_footer::read_parquet_metadata(file) else {
+        let Some(meta) = crate::formats::parquet_footer::read_parquet_metadata(file) else {
             return; // A file we cannot read makes the total a guess; report nothing.
         };
         rows += meta.num_rows;
@@ -1532,8 +1534,8 @@ fn enrich_dataset(
             }
         }
         // Top-level columns, not footer leaves: see
-        // [`crate::schema_union::top_level_columns`].
-        per_file.push(crate::schema_union::top_level_columns(&names));
+        // [`crate::formats::schema_union::top_level_columns`].
+        per_file.push(crate::formats::schema_union::top_level_columns(&names));
         // Again for its own files (`2 parquet` must mean those two), from one stat feeding
         // both totals.
         let file_bytes = std::fs::metadata(file).map(|m| m.len()).unwrap_or(0);
@@ -1557,7 +1559,7 @@ fn enrich_dataset(
     // With the footers read, one-table is known. Separate tables make a place to look
     // inside (summed rows mean nothing). Only `multi` is reconsidered: hive files hold
     // one table by construction.
-    if entry.kind == EntryKind::MultiFile && !crate::schema_union::is_nested(&per_file) {
+    if entry.kind == EntryKind::MultiFile && !crate::formats::schema_union::is_nested(&per_file) {
         // Its own files' bytes, matching what the label and columns count.
         entry.size = Some(own_bytes);
         // Not one table, but column search should still find it: the count is its own
@@ -1616,14 +1618,14 @@ pub(crate) fn spread(files: usize) -> Vec<usize> {
 /// Whether a few files' top-level columns are one table. `None` from fewer than two:
 /// the directory keeps its name-based kind.
 pub(crate) fn one_table_from(footers: &[Vec<String>]) -> Option<bool> {
-    (footers.len() >= 2).then(|| crate::schema_union::is_nested(footers))
+    (footers.len() >= 2).then(|| crate::formats::schema_union::is_nested(footers))
 }
 
 /// The footers of the [`spread`] of a directory too large to read every one of.
-fn sample_footers(files: &[PathBuf]) -> Vec<crate::parquet_footer::Footer> {
+fn sample_footers(files: &[PathBuf]) -> Vec<crate::formats::parquet_footer::Footer> {
     spread(files.len())
         .into_iter()
-        .filter_map(|i| crate::parquet_footer::read_parquet_metadata(&files[i]))
+        .filter_map(|i| crate::formats::parquet_footer::read_parquet_metadata(&files[i]))
         .collect()
 }
 
@@ -1631,8 +1633,8 @@ fn sample_footers(files: &[PathBuf]) -> Vec<crate::parquet_footer::Footer> {
 /// [`one_table_from`]'s rule for CSV and NDJSON, so `Enter` does not promise a table
 /// the read then refuses. Silence (too few files, costly schema, a parse failure)
 /// keeps the name-based kind, safe because the read unions by name and widens types
-/// (`crate::readers::polars::union_of_files`).
-fn judge_by_names(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
+/// (`crate::formats::readers::polars::union_of_files`).
+fn judge_by_names(entry: &mut Entry, as_read: &crate::formats::schema_union::ReadAs) {
     if entry.kind != EntryKind::MultiFile {
         return;
     }
@@ -1649,7 +1651,7 @@ fn judge_by_names(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
         return;
     };
     // Read as the following open will: header placement decides the names.
-    let sampled = crate::schema_union::sample_files(&files, format, as_read);
+    let sampled = crate::formats::schema_union::sample_files(&files, format, as_read);
     if sampled.nests == Some(false) {
         // The sample's columns, for column search, as the Parquet path keeps when
         // downgrading; from the spread, so cost does not grow with the directory.
@@ -1687,7 +1689,7 @@ fn downgrade_to_directory(entry: &mut Entry, cols: Option<usize>) {
 ///
 /// The schema knows. `fields()` is the root's own children, which is what a struct counts
 /// as here, what `schema_preview` lists in the details pane, and what the table shows.
-fn top_level_names(meta: &crate::parquet_footer::Footer) -> Vec<String> {
+fn top_level_names(meta: &crate::formats::parquet_footer::Footer) -> Vec<String> {
     meta.schema_descr
         .fields()
         .iter()
@@ -1709,7 +1711,7 @@ fn union_of(per_file: &[Vec<String>]) -> Vec<String> {
 /// The Parquet files under `dir`, sorted, as deep as a dataset goes, stopping one past
 /// the budget (which says there are too many to count). The open's own walk.
 fn parquet_files_under(dir: &Path) -> Vec<PathBuf> {
-    let mut files = crate::dataset_files::LocalFiles::new(dir)
+    let mut files = crate::formats::dataset_files::LocalFiles::new(dir)
         .first_files(MAX_WALK_DEPTH as usize + 1, MAX_FOOTERS_PER_DATASET);
     // The walk takes a directory entry's own type; a file this reads must be one.
     files.retain(|p| is_regular_file(p));
@@ -1720,8 +1722,8 @@ fn parquet_files_under(dir: &Path) -> Vec<PathBuf> {
 /// whether its files are one table; nothing is read.
 fn measure_from_footers(
     entry: &mut Entry,
-    files: &[crate::dataset_files::DatasetFile],
-    footers: &[Option<crate::schema_union::FileFooter>],
+    files: &[crate::formats::dataset_files::DatasetFile],
+    footers: &[Option<crate::formats::schema_union::FileFooter>],
 ) {
     let per_file: Vec<Vec<String>> = footers
         .iter()
@@ -1729,7 +1731,7 @@ fn measure_from_footers(
         .map(|f| f.schema.iter_names().map(|n| n.to_string()).collect())
         .collect();
     let columns = union_of(&per_file);
-    if entry.kind == EntryKind::MultiFile && !crate::schema_union::is_nested(&per_file) {
+    if entry.kind == EntryKind::MultiFile && !crate::formats::schema_union::is_nested(&per_file) {
         // As a full footer read judges it: label, width and size count the directory's own
         // files.
         let own: Vec<usize> = files
@@ -1753,7 +1755,8 @@ fn measure_from_footers(
         );
         return;
     }
-    let footers: Vec<&crate::schema_union::FileFooter> = footers.iter().flatten().collect();
+    let footers: Vec<&crate::formats::schema_union::FileFooter> =
+        footers.iter().flatten().collect();
     let uncompressed: u64 = footers
         .iter()
         .flat_map(|f| &f.column_bytes)
@@ -1785,7 +1788,7 @@ pub fn enrich_parquet(entry: &mut Entry) {
     if !is_regular_file(&entry.path) {
         return;
     }
-    if let Some(meta) = crate::parquet_footer::read_parquet_metadata(&entry.path) {
+    if let Some(meta) = crate::formats::parquet_footer::read_parquet_metadata(&entry.path) {
         entry.rows = Some(meta.num_rows);
         entry.columns = column_names(&meta);
         // Top-level columns, as a directory's row reports them: `schema_descr` names leaves
@@ -1806,16 +1809,16 @@ pub fn enrich_tables(entry: &mut Entry) {
     if !is_regular_file(&entry.path) {
         return;
     }
-    let Some(format) = crate::members::holder(&entry.path) else {
-        if named.is_some_and(|f| f.holds_tables() && crate::readers::of(f).bytes_decide) {
+    let Some(format) = crate::formats::members::holder(&entry.path) else {
+        if named.is_some_and(|f| f.holds_tables() && crate::formats::readers::of(f).bytes_decide) {
             entry.kind = EntryKind::Other;
         }
         return;
     };
-    let Ok(tables) = crate::members::tables(&entry.path, format) else {
+    let Ok(tables) = crate::formats::members::tables(&entry.path, format) else {
         return;
     };
-    let own: Vec<&crate::sqlite::Table> = tables.iter().filter(|t| !t.internal).collect();
+    let own: Vec<&crate::formats::sqlite::Table> = tables.iter().filter(|t| !t.internal).collect();
     entry.cost.tables = Some(own.len());
     entry.cost.opens_one = format.opens_one_table();
     if let [one] = own.as_slice()
@@ -1829,10 +1832,10 @@ pub fn enrich_tables(entry: &mut Entry) {
 /// A file of tables listed as rows (a database's tables and views, an archive's arrays),
 /// each at its path inside the file; SQLite's own marked hidden.
 pub fn database_rows(file: &Path) -> Vec<Entry> {
-    let Some(format) = crate::members::holder(file) else {
+    let Some(format) = crate::formats::members::holder(file) else {
         return Vec::new();
     };
-    let Ok(mut tables) = crate::members::tables(file, format) else {
+    let Ok(mut tables) = crate::formats::members::tables(file, format) else {
         return Vec::new();
     };
     // A database's tables by name; an archive's arrays in the order they were saved.
@@ -1855,7 +1858,7 @@ pub fn database_rows(file: &Path) -> Vec<Entry> {
 /// (`cache/test`), opened with `--table`. Empty otherwise, or for one split (its door
 /// opens it).
 pub fn split_rows(dir: &Path) -> Vec<Entry> {
-    let splits = crate::hf_splits::cache_splits(dir);
+    let splits = crate::formats::hf_splits::cache_splits(dir);
     if splits.len() < 2 {
         return Vec::new();
     }
@@ -1868,7 +1871,7 @@ pub fn split_rows(dir: &Path) -> Vec<Entry> {
 /// The row of a split named by its path inside its cache directory (a recent); `None`
 /// if none.
 pub fn split_row(path: &Path) -> Option<Entry> {
-    let (dir, split) = crate::hf_splits::split_place(path)?;
+    let (dir, split) = crate::formats::hf_splits::split_place(path)?;
     Some(split_entry(&dir, split))
 }
 
@@ -1885,7 +1888,7 @@ fn split_entry(dir: &Path, split: String) -> Entry {
 /// A spec-read file's variants as rows at their paths inside it (`day.itch/add`),
 /// opened with `--table`. Empty for other files.
 pub fn variant_rows(file: &Path, formats: &crate::formats::Registry) -> Vec<Entry> {
-    let Some((spec, tables)) = crate::members::variants(file, formats) else {
+    let Some((spec, tables)) = crate::formats::members::variants(file, formats) else {
         return Vec::new();
     };
     let modified = std::fs::metadata(file).and_then(|m| m.modified()).ok();
@@ -1897,8 +1900,8 @@ pub fn variant_rows(file: &Path, formats: &crate::formats::Registry) -> Vec<Entr
 
 /// The row of a variant named by its path inside its file (a recent); `None` if none.
 pub fn variant_row(path: &Path, formats: &crate::formats::Registry) -> Option<Entry> {
-    let (file, name) = crate::members::split_variant(path, formats)?;
-    let (spec, tables) = crate::members::variants(&file, formats)?;
+    let (file, name) = crate::formats::members::split_variant(path, formats)?;
+    let (spec, tables) = crate::formats::members::variants(&file, formats)?;
     let table = tables.into_iter().find(|t| t.name == name)?;
     let modified = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
     let mut entry = variant_entry(&file, &spec, table, modified);
@@ -1909,11 +1912,14 @@ pub fn variant_row(path: &Path, formats: &crate::formats::Registry) -> Option<En
 fn variant_entry(
     file: &Path,
     spec: &str,
-    table: crate::sqlite::Table,
+    table: crate::formats::sqlite::Table,
     modified: Option<std::time::SystemTime>,
 ) -> Entry {
-    let mut entry =
-        Entry::new(crate::members::place(file, &table.name), EntryKind::File).with_name(table.name);
+    let mut entry = Entry::new(
+        crate::formats::members::place(file, &table.name),
+        EntryKind::File,
+    )
+    .with_name(table.name);
     entry.modified = modified;
     entry.columns = table.columns.into_iter().map(|(name, _)| name).collect();
     entry.cols = (!entry.columns.is_empty()).then_some(entry.columns.len());
@@ -1929,9 +1935,9 @@ fn variant_entry(
 /// The row of a table named by its path inside its file (`app.db/users`, a recent);
 /// `None` if none.
 pub fn table_row(path: &Path) -> Option<Entry> {
-    let (file, name) = crate::members::split(path)?;
-    let format = crate::members::holder(&file)?;
-    let table = crate::members::tables(&file, format)
+    let (file, name) = crate::formats::members::split(path)?;
+    let format = crate::formats::members::holder(&file)?;
+    let table = crate::formats::members::tables(&file, format)
         .ok()?
         .into_iter()
         .find(|t| t.name == name)?;
@@ -1944,11 +1950,14 @@ pub fn table_row(path: &Path) -> Option<Entry> {
 fn table_entry(
     file: &Path,
     format: crate::FileFormat,
-    table: crate::sqlite::Table,
+    table: crate::formats::sqlite::Table,
     modified: Option<std::time::SystemTime>,
 ) -> Entry {
-    let mut entry =
-        Entry::new(crate::members::place(file, &table.name), EntryKind::File).with_name(table.name);
+    let mut entry = Entry::new(
+        crate::formats::members::place(file, &table.name),
+        EntryKind::File,
+    )
+    .with_name(table.name);
     entry.modified = modified;
     entry.columns = table.columns.into_iter().map(|(name, _)| name).collect();
     entry.cols = (!entry.columns.is_empty()).then_some(entry.columns.len());
@@ -1996,7 +2005,7 @@ fn enrich_arrow(entry: &mut Entry) {
 
 /// Pull layout and compression from an already-read footer: what reading the file
 /// will do, beyond its size.
-pub fn physical_facts(meta: &crate::parquet_footer::Footer, cost: &mut Cost) {
+pub fn physical_facts(meta: &crate::formats::parquet_footer::Footer, cost: &mut Cost) {
     if meta.row_groups.is_empty() {
         return;
     }
@@ -2148,21 +2157,22 @@ pub type SchemaPreview = Vec<(String, polars::prelude::DataType)>;
 /// show.
 fn table_preview(entry: &Entry) -> Option<Option<SchemaPreview>> {
     let (file, format, name) = match &entry.table {
-        Some(table) => match (crate::members::split(&entry.path), table.format) {
+        Some(table) => match (crate::formats::members::split(&entry.path), table.format) {
             (Some((file, _)), Some(format)) => (file, format, Some(entry.name.as_str())),
             _ => return Some(None),
         },
         None if is_regular_file(&entry.path) => {
-            let format = crate::members::holder(&entry.path).or_else(|| {
-                data_format(&entry.path)
-                    .filter(|f| f.holds_tables() && crate::readers::of(*f).table_schema.is_some())
+            let format = crate::formats::members::holder(&entry.path).or_else(|| {
+                data_format(&entry.path).filter(|f| {
+                    f.holds_tables() && crate::formats::readers::of(*f).table_schema.is_some()
+                })
             })?;
             (entry.path.clone(), format, None)
         }
         None => return None,
     };
     Some(
-        crate::readers::of(format)
+        crate::formats::readers::of(format)
             .table_schema
             .and_then(|schema| schema(&file, name)),
     )
@@ -2191,7 +2201,7 @@ fn first_parquet_under(dir: &Path, depth: u8) -> Option<PathBuf> {
 }
 
 /// Column names from a Parquet footer.
-pub fn column_names(meta: &crate::parquet_footer::Footer) -> Vec<String> {
+pub fn column_names(meta: &crate::formats::parquet_footer::Footer) -> Vec<String> {
     meta.schema_descr
         .columns()
         .iter()

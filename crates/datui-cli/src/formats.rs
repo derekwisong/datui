@@ -7,7 +7,7 @@
 //! help, the docs' format table, the home screen and the open cannot disagree.
 //!
 //! What needs a reader (the bytes that say a format, the scan, the Info tab, Copy as
-//! Python, the export default) is `datui_lib::readers`, keyed by the same
+//! Python, the export default) is `datui_lib::formats::readers`, keyed by the same
 //! [`FileFormat`]. Its docs list where a format is still named by the app because it
 //! changes what the app does: Parquet's partitions, Arrow's streams, SQLite's tables.
 //!

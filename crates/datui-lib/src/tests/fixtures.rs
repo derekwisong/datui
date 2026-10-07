@@ -1,8 +1,8 @@
 //! Binary sample files built in Rust, shared by each format's tests. ELF reads the
 //! generated `tests/sample-data/elf/tiny.elf` instead.
 
-use crate::dataflash::{FMT, FMT_LEN, format_size};
-use crate::ulog::{MAGIC, SYNC};
+use crate::formats::dataflash::{FMT, FMT_LEN, format_size};
+use crate::formats::ulog::{MAGIC, SYNC};
 
 /// A ULog message: its length, its kind, then the payload.
 fn ulog_message(kind: u8, payload: &[u8]) -> Vec<u8> {

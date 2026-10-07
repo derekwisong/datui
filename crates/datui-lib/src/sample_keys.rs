@@ -326,10 +326,11 @@ impl App {
         // listing read for the first column's values (local and cheap).
         if let Some(dir) = self.path.as_ref().filter(|path| path.is_dir()) {
             if partition_columns.is_empty() {
-                partition_columns = crate::readers::hive::discover_hive_partition_columns(dir)
-                    .into_iter()
-                    .filter(|column| state.schema().get(column).is_some())
-                    .collect();
+                partition_columns =
+                    crate::formats::readers::hive::discover_hive_partition_columns(dir)
+                        .into_iter()
+                        .filter(|column| state.schema().get(column).is_some())
+                        .collect();
             }
             if let Some(first) = partition_columns.first() {
                 let prefix = format!("{first}=");

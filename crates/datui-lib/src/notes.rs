@@ -4,8 +4,10 @@
 //! never read as a claim about files not looked at. One claim per note, and one
 //! function (`out_of`) deciding the only ratio any note states.
 
+use crate::formats::schema_union::{
+    ColumnDrift, ColumnRange, DatasetSchema, SchemaOrigin, SkippedFiles,
+};
 use crate::numfmt::group_chrome;
-use crate::schema_union::{ColumnDrift, ColumnRange, DatasetSchema, SchemaOrigin, SkippedFiles};
 use polars::prelude::{DataType, PlSmallStr};
 
 /// One thing datui noticed.
@@ -414,7 +416,7 @@ pub fn no_header(files: &[&std::path::Path]) -> Option<Note> {
 pub fn from_the_open(
     left_out: &[(crate::FileFormat, usize)],
     lake: Option<&str>,
-    files_differ: crate::schema_union::Disagreement,
+    files_differ: crate::formats::schema_union::Disagreement,
     names_look_like_data: bool,
 ) -> Vec<Note> {
     let mut notes = Vec::new();

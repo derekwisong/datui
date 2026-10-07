@@ -577,7 +577,7 @@ fn status(area: Rect, buf: &mut Buffer, view: &HexView, has_specs: bool, ctx: &R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixed_records::Bytes;
+    use crate::formats::fixed_records::Bytes;
     use crate::hex_view::{HexSource, Origin};
     use std::path::PathBuf;
     use std::sync::Arc;

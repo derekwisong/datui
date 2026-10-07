@@ -1184,7 +1184,7 @@ fn temporal_roles_produce_latency_without_name_inference() {
 /// of files must not cost one struct per file to say so.
 #[test]
 fn a_column_missing_from_many_files_counts_them_all_and_names_the_largest() {
-    use crate::schema_union::DriftGroup;
+    use crate::formats::schema_union::DriftGroup;
 
     const FILES: usize = 25;
     // File `i` holds `i + 1` rows, so the largest files are the last ones.

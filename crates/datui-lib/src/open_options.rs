@@ -71,7 +71,7 @@ pub struct OpenOptions {
     pub read_as_plain_files_of: Option<&'static str>,
     /// How the directory's files differed, for footerless formats only (Parquet footers
     /// give the exact per-column version).
-    pub files_disagree: crate::schema_union::Disagreement,
+    pub files_disagree: crate::formats::schema_union::Disagreement,
     /// When true (default), infer Hive/partitioned Parquet schema from one file for faster "Reading schema". When false, use Polars collect_schema().
     pub single_spine_schema: bool,
     /// `--view NAME`: the view to apply to the dataset named on the command
@@ -116,11 +116,11 @@ pub struct OpenOptions {
     /// The split of a Hugging Face cache directory this read chose, the others and the
     /// `map()` files it left out. Found by the read, or by a bucket listing, and carried
     /// to the dataset as `left_out` is. `None` for every other open.
-    pub splits: Option<Arc<crate::hf_splits::Splits>>,
+    pub splits: Option<Arc<crate::formats::hf_splits::Splits>>,
     /// Where each Arrow input's rows are once its streams are converted: the IPC files
     /// read in place and the streams' rows in the converted file the scan names. Set
     /// by the load, after a conversion or a bucket's listing, never by a request.
-    pub arrow_parts: Option<Arc<Vec<crate::ipc_stream::Part>>>,
+    pub arrow_parts: Option<Arc<Vec<crate::formats::ipc_stream::Part>>>,
     /// `--format FILE`: read the path through this format spec, whatever else
     /// matches it. A URL is fetched when the open starts, into `spec_fetched`.
     pub spec_file: Option<PathBuf>,
@@ -144,10 +144,10 @@ pub struct OpenOptions {
     /// What the reader found besides the frame: a window read straight from the file,
     /// its row count, its Info panel tab, other tables and notes. Found by the scan and
     /// carried to the dataset as `left_out` is. `None` for a reader with nothing to add.
-    pub opened: Option<Arc<crate::members::Opened>>,
+    pub opened: Option<Arc<crate::formats::members::Opened>>,
     /// The delimited spec the file is read through, once chosen: its dialect is in
     /// these options, and the read's units and metadata ride with it to the dataset.
-    pub delimited: Option<Arc<crate::delimited_spec::DelimitedRead>>,
+    pub delimited: Option<Arc<crate::formats::delimited_spec::DelimitedRead>>,
     /// How the scan found the data is read: lazily, through a copy, or into memory.
     /// Found by the scan and carried to the dataset for the Info panel's `Read:` line.
     pub read_mode: Option<crate::ReadMode>,
@@ -159,7 +159,7 @@ pub struct OpenOptions {
     pub read_notes: Vec<crate::notes::Note>,
     /// The columns the read gave a type and the frame before, carried to the dataset
     /// as `left_out` is, for the count of the values that did not fit.
-    pub typing: crate::readers::Typing,
+    pub typing: crate::formats::readers::Typing,
     /// `--hex`: show the file's bytes in the hex view, whatever it holds.
     pub hex: bool,
     /// `--hex-width N`: the bytes a row of the hex view holds.
@@ -243,7 +243,7 @@ impl OpenOptions {
             ignore_errors: false,
             comment_char: None,
             header_rows: Vec::new(),
-            header_join: crate::csv_dialect::DEFAULT_HEADER_JOIN.to_string(),
+            header_join: crate::formats::csv_dialect::DEFAULT_HEADER_JOIN.to_string(),
             skip_initial_space: false,
             typed_dialect: TypedDialect::default(),
             debug: false,
@@ -438,7 +438,7 @@ pub struct ReadReport {
     /// rest.
     pub left_out: Vec<(FileFormat, usize)>,
     /// How the files read differed. See [`OpenOptions::files_disagree`].
-    pub files_disagree: crate::schema_union::Disagreement,
+    pub files_disagree: crate::formats::schema_union::Disagreement,
     /// The reader the files were read with, where the read chose it: a directory's
     /// commonest format, or a file's extension. Carried back as `OpenOptions::format`,
     /// so what is on screen knows whether it has a header row to turn off.
@@ -450,11 +450,11 @@ pub struct ReadReport {
     /// A SQLite table opened in place. See `OpenOptions::sqlite`.
     pub sqlite: Option<Arc<SqliteOpen>>,
     /// See [`OpenOptions::opened`].
-    pub opened: Option<Arc<crate::members::Opened>>,
+    pub opened: Option<Arc<crate::formats::members::Opened>>,
     /// The split a Hugging Face cache directory was read as. See `OpenOptions::splits`.
-    pub splits: Option<Arc<crate::hf_splits::Splits>>,
+    pub splits: Option<Arc<crate::formats::hf_splits::Splits>>,
     /// What a read through a delimited spec found. See `OpenOptions::delimited`.
-    pub delimited: Option<Arc<crate::delimited_spec::DelimitedRead>>,
+    pub delimited: Option<Arc<crate::formats::delimited_spec::DelimitedRead>>,
     /// The table the read opened where the open named none: a database's only table.
     /// Carried back as `OpenOptions::table`, so the dataset says which table it is.
     pub table: Option<String>,
@@ -464,14 +464,14 @@ pub struct ReadReport {
     /// See [`OpenOptions::read_notes`].
     pub read_notes: Vec<crate::notes::Note>,
     /// See [`OpenOptions::typing`].
-    pub typing: crate::readers::Typing,
+    pub typing: crate::formats::readers::Typing,
 }
 
 /// A SQLite table opened in place, carried from the scan to the dataset.
 pub struct SqliteOpen {
-    pub pushdown: Arc<dyn crate::pushdown::Pushdown>,
+    pub pushdown: Arc<dyn crate::formats::pushdown::Pushdown>,
     /// Taken by the dataset, which stops the table's statements when it goes.
-    pub hold: std::sync::Mutex<Option<crate::sqlite::Hold>>,
+    pub hold: std::sync::Mutex<Option<crate::formats::sqlite::Hold>>,
     pub other_tables: Vec<String>,
 }
 

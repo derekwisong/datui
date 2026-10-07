@@ -460,7 +460,7 @@ impl SampleSource {
         let lf = apply_quality_scope(lf, scope, self.source.as_ref())?;
         let schema = lf.clone().collect_schema()?;
         let helpers = [
-            crate::schema_union::DRIFT_COLUMN,
+            crate::formats::schema_union::DRIFT_COLUMN,
             "__datui_quality_row",
             self.source
                 .as_ref()

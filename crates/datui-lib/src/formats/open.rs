@@ -70,12 +70,12 @@ impl Spec {
         Err(format!(
             "{named} is not {}: expected magic {} at byte {}, found {}",
             self.name,
-            crate::fixed_records::hex(&self.magic),
+            crate::formats::fixed_records::hex(&self.magic),
             self.magic_offset,
             if found.is_empty() {
                 "the end of the file".to_string()
             } else {
-                crate::fixed_records::hex(found)
+                crate::formats::fixed_records::hex(found)
             }
         ))
     }
@@ -169,7 +169,7 @@ impl Spec {
         }
         let data = bytes.as_slice();
         let mut header = if spec.capture.is_some() {
-            if !crate::framed_records::capture::is_capture(data) {
+            if !crate::formats::framed_records::capture::is_capture(data) {
                 return Err(format!("{named} is not a pcap or pcapng capture"));
             }
             HeaderValues::default()
@@ -189,8 +189,8 @@ impl Spec {
         notes.extend(footer_note);
         let fields: Vec<Field> = all_fields(&spec.records).cloned().collect();
         read_lookups(&fields, dir, &mut header)?;
-        if crate::framed_records::needed(spec) {
-            let (records, more) = crate::framed_records::FramedRecords::open(
+        if crate::formats::framed_records::needed(spec) {
+            let (records, more) = crate::formats::framed_records::FramedRecords::open(
                 spec,
                 bytes.clone(),
                 &header,

@@ -191,7 +191,7 @@ impl App {
                     .and(path.file_stem())
                     .and_then(|stem| FileFormat::from_path(Path::new(stem)))
             })
-            .and_then(crate::readers::export_default)
+            .and_then(crate::formats::readers::export_default)
     }
 
     /// What the status line says while an export writes its file.

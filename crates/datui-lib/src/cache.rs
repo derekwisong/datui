@@ -395,9 +395,9 @@ impl CacheManager {
             // A table inside a file of tables has no file of its own: the file is made absolute,
             // the name kept.
             crate::canonical::canonicalize(path)
-                .or_else(|e| match crate::members::split(path) {
+                .or_else(|e| match crate::formats::members::split(path) {
                     Some((db, table)) => crate::canonical::canonicalize(&db)
-                        .map(|db| crate::members::place(&db, &table)),
+                        .map(|db| crate::formats::members::place(&db, &table)),
                     None => Err(e),
                 })
                 .unwrap_or_else(|_| path.to_path_buf())

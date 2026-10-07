@@ -1,5 +1,5 @@
 //! Parquet in an object store, short of its data: a prefix listed in key ranges at
-//! once, and footers read by small ranged reads. [`crate::dataset_files::StoreFiles`]
+//! once, and footers read by small ranged reads. [`crate::formats::dataset_files::StoreFiles`]
 //! opens a dataset over these.
 
 use color_eyre::Result;
@@ -8,8 +8,8 @@ use object_store::{ObjectStore, ObjectStoreExt};
 use polars::prelude::Schema;
 use std::sync::Arc;
 
-use crate::dataset_files::DatasetFile;
-pub use crate::schema_union::FileFooter;
+use crate::formats::dataset_files::DatasetFile;
+pub use crate::formats::schema_union::FileFooter;
 
 const PARQUET_FOOTER_TAIL_BYTES: usize = 256 * 1024;
 
@@ -73,7 +73,7 @@ pub async fn list_dataset_files_reporting(
     plan: ListShards,
     listed: Arc<std::sync::atomic::AtomicUsize>,
     cancelled: Arc<std::sync::atomic::AtomicBool>,
-) -> Result<(Vec<DatasetFile>, crate::schema_union::SkippedFiles)> {
+) -> Result<(Vec<DatasetFile>, crate::formats::schema_union::SkippedFiles)> {
     let prefix = prefix.trim_matches('/');
     let prefix_path = (!prefix.is_empty()).then(|| crate::cloud_browse::object_path(prefix));
     let objects = list_objects(store, prefix_path.as_ref(), plan, listed, cancelled).await?;
@@ -134,7 +134,7 @@ pub async fn list_dataset_files_reporting(
                 .contains('=')
                 && with_data.contains(directory_of(directory)))
     };
-    let mut skipped = crate::schema_union::SkippedFiles::default();
+    let mut skipped = crate::formats::schema_union::SkippedFiles::default();
     for f in &all {
         // Counted against the prefix, not the glob: excluded files were never candidates.
         if is_data(f) || !wanted(f) {
@@ -558,7 +558,7 @@ pub async fn footers_of_files_reporting(
     store: &Arc<dyn ObjectStore>,
     files: &[DatasetFile],
     read: &[usize],
-    progress: &crate::schema_union::FooterProgress,
+    progress: &crate::formats::schema_union::FooterProgress,
     meter: &Arc<crate::measurements::Meter>,
 ) -> Vec<Option<FileFooter>> {
     let began = std::time::Instant::now();

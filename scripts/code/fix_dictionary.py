@@ -3,7 +3,7 @@
 
 Reads FIX42.xml, FIX44.xml, FIXT11.xml and FIX50SP2.xml from QuickFIX's `spec/`
 directory (fetched from GitHub unless --spec names a local copy) and writes
-`crates/datui-lib/src/fix/dictionary.tsv`, one tag a line:
+`crates/datui-lib/src/formats/fix/dictionary.tsv`, one tag a line:
 
     tag <TAB> name <TAB> type <TAB> data tag <TAB> code=Name;code=Name
 
@@ -31,7 +31,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-OUT = ROOT / "crates/datui-lib/src/fix/dictionary.tsv"
+OUT = ROOT / "crates/datui-lib/src/formats/fix/dictionary.tsv"
 BASE = "https://raw.githubusercontent.com/quickfix/quickfix/master/spec/"
 FILES = ["FIX42.xml", "FIX44.xml", "FIXT11.xml", "FIX50SP2.xml"]
 

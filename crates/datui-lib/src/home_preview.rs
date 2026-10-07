@@ -69,7 +69,7 @@ impl PreviewRows {
         let columns: Vec<_> = df
             .columns()
             .iter()
-            .filter(|c| c.name().as_str() != crate::schema_union::DRIFT_COLUMN)
+            .filter(|c| c.name().as_str() != crate::formats::schema_union::DRIFT_COLUMN)
             .collect();
         let total_columns = columns.len();
         let kept: Vec<_> = columns.into_iter().take(PREVIEW_COLUMNS).collect();
@@ -109,7 +109,7 @@ pub struct Prepared {
     pub(crate) state: Box<DataTableState>,
     pub(crate) options: crate::OpenOptions,
     pub(crate) debug_label: Option<String>,
-    pub(crate) progress: Arc<crate::schema_union::FooterProgress>,
+    pub(crate) progress: Arc<crate::formats::schema_union::FooterProgress>,
 }
 
 /// A prepared dataset passed from the preview to the open that takes it, once.
@@ -215,14 +215,15 @@ pub fn previewable(entry: &Entry, max_bytes: u64) -> bool {
     let Some(size) = entry.size else {
         return false;
     };
-    let preview = FileFormat::from_path(&entry.path).and_then(|f| crate::readers::of(f).preview);
+    let preview =
+        FileFormat::from_path(&entry.path).and_then(|f| crate::formats::readers::of(f).preview);
     match preview {
         // The first page is the first row group, whatever the file.
-        Some(crate::readers::Preview::RowGroup) => {
+        Some(crate::formats::readers::Preview::RowGroup) => {
             let groups = entry.cost.row_groups.unwrap_or(1).max(1) as u64;
             size / groups <= max_bytes
         }
-        Some(crate::readers::Preview::Scan) => size <= max_bytes,
+        Some(crate::formats::readers::Preview::Scan) => size <= max_bytes,
         None => false,
     }
 }

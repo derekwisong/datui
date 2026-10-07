@@ -39,7 +39,7 @@ impl DataTableState {
             || !self
                 .dataset_at_open
                 .as_ref()
-                .is_some_and(crate::schema_union::DatasetSchema::drifts)
+                .is_some_and(crate::formats::schema_union::DatasetSchema::drifts)
         {
             return 0;
         }
@@ -61,14 +61,17 @@ impl DataTableState {
         }
         // Built from the dataset as its footers found it, for the same reason
         // `read_column_as_text` is: only the footers know the type each file wrote.
-        let drift =
-            crate::schema_union::ScanDrift::new(&self.drift_files, &dataset, &self.file_rows())
-                .map(Arc::new);
+        let drift = crate::formats::schema_union::ScanDrift::new(
+            &self.drift_files,
+            &dataset,
+            &self.file_rows(),
+        )
+        .map(Arc::new);
         let partition_columns = self.partition_columns.clone();
         Some(crate::data_quality::QualityConflictScan(Arc::new(
             move |files: &[String], as_text: &[PlSmallStr]| {
                 let drifts = drift.is_some();
-                let lf = crate::schema_union::lenient_scan(
+                let lf = crate::formats::schema_union::lenient_scan(
                     files,
                     dataset.schema.clone(),
                     None,
@@ -99,7 +102,7 @@ impl DataTableState {
             !self.drift_files.is_empty() && self.drift_files.len() == self.drift_file_starts.len();
         let source = if self.can_name_source_files() {
             Some(crate::data_quality::QualitySourceContext {
-                row_index_column: crate::schema_union::DRIFT_COLUMN.to_string(),
+                row_index_column: crate::formats::schema_union::DRIFT_COLUMN.to_string(),
                 ..self.quality_source_drift()
             })
         } else if self.is_pristine() && known_files {
@@ -112,7 +115,7 @@ impl DataTableState {
         };
         let mut expressions = self.binary_stub_exprs();
         if self.can_name_source_files() {
-            expressions.push(col(crate::schema_union::DRIFT_COLUMN));
+            expressions.push(col(crate::formats::schema_union::DRIFT_COLUMN));
         }
         let lf = if ordered {
             self.view.lf.clone()
@@ -142,7 +145,7 @@ impl DataTableState {
         let source = if known_files {
             Some(crate::data_quality::QualitySourceContext {
                 row_index_column: if self.drift_at_open {
-                    crate::schema_union::DRIFT_COLUMN.to_string()
+                    crate::formats::schema_union::DRIFT_COLUMN.to_string()
                 } else {
                     "__datui_quality_row".to_string()
                 },
@@ -187,7 +190,7 @@ impl DataTableState {
         self.quality_schema(scope)
             .iter()
             .filter(|(name, dtype)| {
-                name.as_str() != crate::schema_union::DRIFT_COLUMN && dtype.is_temporal()
+                name.as_str() != crate::formats::schema_union::DRIFT_COLUMN && dtype.is_temporal()
             })
             .map(|(name, _)| name.to_string())
             .collect()
@@ -202,7 +205,7 @@ impl DataTableState {
         self.quality_schema(scope)
             .iter()
             .filter(|(name, dtype)| {
-                name.as_str() != crate::schema_union::DRIFT_COLUMN
+                name.as_str() != crate::formats::schema_union::DRIFT_COLUMN
                     && matches!(dtype, DataType::String | DataType::Categorical(..))
             })
             .map(|(name, _)| name.to_string())

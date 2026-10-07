@@ -68,7 +68,7 @@ fn times(df: &DataFrame) -> Vec<Option<i64>> {
 }
 
 fn utc_ms(text: &str) -> i64 {
-    datui::gps::gpx::parse_time(text).unwrap()
+    datui::formats::gps::gpx::parse_time(text).unwrap()
 }
 
 fn summaries(app: &App) -> Vec<String> {

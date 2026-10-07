@@ -112,7 +112,7 @@ const ALLOWED: &[(&str, &str)] = &[
     ),
     // The Excel reader: the workbook XML's own tag, and Excel's kinds of sheet that
     // are not worksheets (chart sheet, dialog sheet, macro sheet).
-    ("crates/datui-lib/src/excel.rs", "sheet"),
+    ("crates/datui-lib/src/formats/excel.rs", "sheet"),
     // The doc-example runner's fence attribute, in the docs on writing docs.
     (
         "docs/for-developers/documentation.md",

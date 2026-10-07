@@ -6,8 +6,8 @@
 //! and the last batch, which has every column, renames and types into a frame that
 //! collects.
 
-use datui_lib::fix::dict::Layers;
-use datui_lib::fix::{self, FixReader};
+use datui_lib::formats::fix::dict::Layers;
+use datui_lib::formats::fix::{self, FixReader};
 
 pub fn run(bytes: &[u8]) {
     let Some((&first, rest)) = bytes.split_first() else {

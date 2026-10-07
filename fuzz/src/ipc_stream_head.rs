@@ -5,7 +5,7 @@
 //! a directory being opened and on whatever is piped in, so any bytes must give an
 //! answer, never a panic, and a pipe must be read as the stream it is.
 
-use datui_lib::ipc_stream::is_stream_head;
+use datui_lib::formats::ipc_stream::is_stream_head;
 use datui_lib::{FileFormat, stdin::sniff};
 
 /// The most a pipe's sniff looks at.

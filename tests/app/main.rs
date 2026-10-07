@@ -554,7 +554,7 @@ fn amount_nulls(app: &App) -> usize {
 /// `v`, and day 30 alone has a `late` column, which only a full footer pass finds.
 /// Returns the file paths in scan order and the total rows.
 fn write_past_one_wave(dir: &Path) -> (Vec<PathBuf>, usize) {
-    let days = datui::schema_union::FOOTERS_AT_ONCE + 6;
+    let days = datui::formats::schema_union::FOOTERS_AT_ONCE + 6;
     let mut files = Vec::new();
     let mut total = 0;
     for i in 0..days {
@@ -579,11 +579,11 @@ fn count_footer_reads(
     dir: &Path,
 ) -> (
     std::sync::Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, usize>>>,
-    datui::schema_union::FooterHookGuard,
+    datui::formats::schema_union::FooterHookGuard,
 ) {
     let reads = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
     let counted = reads.clone();
-    let guard = datui::schema_union::on_local_footer_read(dir, move |path| {
+    let guard = datui::formats::schema_union::on_local_footer_read(dir, move |path| {
         *counted
             .lock()
             .unwrap()

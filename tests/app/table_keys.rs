@@ -141,11 +141,11 @@ fn test_scroll_past_end_does_not_hang_busy() {
 /// footer to fail to read.
 #[test]
 fn test_a_write_that_stopped_is_said_to_have_stopped() {
-    use datui::schema_union::SkippedFiles;
+    use datui::formats::schema_union::SkippedFiles;
     let note = datui::notes::from_dataset(
-        &datui::schema_union::union_file_schemas(
+        &datui::formats::schema_union::union_file_schemas(
             &[],
-            datui::schema_union::SchemaOrigin::AllFooters(0),
+            datui::formats::schema_union::SchemaOrigin::AllFooters(0),
         )
         .with_skipped(SkippedFiles {
             bookkeeping: 2,

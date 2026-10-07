@@ -5,7 +5,7 @@
 //! must never panic or hold more than its bounds: every batch has the table's schema,
 //! the rows add up, and the header stays within its limits.
 
-use datui_lib::vcd::{self, MAX_EXTEND, MAX_TEXT, MAX_TOKEN, VcdReader};
+use datui_lib::formats::vcd::{self, MAX_EXTEND, MAX_TEXT, MAX_TOKEN, VcdReader};
 
 pub fn run(bytes: &[u8]) {
     let Some((&first, rest)) = bytes.split_first() else {

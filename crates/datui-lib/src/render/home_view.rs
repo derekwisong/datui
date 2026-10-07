@@ -2504,7 +2504,7 @@ fn render_preview(
             let variants = spec
                 .as_deref()
                 .filter(|s| s.lists_variants())
-                .map(crate::members::variant_tables);
+                .map(crate::formats::members::variant_tables);
             let spec_columns = spec
                 .as_deref()
                 .and_then(crate::formats::Spec::static_columns)
@@ -2671,7 +2671,7 @@ fn enter_notes(entry: &Entry, facts: &NoteFacts) -> (Vec<(&'static str, String)>
 /// counts packed under the value column (`Status 6 · OrderAdd 9 · …`), or each column and
 /// type, as `room` rows hold.
 fn spec_schema_lines(
-    variants: Option<&[crate::members::Table]>,
+    variants: Option<&[crate::formats::members::Table]>,
     columns: Option<&[(String, polars::prelude::DataType)]>,
     indent: usize,
     width: usize,
@@ -2710,7 +2710,7 @@ fn spec_schema_lines(
 /// A spec's variants as `name count` items, ` · ` between, breaking only between
 /// items; `… N more` past `room` rows.
 fn variant_lines(
-    variants: &[crate::members::Table],
+    variants: &[crate::formats::members::Table],
     indent: usize,
     width: usize,
     room: usize,

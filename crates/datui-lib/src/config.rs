@@ -904,7 +904,7 @@ impl Default for CsvConfig {
     fn default() -> Self {
         Self {
             comment: None,
-            header_join: crate::csv_dialect::DEFAULT_HEADER_JOIN.to_string(),
+            header_join: crate::formats::csv_dialect::DEFAULT_HEADER_JOIN.to_string(),
             skip_initial_space: false,
             null_values: Vec::new(),
             infer_rows: 1000,
@@ -2909,7 +2909,8 @@ impl AppConfig {
         }
 
         if let Some(c) = &self.csv.comment {
-            crate::csv_dialect::check_comment_char(c).map_err(|e| eyre!("csv.comment: {e}"))?;
+            crate::formats::csv_dialect::check_comment_char(c)
+                .map_err(|e| eyre!("csv.comment: {e}"))?;
         }
 
         if let Some(level) = &self.log.level

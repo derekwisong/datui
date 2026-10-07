@@ -248,7 +248,7 @@ impl SpecFiles {
     }
 }
 
-impl crate::pushdown::Windowed for SpecFiles {
+impl crate::formats::pushdown::Windowed for SpecFiles {
     fn window(&self, start: usize, len: usize) -> PolarsResult<LazyFrame> {
         let end = start.saturating_add(len).min(self.rows);
         let mut frames = Vec::new();
@@ -290,7 +290,7 @@ impl SpecRecords for SpecFiles {
         concat(frames, UnionArgs::default())
     }
     fn collect(&self, rows: usize) -> PolarsResult<DataFrame> {
-        crate::pushdown::Windowed::window(self, 0, rows)?.collect()
+        crate::formats::pushdown::Windowed::window(self, 0, rows)?.collect()
     }
     fn sources(&self) -> &[Arc<Bytes>] {
         &self.sources

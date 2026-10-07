@@ -1800,7 +1800,7 @@ impl Listing {
 /// (`measure_row` does nothing for a plain directory), reading files as the following
 /// open will: the command line passes the user's reader settings; listing passes use
 /// the defaults, as a home open does.
-pub fn look_into_as(entry: &Entry, as_read: &crate::schema_union::ReadAs) -> Entry {
+pub fn look_into_as(entry: &Entry, as_read: &crate::formats::schema_union::ReadAs) -> Entry {
     let mut probe = classify_row(entry);
     measure_row(&mut probe, entry, as_read, None);
     probe
@@ -1822,7 +1822,7 @@ fn classify_row(entry: &Entry) -> Entry {
 fn measure_row(
     probe: &mut Entry,
     entry: &Entry,
-    as_read: &crate::schema_union::ReadAs,
+    as_read: &crate::formats::schema_union::ReadAs,
     remembered: Option<&crate::cache::CacheManager>,
 ) {
     discover::enrich_with(probe, as_read, remembered);
@@ -1839,7 +1839,7 @@ pub fn look_into_batch(
     cache: &crate::cache::CacheManager,
     mut each: impl FnMut(PathBuf, Measured),
 ) {
-    let as_read = crate::schema_union::ReadAs::default();
+    let as_read = crate::formats::schema_union::ReadAs::default();
     let classified: Vec<(Entry, Entry)> = rows
         .into_iter()
         .map(|entry| {
@@ -2212,9 +2212,9 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         .filter(|p| {
             network_check(p)
                 || p.exists()
-                || crate::members::split(p).is_some()
-                || crate::members::split_variant(p, formats).is_some()
-                || crate::hf_splits::split_place(p).is_some()
+                || crate::formats::members::split(p).is_some()
+                || crate::formats::members::split_variant(p, formats).is_some()
+                || crate::formats::hf_splits::split_place(p).is_some()
         })
         // No display cap: the store bounds it, the header counts it, and the section folds.
         .map(|p| {

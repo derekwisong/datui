@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::schema_union::{FileFooter, union_file_schemas};
+use crate::formats::schema_union::{FileFooter, union_file_schemas};
 use polars::prelude::{DataType, Field, Schema, TimeUnit, TimeZone};
 use std::sync::Arc;
 
@@ -11,7 +11,7 @@ fn the_notes_from_an_open_have_no_holes_in_them() {
     let notes = from_the_open(
         &[(crate::FileFormat::Json, 1)],
         Some("Delta"),
-        crate::schema_union::Disagreement {
+        crate::formats::schema_union::Disagreement {
             columns: true,
             types: true,
             headerless: true,
@@ -29,8 +29,8 @@ fn walked(skipped: SkippedFiles) -> DatasetSchema {
     union_file_schemas(&[], SchemaOrigin::AllFooters(0)).with_skipped(skipped)
 }
 
-fn agree() -> crate::schema_union::Disagreement {
-    crate::schema_union::Disagreement {
+fn agree() -> crate::formats::schema_union::Disagreement {
+    crate::formats::schema_union::Disagreement {
         columns: false,
         types: false,
         headerless: false,

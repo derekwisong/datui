@@ -77,14 +77,14 @@ pub(crate) struct LenCount {
     pub(crate) count_dir: Option<PathBuf>,
     pub(crate) files: Option<crate::table::FileCounter>,
     /// The view's own count, from a source that runs the view (a SQLite table).
-    pub(crate) counter: Option<crate::pushdown::Counter>,
+    pub(crate) counter: Option<crate::formats::pushdown::Counter>,
     pub(crate) lf: LazyFrame,
     pub(crate) streaming: bool,
     /// The open's meter: a local directory's count re-reads every footer, tallied with
     /// the open's pass.
     pub(crate) meter: Arc<crate::measurements::Meter>,
     /// Footers read of how many, for the progress line; cancelling stops the count (Esc).
-    pub(crate) progress: Arc<crate::schema_union::FooterProgress>,
+    pub(crate) progress: Arc<crate::formats::schema_union::FooterProgress>,
 }
 
 /// A count, and for a remote dataset of many files the row groups it was summed from.
@@ -115,9 +115,9 @@ impl LenCount {
             // Store footers are round trips, many awaited at once; disk footers go a wave at a
             // time.
             progress: Arc::new(if state.is_remote_source() {
-                crate::schema_union::FooterProgress::counting()
+                crate::formats::schema_union::FooterProgress::counting()
             } else {
-                crate::schema_union::FooterProgress::default()
+                crate::formats::schema_union::FooterProgress::default()
             }),
         }
     }
@@ -176,7 +176,7 @@ impl LenCount {
             }
         }
         match &self.count_dir {
-            Some(dir) => crate::dataset_files::LocalFiles::new(dir)
+            Some(dir) => crate::formats::dataset_files::LocalFiles::new(dir)
                 .count_rows(&self.meter, &self.progress)
                 .map(Counted::from)
                 .map_err(|e| log::warn!(target: "datui", "row count failed: {e:#}")),

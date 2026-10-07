@@ -16,7 +16,7 @@ use object_store::{ObjectStore, ObjectStoreExt};
 
 use crate::download::TempDownload;
 use crate::error_display::{FileError, file_message, store_message};
-use crate::ipc_stream::{Merge, Part};
+use crate::formats::ipc_stream::{Merge, Part};
 use crate::unfinished::Writer;
 use crate::{App, FileFormat, OpenOptions};
 
@@ -58,7 +58,7 @@ pub(crate) fn list(
         let names = names_under(&store, &key, url, runtime)?;
         let (base, names, options) = if names
             .iter()
-            .any(|(name, _)| name == crate::hf_splits::DATASET_DICT)
+            .any(|(name, _)| name == crate::formats::hf_splits::DATASET_DICT)
         {
             dict_split(&store, &key, &base, url, options, runtime)?
         } else {
@@ -102,15 +102,15 @@ fn dict_split(
 ) -> Result<(String, Listing, OpenOptions)> {
     let text = get_text(
         store,
-        &join(key, crate::hf_splits::DATASET_DICT),
-        &format!("{base}/{}", crate::hf_splits::DATASET_DICT),
+        &join(key, crate::formats::hf_splits::DATASET_DICT),
+        &format!("{base}/{}", crate::formats::hf_splits::DATASET_DICT),
         runtime,
     )?;
-    let splits = crate::hf_splits::dict_splits(&text)
+    let splits = crate::formats::hf_splits::dict_splits(&text)
         .ok_or_else(|| failed(url, "its dataset_dict.json names no splits"))?;
     let listed: Vec<&str> = splits.iter().map(String::as_str).collect();
-    let picked =
-        crate::hf_splits::pick(&listed, options.table.as_deref()).map_err(|e| failed(url, e))?;
+    let picked = crate::formats::hf_splits::pick(&listed, options.table.as_deref())
+        .map_err(|e| failed(url, e))?;
     let split = picked.split.clone().unwrap_or_default();
     let names = names_under(store, &join(key, &split), url, runtime)?;
     let inner = OpenOptions {
@@ -119,7 +119,7 @@ fn dict_split(
     };
     let (names, inner) = one_split(names, &inner, url)?;
     let options = OpenOptions {
-        splits: Some(Arc::new(crate::hf_splits::Splits {
+        splits: Some(Arc::new(crate::formats::hf_splits::Splits {
             caches: inner.splits.as_ref().map_or(0, |s| s.caches),
             ..picked
         })),
@@ -180,7 +180,7 @@ fn one_split(
     let mut options = options.clone();
     if hugging_face {
         let listed: Vec<&str> = names.iter().map(|(name, _)| name.as_str()).collect();
-        let (chosen, splits) = crate::hf_splits::choose(&listed, options.table.as_deref())
+        let (chosen, splits) = crate::formats::hf_splits::choose(&listed, options.table.as_deref())
             .map_err(|e| failed(url, e))?;
         names = chosen.into_iter().map(|i| names[i].clone()).collect();
         options.splits = Some(Arc::new(splits));
@@ -225,7 +225,7 @@ fn peek(
                         .get_range(&path, 0..size.min(6))
                         .await
                         .map_err(|e| failed(&url, store_message(&e)))?;
-                    let stream = !crate::ipc_stream::is_ipc_file_head(&head);
+                    let stream = !crate::formats::ipc_stream::is_ipc_file_head(&head);
                     Ok::<_, color_eyre::Report>(Object { url, size, stream })
                 }
             })
@@ -263,7 +263,7 @@ pub(crate) fn download(
     runtime: &tokio::runtime::Handle,
     writer: &Writer,
 ) -> Result<(TempDownload, Vec<Part>)> {
-    crate::ipc_stream::has_room(stream_bytes(objects), options.temp_dir.as_deref())?;
+    crate::formats::ipc_stream::has_room(stream_bytes(objects), options.temp_dir.as_deref())?;
     let mut merge = Merge::create(options.temp_dir.as_deref(), writer)?;
     let read = AtomicU64::new(0);
     let mut parts = Vec::with_capacity(objects.len());
@@ -388,7 +388,7 @@ mod tests {
         let said = |e: color_eyre::Report| crate::error_display::user_message_from_report(&e, None);
         let check = |message: String, url: &str, says: &str| {
             eprintln!("{message}");
-            crate::readers::bad_input::assert_shape(&message, Path::new(url));
+            crate::formats::readers::bad_input::assert_shape(&message, Path::new(url));
             assert!(message.contains(says), "{url}: {message}");
         };
 

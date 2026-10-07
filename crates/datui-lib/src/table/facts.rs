@@ -9,21 +9,24 @@ pub type FileScan = Arc<dyn Fn(&[String], &[PlSmallStr]) -> PolarsResult<LazyFra
 
 /// Counts the rows in each row group of every file of a dataset. Blocks.
 pub type FileCounter = Arc<
-    dyn Fn(&Arc<crate::schema_union::FooterProgress>) -> Result<Vec<Vec<usize>>, String>
+    dyn Fn(&Arc<crate::formats::schema_union::FooterProgress>) -> Result<Vec<Vec<usize>>, String>
         + Send
         + Sync,
 >;
 
 /// Reads every footer of a dataset opened from a couple of them; `None` when they
 /// could not be read (the dataset stays as opened). Blocks, reporting to the progress.
-pub type FootersJoin =
-    Arc<dyn Fn(&Arc<crate::schema_union::FooterProgress>) -> Option<FootersFound> + Send + Sync>;
+pub type FootersJoin = Arc<
+    dyn Fn(&Arc<crate::formats::schema_union::FooterProgress>) -> Option<FootersFound>
+        + Send
+        + Sync,
+>;
 
 /// What reading every footer found, and what the dataset must be given with it: the
 /// schema and the scans built at that schema.
 pub struct FootersFound {
     /// Every column every file has, and which files disagree about what.
-    pub dataset: crate::schema_union::DatasetSchema,
+    pub dataset: crate::formats::schema_union::DatasetSchema,
     /// The scan that reads the dataset whole.
     pub lf: LazyFrame,
     /// Each file's rows, in scan order.
@@ -36,7 +39,7 @@ pub struct FootersFound {
     /// How to read part of a remote dataset; `None` for one that does not read by file.
     pub remote: Option<RemoteRead>,
     /// The row count the footers read say, when they were a sample.
-    pub estimate: Option<crate::schema_union::RowEstimate>,
+    pub estimate: Option<crate::formats::schema_union::RowEstimate>,
 }
 
 /// How a remote dataset reads some of its files, as the pass behind an open found
@@ -364,7 +367,7 @@ impl DataTableState {
         let columns = || {
             self.original_schema
                 .iter()
-                .filter(|(name, _)| name.as_str() != crate::schema_union::DRIFT_COLUMN)
+                .filter(|(name, _)| name.as_str() != crate::formats::schema_union::DRIFT_COLUMN)
         };
         if columns().any(|(_, dtype)| matches!(dtype, DataType::Binary)) {
             return false;
@@ -420,7 +423,7 @@ impl DataTableState {
     /// numbers its rows).
     pub(super) fn record_dataset_schema(
         &mut self,
-        schema: crate::schema_union::DatasetSchema,
+        schema: crate::formats::schema_union::DatasetSchema,
         file_rows: &[usize],
         files: &[String],
     ) {
@@ -467,14 +470,14 @@ impl DataTableState {
     }
 
     /// The lines being indexed behind the first rows, if they still are.
-    pub fn indexing(&self) -> Option<&Arc<crate::lines::Lines>> {
+    pub fn indexing(&self) -> Option<&Arc<crate::formats::lines::Lines>> {
         // Asked of the lines, so a dataset set aside meanwhile does not wait forever.
         self.indexing.as_ref().filter(|lines| lines.indexing())
     }
 
     /// The lines this dataset opened from in part, until told all are in (even while
     /// paused): what an indexing thread works on.
-    pub fn lines_to_index(&self) -> Option<&Arc<crate::lines::Lines>> {
+    pub fn lines_to_index(&self) -> Option<&Arc<crate::formats::lines::Lines>> {
         self.indexing.as_ref()
     }
 
@@ -482,8 +485,8 @@ impl DataTableState {
     /// loaded and uncounted. `pass` is the still-running footer pass's estimate.
     pub fn row_estimate(
         &self,
-        pass: Option<crate::schema_union::RowEstimate>,
-    ) -> Option<crate::schema_union::RowEstimate> {
+        pass: Option<crate::formats::schema_union::RowEstimate>,
+    ) -> Option<crate::formats::schema_union::RowEstimate> {
         if self.view.num_rows_valid || !self.is_pristine() {
             return None;
         }
@@ -535,14 +538,14 @@ impl DataTableState {
         let Some(lines) = self.indexing.take() else {
             return false;
         };
-        let notes = crate::lines::notes(&lines, self.indexing_guessed);
+        let notes = crate::formats::lines::notes(&lines, self.indexing_guessed);
         let opened = std::mem::take(&mut self.indexing_notes);
         self.open_notes.retain(|n| !opened.contains(n));
         self.open_notes.extend(notes);
         // A file that shrank has no count to give: the lines so far are not all of it.
         if lines.shrank() {
-            self.open_notes.push(crate::text_formats::note(
-                crate::lines::SHRANK.to_string(),
+            self.open_notes.push(crate::formats::text_formats::note(
+                crate::formats::lines::SHRANK.to_string(),
                 "the file".to_string(),
             ));
             return true;
@@ -605,7 +608,7 @@ impl DataTableState {
             .iter_names()
             .map(|name| name.to_string())
             .filter(|name| {
-                name != crate::schema_union::DRIFT_COLUMN && !known.contains(name.as_str())
+                name != crate::formats::schema_union::DRIFT_COLUMN && !known.contains(name.as_str())
             })
             .collect();
         drop(known);
@@ -699,7 +702,11 @@ impl DataTableState {
 
     /// `lf` without the hidden drift column; a non-strict drop, a no-op when absent.
     pub(super) fn without_drift(lf: LazyFrame) -> LazyFrame {
-        lf.drop(by_name([crate::schema_union::DRIFT_COLUMN], false, false))
+        lf.drop(by_name(
+            [crate::formats::schema_union::DRIFT_COLUMN],
+            false,
+            false,
+        ))
     }
 
     /// The frame a query, SQL statement or fuzzy search builds on, without the drift
@@ -719,7 +726,7 @@ impl DataTableState {
     }
 
     /// What each drift group is missing, for the renderer. Empty when nothing drifts.
-    pub fn drift_groups(&self) -> Arc<Vec<crate::schema_union::DriftGroup>> {
+    pub fn drift_groups(&self) -> Arc<Vec<crate::formats::schema_union::DriftGroup>> {
         self.view.drift_groups.clone()
     }
 
@@ -781,7 +788,7 @@ impl DataTableState {
     pub(crate) fn window_for_quality(
         &self,
         scope: &crate::data_quality::QualityScope,
-    ) -> Option<Arc<dyn crate::pushdown::Windowed>> {
+    ) -> Option<Arc<dyn crate::formats::pushdown::Windowed>> {
         use crate::data_quality::QualityScope;
         matches!(scope, QualityScope::WholeSource | QualityScope::CurrentView)
             .then(|| {
@@ -810,7 +817,7 @@ impl DataTableState {
 
     /// The source a view window is read straight from, if any: records or audio frames
     /// of the data as loaded, or a view the source runs itself.
-    pub(super) fn window_now(&self) -> Option<Arc<dyn crate::pushdown::Windowed>> {
+    pub(super) fn window_now(&self) -> Option<Arc<dyn crate::formats::pushdown::Windowed>> {
         if let Some(window) = self.follow_window() {
             return Some(Arc::new(window));
         }
@@ -822,7 +829,7 @@ impl DataTableState {
 
     /// The view as the source runs it, when it can: the root is the data as loaded and
     /// the source can express the sidebar's filters and sort. Derived each time.
-    pub(crate) fn pushed_view(&self) -> Option<crate::pushdown::PushedView> {
+    pub(crate) fn pushed_view(&self) -> Option<crate::formats::pushdown::PushedView> {
         let pushdown = self.pushdown.as_ref()?;
         if !self.scan_is_the_root() || self.view.drift_column_present {
             return None;
@@ -839,7 +846,7 @@ impl DataTableState {
 
     /// The view's own count from a source that runs it, or, for a followed file known up
     /// to a row, that count plus the rows after.
-    pub(crate) fn source_counter(&self) -> Option<crate::pushdown::Counter> {
+    pub(crate) fn source_counter(&self) -> Option<crate::formats::pushdown::Counter> {
         if let Some(counter) = self.follow_counter() {
             return Some(counter);
         }
@@ -879,7 +886,7 @@ impl DataTableState {
 
     /// A followed view's count known up to a file row, plus the view's rows after it,
     /// read from the preceding mark.
-    fn follow_counter(&self) -> Option<crate::pushdown::Counter> {
+    fn follow_counter(&self) -> Option<crate::formats::pushdown::Counter> {
         let follow = self.follow.as_ref()?;
         let &(before, row) = self.follow_known()?.last()?;
         let rest =
@@ -897,7 +904,7 @@ impl DataTableState {
 
     /// What a read through a delimited spec found, when the dataset was read through
     /// one.
-    pub fn delimited_read(&self) -> Option<&Arc<crate::delimited_spec::DelimitedRead>> {
+    pub fn delimited_read(&self) -> Option<&Arc<crate::formats::delimited_spec::DelimitedRead>> {
         self.delimited.as_ref()
     }
 
@@ -938,7 +945,7 @@ impl DataTableState {
     }
 
     /// What the file said besides its rows: its Info panel tab.
-    pub fn format_detail(&self) -> Option<&crate::text_formats::Detail> {
+    pub fn format_detail(&self) -> Option<&crate::formats::text_formats::Detail> {
         self.detail.as_deref()
     }
 
@@ -958,7 +965,7 @@ impl DataTableState {
         Some(self.original_lf.clone())
     }
 
-    pub(crate) fn set_format_detail(&mut self, detail: crate::text_formats::Detail) {
+    pub(crate) fn set_format_detail(&mut self, detail: crate::formats::text_formats::Detail) {
         self.detail = Some(Arc::new(detail));
     }
 
@@ -1005,7 +1012,7 @@ impl DataTableState {
 
     /// Columns the filter or sort names that some file holds in another type, in dataset
     /// order, each once.
-    fn view_columns_with_conflicts(&self) -> Vec<crate::schema_union::ColumnDrift> {
+    fn view_columns_with_conflicts(&self) -> Vec<crate::formats::schema_union::ColumnDrift> {
         let Some(dataset) = self.dataset_schema.as_ref() else {
             return Vec::new();
         };
@@ -1077,9 +1084,9 @@ impl DataTableState {
             let keep = runs
                 .iter()
                 .map(|(start, end)| {
-                    col(crate::schema_union::DRIFT_COLUMN)
+                    col(crate::formats::schema_union::DRIFT_COLUMN)
                         .lt(lit(*start as u32))
-                        .or(col(crate::schema_union::DRIFT_COLUMN).gt_eq(lit(*end as u32)))
+                        .or(col(crate::formats::schema_union::DRIFT_COLUMN).gt_eq(lit(*end as u32)))
                 })
                 .reduce(Expr::and);
             if let Some(keep) = keep {
@@ -1121,11 +1128,14 @@ impl DataTableState {
 
         // From the dataset as its footers found it, not the view (which no longer has the
         // per-file types).
-        let drift =
-            crate::schema_union::ScanDrift::new(&self.drift_files, &dataset, &self.file_rows());
+        let drift = crate::formats::schema_union::ScanDrift::new(
+            &self.drift_files,
+            &dataset,
+            &self.file_rows(),
+        );
         let scanned = match self.remote_files.as_ref() {
             Some(remote) => (remote.scan)(&remote.urls, &as_text),
-            None => crate::schema_union::lenient_scan(
+            None => crate::formats::schema_union::lenient_scan(
                 &self.drift_files,
                 dataset.schema.clone(),
                 None,
@@ -1175,7 +1185,7 @@ impl DataTableState {
     /// needs each file's row start, unknown when footers were sampled or failed. An offer
     /// the action then declines is worse than none.
     fn notes_datui_can_act_on(
-        dataset: &crate::schema_union::DatasetSchema,
+        dataset: &crate::formats::schema_union::DatasetSchema,
         counted: bool,
     ) -> Vec<crate::notes::Note> {
         let mut notes = crate::notes::from_dataset(dataset);
@@ -1209,7 +1219,7 @@ impl DataTableState {
     }
 
     /// What the footers said about the dataset's columns, when it is many files.
-    pub fn dataset_schema(&self) -> Option<&crate::schema_union::DatasetSchema> {
+    pub fn dataset_schema(&self) -> Option<&crate::formats::schema_union::DatasetSchema> {
         self.dataset_schema.as_ref()
     }
 

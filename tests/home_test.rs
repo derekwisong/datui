@@ -482,7 +482,7 @@ fn test_selection_clamps_when_filter_shrinks_the_list() {
     );
     home.select_first_entry();
     assert_eq!(
-        home.selected_entry().map(|e| e.name),
+        home.selected_entry().map(|e| e.name.clone()),
         Some("aaa.parquet".to_string())
     );
 }
@@ -1591,12 +1591,12 @@ fn test_applying_a_listing_keeps_the_cursor_where_it_was() {
     home.rebuild(&[]);
     home.move_selection(1);
     home.move_selection(1);
-    let held = home.selected_entry().map(|e| e.path);
+    let held = home.selected_entry().map(|e| e.path.clone());
     assert!(held.is_some());
 
     home.rebuild(&[]); // as if a worker delivered a fresh listing
     assert_eq!(
-        home.selected_entry().map(|e| e.path),
+        home.selected_entry().map(|e| e.path.clone()),
         held,
         "a refresh should not move the cursor"
     );
@@ -4417,7 +4417,7 @@ fn test_partitioned_cloud_directories_are_labelled_and_open_whole() {
     // reads `by_year` and `by_station` together.
     assert!(!home.selection_is_the_door());
     assert_eq!(
-        home.selected_entry().map(|e| e.path),
+        home.selected_entry().map(|e| e.path.clone()),
         Some(PathBuf::from("s3://noaa-ghcn-pds/parquet/by_year"))
     );
     assert_eq!(
@@ -5576,13 +5576,16 @@ fn test_coming_back_waits_for_a_row_still_to_arrive() {
     home.search.running = true;
     home.rebuild(&[]);
     assert_ne!(
-        home.selected_entry().map(|e| e.path),
+        home.selected_entry().map(|e| e.path.clone()),
         Some(deep.clone()),
         "not there yet"
     );
     assert!(home.returning.is_some(), "still waiting for it");
     home.search_batch(tmp.path(), found(), 3);
-    assert_eq!(home.selected_entry().map(|e| e.path), Some(deep.clone()));
+    assert_eq!(
+        home.selected_entry().map(|e| e.path.clone()),
+        Some(deep.clone())
+    );
     assert!(home.returning.is_none());
 
     // The same again, but the user moves first: the cursor stays where they put it.
@@ -5720,7 +5723,7 @@ mod coming_back {
     }
 
     pub(super) fn on(app: &App) -> Option<PathBuf> {
-        app.home.selected_entry().map(|entry| entry.path)
+        app.home.selected_entry().map(|entry| entry.path.clone())
     }
 
     /// Where the cursor is in the viewport. Other tests in this binary open datasets,
@@ -6771,7 +6774,7 @@ fn test_rows_arriving_above_the_cursor_leave_it_on_its_line() {
     press_and_draw(&mut app, KeyCode::End);
     let f50 = tmp.path().join("f50.csv");
     let mut line = 0;
-    while app.home.selected_entry().map(|e| e.path) != Some(f50.clone()) {
+    while app.home.selected_entry().map(|e| e.path.clone()) != Some(f50.clone()) {
         line = press_and_draw(&mut app, KeyCode::Up);
     }
     for i in 0..5 {
@@ -6784,7 +6787,7 @@ fn test_rows_arriving_above_the_cursor_leave_it_on_its_line() {
     listed(&mut app, &rx, |app| {
         visible_names(&app.home).contains(&"e4.csv".to_string())
     });
-    assert_eq!(app.home.selected_entry().map(|e| e.path), Some(f50));
+    assert_eq!(app.home.selected_entry().map(|e| e.path.clone()), Some(f50));
     assert_eq!(cursor_line(&mut app), line);
 }
 
@@ -6797,7 +6800,7 @@ fn test_the_view_never_leaves_blank_lines_below_the_last_row() {
     let bottom = press_and_draw(&mut app, KeyCode::End);
     let f44 = tmp.path().join("f44.csv");
     let mut before = bottom;
-    while app.home.selected_entry().map(|e| e.path) != Some(f44.clone()) {
+    while app.home.selected_entry().map(|e| e.path.clone()) != Some(f44.clone()) {
         before = press_and_draw(&mut app, KeyCode::Up);
     }
     for i in 45..60 {
@@ -6812,7 +6815,7 @@ fn test_the_view_never_leaves_blank_lines_below_the_last_row() {
         !visible_names(&app.home).contains(&"f59.csv".to_string())
     });
     let line = cursor_line(&mut app);
-    assert_eq!(app.home.selected_entry().map(|e| e.path), Some(f44));
+    assert_eq!(app.home.selected_entry().map(|e| e.path.clone()), Some(f44));
     assert!(line > before, "the view came up: line {line}, was {before}");
     let rows = app.home.visible().len();
     assert_eq!(
@@ -7020,7 +7023,7 @@ mod landing {
         assert_eq!(app.home.filter, "same_schema");
         assert!(app.home.filter_selected);
         assert_eq!(
-            app.home.selected_entry().map(|e| e.path),
+            app.home.selected_entry().map(|e| e.path.clone()),
             Some(same.clone())
         );
         press(&mut app, KeyCode::Char('~'));
@@ -7121,7 +7124,7 @@ mod landing {
         );
         assert!(!app.home.selection_is_the_door());
         assert_eq!(
-            app.home.selected_entry().map(|e| e.path),
+            app.home.selected_entry().map(|e| e.path.clone()),
             Some(diff.join("a.parquet"))
         );
     }
@@ -7162,7 +7165,12 @@ mod landing {
             Some(("every Parquet file below".to_string(), None))
         );
         assert!(!app.home.selection_is_the_door());
-        let on = app.home.selected_entry().expect("a row inside").path;
+        let on = app
+            .home
+            .selected_entry()
+            .expect("a row inside")
+            .path
+            .clone();
         assert!(on.starts_with(&data) && on != data, "got {on:?}");
     }
 
@@ -7180,7 +7188,7 @@ mod landing {
         assert_eq!(door(&app).name, "delta_tbl (Delta files, not the table)");
         assert!(!app.home.selection_is_the_door());
         assert_eq!(
-            app.home.selected_entry().map(|e| e.path),
+            app.home.selected_entry().map(|e| e.path.clone()),
             Some(delta.join("part-0.parquet"))
         );
     }
@@ -7267,7 +7275,7 @@ fn test_late_footers_move_a_landed_cursor_and_only_a_landed_one() {
     turned_down(&mut home);
     assert!(!home.selection_is_the_door());
     assert_eq!(
-        home.selected_entry().map(|e| e.path),
+        home.selected_entry().map(|e| e.path.clone()),
         Some(exports.join("a.parquet"))
     );
 
@@ -8120,7 +8128,7 @@ mod first_rows {
 
     /// Draw at `w`×`h` until the selected file's preview has landed.
     fn wait_for_rows(app: &mut datui::App, rx: &Receiver<AppEvent>, w: u16, h: u16) {
-        let entry = app.home.selected_entry().expect("a row selected");
+        let entry = app.home.selected_entry().expect("a row selected").clone();
         let stamp = Stamp::of_entry(&entry);
         render(app, w, h);
         settle(app, rx, |app| {
@@ -8748,7 +8756,10 @@ mod frecency {
         let (mut app, _rx, often, last) = opened(&tmp, "sales_q1.csv", "sales_q2.csv");
         assert_eq!(recent_order(&app), [often, last.clone()]);
         app.home.select_first_entry();
-        assert_eq!(app.home.selected_entry().map(|e| e.path), Some(last));
+        assert_eq!(
+            app.home.selected_entry().map(|e| e.path.clone()),
+            Some(last)
+        );
     }
 
     /// Of two files `sales` matches equally, the one opened most is first, in a

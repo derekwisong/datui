@@ -1098,14 +1098,13 @@ impl App {
         let generation = self.home_generation;
 
         self.move_remembered_places();
-        self.home.catalogs = home::catalogs(&self.app_config);
+        let mut catalogs = home::catalogs(&self.app_config);
         // Hidden with Delete on its heading: the catalog that comes with datui only,
         // never a user's own `examples.toml`.
         if self.cache.examples_hidden() {
-            self.home
-                .catalogs
-                .retain(|c| c.origin != crate::catalog::Origin::Bundled);
+            catalogs.retain(|c| c.origin != crate::catalog::Origin::Bundled);
         }
+        self.home.set_catalogs(catalogs);
         let mut request = home::ListingRequest {
             // Filled in on the worker, from the cache and the desktop's recents: files
             // all the same, and the first frame does not wait on a file.
@@ -1208,7 +1207,7 @@ impl App {
         if !self.head_web_rows {
             return;
         }
-        let Some(entry) = self.home.selected_entry() else {
+        let Some(entry) = self.home.selected_entry().cloned() else {
             return;
         };
         if entry.size.is_some()
@@ -1987,13 +1986,13 @@ impl App {
         }
         // A SQLite database lists its tables, however many it has.
         if entry.cost.tables.is_some() {
-            return Some(entry.path);
+            return Some(entry.path.clone());
         }
         (!matches!(
             entry.kind,
             discover::EntryKind::File | discover::EntryKind::Other
         ))
-        .then_some(entry.path)
+        .then_some(entry.path.clone())
     }
 
     /// Why a prefix in an object store cannot be read as one table, when it cannot.
@@ -2137,7 +2136,7 @@ impl App {
             self.home_toggle_fold();
             return None;
         }
-        let entry = self.home.selected_entry()?;
+        let entry = self.home.selected_entry()?.clone();
         // A collection's local dataset that is not there: said here, where it was named.
         if self.home.missing.contains(&entry.path) {
             self.home.status = Some(format!(
@@ -2343,7 +2342,7 @@ impl App {
                 // the facts fill in rows the recursive search finds the same way, and
                 // only the first listing after entering home carries the folds.
                 self.home.known = known.clone();
-                self.home.visits = visits.clone();
+                self.home.set_visits(visits.clone());
                 self.home.newest_recent = newest.clone();
                 if let Some(folds) = folds {
                     self.home.folds = folds.clone();

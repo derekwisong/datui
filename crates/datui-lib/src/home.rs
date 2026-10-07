@@ -240,15 +240,15 @@ fn place_key(path: &Path) -> String {
 }
 
 /// The catalogs' datasets and bookmarks by place, for the lookups every drawn row
-/// makes. Built with each listing, from the catalogs it was built for.
+/// makes.
 #[derive(Debug, Default)]
 pub struct CatalogPlaces {
     /// Catalog and dataset, by [`place_key`]: the first listed of two at one place.
     datasets: std::collections::HashMap<String, (usize, usize)>,
     /// Catalog, dataset and bookmark, by [`place_key`].
     bookmarks: std::collections::HashMap<String, (usize, usize, usize)>,
-    /// How many datasets and bookmarks the catalogs held. Catalogs replaced since
-    /// with a different count are scanned instead until the next listing.
+    /// How many datasets and bookmarks the catalogs held. Catalogs set other than by
+    /// [`HomeState::set_catalogs`] are scanned instead.
     counted: (usize, usize),
 }
 
@@ -1512,7 +1512,8 @@ pub struct HomeState {
     /// How a path is judged to be network-backed. Swappable so the "never touch a
     /// remote path on this thread" rule can be tested without a remote.
     pub network_check: fn(&Path) -> bool,
-    /// How often and how lately each recent was opened: ranks matches (#547 M9).
+    /// How often and how lately each recent was opened: ranks matches (#547 M9). Set
+    /// with [`HomeState::set_visits`], which lists the rows again.
     pub visits: std::collections::HashMap<PathBuf, crate::cache::Visits>,
     /// The recent opened last. Recent is ranked by frecency, and the cursor lands here
     /// so the last file is still one Enter away.
@@ -1583,7 +1584,8 @@ pub struct HomeState {
     /// buckets. Empty on a machine with no cloud credentials, which is the common case
     /// and not a failure.
     pub cloud: Vec<CloudSource>,
-    /// The catalogs shown, each a section of its own.
+    /// The catalogs shown, each a section of its own. Set with
+    /// [`HomeState::set_catalogs`], which indexes their places.
     pub catalogs: Vec<ShownCatalog>,
     /// HTTP(S) catalog files whose size was asked for this session (a HEAD).
     pub sized: std::collections::HashSet<PathBuf>,
@@ -1612,7 +1614,7 @@ pub struct HomeState {
     pub landing: bool,
     /// The rows as last listed. See [`RowsCache`].
     pub rows_cache: RowsCache,
-    /// The catalogs' places, as of the last listing.
+    /// The catalogs' places. See [`HomeState::set_catalogs`].
     pub catalog_places: CatalogPlaces,
 }
 
@@ -3003,7 +3005,6 @@ impl HomeState {
             name_by_spec(&self.formats, &mut section.rows);
         }
         self.sections = listing.sections;
-        self.catalog_places = CatalogPlaces::of(&self.catalogs);
         self.changed();
         self.missing = listing.missing;
         // Browsing, the first section is the directory browsed.
@@ -3965,6 +3966,19 @@ impl HomeState {
         *self.rows_cache.built.get_mut() = None;
     }
 
+    /// Show these catalogs.
+    pub fn set_catalogs(&mut self, catalogs: Vec<ShownCatalog>) {
+        self.catalog_places = CatalogPlaces::of(&catalogs);
+        self.catalogs = catalogs;
+        self.changed();
+    }
+
+    /// How often and how lately each recent was opened, which ranks matches.
+    pub fn set_visits(&mut self, visits: std::collections::HashMap<PathBuf, crate::cache::Visits>) {
+        self.visits = visits;
+        self.changed();
+    }
+
     /// The sections, to change in place. The rows are listed again from them on the
     /// next read.
     pub fn sections_mut(&mut self) -> &mut Vec<Section> {
@@ -4375,9 +4389,9 @@ impl HomeState {
     /// The door counts: it is something to open, and every caller here wants what the
     /// cursor is on. What it must not be is a row in a path-keyed map, which is why it
     /// is [`Row::Door`] and not an entry among the section's rows.
-    pub fn selected_entry(&self) -> Option<Entry> {
+    pub fn selected_entry(&self) -> Option<&Entry> {
         match self.selected_row()? {
-            Row::Entry { entry, .. } | Row::Door { entry, .. } => Some(entry.clone()),
+            Row::Entry { entry, .. } | Row::Door { entry, .. } => Some(entry),
             _ => None,
         }
     }

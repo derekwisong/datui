@@ -227,7 +227,7 @@ impl App {
                 let local = |path: &Path| {
                     matches!(source::input_source(path), source::InputSource::Local(_))
                 };
-                match self.home.selected_entry() {
+                match self.home.selected_entry().cloned() {
                     Some(entry)
                         if !self.home.selection_is_the_door()
                             && entry.table.is_none()

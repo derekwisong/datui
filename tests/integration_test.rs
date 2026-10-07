@@ -14183,7 +14183,7 @@ fn test_a_tall_list_spaces_its_sections_and_a_short_one_does_not() {
         ],
         ..Default::default()
     };
-    app.home.catalogs = datui::home::catalogs(&config);
+    app.home.set_catalogs(datui::home::catalogs(&config));
     app.home.rebuild(&recents);
 
     let is_header = |line: &str| {

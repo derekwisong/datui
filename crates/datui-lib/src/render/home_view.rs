@@ -185,7 +185,7 @@ fn render_rows_strip(
     if free < STRIP_MIN_HEIGHT || app.home.path_input_active {
         return;
     }
-    let Some(entry) = app.home.selected_entry() else {
+    let Some(entry) = app.home.selected_entry().cloned() else {
         return;
     };
     let Some(preview) = app.home_preview_rows(&entry, screen_height) else {
@@ -2687,7 +2687,7 @@ fn render_preview(
             .render(area, buf);
         return;
     }
-    let Some(entry) = app.home.selected_entry() else {
+    let Some(entry) = app.home.selected_entry().cloned() else {
         return;
     };
     if crate::home::cloud_source_id(&entry.path).is_some() {

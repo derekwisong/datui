@@ -657,16 +657,12 @@ pub enum WhatEnter {
 impl App {
     /// See [`WhatEnter`].
     pub fn what_enter_does(&self) -> WhatEnter {
-        // One walk of the list, not four. Every `selected_*` helper rebuilds it, and this
-        // runs from the control bar on every frame, beside a
-        // `selected_directory_to_enter` that walks it once more.
-        let rows = self.home.visible();
-        let entry = match rows.get(self.home.selected) {
+        let entry = match self.home.selected_row() {
             // A place row browses into the place, which is what `→` does on it too, so
             // it is labelled the same and offered once. An HTTP place has no listing to
             // browse and says so instead.
             Some(home::Row::Place { path, .. }) => {
-                return if home::place_is_browsable(path) {
+                return if home::place_is_browsable(&path) {
                     WhatEnter::GoesInside
                 } else {
                     WhatEnter::Explains
@@ -680,7 +676,7 @@ impl App {
             // The door reads the directory it names whatever that directory is labelled —
             // the lake tables included, which is the one row that reads them at all.
             Some(home::Row::Door { .. }) => return WhatEnter::OpensDirectory,
-            Some(home::Row::Entry { entry, .. }) => *entry,
+            Some(home::Row::Entry { entry, .. }) => entry,
         };
         // A bookmark opens whole.
         if entry.kind != discover::EntryKind::File && self.home.bookmark(&entry.path).is_some() {

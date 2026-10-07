@@ -1,6 +1,5 @@
-//! Phase 3: Backend and infrastructure tests for Pivot and Melt.
-//! No modal UI; uses AppEvent::Pivot / AppEvent::Melt with hardcoded specs.
-//! Phase 6: UI-level tests (open modal, Apply, Esc cancel).
+//! Pivot and melt: the events with a spec, the builder driven by keys and its live
+//! preview, saved views, and the read in the background.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
@@ -15,17 +14,8 @@ mod common;
 
 use common::{drain_events, ensure_sample_data, pump_open_until_loaded};
 
-fn load_file_with(
-    app: &mut App,
-    rx: &std::sync::mpsc::Receiver<AppEvent>,
-    path: PathBuf,
-    opts: OpenOptions,
-) {
-    pump_open_until_loaded(app, rx, vec![path], opts);
-}
-
 fn load_file(app: &mut App, rx: &std::sync::mpsc::Receiver<AppEvent>, path: PathBuf) {
-    load_file_with(app, rx, path, OpenOptions::default());
+    pump_open_until_loaded(app, rx, vec![path], OpenOptions::default());
 }
 
 /// TUI-like collect sequence before pivot: the open's first rows → Collect → set visible_rows → collect.
@@ -43,59 +33,18 @@ fn simulate_initial_tui_collects(
     common::read_rows(app, rx);
 }
 
-const SIMULATE_TUI_INITIAL_COLLECTS: bool = true;
-
-/// Polars 0.52's eager pivot panicked when the index column was Date (from_physical UInt32);
-/// the lazy pivot in 0.55 does not.
-
-#[test]
-fn test_pivot_via_events() {
-    ensure_sample_data();
-    let (tx, rx) = mpsc::channel();
-    let mut app = App::new(tx, common::test_runtime());
-    let path = PathBuf::from("tests/sample-data/pivot_long.parquet");
-    load_file(&mut app, &rx, path);
-
-    assert!(app.data_table_state.is_some());
-
-    if SIMULATE_TUI_INITIAL_COLLECTS {
-        simulate_initial_tui_collects(&mut app, &rx, 40);
-    } else if let Some(state) = app.data_table_state.as_mut() {
-        state.visible_rows = 40;
-        common::read_rows(&mut app, &rx);
-    }
-
-    let spec = PivotSpec {
-        index: vec!["date".to_string()],
-        pivot_column: "key".to_string(),
-        value_column: "value".to_string(),
-        aggregation: PivotAggregation::Last,
-    };
-    let event = AppEvent::Pivot(spec);
-    let mut next = app.event(event);
-    while let Some(ev) = next.take() {
-        next = app.event(ev);
-    }
-    drain_events(&mut app, &rx);
-
-    let state = app.data_table_state.as_ref().unwrap();
-    let df = state.lf().clone().collect().unwrap();
-    let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
-    assert_eq!(names, vec!["date", "A", "B", "C"]);
-    assert_eq!(df.height(), 31);
-}
-
-/// Same render path as UI: visible slice (display_slice_df) then cell formatting (get/str_value).
-/// Polars before 0.55 panicked here (restore_logical_type); the test keeps the path exercised.
+/// A pivot on a Date index, after the collects a terminal makes, through the same
+/// render path as the UI: visible slice (display_slice_df) then cell formatting
+/// (get/str_value). Polars' eager pivot panicked on a Date index before 0.55
+/// (from_physical, restore_logical_type); the test keeps the path exercised.
 #[test]
 fn test_pivot_date_index_render_simulation() {
     ensure_sample_data();
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, common::test_runtime());
     let path = PathBuf::from("tests/sample-data/pivot_long.parquet");
-    load_file_with(&mut app, &rx, path, OpenOptions::default());
-    app.data_table_state.as_mut().unwrap().visible_rows = 40;
-    common::read_rows(&mut app, &rx);
+    load_file(&mut app, &rx, path);
+    simulate_initial_tui_collects(&mut app, &rx, 40);
     let spec = PivotSpec {
         index: vec!["date".to_string()],
         pivot_column: "key".to_string(),
@@ -156,45 +105,6 @@ fn test_pivot_long_string_via_events() {
     assert!(names.contains(&"X"));
     assert!(names.contains(&"Y"));
     assert!(names.contains(&"Z"));
-}
-
-#[test]
-fn test_melt_via_events() {
-    ensure_sample_data();
-    let (tx, rx) = mpsc::channel();
-    let mut app = App::new(tx, common::test_runtime());
-    let path = PathBuf::from("tests/sample-data/melt_wide.parquet");
-    load_file(&mut app, &rx, path);
-
-    assert!(app.data_table_state.is_some());
-    let cols = app.data_table_state.as_ref().unwrap().schema().iter_names();
-    let all: Vec<String> = cols.map(|s| s.to_string()).collect();
-    let index = vec!["id".to_string(), "date".to_string()];
-    let value_columns: Vec<String> = all
-        .iter()
-        .filter(|c| *c != "id" && *c != "date")
-        .cloned()
-        .collect();
-    let spec = MeltSpec {
-        index,
-        value_columns,
-        variable_name: "variable".to_string(),
-        value_name: "value".to_string(),
-    };
-    let event = AppEvent::Melt(spec);
-    let mut next = app.event(event);
-    while let Some(ev) = next.take() {
-        next = app.event(ev);
-    }
-
-    let state = app.data_table_state.as_ref().unwrap();
-    let df = state.lf().clone().collect().unwrap();
-    let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
-    assert!(names.contains(&"variable"));
-    assert!(names.contains(&"value"));
-    assert!(names.contains(&"id"));
-    assert!(names.contains(&"date"));
-    assert!(df.height() > 0);
 }
 
 #[test]
@@ -356,81 +266,6 @@ fn test_esc_cancels_pivot_melt_without_change() {
     assert_eq!(rows_before, rows_after, "Esc must not change table");
 }
 
-#[test]
-fn test_pivot_via_modal_apply() {
-    ensure_sample_data();
-    let (tx, rx) = mpsc::channel();
-    let mut app = App::new(tx, common::test_runtime());
-    let path = PathBuf::from("tests/sample-data/pivot_long.parquet");
-    load_file(&mut app, &rx, path);
-
-    send_key(&mut app, KeyCode::Char('p'));
-    assert!(app.pivot_melt_modal.active);
-
-    app.pivot_melt_modal.index_columns = vec!["id".to_string(), "date".to_string()];
-    app.pivot_melt_modal.pivot_column = Some("key".to_string());
-    app.pivot_melt_modal.value_column = Some("value".to_string());
-    app.pivot_melt_modal.aggregation = PivotAggregation::Last;
-
-    // Enter applies from anywhere in the form.
-    let ev = AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let mut next = app.event(ev);
-    while let Some(n) = next.take() {
-        next = app.event(n);
-    }
-    drain_events(&mut app, &rx);
-
-    assert!(!app.pivot_melt_modal.active);
-    assert_eq!(app.input_mode, InputMode::Normal);
-    let state = app.data_table_state.as_ref().unwrap();
-    let df = state.lf().clone().collect().unwrap();
-    let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
-    assert!(names.contains(&"id"));
-    assert!(names.contains(&"date"));
-    assert!(names.contains(&"A"));
-    assert!(names.contains(&"B"));
-    assert!(names.contains(&"C"));
-}
-
-#[test]
-fn test_melt_via_modal_apply() {
-    ensure_sample_data();
-    let (tx, rx) = mpsc::channel();
-    let mut app = App::new(tx, common::test_runtime());
-    let path = PathBuf::from("tests/sample-data/melt_wide.parquet");
-    load_file(&mut app, &rx, path);
-
-    send_key(&mut app, KeyCode::Char('p'));
-    assert!(app.pivot_melt_modal.active);
-
-    app.pivot_melt_modal.switch_tab();
-    app.pivot_melt_modal.melt_index_columns = vec!["id".to_string(), "date".to_string()];
-    app.pivot_melt_modal.melt_value_strategy =
-        datui::pivot_melt_modal::MeltValueStrategy::AllExceptIndex;
-    app.pivot_melt_modal
-        .melt_variable_input
-        .set_value("variable");
-    app.pivot_melt_modal.melt_value_input.set_value("value");
-
-    // Enter applies from anywhere in the form.
-    let ev = AppEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let mut next = app.event(ev);
-    while let Some(n) = next.take() {
-        next = app.event(n);
-    }
-
-    assert!(!app.pivot_melt_modal.active);
-    assert_eq!(app.input_mode, InputMode::Normal);
-    let state = app.data_table_state.as_ref().unwrap();
-    let df = state.lf().clone().collect().unwrap();
-    let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
-    assert!(names.contains(&"variable"));
-    assert!(names.contains(&"value"));
-    assert!(names.contains(&"id"));
-    assert!(names.contains(&"date"));
-    assert!(df.height() > 0);
-}
-
 /// The whole pivot driven by keys alone: Tab to a row, Space opens its Picker,
 /// typing narrows it, Enter chooses, Enter applies from anywhere.
 #[test]
@@ -480,10 +315,11 @@ fn test_pivot_via_keys_only() {
     drain_events(&mut app, &rx);
 
     assert!(!app.pivot_melt_modal.active);
+    assert_eq!(app.input_mode, InputMode::Normal);
     let state = app.data_table_state.as_ref().unwrap();
     let df = state.lf().clone().collect().unwrap();
     let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
-    assert!(names.contains(&"A") && names.contains(&"B") && names.contains(&"C"));
+    assert_eq!(names, ["id", "date", "A", "B", "C"]);
 }
 
 /// Esc backs out one layer at a time: the Picker first, then the modal.
@@ -918,6 +754,7 @@ fn the_builder_previews_the_melt_and_applies_it() {
     send_key(&mut app, KeyCode::Enter);
     drain_events(&mut app, &rx);
     assert!(!app.pivot_melt_modal.active);
+    assert_eq!(app.input_mode, InputMode::Normal);
     let applied = app
         .data_table_state
         .as_ref()

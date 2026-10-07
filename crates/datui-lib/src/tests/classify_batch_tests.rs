@@ -1,3 +1,4 @@
+use crate::home_app::CLASSIFY_BATCH;
 use crate::*;
 use std::sync::mpsc;
 

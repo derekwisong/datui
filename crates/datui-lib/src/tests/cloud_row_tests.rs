@@ -18,7 +18,7 @@ fn a_source_not_signed_in_says_what_to_run() {
         secret_command: None,
         google_credentials: None,
     };
-    let row = crate::home_cloud_source(&source, None, false);
+    let row = crate::home_app::home_cloud_source(&source, None, false);
     assert_eq!(row.count_text(), "not signed in");
     assert_eq!(row.note, "run az login");
 
@@ -28,7 +28,7 @@ fn a_source_not_signed_in_says_what_to_run() {
         origin: "env".to_string(),
         ..source
     };
-    let row = crate::home_cloud_source(&source, None, false);
+    let row = crate::home_app::home_cloud_source(&source, None, false);
     assert_eq!(row.count_text(), "not configured");
     assert_eq!(row.note, "no credentials in AWS_PROFILE");
 }

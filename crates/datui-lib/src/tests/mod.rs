@@ -4,6 +4,8 @@ use std::sync::Once;
 
 static INIT: Once = Once::new();
 
+pub(crate) mod fixtures;
+
 #[cfg(feature = "cloud")]
 mod cloud_recent_facts {
     use crate::dataset_files::DatasetFile;
@@ -4286,3 +4288,6 @@ mod doc_queries_tests;
 
 /// A catalog dataset's codebook in the Info panel and the inspector (#734).
 mod codebook_tests;
+
+/// Every text field the app shows, driven through the real `App`.
+mod text_input_flows;

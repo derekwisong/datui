@@ -3,18 +3,19 @@
 # Run manually with: pre-commit run --all-files
 
 repos:
-  # Rust formatting with cargo fmt
+  # The same commands CI runs, through the one entry point. clippy waits its turn
+  # with other heavy runs on the machine (scripts/dev/test.sh --help).
   - repo: local
     hooks:
       - id: cargo-fmt
         name: cargo fmt
-        entry: cargo fmt --check
+        entry: scripts/dev/test.sh fmt --check
         language: system
         types: [rust]
         pass_filenames: false
       - id: cargo-clippy
         name: cargo clippy
-        entry: cargo clippy --workspace --all-targets --locked -- -D warnings
+        entry: scripts/dev/test.sh clippy
         language: system
         types: [rust]
         pass_filenames: false

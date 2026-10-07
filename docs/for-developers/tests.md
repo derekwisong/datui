@@ -1,16 +1,19 @@
 # Run tests
 
 ```bash,repo
-./scripts/dev/setup-test-data.sh   # once: creates .venv and generates the fixtures
-./scripts/dev/test.sh full         # cargo test --workspace --locked --no-fail-fast
-./scripts/dev/test.sh --help       # the scoped commands
+./scripts/dev/test.sh setup   # once: creates .venv and generates the fixtures
+./scripts/dev/test.sh full    # cargo test --workspace --locked --no-fail-fast
+./scripts/dev/test.sh ci      # what CI's linux job runs: nextest, then doctests
+./scripts/dev/test.sh --help  # every command
 ```
 
 `cargo test` alone runs only the root package. `--workspace` adds `datui-lib`
 and `datui-cli`. CI runs the same tests with
 `cargo nextest run --workspace --locked --no-fail-fast`, one process per test,
-then `cargo test --doc --workspace --locked`. The Python bindings are tested
-separately; see [Build Python bindings](python-bindings.md#build-and-test).
+then `cargo test --doc --workspace --locked`; `test.sh ci` runs exactly that
+(with nextest's `ci` profile from `.config/nextest.toml`), or `cargo test` when
+nextest is not installed. The Python bindings are tested separately
+(`test.sh python`); see [Build Python bindings](python-bindings.md#build-and-test).
 
 ## Select the checks
 
@@ -26,20 +29,23 @@ the executables Cargo builds.
 | `./scripts/dev/test.sh integration home` | Home integration executable |
 | `./scripts/dev/test.sh integration data statistics::` | Data integration executable; only its statistics module executes |
 | `./scripts/dev/test.sh cli` | CLI library tests |
-| `./scripts/dev/test.sh preflight` | Formatting (workspace and fuzz targets) and workspace clippy with all targets |
+| `./scripts/dev/test.sh fmt` | Format the workspace, the fuzz targets and `crates/datui-pyo3` (`--check` only checks) |
+| `./scripts/dev/test.sh lint` | Formatting check and clippy with all targets, in the workspace, the fuzz targets and `crates/datui-pyo3`; `preflight` is the same |
+| `./scripts/dev/test.sh clippy` | Workspace clippy alone, as the pre-commit hook runs it |
+| `./scripts/dev/test.sh msrv` | `cargo +<rust-version> check --workspace`, with the version from `Cargo.toml` |
+| `./scripts/dev/test.sh docs` | The [documentation checks](documentation.md#run-the-checks) and the docs and demo scripts' tests |
 | `./scripts/dev/test.sh features` | Clippy on `datui` and `datui-lib`, all targets, with no default features and then each feature alone |
 | `./scripts/dev/test.sh features none sql` | Only the listed combinations; `none` is no features |
 | `./scripts/dev/test.sh features --test` | The same, then `datui-lib`'s library tests in each combination |
 | `./scripts/dev/test.sh full` | Full workspace tests, including doctests; ignored tests remain opt-in |
+| `./scripts/dev/test.sh ci` | The same tests as CI's `linux` job: nextest, one process per test, then doctests |
 | `./scripts/dev/test.sh --print full` | Print the command without running it |
 
 The script works from any directory and returns the underlying command's exit
-status. Apart from `features`, it keeps the current feature set. It does not
-install dependencies or prepare fixtures ahead of tests, and leaves ignored
-tests opt-in. Existing tests can still generate missing fixtures through their
-fallback helper. Clippy checks all targets, but does
-not execute tests or link their executables. The existing pre-commit hooks
-still run formatting and clippy.
+status. Apart from `features`, it keeps the current feature set. Only `setup`
+installs anything, and ignored tests stay opt-in. Clippy checks all targets, but
+does not execute tests or link their executables. The pre-commit hooks run
+`test.sh fmt --check` and `test.sh clippy`.
 
 Run `features` after gating code or tests on a feature, and `features --test`
 after changing behavior a feature decides. Each combination is a separate
@@ -72,37 +78,38 @@ toolchains or features can cause rebuilds; `cargo clean` is not a routine test
 step. `tests/ORGANIZATION.md` in the repository proposes structural changes to
 reduce linking and harness overhead.
 
-## Heavy runs queue
+## Shared machines
 
 ```text
 Waiting for one of 2 heavy test runs to finish (/run/user/1000/datui-test-heavy*.lock)...
 ```
 
-`unit`, `integration`, `preflight`, `features`, `full`, and any command given
-`--release` take one of `DATUI_TEST_HEAVY_SLOTS` locks (default 2), shared by
-all of the user's checkouts and worktrees on the machine, so only that many run
-at once instead of exhausting memory together. A run that has to wait prints a
-line once, then starts when a slot frees. `check`, `cli` and `--print` do not take it.
+On your own machine you can ignore this. The maintainer runs several checkouts
+and agents on one machine, so `unit`, `integration`, `lint`, `clippy`, `msrv`,
+`ci`, `python`, `features`, `full`, and any command given `--release` take one
+of `DATUI_TEST_HEAVY_SLOTS` slots (default 2) shared by all of the user's
+checkouts, and wait, saying so once, when none is free. `DATUI_TEST_HEAVY_SLOTS=0`
+turns this off.
 
 | Case | Behavior |
 |---|---|
-| Lock file | `$XDG_RUNTIME_DIR/datui-test-heavy.lock`, or `/tmp/datui-test-heavy-<uid>.lock` without `XDG_RUNTIME_DIR` |
+| Lock files | `$XDG_RUNTIME_DIR/datui-test-heavy*.lock`, or `/tmp/datui-test-heavy-<uid>*.lock` without `XDG_RUNTIME_DIR` |
 | Held | Until the command exits, by Ctrl-C or a crash too; never by a daemon it starts, such as sccache's server |
-| `test.sh` inside a heavy run | Runs under the outer run's lock (`DATUI_TEST_LOCK_HELD` is set) |
-| No `flock` (macOS without util-linux) | Runs unlocked and says so |
+| `test.sh` inside a heavy run | Runs under the outer run's slot (`DATUI_TEST_LOCK_HELD` is set) |
+| No `flock` (macOS without util-linux) | Runs without it and says so |
 
-When several agents or people share a machine, run full suites, workspace
-clippy and release builds through `test.sh` rather than `cargo` directly, so
-they queue.
+On such a machine, run full suites, workspace clippy and release builds through
+`test.sh` rather than `cargo` directly, so they queue.
 
 ## Fixtures
 
 The statistics, distribution-detection and pivot/melt tests read sample files
-that are too large to commit. `scripts/dev/setup-test-data.sh` creates `.venv`,
-installs `scripts/requirements.txt` (which pins Polars, NumPy, pyarrow, fastavro
-and openpyxl in `scripts/requirements-fixtures.txt`) and generates them, using [uv](https://github.com/astral-sh/uv) when
-it is installed and `python -m venv` otherwise. It is safe to re-run;
-`--force` regenerates from scratch.
+that are too large to commit. `./scripts/dev/test.sh setup`
+(`scripts/setup_dev.py`) creates `.venv`, installs `scripts/requirements.txt`
+(which pins Polars, NumPy, pyarrow, fastavro and openpyxl in
+`scripts/requirements-fixtures.txt`) and generates them, using
+[uv](https://github.com/astral-sh/uv) when it is installed and `python -m venv`
+otherwise. It is safe to re-run; `--force` regenerates even current fixtures.
 
 The generator writes `tests/sample-data/.generated`, a SHA-256 of
 `scripts/generate_sample_data.py` and `scripts/requirements-fixtures.txt`. When
@@ -122,8 +129,10 @@ To regenerate by hand:
 
 The generator writes into a scratch directory beside the output and then
 renames each file into place, so a test process that has the old file mapped
-keeps reading it. `--out DIR` writes somewhere else. It exits with an error if
-any of its packages is missing.
+keeps reading it. On Windows a rename over a file another process has open
+fails, so generate while no tests run there. `--out DIR` writes somewhere
+else, and `--if-stale` does nothing when the stamp is current. It exits with an
+error if any of its packages is missing.
 
 CI's `linux` job caches `tests/sample-data` under a key built from every input
 to the generator:
@@ -151,8 +160,7 @@ writes its own data writes it elsewhere:
 | Unit tests | `tempfile::tempdir()` |
 
 `scripts/dev/test.sh` fails a test run that wrote into `tests/sample-data`,
-unless that run generated the fixtures. The generator rewrites every fixture in
-place, so do not run it while tests are running.
+unless that run generated the fixtures.
 
 ## Cache and config isolation
 

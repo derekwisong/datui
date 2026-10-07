@@ -2,3 +2,24 @@
 # and goes on.
 [profile.default]
 slow-timeout = { period = "60s", terminate-after = 10 }
+
+# CI's runs (`scripts/dev/test.sh ci`): every failure reported, none retried, so a
+# flaky test fails; JUnit at target/nextest/ci/junit.xml for the job to keep.
+[profile.ci]
+fail-fast = false
+retries = 0
+failure-output = "immediate-final"
+
+[profile.ci.junit]
+path = "junit.xml"
+
+# Binaries whose tests set process-wide environment (credentials, endpoints, spill
+# directories). nextest's process per test already keeps their environments apart;
+# the group runs them one at a time too, so one that comes to share something outside
+# the process (a file, a fixed port) stays safe.
+[test-groups]
+process-env = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = "binary(aws_profiles_test) | binary(cloud_home_test) | binary(cloud_list_on_enter_test) | binary(quality_spill_test)"
+test-group = "process-env"

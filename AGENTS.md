@@ -97,7 +97,7 @@ and helpers: `docs/for-developers/tests.md`.
 | Path | What |
 |---|---|
 | `Cargo.toml` (root) | The `datui` binary. `src/main.rs` parses args and runs `datui_lib::run` |
-| `crates/datui-lib/src/` | Everything else. `lib.rs` holds `App`, the event loop and key handling; `render/` draws each screen; `widgets/` are the Ratatui widgets; `*_modal.rs` hold modal state |
+| `crates/datui-lib/src/` | Everything else, by concern (below). `lib.rs` holds `App`, the event loop and key handling |
 | `crates/datui-cli/` | Clap `Args` shared by the binary and `gen_docs`, which writes the generated docs and the manpages (`man/`, committed) |
 | `crates/datui-pyo3/`, `python/` | Python bindings and wheel. Not a workspace member; see `docs/for-developers/python-bindings.md` |
 | `fuzz/` | cargo-fuzz targets, own workspace; `docs/for-developers/fuzzing.md` |
@@ -106,14 +106,25 @@ and helpers: `docs/for-developers/tests.md`.
 | `release-notes/vX.Y.Z.md` | Optional per-release notes, copied verbatim into the GitHub release and winget |
 | `scripts/` | Python tooling: `bump_version.py`, `docs/`, `demos/`, `packaging/`, `dev/` |
 
-Modules worth knowing: `query.rs` (the DSL parser), `jobs.rs` (background
-jobs), `loading.rs` (opening a dataset), `readers/` (each format's reader),
-`table/` (`DataTableState`: the LazyFrame pipeline and the row buffer, one
-module per concern), `widgets/table.rs` (the table widget), `config.rs` (config structs, merging, theme), `home.rs` +
-`discover.rs` + `search.rs` (the home screen), `cloud_browse.rs` +
-`cloud_hive.rs` + `source.rs` (S3, GCS, HTTP), `statistics.rs` (analysis),
-`chart_data.rs` (chart preparation), `view.rs` (saved views), `cache.rs`, `glyphs.rs`,
-`numfmt.rs`, `fuzzy.rs`.
+`crates/datui-lib/src/`, by directory:
+
+| Directory | What |
+|---|---|
+| `app/` | The event loop (`event_pump.rs`), jobs (`jobs.rs`), the terminal and its one reader (`terminal_input.rs`), the overlay (`overlay.rs`), forms, help, the footer's state; `keys/` and `modals/` hold the table dialogs' keys and state |
+| `loading/` | Opening a dataset: the `Loader` (`mod.rs`), routing and the scan (`open_scan.rs`), open options, row counts, stdin, `--tee`, `--follow`, temp files |
+| `formats/` | Every reader: the registry (`readers/`), a module per format, format specs, and the record decoders they share (`fixed_records.rs`, `framed_records.rs`, `schema_union.rs`) |
+| `cloud/` | S3, GCS, Azure and HTTP: stores and logins (`cloud_browse.rs`, `cloud_sources.rs`), hive listing (`cloud_hive.rs`), `source.rs`, downloads |
+| `home/` | The home screen (`mod.rs`), its work (`home_app.rs`), discovery (`discover.rs`), search, catalogs, `fuzzy.rs` |
+| `table/` | `DataTableState`: the LazyFrame pipeline and the row buffer, a module per concern |
+| `analysis/` | The analysis modal: the sampler (`sampling.rs`), statistics, distribution fits, value counts, Data Quality (`data_quality/`, `quality_*.rs`) |
+| `chart/` | The chart view: its spec (`chart_modal.rs`), preparation (`chart_data.rs`, `chart_jobs.rs`), export |
+| `query/` | The query DSL parser, SQL helpers, the command line (`query_prompt.rs`) |
+| `export/` | Export files, their dialog and keys, copy as Python, `output_file.rs` |
+| `view/`, `inspector/`, `config/` | Saved views; the row inspector; config structs, merging and themes |
+| `render/`, `widgets/` | Drawing: `render/` each screen, `widgets/` the Ratatui widgets (`widgets/table.rs`, the table) |
+
+Root modules are infra the rest share: `cache.rs`, `glyphs.rs`, `numfmt.rs`,
+`logging.rs`, `error_display.rs`, `notes.rs`, `find.rs`, `clipboard.rs`, `limits.rs`.
 
 ## How the app works
 
@@ -130,7 +141,7 @@ run steps with `deferred` (nothing collects; the App then calls
 checkpoint `roll_back` restores if its rows fail.
 
 **One event loop, background work by generation.** Keys (read by the one
-reader in `terminal_input.rs`), worker results and continuations all arrive as
+reader in `app/terminal_input.rs`), worker results and continuations all arrive as
 `AppEvent`s on one mpsc channel; `EventPump::run` sleeps on it until something
 arrives or a deadline passes (spinner, flash), with no polling tick, and
 `App::event` handles each. A key is offered once the results behind it are
@@ -171,7 +182,7 @@ is still claimed. SIGTERM and SIGHUP end the binary's session as a quit does.
 **Keys typed while busy are queued.** While a job the user waits on runs, an
 errand is between phases, or an open is on its way to its dataset,
 `App::is_busy` is true and the footer shows a spinner. `EventPump`
-(`event_pump.rs`, owned by
+(`app/event_pump.rs`, owned by
 `run()`) holds the keys typed meanwhile and replays them in order, one per loop
 iteration, once the app is idle. Ctrl-Q, Ctrl-C outside a text field, Ctrl-O and
 confirmation-modal keys act at once; so do `q`, the column cursor and help at the
@@ -180,13 +191,13 @@ they were typed at goes away. Change this through `classify` and its tests, not
 by gating keys in `App::key`.
 
 **Overlays.** What is open over the table (a dialog, sidebar or screen such as
-Export, Info or Analysis) is one value, `App::overlay` (`overlay.rs`); keys go
+Export, Info or Analysis) is one value, `App::overlay` (`app/overlay.rs`); keys go
 to it and it is drawn over the table. Open one with `open_overlay`, or
 `open_over` for one that goes back to what it was opened over (Export over
 Value Counts); leave through `close_overlay`, which drops the state it held for
 that opening and goes back. `step_back` leaves it without dropping its state,
-behind a confirmation or while it runs. A new dialog is a state struct in
-`*_modal.rs` (it owns its focus), an `Overlay` variant with its arms (keys,
+behind a confirmation or while it runs. A new dialog is a state struct in a
+`*_modal.rs` (`app/modals/`, or its feature's directory; it owns its focus), an `Overlay` variant with its arms (keys,
 `keys_context`, `close_overlay`) and its drawing in `widgets/` or `render/`; it
 has no `active` flag. The error and confirmation modals and the help stack
 over any overlay and keep their own.

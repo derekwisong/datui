@@ -543,7 +543,7 @@ impl App {
 #[derive(Clone)]
 pub enum RunInput {
     /// The command line as parsed; config is read behind the first frame
-    /// ([`startup`]).
+    /// ([`app::startup`]).
     Cli(Box<Args>),
     /// A host program's options, read as the command line's (`-c` included), with a
     /// frame to show instead of its paths. Stdin is the host's, never data.
@@ -836,7 +836,7 @@ pub struct App {
     /// How the table is drawn this session: from the config, with the session's own toggles.
     display: render::context::DisplaySettings,
     runtime: tokio::runtime::Handle, // Tokio runtime handle for background tasks
-    /// Background jobs and the generation their answers are judged by. See [`jobs`].
+    /// Background jobs and the generation their answers are judged by. See [`app::jobs`].
     jobs: Jobs,
     /// The open in flight, from request to first rows. See [`loading`].
     loading: loading::Loader,

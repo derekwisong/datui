@@ -27,7 +27,7 @@ streaming = ["polars/streaming"]
 datui-cli = { path = "../datui-cli", version = "0.4.3-dev" }
 clap = { version = "4.5.54", features = ["derive"] }
 color-eyre = "0.6.5"
-# `event-stream`: the run loop's one terminal reader (terminal_input.rs) has to be
+# `event-stream`: the run loop's one terminal reader (app/terminal_input.rs) has to be
 # wakeable to stop. `futures-core` names its Stream trait; both already in the tree.
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 futures-core = "0.3"
@@ -42,7 +42,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 supports-color = "3.0"
 toml = "1.1"
-# A documentation link is parsed before the browser sees it (link_open.rs).
+# A documentation link is parsed before the browser sees it (app/link_open.rs).
 url = "2.5.8"
 bzip2 = "0.6"
 # static: liblzma compiled in, so a release binary needs no liblzma.so.5 on the
@@ -53,7 +53,7 @@ zstd = "0.14"
 # Chart export: the chart is drawn once as SVG and read with the bundled font
 # (usvg, which sets text with harfrust and skrifa), then written out as SVG,
 # rasterized for PNG (resvg), or written as PDF from the same outlines
-# (chart_pdf.rs). Pure Rust, so no system font library is needed at run time.
+# (chart/chart_pdf.rs). Pure Rust, so no system font library is needed at run time.
 resvg = { version = "0.48.1", default-features = false, features = ["text", "system-fonts"] }
 calamine = { version = "0.36", features = ["chrono"] }
 orc-rust = "0.9"
@@ -144,7 +144,7 @@ features = [
     # dependency of `polars/sql`, so every build without the `sql` feature failed to
     # compile.
     "dtype-decimal",
-    # The same for `DataType::Array`, which schema_union.rs matches on; it arrived
+    # The same for `DataType::Array`, which formats/schema_union.rs matches on; it arrived
     # only through `polars/streaming` or `polars/sql`.
     "dtype-array",
     # Decimal's values are 128-bit, and grouping by them (value counts, a bar

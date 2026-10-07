@@ -8,7 +8,7 @@ exhaustively, so a format missing one does not compile.
 |---|---|
 | A variant | `FileFormat` in `crates/datui-cli/src/formats.rs`, and its place in `FileFormat::ALL` |
 | A descriptor | A `const` beside the others, spread from `BASE`, `DELIMITED`, `READ_INTO` or `MODEL`, and its line in `FileFormat::descriptor` |
-| A parser and a `READER` | A module of its own in `crates/datui-lib/src/`; a format Polars reads goes in `readers/polars.rs` |
+| A parser and a `READER` | A module of its own in `crates/datui-lib/src/formats/`; a format Polars reads goes in `formats/readers/polars.rs` |
 | Its line in the registry | `readers::of` in `crates/datui-lib/src/formats/readers/mod.rs` |
 | Its docs page | A heading for it on a family page in `docs/formats/`, and its line in `format_page` in `crates/datui-cli/src/docgen.rs` |
 | Generated docs | `cargo run -p datui-cli --bin gen_docs -- write`: the format table, the format count, `--format`'s and `--table`'s help |
@@ -46,15 +46,15 @@ const ELF: Descriptor = Descriptor {
 The reader, which starts from `readers::BASE`:
 
 ```rust
-pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
+pub(crate) const READER: crate::formats::readers::Reader = crate::formats::readers::Reader {
     scan,
-    signatures: &[crate::readers::Signature {
+    signatures: &[crate::formats::readers::Signature {
         says: |head, _| looks_like(head),
-        kind: crate::readers::Kind::Magic,
-        trusted: crate::readers::EVERYWHERE,
+        kind: crate::formats::readers::Kind::Magic,
+        trusted: crate::formats::readers::EVERYWHERE,
     }],
     tables: Some(|_| Ok(tables())),
-    ..crate::readers::BASE
+    ..crate::formats::readers::BASE
 };
 ```
 
@@ -67,7 +67,7 @@ pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
 | `facts`, `preview` | What the Info panel and the home preview read cheaply |
 | `python`, `export` | Copy as Python's Polars call; the export default |
 
-The module docs of `readers/mod.rs` list where a format is still named outside
+The module docs of `formats/readers/mod.rs` list where a format is still named outside
 its own module, and why.
 
 ## Tests that catch a miss

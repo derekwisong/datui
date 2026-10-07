@@ -753,7 +753,7 @@ impl Listed {
                     drift.as_deref(),
                     as_text,
                 )?;
-                Ok(crate::hoist_partition_columns(
+                Ok(crate::open_scan::hoist_partition_columns(
                     lf,
                     &schema,
                     &partition_columns,

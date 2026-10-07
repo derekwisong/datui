@@ -1,4 +1,5 @@
 use crate::background::Counted;
+use crate::table::OpenFacts;
 use crate::*;
 use std::path::Path;
 

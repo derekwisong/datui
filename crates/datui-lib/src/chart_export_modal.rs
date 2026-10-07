@@ -34,48 +34,33 @@ pub enum ChartExportFocus {
 impl ChartExportFocus {
     /// The field's label.
     pub fn label(self) -> &'static str {
-        match self {
-            Self::PathInput => "Path:",
-            Self::Format => "Format:",
-            Self::Style => "Style:",
-            Self::Size => "Size:",
-            Self::WidthInput => "Width:",
-            Self::HeightInput => "Height:",
-            Self::Legend => "Legend:",
-            Self::PointOpacity => "Opacity:",
-            Self::PointSize => "Point size:",
-            Self::LineWidth => "Line width:",
-            Self::YFromZero => "Y from zero:",
-            Self::TitleInput => "Title:",
-            Self::DescriptionInput => "Description:",
-            Self::NotesInput => "Notes:",
-            Self::SourceInput => "Source:",
-            Self::BylineInput => "Byline:",
-            Self::Recipe => "Recipe:",
-        }
+        FIELDS
+            .iter()
+            .find(|(field, _)| *field == self)
+            .map_or("", |(_, label)| label)
     }
 }
 
-/// The fields in order, top to bottom; the marks' rows show only for the chart
-/// types they change ([`ChartExportModal::shows`]).
-pub const FIELDS: [ChartExportFocus; 17] = [
-    ChartExportFocus::PathInput,
-    ChartExportFocus::Format,
-    ChartExportFocus::Style,
-    ChartExportFocus::Size,
-    ChartExportFocus::WidthInput,
-    ChartExportFocus::HeightInput,
-    ChartExportFocus::Legend,
-    ChartExportFocus::PointOpacity,
-    ChartExportFocus::PointSize,
-    ChartExportFocus::LineWidth,
-    ChartExportFocus::YFromZero,
-    ChartExportFocus::TitleInput,
-    ChartExportFocus::DescriptionInput,
-    ChartExportFocus::NotesInput,
-    ChartExportFocus::SourceInput,
-    ChartExportFocus::BylineInput,
-    ChartExportFocus::Recipe,
+/// The fields in order, top to bottom, with their labels; the marks' rows show only
+/// for the chart types they change ([`ChartExportModal::shows`]).
+pub const FIELDS: [(ChartExportFocus, &str); 17] = [
+    (ChartExportFocus::PathInput, "Path:"),
+    (ChartExportFocus::Format, "Format:"),
+    (ChartExportFocus::Style, "Style:"),
+    (ChartExportFocus::Size, "Size:"),
+    (ChartExportFocus::WidthInput, "Width:"),
+    (ChartExportFocus::HeightInput, "Height:"),
+    (ChartExportFocus::Legend, "Legend:"),
+    (ChartExportFocus::PointOpacity, "Opacity:"),
+    (ChartExportFocus::PointSize, "Point size:"),
+    (ChartExportFocus::LineWidth, "Line width:"),
+    (ChartExportFocus::YFromZero, "Y from zero:"),
+    (ChartExportFocus::TitleInput, "Title:"),
+    (ChartExportFocus::DescriptionInput, "Description:"),
+    (ChartExportFocus::NotesInput, "Notes:"),
+    (ChartExportFocus::SourceInput, "Source:"),
+    (ChartExportFocus::BylineInput, "Byline:"),
+    (ChartExportFocus::Recipe, "Recipe:"),
 ];
 
 /// What the chart being exported brings to the dialog.
@@ -246,7 +231,11 @@ impl ChartExportModal {
 
     /// The fields on screen, top to bottom.
     pub fn shown(&self) -> Vec<ChartExportFocus> {
-        FIELDS.into_iter().filter(|f| self.shows(*f)).collect()
+        FIELDS
+            .into_iter()
+            .map(|(field, _)| field)
+            .filter(|f| self.shows(*f))
+            .collect()
     }
 
     /// What a choice row shows.
@@ -358,9 +347,9 @@ impl ChartExportModal {
         }
     }
 
-    /// The focused field's input, for a key the form hands it.
-    pub fn focused_input_mut(&mut self) -> Option<&mut TextInput> {
-        Some(match self.focus {
+    /// A text field's input; `None` for a choice.
+    pub fn input_mut(&mut self, field: ChartExportFocus) -> Option<&mut TextInput> {
+        Some(match field {
             ChartExportFocus::PathInput => &mut self.path_input,
             ChartExportFocus::WidthInput => &mut self.width_input,
             ChartExportFocus::HeightInput => &mut self.height_input,
@@ -369,20 +358,6 @@ impl ChartExportModal {
             ChartExportFocus::NotesInput => &mut self.notes_input,
             ChartExportFocus::SourceInput => &mut self.source_input,
             ChartExportFocus::BylineInput => &mut self.byline_input,
-            _ => return None,
-        })
-    }
-
-    pub fn input(&self, field: ChartExportFocus) -> Option<&TextInput> {
-        Some(match field {
-            ChartExportFocus::PathInput => &self.path_input,
-            ChartExportFocus::WidthInput => &self.width_input,
-            ChartExportFocus::HeightInput => &self.height_input,
-            ChartExportFocus::TitleInput => &self.title_input,
-            ChartExportFocus::DescriptionInput => &self.description_input,
-            ChartExportFocus::NotesInput => &self.notes_input,
-            ChartExportFocus::SourceInput => &self.source_input,
-            ChartExportFocus::BylineInput => &self.byline_input,
             _ => return None,
         })
     }

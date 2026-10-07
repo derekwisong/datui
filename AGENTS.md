@@ -132,7 +132,7 @@ is its one outcome, announced by `AppEvent::JobEnded`. `App::job_ended` takes
 the outcome and the record together, so a job holds the generation and the
 keys until its answer is handled. Advancing the generation, or
 `Jobs::supersede`, makes answers stale; App keeps no flags of its own for a
-job. Counts, the footer pass and chart preparation keep their own markers, and
+job. Counts and the footer pass keep their own markers, and
 home-screen workers, keyed by place rather than generation, run inside an
 `OwedAnswer` that sends their in-flight marker an answer if they panic. Async
 cloud calls go through `wait_on_runtime` on the shared Tokio runtime. Never

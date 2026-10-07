@@ -1,4 +1,5 @@
-use crate::render::footer::{Hint, registry_hint, registry_hint_in};
+use crate::render::footer::{Hint, registry_hint, registry_hint_as, registry_hint_in};
+use datui_cli::keys::Context;
 
 /// Determines which full-screen content is active in the main view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,7 +23,7 @@ pub enum MainViewContent {
 
 impl MainViewContent {
     /// Which view is showing. The one place that decides, so the main area and the
-    /// control bar at the foot of it cannot disagree about what the user is looking at.
+    /// footer at the foot of it cannot disagree about what the user is looking at.
     ///
     /// Home first: it is where you are, not an overlay. Then a load in flight, which
     /// owns the screen until it has a dataset to hand over — every other view would be
@@ -60,7 +61,6 @@ impl MainViewContent {
 /// footer then offers only help. A surface with its own footer (a dialog, a
 /// sidebar, the inspector) names its own keys, so the footer adds none.
 pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
-    use datui_cli::keys::Context;
     if app.confirmation_modal.active || app.error_modal.active || app.help_visible() {
         return Vec::new();
     }
@@ -80,7 +80,7 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
                         )
                         .is_some();
                         let mut keys = vec![if row {
-                            Hint::new("Enter", "Go")
+                            registry_hint_as(Context::Query, None, "Enter", "Go")
                         } else {
                             registry_hint(Context::Query, "Enter")
                         }];
@@ -106,7 +106,7 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
                 || app.view_applying()
                 || (app.sample_drawing() && app.in_normal_table_view())
             {
-                return vec![Hint::new("Esc", "Stop")];
+                return vec![stop()];
             }
             // The builder is a takeover with no footer of its own.
             if app.input_mode == crate::InputMode::PivotMelt && app.pivot_melt_modal.active {
@@ -120,8 +120,8 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
             }
             let mut keys = Vec::new();
             if let Some(key) = app.follow_mark().and_then(|f| f.key) {
-                keys.push(Hint::new("t", key));
-                keys.push(Hint::new("Esc", "Stop"));
+                keys.push(registry_hint_as(Context::Table, None, "t", key));
+                keys.push(stop());
             } else if app.find_hint_shown() {
                 keys.push(registry_hint_in(
                     Context::Find,
@@ -138,7 +138,7 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
                 .as_ref()
                 .is_some_and(|s| s.is_drilled_down())
             {
-                keys.push(Hint::new("Esc", "Back"));
+                keys.push(registry_hint(Context::Table, "Esc"));
             } else if app
                 .data_table_state
                 .as_ref()
@@ -161,9 +161,7 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
                 keys.push(registry_hint(Context::Table, "T"));
             }
             if app.app_config.display.notes_accent && state.is_some_and(|s| s.notes_unseen()) {
-                let mut notes = Hint::new("i", "Notes");
-                notes.accented = true;
-                keys.push(notes);
+                keys.push(registry_hint_as(Context::Table, None, "i", "Notes").accented());
             }
             keys
         }
@@ -171,7 +169,7 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
         MainViewContent::Chart => followed(app, chart_hints(app)),
         MainViewContent::ValueCounts => followed(app, screen_hints(value_counts_control_keys(app))),
         MainViewContent::Hex => screen_hints(hex_control_keys(app)),
-        MainViewContent::Loading => vec![Hint::new("^O", "Home")],
+        MainViewContent::Loading => vec![registry_hint(Context::Global, "Ctrl+O")],
         MainViewContent::Home => {
             // The Documentation view names its keys in its own footer.
             if app.info.documentation.is_open() {
@@ -179,41 +177,45 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
             }
             if app.home.path_input_active {
                 return vec![
-                    Hint::new("Enter", "Open"),
-                    Hint::new("Tab", "Complete"),
-                    Hint::new("Esc", "Cancel"),
+                    registry_hint(Context::Home, "Enter"),
+                    registry_hint_as(Context::Home, None, "Tab", "Complete"),
+                    registry_hint_as(Context::Home, None, "Esc", "Cancel"),
                 ];
             }
             // Fixed slots, each its full width whether or not the row offers it, so
             // moving the selection never moves the footer.
             let enter = Some(enter_label(app.what_enter_does())).filter(|l| !l.is_empty());
-            let docs = registry_hint(Context::Home, "Ctrl+E");
             // The bundled catalog's heading has nothing for ^D; its slot offers
             // Delete, the same width: `Del Hide ` for `^D Forget`.
             let catalog = if app.home_hides_catalog() {
-                Hint::new("Del", format!("{:<w$}", "Hide", w = CATALOG_SLOT - 1))
+                slot("Delete", Some("Hide"), CATALOG_SLOT - 1)
             } else {
-                slot("^D", app.home_catalog_action(), CATALOG_SLOT)
+                slot("Ctrl+D", app.home_catalog_action(), CATALOG_SLOT)
             };
+            let docs = registry_hint(Context::Home, "Ctrl+E");
+            let width = docs.label.len();
+            let docs = docs.padded(width);
             vec![
                 slot("Enter", enter, ENTER_SLOT),
                 catalog,
-                slot(
-                    "^E",
-                    app.home_documented_row()
-                        .is_some()
-                        .then_some(docs.label.as_ref()),
-                    docs.label.len(),
-                ),
+                if app.home_documented_row().is_some() {
+                    docs
+                } else {
+                    docs.blank(width)
+                },
             ]
         }
     }
 }
 
+/// Esc stopping a wait at the table.
+fn stop() -> Hint {
+    registry_hint_as(Context::Table, Some("Go"), "Esc", "Stop")
+}
+
 /// The table's Sample form: what Enter does as the form stands, then the keys the
 /// focused row takes.
 fn sample_form_hints(form: &crate::sample_modal::SampleForm) -> Vec<Hint> {
-    let g = crate::glyphs::get();
     let enter = if form.no_sample() {
         "Clear"
     } else if form.anyway {
@@ -221,13 +223,17 @@ fn sample_form_hints(form: &crate::sample_modal::SampleForm) -> Vec<Hint> {
     } else {
         "Draw"
     };
-    let mut keys = vec![Hint::new("Enter", enter), Hint::new(g.updown, "Row")];
-    if form.field.is_text() {
-        keys.push(Hint::new("type", "Edit"));
+    let key = |keys| registry_hint(Context::Sample, keys);
+    let mut keys = vec![
+        registry_hint_as(Context::Sample, None, "Enter", enter),
+        registry_hint_as(Context::Sample, None, "↑ / ↓", "Row"),
+    ];
+    keys.push(if form.field.is_text() {
+        key("(type)")
     } else {
-        keys.push(Hint::new(g.updown_lr, "Change"));
-    }
-    keys.push(Hint::new("Esc", "Cancel"));
+        key("← / →")
+    });
+    keys.push(key("Esc"));
     keys
 }
 
@@ -235,30 +241,23 @@ fn sample_form_hints(form: &crate::sample_modal::SampleForm) -> Vec<Hint> {
 /// it has not read.
 fn followed(app: &crate::App, mut keys: Vec<Hint>) -> Vec<Hint> {
     if let Some(key) = app.follow_mark().and_then(|f| f.key) {
-        keys.insert(0, Hint::new("t", key));
+        keys.insert(0, registry_hint_as(app.keys_context(), None, "t", key));
     }
     keys
 }
 
 /// A screen's own keys in the footer: the two or three it leads with, without help,
 /// which the footer always offers.
-fn screen_hints(keys: Vec<(&'static str, &'static str)>) -> Vec<Hint> {
-    let keys: Vec<_> = keys
-        .into_iter()
-        .filter(|(key, _)| !matches!(*key, "?" | "F1"))
-        .collect();
-    let mut shown: Vec<_> = keys.iter().take(3).copied().collect();
+fn screen_hints(keys: Vec<Hint>) -> Vec<Hint> {
+    let mut shown: Vec<Hint> = keys.iter().take(3).cloned().collect();
     // The way out stays, in the last place, wherever the screen listed it.
-    if let Some(esc) = keys.iter().skip(3).find(|(key, _)| *key == "Esc")
-        && !shown.iter().any(|(key, _)| *key == "Esc")
+    if let Some(esc) = keys.iter().skip(3).find(|hint| hint.key == "Esc")
+        && !shown.iter().any(|hint| hint.key == "Esc")
         && let Some(last) = shown.last_mut()
     {
-        *last = *esc;
+        *last = esc.clone();
     }
     shown
-        .into_iter()
-        .map(|(key, label)| Hint::new(key, label))
-        .collect()
 }
 
 /// The key that opens help, as the footer offers it: `?`, or F1 where `?` types (a
@@ -299,12 +298,12 @@ const ENTER_SLOT: usize = 8;
 /// Columns Ctrl+D's label is given: `Add` or `Forget`.
 const CATALOG_SLOT: usize = 6;
 
-/// A hint in a slot of fixed width: `key label`, the label padded to `width`, or as
-/// many blanks where the row does not offer the key.
-fn slot(key: &'static str, label: Option<&str>, width: usize) -> Hint {
+/// A home hint in a slot of fixed width: the key and `label`, padded to `width`, or
+/// as many blanks where the row does not offer the key.
+fn slot(keys: &str, label: Option<&'static str>, width: usize) -> Hint {
     match label {
-        Some(label) => Hint::new(key, format!("{label:<width$}")),
-        None => Hint::new(" ".repeat(key.len()), " ".repeat(width)),
+        Some(label) => registry_hint_as(Context::Home, None, keys, label).padded(width),
+        None => registry_hint(Context::Home, keys).blank(width),
     }
 }
 
@@ -331,59 +330,52 @@ pub fn enter_label(enter: crate::WhatEnter) -> &'static str {
     }
 }
 
-/// Control bar keys for the analysis screen, per view, tool and Data Quality
+/// Footer keys for the analysis screen, per view, tool and Data Quality
 /// page. This is the screen's one hint surface: the widgets draw no key rows
 /// of their own, and a detail view's bar describes the detail, not the view
 /// it came from.
-fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
+fn analysis_control_keys(app: &crate::App) -> Vec<Hint> {
     use crate::analysis_modal::{AnalysisTool, AnalysisView};
-    let g = crate::glyphs::get();
     let modal = &app.analysis_modal;
+    let context = app.keys_context();
+    let key = |keys| registry_hint(context, keys);
+    let say = |keys, label| registry_hint_as(context, None, keys, label);
     match modal.view {
-        AnalysisView::DistributionDetail => {
-            return vec![
-                (g.updown, "Distribution"),
-                ("s", "Scale"),
-                ("?", "Help"),
-                ("Esc", "Back"),
-            ];
-        }
-        AnalysisView::CorrelationDetail => {
-            return vec![("m", "Method"), ("?", "Help"), ("Esc", "Back")];
-        }
+        AnalysisView::DistributionDetail => return vec![key("↑ / ↓"), key("s"), key("Esc")],
+        AnalysisView::CorrelationDetail => return vec![key("m"), key("Esc")],
         AnalysisView::Main => {}
     }
     // The Sample form owns the keys over whichever tool; its footer names the rest.
     if let Some(form) = &modal.sample_form {
         let listing = modal.focus == crate::analysis_modal::AnalysisFocus::Sidebar;
+        let sample = |keys| registry_hint(Context::Sample, keys);
+        let sample_as = |keys, label| registry_hint_as(Context::Sample, None, keys, label);
         return match (form.inline, listing) {
             // A tool's first run, from the list: Enter takes the form as it stands.
             (true, true) => vec![
-                ("Enter", "Run"),
-                ("Tab", "Sample"),
-                (crate::glyphs::get().updown, "Tools"),
-                ("?", "Help"),
-                ("Esc", "Back"),
+                sample_as("Enter", "Run"),
+                sample_as("Tab", "Sample"),
+                sample_as("↑ / ↓", "Tools"),
+                sample_as("Esc", "Back"),
             ],
             // The form has the cursor: the bar is its only hint surface, so it names
             // what the focused row takes.
             (inline, false) | (inline @ false, _) => {
-                let g = crate::glyphs::get();
                 let mut keys = vec![
-                    ("Enter", if inline { "Run" } else { "Apply" }),
-                    (g.updown, "Row"),
+                    sample_as("Enter", if inline { "Run" } else { "Apply" }),
+                    sample_as("↑ / ↓", "Row"),
                 ];
-                if form.field.is_text() {
-                    keys.push(("type", "Edit"));
+                keys.push(if form.field.is_text() {
+                    sample("(type)")
                 } else {
-                    keys.push((g.updown_lr, "Change"));
-                }
+                    sample("← / →")
+                });
                 if form.field == crate::sample_modal::SampleField::Files
                     && form.context.files.len() > crate::widgets::sample_form::FILES_SHOWN
                 {
-                    keys.push(("PgUp/PgDn", "Files"));
+                    keys.push(sample("PgUp / PgDn"));
                 }
-                keys.push(("Esc", if inline { "Back" } else { "Cancel" }));
+                keys.push(sample_as("Esc", if inline { "Back" } else { "Cancel" }));
                 keys
             }
         };
@@ -393,14 +385,14 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
     }
     // A run in flight owns Esc, and nothing else acts until it is done.
     if modal.computing.is_some() {
-        return vec![("Esc", "Cancel")];
+        return vec![say("Esc", "Cancel")];
     }
     // Only keys that act right now, in the one chip order: primary first, the way
     // out last. The footer shows the first three with Esc kept, so what the
     // focused pane is for leads, then Tab, which is how the other pane is
     // reached; the shared sample after.
     let in_pane = modal.focus == crate::analysis_modal::AnalysisFocus::Main;
-    let esc = (
+    let esc = say(
         "Esc",
         if in_pane && modal.selected_tool.is_some() {
             "Tools"
@@ -408,11 +400,11 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
             "Close"
         },
     );
-    let mut pairs = Vec::new();
+    let mut keys = Vec::new();
     let mut rest = Vec::new();
     if !in_pane {
-        pairs.push(("Enter", "Open"));
-        rest.push((g.updown, "Tools"));
+        keys.push(say("Enter", "Open"));
+        rest.push(say("↑ / ↓", "Tools"));
     } else if let Some(tool) = modal.selected_tool {
         // Enter opens a detail only where the tool has one: a column's
         // distribution, or a pair off the diagonal.
@@ -424,27 +416,27 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
             _ => false,
         };
         if detail {
-            pairs.push(("Enter", "Detail"));
+            keys.push(say("Enter", "Detail"));
         }
         if matches!(tool, AnalysisTool::CorrelationMatrix) {
-            rest.push(("m", "Method"));
+            rest.push(key("m"));
         }
-        rest.push((g.updown, "Rows"));
+        rest.push(say("↑ / ↓", "Rows"));
         // Describe and Distribution scroll only when the statistics do not all fit.
         let columns = match tool {
             AnalysisTool::CorrelationMatrix => true,
             _ => modal.column_scroll().is_some_and(|columns| columns.max > 0),
         };
         if columns {
-            rest.push((g.updown_lr, "Columns"));
+            rest.push(say("← / →", "Columns"));
         }
     }
     if modal.selected_tool.is_some() {
-        pairs.push(("Tab", if in_pane { "Tools" } else { "Result" }));
-        pairs.push(("s", "Sample"));
-        pairs.push(("v", "View Rows"));
+        keys.push(say("Tab", if in_pane { "Tools" } else { "Result" }));
+        keys.push(key("s"));
+        keys.push(key("v"));
     }
-    pairs.extend(rest);
+    keys.extend(rest);
     // On a sample: another one, or every row.
     if modal.view == crate::analysis_modal::AnalysisView::Main
         && app
@@ -452,141 +444,153 @@ fn analysis_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> 
             .current_results()
             .is_some_and(|results| results.sample_size.is_some())
     {
-        pairs.push(("r", "Resample"));
-        pairs.push(("a", "All Rows"));
+        keys.push(key("r"));
+        keys.push(key("a"));
     }
-    pairs.push(("?", "Help"));
-    pairs.push(esc);
-    pairs
+    keys.push(esc);
+    keys
 }
 
 /// The Data Quality pages' keys. Whatever owns the keys right now — a run in
 /// flight, a popup, a list of choices, Setup — the bar says so.
-fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
+fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
     use crate::data_quality::QualityPage;
-    let g = crate::glyphs::get();
     let modal = &app.analysis_modal;
+    let dq = |group, keys| registry_hint_in(Context::DataQuality, Some(group), keys);
+    let dq_as =
+        |group, keys, label| registry_hint_as(Context::DataQuality, Some(group), keys, label);
     if modal.computing.is_some() {
-        return vec![("Esc", "Cancel")];
+        return vec![dq_as("Report", "Esc", "Cancel")];
     }
     if modal.data_quality_show_access {
-        return vec![("Enter", "Close"), ("Esc", "Close")];
+        return vec![dq("Popups", "Enter"), dq_as("Popups", "Esc", "Close")];
     }
     if modal.data_quality_evidence_read.is_some() {
-        return vec![("Enter", "Read"), ("Esc", "Cancel")];
+        return vec![
+            dq_as("Popups", "Enter", "Read"),
+            dq_as("Popups", "Esc", "Cancel"),
+        ];
     }
     if modal.data_quality_observation_detail {
-        if modal.quality_selected_is_clean() {
-            return vec![(
-                "Enter",
-                if modal.data_quality_checks_expanded {
-                    "Fewer Checks"
-                } else {
-                    "All Checks"
-                },
-            )]
-            .into_iter()
-            .chain((modal.data_quality_detail_scroll.max > 0).then_some((g.updown, "Scroll")))
-            .chain([("Esc", "Back")])
-            .collect();
-        }
-        // Enter shows the rows the run kept, asks to read rows it did not keep, and
-        // otherwise only closes the popup; the chip says which.
-        let rows = modal.selected_finding().and_then(|(_, finding)| {
-            let results = modal.data_quality_results.as_ref()?;
-            let rows = finding.evidence(results).ok()?;
-            Some(
-                !matches!(rows, crate::quality_report::EvidenceRows::Files(_))
-                    && app.quality_rows_kept().is_some(),
-            )
-        });
-        let enter = match rows {
-            Some(true) => "Show Rows",
-            Some(false) => "Read Rows",
-            None => "Close",
+        let enter = if modal.quality_selected_is_clean() {
+            if modal.data_quality_checks_expanded {
+                "Fewer checks"
+            } else {
+                "All checks"
+            }
+        } else {
+            // Enter shows the rows the run kept, asks to read rows it did not keep,
+            // and otherwise only closes the popup; the chip says which.
+            let rows = modal.selected_finding().and_then(|(_, finding)| {
+                let results = modal.data_quality_results.as_ref()?;
+                let rows = finding.evidence(results).ok()?;
+                Some(
+                    !matches!(rows, crate::quality_report::EvidenceRows::Files(_))
+                        && app.quality_rows_kept().is_some(),
+                )
+            });
+            match rows {
+                Some(true) => "Show rows",
+                Some(false) => "Read rows",
+                None => "Close",
+            }
         };
-        let mut keys = vec![("Enter", enter)];
+        let mut keys = vec![dq_as("Popups", "Enter", enter)];
         if modal.data_quality_detail_scroll.max > 0 {
-            keys.push((g.updown, "Scroll"));
+            keys.push(dq("Popups", "↑ / ↓"));
         }
-        keys.push(("Esc", "Back"));
+        keys.push(dq("Popups", "Esc"));
         return keys;
     }
     if modal.data_quality_picker.is_some() {
         return vec![
-            ("Enter", "Choose"),
-            (g.updown, "Move"),
-            ("type", "Narrow"),
-            ("Esc", "Cancel"),
+            dq_as("Popups", "Enter", "Choose"),
+            dq_as("Popups", "↑ / ↓", "Move"),
+            dq("Popups", "(type)"),
+            dq_as("Popups", "Esc", "Cancel"),
         ];
     }
+    let lists = |up_down, left_right: Option<&'static str>| {
+        let mut keys = vec![dq_as("Setup lists", "↑ / ↓", up_down)];
+        keys.extend(left_right.map(|label| dq_as("Setup lists", "← / →", label)));
+        keys
+    };
+    let done = || {
+        vec![
+            dq("Setup lists", "Enter"),
+            dq_as("Setup lists", "Esc", "Cancel"),
+        ]
+    };
     if modal.data_quality_page == QualityPage::TimeRoles {
-        return vec![
-            (g.updown, "Role"),
-            (g.updown_lr, "Column"),
-            ("Enter", "Done"),
-            ("Esc", "Cancel"),
-        ];
+        return [lists("Role", Some("Column")), done()].concat();
     }
     if let Some(form) = modal.data_quality_export.as_ref() {
-        let mut keys = vec![("Enter", "Export"), ("Tab", "Next")];
+        let mut keys = vec![dq_as("Forms", "Enter", "Export"), dq("Forms", "Tab")];
         if form.on_format {
-            keys.push((g.updown_lr, "Format"));
+            keys.push(dq_as("Forms", "← / →", "Format"));
         }
-        keys.push(("Esc", "Cancel"));
+        keys.push(dq("Forms", "Esc"));
         return keys;
     }
     if modal.data_quality_page == QualityPage::ExpectedWindows {
-        let mut keys = vec![("Enter", "Done")];
+        let mut keys = vec![dq("Setup lists", "Enter")];
         if modal
             .data_quality_expected_form
             .as_ref()
             .is_some_and(|form| !form.typing())
         {
-            keys.push((g.updown_lr, "Windows"));
+            keys.push(dq_as("Setup lists", "← / →", "Windows"));
         }
-        keys.extend([(g.updown, "Field"), ("Esc", "Cancel")]);
+        keys.extend([
+            dq_as("Setup lists", "↑ / ↓", "Field"),
+            dq_as("Setup lists", "Esc", "Cancel"),
+        ]);
         return keys;
     }
     // The intent form over the list owns the keys: the rows, and what the focused
     // one takes.
     if let Some(form) = modal.data_quality_intent_form.as_ref() {
         use crate::intent_modal::IntentField;
-        let mut keys = vec![("Enter", "Apply"), ("Tab", "Next")];
+        let mut keys = vec![dq("Forms", "Enter"), dq("Forms", "Tab")];
         match form.field {
-            IntentField::Key | IntentField::Required => keys.push(("Space", "Toggle")),
-            IntentField::ReadAs if form.time.is_none() => keys.push((g.updown_lr, "Reading")),
+            IntentField::Key | IntentField::Required => keys.push(dq("Forms", "Space")),
+            IntentField::ReadAs if form.time.is_none() => {
+                keys.push(dq_as("Forms", "← / →", "Reading"));
+            }
             _ => {}
         }
-        keys.push(("Esc", "Cancel"));
+        keys.push(dq("Forms", "Esc"));
         return keys;
     }
     if modal.data_quality_page == QualityPage::Intent {
-        return vec![
-            ("Space", "Declare"),
-            ("Enter", "Done"),
-            (g.updown, "Column"),
-            ("Esc", "Cancel"),
-        ];
+        return [
+            vec![
+                dq_as("Setup lists", "Space", "Declare"),
+                dq("Setup lists", "Enter"),
+            ],
+            lists("Column", None),
+            vec![dq_as("Setup lists", "Esc", "Cancel")],
+        ]
+        .concat();
     }
     if modal.data_quality_page == QualityPage::IntervalPairs {
         let mut keys = Vec::new();
         if !modal.data_quality_plan.candidate_pairs().is_empty() {
-            keys.extend([("Space", "Toggle"), (g.updown, "Pair")]);
+            keys.push(dq("Setup lists", "Space"));
+            keys.extend(lists("Pair", None));
         }
-        keys.extend([("Enter", "Done"), ("Esc", "Cancel")]);
+        keys.extend(done());
         return keys;
     }
     // The tool list has the cursor, the narrow terminal's picker included: its keys
     // are the list's, not the page's. Sample stays second, as on every tool's bar.
     if modal.focus == crate::analysis_modal::AnalysisFocus::Sidebar {
         return vec![
-            ("Enter", "Open"),
-            ("Tab", "Result"),
-            ("s", "Sample"),
-            (g.updown, "Tools"),
-            ("?", "Help"),
-            ("Esc", "Close"),
+            dq_as("Report", "Enter", "Open"),
+            dq_as("Report", "Tab", "Result"),
+            dq("Report", "s"),
+            dq_as("Report", "↑ / ↓", "Tools"),
+            dq_as("Report", "Esc", "Close"),
         ];
     }
     if modal.data_quality_page == QualityPage::Setup {
@@ -604,57 +608,64 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
     let segmented =
         results.is_some() && measured.grain != crate::data_quality::QualityGrain::Dataset;
     let trend = results.is_some_and(|results| crate::data_quality::shows_trend(measured, results));
-    let mut own: Vec<(&'static str, &'static str)> = Vec::new();
+    let mut own: Vec<Hint> = Vec::new();
     // An empty page says which plan setting fills it, and Enter opens that.
     if let Some(setup) = app.quality_page_setup() {
-        own.push(("Enter", setup.label()));
+        own.push(dq_as("Report", "Enter", setup.label()));
     }
+    let rows = if app.quality_rows_kept().is_some() {
+        "Show rows"
+    } else {
+        "Read rows"
+    };
     match page {
         QualityPage::Overview if results.is_some() => own.extend([
-            ("Enter", "Details"),
-            ("c", "Column"),
-            ("t", "Type"),
-            ("o", modal.data_quality_findings.order.next().chip()),
+            dq("Report", "Enter"),
+            dq_as("Report", "c", "Column"),
+            dq_as("Report", "t", "Type"),
+            dq_as(
+                "Report",
+                "o",
+                modal.data_quality_findings.order.next().chip(),
+            ),
         ]),
-        QualityPage::Columns if results.is_some() => own.push(("Enter", "Inspect")),
-        QualityPage::Detail => own.push(("Enter", "Columns")),
+        QualityPage::Columns if results.is_some() => own.push(dq_as("Report", "Enter", "Inspect")),
+        QualityPage::Detail => own.push(dq_as("Report", "Enter", "Columns")),
         QualityPage::Segments if segmented => own.extend([
-            ("Enter", "Details"),
-            (
+            dq("Segments", "Enter"),
+            dq_as(
+                "Segments",
                 "o",
                 if modal.data_quality_segments_by_change {
-                    "In Order"
+                    "In order"
                 } else {
-                    "By Change"
+                    "By change"
                 },
             ),
-            ("b", "Baseline"),
+            dq("Segments", "b"),
         ]),
-        QualityPage::SegmentDetail => own.push(("Enter", "Segments")),
+        QualityPage::SegmentDetail => own.push(dq_as("Report", "Enter", "Segments")),
         QualityPage::Trends if trend => {
-            own.extend([("Enter", "Details"), ("m", "Measure")]);
+            own.extend([dq("Trends", "Enter"), dq("Trends", "m")]);
             own.extend(trend_keys(modal));
         }
         QualityPage::TrendDetail => {
-            own.extend([(g.updown, "Bar"), ("Enter", "Trends"), ("m", "Measure")]);
+            own.extend([
+                dq_as("Report", "↑ / ↓", "Bar"),
+                dq_as("Trends", "Enter", "Trends"),
+                dq("Trends", "m"),
+            ]);
             own.extend(trend_keys(modal));
         }
-        QualityPage::Gaps => own.push(("Enter", "Trends")),
+        QualityPage::Gaps => own.push(dq_as("Trends", "Enter", "Trends")),
         // No trend to draw, but expected windows to list.
         QualityPage::Trends => own.extend(trend_keys(modal)),
         QualityPage::Intervals if results.is_some_and(|results| !results.temporal.is_empty()) => {
-            own.push(("Enter", "Details"));
+            own.push(dq("Intervals", "Enter"));
         }
         // Enter opens the rows behind the count under the cursor, when it has any.
         QualityPage::IntervalDetail if modal.interval_evidence(None).is_some() => {
-            own.push((
-                "Enter",
-                if app.quality_rows_kept().is_some() {
-                    "Show Rows"
-                } else {
-                    "Read Rows"
-                },
-            ));
+            own.push(dq_as("Intervals", "Enter", rows));
         }
         _ => {}
     }
@@ -671,28 +682,28 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
             | QualityPage::Intervals
     );
     let esc = match (narrowed, top) {
-        (true, _) => "All Findings",
+        (true, _) => "All findings",
         (false, true) => "Tools",
         (false, false) => "Back",
     };
-    let mut keys: Vec<(&'static str, &'static str)> = own.next().into_iter().collect();
+    let mut keys: Vec<Hint> = own.next().into_iter().collect();
     keys.extend([
-        ("e", "Setup"),
-        ("s", "Sample"),
-        (g.updown_lr, "Page"),
-        ("v", "View Rows"),
+        dq("Report", "e"),
+        dq("Report", "s"),
+        dq("Report", "← / →"),
+        dq("Report", "v"),
     ]);
     if results.is_some() {
-        keys.push(("x", "Export"));
+        keys.push(dq("Report", "x"));
     }
     keys.extend(own);
-    keys.extend([("Tab", "Focus"), ("?", "Help"), ("Esc", esc)]);
+    keys.extend([dq("Report", "Tab"), dq_as("Report", "Esc", esc)]);
     keys
 }
 
 /// The keys Trends adds when they act: a coarser window, staged in Setup, where
 /// segments came out thin or unsampled; the gaps, where windows are expected.
-fn trend_keys(modal: &crate::analysis_modal::AnalysisModal) -> Vec<(&'static str, &'static str)> {
+fn trend_keys(modal: &crate::analysis_modal::AnalysisModal) -> Vec<Hint> {
     let mut keys = Vec::new();
     let Some(results) = modal.data_quality_results.as_ref() else {
         return keys;
@@ -701,11 +712,11 @@ fn trend_keys(modal: &crate::analysis_modal::AnalysisModal) -> Vec<(&'static str
     if plan.coarser_grain().is_some() {
         let (sampled, unsampled, thin) = crate::quality_trends::segment_coverage(results);
         if sampled && unsampled + thin > 0 {
-            keys.push(("w", "Coarser"));
+            keys.push(registry_hint_in(Context::DataQuality, Some("Trends"), "w"));
         }
     }
     if crate::quality_trends::expected_gaps(plan, results).is_some() {
-        keys.push(("g", "Gaps"));
+        keys.push(registry_hint_in(Context::DataQuality, Some("Trends"), "g"));
     }
     keys
 }
@@ -714,33 +725,26 @@ fn trend_keys(modal: &crate::analysis_modal::AnalysisModal) -> Vec<(&'static str
 /// way out last. Enter is Run here and nowhere else; the lists and forms Setup opens say
 /// Choose, Done or Apply. While a cancelled read finishes, Run is not offered, and
 /// Setup's own line says why.
-fn setup_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
+fn setup_control_keys(app: &crate::App) -> Vec<Hint> {
     use crate::analysis_modal::SetupRow;
-    let g = crate::glyphs::get();
     let modal = &app.analysis_modal;
-    let esc = (
-        "Esc",
-        if modal.setup_edited() {
-            "Discard"
-        } else {
-            "Back"
-        },
-    );
+    let key = |keys| registry_hint_in(Context::DataQuality, Some("Setup"), keys);
+    let say = |keys, label| registry_hint_as(Context::DataQuality, Some("Setup"), keys, label);
     let mut keys = Vec::new();
     if app.cancelled_analysis_running().is_none() {
-        keys.push(("Enter", "Run"));
+        keys.push(key("Enter"));
     }
     let row = modal.setup_row();
     let choices = !modal.data_quality_plan.interval_pairs().is_empty();
     match row {
-        SetupRow::Sample => keys.push(("Space", "Sample")),
-        SetupRow::TextAsTime => keys.push(("Space", "Choose")),
+        SetupRow::Sample => keys.push(say("Space", "Sample")),
+        SetupRow::TextAsTime => keys.push(say("Space", "Choose")),
         SetupRow::TimeRoles if !app.quality_time_candidates().is_empty() => {
-            keys.push(("Space", "Time Roles"));
+            keys.push(say("Space", "Time roles"));
         }
         SetupRow::TimeRoles => {}
         SetupRow::Intervals if !modal.data_quality_plan.candidate_pairs().is_empty() => {
-            keys.push(("Space", "Intervals"));
+            keys.push(say("Space", "Intervals"));
         }
         SetupRow::Intervals => {}
         SetupRow::Expected
@@ -749,10 +753,10 @@ fn setup_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
                 crate::data_quality::QualityGrain::TimeWindows { .. }
             ) =>
         {
-            keys.push(("Space", "Expected"));
+            keys.push(say("Space", "Expected"));
         }
         SetupRow::Expected => {}
-        SetupRow::Intent => keys.push(("Space", "Intent")),
+        SetupRow::Intent => keys.push(say("Space", "Intent")),
         SetupRow::Latency if !choices => {}
         SetupRow::WindowBy if !modal.data_quality_plan.windows_intervals() => {}
         SetupRow::Grain
@@ -760,66 +764,60 @@ fn setup_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
         | SetupRow::Values
         | SetupRow::Latency
         | SetupRow::WindowBy => {
-            keys.extend([(g.updown_lr, "Change"), ("Space", "Choose")]);
+            keys.extend([say("← / →", "Change"), say("Space", "Choose")]);
         }
     }
-    keys.extend([(g.updown, "Row"), ("s", "Sample"), ("p", "Access")]);
+    keys.extend([say("↑ / ↓", "Row"), key("s"), key("p")]);
     if let Some(kept) = app.quality_kept_rows() {
-        keys.push((
-            "d",
-            if kept.copy_bytes > 0 {
-                "Release"
-            } else {
-                "Release Rows"
-            },
-        ));
+        keys.push(if kept.copy_bytes > 0 {
+            key("d")
+        } else {
+            say("d", "Release rows")
+        });
     }
-    keys.push(("?", "Help"));
-    keys.push(esc);
+    keys.push(if modal.setup_edited() {
+        key("Esc")
+    } else {
+        say("Esc", "Back")
+    });
     keys
 }
 
-/// Control bar keys for the chart view: what works right now, most-needed
-/// first, since the bar is cut from the right.
-///
-/// While the column Picker is open it owns the keys, so the bar says so; the
-/// rest of the time the bar leads with the direct chart-type switch and names
-/// what the focused row itself takes.
-/// Control bar keys for Value Counts: only those that act on what is on screen.
-/// Control bar keys for the hex view: its prompt's while one is open, Esc while a
+/// Footer keys for the hex view: its prompt's while one is open, Esc while a
 /// find reads, and otherwise the view's own, most used first.
-fn hex_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
+fn hex_control_keys(app: &crate::App) -> Vec<Hint> {
     use crate::hex_view::PromptKind;
+    let key = |keys| registry_hint(Context::Hex, keys);
+    let say = |keys, label| registry_hint_as(Context::Hex, None, keys, label);
+    let prompt = |keys| registry_hint_in(Context::Hex, Some("Prompt"), keys);
+    let prompt_as = |keys, label| registry_hint_as(Context::Hex, Some("Prompt"), keys, label);
     let Some(view) = app.hex_view.view.as_ref() else {
-        return vec![("?", "Help")];
+        return Vec::new();
     };
     if view.picker.is_some() {
-        return vec![("^Q", "Quit"), ("Esc", "Cancel")];
+        return vec![
+            registry_hint(Context::Global, "Ctrl+Q"),
+            registry_hint(Context::FormatPicker, "Esc"),
+        ];
     }
     match view.prompt {
         Some(PromptKind::Find) => {
-            return vec![
-                ("Enter", "Find"),
-                ("^U", "UTF-16"),
-                ("F1", "Help"),
-                ("Esc", "Cancel"),
-            ];
+            return vec![prompt("Enter"), prompt("Ctrl+U"), prompt("Esc")];
         }
-        Some(PromptKind::GoTo) => {
-            return vec![("Enter", "Go"), ("F1", "Help"), ("Esc", "Cancel")];
-        }
-        Some(PromptKind::RecordSize) => {
-            return vec![("Enter", "Set"), ("F1", "Help"), ("Esc", "Cancel")];
-        }
+        Some(PromptKind::GoTo) => return vec![prompt_as("Enter", "Go"), prompt("Esc")],
+        Some(PromptKind::RecordSize) => return vec![prompt_as("Enter", "Set"), prompt("Esc")],
         None => {}
     }
     if app.finding() {
-        return vec![("Esc", "Cancel"), ("^O", "Home"), ("?", "Help")];
+        return vec![
+            say("Esc", "Cancel"),
+            registry_hint(Context::Global, "Ctrl+O"),
+        ];
     }
-    let mut keys = vec![("f", "Find")];
+    let mut keys = vec![key("f")];
     if view.found.as_ref().is_some_and(|f| f.hit.is_some()) {
-        keys.push(("n", "Next"));
-        keys.push(("N", "Prev"));
+        keys.push(say("n", "Next"));
+        keys.push(say("N", "Prev"));
     }
     if view
         .found
@@ -833,40 +831,41 @@ fn hex_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
                 .and_then(|f| f.stride)
                 .map(|s| s as usize)
     {
-        keys.push(("R", "Use stride"));
+        keys.push(say("R", "Use stride"));
     }
-    keys.push((":", "Offset"));
-    keys.push(("r", "Row size"));
-    keys.push((
-        "v",
-        if view.mark.is_some() {
-            "Unmark"
-        } else {
-            "Mark"
-        },
-    ));
-    keys.push(("i", "Inspector"));
-    keys.push(("#", if view.decimal { "Hex" } else { "Decimal" }));
+    keys.push(say(":", "Offset"));
+    keys.push(key("r"));
+    keys.push(if view.mark.is_some() {
+        say("v", "Unmark")
+    } else {
+        key("v")
+    });
+    keys.push(key("i"));
+    keys.push(say("#", if view.decimal { "Hex" } else { "Decimal" }));
     if app.has_format_specs() {
-        keys.push(("B", "Format"));
+        keys.push(say("B", "Format"));
     }
-    keys.push(("?", "Help"));
     if matches!(
         view.origin,
         crate::hex_view::Origin::Table | crate::hex_view::Origin::Info
     ) {
-        keys.push(("Esc", "Back"));
+        keys.push(registry_hint_in(Context::Hex, Some("Go"), "Esc"));
     }
-    keys.push(("q", app.hex_q_label()));
+    keys.push(say("q", app.hex_q_label()));
     keys
 }
 
-fn value_counts_control_keys(app: &crate::App) -> Vec<(&'static str, &'static str)> {
+/// Footer keys for Value Counts: only those that act on what is on screen.
+fn value_counts_control_keys(app: &crate::App) -> Vec<Hint> {
+    let key = |keys| registry_hint(Context::ValueCounts, keys);
+    let say = |keys, label| registry_hint_as(Context::ValueCounts, None, keys, label);
     // The export dialog carries its own footer.
     if app.input_mode == crate::InputMode::Export {
-        return vec![("^Q", "Quit"), ("Esc", "Cancel")];
+        return vec![
+            registry_hint(Context::Global, "Ctrl+Q"),
+            registry_hint_in(Context::Export, Some("Form"), "Esc"),
+        ];
     }
-    let g = crate::glyphs::get();
     let modal = &app.value_counts;
     let counts = modal.current();
     let mut keys = Vec::new();
@@ -877,98 +876,88 @@ fn value_counts_control_keys(app: &crate::App) -> Vec<(&'static str, &'static st
                 Some(crate::value_counts::LineKind::Other(_)) | None
             )
         {
-            keys.push(("Enter", "Rows"));
+            keys.push(say("Enter", "Rows"));
         }
         // A sample's way to the exact counts comes first: it says the counts are
         // not all there is.
         if counts.is_sample() && !modal.counting() {
-            keys.push(("a", "All rows"));
+            keys.push(key("a"));
         }
         if counts.histogram.is_some() {
-            keys.push((
-                "c",
-                if modal.shows_histogram() {
-                    "Counts"
-                } else {
-                    "Histogram"
-                },
-            ));
+            keys.push(if modal.shows_histogram() {
+                say("c", "Counts")
+            } else {
+                key("c")
+            });
         }
         if !modal.shows_histogram() {
-            keys.push(("s", "Sort"));
+            keys.push(key("s"));
         }
-        keys.push((g.updown_lr, "Column"));
-        keys.push(("y", "Copy"));
-        keys.push(("e", "Export"));
+        keys.extend([key("← / →"), key("y"), key("e")]);
     } else {
-        keys.push((g.updown_lr, "Column"));
+        keys.push(key("← / →"));
     }
-    keys.push(("?", "Help"));
     // With counts on screen, Esc stops a count of every row and keeps them.
-    keys.push((
-        "Esc",
-        if counts.is_some() && modal.counting() {
-            "Stop"
-        } else {
-            "Back"
-        },
-    ));
+    keys.push(if counts.is_some() && modal.counting() {
+        say("Esc", "Stop")
+    } else {
+        key("Esc")
+    });
     keys
 }
 
 /// The chart screen's keys in the footer: what the focused row takes, then the
 /// crosshair and export; a picker's or the plot's keys while they have them.
 fn chart_hints(app: &crate::App) -> Vec<Hint> {
-    use datui_cli::keys::Context;
-    let g = crate::glyphs::get();
+    let in_group = |group, keys| registry_hint_in(Context::Chart, Some(group), keys);
+    let say = |group, keys, label| registry_hint_as(Context::Chart, Some(group), keys, label);
     if app.chart_export_modal.active {
-        return vec![
-            Hint::new("Enter", "Export"),
-            Hint::new("Tab", "Next"),
-            Hint::new("Esc", "Cancel"),
-        ];
+        return ["Enter", "Tab", "Esc"]
+            .into_iter()
+            .map(|keys| in_group("Export dialog", keys))
+            .collect();
     }
     let modal = &app.chart_modal;
     if modal.picker.is_some() {
         return if modal.picker_multi() {
             vec![
-                Hint::new("Space", "Toggle"),
-                Hint::new("Enter", "Done"),
-                Hint::new("Esc", "Back"),
+                say("Picker", "Space", "Toggle"),
+                say("Picker", "Enter", "Done"),
+                in_group("Picker", "Esc"),
             ]
         } else {
             vec![
-                Hint::new(g.updown, "Move"),
-                Hint::new("Enter", "Choose"),
-                Hint::new("Esc", "Back"),
+                in_group("Picker", "↑ / ↓"),
+                in_group("Picker", "Enter"),
+                in_group("Picker", "Esc"),
             ]
         };
     }
     // The plot has the keys: the arrows move the crosshair, Tab hands them back.
     if modal.plot_focus {
-        return vec![
-            Hint::new(g.updown_lr, "Cursor"),
-            Hint::new("Tab", "Panel"),
-            Hint::new("Esc", "Back"),
-        ];
+        return ["← / →", "Tab", "Esc"]
+            .into_iter()
+            .map(|keys| in_group("Crosshair", keys))
+            .collect();
     }
     use crate::chart_modal::ChartFocus;
     let focus = modal.focus;
     // A Rows change waits for Enter; Esc puts it back.
     if focus == ChartFocus::LimitRows && modal.rows_pending() {
         return vec![
-            Hint::new("Enter", "Read"),
-            Hint::new(g.updown_lr, "Switch"),
-            Hint::new("Esc", "Undo"),
+            say("Shelves", "Enter", "Read"),
+            say("Shelves", "← / →", "Switch"),
+            say("Shelves", "Esc", "Undo"),
         ];
     }
     let row = if modal.picker_for(focus).is_some() {
-        Hint::new("Space", "Pick")
+        say("Shelves", "Space", "Pick")
     } else if modal.is_toggle_row(focus) {
-        Hint::new("Space", "Toggle")
+        say("Shelves", "Space", "Toggle")
     } else {
-        Hint::new(
-            g.updown_lr,
+        say(
+            "Shelves",
+            "← / →",
             match focus {
                 ChartFocus::Type => "Type",
                 ChartFocus::TimeUnit => "Bucket",
@@ -1050,7 +1039,7 @@ mod tests {
             app.analysis_modal.data_quality_page = page;
             let keys = super::analysis_control_keys(&app);
             assert!(
-                keys.iter().any(|(key, _)| *key == "Esc"),
+                keys.iter().any(|hint| hint.key == "Esc"),
                 "{page:?} offers no way out"
             );
         }
@@ -1070,18 +1059,18 @@ mod tests {
         let has = |app: &crate::App, key: &str| {
             super::analysis_control_keys(app)
                 .iter()
-                .any(|(k, _)| *k == key)
+                .any(|hint| hint.key == key)
         };
         let label = |app: &crate::App, key: &str| {
             super::analysis_control_keys(app)
                 .into_iter()
-                .find(|(k, _)| *k == key)
-                .map(|(_, label)| label)
+                .find(|hint| hint.key == key)
+                .map(|hint| hint.label.to_string())
         };
 
         app.analysis_modal.focus = AnalysisFocus::Sidebar;
-        assert_eq!(label(&app, "Enter"), Some("Open"));
-        assert_eq!(label(&app, "Esc"), Some("Close"));
+        assert_eq!(label(&app, "Enter").as_deref(), Some("Open"));
+        assert_eq!(label(&app, "Esc").as_deref(), Some("Close"));
         assert!(!has(&app, "Tab"), "no tool, nothing beside the list");
 
         app.analysis_modal.selected_tool = Some(AnalysisTool::Describe);
@@ -1090,12 +1079,12 @@ mod tests {
         assert!(!has(&app, "Enter"), "Describe has no detail");
         assert!(!has(&app, g.updown_lr), "every statistic fits");
         app.analysis_modal.describe_columns.max = 2;
-        assert_eq!(label(&app, g.updown_lr), Some("Columns"));
+        assert_eq!(label(&app, g.updown_lr).as_deref(), Some("Columns"));
 
         app.analysis_modal.selected_tool = Some(AnalysisTool::DistributionAnalysis);
-        assert_eq!(label(&app, "Enter"), Some("Detail"));
+        assert_eq!(label(&app, "Enter").as_deref(), Some("Detail"));
         assert_eq!(
-            label(&app, "Esc"),
+            label(&app, "Esc").as_deref(),
             Some("Tools"),
             "Esc goes back to the tools"
         );
@@ -1112,15 +1101,15 @@ mod tests {
         app.analysis_modal.focus = AnalysisFocus::Sidebar;
         assert_eq!(shown(&app), ["Enter", "Tab", "Esc"]);
         let keys = super::analysis_control_keys(&app);
-        assert_eq!(keys.last().map(|(k, _)| *k), Some("Esc"));
-        assert_eq!(label(&app, "Tab"), Some("Result"));
+        assert_eq!(keys.last().map(|hint| hint.key.as_ref()), Some("Esc"));
+        assert_eq!(label(&app, "Tab").as_deref(), Some("Result"));
         app.analysis_modal.focus = AnalysisFocus::Main;
 
         app.analysis_modal.selected_tool = Some(AnalysisTool::CorrelationMatrix);
         app.analysis_modal.selected_correlation = Some((1, 1));
         assert!(!has(&app, "Enter"), "a column with itself has no detail");
         app.analysis_modal.selected_correlation = Some((1, 2));
-        assert_eq!(label(&app, "Enter"), Some("Detail"));
-        assert_eq!(label(&app, "m"), Some("Method"));
+        assert_eq!(label(&app, "Enter").as_deref(), Some("Detail"));
+        assert_eq!(label(&app, "m").as_deref(), Some("Method"));
     }
 }

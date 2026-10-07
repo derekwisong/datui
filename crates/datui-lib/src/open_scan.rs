@@ -28,8 +28,8 @@ use std::sync::{Arc, Mutex};
 
 /// Where the dataset on screen came from, and how it was opened.
 pub struct OpenedSource {
-    pub(crate) original_file_format: Option<crate::export_modal::ExportFormat>, // Track original file format for default export
-    pub(crate) original_file_delimiter: Option<u8>, // Track original file delimiter for CSV export default
+    pub(crate) original_file_format: Option<crate::export_modal::ExportFormat>,
+    pub(crate) original_file_delimiter: Option<u8>,
     /// The paths the dataset on screen was opened from, with the options it installed
     /// with: what `H` opens again with its header turned the other way.
     pub(crate) opened: Option<(Vec<PathBuf>, OpenOptions)>,
@@ -101,7 +101,7 @@ impl App {
         self.loading.awaiting_dataset()
     }
 
-    /// What the loading screen and the control bar say about the open in flight: its
+    /// What the loading screen and the footer say about the open in flight: its
     /// phase, the flat percentage beside it, the path it names and that path's size.
     pub(crate) fn load_shown(&self) -> Option<(&str, u16, Option<&Path>, u64)> {
         self.loading.current().map(|load| {
@@ -186,7 +186,7 @@ impl App {
     }
 
     /// Put down what the app keeps for a load the loader has retired: its jobs, whose
-    /// answers are for a screen nobody is on, their lines on the control bar, and the
+    /// answers are for a screen nobody is on, their lines on the footer, and the
     /// question about its download.
     pub(crate) fn put_down_load(&mut self, retired: loading::Retired) {
         let id = retired.id;

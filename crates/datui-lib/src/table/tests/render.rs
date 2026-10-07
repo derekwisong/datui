@@ -65,10 +65,10 @@ fn byte_clamp_keeps_view_near_end_of_buffer() {
     let lf = df!("a" => &["seed"]).unwrap().lazy();
     // 1 MB byte budget.
     let mut state = DataTableState::new(lf, None, None, None, Some(1), true).unwrap();
-    state.num_rows = 1000;
-    state.num_rows_valid = true;
+    state.view.num_rows = 1000;
+    state.view.num_rows_valid = true;
     state.visible_rows = 40;
-    state.start_row = 960; // jump-to-end position (num_rows - visible_rows)
+    state.view.start_row = 960; // jump-to-end position (num_rows - visible_rows)
 
     // Buffer spans [900, 1000); the view [960, 1000) sits at its tail. ~2 MB of data forces
     // a trim to roughly half the rows.
@@ -84,15 +84,15 @@ fn byte_clamp_keeps_view_near_end_of_buffer() {
         "expected a trim below the byte budget"
     );
     assert!(
-        eff_start <= state.start_row,
+        eff_start <= state.view.start_row,
         "view start {} fell before kept buffer start {}",
-        state.start_row,
+        state.view.start_row,
         eff_start
     );
     assert!(
-        eff_end >= state.start_row + state.visible_rows,
+        eff_end >= state.view.start_row + state.visible_rows,
         "view end {} fell after kept buffer end {}",
-        state.start_row + state.visible_rows,
+        state.view.start_row + state.visible_rows,
         eff_end
     );
     assert_eq!(
@@ -1016,10 +1016,10 @@ fn frozen_columns_are_measured_on_the_rows_on_screen() {
     state.scroll_to(300);
     state.collect();
     assert!(
-        state.buffered_start_row < state.start_row,
+        state.view.buffered_start_row < state.view.start_row,
         "the page is not the head of the buffer: {} vs {}",
-        state.buffered_start_row,
-        state.start_row
+        state.view.buffered_start_row,
+        state.view.start_row
     );
     let rows = draw(DataTable::default(), &mut state, 80, 6);
     assert!(

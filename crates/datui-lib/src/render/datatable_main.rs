@@ -6,6 +6,7 @@ use crate::widgets::info::{DataTableInfo, InfoContext};
 use crate::widgets::table::DataTable;
 use crate::widgets::ui::{HintBar, Working};
 use crate::widgets::{copy, export, pivot_melt};
+use datui_cli::keys::Context;
 use ratatui::layout::Rect;
 use ratatui::prelude::StatefulWidget;
 use ratatui::style::{Modifier, Style};
@@ -127,7 +128,7 @@ pub fn render(
             StatefulWidget::render(dt, table_area, buf, state);
             if let Some(status) = &query_reading {
                 // Drawn still, so the table keeps its size: the rows are the view the
-                // query replaces, under columns it may have changed. The control bar's
+                // query replaces, under columns it may have changed. The footer's
                 // words, so the two say one thing.
                 Working {
                     text: status,
@@ -219,7 +220,7 @@ pub fn render(
             data_area,
             buf,
             &app.pickers.format_picker,
-            ("Format", "Read", "No format matches"),
+            ("Format", Context::FormatPicker, "No format matches"),
             ctx,
         );
     }
@@ -263,7 +264,7 @@ pub fn render(
             data_area,
             buf,
             &app.pickers.table_picker,
-            ("Table", "Open", "No table matches"),
+            ("Table", Context::TablePicker, "No table matches"),
             Some(&details),
             ctx,
         );
@@ -300,7 +301,7 @@ pub(crate) fn render_breadcrumb(
     // tool's result.
     let style = Style::default().bg(ctx.controls_bg).fg(ctx.table_header);
     buf.set_style(area, style);
-    let back = HintBar::from_ctx(ctx).hint("Esc", "Back");
+    let back = HintBar::from_ctx(ctx).screen(Context::Table).key("Esc");
     let chip_w = back.flush_width_in(area.width.saturating_sub(12));
     let text_w = area.width.saturating_sub(chip_w + 1);
     Paragraph::new(crate::glyphs::fit(text, text_w as usize))
@@ -338,18 +339,18 @@ fn render_go_to_column(
         area,
         buf,
         picker,
-        ("Go to Column", "Go", "No column matches"),
+        ("Go to Column", Context::GoToColumn, "No column matches"),
         ctx,
     );
 }
 
-/// A short pick-one list over the table: `(title, what Enter does, what an empty
-/// narrowing says)`.
+/// A short pick-one list over the table: `(title, the screen whose keys it takes, what
+/// an empty narrowing says)`.
 pub(crate) fn render_picker(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     picker: &crate::widgets::ui::PickerState,
-    words: (&str, &str, &str),
+    words: (&str, Context, &str),
     ctx: &RenderContext,
 ) {
     render_picker_with(area, buf, picker, words, None, ctx);
@@ -360,7 +361,7 @@ pub(crate) fn render_picker_with(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     picker: &crate::widgets::ui::PickerState,
-    (title, enter, none): (&str, &str, &str),
+    (title, keys, none): (&str, Context, &str),
     details: Option<&[String]>,
     ctx: &RenderContext,
 ) {
@@ -391,7 +392,7 @@ pub(crate) fn render_picker_with(
         width,
         height,
     };
-    let footer = HintBar::from_ctx(ctx).hints(&[("Enter", enter), ("Esc", "Cancel")]);
+    let footer = HintBar::from_ctx(ctx).screen(keys).key("Enter").key("Esc");
     let inner = crate::widgets::ui::Surface::new(title)
         .footer(&footer)
         .render(popup, buf, ctx);

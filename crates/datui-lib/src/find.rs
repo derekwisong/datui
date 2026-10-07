@@ -121,7 +121,7 @@ impl FindSpec {
         found.fill_null(lit(false))
     }
 
-    /// How the pattern reads on the control bar: quoted plain text, or a regex
+    /// How the pattern reads on the footer: quoted plain text, or a regex
     /// between slashes, cut short when long.
     pub fn label(&self) -> String {
         const LONGEST: usize = 18;
@@ -672,7 +672,7 @@ pub(crate) struct FindRun {
     pub(crate) from_hit: Option<Option<usize>>,
 }
 
-/// What the control bar says while a find reads.
+/// What the footer says while a find reads.
 fn finding_status(spec: &FindSpec, read: Option<usize>) -> String {
     match read {
         // Abbreviated, as the row count beside it is: the line shares a narrow bar
@@ -709,8 +709,10 @@ impl App {
         self.refresh_live_matches();
     }
 
-    /// Light up the cells the prompt's pattern matches among the rows on hand. Only
-    /// what is already in memory is matched, so typing never waits on a read.
+    /// Light up the cells the prompt's pattern matches among the rows on screen and a
+    /// page either side. Only rows already in memory are matched, so typing never waits
+    /// on a read, and only those near the view, so a buffer of a whole row group is not
+    /// matched on every key.
     pub(crate) fn refresh_live_matches(&mut self) {
         self.prompt.find.live = None;
         self.prompt.find.live_rows = self.rows_on_hand_key();
@@ -718,10 +720,10 @@ impl App {
         if spec.pattern.trim().is_empty() || spec.check().is_err() {
             return;
         }
-        let Some(state) = self.data_table_state.as_ref() else {
+        let Some((df, start)) = self.live_window() else {
             return;
         };
-        let Some((df, start)) = state.rows_on_hand() else {
+        let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
         let columns: Vec<(String, Expr)> =
@@ -739,7 +741,7 @@ impl App {
             .map(|(i, (_, expr))| expr.clone().alias(format!("m{i}")))
             .collect();
         // In memory: the rows on hand are a frame already collected.
-        let Ok(found) = df.clone().lazy().select(exprs).collect() else {
+        let Ok(found) = df.lazy().select(exprs).collect() else {
             return;
         };
         let mut cells = MatchCells::new();
@@ -765,11 +767,22 @@ impl App {
         });
     }
 
-    /// Which rows are on hand, to tell when the live matches were worked out over
-    /// others.
-    fn rows_on_hand_key(&self) -> Option<(usize, usize, u64)> {
+    /// The rows the live find matches: those on screen and a page either side, of
+    /// the rows on hand, and the row the first is.
+    fn live_window(&self) -> Option<(DataFrame, usize)> {
         let state = self.data_table_state.as_ref()?;
         let (df, start) = state.rows_on_hand()?;
+        let page = state.visible_rows.max(1);
+        let from = state.start_row().saturating_sub(page).max(start);
+        let to = (state.start_row() + 2 * page).min(start + df.height());
+        (to > from).then(|| (df.slice((from - start) as i64, to - from), from))
+    }
+
+    /// Which rows the live matches were worked out over, to tell when they need
+    /// working out again.
+    fn rows_on_hand_key(&self) -> Option<(usize, usize, u64)> {
+        let state = self.data_table_state.as_ref()?;
+        let (df, start) = self.live_window()?;
         Some((start, df.height(), state.len_generation()))
     }
 
@@ -950,7 +963,7 @@ impl App {
             .flatten()
     }
 
-    /// What the control bar says about the find in effect: the pattern, and which
+    /// What the footer says about the find in effect: the pattern, and which
     /// match the cursor is on when that is known.
     pub fn find_mark(&self) -> Option<String> {
         let active = self.prompt.find.active.as_ref()?;
@@ -1151,7 +1164,7 @@ impl App {
         }
     }
 
-    /// A find failed: the reason on the control bar, and nothing moved.
+    /// A find failed: the reason on the footer, and nothing moved.
     pub(crate) fn find_failed(&mut self, current: bool, message: &str) {
         if !current {
             return;

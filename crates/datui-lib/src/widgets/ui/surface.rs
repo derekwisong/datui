@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, Borders, Clear, Widget};
 /// optionally a one-line chip footer on the last inner row.
 pub struct Surface<'a> {
     title: &'a str,
-    footer: Option<&'a HintBar<'a>>,
+    footer: Option<&'a HintBar>,
     /// The frame's own style when the default border slot is wrong for it:
     /// an error surface carries the error border, a confirmation the active one.
     border: Option<Style>,
@@ -27,7 +27,7 @@ impl<'a> Surface<'a> {
         }
     }
 
-    pub fn footer(mut self, footer: &'a HintBar<'a>) -> Self {
+    pub fn footer(mut self, footer: &'a HintBar) -> Self {
         self.footer = Some(footer);
         self
     }
@@ -103,8 +103,9 @@ mod tests {
         let area = Rect::new(0, 0, width, height);
         let mut buf = Buffer::empty(area);
         let footer = HintBar::from_ctx(&ctx)
-            .hint("Enter", "Apply")
-            .hint("Esc", "Cancel");
+            .screen(datui_cli::keys::Context::Export)
+            .key("Enter")
+            .key("Esc");
         let surface = if with_footer {
             Surface::new("Export Data").footer(&footer)
         } else {
@@ -133,7 +134,7 @@ mod tests {
             );
         }
         assert!(
-            rows[6].contains("Enter") && rows[6].contains("Apply"),
+            rows[6].contains("Enter") && rows[6].contains("Export"),
             "the footer is the last inner row: {:?}",
             rows[6]
         );

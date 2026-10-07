@@ -1,6 +1,7 @@
 //! The row inspector: opening and closing it, its keys, the value view and its
 //! find, drilling into nested values, copying fields, and the reads it asks for.
 
+use crate::form::ListMove;
 use crate::jobs::{Answer, Job};
 use crate::{
     App, AppEvent, InputMode, clipboard, copy_modal, external_open, inspector_bytes,
@@ -36,8 +37,7 @@ impl App {
     }
 
     fn close_inspector(&mut self) {
-        self.inspector_modal.close();
-        self.input_mode = InputMode::Normal;
+        self.close_overlay();
     }
 
     /// The inspector's list as the row shown has it: Filled, Compare and the find
@@ -96,7 +96,7 @@ impl App {
                 KeyCode::Up => {
                     modal.finding = false;
                     self.refresh_inspector_list();
-                    self.inspector_modal.prev_field();
+                    self.inspector_modal.move_field(ListMove::Up);
                     return None;
                 }
                 KeyCode::Backspace => modal.find_backspace(),
@@ -126,6 +126,10 @@ impl App {
         }
         self.refresh_inspector_list();
         let modal = &mut self.inspector_modal;
+        if let Some(step) = ListMove::from_key(event) {
+            modal.move_field(step);
+            return None;
+        }
         match event.code {
             // Esc backs out one level at a time: the find, then Compare, then the
             // inspector.
@@ -135,12 +139,6 @@ impl App {
                 modal.filled_only = false;
             }
             KeyCode::Esc | KeyCode::Char(' ') => self.close_inspector(),
-            KeyCode::Down | KeyCode::Char('j') => modal.next_field(),
-            KeyCode::Up | KeyCode::Char('k') => modal.prev_field(),
-            KeyCode::Home => modal.first_field(),
-            KeyCode::End => modal.last_field(),
-            KeyCode::PageDown => modal.page_fields(1),
-            KeyCode::PageUp => modal.page_fields(-1),
             // Two panes: Tab and Shift+Tab both cross to the value.
             KeyCode::Tab | KeyCode::BackTab => {
                 if modal.focused().is_some() {
@@ -186,7 +184,15 @@ impl App {
         let modal = &mut self.inspector_modal;
         let h = modal.page.max(1);
         let content = &pane.content;
-        let page = h.saturating_sub(1).max(1) as isize;
+        let page = h.saturating_sub(1);
+        if let Some(step) = ListMove::from_key(event) {
+            match step {
+                ListMove::Home => modal.reader.home(),
+                ListMove::End => modal.reader.end(content, h),
+                _ => modal.reader.scroll(content, h, step.delta(page)),
+            }
+            return None;
+        }
         match event.code {
             KeyCode::Esc
                 if modal
@@ -200,12 +206,6 @@ impl App {
                 modal.focus = inspector_modal::Focus::List;
             }
             KeyCode::Char(' ') => self.close_inspector(),
-            KeyCode::Down | KeyCode::Char('j') => modal.reader.scroll(content, h, 1),
-            KeyCode::Up | KeyCode::Char('k') => modal.reader.scroll(content, h, -1),
-            KeyCode::PageDown => modal.reader.scroll(content, h, page),
-            KeyCode::PageUp => modal.reader.scroll(content, h, -page),
-            KeyCode::Home => modal.reader.home(),
-            KeyCode::End => modal.reader.end(content, h),
             KeyCode::Char('/') => {
                 modal.value_find = Some(inspector_modal::ValueFind {
                     editing: true,
@@ -303,17 +303,15 @@ impl App {
     /// row, but `→` and Enter open the focused item and `←` and Esc step back up.
     fn drill_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let modal = &mut self.inspector_modal;
+        if let Some(step) = ListMove::from_key(event) {
+            modal.move_field(step);
+            return None;
+        }
         match event.code {
             KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
                 modal.drill_out();
             }
             KeyCode::Char(' ') => self.close_inspector(),
-            KeyCode::Down | KeyCode::Char('j') => modal.next_field(),
-            KeyCode::Up | KeyCode::Char('k') => modal.prev_field(),
-            KeyCode::Home => modal.first_field(),
-            KeyCode::End => modal.last_field(),
-            KeyCode::PageDown => modal.page_fields(1),
-            KeyCode::PageUp => modal.page_fields(-1),
             // A level with nothing in it has no value to cross to.
             KeyCode::Tab | KeyCode::BackTab
                 if modal

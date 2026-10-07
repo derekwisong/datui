@@ -506,7 +506,6 @@ fn json(path: &Path, format: JsonFormat) -> Result<LazyFrame> {
         .lazy())
 }
 
-/// Load multiple Parquet files and concatenate them into one LazyFrame (same schema assumed).
 /// How the files of one dataset are stacked into one table.
 ///
 /// `diagonal`, so a file written before a column existed brings the rest of its
@@ -570,175 +569,40 @@ fn arrow_record_batches_to_dataframe(batches: &[RecordBatch]) -> Result<DataFram
 
 fn arrow_array_to_polars_series(name: &str, array: &dyn Array) -> Result<Series> {
     use arrow::datatypes::DataType as ArrowDataType;
-    let len = array.len();
+    let strings = |values: Vec<Option<&str>>| Series::new(name.into(), values);
     match array.data_type() {
-        ArrowDataType::Int8 => {
-            let a = array
-                .as_primitive_opt::<Int8Type>()
-                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Int8 array"))?;
-            let v: Vec<Option<i8>> = (0..len)
-                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
-                .collect();
-            Ok(Series::new(name.into(), v))
-        }
-        ArrowDataType::Int16 => {
-            let a = array
-                .as_primitive_opt::<Int16Type>()
-                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Int16 array"))?;
-            let v: Vec<Option<i16>> = (0..len)
-                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
-                .collect();
-            Ok(Series::new(name.into(), v))
-        }
-        ArrowDataType::Int32 => {
-            let a = array
-                .as_primitive_opt::<Int32Type>()
-                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Int32 array"))?;
-            let v: Vec<Option<i32>> = (0..len)
-                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
-                .collect();
-            Ok(Series::new(name.into(), v))
-        }
-        ArrowDataType::Int64 => {
-            let a = array
-                .as_primitive_opt::<Int64Type>()
-                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Int64 array"))?;
-            let v: Vec<Option<i64>> = (0..len)
-                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
-                .collect();
-            Ok(Series::new(name.into(), v))
-        }
-        ArrowDataType::UInt8 => {
-            let a = array
-                .as_primitive_opt::<UInt8Type>()
-                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected UInt8 array"))?;
-            let v: Vec<Option<i64>> = (0..len)
-                .map(|i| {
-                    if a.is_null(i) {
-                        None
-                    } else {
-                        Some(a.value(i) as i64)
-                    }
-                })
-                .collect();
-            Ok(Series::new(name.into(), v).cast(&DataType::UInt8)?)
-        }
-        ArrowDataType::UInt16 => {
-            let a = array
-                .as_primitive_opt::<UInt16Type>()
-                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected UInt16 array"))?;
-            let v: Vec<Option<i64>> = (0..len)
-                .map(|i| {
-                    if a.is_null(i) {
-                        None
-                    } else {
-                        Some(a.value(i) as i64)
-                    }
-                })
-                .collect();
-            Ok(Series::new(name.into(), v).cast(&DataType::UInt16)?)
-        }
-        ArrowDataType::UInt32 => {
-            let a = array
-                .as_primitive_opt::<UInt32Type>()
-                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected UInt32 array"))?;
-            let v: Vec<Option<u32>> = (0..len)
-                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
-                .collect();
-            Ok(Series::new(name.into(), v))
-        }
-        ArrowDataType::UInt64 => {
-            let a = array
-                .as_primitive_opt::<UInt64Type>()
-                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected UInt64 array"))?;
-            let v: Vec<Option<u64>> = (0..len)
-                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
-                .collect();
-            Ok(Series::new(name.into(), v))
-        }
-        ArrowDataType::Float32 => {
-            let a = array
-                .as_primitive_opt::<Float32Type>()
-                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Float32 array"))?;
-            let v: Vec<Option<f32>> = (0..len)
-                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
-                .collect();
-            Ok(Series::new(name.into(), v))
-        }
-        ArrowDataType::Float64 => {
-            let a = array
-                .as_primitive_opt::<Float64Type>()
-                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Float64 array"))?;
-            let v: Vec<Option<f64>> = (0..len)
-                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
-                .collect();
-            Ok(Series::new(name.into(), v))
+        ArrowDataType::Int8 => primitive::<Int8Type>(name, array, "Int8"),
+        ArrowDataType::Int16 => primitive::<Int16Type>(name, array, "Int16"),
+        ArrowDataType::Int32 => primitive::<Int32Type>(name, array, "Int32"),
+        ArrowDataType::Int64 => primitive::<Int64Type>(name, array, "Int64"),
+        ArrowDataType::UInt8 => primitive::<UInt8Type>(name, array, "UInt8"),
+        ArrowDataType::UInt16 => primitive::<UInt16Type>(name, array, "UInt16"),
+        ArrowDataType::UInt32 => primitive::<UInt32Type>(name, array, "UInt32"),
+        ArrowDataType::UInt64 => primitive::<UInt64Type>(name, array, "UInt64"),
+        ArrowDataType::Float32 => primitive::<Float32Type>(name, array, "Float32"),
+        ArrowDataType::Float64 => primitive::<Float64Type>(name, array, "Float64"),
+        ArrowDataType::Date32 => primitive::<Date32Type>(name, array, "Date32"),
+        ArrowDataType::Date64 => primitive::<Date64Type>(name, array, "Date64"),
+        ArrowDataType::Timestamp(_, _) => {
+            primitive::<TimestampMillisecondType>(name, array, "Timestamp")
         }
         ArrowDataType::Boolean => {
             let a = array
                 .as_boolean_opt()
                 .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Boolean array"))?;
-            let v: Vec<Option<bool>> = (0..len)
-                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
-                .collect();
-            Ok(Series::new(name.into(), v))
+            Ok(Series::new(name.into(), a.iter().collect::<Vec<_>>()))
         }
         ArrowDataType::Utf8 => {
             let a = array
                 .as_string_opt::<i32>()
                 .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Utf8 array"))?;
-            let v: Vec<Option<String>> = (0..len)
-                .map(|i| {
-                    if a.is_null(i) {
-                        None
-                    } else {
-                        Some(a.value(i).to_string())
-                    }
-                })
-                .collect();
-            Ok(Series::new(name.into(), v))
+            Ok(strings(a.iter().collect()))
         }
         ArrowDataType::LargeUtf8 => {
             let a = array
                 .as_string_opt::<i64>()
                 .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected LargeUtf8 array"))?;
-            let v: Vec<Option<String>> = (0..len)
-                .map(|i| {
-                    if a.is_null(i) {
-                        None
-                    } else {
-                        Some(a.value(i).to_string())
-                    }
-                })
-                .collect();
-            Ok(Series::new(name.into(), v))
-        }
-        ArrowDataType::Date32 => {
-            let a = array
-                .as_primitive_opt::<Date32Type>()
-                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Date32 array"))?;
-            let v: Vec<Option<i32>> = (0..len)
-                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
-                .collect();
-            Ok(Series::new(name.into(), v))
-        }
-        ArrowDataType::Date64 => {
-            let a = array
-                .as_primitive_opt::<Date64Type>()
-                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Date64 array"))?;
-            let v: Vec<Option<i64>> = (0..len)
-                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
-                .collect();
-            Ok(Series::new(name.into(), v))
-        }
-        ArrowDataType::Timestamp(_, _) => {
-            let a = array
-                .as_primitive_opt::<TimestampMillisecondType>()
-                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Timestamp array"))?;
-            let v: Vec<Option<i64>> = (0..len)
-                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
-                .collect();
-            Ok(Series::new(name.into(), v))
+            Ok(strings(a.iter().collect()))
         }
         other => Err(color_eyre::eyre::eyre!(
             "ORC: unsupported column type {:?} for column '{}'",
@@ -746,6 +610,21 @@ fn arrow_array_to_polars_series(name: &str, array: &dyn Array) -> Result<Series>
             name
         )),
     }
+}
+
+/// An Arrow array of primitive `T` as a Series of its native values, nulls kept.
+fn primitive<T: arrow::datatypes::ArrowPrimitiveType>(
+    name: &str,
+    array: &dyn Array,
+    type_name: &str,
+) -> Result<Series>
+where
+    Series: NamedFrom<Vec<Option<T::Native>>, [Option<T::Native>]>,
+{
+    let a = array
+        .as_primitive_opt::<T>()
+        .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected {type_name} array"))?;
+    Ok(Series::new(name.into(), a.iter().collect::<Vec<_>>()))
 }
 
 /// Dates and timestamps a JSON file holds as strings, typed the way a CSV's are.

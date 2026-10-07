@@ -88,7 +88,6 @@ fn a_column_order_does_not_wait_on_a_read_of_other_columns() {
 /// One Apply in the sort and filter sidebar reads the page once, however much it
 /// changed: a filter and a sort together are one view, not two reads.
 #[test]
-#[ignore = "an apply reads a page per change until it is one event (Phase B milestone 3)"]
 fn one_sidebar_apply_reads_one_page() {
     use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
     let (mut app, rx, tx, _dir) = app();

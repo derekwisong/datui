@@ -370,7 +370,7 @@ impl App {
         let runtime = self.runtime.clone();
         let cache = self.cache.clone();
         let writes = self.cache_writes.clone();
-        // The table's rows: the screen less the title, the header and the control bar.
+        // The table's rows: the screen less the title, the header and the footer.
         let visible = (screen_height as usize).saturating_sub(3).max(1);
         let owed = self.owed_answer(AppEvent::HomePreviewReady {
             path: path.clone(),
@@ -2220,7 +2220,7 @@ impl App {
             // refusal here is that promise broken on the one directory that needed it.
             // Until datui reads the log, its files are what there is, and what makes
             // that honest is that nothing about it is silent: a note in the panel, a
-            // chip in the control bar, and `Enter` on the row one level up still goes
+            // chip in the footer, and `Enter` on the row one level up still goes
             // inside and says datui does not read the table itself yet.
             let lake = entry.kind.lake_name();
             // A prefix in an object store used to be scanned as Parquet whatever was

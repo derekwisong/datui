@@ -1012,7 +1012,7 @@ fn a_pass_that_cannot_read_the_footers_stops_the_dataset_waiting_for_it() {
 
 /// A count not yet taken is not printed as the total.
 ///
-/// The control bar takes its number straight from the field, so the only thing
+/// The footer takes its number straight from the field, so the only thing
 /// between a user and `Rows: 70` on a prefix of six thousand files is the pending
 /// flag. The integration test beside this one has a dataset whose count is real and
 /// asserts it is shown; this is the direction that goes wrong.
@@ -1463,8 +1463,8 @@ fn uncounted_remote_app() -> (crate::App, std::sync::mpsc::Receiver<crate::AppEv
     (app, rx)
 }
 
-/// The bottom line of a rendered App — the control bar, as a string.
-fn control_bar(app: &mut crate::App) -> String {
+/// The bottom line of a rendered App — the footer, as a string.
+fn footer_text(app: &mut crate::App) -> String {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::widgets::Widget;
@@ -1492,7 +1492,7 @@ fn the_bar_says_question_mark_when_the_count_failed() {
     let live = app.data_table_state.as_ref().unwrap().len_generation();
 
     assert!(
-        !control_bar(&mut app).contains("/ ?"),
+        !footer_text(&mut app).contains("/ ?"),
         "nothing has failed yet"
     );
 
@@ -1500,7 +1500,7 @@ fn the_bar_says_question_mark_when_the_count_failed() {
         len_generation: live,
     });
 
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         bar.contains("/ ?"),
         "the count failed, so the total is unknown: {bar:?}"
@@ -1527,7 +1527,7 @@ fn a_dead_frames_failed_count_leaves_this_frames_question_mark_alone() {
         len_generation: live,
     });
     assert!(
-        control_bar(&mut app).contains("/ ?"),
+        footer_text(&mut app).contains("/ ?"),
         "this frame's count failed"
     );
 
@@ -1536,7 +1536,7 @@ fn a_dead_frames_failed_count_leaves_this_frames_question_mark_alone() {
         len_generation: live.wrapping_sub(1),
     });
 
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         bar.contains("/ ?"),
         "a stranger's failure says nothing about this frame: {bar:?}"
@@ -1752,11 +1752,11 @@ fn a_parked_end_does_not_put_its_message_on_the_home_screen() {
     let (mut app, _rx) = uncounted_remote_app();
     let waiting = app.data_table_state.as_ref().unwrap().len_generation();
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
-    assert!(control_bar(&mut app).contains("Counting rows"), "parked");
+    assert!(footer_text(&mut app).contains("Counting rows"), "parked");
 
     app.enter_home();
 
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         !bar.contains("Counting rows"),
         "the home bar is the home screen's: {bar:?}"
@@ -1772,7 +1772,7 @@ fn a_parked_end_does_not_put_its_message_on_the_home_screen() {
     let _ = app.handle(&AppEvent::BackgroundLenFailed {
         len_generation: waiting,
     });
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         !bar.contains("Could not count the rows"),
         "an error about a dataset they have left is not the home screen's news: \
@@ -1796,7 +1796,7 @@ fn a_parked_end_does_not_put_its_message_on_the_next_dataset() {
 
     let (mut app, _rx) = uncounted_remote_app();
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
-    assert!(control_bar(&mut app).contains("Counting rows"), "parked");
+    assert!(footer_text(&mut app).contains("Counting rows"), "parked");
 
     app.enter_home();
 
@@ -1810,7 +1810,7 @@ fn a_parked_end_does_not_put_its_message_on_the_next_dataset() {
     app.install_for_tests(next, None, &OpenOptions::default(), None);
     app.busy = false;
 
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         !bar.contains("Counting rows"),
         "the new dataset's bar is not the old one's: {bar:?}"
@@ -1830,12 +1830,12 @@ fn a_parked_end_does_not_put_its_message_on_the_chart_view() {
 
     let (mut app, _rx) = uncounted_remote_app();
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
-    assert!(control_bar(&mut app).contains("Counting rows"), "parked");
+    assert!(footer_text(&mut app).contains("Counting rows"), "parked");
 
     app.input_mode = crate::InputMode::Chart;
     app.chart_modal.active = true;
 
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         app.status_message.is_some(),
         "the End is still waiting, and the field still says so"
@@ -1884,7 +1884,7 @@ fn a_failed_count_for_a_frame_that_is_gone_retires_its_end_quietly() {
         app.counting.end_after_count, None,
         "the End it belonged to is retired"
     );
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         !bar.contains("Counting rows"),
         "the status it put up comes down: {bar:?}"
@@ -1915,7 +1915,7 @@ fn the_bar_says_it_is_counting_for_an_end_and_says_when_that_failed() {
         !app.is_busy(),
         "the jump parked rather than blocking the keyboard"
     );
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         bar.contains("Counting rows"),
         "and the line says why the view has not moved: {bar:?}"
@@ -1924,7 +1924,7 @@ fn the_bar_says_it_is_counting_for_an_end_and_says_when_that_failed() {
     let _ = app.handle(&AppEvent::BackgroundLenFailed {
         len_generation: waiting,
     });
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         bar.contains("Could not count the rows"),
         "and says so when the count it was waiting on fails: {bar:?}"
@@ -2903,7 +2903,7 @@ fn the_download_confirmation_is_not_busy() {
     }
 
     assert!(app.is_busy(), "the probe is running");
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(bar.contains("Checking size"), "the probe is named: {bar}");
     assert!(!bar.contains("Scanning"), "nothing is scanned yet: {bar}");
 
@@ -2915,7 +2915,7 @@ fn the_download_confirmation_is_not_busy() {
 
     assert!(app.awaiting_open_confirmation(), "the user is being asked");
     assert!(!app.is_busy(), "and nothing is running while they decide");
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(!bar.contains("..."), "nothing said to be running: {bar}");
     assert!(
         !bar.contains("Checking") && !bar.contains("Scanning"),
@@ -3179,7 +3179,7 @@ fn a_confirmation_keeps_its_keys_in_its_own_footer() {
     chart_prepare_tests::open(&mut app, &rx, &tx, path);
     let _ = app.key(&KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
     assert!(
-        control_bar(&mut app).contains("+/- Filter"),
+        footer_text(&mut app).contains("+/- Filter"),
         "the column's keys"
     );
 
@@ -3188,7 +3188,7 @@ fn a_confirmation_keeps_its_keys_in_its_own_footer() {
     app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
     let _ = app.perform_copy();
     assert!(app.confirmation_modal.active, "an unknown size asks");
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(!bar.contains("Filter"), "not the table's: {bar}");
 }
 
@@ -3615,28 +3615,39 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
     // longer a list of the kinds that happen to exist today. The chart is here
     // beside it because it is the one that a bump would *not* strand: it is
     // prepared against the frame, and the join takes a fresh one of those too.
-    type Start = fn(&mut App) -> Option<crate::jobs::Hold>;
+    /// What keeps the work under way: a hold on the generation, or a running job.
+    type Underway = (Option<crate::jobs::Hold>, Option<crate::jobs::Started>);
+    type Start = fn(&mut App) -> Underway;
     let under_way: Vec<(&str, Start)> = vec![
         ("leased background work", |app: &mut App| {
-            Some(app.hold_the_generation())
+            (Some(app.hold_the_generation()), None)
         }),
         ("a chart", |app: &mut App| {
             let mut modal = crate::chart_modal::ChartModal::new();
             modal.spec.encoding.x.field = Some("id".to_string());
-            app.chart_inflight = Some(crate::ChartInflight {
+            let prep = crate::jobs::ChartPrep {
                 dataset: None,
                 request: crate::ChartRequest::from_modal(&modal).expect("an x range"),
-                stale: false,
                 cancel: Default::default(),
-            });
-            None
+            };
+            (
+                None,
+                Some(app.job_for_tests(crate::jobs::Job::ChartPrepare(Box::new(prep)), None)),
+            )
         }),
     ];
-    let put_away = |app: &mut App, lease: Option<crate::jobs::Hold>| {
+    let put_away = |app: &mut App, (lease, job): Underway| {
         // The hold is released by dropping it; the event after it lets the errands in.
         drop(lease);
+        if let Some(job) = job {
+            let ticket = job.ticket();
+            job.end(crate::jobs::Outcome::Failed {
+                message: "put away".to_string(),
+                panicked: false,
+            });
+            app.jobs.end(ticket);
+        }
         let _ = app.handle(&AppEvent::Update);
-        app.chart_inflight = None;
     };
 
     for (what, start) in under_way {
@@ -4176,6 +4187,8 @@ mod classify_batch_tests;
 mod quality_sample_tests;
 
 mod chart_prepare_tests;
+
+mod chart_golden_tests;
 
 mod view_rollback_tests;
 

@@ -499,12 +499,6 @@ impl InfoModal {
         self.detail_scroll = self.detail_scroll.saturating_add_signed(delta);
     }
 
-    /// Scroll a detail tab's list by a page.
-    pub fn detail_page(&mut self, down: bool) {
-        let page = self.detail_visible.max(1) as isize;
-        self.detail_scroll_by(if down { page } else { -page });
-    }
-
     /// Move the cursor through the notes. Returns true when something changed.
     ///
     /// Only the index moves: the render scrolls to whatever is selected, so how tall a
@@ -758,7 +752,7 @@ fn read_line(state: &DataTableState) -> Option<String> {
 /// Told `None` rather than a number, because what a state holds before it has been
 /// counted is how far its buffer reached — printed under a heading that says "total",
 /// that reads as the size of the dataset. On a directory of thousands of files still
-/// being counted it would say `Rows (total): 70` beside a control bar showing a spinner.
+/// being counted it would say `Rows (total): 70` beside a footer showing a spinner.
 fn rows_and_columns(rows: Option<usize>, columns: usize) -> String {
     let middot = crate::glyphs::get().middot;
     match rows {
@@ -1944,32 +1938,33 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
                 .state
                 .format_detail()
                 .is_some_and(|d| !d.tables.is_empty());
-        let mut footer = HintBar::from_ctx(ctx).hint_weighted(g.updown_lr, "Tabs", 3);
+        let mut footer = HintBar::from_ctx(ctx)
+            .screen(datui_cli::keys::Context::Info)
+            .key("← / →")
+            .weight(3);
         if tables {
-            footer = footer
-                .hint_weighted("Enter", "Open", 2)
-                .hint_weighted(g.updown, "Move", 2);
+            footer = footer.key("Enter").weight(2).key("↑ / ↓").weight(2);
         } else if scrolls {
-            footer = footer.hint_weighted(g.updown, "Scroll", 2);
+            footer = footer.key_as("↑ / ↓", "Scroll").weight(2);
         }
         if tab == InfoTab::Documentation && offered.documentation {
-            footer = footer.hint_weighted("Enter", "Values", 1);
+            footer = footer.key_as("Enter", "Values").weight(1);
             if self
                 .documentation
                 .as_deref()
                 .is_some_and(|d| d.offers_open())
             {
-                footer = footer.hint_weighted("o", "Open", 1);
+                footer = footer.key("o").weight(1);
             }
-            footer = footer.hint_weighted("y", "Copy", 1);
+            footer = footer.key("y").weight(1);
         }
         if tab == InfoTab::Schema && self.header_toggle {
-            footer = footer.hint_weighted("H", "Header", -1);
+            footer = footer.key("H").weight(-1);
         }
         if self.hex {
-            footer = footer.hint_weighted("x", "Hex", 0);
+            footer = footer.key("x").weight(0);
         }
-        let footer = footer.hint_weighted("Esc", "Close", 4);
+        let footer = footer.key("Esc").weight(4);
         // A frame of three rows has one inside it: the body's, so a panel too
         // short for a note still says so rather than showing only keys.
         let surface = Surface::new("Info");

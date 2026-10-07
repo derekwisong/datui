@@ -680,14 +680,13 @@ fn the_live_matches_follow_the_rows_on_hand() {
         .live
         .as_ref()
         .map_or(0, |l| l.within(0..usize::MAX));
-    let held = h
-        .app
-        .data_table_state
-        .as_ref()
-        .unwrap()
-        .rows_on_hand()
-        .map_or(0, |(df, _)| df.height());
-    assert_eq!(after, held, "every row held has its match");
+    let state = h.app.data_table_state.as_ref().unwrap();
+    let on_screen = state.visible_rows.min(state.num_rows());
+    assert_eq!(
+        h.app.live_on_screen(),
+        Some(on_screen),
+        "every row on screen has its match"
+    );
     assert!(after > before, "{before} -> {after}");
 }
 

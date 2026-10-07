@@ -40,6 +40,12 @@ pub enum Context {
     TablePicker,
     Sample,
     Hex,
+    /// The keys every screen takes: [`GLOBAL`].
+    Global,
+    /// The help overlay: [`HELP`].
+    Help,
+    /// A question datui asks before acting: [`QUESTION`].
+    Question,
 }
 
 /// One screen's keys.
@@ -69,6 +75,10 @@ pub struct Key {
     pub keys: &'static str,
     /// A word or two for a hint beside the key: `Filter`, `Next match`.
     pub label: &'static str,
+    /// Other words a hint may give the key where what it does turns on the screen's
+    /// state: Enter's `Show rows` beside `Read rows`. A hint says one of these or
+    /// [`Key::label`], never a word of its own.
+    pub also: &'static [&'static str],
     /// One line: the in-app help, and the man page and docs without [`Key::more`].
     pub line: &'static str,
     /// The whole description, where it says more than the line: the manpage and the
@@ -93,6 +103,7 @@ pub const fn k(keys: &'static str, label: &'static str, line: &'static str) -> K
     Key {
         keys,
         label,
+        also: &[],
         line,
         more: None,
         run: Run::First,
@@ -106,6 +117,16 @@ impl Key {
             more: Some(more),
             ..self
         }
+    }
+
+    /// With other words a hint may say for it; see [`Key::also`].
+    pub const fn also(self, also: &'static [&'static str]) -> Self {
+        Key { also, ..self }
+    }
+
+    /// Whether a hint may give this key `label`.
+    pub fn says(&self, label: &str) -> bool {
+        self.label == label || self.also.contains(&label)
     }
 
     /// Enter in the help presses `spec` rather than the first key.
@@ -306,7 +327,23 @@ pub const HELP: Group = Group {
         k("Enter", "Run", "Close the help and press the key")
             .more("Close the help and press the key on the line, where help was opened"),
         k("/", "Filter", "Narrow to the keys whose text matches"),
-        k("Esc", "Close", "Clear the filter, then close"),
+        k("Esc", "Close", "Clear the filter, then close").also(&["Clear"]),
+    ],
+};
+
+/// The keys of a question datui asks before acting: overwrite a file, delete a view,
+/// read a whole dataset.
+pub const QUESTION: Group = Group {
+    name: "Question",
+    keys: &[
+        k("← / →", "Switch", "Choose the other answer").also(&["Pick"]),
+        k(
+            "Enter",
+            "Confirm",
+            "Give the answer chosen, or close an error",
+        )
+        .also(&["Close"]),
+        k("Esc", "Cancel", "Leave it as it was").also(&["No"]),
     ],
 };
 
@@ -360,7 +397,9 @@ const SAMPLE_KEYS: &[Key] = &[
         "Draw another sample (when the result is a sample)",
     ),
     k("a", "All rows", "Read every row instead, after confirming"),
-    k("t", "New rows", "Read again with rows that arrived since").more(
+    k("t", "New rows", "Read again with rows that arrived since")
+        .also(&["Refresh"])
+        .more(
         "While following a file, read again with the rows that arrived since the results were read",
     ),
 ];
@@ -426,6 +465,7 @@ pub const SCREENS: &[Screen] = &[
                         .more("Open Analysis. In a Data Quality evidence drill a is disabled; Esc returns to the observation"),
                     k("c", "Chart", "Chart the view"),
                     k("i", "Info", "Schema, resources, partitions, notes")
+                    .also(&["Notes"])
                         .more("Open the Info panel (tabs: Schema, Resources, Partitions, Notes). H on its Schema tab reads a CSV's first row as data, or as column names"),
                 ],
             },
@@ -455,6 +495,7 @@ pub const SCREENS: &[Screen] = &[
                     k("T", "Table", "Open another table of the file")
                         .more("A file of several tables (a workbook's worksheets, a database's tables, a format spec's record types, a Hugging Face cache's splits): pick another to open in place of this one, as --table names it. Clears the query, filters and sort; a saved view for the table applies. On a file of one table, says so"),
                     k("t", "Follow", "Follow the file as it grows")
+                    .also(&["Pause", "Resume"])
                         .more("Follow the file as it grows (CSV, TSV, PSV, NDJSON). Reads it again, so the query, filters and sort are cleared; while following, t pauses and resumes, and Esc stops"),
                 ],
             },
@@ -465,6 +506,7 @@ pub const SCREENS: &[Screen] = &[
                         .more("Back to the home screen when the dataset was opened from it; otherwise quit"),
                     k("Q", "Quit", "Quit"),
                     k("Esc", "Back", "Leave a drill-down; stop a find, sample, follow")
+                    .also(&["Stop"])
                         .more("Leave a drill-down; stop a find, a sample being drawn (its rows so far stay) or a follow"),
                 ],
             },
@@ -520,6 +562,7 @@ pub const SCREENS: &[Screen] = &[
                     k("Space", "Fold", "Fold the section (types once filtering)")
                         .more("While the filter is empty: fold or unfold the section header under the cursor. With a filter typed, it types"),
                     k("Tab", "Sort", "Cycle the sort")
+                    .also(&["Complete"])
                         .more("Cycle the sort; the footer names the order in effect when it has room"),
                 ],
             },
@@ -527,10 +570,12 @@ pub const SCREENS: &[Screen] = &[
                 name: "Go",
                 keys: &[
                     k("Enter", "Open", "What the footer names: Open, Inside, Look")
+                    .also(&["Open all", "Inside", "Look", "Fold", "Show all", "Show", "Hex", "About"])
                         .more("What the footer says on this row: \"Open all\" reads a whole directory as one table, \"Inside\" steps into it, \"Open\" loads a file, \"Look\" finds out first. A catalog bookmark, indented under its dataset, opens whole. On a section header, fold or unfold it; on the More row, show the rest; on the hidden-files row, show them"),
                     k("Backspace", "Up", "Delete a filter character, or up a level")
                         .more("Delete a filter character; on an empty filter, up a level (from a bucket, back to its cloud source; from the top of a catalog's remote dataset, back here)"),
                     k("Esc", "Back", "Path prompt, filter, directory, then the table")
+                    .also(&["Cancel"])
                         .more("Back out one layer: the path prompt, the filter (onto the first dataset), the directory (back to the row it was entered from), then to the open table"),
                 ],
             },
@@ -554,10 +599,12 @@ pub const SCREENS: &[Screen] = &[
                     k("Ctrl+X", "Hex", "The file under the cursor as bytes")
                         .more("Show the local file under the cursor as bytes, in the hex view, whatever datui would read it as"),
                     k("Ctrl+D", "Catalog", "Add the row to catalog.toml; on its rows, forget it")
+                    .also(&["Add", "Forget"])
                         .more("Add the dataset or directory under the cursor to catalog.toml, listed under My datasets; on a row from catalog.toml, forget it. A heading stands for the directory it lists. Only catalog.toml is written; another catalog is hidden with home.hide"),
                     k("Ctrl+E", "Docs", "The row's documentation, full screen")
                         .more("Open the Documentation view of a catalog row, of a place inside one, or of a file whose format spec documents it: description, publisher, license, links, record types, columns with units and value legends, bookmarks. A catalog's description, link and column notes stand over the spec's. Ctrl+E here is not readline's end of line: the filter is edited at its end"),
                     k("Delete", "Forget", "Forget a recent, place or catalog.toml row; hide")
+                    .also(&["Hide"])
                         .more("Forget the highlighted recent entry, or a whole place after confirming, or a row from catalog.toml, or hide a cloud source. On the Example datasets heading, hide them until datui cache clear, after confirming"),
                     k("Shift+Delete", "Forget all", "Forget every recent entry, after confirming"),
                 ],
@@ -605,6 +652,7 @@ pub const SCREENS: &[Screen] = &[
                         .more("Digits alone go to that row, and the prefix says row: (:0 Enter is the top)")
                         .no_run(),
                     k("Enter", "Run", "Go to the row, or run the query")
+                    .also(&["Go"])
                         .more("Go to the row, or run the query as the prefix says, sql: or q:. Reopened with a query in effect, the line holds its text, selected: typing replaces it, arrows edit it"),
                     k("Ctrl+J", "Run", "Run, the same as Enter"),
                     k("Ctrl+T", "Language", "SQL or q; the line keeps its text")
@@ -673,7 +721,7 @@ pub const SCREENS: &[Screen] = &[
                 k("Enter", "Go", "Move the column cursor to it")
                     .more("Go. The column cursor moves to it. A column already whole on screen stays where it is; another becomes the first after the frozen ones, or lands on the last page when it is there"),
                 k("Backspace", "Delete", "Delete a character (Ctrl+W a word, Ctrl+U all)"),
-                k("Esc", "Close", "Close without moving"),
+                k("Esc", "Cancel", "Close without moving"),
             ],
         }],
     },
@@ -685,7 +733,7 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Fields",
                 keys: &[
-                    k("↑ / ↓ (j/k)", "Move", "Move between fields"),
+                    k("↑ / ↓ (j/k)", "Field", "Move between fields"),
                     k("Home / End", "First, last", "First and last field"),
                     k("PgUp / PgDn", "Page", "A page of fields"),
                     k("← / → (h/l)", "Row", "Previous and next row")
@@ -693,28 +741,34 @@ pub const SCREENS: &[Screen] = &[
                     k("Tab / Shift+Tab", "Value", "Into the value, to scroll and find in it")
                         .more("Into the value, to scroll and find in it. Nothing moves: the panes are split by what they hold, not by where the cursor is"),
                     k("Enter", "Open", "Open a struct, list or JSON; read a field")
+                    .also(&["Rows", "Read", "Retry"])
                         .more("On a group's row, its rows, as at the table. Else open a struct, a list, or text holding a JSON object or array; or read a field the table's rows do not hold (hidden and binary columns)"),
                     k("r", "Read", "On a group's row, read a field the rows lack")
                         .more("On a group's row, read a field the rows do not hold"),
                     k("/", "Find", "Find a field by name, then by value")
                         .more("Find a field by name, then by value: type to narrow, Enter or ↓ keeps the list narrowed, Esc clears it"),
                     k("f", "Nulls", "Nulls shown or hidden (comparing: only diffs)")
+                    .also(&["Differ", "Nulls: hidden", "Nulls: shown"])
                         .more("Nulls: shown or hidden (null and empty fields); comparing, only the fields that differ"),
                     k("s", "Order", "Order: the table's, A-Z, or nulls last"),
                     k("c", "Compare", "Compare with the next row, or the pinned one")
                         .more("Compare: a column for the next row, or the pinned one"),
                     k("m", "Pin", "Pin this row to compare others with; again to unpin"),
                     k("Esc / Space", "Close", "Close; Esc clears a find, then Compare, first")
+                    .also(&["Clear", "No compare"])
                         .more("Close. Esc backs out one level at a time: a find first, then Compare, then the inspector"),
                 ],
             },
             Group {
                 name: "Output",
                 keys: &[
-                    k("y", "Copy", "Copy the value as its view shows it"),
+                    k("y", "Copy", "Copy the value as its view shows it")
+                    .also(&["Copy base64", "Copy JSON", "Copy text"]),
                     k("Y", "Copy row", "Copy the whole row as one JSON object"),
-                    k("e", "View", "The value's next view, where it has more than one"),
-                    k("w", "Wrap", "Word wrap or hard wrap for long text"),
+                    k("e", "View", "The value's next view, where it has more than one")
+                    .also(&["JSON", "Raw", "Escaped", "Hex", "Text"]),
+                    k("w", "Wrap", "Word wrap or hard wrap for long text")
+                    .also(&["Hard wrap", "Word wrap"]),
                     k("o", "Open", "Open the value in another program"),
                 ],
             },
@@ -723,23 +777,38 @@ pub const SCREENS: &[Screen] = &[
                 keys: &[
                     k("↑ / ↓ (j/k)", "Scroll", "Scroll a line"),
                     k("PgUp / PgDn", "Page", "Scroll a page"),
-                    k("Home / End", "Top, end", "Top and end, however long the value")
+                    k("Home / End", "Top/End", "Top and end, however long the value")
                         .more("Top and end, at once however long the value"),
                     k("/", "Find", "Find in the value; n and N go on")
                         .more("Find in the value; n and N go to the next and last place"),
+                    k("n / N", "Next", "The next or last place found in the value"),
                     k("e, w, y, o", "As fields", "As in the fields"),
                     k("Esc / Tab", "Fields", "Back to the fields; Esc clears a find first")
                         .more("Back to the fields (Shift+Tab too); Esc clears a find first"),
                 ],
             },
             Group {
+                name: "Find",
+                keys: &[
+                    k("(type)", "Find", "The name or value to find")
+                        .also(&["Text"])
+                        .no_run(),
+                    k("Enter", "Done", "Keep the list narrowed; in a value, find")
+                        .also(&["Find"]),
+                    k("Esc", "Clear", "Clear the find"),
+                ],
+            },
+            Group {
                 name: "Nested",
                 keys: &[
                     k("Enter / → (l)", "Open", "Open the focused item"),
+                    k("↑ / ↓ (j/k)", "Field", "Move between fields, keys or items").also(&["Key", "Item"]),
                     k("Tab / Shift+Tab", "Value", "Into the item's value; not in an empty level"),
-                    k("Esc / ← (h)", "Up", "Up a level; at the row, Esc closes"),
+                    k("PgUp / PgDn", "Page", "A page of the level"),
+                    k("Esc / ← (h)", "Back", "Up a level; at the row, Esc closes"),
                     k("y", "Copy", "Copy the item: text, or JSON indented")
                         .more("Copy the focused item: text as itself, a JSON object or array indented"),
+                    k("e", "View", "The item's next view").also(&["JSON", "Raw", "Escaped", "Hex", "Text"]),
                 ],
             },
         ],
@@ -751,15 +820,17 @@ pub const SCREENS: &[Screen] = &[
         groups: &[Group {
             name: "Panel",
             keys: &[
-                k("← / → (h/l)", "Tab", "Previous or next tab (Shift+Tab / Tab too)")
+                k("← / → (h/l)", "Tabs", "Previous or next tab (Shift+Tab / Tab too)")
                     .more("Previous or next tab, from anywhere in the panel; Shift+Tab and Tab do the same. The panel is a viewer, not a form: its body always has the keys"),
                 k("↑ / ↓ (j/k)", "Move", "Move the cursor, or scroll the list")
+                    .also(&["Scroll"])
                     .more("Schema, Notes or Documentation tab: move the cursor. Model, Audio, MIDI, Metadata and format tabs: scroll the list"),
                 k("PgUp / PgDn", "Page", "Scroll the list a page")
                     .more("Model, Audio, MIDI, Metadata and format tabs: scroll the list a page"),
                 k("Home / End", "Top, end", "The top or the end of the list")
                     .more("Model, Audio, MIDI, Metadata and format tabs: the top or the end of the list"),
-                k("Enter", "Take", "Schema: the type; Notes: the offer; a table: open it")
+                k("Enter", "Open", "Schema: the type; Notes: the offer; a table: open it")
+                    .also(&["Values"])
                     .more("Schema tab: change the column's type, with the names and formats a format spec's type takes. Notes tab: take the offer on the note, where it has one. Documentation tab: open or close the value legend of the column under the cursor. Excel or SQLite tab: open the worksheet or table under the cursor in place of this one, as T does"),
                 k("o", "Open", "Documentation tab: open the line's link")
                     .more("Documentation tab: open the link on the cursor's line in the system browser. Only http and https links open, and only after a question showing the whole URL. Off over SSH or without a display"),
@@ -788,12 +859,15 @@ pub const SCREENS: &[Screen] = &[
                     k("← / → (h/l)", "Column", "The previous or next column")
                         .more("The previous or next column; the table's column cursor moves with it"),
                     k("Enter", "Drill", "The rows holding the value")
+                    .also(&["Rows"])
                         .more("The rows holding the value, as a drill-down; Esc there comes back here"),
                     k("s", "Sort", "Sort by count or by value"),
                     k("c", "Histogram", "A number's histogram, or its counts")
+                    .also(&["Counts"])
                         .more("Between a number column's histogram, binned from the counts, and the listing of its values. A number opens as its histogram"),
                     k("a", "All rows", "Count every row, when the counts are of a sample"),
                     k("t", "New rows", "Count again with the rows that arrived")
+                    .also(&["Refresh"])
                         .more("While following a file, count again with the rows that arrived since; the bar says how many"),
                 ],
             },
@@ -804,6 +878,7 @@ pub const SCREENS: &[Screen] = &[
                         .more("Copy the counts as TSV: every value, its count, percent and cumulative percent"),
                     k("e", "Export", "Export the counts to a file"),
                     k("Esc", "Back", "Back to the table")
+                    .also(&["Stop"])
                         .more("Back to the table; while every row is being counted, stop that and keep the sample"),
                 ],
             },
@@ -820,8 +895,10 @@ pub const SCREENS: &[Screen] = &[
                     k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous field")
                         .more("Next or previous field, wrapping; a field the form does not offer right now is skipped. The arrows move from the moment the dialog opens"),
                     k("← / →", "Change", "Tabs on the tab bar; flip a sort; and/or")
+                    .also(&["Tabs", "And/Or"])
                         .more("On the tab bar: switch Sort & Filter / Columns. On a sort: flip its direction. On a filter: and / or. On a column: step its sort (none, ascending, descending). h/l too"),
                     k("Space", "Act", "Flip a sort, edit a filter, add one")
+                    .also(&["Flip", "Edit", "Add"])
                         .more("On a sort: flip its direction. On a filter: edit it (column, operator, value). On \"add sort\": pick a column to sort by, last and ascending. On \"add filter\": a new filter, starting on the table's column cursor. On a column: step its sort"),
                     k("Enter", "Apply", "Apply and close, from any row")
                         .more("Apply everything staged and close, from any row (in the filter editor Enter takes the step; Ctrl+J applies)"),
@@ -844,6 +921,7 @@ pub const SCREENS: &[Screen] = &[
                 name: "Columns",
                 keys: &[
                     k("(type)", "Narrow", "Narrow the list, with the find field focused")
+                    .also(&["Find"])
                         .more("Narrow the column list, when the find field is focused. ↓ from find goes to the list, on the table's column cursor")
                         .no_run(),
                     k("PgUp / PgDn, Home / End", "Page", "A page of columns; the first or last")
@@ -876,6 +954,7 @@ pub const SCREENS: &[Screen] = &[
                         .more("Narrow the column or operator list. The operators are those the column's type takes")
                         .no_run(),
                     k("Enter", "Next", "Choose the step; from the value, save the row")
+                    .also(&["Save", "Add"])
                         .more("Pick the column (type to narrow, Enter chooses), the operator the same way, then type the value and Enter saves the row. Tab, → and Space also choose at the column and operator steps; Shift+Tab steps back; ↑ / ↓ move in the lists"),
                     k("Esc", "Back", "End the edit, and only the edit"),
                 ],
@@ -930,8 +1009,10 @@ pub const SCREENS: &[Screen] = &[
                     k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous row")
                         .more("Next or previous row of the panel, wrapping (j/k too). A shelf the type does not use is dimmed and skipped"),
                     k("Space / Enter", "Act", "Open a shelf's picker, toggle, or step the row")
+                    .also(&["Pick", "Toggle", "Read"])
                         .more("On X, Y or Color: open its picker. On the line under Color: pick the values that get a series, by rows. On an option: toggle it or take its next value. The panel applies as it changes, so Enter acts as Space does, except on Rows: Space switches between Sample and Every row, and Enter reads what the row says"),
                     k("← / → (h/l)", "Change", "Step the type, bucket, aggregate or option")
+                    .also(&["Type", "Bucket", "Aggregate", "Percentile", "Adjust", "Switch", "Order", "Range", "Cumulative"])
                         .more("Step the type, the time bucket (day, week, month, quarter, year), the aggregate (count, distinct, sum, mean, median, stdev, quantile, min, max, first, last) and a quantile's percentile, cumulative, bins, range or order; on Rows, switch between Sample and Every row (read on Enter); on a shelf that takes one column, the previous or next column; on the line under Color, turn Other (every value without a series) on or off; flip a toggle"),
                     k("+ / -", "Adjust", "Bins or bandwidth"),
                     k("0-9", "Size", "On Rows: type a sample size, like 50k or 2m")
@@ -940,6 +1021,7 @@ pub const SCREENS: &[Screen] = &[
                     k("g", "Grid", "Grid on or off")
                         .more("Grid on or off at the labeled ticks: Line, Scatter, Histogram, Box and KDE. [analysis] chart_grid sets where it starts"),
                     k("Esc", "Back", "Back to the table")
+                    .also(&["Undo"])
                         .more("Back to the table; on Rows with a change waiting, put the row back first"),
                 ],
             },
@@ -951,7 +1033,16 @@ pub const SCREENS: &[Screen] = &[
                     k("e", "Export", "Export the chart to PNG, SVG or PDF")
                         .more("Export the chart to PNG, SVG or PDF, with a title, notes and source. Needs the chart's shelves filled first"),
                     k("t", "New rows", "Draw again with the rows that arrived")
+                    .also(&["Refresh"])
                         .more("While following a file, draw again with the rows that arrived since; the bar says how many"),
+                ],
+            },
+            Group {
+                name: "Crosshair",
+                keys: &[
+                    k("← / →", "Cursor", "Move the crosshair along the plot"),
+                    k("Tab", "Panel", "Back to the panel, the crosshair kept"),
+                    k("Esc", "Back", "The crosshair off, back to the panel"),
                 ],
             },
             Group {
@@ -959,6 +1050,7 @@ pub const SCREENS: &[Screen] = &[
                 keys: &[
                     k("↑ / ↓", "Move", "Move; typing narrows"),
                     k("Enter / Space", "Choose", "Choose (Y, Color values: Space toggles one)")
+                    .also(&["Toggle", "Done"])
                         .more("Choose; on a line or scatter chart's Y and on the Color values, Space toggles one in or out (up to 10, fewer on a terminal of fewer colors)"),
                     k("Tab / Shift+Tab", "Next", "Choose and move to the next or previous row"),
                     k("Esc", "Back", "Back out of the picker alone"),
@@ -974,7 +1066,7 @@ pub const SCREENS: &[Screen] = &[
                     k("Ctrl+P / Ctrl+N", "History", "Earlier or later paths in the path field"),
                     k("Enter", "Export", "Export, from anywhere in the dialog")
                         .more("Export, from anywhere in the dialog. A path ending .png, .svg or .pdf takes that format; any other gets the format's extension after it. An existing file asks Overwrite / No, starting on No; ←/→ (h/l) or Tab pick, Enter confirms, and declining returns to the filled dialog"),
-                    k("Esc", "Back", "Back to the chart"),
+                    k("Esc", "Cancel", "Back to the chart"),
                 ],
             },
         ],
@@ -987,15 +1079,20 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Explore",
                 keys: &[
-                    k("Tab / Shift+Tab", "Focus", "Between the results and the tools"),
-                    k("↑ / ↓ (j/k)", "Move", "Rows, or the sidebar's tools"),
+                    k("Tab / Shift+Tab", "Focus", "Between the results and the tools")
+                    .also(&["Tools", "Result"]),
+                    k("↑ / ↓ (j/k)", "Move", "Rows, or the sidebar's tools")
+                    .also(&["Tools", "Rows"]),
                     k("← / → (h/l)", "Scroll", "Scroll the statistics")
+                    .also(&["Columns"])
                         .more("Scroll the statistics; the header counts those out of view"),
                     k("Home / End", "First, last", "First or last row"),
                     k("PgUp / PgDn", "Page", "A page"),
                     k("Enter", "Open", "Open the sidebar's tool")
+                    .also(&["Detail"])
                         .more("Open the sidebar's tool and move into its pane. The first run on a dataset starts in the Sample form, where Enter runs it; later tools reuse that sample. Results last until the view changes: closing and reopening shows them again"),
                     k("Esc", "Back", "Cancel a run; the tools; then close")
+                    .also(&["Cancel", "Tools", "Close"])
                         .more("Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view"),
                 ],
             },
@@ -1013,15 +1110,20 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Explore",
                 keys: &[
-                    k("↑ / ↓ (j/k)", "Move", "Rows, or the sidebar's tools"),
+                    k("↑ / ↓ (j/k)", "Move", "Rows, or the sidebar's tools")
+                    .also(&["Tools", "Rows"]),
                     k("← / → (h/l)", "Scroll", "Scroll the statistics")
+                    .also(&["Columns"])
                         .more("Scroll the statistics; the header counts those out of view"),
                     k("Home / End", "First, last", "First or last row"),
                     k("PgUp / PgDn", "Page", "A page"),
-                    k("Tab / Shift+Tab", "Focus", "Between the results and the tools"),
+                    k("Tab / Shift+Tab", "Focus", "Between the results and the tools")
+                    .also(&["Tools", "Result"]),
                     k("Enter", "Detail", "Q-Q plot and histogram for the column")
+                    .also(&["Open"])
                         .more("Open detail view for selected column (shows Q-Q plot and histogram); with the sidebar focused, open a tool"),
                     k("Esc", "Back", "Cancel a run; the tools; then close")
+                    .also(&["Cancel", "Tools", "Close"])
                         .more("Cancel a run in progress; otherwise from the results back to the tools, and from the tools close the analysis view"),
                 ],
             },
@@ -1038,7 +1140,7 @@ pub const SCREENS: &[Screen] = &[
         groups: &[Group {
             name: "Detail",
             keys: &[
-                k("↑ / ↓ (j/k)", "Family", "Compare the values with another family"),
+                k("↑ / ↓ (j/k)", "Distribution", "Compare the values with another family"),
                 k("Home / End", "First, last", "The first or last family"),
                 k("s", "Scale", "Histogram scale: linear or log"),
                 k("Esc", "Back", "Back to the distribution table"),
@@ -1053,17 +1155,22 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Explore",
                 keys: &[
-                    k("Tab / Shift+Tab", "Focus", "Between the matrix and the tools"),
-                    k("↑ / ↓ (j/k)", "Move", "Matrix rows, or the sidebar's tools"),
-                    k("← / → (h/l)", "Column", "Matrix columns"),
+                    k("Tab / Shift+Tab", "Focus", "Between the matrix and the tools")
+                    .also(&["Tools", "Result"]),
+                    k("↑ / ↓ (j/k)", "Move", "Matrix rows, or the sidebar's tools")
+                    .also(&["Tools", "Rows"]),
+                    k("← / → (h/l)", "Column", "Matrix columns")
+                    .also(&["Columns"]),
                     k("Home / End", "Ends", "The first or last pair")
                         .more("Jump to the first pair (the first row's second column) or the last (the last row's next-to-last column); the matrix opens on the first"),
                     k("PgUp / PgDn", "Page", "A page"),
                     k("Enter", "Detail", "The pair's detail (not on the diagonal)")
+                    .also(&["Open"])
                         .more("Open pair detail view (on a cell) or open a tool (sidebar); does nothing on a diagonal cell"),
                     k("m", "Method", "Pearson or Spearman, named in the title")
                         .more("Method: Pearson r or Spearman ρ, named in the title (both come from the one run, so it reads nothing)"),
                     k("Esc", "Back", "Cancel a run; the tools; then close")
+                    .also(&["Cancel", "Tools", "Close"])
                         .more("Cancel a run in progress; otherwise from the matrix back to the tools, and from the tools close the analysis view"),
                 ],
             },
@@ -1094,31 +1201,65 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Setup",
                 keys: &[
-                    k("↑ / ↓, Tab", "Move", "Move between rows"),
-                    k("← / →", "Choose", "Change a short list's choice"),
+                    k("↑ / ↓, Tab", "Move", "Move between rows")
+                    .also(&["Row"]),
+                    k("← / →", "Choose", "Change a short list's choice")
+                    .also(&["Change"]),
                     k("Space", "Open", "Open the row's form or list")
+                    .also(&["Sample", "Choose", "Time roles", "Intervals", "Expected", "Intent"])
                         .more("Open the row: the Sample form, a list (type to narrow), Time roles, Intervals, Column intent or Expected"),
                     k("s", "Sample", "The Sample form")
                         .more("The Sample form; its Enter applies to Setup and returns there"),
-                    k("p", "Plan", "The access plan: what a run reads"),
+                    k("p", "Access", "The access plan: what a run reads"),
                     k("d", "Release", "Release kept rows and the local copy")
+                    .also(&["Release rows"])
                         .more("Release the rows runs kept and a full scan's local copy, named on the Read rule; the next run that would reuse them reads again"),
                     k("Enter", "Run", "Run, from any row")
                         .more("Run, from any row. A full read asks first; the report on screen or in the session cache is shown, not read again"),
-                    k("Esc", "Discard", "Discard every staged edit"),
+                    k("Esc", "Discard", "Discard every staged edit")
+                    .also(&["Back"]),
                 ],
             },
             Group {
                 name: "Setup lists",
                 keys: &[
                     k("↑ / ↓", "Move", "Choose the role, pair, column or row")
+                    .also(&["Role", "Field", "Column", "Pair"])
                         .more("Time roles: choose the role. Intervals: choose the pair. Column intent: choose the column. Expected: Windows, From, Before (Tab too)"),
                     k("← / →", "Choose", "Time roles: its column; Expected: windows")
+                    .also(&["Column", "Windows"])
                         .more("Time roles: choose the role's column. Expected: choose the windows. Intervals: measure the pair or not"),
                     k("Space", "Toggle", "Intervals: measure or not; intent: its form")
+                    .also(&["Declare"])
                         .more("Intervals: measure the pair or not. Column intent: declare the column's intent in a form"),
                     k("Enter", "Done", "Done"),
-                    k("Esc", "Undo", "Put the list back as it was"),
+                    k("Esc", "Undo", "Put the list back as it was")
+                    .also(&["Cancel"]),
+                ],
+            },
+            Group {
+                name: "Forms",
+                keys: &[
+                    k("Tab / Shift+Tab", "Next", "Next or previous field"),
+                    k("← / →", "Change", "Change the field's choice")
+                        .also(&["Format", "Reading"]),
+                    k("Space", "Toggle", "Toggle a checkbox"),
+                    k("Enter", "Apply", "Apply the form; export the report")
+                        .also(&["Export"]),
+                    k("Esc", "Cancel", "Close the form unchanged"),
+                ],
+            },
+            Group {
+                name: "Popups",
+                keys: &[
+                    k("↑ / ↓", "Scroll", "Scroll a popup, or move in its list")
+                        .also(&["Move"]),
+                    k("(type)", "Narrow", "Narrow a popup's list").no_run(),
+                    k("Enter", "Close", "Close a popup, or act on its finding")
+                        .also(&["Read", "Choose", "Fewer checks", "All checks", "Show rows", "Read rows"])
+                        .more("Close a popup, or act on what it shows: a finding's rows (shown when the run kept them, else read), its checks all or fewer, a list's choice"),
+                    k("Esc", "Back", "Close a popup or a list unchanged")
+                        .also(&["Cancel", "Close"]),
                 ],
             },
             Group {
@@ -1127,39 +1268,47 @@ pub const SCREENS: &[Screen] = &[
                     k("← / → (h/l)", "Page", "Previous or next page"),
                     k("1 - 5", "Page", "Overview, Columns, Segments, Trends, Intervals")
                         .run("1"),
-                    k("↑ / ↓ (j/k)", "Move", "Move, or scroll a tall finding"),
+                    k("↑ / ↓ (j/k)", "Move", "Move, or scroll a tall finding")
+                    .also(&["Bar", "Tools"]),
                     k("PgUp / PgDn", "Page", "A page; Home / End the ends")
                         .more("Page; Home/End jump to either end"),
-                    k("Enter", "Open", "Open a finding, then its rows")
+                    k("Enter", "Details", "Open a finding, then its rows")
+                    .also(&["Open", "Inspect", "Columns", "Segments", "Trends", "Show rows", "Read rows", "Set grain", "Time roles", "Intervals"])
                         .more("Open a finding, then its rows. On an empty page, open the setting it needs"),
                     k("c / t", "Only", "Overview: one column's or type's findings")
+                    .also(&["Column", "Type"])
                         .more("Overview: only one column's or one type's findings"),
-                    k("o", "Order", "Overview: ranked, by rows, by rate"),
+                    k("o", "Order", "Overview: ranked, by rows, by rate")
+                    .also(&["Ranked", "By rows", "By rate"]),
                     k("e", "Setup", "Setup"),
                     k("s", "Sample", "Setup, with the Sample form open"),
                     k("v", "Sample rows", "View the sample's rows; Esc returns"),
-                    k("p", "Plan", "The access plan: what a run reads"),
+                    k("p", "Access", "The access plan: what a run reads"),
                     k("r", "Resample", "On a sample, run again with a new seed"),
                     k("x", "Export", "Export the report to JSON or Markdown")
                         .more("Export the report to JSON or Markdown; nothing is read"),
-                    k("Tab / Shift+Tab", "Focus", "Between the result and the tools"),
+                    k("Tab / Shift+Tab", "Focus", "Between the result and the tools")
+                    .also(&["Result"]),
                     k("Esc", "Back", "Back one level: all findings, the tools, close")
+                    .also(&["Cancel", "All findings", "Tools", "Close"])
                         .more("Back one level: all findings again, then the tools, then close"),
                 ],
             },
             Group {
                 name: "Segments",
                 keys: &[
-                    k("Enter", "Compare", "The segment's columns beside its comparison")
+                    k("Enter", "Details", "The segment's columns beside its comparison")
                         .more("A segment's columns beside the one it is compared with, largest change first"),
-                    k("o", "Order", "Largest change first, or back in order"),
-                    k("b", "Base", "Compare with the highlighted segment"),
+                    k("o", "Order", "Largest change first, or back in order")
+                    .also(&["In order", "By change"]),
+                    k("b", "Baseline", "Compare with the highlighted segment"),
                 ],
             },
             Group {
                 name: "Trends",
                 keys: &[
-                    k("Enter", "Bars", "A line's bars, with rate and interval")
+                    k("Enter", "Details", "A line's bars, with rate and interval")
+                    .also(&["Trends"])
                         .more("A line's bars: span, segments, rows sampled of counted, rate, 95% interval, and the bar before. ↑ / ↓ there: the next bar"),
                     k("m", "Measure", "Next measure"),
                     k("w", "Coarser", "Stage a coarser window in Setup")
@@ -1172,7 +1321,8 @@ pub const SCREENS: &[Screen] = &[
             Group {
                 name: "Intervals",
                 keys: &[
-                    k("Enter", "Detail", "An interval's detail; again, its rows")
+                    k("Enter", "Details", "An interval's detail; again, its rows")
+                    .also(&["Show rows", "Read rows"])
                         .more("An interval's detail: its ends, the rows with both, missing and unread ends, negative and zero durations, percentiles and breaches. Enter there shows the rows behind the count under the cursor: a sample's from the rows the run kept"),
                     k("Esc", "Back", "Back to the list"),
                 ],
@@ -1190,14 +1340,16 @@ pub const SCREENS: &[Screen] = &[
                     k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous field")
                         .more("Next or previous field, wrapping; the fields follow the format. The dialog opens on Path, and the arrows move from there"),
                     k("← / →", "Change", "Step the format or compression; move the cursor")
+                    .also(&["Format"])
                         .more("On Format or Compression: the previous or next value, along the Format row (h/l too). On Header or Source file: toggle. In Path and Delimiter: move the cursor"),
                     k("Space", "Act", "Toggle a checkbox; next format or compression")
+                    .also(&["Toggle"])
                         .more("Toggle a checkbox (Header, Source file); on Format or Compression, the next value, wrapping"),
                     k("Ctrl+P / Ctrl+N", "History", "Earlier or later paths in the path field")
                         .more("In the path field: the paths exported to before, earlier or later (↑ and ↓ move between fields)"),
                     k("Enter", "Export", "Export, from anywhere in the form")
                         .more("Export, from anywhere in the form. On a blank path the form says \"Enter a file path.\" instead of exporting"),
-                    k("Esc", "Close", "Close without exporting"),
+                    k("Esc", "Cancel", "Close without exporting"),
                 ],
             },
             Group {
@@ -1222,10 +1374,11 @@ pub const SCREENS: &[Screen] = &[
                     k("← / →", "Change", "Step the scope, column or format")
                         .more("The previous or next scope, column or format (h/l too); on Header: toggle"),
                     k("Space", "Act", "Next scope or format; pick a column; toggle")
+                    .also(&["Toggle", "Pick"])
                         .more("On Scope or Format: the next value, wrapping. On Column: open its picker. On Header: toggle"),
                     k("Enter", "Copy", "Copy, from anywhere in the form")
                         .more("Copy, from anywhere in the form. On the Cell scope with no column picked, Enter re-accents the spec line instead of copying"),
-                    k("Esc", "Close", "Close a picker, then the dialog")
+                    k("Esc", "Cancel", "Close a picker, then the dialog")
                         .more("Close a picker, then the dialog, without copying"),
                 ],
             },
@@ -1237,6 +1390,7 @@ pub const SCREENS: &[Screen] = &[
                         .more("Move the cursor (j/k narrow the picker; only ↑/↓ move there)"),
                     k("Enter / Space", "Choose", "Choose"),
                     k("Tab / Shift+Tab", "Next", "Choose and move on"),
+                    k("Esc", "Back", "Back to the form, the choice unchanged"),
                 ],
             },
         ],
@@ -1271,8 +1425,9 @@ pub const SCREENS: &[Screen] = &[
                         .more("Save from anywhere, the description included; so does Ctrl+Enter, on a terminal that tells it from Enter"),
                     k("PgUp / PgDn", "Lines", "Five lines in the description"),
                     k("Space", "Toggle", "Expand Matching; toggle schema match")
+                    .also(&["Collapse", "Expand"])
                         .more("Expand or collapse Matching; toggle schema match"),
-                    k("Esc", "Back", "Back to the list, discarding edits"),
+                    k("Esc", "Cancel", "Back to the list, discarding edits"),
                 ],
             },
             Group {
@@ -1297,7 +1452,7 @@ pub const SCREENS: &[Screen] = &[
                 k("Enter", "Read", "Read the file again with the spec")
                     .more("Read the file again with the spec chosen. The query, filters and sort are cleared"),
                 k("Backspace", "Delete", "Delete a character (Ctrl+W a word, Ctrl+U all)"),
-                k("Esc", "Close", "Close and keep the format"),
+                k("Esc", "Cancel", "Close and keep the format"),
             ],
         }],
     },
@@ -1314,7 +1469,8 @@ pub const SCREENS: &[Screen] = &[
                 k("Enter", "Choose", "The type, or its format")
                     .more("The type: the column reads as it at once, a value that does not fit null. A date, time or datetime asks its format next, each line showing what it makes of the column's first value. as read takes the type away"),
                 k("Backspace", "Delete", "Delete a character (Ctrl+W a word, Ctrl+U all)"),
-                k("Esc", "Back", "Back to the types, or close"),
+                k("Esc", "Back", "Back to the types, or close")
+                    .also(&["Cancel"]),
             ],
         }],
     },
@@ -1322,7 +1478,8 @@ pub const SCREENS: &[Screen] = &[
         context: Context::Combine,
         title: "Combine into datetime",
         reached: "Combine into datetime in the cell menu, on a text, date or time column.",
-        groups: &[Group {
+        groups: &[
+            Group {
             name: "Fields",
             keys: &[
                 k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous field"),
@@ -1331,6 +1488,15 @@ pub const SCREENS: &[Screen] = &[
                 k("Enter", "Make", "Make the column")
                     .more("Make the column, before the first column it is made from, as a format spec's derived column is: a date and a time, and a UTC offset, make a datetime in UTC"),
                 k("Esc", "Cancel", "Cancel"),
+            ],
+        },
+        Group {
+            name: "Picker",
+            keys: &[
+                k("(type)", "Narrow", "Narrow to the columns that contain it").no_run(),
+                k("↑ / ↓", "Move", "Move"),
+                k("Enter", "Choose", "Choose the column"),
+                k("Esc", "Back", "Back to the fields, the choice unchanged"),
             ],
         }],
     },
@@ -1346,7 +1512,7 @@ pub const SCREENS: &[Screen] = &[
                 k("Enter", "Open", "Open the table in place of this one")
                     .more("Open the table chosen in place of this one. The query, filters and sort are cleared"),
                 k("Backspace", "Delete", "Delete a character (Ctrl+W a word, Ctrl+U all)"),
-                k("Esc", "Close", "Close and keep the table"),
+                k("Esc", "Cancel", "Close and keep the table"),
             ],
         }],
     },
@@ -1357,15 +1523,19 @@ pub const SCREENS: &[Screen] = &[
         groups: &[Group {
             name: "Form",
             keys: &[
-                k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous row"),
+                k("Tab / Shift+Tab (↑ / ↓)", "Next", "Next or previous row")
+                    .also(&["Row", "Tools", "Sample"]),
                 k("← / →", "Change", "Step Rows from, Method, Per value of")
                     .more("Step Rows from, Method and Per value of; Method's No sample takes the view's sample away"),
                 k("(type)", "Edit", "Type a size (50k, 2m), a seed, rows, values")
                     .more("Type into the focused row: the size (50000, 50k, 2m), the seed, a row range, partition values or file numbers")
                     .no_run(),
+                    k("PgUp / PgDn", "Files", "Page through the files, where there are many"),
                 k("Enter", "Draw", "Draw the sample; again past a memory warning")
+                    .also(&["Clear", "Draw anyway", "Run", "Apply"])
                     .more("Draw the sample: the table shows its rows as they arrive, and the query, filters and sort run over them. When the estimate is more than the memory available now (or analysis.sample_memory_limit), the form says so; Enter again draws anyway"),
-                k("Esc", "Cancel", "Close; the view's sample stays as it was"),
+                k("Esc", "Cancel", "Close; the view's sample stays as it was")
+                    .also(&["Back"]),
             ],
         }],
     },
@@ -1386,6 +1556,7 @@ pub const SCREENS: &[Screen] = &[
                     k("PgUp / PgDn", "Page", "A page (Ctrl+B / F; Ctrl+U / D half)")
                         .more("A page (Ctrl+B/F too; Ctrl+U/D half a page)"),
                     k(":", "Go to", "Go to an offset: 4096, 0x1000, +16, e-8")
+                    .also(&["Offset"])
                         .more("Go to an offset: 4096 or 0x1000; +16 or -16 from the cursor; e-8 for the eighth byte from the end"),
                 ],
             },
@@ -1395,10 +1566,22 @@ pub const SCREENS: &[Screen] = &[
                     k("f", "Find", "Find text or bytes (de ad, 0x1acf, ?? any)")
                         .more("Find bytes. Text is found as its UTF-8 bytes (Ctrl+U in the prompt: as UTF-16 little-endian). 0x1acffc1d, or two or more hex pairs (de ad be ef), is a byte pattern, where ?? matches any byte. Text in double quotes is text, even when it looks like hex. A match may span rows"),
                     k("n / N", "Next, previous", "Next or previous match, round the end")
+                    .also(&["Next", "Prev"])
                         .more("The next or previous match, round the end of the file"),
                     k("R", "Stride", "Bytes per row from the matches' spacing")
+                    .also(&["Use stride"])
                         .more("When the matches after the one found are all the same distance apart, make that the bytes per row"),
-                    k("Esc", "Stop", "Stop a find that is reading"),
+                    k("Esc", "Stop", "Stop a find that is reading")
+                    .also(&["Cancel"]),
+                ],
+            },
+            Group {
+                name: "Prompt",
+                keys: &[
+                    k("Enter", "Find", "Find, go to the offset or set the row size")
+                        .also(&["Go", "Set"]),
+                    k("Ctrl+U", "UTF-16", "Find the text as UTF-16 as well"),
+                    k("Esc", "Cancel", "Close the prompt"),
                 ],
             },
             Group {
@@ -1406,20 +1589,24 @@ pub const SCREENS: &[Screen] = &[
                 keys: &[
                     k("r", "Row size", "Bytes per row; empty: as many as fit")
                         .more("Bytes per row, so that records line up; empty goes back to as many as fit. --hex-width N sets it on the command line"),
-                    k("#", "Offsets", "Offsets in decimal or hex"),
+                    k("#", "Offsets", "Offsets in decimal or hex")
+                    .also(&["Hex", "Decimal"]),
                     k("i / Enter", "Inspector", "Show or hide the byte inspector")
                         .more("Show or hide the byte inspector. Beside the bytes when there is room for it and 16 bytes a row, over them when there is not"),
                     k("v", "Mark", "Mark a range from the cursor; again to unmark")
+                    .also(&["Unmark"])
                         .more("Mark from the cursor; move to mark a range, and the status line counts it. v again, or Esc, unmarks"),
                 ],
             },
             Group {
                 name: "Go",
                 keys: &[
-                    k("B", "Format spec", "Read the file with a format spec instead"),
+                    k("B", "Format spec", "Read the file with a format spec instead")
+                    .also(&["Format"]),
                     k("Esc", "Back", "Back to the Info panel or home")
                         .more("Back to the table, when opened from the Info panel; back home, when opened from there"),
-                    k("q", "Back", "Home, when opened from there; else quit"),
+                    k("q", "Back", "Home, when opened from there; else quit")
+                    .also(&["Home", "Quit"]),
                 ],
             },
         ],
@@ -1437,20 +1624,34 @@ pub fn screen(context: Context) -> &'static Screen {
 /// The entry for `keys` on `context`'s screen, or in `group` of it when named: what
 /// the footer's hints read their labels from.
 pub fn lookup(context: Context, group: Option<&str>, keys: &str) -> Option<&'static Key> {
-    screen(context)
-        .groups
-        .iter()
-        .filter(|g| group.is_none_or(|name| g.name == name))
-        .flat_map(|g| g.keys.iter())
-        .find(|k| k.keys == keys)
+    let groups: &'static [Group] = match context {
+        Context::Global => std::slice::from_ref(&GLOBAL),
+        Context::Help => std::slice::from_ref(&HELP),
+        Context::Question => std::slice::from_ref(&QUESTION),
+        _ => screen(context).groups,
+    };
+    let entries = || {
+        groups
+            .iter()
+            .filter(move |g| group.is_none_or(|name| g.name == name))
+            .flat_map(|g| g.keys.iter())
+    };
+    // As written, or the entry whose keys include every key named: a hint may offer
+    // `d` of `d / Del`, or `↑ / ↓` of `↑ / ↓ (j/k)`.
+    let wanted = chords(keys);
+    entries().find(|k| k.keys == keys).or_else(|| {
+        (!wanted.is_empty())
+            .then(|| entries().find(|k| wanted.iter().all(|c| chords(k.keys).contains(c))))
+            .flatten()
+    })
 }
 
-/// Every key entry with its screen and group, in reference order; [`GLOBAL`] first.
+/// Every key entry with its screen and group, in reference order; [`GLOBAL`], [`HELP`]
+/// and [`QUESTION`] first.
 pub fn entries() -> impl Iterator<Item = (Option<&'static Screen>, &'static Group, &'static Key)> {
-    GLOBAL
-        .keys
-        .iter()
-        .map(|key| (None, &GLOBAL, key))
+    [&GLOBAL, &HELP, &QUESTION]
+        .into_iter()
+        .flat_map(|group| group.keys.iter().map(move |key| (None, group, key)))
         .chain(SCREENS.iter().flat_map(|screen| {
             screen
                 .groups
@@ -1493,6 +1694,8 @@ pub fn render_markdown() -> String {
     markdown_table(&mut out, GLOBAL.keys);
     out.push_str("\n## Help\n\n<kbd>?</kbd> or <kbd>F1</kbd>.\n");
     markdown_table(&mut out, HELP.keys);
+    out.push_str("\n## Question\n\nWhen datui asks before acting.\n");
+    markdown_table(&mut out, QUESTION.keys);
     for screen in SCREENS {
         out.push_str(&format!("\n## {}\n\n{}\n", screen.title, screen.reached));
         for group in screen.groups {
@@ -1566,8 +1769,10 @@ mod tests {
             if key.line.contains('\n') || key.line.chars().count() > 52 {
                 bad.push(format!("{at}: line longer than 52: {}", key.line));
             }
-            if key.label.is_empty() || key.label.split(' ').count() > 3 {
-                bad.push(format!("{at}: label {:?}", key.label));
+            for label in std::iter::once(&key.label).chain(key.also) {
+                if label.is_empty() || label.split(' ').count() > 3 {
+                    bad.push(format!("{at}: label {label:?}"));
+                }
             }
             if key.line.ends_with('.') || key.more.is_some_and(|m| m.ends_with('.')) {
                 bad.push(format!("{at}: ends with a period"));

@@ -203,8 +203,9 @@ impl ExportFrame {
 impl DataTableState {
     /// The group drilled into, as its key columns and their values.
     pub fn drilled_group_key(&self) -> Option<(&[String], &[String])> {
-        let values = self.drilled_down_group_key.as_deref()?;
+        let values = self.view.drilled_down_group_key.as_deref()?;
         let columns = self
+            .view
             .drilled_down_group_key_columns
             .as_deref()
             .unwrap_or_default();
@@ -215,7 +216,7 @@ impl DataTableState {
     /// schema already known for the data as loaded; a drilled group or a reshape only
     /// has its plan resolved, which reads nothing.
     pub fn sql_table_columns(&self) -> Vec<(String, DataType)> {
-        let schema = if self.grouped.is_none() && self.reshaped_lf.is_none() {
+        let schema = if self.view.grouped.is_none() && self.view.reshaped_lf.is_none() {
             Some(self.original_schema.clone())
         } else {
             self.query_root().collect_schema().ok()
@@ -234,45 +235,47 @@ impl DataTableState {
     /// Rows `df` holds, when that is known without counting: the data as loaded,
     /// once its count has come back.
     pub fn sql_table_rows(&self) -> Option<usize> {
-        if self.grouped.is_some() || self.reshaped_lf.is_some() {
+        if self.view.grouped.is_some() || self.view.reshaped_lf.is_some() {
             return None;
         }
         self.pristine_rows
     }
 
     pub fn get_active_fuzzy_query(&self) -> &str {
-        &self.active_fuzzy_query
+        &self.view.active_fuzzy_query
     }
 
     pub fn last_pivot_spec(&self) -> Option<&PivotSpec> {
-        self.last_pivot_spec.as_ref()
+        self.view.last_pivot_spec.as_ref()
     }
 
     pub fn last_melt_spec(&self) -> Option<&MeltSpec> {
-        self.last_melt_spec.as_ref()
+        self.view.last_melt_spec.as_ref()
     }
 
     /// What the pivot or melt in effect ran over. See the field.
     pub fn reshape_source(&self) -> Option<&ReshapeSource> {
-        self.reshape_source.as_ref()
+        self.view.reshape_source.as_ref()
     }
 
     /// Whether the view is a grouping's result (a `by` query, a SQL GROUP BY), so its
     /// rows drill into groups. Recorded by the query, never inferred from list columns:
     /// a table loaded with one is not grouped.
     pub fn is_grouped(&self) -> bool {
-        self.group_source.is_some()
+        self.view.group_source.is_some()
     }
 
     /// Whether any column holds lists.
     fn has_list_columns(&self) -> bool {
-        self.schema
+        self.view
+            .schema
             .iter()
             .any(|(_, dtype)| matches!(dtype, DataType::List(_)))
     }
 
     fn group_key_columns(&self) -> Vec<String> {
-        self.schema
+        self.view
+            .schema
             .iter()
             .filter(|(_, dtype)| !matches!(dtype, DataType::List(_)))
             .map(|(name, _)| name.to_string())
@@ -280,7 +283,8 @@ impl DataTableState {
     }
 
     fn group_value_columns(&self) -> Vec<String> {
-        self.schema
+        self.view
+            .schema
             .iter()
             .filter(|(_, dtype)| matches!(dtype, DataType::List(_)))
             .map(|(name, _)| name.to_string())
@@ -290,7 +294,8 @@ impl DataTableState {
     /// Names of binary columns in the source schema. Their values are not read into the display
     /// buffer (the `‹binary›` stub stands in); the renderer uses this to style those cells.
     pub fn binary_column_names(&self) -> std::collections::HashSet<String> {
-        self.schema
+        self.view
+            .schema
             .iter()
             .filter(|(_, dtype)| matches!(dtype, DataType::Binary))
             .map(|(name, _)| name.to_string())
@@ -300,11 +305,17 @@ impl DataTableState {
     /// Estimated heap size in bytes of the currently buffered slice (locked + scrollable), if collected.
     pub fn buffered_memory_bytes(&self) -> Option<usize> {
         let locked = self
+            .view
             .locked_df
             .as_ref()
             .map(|df| df.estimated_size())
             .unwrap_or(0);
-        let scroll = self.df.as_ref().map(|df| df.estimated_size()).unwrap_or(0);
+        let scroll = self
+            .view
+            .df
+            .as_ref()
+            .map(|df| df.estimated_size())
+            .unwrap_or(0);
         if locked == 0 && scroll == 0 {
             None
         } else {
@@ -314,15 +325,16 @@ impl DataTableState {
 
     /// Number of rows currently in the buffer. 0 if no buffer loaded.
     pub fn buffered_rows(&self) -> usize {
-        self.buffered_end_row
-            .saturating_sub(self.buffered_start_row)
+        self.view
+            .buffered_end_row
+            .saturating_sub(self.view.buffered_start_row)
     }
 
     /// The first `limit` distinct non-null values of `column` among the rows already
     /// buffered for display, as text. Reads nothing: a column the buffer lacks gives
     /// none.
     pub(crate) fn buffered_values(&self, column: &str, limit: usize) -> Vec<String> {
-        let Some(series) = [self.df.as_ref(), self.locked_df.as_ref()]
+        let Some(series) = [self.view.df.as_ref(), self.view.locked_df.as_ref()]
             .into_iter()
             .flatten()
             .find_map(|df| df.column(column).ok())
@@ -354,13 +366,16 @@ impl DataTableState {
 
     /// Current scrollable display buffer. None until first collect().
     pub fn display_df(&self) -> Option<&DataFrame> {
-        self.df.as_ref()
+        self.view.df.as_ref()
     }
 
     /// Visible-window slice of the display buffer (same as passed to render_dataframe).
     pub fn display_slice_df(&self) -> Option<DataFrame> {
-        let df = self.df.as_ref()?;
-        let offset = self.start_row.saturating_sub(self.buffered_start_row);
+        let df = self.view.df.as_ref()?;
+        let offset = self
+            .view
+            .start_row
+            .saturating_sub(self.view.buffered_start_row);
         let slice_len = self.visible_rows.min(df.height().saturating_sub(offset));
         if offset < df.height() && slice_len > 0 {
             Some(df.slice(offset as i64, slice_len))
@@ -372,13 +387,13 @@ impl DataTableState {
     /// The selected row with every display column, raw and in display order:
     /// what a row copy carries.
     pub fn copy_row_df(&self) -> Option<DataFrame> {
-        let df = self.buffered_df.as_ref()?;
-        let absolute = self.start_row + self.table_state.selected()?;
-        let offset = absolute.checked_sub(self.buffered_start_row)?;
+        let df = self.view.buffered_df.as_ref()?;
+        let absolute = self.view.start_row + self.table_state.selected()?;
+        let offset = absolute.checked_sub(self.view.buffered_start_row)?;
         if offset >= df.height() {
             return None;
         }
-        let names: Vec<&str> = self.column_order.iter().map(|s| s.as_str()).collect();
+        let names: Vec<&str> = self.view.column_order.iter().map(|s| s.as_str()).collect();
         df.select(names).ok().map(|d| d.slice(offset as i64, 1))
     }
 
@@ -386,10 +401,13 @@ impl DataTableState {
     /// untouched by the column scroll: a copy that lost the columns scrolled
     /// past would deny exactly the identifiers that make the rows readable.
     pub fn copy_view_df(&self) -> Option<DataFrame> {
-        let df = self.buffered_df.as_ref()?;
-        let names: Vec<&str> = self.column_order.iter().map(|s| s.as_str()).collect();
+        let df = self.view.buffered_df.as_ref()?;
+        let names: Vec<&str> = self.view.column_order.iter().map(|s| s.as_str()).collect();
         let selected = df.select(names).ok()?;
-        let offset = self.start_row.saturating_sub(self.buffered_start_row);
+        let offset = self
+            .view
+            .start_row
+            .saturating_sub(self.view.buffered_start_row);
         let len = self
             .visible_rows
             .min(selected.height().saturating_sub(offset));
@@ -408,7 +426,7 @@ impl DataTableState {
 
     /// The selected row's number as the row-numbers column would print it.
     pub fn selected_display_row(&self) -> Option<usize> {
-        Some(self.start_row + self.table_state.selected()? + self.row_start_index)
+        Some(self.view.start_row + self.table_state.selected()? + self.row_start_index)
     }
 
     /// Rows times estimated row width, for the copy guard: what collecting the whole
@@ -428,13 +446,13 @@ impl DataTableState {
                 .map(|(_, w)| *w)
         };
         let mut row = self.bytes_per_row();
-        for name in &self.column_order {
-            match self.schema.get(name.as_str()) {
+        for name in &self.view.column_order {
+            match self.view.schema.get(name.as_str()) {
                 Some(DataType::Binary) => row += base64(footer_width(name)?),
                 // Buffered whole, so the buffer measured it with the row; base64 adds
                 // a third on top.
                 Some(dtype) if crate::nested_json::has_binary(dtype) => {
-                    let buffered = self.buffered_df.as_ref().and_then(|df| {
+                    let buffered = self.view.buffered_df.as_ref().and_then(|df| {
                         let column = df.column(name).ok()?;
                         (df.height() > 0)
                             .then(|| column.as_materialized_series().estimated_size() / df.height())
@@ -464,16 +482,19 @@ impl DataTableState {
     /// file, so their nulls are ordinary nulls. A frame is a screen tall, so this is
     /// a few dozen values.
     pub fn display_drift(&self, frame_rows: usize) -> Vec<u32> {
-        if !self.drift_column_present {
+        if !self.view.drift_column_present {
             return Vec::new();
         }
-        let Some(df) = self.buffered_df.as_ref() else {
+        let Some(df) = self.view.buffered_df.as_ref() else {
             return Vec::new();
         };
         let Ok(column) = df.column(crate::schema_union::DRIFT_COLUMN) else {
             return Vec::new();
         };
-        let offset = self.start_row.saturating_sub(self.buffered_start_row);
+        let offset = self
+            .view
+            .start_row
+            .saturating_sub(self.view.buffered_start_row);
         let len = frame_rows.min(column.len().saturating_sub(offset));
         if len == 0 {
             return Vec::new();
@@ -508,16 +529,27 @@ impl DataTableState {
     /// Whether a drill shows the lists of a row as the group's rows rather than
     /// filtering the source: a `by` result that holds its groups as lists.
     fn drills_lists(&self) -> bool {
-        self.has_list_columns() && self.group_source.as_ref().is_some_and(|s| s.rows_in_lists)
+        self.has_list_columns()
+            && self
+                .view
+                .group_source
+                .as_ref()
+                .is_some_and(|s| s.rows_in_lists)
     }
 
     /// The columns of a row that a drill into its group reads: every column of a result
     /// holding its groups as lists, the keys of one holding aggregates.
     fn drill_columns(&self) -> Vec<String> {
         if self.drills_lists() {
-            return self.schema.iter_names().map(|n| n.to_string()).collect();
+            return self
+                .view
+                .schema
+                .iter_names()
+                .map(|n| n.to_string())
+                .collect();
         }
-        self.group_source
+        self.view
+            .group_source
             .iter()
             .flat_map(|source| source.keys.iter().map(|(name, _)| name.to_string()))
             .collect()
@@ -526,19 +558,20 @@ impl DataTableState {
     /// The columns the inspector lists for a row: the table's, in its order, then
     /// the ones hidden from it, in schema order. Never the scan's own row index.
     pub fn inspect_fields(&self) -> Vec<InspectField> {
-        let shown = self.column_order.iter().filter_map(|name| {
+        let shown = self.view.column_order.iter().filter_map(|name| {
             Some(InspectField {
                 name: name.clone(),
-                dtype: self.schema.get(name.as_str())?.clone(),
+                dtype: self.view.schema.get(name.as_str())?.clone(),
                 hidden: false,
             })
         });
         let hidden = self
+            .view
             .schema
             .iter()
             .filter(|(name, _)| {
                 name.as_str() != crate::schema_union::DRIFT_COLUMN
-                    && !self.column_order.iter().any(|c| c == name.as_str())
+                    && !self.view.column_order.iter().any(|c| c == name.as_str())
             })
             .map(|(name, dtype)| InspectField {
                 name: name.to_string(),
@@ -551,20 +584,21 @@ impl DataTableState {
     /// The selected row as the buffer holds it, with the file group that says what
     /// its nulls are. Reads nothing; `None` while the row is not on hand.
     pub fn inspect_row(&self) -> Option<InspectRow> {
-        self.inspect_row_at(self.start_row + self.table_state.selected()?)
+        self.inspect_row_at(self.view.start_row + self.table_state.selected()?)
     }
 
     /// Row `row` of the view as the buffer holds it, as [`Self::inspect_row`] does
     /// the selected one: Compare's next row. `None` while it is not on hand.
     pub fn inspect_row_at(&self, row: usize) -> Option<InspectRow> {
-        let df = self.buffered_df.as_ref()?;
-        let offset = row.checked_sub(self.buffered_start_row)?;
+        let df = self.view.buffered_df.as_ref()?;
+        let offset = row.checked_sub(self.view.buffered_start_row)?;
         if offset >= df.height() {
             return None;
         }
-        let names: Vec<&str> = self.column_order.iter().map(|s| s.as_str()).collect();
+        let names: Vec<&str> = self.view.column_order.iter().map(|s| s.as_str()).collect();
         let values = df.select(names).ok()?.slice(offset as i64, 1);
         let drift_group = self
+            .view
             .drift_column_present
             .then(|| df.column(crate::schema_union::DRIFT_COLUMN).ok())
             .flatten()
@@ -573,7 +607,7 @@ impl DataTableState {
             .map(|place| self.file_group_of(place));
         Some(InspectRow {
             row,
-            frame: self.len_generation,
+            frame: self.view.len_generation,
             display_row: row + self.row_start_index,
             values,
             drift_group,
@@ -592,7 +626,7 @@ impl DataTableState {
     /// What a null in `column` is, for a row of file group `group`: the data's own,
     /// a file without the column, or a file holding it in another type.
     pub fn null_kind(&self, column: &str, group: Option<u32>) -> NullKind {
-        let Some(group) = group.and_then(|g| self.drift_groups.get(g as usize)) else {
+        let Some(group) = group.and_then(|g| self.view.drift_groups.get(g as usize)) else {
             return NullKind::Null;
         };
         if group.absent.iter().any(|c| c == column) {
@@ -623,16 +657,19 @@ impl DataTableState {
         }
         let columns = self.drill_columns();
         let buffered = self
+            .view
             .buffered_df
             .as_ref()
-            .filter(|_| (self.buffered_start_row..self.buffered_end_row).contains(&group_index))
+            .filter(|_| {
+                (self.view.buffered_start_row..self.view.buffered_end_row).contains(&group_index)
+            })
             .filter(|_| {
                 columns
                     .iter()
-                    .all(|c| !matches!(self.schema.get(c.as_str()), Some(DataType::Binary)))
+                    .all(|c| !matches!(self.view.schema.get(c.as_str()), Some(DataType::Binary)))
             })
             .and_then(|df| df.select(columns.iter().map(|c| c.as_str())).ok())
-            .map(|df| df.slice((group_index - self.buffered_start_row) as i64, 1))
+            .map(|df| df.slice((group_index - self.view.buffered_start_row) as i64, 1))
             .filter(|row| row.height() == 1);
         Some(match buffered {
             Some(row) => DrillRow::Buffered(row),
@@ -672,16 +709,21 @@ impl DataTableState {
                 row,
                 self.group_key_columns(),
                 self.group_value_columns(),
-                self.lineage.clone(),
+                self.view.lineage.clone(),
             )?
-        } else if let Some(source) = &self.group_source {
+        } else if let Some(source) = &self.view.group_source {
             Self::group_from_source(source, row)?
         } else {
             return Ok(());
         };
         // A list form that also aggregates (`select a, n: count a by k`) holds its
         // aggregates beside the keys; the query knows which columns are keys.
-        if let Some(source) = self.group_source.as_ref().filter(|_| self.drills_lists()) {
+        if let Some(source) = self
+            .view
+            .group_source
+            .as_ref()
+            .filter(|_| self.drills_lists())
+        {
             let keys: Vec<&str> = source.keys.iter().map(|(n, _)| n.as_str()).collect();
             (group.key_columns, group.key_values) = group
                 .key_columns
@@ -699,6 +741,7 @@ impl DataTableState {
     /// back to the view the group was drilled from.
     pub fn drill_into_value(&mut self, column: &str, value: AnyValue<'static>) -> Result<()> {
         let dtype = self
+            .view
             .schema
             .get(column)
             .cloned()
@@ -721,30 +764,30 @@ impl DataTableState {
             key_values: vec![label],
             lead: vec![column.to_string()],
             steps,
-            lineage: self.lineage.clone(),
+            lineage: self.view.lineage.clone(),
         };
         if !self.is_drilled_down() {
-            let index = self.start_row + self.table_state.selected().unwrap_or(0);
+            let index = self.view.start_row + self.table_state.selected().unwrap_or(0);
             return self.enter_group(group, index, true);
         }
         let schema = group.lf.clone().collect_schema()?;
-        let order = std::mem::take(&mut self.column_order);
-        if let Some(keys) = self.drilled_down_group_key_columns.as_mut() {
+        let order = std::mem::take(&mut self.view.column_order);
+        if let Some(keys) = self.view.drilled_down_group_key_columns.as_mut() {
             keys.extend(group.key_columns);
         }
-        if let Some(values) = self.drilled_down_group_key.as_mut() {
+        if let Some(values) = self.view.drilled_down_group_key.as_mut() {
             values.extend(group.key_values);
         }
         // The group's filters and sort are in the frame now.
-        self.filters.clear();
-        self.sort_columns.clear();
-        self.sort_descending.clear();
-        self.sort_ascending = true;
+        self.view.filters.clear();
+        self.view.sort_columns.clear();
+        self.view.sort_descending.clear();
+        self.view.sort_ascending = true;
         self.install_base(group.lf, schema);
-        self.base_steps = group.steps;
-        self.lineage = group.lineage;
-        self.column_order = order;
-        self.start_row = 0;
+        self.view.base_steps = group.steps;
+        self.view.lineage = group.lineage;
+        self.view.column_order = order;
+        self.view.start_row = 0;
         self.termcol_index = 0;
         self.clear_column_moves();
         self.settle_cursor();
@@ -755,55 +798,55 @@ impl DataTableState {
 
     /// Whether the drill on screen came from Value Counts.
     pub fn drilled_into_value(&self) -> bool {
-        self.grouped.as_ref().is_some_and(|view| view.by_value)
+        self.view.grouped.as_ref().is_some_and(|view| view.by_value)
     }
 
     /// Show `group`, the group on row `group_index` of the view, keeping the view to
     /// come back to.
     fn enter_group(&mut self, group: GroupRows, group_index: usize, by_value: bool) -> Result<()> {
         let schema = group.lf.clone().collect_schema()?;
-        self.drilled_down_group_key = Some(group.key_values);
-        self.drilled_down_group_key_columns = Some(group.key_columns);
+        self.view.drilled_down_group_key = Some(group.key_values);
+        self.view.drilled_down_group_key_columns = Some(group.key_columns);
 
         // The group becomes the pipeline root while drilled in, so a sidebar filter or
         // sort applies within it instead of rebuilding the grouped view underneath.
-        self.grouped = Some(GroupedView {
-            lf: self.lf.clone(),
-            base_lf: self.base_lf.clone(),
-            filters: std::mem::take(&mut self.filters),
-            sort_columns: std::mem::take(&mut self.sort_columns),
-            sort_descending: std::mem::take(&mut self.sort_descending),
-            sort_ascending: self.sort_ascending,
-            drift: self.drift_column_present,
-            drift_groups: self.drift_groups.clone(),
-            view_numbered: self.view_numbered,
-            notes: self.notes.clone(),
-            group_source: self.group_source.take(),
-            column_order: self.column_order.clone(),
-            locked_columns_count: self.locked_columns_count,
-            start_row: self.start_row,
+        self.view.grouped = Some(GroupedView {
+            lf: self.view.lf.clone(),
+            base_lf: self.view.base_lf.clone(),
+            filters: std::mem::take(&mut self.view.filters),
+            sort_columns: std::mem::take(&mut self.view.sort_columns),
+            sort_descending: std::mem::take(&mut self.view.sort_descending),
+            sort_ascending: self.view.sort_ascending,
+            drift: self.view.drift_column_present,
+            drift_groups: self.view.drift_groups.clone(),
+            view_numbered: self.view.view_numbered,
+            notes: self.view.notes.clone(),
+            group_source: self.view.group_source.take(),
+            column_order: self.view.column_order.clone(),
+            locked_columns_count: self.view.locked_columns_count,
+            start_row: self.view.start_row,
             termcol_index: self.termcol_index,
-            cursor_column: self.cursor_column.clone(),
+            cursor_column: self.view.cursor_column.clone(),
             selected: self.table_state.selected(),
             by_value,
-            base_steps: std::mem::take(&mut self.base_steps),
-            lineage: self.lineage.clone(),
+            base_steps: std::mem::take(&mut self.view.base_steps),
+            lineage: self.view.lineage.clone(),
         });
-        self.sort_ascending = true;
+        self.view.sort_ascending = true;
         self.install_base(group.lf, schema);
-        self.base_steps = group.steps;
-        self.lineage = group.lineage;
+        self.view.base_steps = group.steps;
+        self.view.lineage = group.lineage;
         // Led by the keys, as a group drilled from lists is.
-        let rest: Vec<String> = std::mem::take(&mut self.column_order)
+        let rest: Vec<String> = std::mem::take(&mut self.view.column_order)
             .into_iter()
             .filter(|c| !group.lead.contains(c))
             .collect();
-        self.column_order = group.lead.into_iter().chain(rest).collect();
-        self.drilled_down_group_index = Some(group_index);
-        self.start_row = 0;
+        self.view.column_order = group.lead.into_iter().chain(rest).collect();
+        self.view.drilled_down_group_index = Some(group_index);
+        self.view.start_row = 0;
         self.termcol_index = 0;
         self.clear_column_moves();
-        self.locked_columns_count = 0;
+        self.view.locked_columns_count = 0;
         self.settle_cursor();
         self.table_state.select(Some(0));
         self.collect();
@@ -936,7 +979,7 @@ impl DataTableState {
     }
 
     pub fn drill_up(&mut self) -> Result<()> {
-        let Some(view) = self.grouped.take() else {
+        let Some(view) = self.view.grouped.take() else {
             return Err(color_eyre::eyre::eyre!("Not in drill-down mode"));
         };
         let schema = Self::without_drift(view.lf.clone()).collect_schema()?;
@@ -944,37 +987,37 @@ impl DataTableState {
         // The buffer holds the group's rows; kept, it would stand in for the grouped
         // view wherever the view fits inside it.
         self.drop_buffer();
-        self.observed_bytes_per_row = None;
+        self.view.observed_bytes_per_row = None;
         self.widths.relearn();
-        self.lf = view.lf;
-        self.unsorted_lf = None;
-        self.base_lf = view.base_lf;
-        self.base_steps = view.base_steps;
-        self.lineage = view.lineage;
-        self.filters = view.filters;
-        self.sort_columns = view.sort_columns;
-        self.sort_descending = view.sort_descending;
-        self.sort_ascending = view.sort_ascending;
-        self.drift_column_present = view.drift;
-        self.drift_groups = view.drift_groups;
-        self.view_numbered = view.view_numbered;
-        self.notes = view.notes;
-        self.group_source = view.group_source;
+        self.view.lf = view.lf;
+        self.view.unsorted_lf = None;
+        self.view.base_lf = view.base_lf;
+        self.view.base_steps = view.base_steps;
+        self.view.lineage = view.lineage;
+        self.view.filters = view.filters;
+        self.view.sort_columns = view.sort_columns;
+        self.view.sort_descending = view.sort_descending;
+        self.view.sort_ascending = view.sort_ascending;
+        self.view.drift_column_present = view.drift;
+        self.view.drift_groups = view.drift_groups;
+        self.view.view_numbered = view.view_numbered;
+        self.view.notes = view.notes;
+        self.view.group_source = view.group_source;
         // The frame put back here already leaves out whatever its filter and sort left
         // out, so the notes saying so have to come back with it. They are derived rather
         // than saved, so they cannot go stale against a frame that changed while it was
         // drilled into.
-        self.view_notes = self.view_notes_only();
-        self.schema = schema;
-        self.column_order = view.column_order;
-        self.locked_columns_count = view.locked_columns_count;
-        self.drilled_down_group_index = None;
-        self.drilled_down_group_key = None;
-        self.drilled_down_group_key_columns = None;
-        self.start_row = view.start_row;
+        self.view.view_notes = self.view_notes_only();
+        self.view.schema = schema;
+        self.view.column_order = view.column_order;
+        self.view.locked_columns_count = view.locked_columns_count;
+        self.view.drilled_down_group_index = None;
+        self.view.drilled_down_group_key = None;
+        self.view.drilled_down_group_key_columns = None;
+        self.view.start_row = view.start_row;
         self.termcol_index = view.termcol_index;
         self.clear_column_moves();
-        self.cursor_column = view.cursor_column;
+        self.view.cursor_column = view.cursor_column;
         self.settle_cursor();
         self.table_state.select(view.selected);
         self.collect();
@@ -983,13 +1026,13 @@ impl DataTableState {
 
     pub fn get_analysis_context(&self) -> crate::statistics::AnalysisContext {
         crate::statistics::AnalysisContext {
-            has_query: !self.active_query.is_empty(),
-            query: self.active_query.clone(),
-            has_filters: !self.filters.is_empty(),
-            filter_count: self.filters.len(),
+            has_query: !self.view.active_query.is_empty(),
+            query: self.view.active_query.clone(),
+            has_filters: !self.view.filters.is_empty(),
+            filter_count: self.view.filters.len(),
             is_drilled_down: self.is_drilled_down(),
-            group_key: self.drilled_down_group_key.clone(),
-            group_columns: self.drilled_down_group_key_columns.clone(),
+            group_key: self.view.drilled_down_group_key.clone(),
+            group_columns: self.view.drilled_down_group_key_columns.clone(),
         }
     }
 }

@@ -154,7 +154,6 @@ pub struct ExportModal {
     pub focus: ExportFocus,
     pub selected_format: ExportFormat,
     pub path_input: TextInput,
-    // CSV options
     pub csv_delimiter_input: TextInput,
     pub csv_include_header: bool,
     /// Add a column naming the file each row came from. See `ExportFocus::SourceFile`.
@@ -168,9 +167,7 @@ pub struct ExportModal {
     /// allow; the dialog says those are renamed. Set when it opens.
     pub avro_renames: bool,
     pub csv_compression: Option<CompressionFormat>,
-    // JSON options
     pub json_compression: Option<CompressionFormat>,
-    // NDJSON options
     pub ndjson_compression: Option<CompressionFormat>,
     pub history_limit: usize,
     /// Why the form cannot export, or why its last write failed, said inline on

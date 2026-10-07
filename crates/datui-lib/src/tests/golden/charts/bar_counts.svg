@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="320" viewBox="0 0 480 320" font-family="IBM Plex Sans">
+<rect x="0.00" y="0.00" width="480.00" height="320.00" fill="#ffffff" fill-opacity="1.00"/>
+<text x="31.1" y="53.7" font-size="22.6" font-weight="600" text-anchor="start" fill="#1f2430">Golden</text>
+<text x="31.1" y="285.1" font-size="12.8" font-weight="400" text-anchor="start" fill="#5b6170">all 300 rows</text>
+<text x="52.5" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">0</text>
+<text x="144.7" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">20</text>
+<text x="236.9" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">40</text>
+<text x="329.1" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">60</text>
+<text x="421.2" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">80</text>
+<text x="250.7" y="256.4" font-size="14.0" font-weight="600" text-anchor="middle" fill="#1f2430">count</text>
+<text x="31.1" y="87.3" font-size="14.0" font-weight="600" text-anchor="start" fill="#1f2430">g</text>
+<text x="45.5" y="123.0" font-size="14.0" font-weight="400" text-anchor="end" fill="#1f2430">p</text>
+<rect x="52.53" y="108.71" width="396.36" height="18.73" fill="#2a78d6" fill-opacity="1.00"/>
+<text x="45.5" y="150.9" font-size="14.0" font-weight="400" text-anchor="end" fill="#1f2430">q</text>
+<rect x="52.53" y="136.64" width="396.36" height="18.73" fill="#2a78d6" fill-opacity="1.00"/>
+<text x="45.5" y="178.8" font-size="14.0" font-weight="400" text-anchor="end" fill="#1f2430">r</text>
+<rect x="52.53" y="164.57" width="391.75" height="18.73" fill="#2a78d6" fill-opacity="1.00"/>
+<text x="45.5" y="206.8" font-size="14.0" font-weight="400" text-anchor="end" fill="#1f2430">s</text>
+<rect x="52.53" y="192.50" width="198.18" height="18.73" fill="#2a78d6" fill-opacity="1.00"/>
+<line x1="52.5" y1="104.1" x2="52.5" y2="215.8" stroke="#5b6170" stroke-width="1.33"/>
+</svg>

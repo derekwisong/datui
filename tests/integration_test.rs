@@ -777,7 +777,7 @@ fn test_chart_prepares_one_selection_at_a_time() {
 
     let mut results = 0;
     let mut handle = |app: &mut App, ev: AppEvent| {
-        if matches!(ev, AppEvent::BackgroundChartReady) {
+        if matches!(ev, AppEvent::JobEnded(t) if t.kind() == JobKind::ChartPrepare) {
             results += 1;
         }
         if let Some(next) = app.event(&ev) {
@@ -2643,7 +2643,7 @@ fn data_quality_on_a_local_file_leads_with_the_result() {
     )));
     assert_eq!(app.analysis_modal.data_quality_page, QualityPage::Setup);
 
-    // The control bar is the one hint surface: the widget draws no key rows
+    // The footer is the one hint surface: the widget draws no key rows
     // or prose of its own.
     let area = Rect::new(0, 0, 110, 30);
     let mut buffer = Buffer::empty(area);
@@ -2788,8 +2788,8 @@ fn data_quality_reads_as_a_report() {
     for (page, own) in [
         (QualityPage::Overview, "Enter Details"),
         (QualityPage::Columns, "Enter Inspect"),
-        (QualityPage::Segments, "Enter Set Grain"),
-        (QualityPage::Trends, "Enter Set Grain"),
+        (QualityPage::Segments, "Enter Set grain"),
+        (QualityPage::Trends, "Enter Set grain"),
     ] {
         if page != QualityPage::Overview {
             app.event(&AppEvent::Key(KeyEvent::new(
@@ -2808,7 +2808,7 @@ fn data_quality_reads_as_a_report() {
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
     let screen = common::buffer_text(&buffer);
-    assert!(screen.contains("Set Grain") && !screen.contains("Metric"));
+    assert!(screen.contains("Set grain") && !screen.contains("Metric"));
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -2887,7 +2887,7 @@ fn data_quality_reads_as_a_report() {
         "no threshold without an interval:\n{screen}"
     );
     // Text columns can take a role, read through a format.
-    assert!(bar_now(&mut app).contains("Time Roles"));
+    assert!(bar_now(&mut app).contains("Time roles"));
     // Enter runs from any row; the plan is the one measured, so the report opens.
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
@@ -2925,7 +2925,7 @@ fn data_quality_reads_as_a_report() {
     assert!(screen.contains("Duplicate rows"));
     assert!(screen.contains("4 more checks"));
     assert!(
-        screen.contains("All Checks"),
+        screen.contains("All checks"),
         "the bar says Enter shows the rest"
     );
     app.event(&AppEvent::Key(KeyEvent::new(
@@ -2939,7 +2939,7 @@ fn data_quality_reads_as_a_report() {
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
     let screen = common::buffer_text(&buffer);
-    assert!(screen.contains("Nearly unique") && screen.contains("Fewer Checks"));
+    assert!(screen.contains("Nearly unique") && screen.contains("Fewer checks"));
     for code in [KeyCode::Esc, KeyCode::Home] {
         app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     }
@@ -2967,7 +2967,7 @@ fn data_quality_reads_as_a_report() {
         "facts and advice as a list, not a lecture"
     );
     assert!(
-        screen.contains("Show Rows"),
+        screen.contains("Show rows"),
         "the bar names what Enter does"
     );
     app.event(&AppEvent::Key(KeyEvent::new(
@@ -3044,7 +3044,7 @@ fn a_long_finding_scrolls() {
     press(&mut app, KeyCode::End);
     let screen = render(&mut app);
     assert!(!screen.contains(" more "), "nothing left below at the end");
-    assert!(screen.contains("Show Rows"), "the Enter line is reachable");
+    assert!(screen.contains("Show rows"), "the Enter line is reachable");
     press(&mut app, KeyCode::Home);
     assert_eq!(app.analysis_modal.data_quality_detail_scroll.offset, 0);
     press(&mut app, KeyCode::Esc);
@@ -3117,7 +3117,7 @@ fn a_sampled_finding_opens_its_sampled_rows() {
         screen.contains(&format!("Enter: the {expected} sampled rows")),
         "the popup says which rows open"
     );
-    assert!(screen.contains("Show Rows"));
+    assert!(screen.contains("Show rows"));
     assert!(!screen.contains("full profile"));
 
     let mut next = app.event(&enter());
@@ -3280,7 +3280,7 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
         assert_glyph_slots(&screen);
     }
     assert!(
-        render(&mut app, 120, 30).contains("All Findings"),
+        render(&mut app, 120, 30).contains("All findings"),
         "Esc says what it does"
     );
     press(&mut app, KeyCode::Esc);
@@ -3361,7 +3361,7 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
         )),
         "{screen}"
     );
-    assert!(screen.contains("Show Rows"), "{screen}");
+    assert!(screen.contains("Show rows"), "{screen}");
     assert_glyph_slots(&screen);
     let mut next = press(&mut app, KeyCode::Enter);
     while let Some(event) = next {
@@ -3416,7 +3416,7 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
     let screen = render(&mut app, 80, 24);
     assert!(screen.contains("every value parses"), "{screen}");
     assert!(
-        screen.contains("Close") && !screen.contains("Show Rows"),
+        screen.contains("Close") && !screen.contains("Show rows"),
         "{screen}"
     );
     press(&mut app, KeyCode::Enter);
@@ -3496,7 +3496,7 @@ fn full_scan_evidence_is_read_only_on_confirm() {
         screen.contains("full scan keeps none, asks first"),
         "{screen}"
     );
-    assert!(screen.contains("Read Rows"), "{screen}");
+    assert!(screen.contains("Read rows"), "{screen}");
 
     // Enter stages the read and shows it; nothing reads yet.
     assert!(press(&mut app, KeyCode::Enter).is_none());
@@ -4919,7 +4919,7 @@ fn intervals_are_chosen_in_setup_and_inspected_without_a_read() {
         press(&mut app, KeyCode::Down);
     }
     assert_eq!(app.analysis_modal.selected_interval_fact(), Some(fact));
-    assert!(render(&mut app, 100, 30).contains("Show Rows"));
+    assert!(render(&mut app, 100, 30).contains("Show rows"));
     std::fs::remove_file(&path).unwrap();
     let mut next = press(&mut app, KeyCode::Enter);
     while let Some(event) = next {
@@ -6671,7 +6671,8 @@ fn test_absent_cells_still_read_as_absent_after_a_sort() {
     // Descending by id interleaves the two files: 4, 3, 2, 1.
     let state = app.data_table_state.as_mut().unwrap();
     state.sort(vec!["id".to_string()], false);
-    state.collect();
+    common::read_rows(&mut app, &rx);
+    let state = app.data_table_state.as_mut().unwrap();
     assert!(state.error().is_none(), "the sort itself must succeed");
 
     let text = painted(&mut app, &rx, &tx, area);
@@ -6940,7 +6941,8 @@ fn test_each_row_takes_its_glyph_from_the_file_it_came_from() {
     // window starts where the view does, so the groups have to shift with it.
     let state = app.data_table_state.as_mut().unwrap();
     state.scroll_to(4);
-    state.collect();
+    common::read_rows(&mut app, &rx);
+    let state = app.data_table_state.as_mut().unwrap();
     assert_eq!(
         state.display_drift(6),
         vec![middle, middle, middle, middle, last, last],
@@ -8105,7 +8107,7 @@ fn test_each_open_counts_its_own_footers() {
     );
 }
 
-/// The control bar shows the same count the loading body does.
+/// The footer shows the same count the loading body does.
 ///
 /// Both derive it from `App::loading_phase`, and the point of that is that one wait
 /// cannot be described two ways. The truncation test in `controls.rs` builds the bar
@@ -8130,7 +8132,7 @@ fn test_the_control_bar_counts_the_footers_the_loading_screen_does() {
 
     let body = rows.iter().find(|r| r.contains("Reading footers"));
     assert!(body.is_some(), "the body counts them:\n{}", rows.join("\n"));
-    let bar = rows.last().expect("a control bar");
+    let bar = rows.last().expect("a footer");
     assert!(
         bar.contains("Reading footers: 1,203 of 6,541"),
         "and so does the bar, rather than the phase the body has stopped showing: \
@@ -8165,7 +8167,7 @@ fn test_the_control_bar_counts_a_listing_without_a_percentage() {
         "the body counts them:\n{}",
         rows.join("\n")
     );
-    let bar = rows.last().expect("a control bar");
+    let bar = rows.last().expect("a footer");
     assert!(bar.contains("Listing files: 1,500"), "{bar:?}");
     assert!(
         !bar.contains('%'),
@@ -8176,7 +8178,7 @@ fn test_the_control_bar_counts_a_listing_without_a_percentage() {
 /// The bar says the footers are still arriving, after the dataset is on screen.
 ///
 /// A cloud prefix of many files opens from two of them and reads the rest behind the
-/// data. Nothing is blocked and nothing is wrong, so it is said in the control bar
+/// data. Nothing is blocked and nothing is wrong, so it is said in the footer
 /// rather than on a loading screen — but it is said, because otherwise columns appear
 /// minutes later with no explanation.
 #[test]
@@ -8509,7 +8511,7 @@ fn test_a_uniform_dataset_shows_no_absent_or_conflicting_cells() {
 
     let (mut app, rx, tx) = open_local_dataset_with_channel(dir.path());
     let text = painted(&mut app, &rx, &tx, Rect::new(0, 0, 100, 20));
-    // The table, without the control bar (the last row), whose separator is the
+    // The table, without the footer (the last row), whose separator is the
     // same dot.
     let text: String = text.chars().take(100 * 19).collect();
     assert!(text.contains(g.null), "the real null still shows");
@@ -9510,7 +9512,7 @@ fn test_a_query_never_turns_the_drift_column_into_a_real_one() {
         ("a SQL query", 2),
         ("a reset", 3),
     ] {
-        let mut app = open_local_dataset(dir.path());
+        let (mut app, rx, _tx) = open_local_dataset_with_channel(dir.path());
         let state = app.data_table_state.as_mut().unwrap();
         match run {
             0 => state.fuzzy_search("x".to_string()),
@@ -9519,7 +9521,8 @@ fn test_a_query_never_turns_the_drift_column_into_a_real_one() {
             _ => state.reset(),
         }
         assert!(state.error().is_none(), "{what}: {:?}", state.error());
-        state.collect();
+        common::read_rows(&mut app, &rx);
+        let state = app.data_table_state.as_mut().unwrap();
         assert!(
             state.error().is_none(),
             "{what} collect: {:?}",
@@ -9564,7 +9567,8 @@ fn test_a_reset_brings_back_the_absent_cells() {
 
     let state = app.data_table_state.as_mut().unwrap();
     state.sql_query("select * from df".to_string());
-    state.collect();
+    common::read_rows(&mut app, &rx);
+    let state = app.data_table_state.as_mut().unwrap();
     assert!(state.error().is_none(), "the query: {:?}", state.error());
     assert!(
         !state.drifts(),
@@ -9573,7 +9577,8 @@ fn test_a_reset_brings_back_the_absent_cells() {
 
     let state = app.data_table_state.as_mut().unwrap();
     state.reset();
-    state.collect();
+    common::read_rows(&mut app, &rx);
+    let state = app.data_table_state.as_mut().unwrap();
     assert!(state.error().is_none(), "the reset: {:?}", state.error());
     assert!(state.drifts(), "and the reset puts the files back");
     assert!(
@@ -9604,11 +9609,12 @@ fn test_counting_a_union_of_scans_does_not_panic() {
         df!("id" => &[2i64, 3], "n" => &[10i64, 20]).unwrap(),
     );
 
-    let mut app = open_local_dataset(dir.path());
+    let (mut app, rx, _tx) = open_local_dataset_with_channel(dir.path());
     let state = app.data_table_state.as_mut().unwrap();
     state.fuzzy_search("a".to_string());
     assert!(state.error().is_none(), "fuzzy search: {:?}", state.error());
-    state.collect();
+    common::read_rows(&mut app, &rx);
+    let state = app.data_table_state.as_mut().unwrap();
     assert!(
         state.error().is_none(),
         "collect after the search: {:?}",
@@ -9698,12 +9704,13 @@ fn test_a_query_puts_the_notes_away_and_a_reset_brings_them_back() {
         df!("id" => &[2i64], "extra" => &["x"]).unwrap(),
     );
 
-    let mut app = open_local_dataset(dir.path());
+    let (mut app, rx, _tx) = open_local_dataset_with_channel(dir.path());
     let state = app.data_table_state.as_mut().unwrap();
     assert_eq!(state.notes().len(), 1, "the dataset has something to say");
 
     state.sql_query("select id from df".to_string());
-    state.collect();
+    common::read_rows(&mut app, &rx);
+    let state = app.data_table_state.as_mut().unwrap();
     assert!(state.error().is_none(), "the query: {:?}", state.error());
     assert!(
         state.notes().is_empty(),
@@ -9711,7 +9718,8 @@ fn test_a_query_puts_the_notes_away_and_a_reset_brings_them_back() {
     );
 
     state.reset();
-    state.collect();
+    common::read_rows(&mut app, &rx);
+    let state = app.data_table_state.as_mut().unwrap();
     assert!(state.error().is_none(), "the reset: {:?}", state.error());
     assert_eq!(state.notes().len(), 1, "and the reset brings them back");
 }
@@ -10103,7 +10111,8 @@ fn test_asking_to_name_files_on_a_query_result_leaks_nothing() {
     // naming them is refused — but the export still runs.
     let state = app.data_table_state.as_mut().unwrap();
     state.sql_query("select * from df".to_string());
-    state.collect();
+    common::read_rows(&mut app, &rx);
+    let state = app.data_table_state.as_mut().unwrap();
     assert!(!state.can_name_source_files(), "nothing to name any more");
 
     let out = dir.path().join("refused.csv");
@@ -10326,7 +10335,7 @@ fn key(code: KeyCode) -> AppEvent {
     AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
 }
 
-/// The same, without the control bar on the last row. The bar reports a load on its
+/// The same, without the footer on the last row. The bar reports a load on its
 /// own; assertions about what the *view* shows have to exclude it.
 fn main_area_text(buf: &Buffer, area: Rect) -> String {
     let cells = (area.width as usize) * (area.height as usize - 1);
@@ -14120,7 +14129,7 @@ fn test_the_rule_counts_datasets_past_the_cap() {
     assert!(!bar.contains("datasets"), "{bar:?}");
 }
 
-/// The rendered list, one string per screen row, without the control bar.
+/// The rendered list, one string per screen row, without the footer.
 fn list_rows(buf: &Buffer, area: Rect) -> Vec<String> {
     (0..area.height - 1)
         .map(|y| {
@@ -14682,7 +14691,7 @@ fn test_an_unexamined_lake_root_is_classified_before_it_is_opened() {
 
 /// `→` into a lake table says the same thing `Enter` does.
 ///
-/// The control bar advertises `→` on that row, and `home_browse_into` clears the status
+/// The footer advertises `→` on that row, and `home_browse_into` clears the status
 /// line — so the door the bar points at was the one that arrived inside with no
 /// explanation.
 #[test]
@@ -16234,7 +16243,7 @@ fn test_a_directory_of_csv_is_judged_by_its_headers_like_one_of_parquet() {
     );
 }
 
-/// The control bar says what Enter will really do, on a row of every shape.
+/// The footer says what Enter will really do, on a row of every shape.
 ///
 /// `WhatEnter` is a prediction the renderer reads and `home_open_selected` is the thing
 /// that decides, so the two can drift. This is what stops them: one row of each shape,
@@ -19460,7 +19469,7 @@ fn test_info_panel_reads_the_file_facts_off_the_ui_thread() {
     );
 }
 
-/// The control bar's "of" total: none while pristine, the dataset's count under a
+/// The footer's "of" total: none while pristine, the dataset's count under a
 /// filter or query, and gone again when the filter clears. Never a fresh read — only
 /// the count the pristine frame already resolved.
 #[test]
@@ -20158,7 +20167,7 @@ fn test_copy_dialog_sends_each_scope_to_the_destination() {
         );
     }
 
-    // The completion is a flash on the control bar, not a modal.
+    // The completion is a flash on the footer, not a modal.
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
     let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
@@ -20859,6 +20868,7 @@ fn test_inspector_reads_hidden_and_binary_fields_on_enter() {
         .as_mut()
         .unwrap()
         .set_column_order(["id", "amount", "blob"].map(String::from).to_vec());
+    pump_until_idle(&mut app, &rx, &tx);
     draw_inspector(&mut app);
 
     press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
@@ -25003,7 +25013,7 @@ fn test_copy_as_python_reads_streams_beside_ipc_files() {
 }
 
 /// Dropping footer rows counts the whole file before the first row: the loading
-/// screen and the control bar say so while it does.
+/// screen and the footer say so while it does.
 #[test]
 fn test_a_footer_count_says_so_on_screen() {
     let dir = tempfile::tempdir().unwrap();
@@ -25493,7 +25503,7 @@ fn copy_as_python_reads_a_directory_named_like_a_glob() {
     assert!(!script.contains("glob=False"), "{script}");
 }
 
-/// While a query's first rows are read, the table area says what the control bar
+/// While a query's first rows are read, the table area says what the footer
 /// does, in place of the rows it replaces; once they are in, they show.
 #[cfg(feature = "sql")]
 #[test]
@@ -25510,7 +25520,7 @@ fn a_running_query_says_so_in_the_table() {
     // Its rows are not in until their job's end is handled.
     assert!(app.is_busy(), "the query is running");
     let screen = screen_text(&mut app);
-    // Above the control bar's row, which says it too.
+    // Above the footer's row, which says it too.
     let table: String = screen.chars().take(120 * 29).collect();
     assert!(table.contains("Applying SQL query..."), "{screen}");
     assert!(!table.contains("alpha_0"), "{screen}");
@@ -25672,12 +25682,12 @@ fn test_terminal_background_switches_the_palette_under_auto() {
     ] {
         app.event(&AppEvent::TerminalBackground(mode));
         assert_eq!(
-            app.theme().get("table_header_bg"),
+            app.theme().table_header_bg(),
             hex(&stock.table_header_bg),
             "{mode:?}"
         );
-        assert_eq!(app.theme().get("dimmed"), hex(&stock.dimmed), "{mode:?}");
-        assert_eq!(app.theme().get("accent"), hex("#123456"), "{mode:?}");
+        assert_eq!(app.theme().dimmed(), hex(&stock.dimmed), "{mode:?}");
+        assert_eq!(app.theme().accent(), hex("#123456"), "{mode:?}");
         // Drawn with it.
         let mut buf = Buffer::empty(area);
         Widget::render(&mut app, area, &mut buf);
@@ -25694,7 +25704,7 @@ fn test_terminal_background_switches_the_palette_under_auto() {
     let mut app = App::new_with_config(tx, common::test_runtime(), theme, light);
     app.event(&AppEvent::TerminalBackground(ThemeMode::Dark));
     assert_eq!(
-        app.theme().get("table_header_bg"),
+        app.theme().table_header_bg(),
         hex(&ColorConfig::light().table_header_bg)
     );
     app.event(&AppEvent::TerminalFocused);
@@ -25721,7 +25731,7 @@ fn test_first_frame_uses_the_terminals_last_answer() {
         app.settle_first_palette(answered);
         app
     };
-    let header = |app: &App| app.theme().get("table_header_bg");
+    let header = |app: &App| app.theme().table_header_bg();
     let dark = hex(&ColorConfig::dark().table_header_bg);
     let light = hex(&ColorConfig::light().table_header_bg);
 
@@ -25772,18 +25782,18 @@ fn test_terminal_background_switches_between_named_themes() {
     for _ in 0..2 {
         app.event(&AppEvent::TerminalBackground(ThemeMode::Light));
         let light = ColorConfig::light();
-        assert_eq!(app.theme().get("accent"), hex(&light.accent));
-        assert_eq!(app.theme().get("dimmed"), hex(&light.dimmed));
-        assert_eq!(app.theme().get("find_match"), hex("#ff9e64"));
+        assert_eq!(app.theme().accent(), hex(&light.accent));
+        assert_eq!(app.theme().dimmed(), hex(&light.dimmed));
+        assert_eq!(app.theme().find_match(), hex("#ff9e64"));
 
         app.event(&AppEvent::TerminalBackground(ThemeMode::Dark));
-        assert_eq!(app.theme().get("accent"), hex("#e0af68"));
-        assert_eq!(app.theme().get("dimmed"), hex("#111111"));
+        assert_eq!(app.theme().accent(), hex("#e0af68"));
+        assert_eq!(app.theme().dimmed(), hex("#111111"));
         assert_eq!(
-            app.theme().get("controls_bg"),
+            app.theme().controls_bg(),
             hex(&ColorConfig::dark().controls_bg)
         );
-        assert_eq!(app.theme().get("find_match"), hex("#ff9e64"));
+        assert_eq!(app.theme().find_match(), hex("#ff9e64"));
     }
     assert_eq!(app.flash_message(), None);
 

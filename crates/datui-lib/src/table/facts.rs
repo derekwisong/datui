@@ -126,8 +126,8 @@ impl DataTableState {
     /// Draws from the shared counter rather than incrementing, so a mutation here can
     /// never land on the value a later dataset is about to be seeded with.
     pub(crate) fn invalidate_num_rows(&mut self) {
-        self.num_rows_valid = false;
-        self.len_generation = next_len_generation();
+        self.view.num_rows_valid = false;
+        self.view.len_generation = next_len_generation();
     }
 
     /// True while `lf` is the data as loaded: no sidebar filter or sort, no query in
@@ -136,37 +136,37 @@ impl DataTableState {
     /// Whether the table shows other rows than its source holds: a filter, a query, a
     /// reshape or a drill. A sort alone reorders the same rows.
     pub(crate) fn changes_rows(&self) -> bool {
-        !self.filters.is_empty()
-            || !self.active_query.is_empty()
-            || !self.active_sql_query.is_empty()
-            || !self.active_fuzzy_query.is_empty()
-            || self.reshaped_lf.is_some()
-            || self.grouped.is_some()
-            || self.drilled_down_group_index.is_some()
+        !self.view.filters.is_empty()
+            || !self.view.active_query.is_empty()
+            || !self.view.active_sql_query.is_empty()
+            || !self.view.active_fuzzy_query.is_empty()
+            || self.view.reshaped_lf.is_some()
+            || self.view.grouped.is_some()
+            || self.view.drilled_down_group_index.is_some()
     }
 
     /// Whether the view may still take its rows straight from the scan: nothing
     /// that picks rows (a filter, a search, a reshape, a group, a drill). A query
     /// may only choose columns, so it may.
     pub(crate) fn may_keep_scan_rows(&self) -> bool {
-        self.filters.is_empty()
-            && self.active_fuzzy_query.is_empty()
-            && self.reshaped_lf.is_none()
-            && self.grouped.is_none()
-            && self.drilled_down_group_index.is_none()
+        self.view.filters.is_empty()
+            && self.view.active_fuzzy_query.is_empty()
+            && self.view.reshaped_lf.is_none()
+            && self.view.grouped.is_none()
+            && self.view.drilled_down_group_index.is_none()
     }
 
     pub(super) fn is_pristine(&self) -> bool {
-        self.column_changes.is_empty()
-            && self.filters.is_empty()
-            && self.sort_columns.is_empty()
-            && self.sort_ascending
-            && self.active_query.is_empty()
-            && self.active_sql_query.is_empty()
-            && self.active_fuzzy_query.is_empty()
-            && self.reshaped_lf.is_none()
-            && self.grouped.is_none()
-            && self.drilled_down_group_index.is_none()
+        self.view.column_changes.is_empty()
+            && self.view.filters.is_empty()
+            && self.view.sort_columns.is_empty()
+            && self.view.sort_ascending
+            && self.view.active_query.is_empty()
+            && self.view.active_sql_query.is_empty()
+            && self.view.active_fuzzy_query.is_empty()
+            && self.view.reshaped_lf.is_none()
+            && self.view.grouped.is_none()
+            && self.view.drilled_down_group_index.is_none()
     }
 
     /// Whether the frame on screen still grows from the dataset's own scan.
@@ -184,7 +184,10 @@ impl DataTableState {
     /// order. No statistic depends on the order, and a sort is the one step that makes
     /// a sampled read of a huge table read all of it.
     pub fn analysis_lf(&self) -> LazyFrame {
-        self.unsorted_lf.clone().unwrap_or_else(|| self.lf.clone())
+        self.view
+            .unsorted_lf
+            .clone()
+            .unwrap_or_else(|| self.view.lf.clone())
     }
 
     /// What the Pivot & Melt builder previews a few rows of: the view as the user
@@ -196,16 +199,16 @@ impl DataTableState {
 
     /// Whether the view has a sort, which [`Self::preview_lf`] leaves out.
     pub fn is_sorted(&self) -> bool {
-        self.unsorted_lf.is_some()
+        self.view.unsorted_lf.is_some()
     }
 
     pub fn scan_is_the_root(&self) -> bool {
-        self.active_query.is_empty()
-            && self.active_sql_query.is_empty()
-            && self.active_fuzzy_query.is_empty()
-            && self.reshaped_lf.is_none()
-            && self.grouped.is_none()
-            && self.drilled_down_group_index.is_none()
+        self.view.active_query.is_empty()
+            && self.view.active_sql_query.is_empty()
+            && self.view.active_fuzzy_query.is_empty()
+            && self.view.reshaped_lf.is_none()
+            && self.view.grouped.is_none()
+            && self.view.drilled_down_group_index.is_none()
     }
 
     /// A pristine scan's count is its footer's: take it back, without a `len()`, when
@@ -235,14 +238,14 @@ impl DataTableState {
     /// Current count generation. A background `len()` task captures this; its result is
     /// only applied if the generation still matches (i.e. the data hasn't changed since).
     pub fn len_generation(&self) -> u64 {
-        self.len_generation
+        self.view.len_generation
     }
 
-    /// Returns the cached row count when valid (same value shown in the control bar). Use this to
+    /// Returns the cached row count when valid (same value shown in the footer). Use this to
     /// avoid an extra full scan for analysis/describe when the table has already been collected.
     pub fn num_rows_if_valid(&self) -> Option<usize> {
-        if self.num_rows_valid {
-            Some(self.num_rows)
+        if self.view.num_rows_valid {
+            Some(self.view.num_rows)
         } else {
             None
         }
@@ -251,7 +254,7 @@ impl DataTableState {
     /// True when num_rows reflects the current `lf`. Used by App to decide whether
     /// to dispatch a background len() query before planning the buffer collect.
     pub fn is_num_rows_valid(&self) -> bool {
-        self.num_rows_valid
+        self.view.num_rows_valid
     }
 
     /// Effective upper bound on row indices for buffer planning. When the exact count
@@ -259,8 +262,8 @@ impl DataTableState {
     /// `len()` resolves), treat the dataset as unbounded so we plan a top-of-data window
     /// (`slice(0, N)`) instead of clamping everything to a stale/zero count.
     pub(super) fn num_rows_bound(&self) -> usize {
-        if self.num_rows_valid {
-            self.num_rows
+        if self.view.num_rows_valid {
+            self.view.num_rows
         } else {
             usize::MAX
         }
@@ -269,36 +272,36 @@ impl DataTableState {
     /// Apply a row count computed in the background (so prepare_async_collect doesn't
     /// have to fall back to a blocking len() on the UI thread).
     pub(super) fn set_num_rows(&mut self, n: usize) {
-        self.num_rows = n;
-        self.num_rows_valid = true;
+        self.view.num_rows = n;
+        self.view.num_rows_valid = true;
         self.remember_pristine_count();
         // A view past the end of a frame that turned out smaller comes back to it.
-        if self.start_row > 0 && self.start_row >= n {
-            self.start_row = n.saturating_sub(self.visible_rows);
+        if self.view.start_row > 0 && self.view.start_row >= n {
+            self.view.start_row = n.saturating_sub(self.visible_rows);
             self.needs_recollect = true;
         }
     }
 
-    /// Keep the pristine frame's count for the control bar's "417 of 1,000". Only a
+    /// Keep the pristine frame's count for the footer's "417 of 1,000". Only a
     /// count already resolved for the data as loaded — never a reason to run one.
     pub(super) fn remember_pristine_count(&mut self) {
-        if self.num_rows_valid && self.error.is_none() && self.is_pristine() {
-            self.pristine_rows = Some(self.num_rows);
+        if self.view.num_rows_valid && self.error.is_none() && self.is_pristine() {
+            self.pristine_rows = Some(self.view.num_rows);
         }
     }
 
-    /// The dataset's full row count for the control bar, when the rows on screen are a
+    /// The dataset's full row count for the footer, when the rows on screen are a
     /// subset of it: a sidebar filter, a query in any bar or a drill-down is active and
     /// the count from before it was applied is known. A pivot or melt makes rows that
     /// are not the dataset's, so the comparison would mislead and none is offered.
     /// Cheap by construction: it only reads what a pristine collect already knew.
     pub fn total_rows_when_subset(&self) -> Option<usize> {
-        let subsetting = !self.filters.is_empty()
-            || !self.active_query.is_empty()
-            || !self.active_sql_query.is_empty()
-            || !self.active_fuzzy_query.is_empty()
-            || self.drilled_down_group_index.is_some();
-        if subsetting && self.reshaped_lf.is_none() {
+        let subsetting = !self.view.filters.is_empty()
+            || !self.view.active_query.is_empty()
+            || !self.view.active_sql_query.is_empty()
+            || !self.view.active_fuzzy_query.is_empty()
+            || self.view.drilled_down_group_index.is_some();
+        if subsetting && self.view.reshaped_lf.is_none() {
             self.pristine_rows
         } else {
             None
@@ -307,7 +310,7 @@ impl DataTableState {
 
     /// Clone of the LazyFrame for off-thread queries (e.g. background len()).
     pub fn lf_clone(&self) -> LazyFrame {
-        self.lf.clone()
+        self.view.lf.clone()
     }
 
     /// Whether the current LazyFrame should use Polars streaming engine.
@@ -324,19 +327,19 @@ impl DataTableState {
     /// The rows on hand and the view row the first of them is, when every row of
     /// the buffered range is: what a find lights up as it is typed, without a read.
     pub(crate) fn rows_on_hand(&self) -> Option<(&DataFrame, usize)> {
-        self.buffered_df
+        self.view
+            .buffered_df
             .as_ref()
             .filter(|_| self.buffer_on_hand())
-            .map(|df| (df, self.buffered_start_row))
+            .map(|df| (df, self.view.buffered_start_row))
     }
 
     /// True when every row of the buffered range is on hand.
     pub(crate) fn buffer_on_hand(&self) -> bool {
-        self.buffered_end_row > self.buffered_start_row
-            && self
-                .buffered_df
-                .as_ref()
-                .is_some_and(|b| b.height() == self.buffered_end_row - self.buffered_start_row)
+        self.view.buffered_end_row > self.view.buffered_start_row
+            && self.view.buffered_df.as_ref().is_some_and(|b| {
+                b.height() == self.view.buffered_end_row - self.view.buffered_start_row
+            })
     }
 
     /// True when the rows on hand include `[start, end)`. The buffer is then cut down
@@ -344,36 +347,37 @@ impl DataTableState {
     /// view has left it, rather than fetched again when the view comes back.
     pub(super) fn holds_buffer(&mut self, start: usize, end: usize) -> bool {
         if !self.buffer_on_hand()
-            || start < self.buffered_start_row
-            || end > self.buffered_end_row
+            || start < self.view.buffered_start_row
+            || end > self.view.buffered_end_row
             || end <= start
         {
             return false;
         }
-        if (start, end) != (self.buffered_start_row, self.buffered_end_row) {
-            let offset = start - self.buffered_start_row;
+        if (start, end) != (self.view.buffered_start_row, self.view.buffered_end_row) {
+            let offset = start - self.view.buffered_start_row;
             // Trimmed so the rows let go are freed rather than kept behind a slice; the
             // display frames alias the old buffer and go with it.
-            self.locked_df = None;
-            self.df = None;
-            self.buffered_df = self
+            self.view.locked_df = None;
+            self.view.df = None;
+            self.view.buffered_df = self
+                .view
                 .buffered_df
                 .take()
                 .map(|b| trim_rows(b, offset, end - start, None));
-            self.buffered_start_row = start;
-            self.buffered_end_row = end;
+            self.view.buffered_start_row = start;
+            self.view.buffered_end_row = end;
         }
         true
     }
 
     /// Start row of the currently buffered range.
     pub fn buffered_start(&self) -> usize {
-        self.buffered_start_row
+        self.view.buffered_start_row
     }
 
     /// End row (exclusive) of the currently buffered range.
     pub fn buffered_end(&self) -> usize {
-        self.buffered_end_row
+        self.view.buffered_end_row
     }
 
     /// True for a scan of an object store in place.
@@ -427,6 +431,7 @@ impl DataTableState {
             QualityScope::WholeSource => true,
             QualityScope::CurrentView => {
                 let shown = self
+                    .view
                     .column_order
                     .iter()
                     .map(String::as_str)
@@ -480,8 +485,9 @@ impl DataTableState {
     ) {
         self.drift_files = files.to_vec();
         // The scan numbers rows exactly when the files differ and every one is counted.
-        self.drift_column_present = schema.drifts() && file_rows.len() == schema.file_group.len();
-        self.drift_groups = Arc::new(schema.groups.clone());
+        self.view.drift_column_present =
+            schema.drifts() && file_rows.len() == schema.file_group.len();
+        self.view.drift_groups = Arc::new(schema.groups.clone());
         self.drift_file_group = schema.file_group.clone();
         self.drift_file_starts = Vec::with_capacity(file_rows.len());
         let mut row = 0usize;
@@ -490,11 +496,11 @@ impl DataTableState {
             row += rows;
         }
         self.drift_dataset_rows = row;
-        self.drift_at_open = self.drift_column_present;
-        self.groups_at_open = self.drift_groups.clone();
-        self.notes = Self::notes_datui_can_act_on(&schema, self.drift_column_present);
-        self.notes_at_open = self.notes.clone();
-        self.notes_seen = false;
+        self.drift_at_open = self.view.drift_column_present;
+        self.groups_at_open = self.view.drift_groups.clone();
+        self.view.notes = Self::notes_datui_can_act_on(&schema, self.view.drift_column_present);
+        self.notes_at_open = self.view.notes.clone();
+        self.view.notes_seen = false;
         self.read_as_text = Vec::new();
         self.dataset_at_open = Some(schema.clone());
         self.dataset_schema = Some(schema);
@@ -517,7 +523,7 @@ impl DataTableState {
     pub fn counts_itself_later(&self) -> bool {
         // Lines still being indexed: any frame's count is of the lines so far, and the
         // indexing is bringing the rest.
-        if self.indexing().is_some() && !self.num_rows_valid {
+        if self.indexing().is_some() && !self.view.num_rows_valid {
             return true;
         }
         // Only while it does not have one, and only while the frame is the scan. What
@@ -526,7 +532,7 @@ impl DataTableState {
         // row count spins for as long as the query is open and `End` says it is
         // counting while nothing is — and it costs nothing to take, because a frame
         // that is not the scan does not read footers for it either.
-        self.footers_pending.is_some() && !self.num_rows_valid && self.is_pristine()
+        self.footers_pending.is_some() && !self.view.num_rows_valid && self.is_pristine()
     }
 
     /// The lines being indexed behind the first rows, if they still are.
@@ -549,7 +555,7 @@ impl DataTableState {
         &self,
         pass: Option<crate::schema_union::RowEstimate>,
     ) -> Option<crate::schema_union::RowEstimate> {
-        if self.num_rows_valid || !self.is_pristine() {
+        if self.view.num_rows_valid || !self.is_pristine() {
             return None;
         }
         self.row_estimate
@@ -589,7 +595,9 @@ impl DataTableState {
         self.row_numbers
             && !self.carries_source_rows()
             && self.scan_is_the_root()
-            && (!self.filters.is_empty() || !self.sort_columns.is_empty() || !self.sort_ascending)
+            && (!self.view.filters.is_empty()
+                || !self.view.sort_columns.is_empty()
+                || !self.view.sort_ascending)
     }
 
     /// Every line is indexed, `rows` of them: the count of the lines in order, and the
@@ -685,7 +693,7 @@ impl DataTableState {
         };
         let (file_rows, files) = (file_rows.as_slice(), files.as_slice());
         let known: std::collections::HashSet<&str> =
-            self.column_order.iter().map(String::as_str).collect();
+            self.view.column_order.iter().map(String::as_str).collect();
         let joining: Vec<String> = dataset
             .schema
             .iter_names()
@@ -695,12 +703,13 @@ impl DataTableState {
             })
             .collect();
         drop(known);
-        self.column_order.extend(joining);
+        self.view.column_order.extend(joining);
         // Columns only join — but a name can still go, if the footer that was the only
         // evidence for it would not parse this time round. Every read projects
         // `column_order`, so a name the new schema does not have is not a missing
         // column on screen, it is a scan that cannot run at all.
-        self.column_order
+        self.view
+            .column_order
             .retain(|name| dataset.schema.contains(name.as_str()));
         let schema = dataset.schema.clone();
         // The scan is built at a schema, and the one this dataset opened with has never
@@ -738,7 +747,7 @@ impl DataTableState {
         // Measured on the frame that just went. A dataset that opened two columns wide
         // and gained thirty would plan its first page after the join from the two-column
         // width, which against a bucket is a read many times the budget the user set.
-        self.observed_bytes_per_row = None;
+        self.view.observed_bytes_per_row = None;
         // Every file's row groups are known now, so this is the dataset's count. Set
         // before the rebuild so the count is in place the moment the frame is, rather
         // than for any ordering the lines below depend on.
@@ -762,7 +771,7 @@ impl DataTableState {
     /// traces a row back to its file; it stays invisible because the display is only
     /// ever a projection of `column_order`, which never names it.
     pub fn visible_lf(&self) -> LazyFrame {
-        Self::without_drift(self.lf.clone())
+        Self::without_drift(self.view.lf.clone())
     }
 
     /// Whether the frame scans a temporary file this state holds (a decompressed
@@ -817,20 +826,25 @@ impl DataTableState {
         Self::without_drift(self.original_lf.clone())
     }
 
+    /// The schema of [`Self::query_source`], as known since the open: nothing resolved.
+    pub(super) fn query_source_schema(&self) -> Arc<Schema> {
+        Self::without_source_rows(self.original_schema.clone()).0
+    }
+
     /// Whether rows still know which file they came from.
     pub fn drifts(&self) -> bool {
-        self.drift_column_present
+        self.view.drift_column_present
     }
 
     /// What each drift group is missing, for the renderer. Empty when nothing drifts.
     pub fn drift_groups(&self) -> Arc<Vec<crate::schema_union::DriftGroup>> {
-        self.drift_groups.clone()
+        self.view.drift_groups.clone()
     }
 
     /// Whether an export can name each row's file: the frame has to still carry the
     /// scan's row index, and the dataset has to have files to name.
     pub fn can_name_source_files(&self) -> bool {
-        self.drift_column_present
+        self.view.drift_column_present
             && !self.drift_files.is_empty()
             && self.drift_files.len() == self.drift_file_starts.len()
     }
@@ -842,7 +856,7 @@ impl DataTableState {
     pub fn export_frame(&self, name_files: bool) -> ExportFrame {
         if name_files && self.can_name_source_files() {
             ExportFrame {
-                lf: self.lf.clone(),
+                lf: self.view.lf.clone(),
                 files: Some(SourceFiles {
                     names: Arc::new(self.drift_files.clone()),
                     starts: Arc::new(self.drift_file_starts.clone()),
@@ -867,8 +881,8 @@ impl DataTableState {
         // tallies are in hand.
         let mut notes = crate::notes::merged(
             &self.open_notes,
-            &self.notes,
-            &self.view_notes,
+            &self.view.notes,
+            &self.view.view_notes,
             self.dataset_schema.as_ref(),
         );
         // What reading a table in place has found, which may grow after the open.
@@ -876,9 +890,9 @@ impl DataTableState {
             notes.extend(pushdown.notes());
         }
         notes.extend(self.unfit_notes.iter().flatten().cloned());
-        notes.extend(self.changes_dropped.iter().cloned());
+        notes.extend(self.view.changes_dropped.iter().cloned());
         if let Some((version, unfit)) = &self.changes_unfit
-            && *version == self.changes_version
+            && *version == self.view.changes_version
         {
             notes.extend(unfit.iter().cloned());
         }
@@ -904,7 +918,7 @@ impl DataTableState {
 
     /// The lake format whose plain files this dataset is, if it is one.
     ///
-    /// For the chip in the control bar. The note says the same at length; this is what
+    /// For the chip in the footer. The note says the same at length; this is what
     /// keeps the row count from reading as the table's.
     pub fn not_the_table(&self) -> Option<&'static str> {
         self.not_the_table
@@ -937,16 +951,17 @@ impl DataTableState {
     /// sort. Derived from them each time, so it never disagrees with them.
     pub(crate) fn pushed_view(&self) -> Option<crate::pushdown::PushedView> {
         let pushdown = self.pushdown.as_ref()?;
-        if !self.scan_is_the_root() || self.drift_column_present {
+        if !self.scan_is_the_root() || self.view.drift_column_present {
             return None;
         }
         let sort: Vec<(String, bool)> = self
+            .view
             .sort_columns
             .iter()
             .cloned()
-            .zip(self.sort_descending.iter().copied())
+            .zip(self.view.sort_descending.iter().copied())
             .collect();
-        pushdown.view(&self.filters, &sort, !self.sort_ascending)
+        pushdown.view(&self.view.filters, &sort, !self.view.sort_ascending)
     }
 
     /// The view's own count, from a source that runs the view, or for a followed file
@@ -963,7 +978,7 @@ impl DataTableState {
     fn follow_known(&self) -> Option<&[(usize, usize)]> {
         self.follow_known
             .as_ref()
-            .filter(|(generation, _)| *generation == self.len_generation)
+            .filter(|(generation, _)| *generation == self.view.len_generation)
             .map(|(_, known)| known.as_slice())
     }
 
@@ -973,13 +988,16 @@ impl DataTableState {
         let follow = self.follow.as_ref()?;
         let known = if self.is_pristine() {
             None
-        } else if self.scan_is_the_root() && self.sort_columns.is_empty() && self.sort_ascending {
+        } else if self.scan_is_the_root()
+            && self.view.sort_columns.is_empty()
+            && self.view.sort_ascending
+        {
             Some(self.follow_known()?.to_vec())
         } else {
             return None;
         };
         Some(crate::follow::Window {
-            lf: self.lf.clone(),
+            lf: self.view.lf.clone(),
             path: follow.path().to_path_buf(),
             marks: follow.marks().clone(),
             known,
@@ -991,7 +1009,8 @@ impl DataTableState {
     fn follow_counter(&self) -> Option<crate::pushdown::Counter> {
         let follow = self.follow.as_ref()?;
         let &(before, row) = self.follow_known()?.last()?;
-        let rest = crate::follow::from_marks(&self.lf, follow.path(), follow.marks(), row, None)?;
+        let rest =
+            crate::follow::from_marks(&self.view.lf, follow.path(), follow.marks(), row, None)?;
         let streaming = self.polars_streaming;
         Some(Arc::new(move || {
             let df = crate::statistics::collect_lazy(row_count_lf(&rest), streaming)?;
@@ -1016,7 +1035,7 @@ impl DataTableState {
         if self.delimited.is_none() && self.file_units.is_empty() {
             return None;
         }
-        let loaded = match &self.lineage {
+        let loaded = match &self.view.lineage {
             None => column,
             Some(lineage) => lineage
                 .iter()
@@ -1038,7 +1057,8 @@ impl DataTableState {
         if self.delimited.is_none() && self.file_units.is_empty() {
             return Vec::new();
         }
-        self.schema
+        self.view
+            .schema
             .iter_names()
             .filter_map(|name| Some((name.to_string(), self.unit_of(name)?.to_string())))
             .collect()
@@ -1081,14 +1101,14 @@ impl DataTableState {
         // The open's own notes count: a directory read as one format with another left
         // out may have nothing else worth saying, and that is exactly the dataset whose
         // reader the user most wants to know about.
-        !self.notes.is_empty()
+        !self.view.notes.is_empty()
             || !self.open_notes.is_empty()
             || self.unfit_notes.as_ref().is_some_and(|n| !n.is_empty())
-            || !self.changes_dropped.is_empty()
+            || !self.view.changes_dropped.is_empty()
             || self
                 .changes_unfit
                 .as_ref()
-                .is_some_and(|(v, n)| *v == self.changes_version && !n.is_empty())
+                .is_some_and(|(v, n)| *v == self.view.changes_version && !n.is_empty())
             || self
                 .pushdown
                 .as_ref()
@@ -1097,7 +1117,7 @@ impl DataTableState {
 
     /// Whether there is something to say that has not been offered yet.
     pub fn notes_unseen(&self) -> bool {
-        self.has_notes() && !self.notes_seen
+        self.has_notes() && !self.view.notes_seen
     }
 
     /// The rows a filter or sort on `column` has to leave out: every row of every file
@@ -1126,10 +1146,11 @@ impl DataTableState {
             return Vec::new();
         };
         let named: HashSet<&str> = self
+            .view
             .filters
             .iter()
             .map(|filter| filter.column.as_str())
-            .chain(self.sort_columns.iter().map(String::as_str))
+            .chain(self.view.sort_columns.iter().map(String::as_str))
             .collect();
         dataset
             .columns
@@ -1148,7 +1169,7 @@ impl DataTableState {
     /// out of both, and the note says how many so the smaller count is never a
     /// surprise.
     pub(super) fn view_exclusions(&self) -> Vec<(Vec<(usize, usize)>, crate::notes::Note)> {
-        if !self.drift_column_present {
+        if !self.view.drift_column_present {
             return Vec::new();
         }
         let Some(dataset) = self.dataset_schema.as_ref() else {
@@ -1162,10 +1183,12 @@ impl DataTableState {
                 continue;
             }
             let filtered = self
+                .view
                 .filters
                 .iter()
                 .any(|filter| filter.column.as_str() == column.name.as_str());
             let sorted = self
+                .view
                 .sort_columns
                 .iter()
                 .any(|sorted| sorted.as_str() == column.name.as_str());
@@ -1212,7 +1235,7 @@ impl DataTableState {
 
     /// The Info panel has been opened; the quiet accent has done its job.
     pub fn mark_notes_seen(&mut self) {
-        self.notes_seen = true;
+        self.view.notes_seen = true;
     }
 
     /// Read `column` as text from every file, so the values a type conflict hid can be
@@ -1232,7 +1255,7 @@ impl DataTableState {
         let Some(dataset) = self.dataset_at_open.clone() else {
             return Ok(false);
         };
-        if !self.drift_column_present || self.read_as_text.contains(&name) {
+        if !self.view.drift_column_present || self.read_as_text.contains(&name) {
             return Ok(false);
         }
         if !dataset
@@ -1287,13 +1310,13 @@ impl DataTableState {
         // `text_schema` keeps the columns in their places, so the order the user
         // arranged still names every one of them and still means what it did.
         let schema = view.schema.clone();
-        self.drift_groups = Arc::new(view.groups.clone());
-        self.groups_at_open = self.drift_groups.clone();
-        self.notes = Self::notes_datui_can_act_on(&view, self.drift_column_present);
-        self.notes_at_open = self.notes.clone();
+        self.view.drift_groups = Arc::new(view.groups.clone());
+        self.groups_at_open = self.view.drift_groups.clone();
+        self.view.notes = Self::notes_datui_can_act_on(&view, self.view.drift_column_present);
+        self.notes_at_open = self.view.notes.clone();
         // One note went and another arrived, and the new one is about how the column
         // now compares — which matters most to a user who has a filter on it.
-        self.notes_seen = false;
+        self.view.notes_seen = false;
         self.dataset_schema = Some(view);
         self.replace_root(lf, schema);
         // Re-applies the filter and sort over the new frame, and with them the note

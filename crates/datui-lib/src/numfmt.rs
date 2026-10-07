@@ -400,7 +400,7 @@ pub fn percent_of(count: usize, of: usize) -> String {
     percent(count as f64 / of as f64)
 }
 
-/// Comma-group a count for the application's own chrome — the control bar's
+/// Comma-group a count for the application's own chrome — the footer's
 /// row count, info-panel totals, and similar labels.
 ///
 /// Deliberately unconditional: these are datui's labels, not the user's data,

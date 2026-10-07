@@ -1,5 +1,5 @@
 //! Running the commands other tools provide for credentials: `aws`, a profile's
-//! `credential_process`, and later `gcloud` and `az`.
+//! `credential_process`, `gcloud`, and `az` and PowerShell for Azure.
 //!
 //! Asking a cloud's own CLI is how SSO, assume-role and MFA work without datui
 //! reimplementing any of them. Every call here blocks, so it only ever runs on a

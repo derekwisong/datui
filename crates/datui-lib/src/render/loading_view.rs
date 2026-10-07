@@ -2,12 +2,12 @@
 //!
 //! It stands in for the table from the moment a load starts until that load installs
 //! its dataset. Without it the previous dataset stayed on screen for the whole load —
-//! one file's rows under another file's name, with only the control bar to say so.
+//! one file's rows under another file's name, with only the footer to say so.
 //!
 //! Drawn in the same family as the home screen: no boxes, centred, one accent. The
 //! phase name is the progress indicator. It is a real, observable step ("Scanning
 //! input", "Reading schema", "Loading buffer"), unlike the percentage beside it in
-//! the control bar, which is a constant per phase.
+//! the footer, which is a constant per phase.
 
 use std::path::Path;
 
@@ -32,7 +32,7 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContex
     // A directory of many files reads a footer from each before a row is shown, and on a
     // few thousand that is seconds of a screen saying only "Reading schema". The count
     // is what makes the wait legible: a number climbing is a wait, a number stopped is
-    // a problem. `App::loading_phase` decides it for the control bar too, so the two
+    // a problem. `App::loading_phase` decides it for the footer too, so the two
     // halves of the screen cannot say different things about one wait.
     let phase = app.loading_phase(phase);
     let phase = phase.as_ref();

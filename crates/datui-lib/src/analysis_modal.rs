@@ -476,7 +476,8 @@ pub struct AnalysisModal {
     pub distribution_results: Option<AnalysisResults>,
     pub correlation_results: Option<AnalysisResults>,
     pub data_quality_results: Option<DataQualityResults>,
-    /// When Some, show progress overlay (phase, current/total); in-progress data lives in App.
+    /// Set while a tool runs: its phase and progress, drawn in place of its results.
+    /// What it is building lives in App.
     pub computing: Option<AnalysisProgress>,
     pub view: AnalysisView,
     pub focus: AnalysisFocus,
@@ -1626,151 +1627,51 @@ impl AnalysisModal {
         }
     }
 
-    pub fn next_row(&mut self, max_rows: usize) {
-        if self.focus == AnalysisFocus::Sidebar {
-            self.next_tool();
-            return;
-        }
+    /// Move the focused tool's cursor by `step` in its `rows` rows, ten to a page.
+    /// The correlation matrix moves its row, keeping its column; Down steps the cell
+    /// as the matrix does, and Home and End take the first and last pair off the
+    /// diagonal.
+    pub fn move_row(&mut self, step: crate::form::ListMove, rows: usize) {
+        use crate::form::ListMove;
+        const PAGE: usize = 10;
+        let to = |at: Option<usize>| match (at, step) {
+            (Some(at), _) => Some(step.apply(at, rows, PAGE)),
+            // Nothing selected yet: Down and Home start the cursor at the top, End at
+            // the bottom.
+            (None, ListMove::Down | ListMove::Home) => Some(0),
+            (None, ListMove::End) => rows.checked_sub(1),
+            (None, _) => None,
+        };
         match self.selected_tool {
             Some(AnalysisTool::Describe) => {
-                if let Some(current) = self.table_state.selected() {
-                    let next = (current + 1).min(max_rows.saturating_sub(1));
-                    self.table_state.select(Some(next));
-                } else {
-                    self.table_state.select(Some(0));
-                }
-            }
-            Some(AnalysisTool::DistributionAnalysis) => {
-                if let Some(current) = self.distribution_table_state.selected() {
-                    let next = (current + 1).min(max_rows.saturating_sub(1));
-                    self.distribution_table_state.select(Some(next));
-                    self.selected_distribution = Some(next);
-                } else {
-                    self.distribution_table_state.select(Some(0));
-                    self.selected_distribution = Some(0);
-                }
-            }
-            Some(AnalysisTool::CorrelationMatrix) => {
-                if let Some((row, col)) = self.selected_correlation {
-                    let next_row = (row + 1).min(max_rows.saturating_sub(1));
-                    self.selected_correlation = Some((next_row, col));
-                    self.correlation_table_state.select(Some(next_row));
-                }
-            }
-            Some(AnalysisTool::DataQuality) => {
-                let current = self.data_quality_table_state.selected().unwrap_or(0);
-                self.data_quality_table_state
-                    .select(Some((current + 1).min(max_rows.saturating_sub(1))));
-            }
-            None => {}
-        }
-    }
-
-    pub fn previous_row(&mut self) {
-        if self.focus == AnalysisFocus::Sidebar {
-            self.previous_tool();
-            return;
-        }
-        match self.selected_tool {
-            Some(AnalysisTool::Describe) => {
-                if let Some(current) = self.table_state.selected()
-                    && current > 0
-                {
-                    self.table_state.select(Some(current - 1));
-                }
-            }
-            Some(AnalysisTool::DistributionAnalysis) => {
-                if let Some(current) = self.distribution_table_state.selected()
-                    && current > 0
-                {
-                    let prev = current - 1;
-                    self.distribution_table_state.select(Some(prev));
-                    self.selected_distribution = Some(prev);
-                }
-            }
-            Some(AnalysisTool::CorrelationMatrix) => {
-                if let Some((row, col)) = self.selected_correlation
-                    && row > 0
-                {
-                    let prev_row = row - 1;
-                    self.selected_correlation = Some((prev_row, col));
-                    self.correlation_table_state.select(Some(prev_row));
-                }
-            }
-            Some(AnalysisTool::DataQuality) => {
-                let current = self.data_quality_table_state.selected().unwrap_or(0);
-                self.data_quality_table_state
-                    .select(Some(current.saturating_sub(1)));
-            }
-            None => {}
-        }
-    }
-
-    pub fn page_down(&mut self, max_rows: usize, page_size: usize) {
-        if self.focus == AnalysisFocus::Sidebar {
-            return;
-        }
-
-        match self.selected_tool {
-            Some(AnalysisTool::Describe) => {
-                if let Some(current) = self.table_state.selected() {
-                    let next = (current + page_size).min(max_rows.saturating_sub(1));
+                if let Some(next) = to(self.table_state.selected()) {
                     self.table_state.select(Some(next));
                 }
             }
             Some(AnalysisTool::DistributionAnalysis) => {
-                if let Some(current) = self.distribution_table_state.selected() {
-                    let next = (current + page_size).min(max_rows.saturating_sub(1));
+                if let Some(next) = to(self.distribution_table_state.selected()) {
                     self.distribution_table_state.select(Some(next));
                     self.selected_distribution = Some(next);
                 }
             }
             Some(AnalysisTool::CorrelationMatrix) => {
-                if let Some((row, col)) = self.selected_correlation {
-                    let next_row = (row + page_size).min(max_rows.saturating_sub(1));
-                    self.selected_correlation = Some((next_row, col));
-                    self.correlation_table_state.select(Some(next_row));
-                }
+                let n = self.correlation_size();
+                let cell = match (step, self.selected_correlation) {
+                    (ListMove::Down, _) => return self.move_correlation_cell((1, 0)),
+                    (ListMove::Home, _) if n > 0 => (0, 1.min(n - 1)),
+                    (ListMove::End, _) if n > 0 => (n - 1, (n - 1).saturating_sub(1)),
+                    (ListMove::Up | ListMove::PageUp | ListMove::PageDown, Some((row, col))) => {
+                        (step.apply(row, rows, PAGE), col)
+                    }
+                    _ => return,
+                };
+                self.selected_correlation = Some(cell);
+                self.correlation_table_state.select(Some(cell.0));
             }
             Some(AnalysisTool::DataQuality) => {
-                let current = self.data_quality_table_state.selected().unwrap_or(0);
+                let at = self.data_quality_table_state.selected().unwrap_or(0);
                 self.data_quality_table_state
-                    .select(Some((current + page_size).min(max_rows.saturating_sub(1))));
-            }
-            None => {}
-        }
-    }
-
-    pub fn page_up(&mut self, page_size: usize) {
-        if self.focus == AnalysisFocus::Sidebar {
-            return;
-        }
-
-        match self.selected_tool {
-            Some(AnalysisTool::Describe) => {
-                if let Some(current) = self.table_state.selected() {
-                    let next = current.saturating_sub(page_size);
-                    self.table_state.select(Some(next));
-                }
-            }
-            Some(AnalysisTool::DistributionAnalysis) => {
-                if let Some(current) = self.distribution_table_state.selected() {
-                    let next = current.saturating_sub(page_size);
-                    self.distribution_table_state.select(Some(next));
-                    self.selected_distribution = Some(next);
-                }
-            }
-            Some(AnalysisTool::CorrelationMatrix) => {
-                if let Some((row, col)) = self.selected_correlation {
-                    let prev_row = row.saturating_sub(page_size);
-                    self.selected_correlation = Some((prev_row, col));
-                    self.correlation_table_state.select(Some(prev_row));
-                }
-            }
-            Some(AnalysisTool::DataQuality) => {
-                let current = self.data_quality_table_state.selected().unwrap_or(0);
-                self.data_quality_table_state
-                    .select(Some(current.saturating_sub(page_size)));
+                    .select(Some(step.apply(at, rows, PAGE)));
             }
             None => {}
         }

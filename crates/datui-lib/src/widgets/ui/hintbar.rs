@@ -1,6 +1,8 @@
-//! The chip row: keys and their labels, one renderer for the control bar and
+//! The chip row: keys and their labels, one renderer for the footer and
 //! every Surface footer.
 
+use crate::render::footer::{Hint, registry_hint_as, registry_hint_in};
+use datui_cli::keys::Context;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -10,34 +12,36 @@ use ratatui::widgets::{Paragraph, Widget};
 /// Blank cells after a chip's label, before the next chip.
 const GAP: u16 = 2;
 
-/// One key chip: the key on the accent, the label beside it.
-#[derive(Debug, Clone, Copy)]
-pub struct Hint<'a> {
-    pub key: &'a str,
-    pub label: &'a str,
-    /// Give this label the accent — a quiet "look here", never extra text.
-    pub accented: bool,
+/// One key chip: the key on the accent, the label beside it, from the key registry.
+#[derive(Debug, Clone)]
+struct Chip {
+    hint: Hint,
     /// What yields first when the row runs out of room: the lightest chip,
     /// wherever it sits. None weighs chips by position, leftmost heaviest —
     /// plain cut-from-the-right. The way out (Esc) should weigh the most.
-    pub weight: Option<i32>,
+    weight: Option<i32>,
 }
 
 /// A row of key chips. Primary action first, Esc last; chips that do not fit
 /// are dropped whole from the right, never clipped mid-word.
+///
+/// Every chip is a key of one screen's registry entries ([`Self::screen`]), so a
+/// dialog's footer says what its help says.
 #[derive(Debug, Clone)]
-pub struct HintBar<'a> {
-    hints: Vec<Hint<'a>>,
+pub struct HintBar {
+    hints: Vec<Chip>,
+    screen: Option<(Context, Option<&'static str>)>,
     key_style: Style,
     label_style: Style,
     accent_label_style: Style,
 }
 
-impl<'a> HintBar<'a> {
-    /// A bar with explicit styles, for the control bar's background-filled row.
+impl HintBar {
+    /// A bar with explicit styles, for the footer's background-filled row.
     pub fn with_styles(key_style: Style, label_style: Style, accent_label_style: Style) -> Self {
         Self {
             hints: Vec::new(),
+            screen: None,
             key_style,
             label_style,
             accent_label_style,
@@ -56,44 +60,52 @@ impl<'a> HintBar<'a> {
         )
     }
 
-    pub fn hint(mut self, key: &'a str, label: &'a str) -> Self {
-        self.hints.push(Hint {
-            key,
-            label,
-            accented: false,
-            weight: None,
-        });
+    /// The screen whose registry entries the chips that follow are.
+    pub fn screen(mut self, context: Context) -> Self {
+        self.screen = Some((context, None));
         self
     }
 
-    /// A chip with an explicit weight; see [`Hint::weight`].
-    pub fn hint_weighted(mut self, key: &'a str, label: &'a str, weight: i32) -> Self {
-        self.hints.push(Hint {
-            key,
-            label,
-            accented: false,
-            weight: Some(weight),
-        });
+    /// The group of the screen's entries the chips that follow are, where the screen
+    /// lists a key twice.
+    pub fn group(mut self, group: &'static str) -> Self {
+        if let Some((_, in_group)) = self.screen.as_mut() {
+            *in_group = Some(group);
+        }
         self
     }
 
-    pub fn hints(mut self, pairs: &[(&'a str, &'a str)]) -> Self {
-        for (key, label) in pairs {
-            self.hints.push(Hint {
-                key,
-                label,
-                accented: false,
-                weight: None,
-            });
+    /// A chip for `keys`, with the registry's word for them.
+    pub fn key(self, keys: &str) -> Self {
+        let (context, group) = self.screen.expect("a bar's screen before its keys");
+        self.push(registry_hint_in(context, group, keys))
+    }
+
+    /// A chip for `keys` saying `label`, one of the registry's words for them.
+    pub fn key_as(self, keys: &str, label: &'static str) -> Self {
+        let (context, group) = self.screen.expect("a bar's screen before its keys");
+        self.push(registry_hint_as(context, group, keys, label))
+    }
+
+    /// A chip built elsewhere from the registry.
+    pub fn push(mut self, hint: Hint) -> Self {
+        self.hints.push(Chip { hint, weight: None });
+        self
+    }
+
+    /// The weight of the last chip; see [`Chip::weight`].
+    pub fn weight(mut self, weight: i32) -> Self {
+        if let Some(chip) = self.hints.last_mut() {
+            chip.weight = Some(weight);
         }
         self
     }
 
     /// Accent the label of the chip whose key is `key`.
     pub fn accent(mut self, key: &str) -> Self {
-        for hint in &mut self.hints {
-            if hint.key == key {
-                hint.accented = true;
+        for chip in &mut self.hints {
+            if chip.hint.key == key {
+                chip.hint.accented = true;
             }
         }
         self
@@ -102,9 +114,9 @@ impl<'a> HintBar<'a> {
     /// A chip's cost in columns: the key padded one cell each side, a space,
     /// the label, then [`GAP`] cells before the next chip. Measured in display
     /// columns — a `[glyphs]` override may be wide.
-    fn chip_width(hint: &Hint) -> u16 {
-        (crate::glyphs::display_width(hint.key) as u16 + 2)
-            + (crate::glyphs::display_width(hint.label) as u16 + 3)
+    fn chip_width(chip: &Chip) -> u16 {
+        (crate::glyphs::display_width(&chip.hint.key) as u16 + 2)
+            + (crate::glyphs::display_width(&chip.hint.label) as u16 + 3)
     }
 
     /// Which chips a row of `width` shows: chips are dropped whole, lightest
@@ -161,12 +173,12 @@ impl<'a> HintBar<'a> {
 
     /// Where each chip [`Widget::render`] draws in `area` lands, key and label without
     /// the gap after it, with its key: what a click on the bar presses.
-    pub fn chips_in(&self, area: Rect) -> Vec<(Rect, &'a str)> {
+    pub fn chips_in(&self, area: Rect) -> Vec<(Rect, &str)> {
         self.chips(area, false)
     }
 
     /// Where each kept chip lands in `area`, drawn flush or not.
-    fn chips(&self, area: Rect, flush: bool) -> Vec<(Rect, &'a str)> {
+    fn chips(&self, area: Rect, flush: bool) -> Vec<(Rect, &str)> {
         let mut x = area.x;
         let mut chips = Vec::new();
         for (hint, keep) in self.hints.iter().zip(self.kept(area.width, flush)) {
@@ -176,7 +188,10 @@ impl<'a> HintBar<'a> {
             let width = Self::chip_width(hint);
             let shown = (width - GAP).min(area.right().saturating_sub(x));
             if shown > 0 {
-                chips.push((Rect::new(x, area.y, shown, area.height.min(1)), hint.key));
+                chips.push((
+                    Rect::new(x, area.y, shown, area.height.min(1)),
+                    hint.hint.key.as_ref(),
+                ));
             }
             x = x.saturating_add(width);
         }
@@ -193,23 +208,23 @@ impl<'a> HintBar<'a> {
         }
         let kept = self.kept(area.width, flush);
         let mut spans = Vec::new();
-        for (hint, keep) in self.hints.iter().zip(kept) {
+        for (chip, keep) in self.hints.iter().zip(kept) {
             if !keep {
                 continue;
             }
-            spans.push(Span::styled(format!(" {} ", hint.key), self.key_style));
-            let style = if hint.accented {
+            spans.push(Span::styled(format!(" {} ", chip.hint.key), self.key_style));
+            let style = if chip.hint.accented {
                 self.accent_label_style
             } else {
                 self.label_style
             };
-            spans.push(Span::styled(format!(" {}  ", hint.label), style));
+            spans.push(Span::styled(format!(" {}  ", chip.hint.label), style));
         }
         Paragraph::new(Line::from(spans)).render(area, buf);
     }
 }
 
-impl Widget for &HintBar<'_> {
+impl Widget for &HintBar {
     fn render(self, area: Rect, buf: &mut Buffer) {
         self.draw(area, buf, false);
     }
@@ -224,11 +239,16 @@ mod tests {
     #[test]
     fn chips_are_found_where_they_are_drawn() {
         let bar = HintBar::from_ctx(&RenderContext::for_test())
-            .hints(&[("Enter", "Inspect"), ("^Q", "Quit")]);
+            .screen(Context::Export)
+            .key("Enter")
+            .push(crate::render::footer::registry_hint(
+                Context::Global,
+                "Ctrl+Q",
+            ));
         let drawn = render_to_string(&bar, 40);
         let chips = bar.chips_in(Rect::new(0, 0, 40, 1));
         assert_eq!(chips.len(), 2);
-        for ((rect, key), label) in chips.iter().zip(["Inspect", "Quit"]) {
+        for ((rect, key), label) in chips.iter().zip(["Export", "Quit"]) {
             let text: String = drawn
                 .chars()
                 .skip(rect.x as usize)
@@ -249,11 +269,12 @@ mod tests {
             .collect()
     }
 
-    fn bar<'a>() -> HintBar<'a> {
+    fn bar() -> HintBar {
         HintBar::from_ctx(&RenderContext::for_test())
-            .hint("Enter", "Export")
-            .hint("Tab", "Next")
-            .hint("Esc", "Cancel")
+            .screen(Context::Export)
+            .key("Enter")
+            .key("Tab")
+            .key("Esc")
     }
 
     #[test]
@@ -302,9 +323,13 @@ mod tests {
     fn the_escape_chip_outlives_lighter_chips() {
         let weighted = || {
             HintBar::from_ctx(&RenderContext::for_test())
-                .hint_weighted("Enter", "Export", 2)
-                .hint_weighted("Tab", "Next", 1)
-                .hint_weighted("Esc", "Cancel", 3)
+                .screen(Context::Export)
+                .key("Enter")
+                .weight(2)
+                .key("Tab")
+                .weight(1)
+                .key("Esc")
+                .weight(3)
         };
         let full = weighted().width_in(u16::MAX);
         let out = render_to_string(&weighted(), full - 1);

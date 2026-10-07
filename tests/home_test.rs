@@ -3287,7 +3287,7 @@ fn test_what_is_looked_into_is_the_viewport_and_a_screen_either_side() {
 
 #[test]
 fn test_directories_nobody_has_looked_into_are_not_counted_as_datasets() {
-    // The control bar's figure is "how many datasets are listed". A fresh listing has
+    // The footer's figure is "how many datasets are listed". A fresh listing has
     // looked into nothing, so every directory in it is `Unknown` — and `is_dataset` says
     // yes to those, because they are offered as openable and looked into first. That
     // is the right answer to "may this be opened" and the wrong one to count.
@@ -5709,7 +5709,7 @@ mod coming_back {
     }
 
     /// Every pass over the list in a frame reads one build of its rows: the list, the
-    /// passes that pick what on screen to look into, the preview and the control bar.
+    /// passes that pick what on screen to look into, the preview and the footer.
     /// A frame with nothing changed builds none.
     #[test]
     fn a_frame_builds_the_rows_at_most_once() {

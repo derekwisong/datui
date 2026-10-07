@@ -56,7 +56,7 @@ impl App {
             self.complete_column_name();
             return None;
         }
-        // No tab bar to go to any more.
+        // Shift+Tab completes nothing, and moves nothing.
         if event.code == KeyCode::BackTab {
             return None;
         }

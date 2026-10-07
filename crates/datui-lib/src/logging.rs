@@ -391,7 +391,7 @@ const MAX_POLARS_WARNINGS: usize = 256;
 /// Where `polars_warn!` goes instead of `eprintln!`. Each distinct warning is logged
 /// once per session. A deprecation is about Polars' API, which the user cannot act
 /// on; a user warning can explain a surprising result, so it is also queued for the
-/// control bar.
+/// footer.
 fn polars_warning(message: &str, kind: polars_error::PolarsWarning) {
     use polars_error::PolarsWarning as W;
     let text = message.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -413,7 +413,7 @@ fn polars_warning(message: &str, kind: polars_error::PolarsWarning) {
 }
 
 /// What wakes the run loop when there is news it has to come and look for: a warning
-/// queued for the control bar, a background panic nothing reported. The loop only
+/// queued for the footer, a background panic nothing reported. The loop only
 /// wakes for events and deadlines, so without this either would wait for a key.
 static NEWS: Mutex<Option<Box<dyn Fn() + Send + Sync>>> = Mutex::new(None);
 
@@ -423,7 +423,7 @@ fn tell_the_loop() {
     }
 }
 
-/// The next Polars user warning not yet shown, for the control bar.
+/// The next Polars user warning not yet shown, for the footer.
 pub fn next_polars_warning() -> Option<String> {
     POLARS
         .lock()
@@ -907,7 +907,7 @@ mod tests {
         );
         assert!(!text.contains("below the level"), "{text}");
 
-        // The user warning reaches the control bar, once, when the bar is free.
+        // The user warning reaches the footer, once, when the bar is free.
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = crate::App::new(tx, crate::tests::test_runtime());
         app.busy = true;

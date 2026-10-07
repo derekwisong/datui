@@ -103,7 +103,7 @@ fn render_body(
         // A run has no total to count against, so a gauge could only ever read 0%.
         // What moves is time and the stage: the spinner, the clock and the stage's
         // name say it is alive, rows are counted only where the read counts them,
-        // and the control bar says Esc cancels. Every tool, Data Quality included,
+        // and the footer says Esc cancels. Every tool, Data Quality included,
         // runs behind this one view, whose lines never move as the stages go by.
         Clear.render(area, buf);
         let g = crate::glyphs::get();

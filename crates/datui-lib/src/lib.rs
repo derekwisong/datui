@@ -5,10 +5,10 @@ use polars::prelude::{DataFrame, LazyFrame, col};
 use std::collections::HashMap;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, mpsc::Sender};
+use std::sync::{Arc, mpsc::Sender};
 use widgets::info::{FileFacts, InfoModal};
 
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 
 use ratatui::widgets::{Block, Clear};
@@ -33,6 +33,7 @@ mod chart_jobs;
 mod chart_keys;
 pub mod chart_modal;
 mod chart_pdf;
+pub mod chart_plot;
 mod chart_recipe;
 pub mod cli;
 pub mod clipboard;
@@ -132,6 +133,7 @@ pub mod numpy;
 mod open_options;
 mod open_scan;
 pub mod output_file;
+mod overlay;
 pub mod parquet_footer;
 pub mod past_calendar;
 mod picker_keys;
@@ -143,6 +145,7 @@ pub mod python_script;
 pub mod quality_export;
 mod quality_form_keys;
 pub mod quality_intent;
+mod quality_keys;
 mod quality_memory;
 pub mod quality_report;
 mod quality_runs;
@@ -221,7 +224,7 @@ use analysis_modal::{AnalysisModal, AnalysisProgress};
 use background::{CacheWrites, InflightCollect, LenCount, OwedCount};
 use chart_export::ChartExportRequest;
 use chart_export_modal::ChartExportModal;
-use chart_jobs::{ChartCache, ChartInflight, ChartPrepared, ChartRequest, ChartResultSlot};
+use chart_jobs::{ChartCache, ChartRequest};
 use chart_modal::{ChartColumns, ChartModal};
 
 pub use error_display::{ErrorKindForPython, error_for_python};
@@ -515,6 +518,15 @@ pub enum AppEvent {
     Filter(Vec<FilterStatement>),
     Sort(Vec<String>, Vec<bool>), // Columns, and per column whether it runs descending
     ColumnOrder(Vec<String>, usize), // Column order, locked columns count
+    /// The sidebar's Apply as one change: column order, locked count, filters, and the
+    /// sort's columns with whether each runs descending.
+    ApplyView(
+        Vec<String>,
+        usize,
+        Vec<FilterStatement>,
+        Vec<String>,
+        Vec<bool>,
+    ),
     Pivot(PivotSpec),
     Melt(MeltSpec),
     Export(ExportRequest),
@@ -581,10 +593,6 @@ pub enum AppEvent {
         generation: u64,
         rows: usize,
     },
-    /// Background task completed: chart data for one selection is prepared. The data is
-    /// in `App::pending_chart_result`; it belongs to `App::chart_inflight`, which says
-    /// whether it is still wanted.
-    BackgroundChartReady,
     /// Write the Data Quality report on screen to a file, in a form. From the
     /// results in memory: nothing is read.
     QualityReportExport(PathBuf, crate::quality_export::ReportFormat, Overwrite),
@@ -657,7 +665,7 @@ pub type EventOutcome = Result<Option<AppEvent>, KeyEvent>;
 
 /// What <kbd>Enter</kbd> will do on the highlighted row.
 ///
-/// Written so the control bar and the details pane can say it before it happens.
+/// Written so the footer and the details pane can say it before it happens.
 /// Every directory has two doors and the labels no longer decide access, which is only
 /// worth anything if the screen says which key is which — a bar reading `Enter Open` on
 /// a row where `Enter` goes inside teaches the wrong thing on the first try, and the
@@ -884,7 +892,7 @@ pub(crate) enum Leaving {
     Home,
 }
 
-/// An export under way, for the control bar: the file, its phase, and the bytes
+/// An export under way, for the footer: the file, its phase, and the bytes
 /// written once writing has started.
 #[derive(Clone, Debug)]
 pub struct ExportProgress {
@@ -1065,20 +1073,10 @@ pub struct App {
     /// The hex view, and the number its next read is tagged with.
     pub hex_view: hex_keys::HexState,
     pub(crate) chart_cache: ChartCache,
-    /// The one chart preparation allowed to run at a time. Render draws only what is in
-    /// `chart_cache`; this drives the throbber while it is current. Its result is
-    /// installed only if the record is still current (not `stale`) and the dataset is
-    /// the one it was computed from. Deliberately not
-    /// `busy`: the sidebar stays live while the data is computed, and the newest
-    /// selection is prepared once this one lands.
-    chart_inflight: Option<ChartInflight>,
     /// The selection the chart last asked for, and, when it stepped the aggregate of
     /// the one before, until when it waits for the next step before it is prepared.
     chart_asked: Option<(ChartRequest, Option<std::time::Instant>)>,
-    /// The result of the background chart preparation, like `pending_collect_result`:
-    /// the data stays out of the event.
-    pending_chart_result: ChartResultSlot,
-    /// A chart export that asked for data still being prepared. `BackgroundChartReady`
+    /// A chart export that asked for data still being prepared. The preparation's end
     /// picks it up; `busy` stays set until then.
     chart_export_waiting: Option<ChartExportRequest>,
     error_modal: ErrorModal,
@@ -1095,7 +1093,7 @@ pub struct App {
     cache_writes: CacheWrites,
     /// Saved views, and the one applied to the dataset on screen.
     views: view_apply::SavedViews,
-    /// An export under way, which the control bar reports.
+    /// An export under way, which the footer reports.
     export_progress: Option<ExportProgress>,
     theme: Theme, // Color theme for UI rendering
     /// How the table is drawn this session: from the config, with the session's own toggles.
@@ -1128,8 +1126,9 @@ pub struct App {
     /// status message while work is running. Cleared once the held keys have been
     /// replayed.
     input_dropped: bool,
-    throbber_frame: u8, // Spinner frame index (0..3) for control bar
-    /// Status text for the control bar, at the table view. Shown whether or not the app
+    /// The spinner's frame, counting up; each spinner takes it modulo its own frames.
+    throbber_frame: u8,
+    /// Status text for the footer, at the table view. Shown whether or not the app
     /// is busy: an End waiting on a remote row count parks without setting `busy`.
     status_message: Option<String>,
     app_config: AppConfig,
@@ -1772,7 +1771,7 @@ impl App {
         true
     }
 
-    /// Show a completion flash on the control bar.
+    /// Show a completion flash on the footer.
     fn flash_note(&mut self, message: String) {
         self.flash = Some(Flash::new(message));
     }
@@ -1782,7 +1781,7 @@ impl App {
         self.flash = Some(Flash::path(prefix, path));
     }
 
-    /// The completion flash on the control bar, if one is showing.
+    /// The completion flash on the footer, if one is showing.
     pub fn flash_message(&self) -> Option<&str> {
         self.flash.as_ref().map(|f| f.message.as_str())
     }
@@ -1823,7 +1822,7 @@ impl App {
         true
     }
 
-    /// What the control bar says about the follow of the dataset on screen.
+    /// What the footer says about the follow of the dataset on screen.
     fn follow_mark(&self) -> Option<crate::render::footer::FollowMark> {
         use crate::follow::Standing;
         // The hex view shows a file's bytes, not the table the follow moves.
@@ -1957,7 +1956,7 @@ impl App {
         false
     }
 
-    /// Show the next Polars user warning on the control bar, once per session, when the
+    /// Show the next Polars user warning on the footer, once per session, when the
     /// bar is free. Returns true when the frame must redraw.
     pub fn flash_polars_warning(&mut self) -> bool {
         if !self.bar_is_free() {
@@ -2415,7 +2414,7 @@ impl App {
     /// for a literal, and without clearing a message that belongs to something else.
     const COUNTING_FOR_END: &'static str = "Counting rows to find the end...";
 
-    /// What the control bar says while a path is being looked at. Named so the answer can
+    /// What the footer says while a path is being looked at. Named so the answer can
     /// take down its own line without clearing one that belongs to something else.
     const LOOKING: &'static str = "Looking...";
 
@@ -3152,9 +3151,7 @@ impl App {
                 retype_from_info: false,
             },
             chart_cache: ChartCache::default(),
-            chart_inflight: None,
             chart_asked: None,
-            pending_chart_result: Arc::new(Mutex::new(None)),
             chart_export_waiting: None,
             error_modal: ErrorModal::new(),
             flash: None,
@@ -3251,11 +3248,6 @@ impl App {
             #[cfg(feature = "cloud")]
             self.peek_cloud_directories();
         }
-    }
-
-    /// Get a color from the theme by name
-    fn color(&self, name: &str) -> Color {
-        self.theme.get(name)
     }
 }
 
@@ -3555,8 +3547,7 @@ impl App {
             return None;
         }
 
-        // Handle modals first - they have highest priority
-        // Confirmation modal (for overwrite)
+        // The confirmation modal (for an overwrite).
         if self.confirmation_modal.active {
             match event.code {
                 KeyCode::Left | KeyCode::Char('h') => {
@@ -3566,7 +3557,6 @@ impl App {
                     self.confirmation_modal.focus_yes = false;
                 }
                 KeyCode::Tab => {
-                    // Toggle between Yes and No
                     self.confirmation_modal.focus_yes = !self.confirmation_modal.focus_yes;
                 }
                 // ←→ carry the choice, so ↑↓ (k/j) scroll a long question; the
@@ -3922,8 +3912,7 @@ impl App {
                     state.stop_following();
                     self.flash_note("Stopped following".to_string());
                 }
-                // Escape no longer exits - use 'q' or Ctrl-C to exit
-                // (Info modal handles Esc in its own block)
+                // The Info panel handles Esc in its own block.
                 None
             }
             KeyCode::Char('t') if event.is_press() => self.toggle_follow(),
@@ -4474,7 +4463,7 @@ impl App {
                 // A newer look replaces an older one.
                 self.jobs
                     .supersede(|job| matches!(job, Job::LookAtDirectory { .. }));
-                // The same words the loading screen shows, so the control bar and the
+                // The same words the loading screen shows, so the footer and the
                 // screen above it do not name the wait two different ways.
                 // Unleased. A lease exists to make a bump wait for an answer that
                 // would otherwise be stranded — and this answer is *meant* to be
@@ -4551,7 +4540,7 @@ impl App {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| looking.display().to_string());
-                // The home screen's own line, because the control bar's is the table's.
+                // The home screen's own line, because the footer's is the table's.
                 self.home.status = Some(format!("Looking at {name}..."));
                 self.spawn_job(look, Some(Self::LOOKING), move |_| {
                     // Every one of these can sit forever on a share that has gone away,
@@ -4611,8 +4600,22 @@ impl App {
                     state.deferred(|s| s.reset());
                 }
                 self.spawn_async_collect(Self::LOADING_BUFFER);
-                // Clear active view when resetting
                 self.views.active_id = None;
+                None
+            }
+            AppEvent::ApplyView(order, locked, filters, columns, descending) => {
+                if let Some(state) = &mut self.data_table_state {
+                    state.deferred(|s| {
+                        s.apply_view(
+                            order.clone(),
+                            *locked,
+                            filters.clone(),
+                            columns.clone(),
+                            descending.clone(),
+                        )
+                    });
+                    self.spawn_async_collect("Sorting...");
+                }
                 None
             }
             AppEvent::ColumnOrder(order, locked_count) => {
@@ -4678,9 +4681,7 @@ impl App {
                 );
                 None
             }
-            AppEvent::ChartExport(..)
-            | AppEvent::DoChartExport(..)
-            | AppEvent::BackgroundChartReady => self.chart_event(event),
+            AppEvent::ChartExport(..) | AppEvent::DoChartExport(..) => self.chart_event(event),
             AppEvent::Export(request) => {
                 if self.data_table_state.is_some() {
                     self.busy = true;
@@ -5091,14 +5092,17 @@ impl App {
             col.is_to_be_locked = false;
         }
         self.sort_filter_modal.sort.has_unapplied_changes = false;
-        self.sort_filter_modal.close();
-        self.input_mode = InputMode::Normal;
+        self.close_overlay();
         if view_unchanged {
             return None;
         }
-        let _ = self.send_event(AppEvent::ColumnOrder(column_order, locked_count));
-        let _ = self.send_event(AppEvent::Filter(statements));
-        Some(AppEvent::Sort(columns, descending))
+        Some(AppEvent::ApplyView(
+            column_order,
+            locked_count,
+            statements,
+            columns,
+            descending,
+        ))
     }
 
     /// The facts read for the dataset on screen, if its file has one: one file, stored
@@ -5120,7 +5124,7 @@ impl App {
         (!hive && plain && one_file).then_some((format, facts))
     }
 
-    /// What the control bar says while a query's first rows are read over the frame on
+    /// What the footer says while a query's first rows are read over the frame on
     /// screen, from the read's job record. The rows drawn meanwhile are the view it
     /// replaces, under columns it may have changed.
     pub(crate) fn query_reading(&self) -> Option<&str> {
@@ -5139,7 +5143,7 @@ impl App {
     /// next holds them before anything else can look.
     ///
     /// What the job held is put down here, for every job alike: a job the user waited
-    /// on gives the keys back, and its line on the control bar goes with it, unless the
+    /// on gives the keys back, and its line on the footer goes with it, unless the
     /// answer goes on to a continuation, which keeps the wait up across the gap.
     fn job_ended(&mut self, ticket: Ticket) -> Option<AppEvent> {
         let jobs::Ended {
@@ -5593,6 +5597,12 @@ impl App {
                 }
                 None
             }
+            Answer::ChartPrepared(prepared) => {
+                if let Job::ChartPrepare(prep) = job {
+                    self.chart_prepared(*prep, current, Ok(*prepared));
+                }
+                None
+            }
             Answer::ChartExported => {
                 // Leaving the chart's dataset supersedes the write: one that finishes
                 // after Ctrl-O must not reopen its modal over the home screen.
@@ -5682,6 +5692,14 @@ impl App {
                 if let loading::Step::Failed(failed) = self.loading.failed(*load, message) {
                     self.load_failed(failed);
                 }
+            }
+            Job::ChartPrepare(prep) => {
+                let message = if panicked {
+                    "Chart preparation panicked".to_string()
+                } else {
+                    message.to_string()
+                };
+                self.chart_prepared(*prep.clone(), current, Err(message));
             }
             Job::Classify(_) => {
                 if current {
@@ -6207,7 +6225,7 @@ impl App {
         let main_view_content = MainViewContent::current(self);
 
         Clear.render(area, buf);
-        let background_color = self.color("background");
+        let background_color = self.theme.background();
         Block::default()
             .style(Style::default().bg(background_color))
             .render(area, buf);
@@ -6243,8 +6261,6 @@ impl App {
         {
             menu.render(main_area, buf, &ctx);
         }
-
-        // Status messages are shown inline in the control bar (no overlay popups).
 
         if self.confirmation_modal.active {
             crate::render::overlays::render_confirmation_modal(

@@ -77,23 +77,20 @@ pub fn render_export_modal(
     // Primary first, Esc last, and one chip for what the focused row itself
     // takes; when the dialog runs out of room, Tab yields first and the way
     // out goes last.
-    let g = crate::glyphs::get();
-    let mut footer = HintBar::from_ctx(ctx).hint_weighted("Enter", "Export", 3);
-    match modal.focus {
-        ExportFocus::FormatSelector => {
-            footer = footer.hint_weighted(g.updown_lr, "Format", 2);
-        }
+    let footer = HintBar::from_ctx(ctx)
+        .screen(datui_cli::keys::Context::Export)
+        .group("Form")
+        .key("Enter")
+        .weight(3);
+    let footer = match modal.focus {
+        ExportFocus::FormatSelector => footer.key_as("← / →", "Format").weight(2),
         ExportFocus::CsvIncludeHeader | ExportFocus::SourceFile => {
-            footer = footer.hint_weighted("Space", "Toggle", 2);
+            footer.key_as("Space", "Toggle").weight(2)
         }
-        ExportFocus::Compression => {
-            footer = footer.hint_weighted(g.updown_lr, "Change", 2);
-        }
-        ExportFocus::PathInput | ExportFocus::CsvDelimiter => {}
-    }
-    let footer = footer
-        .hint_weighted("Tab", "Next", 1)
-        .hint_weighted("Esc", "Cancel", 4);
+        ExportFocus::Compression => footer.key("← / →").weight(2),
+        ExportFocus::PathInput | ExportFocus::CsvDelimiter => footer,
+    };
+    let footer = footer.key("Tab").weight(1).key("Esc").weight(4);
     crate::pointer::record(area, crate::pointer::Hit::Modal);
     let content = Surface::new("Export Data")
         .footer(&footer)

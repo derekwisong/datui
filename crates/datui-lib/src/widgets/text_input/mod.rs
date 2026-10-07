@@ -150,8 +150,8 @@ impl TextInput {
 
     /// Take text and cursor colours from the theme.
     pub fn with_theme(mut self, theme: &Theme) -> Self {
-        self.text_color = Some(theme.get("text_primary"));
-        let cursor = theme.get("input_cursor");
+        self.text_color = Some(theme.text_primary());
+        let cursor = theme.input_cursor();
         self.cursor_color = Some(cursor);
         self.cursor_text = Some(theme.cursor_text_for(cursor));
         self.selection_style = Some(theme.text_selection_style());

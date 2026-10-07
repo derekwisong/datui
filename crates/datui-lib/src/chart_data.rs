@@ -673,7 +673,87 @@ fn x_values(df: &DataFrame, column: &str, dtype: &DataType) -> Result<Vec<Option
     }
 }
 
-/// Result of loading only the x column: min/max for axis bounds and temporal kind.
+/// X's type in `schema`, or an error naming it.
+fn x_dtype<'a>(schema: &'a Schema, x: &str) -> Result<&'a DataType> {
+    schema
+        .get(x)
+        .ok_or_else(|| color_eyre::eyre::eyre!("x column '{}' not in schema", x))
+}
+
+/// The rows with an X, as `(x, row)`, in X order; rows sharing an X keep their table
+/// order.
+fn x_order(df: &DataFrame, x: &str, dtype: &DataType) -> Result<Vec<(f64, usize)>> {
+    let mut order: Vec<(f64, usize)> = x_values(df, x, dtype)?
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, x)| x.map(|x| (x, i)))
+        .collect();
+    order.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Ok(order)
+}
+
+/// Series built a point at a time in X order, each breaking its line after a gap:
+/// a point with no Y.
+struct SeriesBuilder {
+    series: Vec<Vec<(f64, f64)>>,
+    breaks: Vec<Vec<usize>>,
+    gap: Vec<bool>,
+}
+
+impl SeriesBuilder {
+    fn new(n: usize) -> Self {
+        Self {
+            series: vec![Vec::new(); n],
+            breaks: vec![Vec::new(); n],
+            gap: vec![false; n],
+        }
+    }
+
+    fn push(&mut self, s: usize, x: f64, y: Option<f64>) {
+        match y {
+            Some(y) => {
+                if self.gap[s] && !self.series[s].is_empty() {
+                    self.breaks[s].push(self.series[s].len());
+                }
+                self.gap[s] = false;
+                self.series[s].push((x, y));
+            }
+            None => self.gap[s] = true,
+        }
+    }
+}
+
+/// A column's values as text, as a category is labeled.
+fn text_labels(df: &DataFrame, column: &str) -> Result<Series> {
+    Ok(crate::past_calendar::cast_text(
+        df.column(column)?.as_materialized_series(),
+        CastOptions::NonStrict,
+    )?)
+}
+
+/// A count column as `u64`s, null as none.
+fn counts_of(df: &DataFrame, column: &str) -> Result<Vec<u64>> {
+    Ok(df
+        .column(column)?
+        .cast(&DataType::UInt64)?
+        .u64()?
+        .iter()
+        .map(|n| n.unwrap_or(0))
+        .collect())
+}
+
+impl RowsRead {
+    /// Every one of `total_rows` rows, read whole.
+    pub fn every(total_rows: usize) -> Self {
+        Self {
+            total_rows,
+            ..Self::default()
+        }
+    }
+}
+
+/// The X column's range alone, for a line or scatter chart's axes before any Y.
+#[derive(Debug, Clone)]
 pub struct ChartXRangeResult {
     pub x_min: f64,
     pub x_max: f64,
@@ -688,9 +768,7 @@ pub fn prepare_chart_x_range(
     x_column: &str,
     sampling: &ChartSampling,
 ) -> Result<ChartXRangeResult> {
-    let x_dtype = schema
-        .get(x_column)
-        .ok_or_else(|| color_eyre::eyre::eyre!("x column '{}' not in schema", x_column))?;
+    let x_dtype = x_dtype(schema, x_column)?;
     let x_axis_kind = x_axis_temporal_kind(x_dtype);
     let (df, rows) = read_columns(lf, &[x_column], sampling)?;
     let (x_min, x_max) = x_values(&df, x_column, x_dtype)?
@@ -803,6 +881,39 @@ pub struct BoxPlotStats {
     pub max: f64,
 }
 
+/// A box and its whiskers as line segments, the box `half` either side of `center`
+/// and the caps `cap` either side; Y in data values, X in whatever unit `center` is.
+pub struct BoxMarks {
+    /// The box, corner to corner and back to the first.
+    pub outline: [(f64, f64); 5],
+    pub median: [(f64, f64); 2],
+    /// Minimum to the first quartile, and the third quartile to the maximum.
+    pub low: [(f64, f64); 2],
+    pub high: [(f64, f64); 2],
+    pub low_cap: [(f64, f64); 2],
+    pub high_cap: [(f64, f64); 2],
+}
+
+impl BoxPlotStats {
+    pub fn marks(&self, center: f64, half: f64, cap: f64) -> BoxMarks {
+        let (left, right) = (center - half, center + half);
+        BoxMarks {
+            outline: [
+                (left, self.q1),
+                (right, self.q1),
+                (right, self.q3),
+                (left, self.q3),
+                (left, self.q1),
+            ],
+            median: [(left, self.median), (right, self.median)],
+            low: [(center, self.min), (center, self.q1)],
+            high: [(center, self.q3), (center, self.max)],
+            low_cap: [(center - cap, self.min), (center + cap, self.min)],
+            high_cap: [(center - cap, self.max), (center + cap, self.max)],
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BoxPlotData {
     pub stats: Vec<BoxPlotStats>,
@@ -813,6 +924,41 @@ pub struct BoxPlotData {
     /// One box per category: how many categories there are, of which the largest
     /// have a box. 0 for a box per column.
     pub of: usize,
+}
+
+impl HistogramData {
+    /// Each group's bins as the outline of its bars: up the left edge of each bin,
+    /// across its top, and down at the end.
+    pub fn step_outlines(&self) -> Vec<Vec<(f64, f64)>> {
+        let n = self.bins.len().max(1);
+        let width = (self.x_max - self.x_min) / n as f64;
+        self.groups
+            .iter()
+            .map(|group| {
+                let mut points = vec![(self.x_min, 0.0)];
+                for (i, &count) in group.counts.iter().enumerate() {
+                    let x0 = self.x_min + i as f64 * width;
+                    points.push((x0, count));
+                    points.push((x0 + width, count));
+                }
+                points.push((self.x_max, 0.0));
+                points
+            })
+            .collect()
+    }
+}
+
+/// Where Other is among `n` series: the last, when there is one.
+pub fn other_at(other: bool, n: usize) -> Option<usize> {
+    (other && n > 0).then(|| n - 1)
+}
+
+/// The order `n` series are drawn in: Other first, under the series drawn over it.
+pub fn drawing_order(n: usize, other: Option<usize>) -> impl Iterator<Item = usize> {
+    other
+        .filter(|&o| o < n)
+        .into_iter()
+        .chain((0..n).filter(move |&i| Some(i) != other))
 }
 
 /// Heatmap data for two numeric columns.
@@ -859,9 +1005,7 @@ pub fn prepare_chart_data(
         });
     }
 
-    let x_dtype = schema
-        .get(x_column)
-        .ok_or_else(|| color_eyre::eyre::eyre!("x column '{}' not in schema", x_column))?;
+    let x_dtype = x_dtype(schema, x_column)?;
     let x_axis_kind = x_axis_temporal_kind(x_dtype);
 
     let mut counted = None;
@@ -909,40 +1053,18 @@ pub fn prepare_chart_data(
     columns.extend(y_columns.iter().map(String::as_str));
     let (df, rows) = read_columns(lf, &columns, sampling)?;
 
-    let mut order: Vec<(f64, usize)> = x_values(&df, x_column, x_dtype)?
-        .into_iter()
-        .enumerate()
-        .filter_map(|(i, x)| x.map(|x| (x, i)))
-        .collect();
-    // Stable, so rows sharing an X keep their table order.
-    order.sort_by(|a, b| a.0.total_cmp(&b.0));
-
-    let mut series = Vec::with_capacity(y_columns.len());
-    let mut breaks = Vec::with_capacity(y_columns.len());
-    for y_column in y_columns {
+    let order = x_order(&df, x_column, x_dtype)?;
+    let mut built = SeriesBuilder::new(y_columns.len());
+    for (s, y_column) in y_columns.iter().enumerate() {
         let ys = f64_values(&df, y_column)?;
-        let mut points = Vec::with_capacity(order.len());
-        let mut starts = Vec::new();
-        let mut gap = false;
         for &(x, i) in &order {
-            match ys[i] {
-                Some(y) => {
-                    if gap && !points.is_empty() {
-                        starts.push(points.len());
-                    }
-                    gap = false;
-                    points.push((x, y));
-                }
-                None => gap = true,
-            }
+            built.push(s, x, ys[i]);
         }
-        series.push(points);
-        breaks.push(starts);
     }
 
     Ok(ChartDataResult {
-        series,
-        breaks,
+        series: built.series,
+        breaks: built.breaks,
         x_axis_kind,
         rows,
     })
@@ -1113,15 +1235,14 @@ fn envelope_series(
 /// Each column's finite values, read in one pass; nulls are dropped per column.
 fn read_values(
     lf: &LazyFrame,
-    columns: &[&str],
+    column: &str,
     sampling: &ChartSampling,
-) -> Result<(Vec<Vec<f64>>, RowsRead)> {
-    let (df, rows) = read_columns(lf, columns, sampling)?;
-    let values = columns
-        .iter()
-        .map(|c| Ok(f64_values(&df, c)?.into_iter().flatten().collect()))
-        .collect::<Result<Vec<Vec<f64>>>>()?;
-    Ok((values, rows))
+) -> Result<(Vec<f64>, RowsRead)> {
+    let (df, rows) = read_columns(lf, &[column], sampling)?;
+    Ok((
+        f64_values(&df, column)?.into_iter().flatten().collect(),
+        rows,
+    ))
 }
 
 /// Sort `values` and keep those inside `range`; returns how many were left out.
@@ -1318,25 +1439,16 @@ fn box_data(stats: Vec<BoxPlotStats>, rows: RowsRead, clipped: Option<Clipped>) 
     }
 }
 
-/// Prepare box plot stats for one or more numeric columns. Uses a single read for all columns.
-pub fn prepare_box_plot_data<T: AsRef<str>>(
+/// The box plot of one numeric column.
+pub fn prepare_box_plot_data(
     lf: &LazyFrame,
-    columns: &[T],
+    column: &str,
     range: ValueRange,
     sampling: &ChartSampling,
 ) -> Result<BoxPlotData> {
-    let col_refs: Vec<&str> = columns.iter().map(|c| c.as_ref()).collect();
-    let (columns_values, rows) = if col_refs.is_empty() {
-        (Vec::new(), RowsRead::default())
-    } else {
-        read_values(lf, &col_refs, sampling)?
-    };
-    let mut stats = Vec::new();
-    let mut outside = 0;
-    for (column, mut values) in col_refs.iter().zip(columns_values) {
-        outside += sort_and_clip(&mut values, range);
-        stats.extend(box_stats((*column).to_string(), &values));
-    }
+    let (mut values, rows) = read_values(lf, column, sampling)?;
+    let outside = sort_and_clip(&mut values, range);
+    let stats = box_stats(column.to_string(), &values).into_iter().collect();
     Ok(box_data(stats, rows, clipped(range, outside)))
 }
 
@@ -1431,26 +1543,19 @@ fn kde_data(series: Vec<KdeSeries>, rows: RowsRead, clipped: Option<Clipped>) ->
     }
 }
 
-/// Prepare KDE data for one or more numeric columns. Uses a single read for all columns.
-pub fn prepare_kde_data<T: AsRef<str>>(
+/// The density curve of one numeric column.
+pub fn prepare_kde_data(
     lf: &LazyFrame,
-    columns: &[T],
+    column: &str,
     bandwidth_factor: f64,
     range: ValueRange,
     sampling: &ChartSampling,
 ) -> Result<KdeData> {
-    let col_refs: Vec<&str> = columns.iter().map(|c| c.as_ref()).collect();
-    let (columns_values, rows) = if col_refs.is_empty() {
-        (Vec::new(), RowsRead::default())
-    } else {
-        read_values(lf, &col_refs, sampling)?
-    };
-    let mut series = Vec::new();
-    let mut outside = 0;
-    for (column, mut values) in col_refs.iter().zip(columns_values) {
-        outside += sort_and_clip(&mut values, range);
-        series.extend(kde_series((*column).to_string(), &values, bandwidth_factor));
-    }
+    let (mut values, rows) = read_values(lf, column, sampling)?;
+    let outside = sort_and_clip(&mut values, range);
+    let series = kde_series(column.to_string(), &values, bandwidth_factor)
+        .into_iter()
+        .collect();
     Ok(kde_data(series, rows, clipped(range, outside)))
 }
 
@@ -1745,7 +1850,7 @@ pub fn prepare_bar_data(
 ) -> Result<BarData> {
     let (df, rows) = read_columns(lf, &[category, value], sampling)?;
     let categories = df.column(category)?.as_materialized_series().clone();
-    let labels_series = crate::past_calendar::cast_text(&categories, CastOptions::NonStrict)?;
+    let labels_series = text_labels(&df, category)?;
     let labels: Vec<Option<&str>> = labels_series.str()?.iter().collect();
 
     let mut seen: std::collections::HashMap<Option<&str>, usize> =
@@ -1904,12 +2009,7 @@ fn count_bars(
         bars,
         more,
         no_value: 0,
-        rows: RowsRead {
-            total_rows: total,
-            sample_size: None,
-            envelope_steps: None,
-            seed: None,
-        },
+        rows: RowsRead::every(total),
         value_dtype: DataType::UInt64,
         counted: sampling.limit.is_some_and(|n| total > n).then_some(total),
         groups: Vec::new(),
@@ -1926,7 +2026,7 @@ fn count_bars(
         .collect();
     let counts = counts.take(&IdxCa::from_vec("order".into(), by_label))?;
     let categories = counts.column(category)?.as_materialized_series().clone();
-    let labels_series = crate::past_calendar::cast_text(&categories, CastOptions::NonStrict)?;
+    let labels_series = text_labels(&counts, category)?;
     let labels: Vec<Option<&str>> = labels_series.str()?.iter().collect();
     let values: Vec<Option<f64>> = counts
         .column(COUNT_COLUMN)?
@@ -2180,8 +2280,7 @@ pub fn group_label(value: &Option<String>) -> String {
 /// for a value that has none. Values are compared as text, as the value picker lists
 /// them.
 fn row_groups(df: &DataFrame, split: ColorSplit<'_>) -> Result<Vec<Option<usize>>> {
-    let series = df.column(split.column)?.as_materialized_series();
-    let text = crate::past_calendar::cast_text(series, CastOptions::NonStrict)?;
+    let text = text_labels(df, split.column)?;
     let index: std::collections::HashMap<Option<&str>, usize> = split
         .groups
         .iter()
@@ -2265,10 +2364,7 @@ pub fn value_rows(lf: &LazyFrame, column: &str, sampling: &ChartSampling) -> Res
         .map(|i| i as IdxSize)
         .collect();
     let counts = counts.take(&IdxCa::from_vec("order".into(), by_label))?;
-    let labels = crate::past_calendar::cast_text(
-        counts.column(column)?.as_materialized_series(),
-        CastOptions::NonStrict,
-    )?;
+    let labels = text_labels(&counts, column)?;
     let mut values: Vec<(Option<String>, u64)> = labels
         .str()?
         .iter()
@@ -2338,40 +2434,20 @@ pub fn prepare_xy_by(
     color: ColorSplit<'_>,
     sampling: &ChartSampling,
 ) -> Result<GroupedSeries> {
-    let x_dtype = schema
-        .get(x)
-        .ok_or_else(|| color_eyre::eyre::eyre!("x column '{}' not in schema", x))?;
+    let x_dtype = x_dtype(schema, x)?;
     let (df, rows) = read_columns(lf, &[x, y, color.column], sampling)?;
-    let xs = x_values(&df, x, x_dtype)?;
     let ys = f64_values(&df, y)?;
     let groups = row_groups(&df, color)?;
-    let mut order: Vec<(f64, usize)> = xs
-        .into_iter()
-        .enumerate()
-        .filter_map(|(i, x)| x.map(|x| (x, i)))
-        .collect();
-    order.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let n = color.series();
-    let mut series = vec![Vec::new(); n];
-    let mut breaks = vec![Vec::new(); n];
-    let mut gap = vec![false; n];
-    for (x, i) in order {
-        let Some(g) = groups[i] else { continue };
-        match ys[i] {
-            Some(y) => {
-                if gap[g] && !series[g].is_empty() {
-                    breaks[g].push(series[g].len());
-                }
-                gap[g] = false;
-                series[g].push((x, y));
-            }
-            None => gap[g] = true,
+    let mut built = SeriesBuilder::new(color.series());
+    for (x, i) in x_order(&df, x, x_dtype)? {
+        if let Some(g) = groups[i] {
+            built.push(g, x, ys[i]);
         }
     }
     Ok(GroupedSeries {
         names: color.names(),
-        series,
-        breaks,
+        series: built.series,
+        breaks: built.breaks,
         x_axis_kind: x_axis_temporal_kind(x_dtype),
         rows,
         other: color.other,
@@ -2451,6 +2527,29 @@ fn with_row_order(lf: &LazyFrame, aggregate: crate::chart_modal::Aggregate) -> L
 /// row per group, and the streaming engine checks `cancel` between morsels. A plan
 /// the streaming engine cannot take runs in memory, where the check runs once and
 /// the pass goes to its end. A pass stopped by `cancel` is an error that says so.
+/// The rows a group-by aggregates: `select` (its keys and values), with the row
+/// order a first or last needs, and each row's color group as a key; rows with no
+/// group left out. Returns the plan and its keys.
+fn group_plan(
+    lf: &LazyFrame,
+    (mut select, mut keys): (Vec<Expr>, Vec<Expr>),
+    aggregate: crate::chart_modal::Aggregate,
+    color: Option<ColorSplit<'_>>,
+) -> (LazyFrame, Vec<Expr>) {
+    if aggregate.follows_row_order() {
+        select.push(col(ROW_ORDER));
+    }
+    if let Some(color) = color {
+        select.push(group_expr(color).alias("__g"));
+        keys.push(col("__g"));
+    }
+    let mut plan = with_row_order(lf, aggregate).select(select);
+    if color.is_some() {
+        plan = plan.filter(col("__g").is_not_null());
+    }
+    (plan, keys)
+}
+
 fn aggregate_pass(lf: LazyFrame, sampling: &ChartSampling) -> Result<DataFrame> {
     crate::statistics::collect_lazy(lf, true).map_err(|e| {
         if sampling.cancel.load(Ordering::Relaxed) {
@@ -2514,9 +2613,7 @@ pub fn prepare_aggregate_xy(
     sampling: &ChartSampling,
 ) -> Result<GroupedSeries> {
     use crate::chart_modal::{Aggregate, Cumulative};
-    let x_dtype = schema
-        .get(spec.x)
-        .ok_or_else(|| color_eyre::eyre::eyre!("x column '{}' not in schema", spec.x))?;
+    let x_dtype = x_dtype(schema, spec.x)?;
     let mut x = col(spec.x);
     let bucketed = spec.time_unit.every().is_some()
         && matches!(x_dtype, DataType::Date | DataType::Datetime(_, _));
@@ -2534,22 +2631,12 @@ pub fn prepare_aggregate_xy(
         (false, None) => spec.ys,
     };
     let mut select = vec![x];
-    let mut keys = vec![col("__x")];
+    let keys = vec![col("__x")];
     for (i, y) in ys.iter().enumerate() {
         select.push(y_values(col(y.as_str()), spec.aggregate).alias(format!("__y{i}")));
     }
-    let plan = with_row_order(lf, spec.aggregate);
-    if spec.aggregate.follows_row_order() {
-        select.push(col(ROW_ORDER));
-    }
-    if let Some(color) = spec.color {
-        select.push(group_expr(color).alias("__g"));
-        keys.push(col("__g"));
-    }
-    let mut plan = plan.select(select).filter(col("__x").is_not_null());
-    if spec.color.is_some() {
-        plan = plan.filter(col("__g").is_not_null());
-    }
+    let (plan, keys) = group_plan(lf, (select, keys), spec.aggregate, spec.color);
+    let plan = plan.filter(col("__x").is_not_null());
     let mut aggs = vec![len().alias("__n")];
     for i in 0..ys.len() {
         let y = col(format!("__y{i}"));
@@ -2576,13 +2663,7 @@ pub fn prepare_aggregate_xy(
         ));
     }
     let xs: Vec<Option<f64>> = x_values(&df, "__x", x_dtype)?;
-    let counts: Vec<u64> = df
-        .column("__n")?
-        .cast(&DataType::UInt64)?
-        .u64()?
-        .iter()
-        .map(|n| n.unwrap_or(0))
-        .collect();
+    let counts = counts_of(&df, "__n")?;
     let groups: Option<Vec<Option<u32>>> = match spec.color {
         Some(_) => Some(df.column("__g")?.u32()?.iter().collect()),
         None => None,
@@ -2593,13 +2674,12 @@ pub fn prepare_aggregate_xy(
         (0..ys.len())
             .map(|i| {
                 let made = df.column(&format!("__a{i}"))?.f64()?.clone();
-                let behind = df.column(&format!("__c{i}"))?.cast(&DataType::UInt64)?;
-                let behind = behind.u64()?;
+                let behind = counts_of(&df, &format!("__c{i}"))?;
                 Ok(made
                     .iter()
-                    .zip(behind.iter())
+                    .zip(behind)
                     .map(|(v, n)| {
-                        let v = v.filter(|_| n.unwrap_or(0) > 0)?;
+                        let v = v.filter(|_| n > 0)?;
                         // A bucket's compound return, from its log sum.
                         Some(if spec.cumulative == Cumulative::Compound {
                             v.exp_m1()
@@ -2616,20 +2696,8 @@ pub fn prepare_aggregate_xy(
         None if count => vec!["count".to_string()],
         None => ys.to_vec(),
     };
-    let n = names.len();
-    let mut series = vec![Vec::new(); n];
-    let mut breaks = vec![Vec::new(); n];
-    let mut gap = vec![false; n];
-    let mut push = |s: usize, x: f64, y: Option<f64>| match y.filter(|y| y.is_finite()) {
-        Some(y) => {
-            if gap[s] && !series[s].is_empty() {
-                breaks[s].push(series[s].len());
-            }
-            gap[s] = false;
-            series[s].push((x, y));
-        }
-        None => gap[s] = true,
-    };
+    let mut built = SeriesBuilder::new(names.len());
+    let mut push = |s: usize, x: f64, y: Option<f64>| built.push(s, x, y.filter(|y| y.is_finite()));
     for (row, x) in xs.iter().enumerate() {
         let Some(x) = *x else { continue };
         match &groups {
@@ -2650,20 +2718,15 @@ pub fn prepare_aggregate_xy(
         Cumulative::Compound if count => Cumulative::Sum,
         how => how,
     };
-    for points in &mut series {
+    for points in &mut built.series {
         accumulate(points, how);
     }
     Ok(GroupedSeries {
         names,
-        series,
-        breaks,
+        series: built.series,
+        breaks: built.breaks,
         x_axis_kind: x_axis_temporal_kind(x_dtype),
-        rows: RowsRead {
-            total_rows: counts.iter().sum::<u64>() as usize,
-            sample_size: None,
-            envelope_steps: None,
-            seed: None,
-        },
+        rows: RowsRead::every(counts.iter().sum::<u64>() as usize),
         other: spec.color.is_some_and(|c| c.other),
     })
 }
@@ -2702,6 +2765,7 @@ pub struct BarAggregate<'a> {
 /// a color is the exact count a bar chart of counts draws.
 pub fn prepare_bar_aggregate(
     lf: &LazyFrame,
+    schema: &Schema,
     spec: &BarAggregate<'_>,
     sampling: &ChartSampling,
 ) -> Result<BarData> {
@@ -2724,7 +2788,6 @@ pub fn prepare_bar_aggregate(
         None if !count => return Err(color_eyre::eyre::eyre!("Pick a Y column")),
         _ => None,
     };
-    let schema = lf.clone().collect_schema()?;
     let value_dtype = match value {
         Some(v) => schema
             .get(v)
@@ -2733,21 +2796,10 @@ pub fn prepare_bar_aggregate(
         None => DataType::UInt64,
     };
     let mut select = vec![until_cancelled(col(category), &sampling.cancel)];
-    let mut keys = vec![col(category)];
     if let Some(value) = value {
         select.push(y_values(col(value), aggregate).alias("__v"));
     }
-    if aggregate.follows_row_order() {
-        select.push(col(ROW_ORDER));
-    }
-    if let Some(color) = color {
-        select.push(group_expr(color).alias("__g"));
-        keys.push(col("__g"));
-    }
-    let mut plan = with_row_order(lf, aggregate).select(select);
-    if color.is_some() {
-        plan = plan.filter(col("__g").is_not_null());
-    }
+    let (plan, keys) = group_plan(lf, (select, vec![col(category)]), aggregate, color);
     let measure = match value {
         Some(_) => aggregate_expr(col("__v"), aggregate, quantile),
         None => len().cast(DataType::Float64),
@@ -2767,13 +2819,7 @@ pub fn prepare_bar_aggregate(
         ]),
         sampling,
     )?;
-    let rows: usize = df
-        .column("__n")?
-        .cast(&DataType::UInt64)?
-        .u64()?
-        .iter()
-        .map(|n| n.unwrap_or(0) as usize)
-        .sum();
+    let rows = counts_of(&df, "__n")?.iter().sum::<u64>() as usize;
     // A sum, least or greatest of whole numbers is whole; a count always is.
     let whole = aggregate.is_count()
         || (value_dtype.is_integer()
@@ -2786,15 +2832,9 @@ pub fn prepare_bar_aggregate(
                     | Aggregate::Last
             ));
     let categories = df.column(category)?.as_materialized_series().clone();
-    let labels_series = crate::past_calendar::cast_text(&categories, CastOptions::NonStrict)?;
+    let labels_series = text_labels(&df, category)?;
     let labels: Vec<Option<&str>> = labels_series.str()?.iter().collect();
-    let behind: Vec<u64> = df
-        .column("__c")?
-        .cast(&DataType::UInt64)?
-        .u64()?
-        .iter()
-        .map(|n| n.unwrap_or(0))
-        .collect();
+    let behind = counts_of(&df, "__c")?;
     // NaN and infinities draw nothing true: no bar.
     let measures: Vec<Option<f64>> = df
         .column("__a")?
@@ -2813,12 +2853,7 @@ pub fn prepare_bar_aggregate(
         bars: Vec::new(),
         more: 0,
         no_value: 0,
-        rows: RowsRead {
-            total_rows: rows,
-            sample_size: None,
-            envelope_steps: None,
-            seed: None,
-        },
+        rows: RowsRead::every(rows),
         value_dtype: if whole {
             DataType::Int64
         } else {

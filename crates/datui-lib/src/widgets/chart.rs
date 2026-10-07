@@ -11,11 +11,12 @@ use ratatui::{
 
 use crate::chart_data::{
     AxisNumbers, BarData, BoxPlotData, HeatmapData, HistogramData, KdeData, XAxisTemporalKind,
-    segments,
+    other_at, segments,
 };
 use crate::chart_modal::{
     Aggregate, ChartFocus, ChartModal, Cumulative, Mark, PickerFor, ShelfUse, TimeUnit,
 };
+use crate::chart_plot::{Axis, Curve, LinesData, Plot, PlotData};
 use crate::config::Theme;
 use crate::glyphs::Glyphs;
 use crate::pointer::Hit;
@@ -39,7 +40,9 @@ const HEATMAP_X_LABEL_HEIGHT: u16 = 2;
 /// What the chart area shows: the plot, the notes over it about its input, or the
 /// reason it could not be prepared.
 pub struct ChartView<'a> {
-    pub data: ChartRenderData<'a>,
+    /// What to plot: `None` while a kind other than a line or scatter waits for its
+    /// data, or a shelf it needs is empty.
+    pub plot: Option<Plot<'a>>,
     /// Dimmed at the right of the title row: a sample, values a range left out.
     pub notes: Vec<String>,
     /// Preparing the selection failed; shown in place of an empty plot.
@@ -49,67 +52,6 @@ pub struct ChartView<'a> {
     pub working: Option<Working<'a>>,
     /// The view's schema, so column names take their type's color.
     pub schema: Option<&'a Schema>,
-}
-
-pub enum ChartRenderData<'a> {
-    XY {
-        series: Option<&'a Vec<Vec<(f64, f64)>>>,
-        /// Per series, where its line starts again after a gap.
-        breaks: Option<&'a Vec<Vec<usize>>>,
-        /// The series before any log, for the crosshair's readout; `None` reads
-        /// `series`.
-        values: Option<&'a Vec<Vec<(f64, f64)>>>,
-        /// Each series' name: its Y column or its color group.
-        names: &'a [String],
-        x_axis_kind: XAxisTemporalKind,
-        x_bounds: Option<(f64, f64)>,
-        numbers: PlotNumbers,
-        /// The last series is Other, drawn in `dimmed` under the rest.
-        other: bool,
-    },
-    Histogram {
-        data: Option<&'a HistogramData>,
-        /// The column's numbers; the counts are the table's.
-        x: AxisNumbers,
-    },
-    BoxPlot {
-        data: Option<&'a BoxPlotData>,
-        y: AxisNumbers,
-    },
-    Kde {
-        data: Option<&'a KdeData>,
-        x: AxisNumbers,
-    },
-    Heatmap {
-        data: Option<&'a HeatmapData>,
-        numbers: PlotNumbers,
-    },
-    Bar {
-        data: Option<&'a BarData>,
-    },
-}
-
-impl ChartRenderData<'_> {
-    /// Whether there is a plot to draw: data, or a line chart's axes, which stand
-    /// empty until their series arrive.
-    fn draws_plot(&self) -> bool {
-        match self {
-            Self::XY { .. } => true,
-            Self::Histogram { data, .. } => data.is_some(),
-            Self::BoxPlot { data, .. } => data.is_some(),
-            Self::Kde { data, .. } => data.is_some(),
-            Self::Heatmap { data, .. } => data.is_some(),
-            Self::Bar { data } => data.is_some(),
-        }
-    }
-}
-
-/// What each axis holds, so its ticks print as the table prints its columns: whole
-/// for an integer column, grouped and separated in the table's number format.
-#[derive(Default)]
-pub struct PlotNumbers {
-    pub x: AxisNumbers,
-    pub y: AxisNumbers,
 }
 
 /// One line of the panel.
@@ -733,9 +675,7 @@ pub fn render_chart_view(
             .render(chart_inner, buf);
     } else {
         match view.working {
-            Some(working) if !view.data.draws_plot() => {
-                working.render_centered(chart_inner, buf, ctx)
-            }
+            Some(working) if view.plot.is_none() => working.render_centered(chart_inner, buf, ctx),
             working => {
                 modal.plot = render_plot(
                     chart_inner,
@@ -743,7 +683,7 @@ pub fn render_chart_view(
                     modal,
                     theme,
                     ctx,
-                    view.data,
+                    view.plot,
                     crate::glyphs::get(),
                 );
                 if let Some(working) = working {
@@ -779,92 +719,61 @@ fn render_plot(
     modal: &ChartModal,
     theme: &Theme,
     ctx: &RenderContext,
-    data: ChartRenderData<'_>,
+    plot: Option<Plot<'_>>,
     g: &Glyphs,
 ) -> Option<PlotPlace> {
-    let text_secondary = theme.get("text_secondary");
+    let text_secondary = theme.text_secondary();
     let hint = |buf: &mut ratatui::buffer::Buffer| {
         Paragraph::new(missing(modal))
             .style(Style::default().fg(text_secondary))
             .centered()
             .render(area, buf);
     };
-    match data {
-        ChartRenderData::XY {
-            series,
-            breaks,
-            values,
-            names,
-            x_axis_kind,
-            x_bounds,
-            numbers,
-            other,
-        } => {
-            let xy = XYData {
-                series,
-                breaks,
-                values,
-                names,
-                x_axis_kind,
-                x_bounds,
-                numbers,
-                other,
-            };
-            return render_xy_chart(area, buf, modal, theme, xy, text_secondary, g);
-        }
-        ChartRenderData::Histogram { data: None, .. }
-        | ChartRenderData::BoxPlot { data: None, .. }
-        | ChartRenderData::Kde { data: None, .. }
-        | ChartRenderData::Heatmap { data: None, .. } => hint(buf),
-        ChartRenderData::Histogram {
-            data: Some(data),
-            x,
-        } => {
-            let numbers = PlotNumbers {
-                x,
-                y: if data.share {
-                    AxisNumbers::measure(&ctx.number_format, "Share")
-                } else {
-                    AxisNumbers::count(&ctx.number_format)
-                },
-            };
-            let x_title = modal.axis_title(&data.column);
-            let look = HistogramLook {
-                grid: modal.grid,
-                legend: modal.show_legend,
-                x_title: &x_title,
-            };
-            render_histogram_chart(area, buf, &look, theme, data, numbers, g)
-        }
-        ChartRenderData::BoxPlot {
-            data: Some(data),
-            y,
-        } => render_box_plot_chart(area, buf, modal, theme, data, y, g),
-        ChartRenderData::Kde {
-            data: Some(data),
-            x,
-        } => {
-            let numbers = PlotNumbers {
-                x: x.fractional(),
-                y: AxisNumbers::measure(&ctx.number_format, "Density"),
-            };
-            render_kde_chart(area, buf, modal, theme, data, numbers, g)
-        }
-        ChartRenderData::Heatmap {
-            data: Some(data),
-            numbers,
-        } => render_heatmap_chart(area, buf, theme, data, numbers, text_secondary, g),
-        ChartRenderData::Bar { data } => {
-            let picked = ChartModal::is_complete(&modal.effective_spec());
+    let picked = || ChartModal::is_complete(&modal.effective_spec());
+    let Some(plot) = plot else {
+        if modal.mark() == Mark::Bar {
             render_bar_chart(
                 area,
                 buf,
                 (ctx, theme),
-                data,
-                (picked, modal.show_legend),
+                None,
+                (picked(), modal.show_legend),
                 g,
-            )
+            );
+        } else {
+            hint(buf);
         }
+        return None;
+    };
+    let (x, y) = (&plot.x, &plot.y);
+    match &*plot.data {
+        PlotData::Lines(_) | PlotData::XRange(_) => {
+            return render_xy_chart(area, buf, modal, theme, &plot, text_secondary, g);
+        }
+        PlotData::Histogram(data) => {
+            let look = HistogramLook {
+                grid: modal.grid,
+                legend: modal.show_legend,
+            };
+            render_histogram_chart(area, buf, &look, theme, (data, &plot.curves()), (x, y), g)
+        }
+        PlotData::Box(data) => {
+            render_box_plot_chart(area, buf, modal, theme, data, (&x.title, y), g)
+        }
+        PlotData::Kde(data) => {
+            render_kde_chart(area, buf, modal, theme, (data, &plot.curves()), (x, y), g)
+        }
+        PlotData::Heatmap(data) => {
+            render_heatmap_chart(area, buf, theme, data, (x, y), text_secondary, g)
+        }
+        PlotData::Bars(data) => render_bar_chart(
+            area,
+            buf,
+            (ctx, theme),
+            Some(data),
+            (picked(), modal.show_legend),
+            g,
+        ),
     }
     None
 }
@@ -1132,80 +1041,46 @@ fn render_grouped_bars(
     }
 }
 
-/// The line or scatter chart's prepared series, as `ChartRenderData::XY` carries
-/// them.
-struct XYData<'a> {
-    series: Option<&'a Vec<Vec<(f64, f64)>>>,
-    breaks: Option<&'a Vec<Vec<usize>>>,
-    values: Option<&'a Vec<Vec<(f64, f64)>>>,
-    names: &'a [String],
-    x_axis_kind: XAxisTemporalKind,
-    x_bounds: Option<(f64, f64)>,
-    numbers: PlotNumbers,
-    other: bool,
-}
-
-/// One XY series with where its line breaks.
-struct SeriesRuns<'a> {
-    /// Its place among every series, which picks its color: an empty series
-    /// before it keeps its color too.
-    index: usize,
-    name: &'a str,
-    points: &'a [(f64, f64)],
-    breaks: &'a [usize],
-}
-
 fn render_xy_chart(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     modal: &ChartModal,
     theme: &Theme,
-    xy: XYData<'_>,
+    plot: &Plot<'_>,
     text_secondary: ratatui::style::Color,
     g: &Glyphs,
 ) -> Option<PlotPlace> {
-    let XYData {
-        series: chart_data,
-        breaks,
-        values,
-        names,
-        x_axis_kind,
-        x_bounds,
-        numbers,
-        other,
-    } = xy;
-    let other_at = other.then(|| names.len().saturating_sub(1));
-    let scatter = modal.mark() == Mark::Scatter;
-    let graph_type = if scatter {
+    let empty = LinesData::default();
+    let (lines, x_bounds) = match &*plot.data {
+        PlotData::Lines(lines) => (lines, None),
+        PlotData::XRange(range) => (&empty, Some((range.x_min, range.x_max))),
+        _ => return None,
+    };
+    let other_at = lines.other.then(|| lines.names.len().saturating_sub(1));
+    let graph_type = if plot.scatter {
         GraphType::Scatter
     } else {
         GraphType::Line
     };
-    let y_starts_at_zero = modal.y_starts_at_zero;
-    let log_scale = modal.log_scale;
-    let show_legend = modal.show_legend;
-    let spec = modal.effective_spec();
-    let y_columns: Vec<String> = if spec.encoding.y.aggregate == Aggregate::Count {
-        vec!["count".to_string()]
-    } else {
-        spec.encoding.y.field.clone()
-    };
+    let (x, y) = (&plot.x, &plot.y);
+    let drawn: Vec<_> = plot.drawn().collect();
 
-    let has_x_selected = spec.encoding.x.field.is_some();
-    let has_data = chart_data
-        .map(|d| d.iter().any(|s| !s.is_empty()))
-        .unwrap_or(false);
-
-    if has_x_selected && !has_data {
-        let x_name = spec.encoding.x.field.as_deref().unwrap_or("X");
-        let y_names: String = y_columns.join(", ");
+    if drawn.is_empty() {
+        if modal.x().is_none() {
+            Paragraph::new(missing(modal))
+                .style(Style::default().fg(text_secondary))
+                .centered()
+                .render(area, buf);
+            return None;
+        }
+        // The axes stand empty until the series arrive.
         const PLACEHOLDER_MIN: f64 = 0.0;
         const PLACEHOLDER_MAX: f64 = 1.0;
         let (x_min, x_max) = x_bounds.unwrap_or((PLACEHOLDER_MIN, PLACEHOLDER_MAX));
         let axes = plot_axes(
             theme,
-            x_axis([x_min, x_max], x_axis_kind, &numbers.x, x_name),
-            AxisSpec::y_numbers([PLACEHOLDER_MIN, PLACEHOLDER_MAX], &numbers.y, &y_names),
+            x_axis([x_min, x_max], x.kind, &x.numbers, &x.title),
+            AxisSpec::y_numbers([PLACEHOLDER_MIN, PLACEHOLDER_MAX], &y.numbers, &y.title),
             g.plot.line,
             modal.grid,
         );
@@ -1214,201 +1089,113 @@ fn render_xy_chart(
         return None;
     }
 
-    if has_data {
-        if let Some(data) = chart_data {
-            let mut all_x_min = f64::INFINITY;
-            let mut all_x_max = f64::NEG_INFINITY;
-            let mut all_y_min = f64::INFINITY;
-            let mut all_y_max = f64::NEG_INFINITY;
+    // Kept with the prepared series; worked out here only for series made here.
+    let [all_x_min, all_x_max, all_y_min, all_y_max] =
+        lines.shown_bounds(y.log).unwrap_or([0.0; 4]);
 
-            // Data is already in display form (log-scaled when log_scale) from cache; use as-is.
-            let no_breaks = Vec::new();
-            let names_and_points: Vec<SeriesRuns> = data
-                .iter()
-                .zip(names.iter())
-                .enumerate()
-                .filter_map(|(i, (points, name))| {
-                    if points.is_empty() {
-                        return None;
-                    }
-                    let series_breaks = breaks.and_then(|b| b.get(i)).unwrap_or(&no_breaks);
-                    Some(SeriesRuns {
-                        index: i,
-                        name: name.as_str(),
-                        points: points.as_slice(),
-                        breaks: series_breaks.as_slice(),
-                    })
-                })
-                .collect();
+    // A scatter of few points marks each with a dot a cell wide; past one point per
+    // four cells, the line's finer marks keep them apart.
+    let points: usize = drawn.iter().map(|s| s.points.len()).sum();
+    let cells = usize::from(area.width) * usize::from(area.height);
+    let finer = resolution(g.plot.line) > resolution(g.plot.point);
+    let marker = match plot.scatter {
+        false => g.plot.line,
+        true if finer && points * 4 > cells => g.plot.line,
+        true => g.plot.point,
+    };
 
-            for SeriesRuns { points, .. } in &names_and_points {
-                let (x_min, x_max) = points
-                    .iter()
-                    .map(|&(x, _)| x)
-                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), x| {
-                        (a.min(x), b.max(x))
-                    });
-                let (y_min, y_max) = points
-                    .iter()
-                    .map(|&(_, y)| y)
-                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), y| {
-                        (a.min(y), b.max(y))
-                    });
-                all_x_min = all_x_min.min(x_min);
-                all_x_max = all_x_max.max(x_max);
-                all_y_min = all_y_min.min(y_min);
-                all_y_max = all_y_max.max(y_max);
-            }
+    // A series is drawn as its runs between gaps, so a line never bridges a missing
+    // value. Other first, so the series drawn over it keep their colors.
+    let curves = plot.curves();
+    let datasets = curve_datasets(&curves, theme, marker, graph_type);
 
-            // A scatter of few points marks each with a dot a cell wide; past one
-            // point per four cells, the line's finer marks keep them apart.
-            let points: usize = names_and_points.iter().map(|s| s.points.len()).sum();
-            let cells = usize::from(area.width) * usize::from(area.height);
-            let finer = resolution(g.plot.line) > resolution(g.plot.point);
-            let marker = match scatter {
-                false => g.plot.line,
-                true if finer && points * 4 > cells => g.plot.line,
-                true => g.plot.point,
-            };
-
-            // A series is drawn as its runs between gaps, so a line never bridges a
-            // missing value.
-            // Other first, so the series drawn over it keep their colors.
-            let datasets: Vec<Dataset> = names_and_points
-                .iter()
-                .filter(|s| Some(s.index) == other_at)
-                .chain(
-                    names_and_points
-                        .iter()
-                        .filter(|s| Some(s.index) != other_at),
-                )
-                .flat_map(|series| {
-                    let style = series_style(theme, series.index, other_at);
-                    segments(series.points, series.breaks)
-                        .into_iter()
-                        .map(move |run| {
-                            Dataset::default()
-                                .marker(marker)
-                                .graph_type(graph_type)
-                                .style(style)
-                                .data(run)
-                        })
-                })
-                .collect();
-
-            if datasets.is_empty() {
-                Paragraph::new("No valid data points")
-                    .style(Style::default().fg(text_secondary))
-                    .centered()
-                    .render(area, buf);
-                return None;
-            }
-
-            let y_min_bounds = if y_starts_at_zero {
-                0.0_f64.min(all_y_min)
-            } else {
-                all_y_min
-            };
-            let y_max_bounds = if all_y_max > y_min_bounds {
-                all_y_max
-            } else {
-                y_min_bounds + 1.0
-            };
-            let x_min_bounds = if all_x_max > all_x_min {
-                all_x_min
-            } else {
-                all_x_min - 0.5
-            };
-            let x_max_bounds = if all_x_max > all_x_min {
-                all_x_max
-            } else {
-                all_x_min + 0.5
-            };
-
-            let x_axis_title = spec
-                .encoding
-                .x
-                .field
-                .as_deref()
-                .map(|s| modal.axis_title(s))
-                .unwrap_or_default();
-            let y_axis_title = y_columns
-                .iter()
-                .map(|c| modal.axis_title(c))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let y_bounds = [y_min_bounds, y_max_bounds];
-            // On a log scale a tick stands for its value before the log.
-            let y = if log_scale {
-                AxisSpec::y_log(y_bounds, &numbers.y.clone().fractional(), &y_axis_title)
-            } else {
-                AxisSpec::y_numbers(y_bounds, &numbers.y, &y_axis_title)
-            };
-            let mut axes = plot_axes(
-                theme,
-                x_axis(
-                    [x_min_bounds, x_max_bounds],
-                    x_axis_kind,
-                    &numbers.x,
-                    &x_axis_title,
-                ),
-                y,
-                marker,
-                modal.grid,
-            );
-            axes.legend = legend(
-                show_legend,
-                names_and_points
-                    .iter()
-                    .map(|s| (s.name, series_style(theme, s.index, other_at))),
-            );
-            let x_bounds = [x_min_bounds, x_max_bounds];
-            let sub = resolution(marker).0;
-            // The crosshair's readout takes the rows under the plot while the plot
-            // has the keys.
-            let values = values.unwrap_or(data);
-            let cursor = modal
-                .cursor_x
-                .filter(|_| modal.plot_focus)
-                .and_then(|x| crosshair::nearest(&crosshair::xs(values), x));
-            let readout = cursor
-                .map(|x| {
-                    let written = crosshair::format_x(x, x_axis_kind, &numbers.x);
-                    let entries = readout_entries(
-                        theme,
-                        g,
-                        (x, &x_axis_title, written),
-                        &numbers.y,
-                        values,
-                        names,
-                        other_at,
-                    );
-                    crosshair::readout_lines(&entries, area.width as usize, g)
-                })
-                .unwrap_or_default();
-            let rows = (readout.len() as u16).min(area.height / 3);
-            let [plot_area, readout_area] =
-                Layout::vertical([Constraint::Fill(1), Constraint::Length(rows)]).areas(area);
-            let frame = axes.render(Chart::new(datasets), plot_area, buf, g);
-            let place = PlotPlace {
-                graph: frame.graph,
-                x_bounds,
-                sub,
-            };
-            if let Some(x) = cursor {
-                let style = Style::default().fg(theme.get("accent"));
-                crosshair::draw(buf, &place, x, style, g);
-                Paragraph::new(readout).render(readout_area, buf);
-            }
-            return Some(place);
-        }
+    let y_min_bounds = if plot.y_from_zero {
+        0.0_f64.min(all_y_min)
     } else {
-        Paragraph::new(missing(modal))
-            .style(Style::default().fg(text_secondary))
-            .centered()
-            .render(area, buf);
+        all_y_min
+    };
+    let y_max_bounds = if all_y_max > y_min_bounds {
+        all_y_max
+    } else {
+        y_min_bounds + 1.0
+    };
+    let (x_min_bounds, x_max_bounds) = if all_x_max > all_x_min {
+        (all_x_min, all_x_max)
+    } else {
+        (all_x_min - 0.5, all_x_min + 0.5)
+    };
+
+    let y_bounds = [y_min_bounds, y_max_bounds];
+    // On a log scale a tick stands for its value before the log.
+    let y_numbers = if y.log {
+        y.numbers.clone().fractional()
+    } else {
+        y.numbers.clone()
+    };
+    let y_spec = if y.log {
+        AxisSpec::y_log(y_bounds, &y_numbers, &y.title)
+    } else {
+        AxisSpec::y_numbers(y_bounds, &y_numbers, &y.title)
+    };
+    let mut axes = plot_axes(
+        theme,
+        x_axis([x_min_bounds, x_max_bounds], x.kind, &x.numbers, &x.title),
+        y_spec,
+        marker,
+        modal.grid,
+    );
+    axes.legend = legend(
+        modal.show_legend,
+        drawn
+            .iter()
+            .map(|s| (s.name, series_style(theme, s.index, other_at))),
+    );
+    let x_bounds = [x_min_bounds, x_max_bounds];
+    let sub = resolution(marker).0;
+    // The crosshair's readout takes the rows under the plot while the plot has the
+    // keys.
+    // Before any log: what the readout reads.
+    let values = &lines.series[..];
+    let cursor = modal
+        .cursor_x
+        .filter(|_| modal.plot_focus)
+        .and_then(|cursor| {
+            if lines.xs.is_empty() {
+                crosshair::nearest(&crosshair::xs(values), cursor)
+            } else {
+                crosshair::nearest(&lines.xs, cursor)
+            }
+        });
+    let readout = cursor
+        .map(|at| {
+            let written = crosshair::format_x(at, x.kind, &x.numbers);
+            let entries = readout_entries(
+                theme,
+                g,
+                (at, &x.title, written),
+                &y.numbers,
+                values,
+                &lines.names,
+                other_at,
+            );
+            crosshair::readout_lines(&entries, area.width as usize, g)
+        })
+        .unwrap_or_default();
+    let rows = (readout.len() as u16).min(area.height / 3);
+    let [plot_area, readout_area] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(rows)]).areas(area);
+    let frame = axes.render(Chart::new(datasets), plot_area, buf, g);
+    let place = PlotPlace {
+        graph: frame.graph,
+        x_bounds,
+        sub,
+    };
+    if let Some(at) = cursor {
+        let style = Style::default().fg(theme.accent());
+        crosshair::draw(buf, &place, at, style, g);
+        Paragraph::new(readout).render(readout_area, buf);
     }
-    None
+    Some(place)
 }
 
 /// The readout at the crosshair's `x`: x under its title as `written`, then each
@@ -1422,11 +1209,11 @@ fn readout_entries(
     names: &[String],
     other_at: Option<usize>,
 ) -> Vec<crosshair::Entry> {
-    let value_style = Style::default().fg(theme.get("text_primary"));
+    let value_style = Style::default().fg(theme.text_primary());
     let x_title = if x_title.is_empty() { "x" } else { x_title };
     let mut entries = vec![crosshair::Entry {
         name: x_title.to_string(),
-        name_style: Style::default().fg(theme.get("text_secondary")),
+        name_style: Style::default().fg(theme.text_secondary()),
         value: written,
         value_style,
     }];
@@ -1437,7 +1224,7 @@ fn readout_entries(
     {
         let (value, value_style) = match value {
             Some(v) => (crosshair::format_number(v, y), value_style),
-            None => (g.null.to_string(), Style::default().fg(theme.get("dimmed"))),
+            None => (g.null.to_string(), Style::default().fg(theme.dimmed())),
         };
         entries.push(crosshair::Entry {
             name: name.clone(),
@@ -1458,9 +1245,9 @@ fn plot_axes<'a>(
     marker: ratatui::symbols::Marker,
     grid: bool,
 ) -> PlotAxes<'a> {
-    let style = Style::default().fg(theme.get("text_primary"));
+    let style = Style::default().fg(theme.text_primary());
     PlotAxes {
-        grid: grid.then(|| Style::default().fg(theme.get("chart_grid"))),
+        grid: grid.then(|| Style::default().fg(theme.chart_grid())),
         ..PlotAxes::new(x, y, style, marker)
     }
 }
@@ -1483,28 +1270,47 @@ fn legend<'a>(show: bool, entries: impl Iterator<Item = (&'a str, Style)>) -> Op
     (show && entries.len() > 1).then_some(Legend { entries })
 }
 
+/// A dataset per run of each curve, in the order they come: Other first, so the
+/// series drawn over it keep their colors.
+fn curve_datasets<'a>(
+    curves: &'a [Curve<'_>],
+    theme: &Theme,
+    marker: ratatui::symbols::Marker,
+    graph_type: GraphType,
+) -> Vec<Dataset<'a>> {
+    curves
+        .iter()
+        .flat_map(|curve| {
+            let style = series_style(theme, curve.index, curve.other.then_some(curve.index));
+            segments(&curve.points, curve.breaks)
+                .into_iter()
+                .map(move |run| {
+                    Dataset::default()
+                        .marker(marker)
+                        .graph_type(graph_type)
+                        .style(style)
+                        .data(run)
+                })
+        })
+        .collect()
+}
+
 /// The style series `i` draws in: its palette color, or `dimmed` for Other, the
 /// rows of every value without a series of its own.
 fn series_style(theme: &Theme, i: usize, other_at: Option<usize>) -> Style {
     if other_at == Some(i) {
-        return Style::default().fg(theme.get("dimmed"));
+        return Style::default().fg(theme.dimmed());
     }
     let colors = theme.series_colors();
     Style::default().fg(colors[i % colors.len()])
 }
 
-/// Where Other is among `n` series, when the last one is.
-fn other_at(other: bool, n: usize) -> Option<usize> {
-    (other && n > 0).then(|| n - 1)
-}
-
 /// A histogram: filled bars, or split by a color, each group's bins as a step
 /// outline over the others, since filled bars would hide one another.
-/// How a histogram is drawn: its grid, its legend, and the X axis's title.
-pub struct HistogramLook<'a> {
+/// How a histogram is drawn: its grid and its legend.
+pub struct HistogramLook {
     pub grid: bool,
     pub legend: bool,
-    pub x_title: &'a str,
 }
 
 /// A histogram of `data` in `area`, in the chart view's marks: for the Value Counts
@@ -1517,28 +1323,41 @@ pub fn render_histogram(
     data: &HistogramData,
     x: AxisNumbers,
 ) {
-    let numbers = PlotNumbers {
-        x,
-        y: AxisNumbers::count(&ctx.number_format),
+    let x = Axis {
+        title: data.column.clone(),
+        numbers: x,
+        ..Axis::default()
+    };
+    let y = Axis {
+        title: "Count".to_string(),
+        numbers: AxisNumbers::count(&ctx.number_format),
+        ..Axis::default()
     };
     let look = HistogramLook {
         grid: false,
         legend: false,
-        x_title: &data.column,
     };
-    render_histogram_chart(area, buf, &look, theme, data, numbers, crate::glyphs::get());
+    render_histogram_chart(
+        area,
+        buf,
+        &look,
+        theme,
+        (data, &[]),
+        (&x, &y),
+        crate::glyphs::get(),
+    );
 }
 
 fn render_histogram_chart(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
-    look: &HistogramLook<'_>,
+    look: &HistogramLook,
     theme: &Theme,
-    data: &HistogramData,
-    numbers: PlotNumbers,
+    (data, curves): (&HistogramData, &[Curve<'_>]),
+    (x, y): (&Axis, &Axis),
     g: &Glyphs,
 ) {
-    let text_secondary = theme.get("text_secondary");
+    let text_secondary = theme.text_secondary();
     if data.bins.is_empty() {
         Paragraph::new("No data for histogram")
             .style(Style::default().fg(text_secondary))
@@ -1560,8 +1379,6 @@ fn render_histogram_chart(
         1.0
     };
 
-    let y_title = if data.share { "Share" } else { "Count" };
-    let x_title = look.x_title;
     let marker = if data.groups.is_empty() {
         g.plot.bar
     } else {
@@ -1569,29 +1386,14 @@ fn render_histogram_chart(
     };
     let mut axes = plot_axes(
         theme,
-        AxisSpec::numbers([x_min_bounds, x_max_bounds], &numbers.x, x_title),
-        AxisSpec::y_numbers([y_min_bounds, y_max_bounds], &numbers.y, y_title),
+        AxisSpec::numbers([x_min_bounds, x_max_bounds], &x.numbers, &x.title),
+        AxisSpec::y_numbers([y_min_bounds, y_max_bounds], &y.numbers, &y.title),
         marker,
         look.grid,
     );
     if !data.groups.is_empty() {
-        let steps = step_outlines(data);
-        let other = other_at(data.other, steps.len());
-        // Other first, under the rest.
-        let mut datasets: Vec<(usize, Dataset)> = steps
-            .iter()
-            .enumerate()
-            .map(|(i, points)| {
-                let dataset = Dataset::default()
-                    .graph_type(GraphType::Line)
-                    .marker(marker)
-                    .style(series_style(theme, i, other))
-                    .data(points);
-                (i, dataset)
-            })
-            .collect();
-        datasets.sort_by_key(|(i, _)| Some(*i) != other);
-        let datasets: Vec<Dataset> = datasets.into_iter().map(|(_, d)| d).collect();
+        let other = other_at(data.other, data.groups.len());
+        let datasets = curve_datasets(curves, theme, marker, GraphType::Line);
         axes.legend = legend(
             look.legend,
             data.groups
@@ -1603,9 +1405,9 @@ fn render_histogram_chart(
         return;
     }
 
-    let columns = axes.frame(area).graph.width;
-    let points = bin_columns(data, [x_min_bounds, x_max_bounds], columns);
-    let style = Style::default().fg(theme.get("chart_1"));
+    let frame = axes.frame(area);
+    let points = bin_columns(data, [x_min_bounds, x_max_bounds], frame.graph.width);
+    let style = Style::default().fg(theme.chart_1());
     let dataset = Dataset::default()
         .name("")
         .marker(g.plot.bar)
@@ -1613,27 +1415,7 @@ fn render_histogram_chart(
         .style(style)
         .data(&points);
 
-    axes.render(Chart::new(vec![dataset]), area, buf, g);
-}
-
-/// Each group's bins as the outline of its bars: up the left edge of each bin,
-/// across its top, and down at the end.
-fn step_outlines(data: &HistogramData) -> Vec<Vec<(f64, f64)>> {
-    let n = data.bins.len().max(1);
-    let width = (data.x_max - data.x_min) / n as f64;
-    data.groups
-        .iter()
-        .map(|group| {
-            let mut points = vec![(data.x_min, 0.0)];
-            for (i, &count) in group.counts.iter().enumerate() {
-                let x0 = data.x_min + i as f64 * width;
-                points.push((x0, count));
-                points.push((x0 + width, count));
-            }
-            points.push((data.x_max, 0.0));
-            points
-        })
-        .collect()
+    axes.render_in(frame, Chart::new(vec![dataset]), buf, g);
 }
 
 /// A histogram's bars as a column of the plot each, `columns` wide over `bounds`: a
@@ -1664,11 +1446,11 @@ fn render_kde_chart(
     buf: &mut ratatui::buffer::Buffer,
     modal: &ChartModal,
     theme: &Theme,
-    data: &KdeData,
-    numbers: PlotNumbers,
+    (data, curves): (&KdeData, &[Curve<'_>]),
+    (x, y): (&Axis, &Axis),
     g: &Glyphs,
 ) {
-    let text_secondary = theme.get("text_secondary");
+    let text_secondary = theme.text_secondary();
     if data.series.is_empty() {
         Paragraph::new("No data for KDE")
             .style(Style::default().fg(text_secondary))
@@ -1678,28 +1460,12 @@ fn render_kde_chart(
     }
 
     let other = other_at(data.other, data.series.len());
-    let mut datasets: Vec<(usize, Dataset)> = data
-        .series
-        .iter()
-        .enumerate()
-        .map(|(i, s)| {
-            let dataset = Dataset::default()
-                .graph_type(GraphType::Line)
-                .marker(g.plot.line)
-                .style(series_style(theme, i, other))
-                .data(&s.points);
-            (i, dataset)
-        })
-        .collect();
-    // Other first, under the rest.
-    datasets.sort_by_key(|(i, _)| Some(*i) != other);
-    let datasets: Vec<Dataset> = datasets.into_iter().map(|(_, d)| d).collect();
+    let datasets = curve_datasets(curves, theme, g.plot.line, GraphType::Line);
 
-    let x_title = modal.x().map(|x| modal.axis_title(x)).unwrap_or_default();
     let mut axes = plot_axes(
         theme,
-        AxisSpec::numbers([data.x_min, data.x_max], &numbers.x, &x_title),
-        AxisSpec::y_numbers([0.0, data.y_max], &numbers.y, "Density"),
+        AxisSpec::numbers([data.x_min, data.x_max], &x.numbers, &x.title),
+        AxisSpec::y_numbers([0.0, data.y_max], &y.numbers, &y.title),
         g.plot.line,
         modal.grid,
     );
@@ -1719,10 +1485,10 @@ fn render_box_plot_chart(
     modal: &ChartModal,
     theme: &Theme,
     data: &BoxPlotData,
-    y_numbers: AxisNumbers,
+    (x_title, y): (&str, &Axis),
     g: &Glyphs,
 ) {
-    let text_secondary = theme.get("text_secondary");
+    let text_secondary = theme.text_secondary();
     if data.stats.is_empty() {
         Paragraph::new("No data for box plot")
             .style(Style::default().fg(text_secondary))
@@ -1733,32 +1499,19 @@ fn render_box_plot_chart(
 
     let mut segments: Vec<Vec<(f64, f64)>> = Vec::new();
     let mut segment_styles: Vec<Style> = Vec::new();
-    let box_half = 0.3;
-    let cap_half = 0.2;
     for (i, stat) in data.stats.iter().enumerate() {
-        let x = i as f64;
-        let style = series_style(theme, i, None);
-        segments.push(vec![
-            (x - box_half, stat.q1),
-            (x + box_half, stat.q1),
-            (x + box_half, stat.q3),
-            (x - box_half, stat.q3),
-            (x - box_half, stat.q1),
-        ]);
-        segment_styles.push(style);
-        segments.push(vec![
-            (x - box_half, stat.median),
-            (x + box_half, stat.median),
-        ]);
-        segment_styles.push(style);
-        segments.push(vec![(x, stat.min), (x, stat.q1)]);
-        segment_styles.push(style);
-        segments.push(vec![(x, stat.q3), (x, stat.max)]);
-        segment_styles.push(style);
-        segments.push(vec![(x - cap_half, stat.min), (x + cap_half, stat.min)]);
-        segment_styles.push(style);
-        segments.push(vec![(x - cap_half, stat.max), (x + cap_half, stat.max)]);
-        segment_styles.push(style);
+        let marks = stat.marks(i as f64, 0.3, 0.2);
+        for segment in [
+            &marks.outline[..],
+            &marks.median,
+            &marks.low,
+            &marks.high,
+            &marks.low_cap,
+            &marks.high_cap,
+        ] {
+            segments.push(segment.to_vec());
+            segment_styles.push(series_style(theme, i, None));
+        }
     }
 
     let datasets: Vec<Dataset> = segments
@@ -1781,22 +1534,13 @@ fn render_box_plot_chart(
         let stat = data.stats.get(i as usize)?;
         (level == 0).then(|| stat.name.clone())
     };
-    let spec = modal.effective_spec();
-    let x_title = spec.encoding.x.field.as_deref().unwrap_or("");
-    let y_title = spec
-        .encoding
-        .y
-        .field
-        .first()
-        .map(|y| modal.axis_title(y))
-        .unwrap_or_default();
     let x = AxisSpec::fixed(
         [x_min_bounds, x_max_bounds],
         (0..data.stats.len()).map(|i| i as f64).collect(),
         Box::new(name),
         x_title,
     );
-    let y = AxisSpec::y_numbers([data.y_min, data.y_max], &y_numbers, &y_title);
+    let y = AxisSpec::y_numbers([data.y_min, data.y_max], &y.numbers, &y.title);
     plot_axes(theme, x, y, g.plot.point, modal.grid).render(Chart::new(datasets), area, buf, g);
 }
 
@@ -1805,7 +1549,7 @@ fn render_heatmap_chart(
     buf: &mut ratatui::buffer::Buffer,
     theme: &Theme,
     data: &HeatmapData,
-    numbers: PlotNumbers,
+    (x, y): (&Axis, &Axis),
     text_secondary: ratatui::style::Color,
     g: &Glyphs,
 ) {
@@ -1827,13 +1571,13 @@ fn render_heatmap_chart(
         .split(area);
     // The axes' titles sit as every plot's do: Y over its labels, X at the right
     // under its own.
-    let title_style = Style::default().fg(theme.get("text_primary"));
-    let y_title = cut(&data.y_column, layout[0].width as usize, g);
+    let title_style = Style::default().fg(theme.text_primary());
+    let y_title = cut(&y.title, layout[0].width as usize, g);
     buf.set_string(layout[0].x, layout[0].y, &y_title, title_style);
 
     const Y_LABEL_MAX: u16 = 12;
     // Nice values up the side, one per few rows, each on the row its value falls in.
-    let y_axis = AxisSpec::numbers([data.y_min, data.y_max], &numbers.y, "");
+    let y_axis = AxisSpec::numbers([data.y_min, data.y_max], &y.numbers, "");
     let rows = layout[1];
     let y_track = Track {
         start: rows.y,
@@ -1853,7 +1597,7 @@ fn render_heatmap_chart(
         return;
     }
 
-    let label_style = Style::default().fg(theme.get("text_primary"));
+    let label_style = Style::default().fg(theme.text_primary());
     for (row, label) in &y_labels {
         let pad = usize::from(y_label_width).saturating_sub(label.width()) as u16;
         buf.set_stringn(
@@ -1865,33 +1609,33 @@ fn render_heatmap_chart(
         );
     }
 
-    let intensity_chars: Vec<char> = " .:-=+*#%@".chars().collect();
+    // Ten steps of density, the same in either glyph set.
+    const RAMP: [&str; 10] = [" ", ".", ":", "-", "=", "+", "*", "#", "%", "@"];
+    let style = Style::default().fg(theme.chart_1());
+    let max_x_bin = data.x_bins.saturating_sub(1) as f64;
+    let max_y_bin = data.y_bins.saturating_sub(1) as f64;
     for row in 0..plot_area.height {
+        let y_bin_raw = ((row as f64 / plot_area.height as f64) * data.y_bins as f64).floor();
+        let y_bin = data
+            .y_bins
+            .saturating_sub(1)
+            .saturating_sub(y_bin_raw.clamp(0.0, max_y_bin) as usize);
         for col in 0..plot_area.width {
-            let max_x_bin = data.x_bins.saturating_sub(1) as f64;
-            let max_y_bin = data.y_bins.saturating_sub(1) as f64;
             let x_bin = ((col as f64 / plot_area.width as f64) * data.x_bins as f64)
                 .floor()
                 .clamp(0.0, max_x_bin) as usize;
-            let y_bin_raw = ((row as f64 / plot_area.height as f64) * data.y_bins as f64).floor();
-            let y_bin = data
-                .y_bins
-                .saturating_sub(1)
-                .saturating_sub(y_bin_raw.clamp(0.0, max_y_bin) as usize);
             let count = data.counts[y_bin][x_bin];
-            let level = ((count / data.max_count) * (intensity_chars.len() as f64 - 1.0))
+            let level = ((count / data.max_count) * (RAMP.len() as f64 - 1.0))
                 .round()
-                .clamp(0.0, intensity_chars.len() as f64 - 1.0) as usize;
-            let ch = intensity_chars[level];
-            let cell = &mut buf[(plot_area.x + col, plot_area.y + row)];
-            let symbol = ch.to_string();
-            cell.set_symbol(&symbol);
-            cell.set_style(Style::default().fg(theme.get("chart_1")));
+                .clamp(0.0, RAMP.len() as f64 - 1.0) as usize;
+            buf[(plot_area.x + col, plot_area.y + row)]
+                .set_symbol(RAMP[level])
+                .set_style(style);
         }
     }
 
     let x_label_area = layout[2];
-    let x_axis = AxisSpec::numbers([data.x_min, data.x_max], &numbers.x, "");
+    let x_axis = AxisSpec::numbers([data.x_min, data.x_max], &x.numbers, "");
     let span = (x_label_area.left(), x_label_area.right());
     let x_track = Track {
         start: plot_area.x,
@@ -1902,7 +1646,7 @@ fn render_heatmap_chart(
         buf.set_string(x, x_label_area.y, label, label_style);
     }
     if x_label_area.height > 1 {
-        let x_title = cut(&data.x_column, x_label_area.width as usize, g);
+        let x_title = cut(&x.title, x_label_area.width as usize, g);
         let x = x_label_area.right() - x_title.width() as u16;
         buf.set_string(x, x_label_area.y + 1, &x_title, title_style);
     }

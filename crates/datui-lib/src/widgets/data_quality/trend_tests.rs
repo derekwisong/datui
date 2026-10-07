@@ -398,7 +398,7 @@ fn one_window_found_still_sums_up_the_expected_ones() {
         &screen.results
     ));
     let text = screen.draw(QualityPage::Trends, 0, 0, (80, 24));
-    assert!(text.contains("Set Grain"), "{text}");
+    assert!(text.contains("Set grain"), "{text}");
     assert!(
         text.contains("Expected every day, 7 days: 6 empty"),
         "{text}"

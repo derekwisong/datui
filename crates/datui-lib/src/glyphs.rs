@@ -52,7 +52,7 @@ pub struct Glyphs {
     /// Section collapse markers; both must be the same display width.
     pub collapsed: &'static str,
     pub expanded: &'static str,
-    /// Keycap names for the control bar. Named keys are spelled out there, matching
+    /// Keycap names for the footer. Named keys are spelled out there, matching
     /// the rest of datui, so only the arrows need a fallback.
     pub updown: &'static str,
     /// Left/right pair, for the fold hint.
@@ -1190,6 +1190,7 @@ mod tests {
         let mut texts: Vec<&str> = Vec::new();
         for (screen, group, key) in keys::entries() {
             texts.extend([group.name, key.keys, key.label, key.line, key.long()]);
+            texts.extend(key.also);
             if let Some(screen) = screen {
                 texts.push(screen.title);
             }

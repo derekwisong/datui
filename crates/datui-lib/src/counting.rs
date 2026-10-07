@@ -16,7 +16,7 @@ pub struct Counting {
     /// The count as it stood when this frame began, or `None` if no pass was running.
     ///
     /// Taken once because the pass is running on other threads while the frame is
-    /// drawn. The loading body and the control bar are painted a millisecond apart,
+    /// drawn. The loading body and the footer are painted a millisecond apart,
     /// and when each read the counter for itself they printed different numbers for
     /// one wait — and the bar could print a phase's flat percentage beside a count
     /// that had finished between the two reads.
@@ -144,8 +144,8 @@ impl App {
     /// Not the same question as whether a pass is running. The counter is shared with
     /// every open, and abandoning one does not stop it: without this, giving up on a
     /// large local directory and going back to the dataset you had would leave that
-    /// dataset's control bar counting footers belonging to the directory you left.
-    /// Whether the row count on the control bar is on its way, so a spinner stands in
+    /// dataset's footer counting footers belonging to the directory you left.
+    /// Whether the row count on the footer is on its way, so a spinner stands in
     /// for it. Asked by the bar, and by the run loop, which turns the spinner: the
     /// two disagreed while a dataset read its own footers, and the spinner sat still.
     pub fn row_count_pending(&self) -> bool {
@@ -308,9 +308,8 @@ impl App {
     /// might be running.
     ///
     /// One thing more than a bump, though: a join takes a fresh `len_generation` too. A
-    /// chart is prepared against the frame rather than the generation
-    /// (`BackgroundChartReady` carries no generation at all), so a bump cannot strand
-    /// one but changing the frame under it can.
+    /// chart is prepared against the frame rather than the generation, so a bump cannot
+    /// strand one but changing the frame under it can.
     pub(crate) fn work_the_join_would_cancel(&self) -> bool {
         self.work_a_bump_would_strand() || self.chart_preparing()
     }
@@ -625,11 +624,23 @@ impl App {
             .is_some_and(|generation| !self.waited_on_rows_pending(generation))
     }
 
-    /// A frame has been painted. Start the count that was waiting for its rows to be on
-    /// screen, unless they are still being read; retire it if the frame it was for has
-    /// gone or its rows already said how many there are.
+    /// A frame has been painted. Read the rows it found it needed (it set the rows on
+    /// screen, or a change asked for them), and start the count waiting on it.
     pub fn frame_painted(&mut self) {
         self.pointer.painted();
+        self.count_what_was_painted();
+        if let Some(state) = &mut self.data_table_state
+            && state.needs_recollect
+        {
+            state.needs_recollect = false;
+            self.spawn_async_collect(App::LOADING_BUFFER);
+        }
+    }
+
+    /// Start the count that was waiting for a frame's rows to be on screen, unless they
+    /// are still being read; retire it if the frame it was for has gone or its rows
+    /// already said how many there are.
+    fn count_what_was_painted(&mut self) {
         let Some(generation) = self.counting.count_after_paint else {
             return;
         };

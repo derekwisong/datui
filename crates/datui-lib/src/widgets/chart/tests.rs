@@ -1,6 +1,192 @@
 use super::*;
 use ratatui::buffer::Buffer;
 
+/// What a test draws: the data as the chart cache holds it, with the axes' numbers.
+/// Turned into the chart view's plot under the modal it is drawn with, so the titles
+/// are the view's own.
+enum Draw<'a> {
+    XY {
+        /// As drawn: logged on a log scale.
+        series: Option<&'a Vec<Vec<(f64, f64)>>>,
+        breaks: Option<&'a Vec<Vec<usize>>>,
+        values: Option<&'a Vec<Vec<(f64, f64)>>>,
+        names: &'a [String],
+        x_axis_kind: XAxisTemporalKind,
+        x_bounds: Option<(f64, f64)>,
+        numbers: PlotNumbers,
+        other: bool,
+    },
+    Histogram {
+        data: Option<&'a HistogramData>,
+        x: AxisNumbers,
+    },
+    BoxPlot {
+        data: Option<&'a BoxPlotData>,
+        y: AxisNumbers,
+    },
+    Kde {
+        data: Option<&'a KdeData>,
+        x: AxisNumbers,
+    },
+    Heatmap {
+        data: Option<&'a HeatmapData>,
+        numbers: PlotNumbers,
+    },
+    Bar {
+        data: Option<&'a BarData>,
+    },
+}
+
+#[derive(Default)]
+struct PlotNumbers {
+    x: AxisNumbers,
+    y: AxisNumbers,
+}
+
+impl Draw<'_> {
+    fn plot(self, modal: &ChartModal, ctx: &RenderContext) -> Option<Plot<'static>> {
+        use crate::chart_plot::{LinesData, PlotContext};
+        // The data says what kind of chart it is, whatever the modal's type.
+        let mut spec = modal.effective_spec();
+        spec.mark = match &self {
+            Draw::XY { .. } if spec.mark == Mark::Scatter => Mark::Scatter,
+            Draw::XY { .. } => Mark::Line,
+            Draw::Histogram { .. } => Mark::Histogram,
+            Draw::BoxPlot { .. } => Mark::Box,
+            Draw::Kde { .. } => Mark::Kde,
+            Draw::Heatmap { .. } => Mark::Heatmap,
+            Draw::Bar { .. } => Mark::Bar,
+        };
+        let (data, numbers, kind) = match self {
+            Draw::XY {
+                series,
+                breaks,
+                values,
+                names,
+                x_axis_kind,
+                x_bounds,
+                numbers,
+                other,
+            } => {
+                let data = match (series, x_bounds) {
+                    // `series` as drawn; `values` before the log, when it differs.
+                    (Some(series), _) => Some(PlotData::Lines(LinesData {
+                        names: names.to_vec(),
+                        series: values.unwrap_or(series).clone(),
+                        series_log: values.map(|_| series.clone()),
+                        breaks: breaks.cloned().unwrap_or_default(),
+                        x_axis_kind,
+                        other,
+                        ..LinesData::default()
+                    })),
+                    (None, Some((x_min, x_max))) => {
+                        Some(PlotData::XRange(crate::chart_data::ChartXRangeResult {
+                            x_min,
+                            x_max,
+                            x_axis_kind,
+                            rows: Default::default(),
+                        }))
+                    }
+                    (None, None) => None,
+                };
+                (data, Some((numbers.x, numbers.y)), Some(x_axis_kind))
+            }
+            Draw::Histogram { data, x } => (
+                data.cloned().map(PlotData::Histogram),
+                Some((x, AxisNumbers::count(&ctx.number_format))),
+                None,
+            ),
+            Draw::BoxPlot { data, y } => (
+                data.cloned().map(PlotData::Box),
+                Some((AxisNumbers::default(), y)),
+                None,
+            ),
+            Draw::Kde { data, x } => (
+                data.cloned().map(PlotData::Kde),
+                Some((
+                    x.fractional(),
+                    AxisNumbers::measure(&ctx.number_format, "Density"),
+                )),
+                None,
+            ),
+            Draw::Heatmap { data, numbers } => (
+                data.cloned().map(PlotData::Heatmap),
+                Some((numbers.x, numbers.y)),
+                None,
+            ),
+            Draw::Bar { data } => (data.cloned().map(PlotData::Bars), None, None),
+        };
+        let mut plot = crate::chart_plot::plot(
+            data.as_ref(),
+            &PlotContext {
+                modal,
+                spec: &spec,
+                numbers: &ctx.number_format,
+                schema: None,
+            },
+        )?
+        .into_owned();
+        if let Some((x, y)) = numbers {
+            plot.x.numbers = x;
+            // A share is a measure, which the test does not say.
+            if !matches!(&*plot.data, PlotData::Histogram(h) if h.share) {
+                plot.y.numbers = y;
+            }
+        }
+        if let Some(kind) = kind {
+            plot.x.kind = kind;
+        }
+        Some(plot)
+    }
+}
+
+/// A chart view as a test sets it up.
+struct View<'a> {
+    data: Draw<'a>,
+    notes: Vec<String>,
+    error: Option<&'a str>,
+    working: Option<Working<'a>>,
+    schema: Option<&'a Schema>,
+}
+
+fn render_plot(
+    area: Rect,
+    buf: &mut Buffer,
+    modal: &ChartModal,
+    theme: &Theme,
+    ctx: &RenderContext,
+    data: Draw<'_>,
+    g: &Glyphs,
+) -> Option<PlotPlace> {
+    let plot = data.plot(modal, ctx);
+    super::render_plot(area, buf, modal, theme, ctx, plot, g)
+}
+
+fn render_chart_view(
+    area: Rect,
+    buf: &mut Buffer,
+    modal: &mut ChartModal,
+    theme: &Theme,
+    ctx: &RenderContext,
+    view: View<'_>,
+) {
+    let plot = view.data.plot(modal, ctx);
+    super::render_chart_view(
+        area,
+        buf,
+        modal,
+        theme,
+        ctx,
+        ChartView {
+            plot,
+            notes: view.notes,
+            error: view.error,
+            working: view.working,
+            schema: view.schema,
+        },
+    );
+}
+
 fn open_modal() -> ChartModal {
     let mut modal = ChartModal::new();
     modal.open(
@@ -32,8 +218,8 @@ fn names() -> &'static [String] {
 fn render_rows(modal: &mut ChartModal, width: u16, height: u16) -> Vec<String> {
     render_view(
         modal,
-        ChartView {
-            data: ChartRenderData::XY {
+        View {
+            data: Draw::XY {
                 series: None,
                 breaks: None,
                 values: None,
@@ -163,8 +349,8 @@ fn the_aggregate_row_is_labeled() {
         &mut modal,
         &theme,
         &ctx,
-        ChartView {
-            data: ChartRenderData::XY {
+        View {
+            data: Draw::XY {
                 series: None,
                 breaks: None,
                 values: None,
@@ -251,8 +437,8 @@ fn a_shelf_that_does_not_apply_is_dimmed_not_hidden() {
         &mut modal,
         &theme,
         &ctx,
-        ChartView {
-            data: ChartRenderData::BoxPlot {
+        View {
+            data: Draw::BoxPlot {
                 data: None,
                 y: AxisNumbers::default(),
             },
@@ -407,7 +593,7 @@ fn ten_series_take_ten_colors() {
         &modal,
         &theme,
         &ctx,
-        ChartRenderData::XY {
+        Draw::XY {
             series: Some(&series),
             breaks: None,
             values: None,
@@ -515,7 +701,7 @@ fn other_is_the_legends_last_entry() {
         &modal,
         &theme,
         &ctx,
-        ChartRenderData::XY {
+        Draw::XY {
             series: Some(&series),
             breaks: None,
             values: None,
@@ -539,7 +725,7 @@ fn other_is_the_legends_last_entry() {
     let swatch = (0..area.width)
         .find(|&x| buf[(x, row)].symbol() == "█")
         .unwrap();
-    assert_eq!(buf[(swatch, row)].fg, theme.get("dimmed"));
+    assert_eq!(buf[(swatch, row)].fg, theme.dimmed());
 }
 
 /// The open Picker drops over the panel under its row, with a checkbox per item
@@ -578,7 +764,7 @@ fn an_open_picker_with_no_room_still_takes_the_clicks() {
     assert!(hits.iter().any(|(_, h)| *h == Hit::Picker), "{hits:?}");
 }
 
-fn render_view(modal: &mut ChartModal, view: ChartView<'_>, w: u16, h: u16) -> Vec<String> {
+fn render_view(modal: &mut ChartModal, view: View<'_>, w: u16, h: u16) -> Vec<String> {
     let ctx = RenderContext::for_test();
     let theme = crate::config::Theme::from_config(&crate::config::ThemeConfig::default())
         .expect("default theme colors must resolve");
@@ -601,8 +787,8 @@ fn notes_sit_at_the_title_rows_right() {
     let note = "sample of 10,000 of 3.5M rows";
     let rows = render_view(
         &mut modal,
-        ChartView {
-            data: ChartRenderData::XY {
+        View {
+            data: Draw::XY {
                 series: Some(&series),
                 breaks: None,
                 values: None,
@@ -641,8 +827,8 @@ fn notes_give_way_to_the_how() {
     ];
     let rows = render_view(
         &mut modal,
-        ChartView {
-            data: ChartRenderData::Histogram {
+        View {
+            data: Draw::Histogram {
                 data: None,
                 x: AxisNumbers::default(),
             },
@@ -672,8 +858,8 @@ fn an_error_replaces_the_plot() {
     let mut modal = open_modal();
     let rows = render_view(
         &mut modal,
-        ChartView {
-            data: ChartRenderData::XY {
+        View {
+            data: Draw::XY {
                 series: None,
                 breaks: None,
                 values: None,
@@ -705,8 +891,8 @@ fn a_line_does_not_bridge_a_gap() {
     let draw = |modal: &mut ChartModal, breaks: &Vec<Vec<usize>>| {
         render_view(
             modal,
-            ChartView {
-                data: ChartRenderData::XY {
+            View {
+                data: Draw::XY {
                     series: Some(&series),
                     breaks: Some(breaks),
                     values: None,
@@ -767,8 +953,8 @@ fn render_bars(data: &BarData, w: u16, h: u16) -> Vec<String> {
     modal.set_mark(Mark::Bar);
     render_view(
         &mut modal,
-        ChartView {
-            data: ChartRenderData::Bar { data: Some(data) },
+        View {
+            data: Draw::Bar { data: Some(data) },
             notes: Vec::new(),
             error: None,
             working: None,
@@ -884,18 +1070,18 @@ fn a_tiny_value_still_draws_a_mark() {
     assert!(marks(&canvas[5]) > 0, "neg: {:?}", canvas[5]);
 }
 
-fn plot_text(modal: &ChartModal, data: ChartRenderData<'_>, g: &Glyphs) -> String {
+fn plot_text(modal: &ChartModal, data: Draw<'_>, g: &Glyphs) -> String {
     plot_text_in(modal, data, g, Rect::new(0, 0, 60, 20))
 }
 
-fn plot_text_in(modal: &ChartModal, data: ChartRenderData<'_>, g: &Glyphs, area: Rect) -> String {
+fn plot_text_in(modal: &ChartModal, data: Draw<'_>, g: &Glyphs, area: Rect) -> String {
     plot_text_with(&RenderContext::for_test(), modal, data, g, area)
 }
 
 fn plot_text_with(
     ctx: &RenderContext,
     modal: &ChartModal,
-    data: ChartRenderData<'_>,
+    data: Draw<'_>,
     g: &Glyphs,
     area: Rect,
 ) -> String {
@@ -914,7 +1100,7 @@ fn axis_labels_stand_apart_and_titles_keep_their_rows() {
     /// A plot, its x and y titles, and what its x labels look like.
     type Case<'a> = (
         &'a str,
-        ChartRenderData<'a>,
+        Draw<'a>,
         &'a str,
         &'a str,
         &'a dyn Fn(&str) -> bool,
@@ -983,7 +1169,7 @@ fn axis_labels_stand_apart_and_titles_keep_their_rows() {
             let cases: [Case; 4] = [
                 (
                     "date",
-                    ChartRenderData::XY {
+                    Draw::XY {
                         series: Some(&dates),
                         breaks: None,
                         values: None,
@@ -999,7 +1185,7 @@ fn axis_labels_stand_apart_and_titles_keep_their_rows() {
                 ),
                 (
                     "number",
-                    ChartRenderData::XY {
+                    Draw::XY {
                         series: Some(&numbers),
                         breaks: None,
                         values: None,
@@ -1015,7 +1201,7 @@ fn axis_labels_stand_apart_and_titles_keep_their_rows() {
                 ),
                 (
                     "histogram",
-                    ChartRenderData::Histogram {
+                    Draw::Histogram {
                         data: Some(&histogram),
                         x: AxisNumbers::default(),
                     },
@@ -1025,7 +1211,7 @@ fn axis_labels_stand_apart_and_titles_keep_their_rows() {
                 ),
                 (
                     "KDE",
-                    ChartRenderData::Kde {
+                    Draw::Kde {
                         data: Some(&kde),
                         x: AxisNumbers::default(),
                     },
@@ -1087,7 +1273,7 @@ fn an_axis_writes_every_label_in_one_format() {
         rows: Default::default(),
         clipped: None,
     };
-    let data = ChartRenderData::Kde {
+    let data = Draw::Kde {
         data: Some(&kde),
         x: AxisNumbers::default(),
     };
@@ -1101,7 +1287,7 @@ fn an_axis_writes_every_label_in_one_format() {
     modal.spec.encoding.y.field = vec!["price".to_string()];
     modal.y_starts_at_zero = false;
     let series = vec![vec![(0.0, 12_000.0), (5.0, 12_600.0)]];
-    let xy = || ChartRenderData::XY {
+    let xy = || Draw::XY {
         series: Some(&series),
         breaks: None,
         values: None,
@@ -1172,7 +1358,7 @@ fn heatmap_y_labels_are_whole_where_the_column_is() {
     let data = heatmap((0.0, 1.0));
     let text = plot_text_in(
         &modal,
-        ChartRenderData::Heatmap {
+        Draw::Heatmap {
             data: Some(&data),
             numbers: whole,
         },
@@ -1183,7 +1369,7 @@ fn heatmap_y_labels_are_whole_where_the_column_is() {
     let data = heatmap((0.0, 0.0126));
     let text = plot_text_in(
         &modal,
-        ChartRenderData::Heatmap {
+        Draw::Heatmap {
             data: Some(&data),
             numbers: PlotNumbers::default(),
         },
@@ -1242,7 +1428,7 @@ fn whole_number_axes_tick_whole_in_the_table_format() {
         rows: Default::default(),
         clipped: None,
     };
-    let data = ChartRenderData::Histogram {
+    let data = Draw::Histogram {
         data: Some(&histogram),
         x: whole.clone(),
     };
@@ -1258,7 +1444,7 @@ fn whole_number_axes_tick_whole_in_the_table_format() {
     modal.spec.encoding.x.field = Some("volume".to_string());
     modal.spec.encoding.y.field = vec!["price".to_string()];
     modal.show_legend = false;
-    let xy = |numbers| ChartRenderData::XY {
+    let xy = |numbers| Draw::XY {
         series: Some(&series),
         breaks: None,
         values: None,
@@ -1305,7 +1491,7 @@ fn every_plot_is_ascii_under_the_ascii_set() {
             .map(|i| (i as f64, 400.0 - (i * i) as f64))
             .collect(),
     ];
-    let xy = |series| ChartRenderData::XY {
+    let xy = |series| Draw::XY {
         series,
         breaks: None,
         values: None,
@@ -1344,7 +1530,7 @@ fn every_plot_is_ascii_under_the_ascii_set() {
         rows: Default::default(),
         clipped: None,
     };
-    let data = ChartRenderData::Histogram {
+    let data = Draw::Histogram {
         data: Some(&histogram),
         x: AxisNumbers::default(),
     };
@@ -1368,7 +1554,7 @@ fn every_plot_is_ascii_under_the_ascii_set() {
         rows: Default::default(),
         clipped: None,
     };
-    let data = ChartRenderData::BoxPlot {
+    let data = Draw::BoxPlot {
         data: Some(&box_plot),
         y: AxisNumbers::default(),
     };
@@ -1391,7 +1577,7 @@ fn every_plot_is_ascii_under_the_ascii_set() {
         rows: Default::default(),
         clipped: None,
     };
-    let data = ChartRenderData::Kde {
+    let data = Draw::Kde {
         data: Some(&kde),
         x: AxisNumbers::default(),
     };
@@ -1399,7 +1585,7 @@ fn every_plot_is_ascii_under_the_ascii_set() {
 
     // Bars draw no axes of their own.
     let bars = bar_data(5);
-    let text = plot_text(&modal, ChartRenderData::Bar { data: Some(&bars) }, ascii);
+    let text = plot_text(&modal, Draw::Bar { data: Some(&bars) }, ascii);
     assert!(text.is_ascii() && text.contains('#'), "bars:\n{text}");
 }
 
@@ -1421,7 +1607,7 @@ fn the_legend_hides_the_plot_behind_it() {
     for g in [crate::glyphs::ascii(), crate::glyphs::unicode()] {
         let text = plot_text(
             &modal,
-            ChartRenderData::XY {
+            Draw::XY {
                 series: Some(&series),
                 breaks: None,
                 values: None,
@@ -1457,8 +1643,8 @@ fn decade() -> Vec<Vec<(f64, f64)>> {
     ]
 }
 
-fn xy_dates(series: &Vec<Vec<(f64, f64)>>) -> ChartRenderData<'_> {
-    ChartRenderData::XY {
+fn xy_dates(series: &Vec<Vec<(f64, f64)>>) -> Draw<'_> {
+    Draw::XY {
         series: Some(series),
         breaks: None,
         values: None,
@@ -1480,7 +1666,7 @@ fn a_wide_chart_carries_ticks_scaled_to_the_space() {
     let series = decade();
     let rows = render_view(
         &mut modal,
-        ChartView {
+        View {
             data: xy_dates(&series),
             notes: Vec::new(),
             error: None,
@@ -1556,7 +1742,7 @@ fn the_grid_follows_the_toggle() {
     modal.toggle_grid();
     let on = draw(&modal);
     assert!(grid_cells(&on) > 100);
-    let grid = theme.get("chart_grid");
+    let grid = theme.chart_grid();
     assert!(
         on.content()
             .iter()
@@ -1620,13 +1806,16 @@ fn log_scale_ticks_fall_on_the_decades() {
             .map(|i| (f64::from(i), f64::from(i).powi(2) * 3.333))
             .collect(),
     ];
-    let logged = crate::chart_jobs::log_series(&linear);
+    let logged: Vec<Vec<(f64, f64)>> = linear
+        .iter()
+        .map(|points| points.iter().map(|&(x, y)| (x, y.ln_1p())).collect())
+        .collect();
     let theme = crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
     let ctx = RenderContext::for_test();
     let y_labels = |height: u16| {
         let area = Rect::new(0, 0, 60, height);
         let mut buf = Buffer::empty(area);
-        let data = ChartRenderData::XY {
+        let data = Draw::XY {
             series: Some(&logged),
             breaks: None,
             values: Some(&linear),
@@ -1691,7 +1880,7 @@ fn the_crosshair_reads_out_every_series() {
     let draw = |modal: &ChartModal, g: &Glyphs| {
         let area = Rect::new(0, 0, 60, 20);
         let mut buf = Buffer::empty(area);
-        let data = ChartRenderData::XY {
+        let data = Draw::XY {
             series: Some(&series),
             breaks: None,
             values: None,
@@ -1721,7 +1910,7 @@ fn the_crosshair_reads_out_every_series() {
             "{rows:#?}"
         );
         let column = place.column(19_786.0);
-        let accent = theme.get("accent");
+        let accent = theme.accent();
         let marks = (place.graph.top()..place.graph.bottom())
             .filter(|&y| on[(column, y)].symbol() == g.plot.axis.vertical)
             .inspect(|&y| assert_eq!(on[(column, y)].fg, accent))
@@ -1756,7 +1945,7 @@ fn a_scatter_picks_its_marker_by_density() {
                 .map(|i| (i as f64, ((i * 7919) % 1000) as f64))
                 .collect::<Vec<_>>(),
         ];
-        let data = ChartRenderData::XY {
+        let data = Draw::XY {
             series: Some(&series),
             breaks: None,
             values: None,
@@ -1808,7 +1997,7 @@ fn histogram_bins_fill_their_columns() {
     assert_eq!(points.len(), 41 - 3, "{points:?}");
     let text = plot_text_in(
         &open_modal(),
-        ChartRenderData::Histogram {
+        Draw::Histogram {
             data: Some(&histogram),
             x: AxisNumbers::default(),
         },

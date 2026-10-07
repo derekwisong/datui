@@ -63,7 +63,7 @@ These are checkable, and CI or review should treat a violation as a defect:
   SCREAMING, never key hints inside a title.
 - Field labels: sentence case with a colon (`X axis:`, `Log scale:`).
   Spelled out — no `Col`/`Op`/`Val` abbreviations.
-- Chip labels: Title Case, short (`Open all`, `Sort & Filter`).
+- Chip labels: sentence case, short (`Open all`, `Copy row`); a feature's own name keeps its capitals (`Sort & Filter`).
 - Key spelling: `^X` in chips; `Ctrl+X` in help text and prose. Arrows are
   glyphs (`↑↓`, with ASCII twins), never the words "Up/Down".
 - American English. No filler ("Please…", "Note that…"). A label is a noun

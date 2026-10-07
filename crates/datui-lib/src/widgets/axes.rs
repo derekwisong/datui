@@ -189,18 +189,18 @@ impl<'a> AxisSpec<'a> {
         Self { pad: width, ..self }
     }
 
-    /// The ways to tick this axis along `track`, the preferred first: about one label
-    /// per `spacing` cells, then coarser. A second group follows when the first may
-    /// come up empty: a time axis's dates at its ends and middle.
-    fn tick_sets(
+    /// The ways to tick this axis `length` long, the preferred first: about one label
+    /// per `spacing`, then coarser, none closer than `least`, minor ticks `minor_gap`
+    /// apart at the least. Cells on screen, points in a file. A second group follows
+    /// when the first may come up empty: a time axis's dates at its ends and middle.
+    pub fn tick_sets(
         &self,
-        track: Track,
+        length: f64,
         spacing: f64,
         least: f64,
         minor_gap: f64,
     ) -> Vec<Vec<TickSet>> {
         let [lo, hi] = self.bounds;
-        let length = track.length();
         match &self.scale {
             Scale::Fixed { ticks, label } => vec![
                 strides(ticks.len())
@@ -246,7 +246,7 @@ impl<'a> AxisSpec<'a> {
                     Box::new(move |v, level| x_axis_label_at(v, kind, (lo, hi), level, &format)),
                     "",
                 );
-                let fallback = ends.tick_sets(track, spacing, least, minor_gap).remove(0);
+                let fallback = ends.tick_sets(length, spacing, least, minor_gap).remove(0);
                 vec![primary, fallback]
             }
         }
@@ -1014,7 +1014,7 @@ fn fraction(v: f64, [lo, hi]: [f64; 2]) -> f64 {
 /// its axis: about one per four rows, each on its tick's row, in the fullest form
 /// that fits the width and tells them apart.
 pub fn fit_y_labels(axis: &AxisSpec<'_>, track: Track, width: u16) -> Placed {
-    let groups = axis.tick_sets(track, Y_SPACING, Y_LEAST, Y_MINOR_GAP);
+    let groups = axis.tick_sets(track.length(), Y_SPACING, Y_LEAST, Y_MINOR_GAP);
     let place = |set: &TickSet, labels: Option<&Vec<String>>| {
         let row = |v: f64| track.cell(1.0 - fraction(v, set.bounds));
         Placed {
@@ -1074,7 +1074,7 @@ fn distinct<'a>(labels: impl Iterator<Item = &'a String>) -> bool {
 pub fn fit_x_labels(axis: &AxisSpec<'_>, span: (u16, u16), track: Track) -> Placed {
     let (start, end) = span;
     let column = |v: f64| track.cell(fraction(v, axis.bounds));
-    let groups = axis.tick_sets(track, X_SPACING, X_LEAST, X_MINOR_GAP);
+    let groups = axis.tick_sets(track.length(), X_SPACING, X_LEAST, X_MINOR_GAP);
     for sets in &groups {
         for level in 0..MAX_LEVELS {
             for set in sets {

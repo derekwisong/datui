@@ -3,9 +3,10 @@
 <text x="31.1" y="53.7" font-size="22.6" font-weight="600" text-anchor="start" fill="#1f2430">Golden</text>
 <text x="31.1" y="285.1" font-size="12.8" font-weight="400" text-anchor="start" fill="#5b6170">all 300 rows</text>
 <text x="52.5" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">0</text>
-<text x="167.8" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">25</text>
-<text x="283.0" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">50</text>
-<text x="398.2" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">75</text>
+<text x="144.7" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">20</text>
+<text x="236.9" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">40</text>
+<text x="329.1" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">60</text>
+<text x="421.2" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">80</text>
 <text x="250.7" y="256.4" font-size="14.0" font-weight="600" text-anchor="middle" fill="#1f2430">count</text>
 <text x="31.1" y="87.3" font-size="14.0" font-weight="600" text-anchor="start" fill="#1f2430">g</text>
 <text x="45.5" y="123.0" font-size="14.0" font-weight="400" text-anchor="end" fill="#1f2430">p</text>

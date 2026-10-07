@@ -2,15 +2,25 @@
 <rect x="0.00" y="0.00" width="480.00" height="320.00" fill="#ffffff" fill-opacity="1.00"/>
 <text x="31.1" y="53.7" font-size="22.6" font-weight="600" text-anchor="start" fill="#1f2430">Golden</text>
 <text x="31.1" y="285.1" font-size="12.8" font-weight="400" text-anchor="start" fill="#5b6170">all 300 rows</text>
-<text x="52.7" y="164.1" font-size="14.0" font-weight="400" text-anchor="end" fill="#5b6170">20</text>
+<text x="52.7" y="220.7" font-size="14.0" font-weight="400" text-anchor="end" fill="#5b6170">10</text>
+<text x="52.7" y="173.6" font-size="14.0" font-weight="400" text-anchor="end" fill="#5b6170">20</text>
+<text x="52.7" y="109.0" font-size="14.0" font-weight="400" text-anchor="end" fill="#5b6170">50</text>
+<line x1="59.7" y1="215.8" x2="59.7" y2="220.7" stroke="#5b6170" stroke-width="1.33"/>
+<text x="59.7" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">1</text>
 <line x1="124.5" y1="215.8" x2="124.5" y2="220.7" stroke="#5b6170" stroke-width="1.33"/>
 <text x="124.5" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">2</text>
+<line x1="189.4" y1="215.8" x2="189.4" y2="220.7" stroke="#5b6170" stroke-width="1.33"/>
+<text x="189.4" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">3</text>
 <line x1="254.3" y1="215.8" x2="254.3" y2="220.7" stroke="#5b6170" stroke-width="1.33"/>
 <text x="254.3" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">4</text>
+<line x1="319.1" y1="215.8" x2="319.1" y2="220.7" stroke="#5b6170" stroke-width="1.33"/>
+<text x="319.1" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">5</text>
 <line x1="384.0" y1="215.8" x2="384.0" y2="220.7" stroke="#5b6170" stroke-width="1.33"/>
 <text x="384.0" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">6</text>
+<line x1="448.9" y1="215.8" x2="448.9" y2="220.7" stroke="#5b6170" stroke-width="1.33"/>
+<text x="448.9" y="234.7" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">7</text>
 <line x1="59.7" y1="215.8" x2="448.9" y2="215.8" stroke="#5b6170" stroke-width="1.33"/>
 <text x="31.1" y="87.3" font-size="14.0" font-weight="600" text-anchor="start" fill="#1f2430">mean a</text>
 <text x="254.3" y="256.4" font-size="14.0" font-weight="600" text-anchor="middle" fill="#1f2430">n</text>
-<polyline points="59.7,215.8 124.5,181.5 189.4,147.6 254.3,171.2 319.1,166.0 384.0,104.1 448.9,182.0" fill="none" stroke="#2a78d6" stroke-width="3.33" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="59.7,170.3 124.5,169.4 189.4,168.4 254.3,169.1 319.1,168.9 384.0,167.2 448.9,169.4" fill="none" stroke="#2a78d6" stroke-width="3.33" stroke-linejoin="round" stroke-linecap="round"/>
 </svg>

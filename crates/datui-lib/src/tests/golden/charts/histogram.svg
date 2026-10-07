@@ -2,8 +2,9 @@
 <rect x="0.00" y="0.00" width="480.00" height="320.00" fill="#ffffff" fill-opacity="1.00"/>
 <text x="31.1" y="53.7" font-size="22.6" font-weight="600" text-anchor="start" fill="#1f2430">Golden</text>
 <text x="52.7" y="250.4" font-size="14.0" font-weight="400" text-anchor="end" fill="#5b6170">0</text>
-<text x="52.7" y="192.7" font-size="14.0" font-weight="400" text-anchor="end" fill="#5b6170">20</text>
-<text x="52.7" y="135.0" font-size="14.0" font-weight="400" text-anchor="end" fill="#5b6170">40</text>
+<text x="52.7" y="203.3" font-size="14.0" font-weight="400" text-anchor="end" fill="#5b6170">20</text>
+<text x="52.7" y="156.1" font-size="14.0" font-weight="400" text-anchor="end" fill="#5b6170">40</text>
+<text x="52.7" y="109.0" font-size="14.0" font-weight="400" text-anchor="end" fill="#5b6170">60</text>
 <line x1="59.7" y1="245.5" x2="59.7" y2="250.4" stroke="#5b6170" stroke-width="1.33"/>
 <text x="59.7" y="264.4" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">0</text>
 <line x1="159.5" y1="245.5" x2="159.5" y2="250.4" stroke="#5b6170" stroke-width="1.33"/>
@@ -15,12 +16,12 @@
 <line x1="59.7" y1="245.5" x2="448.9" y2="245.5" stroke="#5b6170" stroke-width="1.33"/>
 <text x="31.1" y="87.3" font-size="14.0" font-weight="600" text-anchor="start" fill="#1f2430">Count</text>
 <text x="254.3" y="286.1" font-size="14.0" font-weight="600" text-anchor="middle" fill="#1f2430">a</text>
-<rect x="60.78" y="210.86" width="46.43" height="34.62" fill="#2a78d6" fill-opacity="1.00"/>
-<rect x="109.43" y="141.62" width="46.43" height="103.87" fill="#2a78d6" fill-opacity="1.00"/>
-<rect x="158.09" y="104.11" width="46.43" height="141.38" fill="#2a78d6" fill-opacity="1.00"/>
-<rect x="206.74" y="106.99" width="46.43" height="138.50" fill="#2a78d6" fill-opacity="1.00"/>
-<rect x="255.39" y="104.11" width="46.43" height="141.38" fill="#2a78d6" fill-opacity="1.00"/>
-<rect x="304.04" y="104.11" width="46.43" height="141.38" fill="#2a78d6" fill-opacity="1.00"/>
-<rect x="352.70" y="127.19" width="46.43" height="118.30" fill="#2a78d6" fill-opacity="1.00"/>
-<rect x="401.35" y="199.32" width="46.43" height="46.17" fill="#2a78d6" fill-opacity="1.00"/>
+<rect x="60.78" y="217.21" width="46.43" height="28.28" fill="#2a78d6" fill-opacity="1.00"/>
+<rect x="109.43" y="160.66" width="46.43" height="84.83" fill="#2a78d6" fill-opacity="1.00"/>
+<rect x="158.09" y="130.03" width="46.43" height="115.46" fill="#2a78d6" fill-opacity="1.00"/>
+<rect x="206.74" y="132.38" width="46.43" height="113.11" fill="#2a78d6" fill-opacity="1.00"/>
+<rect x="255.39" y="130.03" width="46.43" height="115.46" fill="#2a78d6" fill-opacity="1.00"/>
+<rect x="304.04" y="130.03" width="46.43" height="115.46" fill="#2a78d6" fill-opacity="1.00"/>
+<rect x="352.70" y="148.88" width="46.43" height="96.61" fill="#2a78d6" fill-opacity="1.00"/>
+<rect x="401.35" y="207.79" width="46.43" height="37.70" fill="#2a78d6" fill-opacity="1.00"/>
 </svg>

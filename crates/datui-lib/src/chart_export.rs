@@ -11,10 +11,10 @@ use color_eyre::Result;
 use resvg::{tiny_skia, usvg};
 
 use crate::chart_data::{
-    AxisFormat, AxisNumbers, BarData, BoxPlotData, HeatmapData, HistogramData, KdeData,
-    XAxisTemporalKind, segments, x_axis_label_at,
+    AxisNumbers, BarData, BoxPlotData, HeatmapData, HistogramData, KdeData, XAxisTemporalKind,
+    segments,
 };
-use crate::widgets::ticks;
+use crate::widgets::axes::{AxisSpec, TickSet};
 
 const FONT_REGULAR: &[u8] = include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf");
 const FONT_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/IBMPlexSans-SemiBold.ttf");
@@ -1076,55 +1076,71 @@ impl Scale {
     }
 }
 
-/// An axis's ticks and their labels from `lo` to `hi`, at most `most` of them: on
-/// nice numbers, or on calendar boundaries for dates.
-fn axis_ticks(lo: f64, hi: f64, axis: &Axis, most: usize) -> Vec<(f64, String)> {
-    let most = most.max(2);
-    if axis.kind != XAxisTemporalKind::Numeric
-        && axis.kind != XAxisTemporalKind::Time
-        && let (Some(a), Some(b)) = (
-            ticks::to_datetime(lo, axis.kind),
-            ticks::to_datetime(hi, axis.kind),
-        )
-    {
-        for step in ticks::calendar_steps(axis.kind) {
-            let at = ticks::calendar_ticks(a, b, step);
-            if at.is_empty() || at.len() > most {
-                continue;
-            }
-            let labels = ticks::calendar_labels(&at, step.unit, axis.kind, true);
-            return at
+/// An axis's ticks and labels over `lo..hi`, chosen by the screen's tick engine
+/// for an axis `length` long whose labels are `tick` high: on nice numbers, the
+/// calendar or a log scale's powers, about a label per six label heights across or
+/// three down. A Y axis widens to the ticks either side of its range, as on screen;
+/// the range it ends up with comes back with the ticks. Across, the finest set and
+/// fullest labels that stand apart; down, the first whose labels differ.
+fn axis_ticks(
+    (lo, hi): (f64, f64),
+    axis: &Axis,
+    length: f64,
+    tick: f64,
+    across: bool,
+) -> ([f64; 2], Vec<(f64, String)>) {
+    let bounds = [lo, hi];
+    let spec = match (axis.log, across) {
+        (true, _) => AxisSpec::y_log(bounds, &axis.numbers, ""),
+        (false, true) => AxisSpec::calendar(bounds, axis.kind, &axis.numbers, ""),
+        (false, false) => AxisSpec::y_numbers(bounds, &axis.numbers, ""),
+    };
+    let (spacing, least) = if across {
+        (tick * 6.0, tick * 2.5)
+    } else {
+        (tick * 3.0, tick * 1.5)
+    };
+    let groups = spec.tick_sets(length, spacing, least, tick);
+    let placed = |set: &TickSet, labels: &[String]| {
+        (
+            set.bounds,
+            set.ticks
                 .iter()
-                .zip(labels)
-                .filter_map(|(t, label)| Some((ticks::from_datetime(*t, axis.kind)?, label)))
-                .collect();
+                .copied()
+                .zip(labels.iter().cloned())
+                .collect(),
+        )
+    };
+    let distinct = |labels: &[String]| labels.windows(2).all(|w| w[0] != w[1]);
+    for set in groups.iter().flatten() {
+        for labels in &set.levels {
+            let fits = if across {
+                // Centered under their ticks, a label height apart, within the axis.
+                let mut next_free = f64::NEG_INFINITY;
+                set.ticks.iter().zip(labels).all(|(&v, label)| {
+                    let w = text_width(label, tick);
+                    let at = if set.bounds[1] > set.bounds[0] {
+                        (v - set.bounds[0]) / (set.bounds[1] - set.bounds[0]) * length
+                    } else {
+                        0.0
+                    };
+                    let x = (at - w / 2.0).clamp(-w / 2.0, length - w / 2.0);
+                    let clear = x >= next_free;
+                    next_free = x + w + tick;
+                    clear
+                })
+            } else {
+                true
+            };
+            if fits && distinct(labels) {
+                return placed(set, labels);
+            }
         }
     }
-    let (show_lo, show_hi) = if axis.log {
-        (lo.exp_m1(), hi.exp_m1())
-    } else {
-        (lo, hi)
-    };
-    let whole = axis.numbers.whole && !axis.log;
-    let steps = ticks::nice_steps(show_lo, show_hi, 0.0, whole);
-    let step = steps
-        .iter()
-        .copied()
-        .find(|s| (((show_hi - show_lo) / s) as usize) < most)
-        .or_else(|| steps.last().copied());
-    let values = match step {
-        Some(step) => ticks::multiples(show_lo, show_hi, step),
-        None => vec![show_lo],
-    };
-    let format = AxisFormat::new(&values, &axis.numbers);
-    values
-        .iter()
-        .filter_map(|&v| {
-            let label = x_axis_label_at(v, axis.kind, (show_lo, show_hi), 0, &format)?;
-            let at = if axis.log { v.max(0.0).ln_1p() } else { v };
-            Some((at, label))
-        })
-        .collect()
+    match groups.iter().flatten().next() {
+        Some(set) if !across => placed(set, set.levels.first().map_or(&[][..], |l| &l[..])),
+        _ => (bounds, Vec::new()),
+    }
 }
 
 /// `lo..hi` padded so a flat series or a single point still has room.
@@ -1625,7 +1641,7 @@ fn axes_with(
     let top = frame.top + tick * 2.2;
     let x_title_h = if x.title.is_empty() { 0.0 } else { tick * 1.5 };
     let bottom = frame.bottom - tick * 1.6 - x_title_h;
-    let y_ticks = axis_ticks(ys.0, ys.1, y, ((bottom - top) / (tick * 3.0)) as usize);
+    let (y_bounds, y_ticks) = axis_ticks(ys, y, bottom - top, tick, false);
     let y_label_w = y_ticks
         .iter()
         .map(|(_, l)| text_width(l, tick))
@@ -1643,27 +1659,16 @@ fn axes_with(
         to: plot.right,
     };
     let sy = Scale {
-        lo: ys.0,
-        hi: ys.1,
+        lo: y_bounds[0],
+        hi: y_bounds[1],
         from: plot.bottom,
         to: plot.top,
     };
-    let widest_x = |labels: &[(f64, String)]| {
-        labels
-            .iter()
-            .map(|(_, l)| text_width(l, tick))
-            .fold(0.0, f64::max)
-    };
-    let mut most = (plot.width() / (tick * 6.0)) as usize;
-    let mut x_ticks = if x_ticked {
-        axis_ticks(xs.0, xs.1, x, most)
+    let x_ticks = if x_ticked {
+        axis_ticks(xs, x, plot.width(), tick, true).1
     } else {
         Vec::new()
     };
-    while x_ticked && most > 2 && widest_x(&x_ticks) * x_ticks.len() as f64 * 1.4 > plot.width() {
-        most -= 1;
-        x_ticks = axis_ticks(xs.0, xs.1, x, most);
-    }
     let hair = 0.6 * c.pt;
     for (v, label) in &y_ticks {
         let py = sy.at(*v);
@@ -1901,7 +1906,7 @@ fn draw_bars(c: &mut Canvas<'_>, frame: Area, data: &BarData, value: &Axis, grid
         from: plot.left,
         to: plot.right,
     };
-    let x_ticks = axis_ticks(lo, hi, value, (plot.width() / (tick * 6.0)) as usize);
+    let (_, x_ticks) = axis_ticks((lo, hi), value, plot.width(), tick, true);
     let hair = 0.6 * c.pt;
     for (v, label) in &x_ticks {
         let px = sx.at(*v);
@@ -2494,7 +2499,7 @@ mod tests {
             kind: XAxisTemporalKind::Date,
             ..Default::default()
         };
-        let ticks = axis_ticks(19723.0, 20454.0, &axis, 6);
+        let (_, ticks) = axis_ticks((19723.0, 20454.0), &axis, 400.0, 12.0, true);
         let labels: Vec<&str> = ticks.iter().map(|(_, l)| l.as_str()).collect();
         assert!(labels.contains(&"2025"), "{labels:?}");
         assert!(ticks.len() <= 6);

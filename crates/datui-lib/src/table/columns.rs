@@ -148,11 +148,10 @@ impl DataTableState {
             .saturating_sub(self.frozen_shown())
     }
 
-    /// Move the view sideways, leaving the cursor where it is unless the view leaves
-    /// it behind on the left. Planned from the widths the columns were last drawn at;
-    /// reads nothing. A page that needs a column not drawn yet waits for the next
-    /// draw, which measures it from the rows on hand; a relative move typed behind it
-    /// waits too and lands after it, in order, so no key is lost or planned on a guess.
+    /// Move the view sideways, the cursor staying unless left behind on the left. Planned
+    /// from last-drawn widths, reading nothing; a page needing an undrawn column waits for
+    /// the next draw (which measures it from rows on hand), and moves typed behind it wait
+    /// too, in order.
     pub(super) fn scroll_columns(&mut self, mv: ColumnMove) {
         if matches!(
             mv,
@@ -170,10 +169,9 @@ impl DataTableState {
         }
     }
 
-    /// Move the column cursor (`h` `l` `[` `]` `{` `}`), the view following only when
-    /// the cursor would leave the screen. Reads nothing; a move that needs a column
-    /// not drawn yet waits for the next draw, in order, as `Self::scroll_columns`
-    /// says.
+    /// Move the column cursor (`h` `l` `[` `]` `{` `}`), the view following only when the
+    /// cursor would leave the screen. Reads nothing; moves needing undrawn columns wait as
+    /// in `Self::scroll_columns`.
     pub fn move_cursor(&mut self, mv: CursorMove) {
         if matches!(mv, CursorMove::First | CursorMove::Last) {
             self.column_moves.clear();
@@ -412,12 +410,10 @@ impl DataTableState {
         }
     }
 
-    /// Record the scrolling side as the renderer lays it out, land the moves waiting
-    /// on it, in order, and bring the cursor back on screen when it may have left,
-    /// with `width`, which measures a column not drawn yet from the rows on hand.
-    /// Called while drawing, before the scrolling columns are drawn; reads nothing,
-    /// and measures only the columns a move crosses. With no rows on hand the moves
-    /// wait for a draw that has them.
+    /// While drawing, before the scrolling columns: record the scrolling side's layout,
+    /// land waiting moves in order, and bring the cursor back on screen, measuring undrawn
+    /// columns a move crosses with `width` from rows on hand. Reads nothing; without rows
+    /// the moves wait.
     pub(crate) fn land_column_moves(
         &mut self,
         room: Room,
@@ -464,26 +460,11 @@ impl DataTableState {
         }
     }
 
-    /// Show the new column window, reading nothing.
-    ///
-    /// A sideways move changes which columns are on screen, not which rows, so it
-    /// re-slices the buffer already held. It must not go through [`collect`], which
-    /// counts the rows when the count is not yet known: `App::handle` calls
-    /// `scroll_right` inline on the thread that draws and reads keys, and
-    /// `key_acts_while_busy` lets Left and Right through while other work runs. On a
-    /// staged-open cloud hive that count is a metadata read per object, and taken
-    /// there it is a freeze no keystroke can interrupt.
-    ///
-    /// Nothing is drawn when there is no buffer to re-slice, or when what is held
-    /// does not match the range it claims. [`collect`] reloaded the page in that
-    /// second case; this does not, because `load_buffer` is a collect of that page
-    /// and on a cloud hive that is row groups over the wire — the same freeze in a
-    /// smaller size.
-    ///
-    /// The index still moves, so presses before the first buffer lands are spent on
-    /// a view that cannot show them yet, and the first frame drawn is already scrolled
-    /// to wherever they left it. That is the pre-existing behaviour: the old path
-    /// redrew each press, but only by paying the wait this exists to avoid.
+    /// Show the new column window by re-slicing the held buffer, never via
+    /// [`collect`]: this runs inline on the key thread (and Left/Right act while busy),
+    /// where `collect`'s row count or page reload could freeze on a cloud hive. Draws
+    /// nothing without a matching buffer; the index still moves, so the first drawn frame
+    /// is already scrolled.
     ///
     /// [`collect`]: Self::collect
     fn rescroll_columns(&mut self) {
@@ -539,11 +520,10 @@ impl DataTableState {
         }
     }
 
-    /// Take the layout's word for how many frozen columns fit, and re-slice the
-    /// scrolling columns to start after them. Unscrolled, the frozen columns left out
-    /// lead the scrolling ones; scrolled, the column the scroll started at stays
-    /// first where it can, so a resize does not also move the view. Reads nothing;
-    /// called while drawing, and only re-selects columns of the buffer already held.
+    /// Take the layout's count of frozen columns that fit and re-slice the scrolling
+    /// columns after them: unscrolled, left-out frozen columns lead; scrolled, the first
+    /// scrolled column stays first where it can, so a resize does not move the view. Reads
+    /// nothing; called while drawing.
     pub(crate) fn fit_frozen(&mut self, shown: usize) {
         let before = self.frozen_shown();
         let shown = shown.min(self.view.locked_columns_count);

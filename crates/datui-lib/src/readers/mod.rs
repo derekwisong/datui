@@ -1,43 +1,28 @@
 //! The readers: what datui does with a file of each format.
 //!
 //! A format's descriptor ([`crate::FileFormat::descriptor`], in datui-cli) says what is
-//! true of it without a file to read. Its `Reader` holds the code: the bytes that say
-//! it, the scan that opens it, the conversion of a format read into files of its own,
-//! the tables a file of it lists, the home preview, Copy as Python's Polars call and
-//! the format a view of it exports to by default. What a file says besides its rows is
-//! the scan's to report, as the Info panel tab of [`crate::members::Opened::detail`].
+//! true of it without a file. Its `Reader` holds the code: signature bytes, the scan,
+//! conversion to files of its own, listed tables, the home preview, Copy as Python's
+//! call, the default export format, and Info tab facts (from the scan, or `Reader::facts`
+//! reading a footer). Readers live beside their parsers (`crate::sqlite::READER`); those
+//! Polars reads are in `polars`. `of` maps every format exhaustively, so a missing
+//! reader does not compile. Adding a format: variant and descriptor in datui-cli, parser
+//! and reader in a module, a line in `of`.
 //!
-//! Each format's reader lives beside its parser (`crate::sqlite::READER`), and those of
-//! the formats Polars reads in `polars`. `of` maps every format to its reader,
-//! exhaustively, so a format without one does not compile.
+//! Outside those, a format is named only where it changes app behavior:
 //!
-//! The descriptor says whether a format has a tab of its own on the Info panel and
-//! whether a file of it holds tables; the reader fills the tab, from what its scan
-//! read or, for a format Polars opens, from what `Reader::facts` reads of the file's
-//! footer when the panel first opens, and lists the tables.
-//!
-//! Adding a format is its variant and descriptor in datui-cli, its parser and reader
-//! in a module of its own, and a line in `of`.
-//!
-//! Outside a format's own module, the descriptors and this registry, a format is named
-//! only where it changes what the app does, beyond what a descriptor or reader says:
-//!
-//! - Parquet: hive partitions and footers. A directory or glob of it is one scan with
-//!   partition columns, a part file is Parquet by its directory's name, its rows are
-//!   counted from footers, and a directory in an object store is read as Parquet only.
-//! - Arrow IPC: streams have no footer and are converted to one file first
-//!   (`Scan::Streams`, `Conversion::Streams`); Hugging Face caches and DatasetDicts are
-//!   Arrow files with JSON metadata beside them, read a split at a time.
-//! - JSON: Hugging Face metadata, and a model's config beside its weights, are not data
-//!   left out.
-//! - SafeTensors and GGUF: a directory of weights is the model, and a remote model is
-//!   read by its headers (`crate::remote_model`).
-//! - CSV: the reader a delimited spec reads through.
-//! - Text, and CSV, TSV, JSON and NDJSON without a name that says them: told apart by
-//!   [`crate::lines::guess`] from text no signature claims, not by `sniff`; a name
-//!   that says text is still asked its bytes ([`FileFormat::TEXT`]), and a followed
-//!   file's lines are counted by the watcher.
-//! - Audio: a full quality run checks a recording's signal (`crate::audio::recording`).
+//! - Parquet: hive partitions and footers (directories and globs as one scan, part files
+//!   by directory name, footer row counts, object-store directories read as Parquet only).
+//! - Arrow IPC: streams are converted to a file first (`Scan::Streams`,
+//!   `Conversion::Streams`); Hugging Face caches and DatasetDicts, a split at a time.
+//! - JSON: Hugging Face metadata and model configs are not data left out.
+//! - SafeTensors and GGUF: a directory of weights is the model; remote models read by
+//!   headers (`crate::remote_model`).
+//! - CSV: the reader delimited specs read through.
+//! - Text, and unnamed CSV, TSV, JSON and NDJSON: told apart by [`crate::lines::guess`],
+//!   not `sniff`; a text name still has its bytes asked ([`FileFormat::TEXT`]); followed
+//!   lines are counted by the watcher.
+//! - Audio: a full quality run checks the signal (`crate::audio::recording`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

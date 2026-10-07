@@ -296,6 +296,7 @@ pub const SETTINGS: &[Setting] = &[
     s("performance.max_buffered_rows", Count, Value("100000"), "Most rows the table buffers between reads; 0 for no limit.").kwarg("max_buffered_rows"),
     s("performance.max_buffered", Size, Value("\"512MiB\""), "Most memory the buffered rows may take, estimated from the schema; 0 for no limit. Rounded up to whole MiB.").kwarg("max_buffered"),
     s("performance.streaming", Bool, Value("true"), "Use the Polars streaming engine where it applies.").kwarg("streaming"),
+    s("performance.threads", Count, Value("0"), "Most threads Polars computes with; 0 for every core. It caps speed, not memory; POLARS_MAX_THREADS, when set, wins, and in Python it has no effect once Polars is imported."),
     // [analysis]
     s("analysis.sample_rows", Count, Value("100000"), "Rows an analysis samples from a larger table, spread across all of it; 0 reads every row.").flag("sample-rows").kwarg("sample_rows"),
     s("analysis.chart_rows", Count, Value("10000"), "Rows a chart reads; a larger table is sampled across all of it."),

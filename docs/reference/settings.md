@@ -85,6 +85,7 @@ lives, imports, the theme and troubleshooting.
 | `performance.max_buffered_rows` | integer | `100000` |  | Most rows the table buffers between reads; 0 for no limit. |
 | `performance.max_buffered` | size | `"512MiB"` |  | Most memory the buffered rows may take, estimated from the schema; 0 for no limit. Rounded up to whole MiB. |
 | `performance.streaming` | bool | `true` |  | Use the Polars streaming engine where it applies. |
+| `performance.threads` | integer | `0` |  | Most threads Polars computes with; 0 for every core. It caps speed, not memory; POLARS_MAX_THREADS, when set, wins, and in Python it has no effect once Polars is imported. |
 
 ## Analysis
 

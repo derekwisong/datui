@@ -338,11 +338,11 @@ fn test_esc_cancels_pivot_melt_without_change() {
 
     send_key(&mut app, KeyCode::Char('p'));
     assert_eq!(app.overlay, Overlay::PivotMelt);
-    assert!(app.pivot_melt_modal.active);
+    assert_eq!(app.overlay, Overlay::PivotMelt);
 
     send_key(&mut app, KeyCode::Esc);
     assert!(app.at_table());
-    assert!(!app.pivot_melt_modal.active);
+    assert_ne!(app.overlay, Overlay::PivotMelt);
 
     let rows_after = app
         .data_table_state
@@ -365,7 +365,7 @@ fn test_pivot_via_modal_apply() {
     load_file(&mut app, &rx, path);
 
     send_key(&mut app, KeyCode::Char('p'));
-    assert!(app.pivot_melt_modal.active);
+    assert_eq!(app.overlay, Overlay::PivotMelt);
 
     app.pivot_melt_modal.index_columns = vec!["id".to_string(), "date".to_string()];
     app.pivot_melt_modal.pivot_column = Some("key".to_string());
@@ -380,7 +380,7 @@ fn test_pivot_via_modal_apply() {
     }
     drain_events(&mut app, &rx);
 
-    assert!(!app.pivot_melt_modal.active);
+    assert_ne!(app.overlay, Overlay::PivotMelt);
     assert!(app.at_table());
     let state = app.data_table_state.as_ref().unwrap();
     let df = state.lf().clone().collect().unwrap();
@@ -401,7 +401,7 @@ fn test_melt_via_modal_apply() {
     load_file(&mut app, &rx, path);
 
     send_key(&mut app, KeyCode::Char('p'));
-    assert!(app.pivot_melt_modal.active);
+    assert_eq!(app.overlay, Overlay::PivotMelt);
 
     app.pivot_melt_modal.switch_tab();
     app.pivot_melt_modal.melt_index_columns = vec!["id".to_string(), "date".to_string()];
@@ -419,7 +419,7 @@ fn test_melt_via_modal_apply() {
         next = app.event(&n);
     }
 
-    assert!(!app.pivot_melt_modal.active);
+    assert_ne!(app.overlay, Overlay::PivotMelt);
     assert!(app.at_table());
     let state = app.data_table_state.as_ref().unwrap();
     let df = state.lf().clone().collect().unwrap();
@@ -442,7 +442,7 @@ fn test_pivot_via_keys_only() {
     load_file(&mut app, &rx, path);
 
     send_key(&mut app, KeyCode::Char('p'));
-    assert!(app.pivot_melt_modal.active);
+    assert_eq!(app.overlay, Overlay::PivotMelt);
 
     // Index: toggle id and date in the row's Picker.
     send_key(&mut app, KeyCode::Tab);
@@ -479,7 +479,7 @@ fn test_pivot_via_keys_only() {
     }
     drain_events(&mut app, &rx);
 
-    assert!(!app.pivot_melt_modal.active);
+    assert_ne!(app.overlay, Overlay::PivotMelt);
     let state = app.data_table_state.as_ref().unwrap();
     let df = state.lf().clone().collect().unwrap();
     let names: Vec<&str> = df.get_column_names().iter().map(|s| s.as_str()).collect();
@@ -502,11 +502,15 @@ fn test_esc_closes_the_picker_before_the_modal() {
 
     send_key(&mut app, KeyCode::Esc);
     assert!(app.pivot_melt_modal.picker.is_none());
-    assert!(app.pivot_melt_modal.active, "the modal outlives its picker");
+    assert_eq!(
+        app.overlay,
+        Overlay::PivotMelt,
+        "the modal outlives its picker"
+    );
     assert_eq!(app.overlay, Overlay::PivotMelt);
 
     send_key(&mut app, KeyCode::Esc);
-    assert!(!app.pivot_melt_modal.active);
+    assert_ne!(app.overlay, Overlay::PivotMelt);
     assert!(app.at_table());
 }
 
@@ -616,7 +620,7 @@ fn test_pivot_reads_in_the_background() {
     );
     drain_events(&mut app, &rx);
     send_key(&mut app, KeyCode::Char('p'));
-    assert!(app.pivot_melt_modal.active);
+    assert_eq!(app.overlay, Overlay::PivotMelt);
 
     let spec = PivotSpec {
         index: vec!["date".to_string()],
@@ -633,13 +637,14 @@ fn test_pivot_reads_in_the_background() {
         state.schema().contains("key"),
         "the table is as it was until the read lands"
     );
-    assert!(
-        app.pivot_melt_modal.active,
+    assert_eq!(
+        app.overlay,
+        Overlay::PivotMelt,
         "the modal waits for the result"
     );
 
     drain_events(&mut app, &rx);
-    assert!(!app.pivot_melt_modal.active);
+    assert_ne!(app.overlay, Overlay::PivotMelt);
     assert!(app.at_table());
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.last_pivot_spec().is_some());
@@ -723,8 +728,9 @@ fn test_esc_stops_a_pivot_being_read() {
     );
     send_key(&mut app, KeyCode::Esc);
     assert!(!app.is_busy());
-    assert!(
-        app.pivot_melt_modal.active,
+    assert_eq!(
+        app.overlay,
+        Overlay::PivotMelt,
         "the spec is still there to change"
     );
     assert_eq!(app.overlay, Overlay::PivotMelt);
@@ -746,10 +752,10 @@ fn test_esc_stops_a_pivot_being_read() {
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.last_pivot_spec().is_none());
     assert!(state.schema().contains("key"));
-    assert!(app.pivot_melt_modal.active);
+    assert_eq!(app.overlay, Overlay::PivotMelt);
 
     send_key(&mut app, KeyCode::Esc);
-    assert!(!app.pivot_melt_modal.active);
+    assert_ne!(app.overlay, Overlay::PivotMelt);
     assert!(app.at_table());
 }
 
@@ -843,7 +849,7 @@ fn the_builder_previews_the_pivot_and_applies_it() {
     // Enter applies the whole view; with all of it previewed, the rows match.
     send_key(&mut app, KeyCode::Enter);
     drain_events(&mut app, &rx);
-    assert!(!app.pivot_melt_modal.active);
+    assert_ne!(app.overlay, Overlay::PivotMelt);
     assert!(app.at_table());
     let applied = app
         .data_table_state
@@ -917,7 +923,7 @@ fn the_builder_previews_the_melt_and_applies_it() {
 
     send_key(&mut app, KeyCode::Enter);
     drain_events(&mut app, &rx);
-    assert!(!app.pivot_melt_modal.active);
+    assert_ne!(app.overlay, Overlay::PivotMelt);
     let applied = app
         .data_table_state
         .as_ref()
@@ -957,9 +963,9 @@ fn esc_closes_the_picker_then_the_builder_and_its_preview() {
     assert!(app.pivot_melt_modal.picker.is_some());
     send_key(&mut app, KeyCode::Esc);
     assert!(app.pivot_melt_modal.picker.is_none());
-    assert!(app.pivot_melt_modal.active, "the builder survives");
+    assert_eq!(app.overlay, Overlay::PivotMelt, "the builder survives");
     send_key(&mut app, KeyCode::Esc);
-    assert!(!app.pivot_melt_modal.active);
+    assert_ne!(app.overlay, Overlay::PivotMelt);
     assert!(app.at_table());
     assert!(app.pivot_melt_modal.preview.shown.is_none());
     assert!(app.pivot_melt_modal.preview.input.is_none());
@@ -1096,7 +1102,7 @@ fn a_pivot_past_the_column_limit_is_refused() {
         message.contains("10,001 columns") && message.contains("limit is 10,000"),
         "{message}"
     );
-    assert!(app.pivot_melt_modal.active, "the spec stays to change");
+    assert_eq!(app.overlay, Overlay::PivotMelt, "the spec stays to change");
     assert!(
         app.data_table_state
             .as_ref()
@@ -1132,7 +1138,7 @@ fn a_small_sorted_view_previews_in_its_order() {
 
     send_key(&mut app, KeyCode::Enter);
     drain_events(&mut app, &rx);
-    assert!(!app.pivot_melt_modal.active);
+    assert_ne!(app.overlay, Overlay::PivotMelt);
     let applied = app
         .data_table_state
         .as_ref()

@@ -109,10 +109,10 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
                 return vec![stop()];
             }
             // The builder is a takeover with no footer of its own.
-            if app.overlay == crate::Overlay::PivotMelt && app.pivot_melt_modal.active {
+            if app.overlay == crate::Overlay::PivotMelt {
                 return crate::widgets::pivot_melt::hints(&app.pivot_melt_modal);
             }
-            if !app.at_table() || app.sort_filter_modal.active || app.view_modal.active {
+            if !app.at_table() || app.view_modal.active {
                 return Vec::new();
             }
             let mut keys = Vec::new();

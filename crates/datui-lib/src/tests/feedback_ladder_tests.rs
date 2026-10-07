@@ -13,7 +13,6 @@ fn key(app: &mut App, code: KeyCode) -> Option<AppEvent> {
 fn an_incomplete_pivot_apply_stays_inline() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
-    app.pivot_melt_modal.active = true;
     app.overlay = Overlay::PivotMelt;
     key(&mut app, KeyCode::Enter);
     assert!(!app.error_modal.active, "validation is not a failure");

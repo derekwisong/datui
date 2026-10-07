@@ -457,7 +457,7 @@ impl App {
     /// bytes decompressed for their Text view. None holds the keys: moving on
     /// drops what is no longer wanted.
     pub(crate) fn inspector_needs(&mut self) {
-        if self.overlay != Overlay::Inspect || !self.inspector_modal.active {
+        if self.overlay != Overlay::Inspect {
             return;
         }
         let Some(state) = self.data_table_state.as_ref() else {

@@ -302,7 +302,6 @@ struct PickerBefore {
 }
 
 pub struct PivotMeltModal {
-    pub active: bool,
     /// The live preview of the staged spec.
     pub preview: ReshapePreview,
     pub active_tab: PivotMeltTab,
@@ -343,7 +342,6 @@ pub struct PivotMeltModal {
 impl Default for PivotMeltModal {
     fn default() -> Self {
         let mut modal = Self {
-            active: false,
             preview: ReshapePreview::default(),
             active_tab: PivotMeltTab::default(),
             focus: PivotMeltFocus::default(),
@@ -376,7 +374,6 @@ impl PivotMeltModal {
     }
 
     pub fn open(&mut self, history_limit: usize, theme: &crate::config::Theme) {
-        self.active = true;
         self.preview = ReshapePreview {
             epoch: next_epoch(),
             ..ReshapePreview::default()
@@ -395,7 +392,6 @@ impl PivotMeltModal {
     }
 
     pub fn close(&mut self) {
-        self.active = false;
         self.picker = None;
         self.preview = ReshapePreview::default();
     }
@@ -995,7 +991,6 @@ mod tests {
     #[test]
     fn test_pivot_melt_modal_new() {
         let m = PivotMeltModal::new();
-        assert!(!m.active);
         assert!(matches!(m.active_tab, PivotMeltTab::Pivot));
         assert!(matches!(m.focus, PivotMeltFocus::TabBar));
         assert!(m.picker.is_none());
@@ -1004,11 +999,10 @@ mod tests {
     #[test]
     fn test_open_close() {
         let mut m = modal_with_columns(&["a", "b"]);
-        assert!(m.active);
         assert!(matches!(m.active_tab, PivotMeltTab::Pivot));
         assert!(matches!(m.focus, PivotMeltFocus::TabBar));
         m.close();
-        assert!(!m.active);
+        assert!(m.picker.is_none());
     }
 
     #[test]

@@ -223,7 +223,7 @@ fn test_full_workflow() {
     // 2. Filter the data (s = Sort & Filter, switch to Filter tab, configure, Apply)
     let key_event = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
     app.event(&AppEvent::Key(key_event));
-    assert!(app.sort_filter_modal.active);
+    assert_eq!(app.overlay, Overlay::SortFilter);
 
     app.sort_filter_modal.switch_tab(); // Filter tab
     app.sort_filter_modal.filter.available_columns =
@@ -245,7 +245,7 @@ fn test_full_workflow() {
         app.event(&next_event);
     }
     drain_events(&mut app, &rx);
-    assert!(!app.sort_filter_modal.active);
+    assert_ne!(app.overlay, Overlay::SortFilter);
 
     let datatable = app.data_table_state.as_ref().unwrap();
     assert_eq!(datatable.lf().clone().collect().unwrap().shape().0, 33);
@@ -253,7 +253,7 @@ fn test_full_workflow() {
     // 3. Sort the data (s = Sort & Filter, Sort tab, configure, Apply)
     let key_event = KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE);
     app.event(&AppEvent::Key(key_event));
-    assert!(app.sort_filter_modal.active);
+    assert_eq!(app.overlay, Overlay::SortFilter);
 
     app.sort_filter_modal.sort.columns = app
         .data_table_state
@@ -285,7 +285,7 @@ fn test_full_workflow() {
         app.event(&next_event);
     }
     drain_events(&mut app, &rx);
-    assert!(!app.sort_filter_modal.active);
+    assert_ne!(app.overlay, Overlay::SortFilter);
 
     let datatable = app.data_table_state.as_ref().unwrap();
     let df = datatable.lf().clone().collect().unwrap();
@@ -12556,10 +12556,9 @@ fn test_enter_inspects_where_there_is_nothing_to_drill_into() {
     assert!(!plain.contains("Enter Drill"), "{plain}");
     press_and_send(&mut app, &tx, KeyCode::Enter);
     assert_eq!(app.overlay, Overlay::Inspect);
-    assert!(app.inspector_modal.active);
     press_and_send(&mut app, &tx, KeyCode::Esc);
     assert!(app.at_table());
-    assert!(!app.inspector_modal.active);
+    assert_ne!(app.overlay, Overlay::Inspect);
 
     app.event(&AppEvent::QQuery("select n: count a by c".to_string()));
     pump_until_idle(&mut app, &rx, &tx);
@@ -12621,7 +12620,6 @@ fn test_enter_inspects_a_loaded_list_column_and_drills_a_by_view() {
     press_and_send(&mut app, &tx, KeyCode::Enter);
     pump_until_idle(&mut app, &rx, &tx);
     assert_eq!(app.overlay, Overlay::Inspect);
-    assert!(app.inspector_modal.active);
     press_and_send(&mut app, &tx, KeyCode::Esc);
     let state = app.data_table_state.as_ref().unwrap();
     assert!(!state.is_drilled_down());
@@ -18019,7 +18017,7 @@ fn test_sort_filter_esc_discards_staged_edits() {
 
     // Open the modal, walk to the column list, and hide the first column — staged only.
     open_columns_list(&mut app);
-    assert!(app.sort_filter_modal.active);
+    assert_eq!(app.overlay, Overlay::SortFilter);
     press(&mut app, KeyCode::Down); // select the first column
     press(&mut app, KeyCode::Char('v'));
     assert!(
@@ -18032,7 +18030,7 @@ fn test_sort_filter_esc_discards_staged_edits() {
     );
 
     press(&mut app, KeyCode::Esc);
-    assert!(!app.sort_filter_modal.active);
+    assert_ne!(app.overlay, Overlay::SortFilter);
 
     // Reopen: the canceled hide is gone and nothing is staged as sorted.
     press(&mut app, KeyCode::Char('s'));
@@ -18250,7 +18248,7 @@ fn a_freeze_survives_a_narrow_window() {
     // column pulls the boundary back to it.
     freeze_through(&mut app, "delta");
     let with_sidebar = draw(&mut app, 60, 20);
-    assert!(app.sort_filter_modal.active);
+    assert_eq!(app.overlay, Overlay::SortFilter);
     assert!(with_sidebar.contains("Sort & Filter"), "{with_sidebar}");
     apply(&mut app);
     assert_eq!(
@@ -18631,7 +18629,7 @@ fn test_sort_filter_per_column_directions_reach_the_table() {
         let _ = tx.send(next);
     }
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(!app.sort_filter_modal.active, "Enter applies and closes");
+    assert_ne!(app.overlay, Overlay::SortFilter, "Enter applies and closes");
 
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(
@@ -18698,7 +18696,7 @@ fn test_filter_editor_keyboard_flow() {
         let _ = tx.send(next);
     }
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(!app.sort_filter_modal.active);
+    assert_ne!(app.overlay, Overlay::SortFilter);
     assert_eq!(current_rows(&app), 50, "only the alpha_ rows remain");
 
     // Reopen: the statement is staged; Del deletes it; Ctrl+Enter clears the filter.
@@ -18775,7 +18773,7 @@ fn test_ctrl_j_applies_from_the_filter_editor() {
         let _ = tx.send(next);
     }
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(!app.sort_filter_modal.active);
+    assert_ne!(app.overlay, Overlay::SortFilter);
     assert_eq!(current_rows(&app), 50, "the row in progress was applied");
 }
 
@@ -18836,7 +18834,7 @@ fn test_the_first_filter_is_s_down_space() {
     );
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Char(' '));
-    assert!(app.sort_filter_modal.active, "the sidebar stays open");
+    assert_eq!(app.overlay, Overlay::SortFilter, "the sidebar stays open");
     assert!(
         app.sort_filter_modal.filter.editor.is_some(),
         "and the editor is up, on the add row"
@@ -18858,11 +18856,11 @@ fn test_filter_editor_esc_ends_the_edit_not_the_sidebar() {
         app.sort_filter_modal.filter.editor.is_none(),
         "the edit dies"
     );
-    assert!(app.sort_filter_modal.active, "the sidebar does not");
+    assert_eq!(app.overlay, Overlay::SortFilter, "the sidebar does not");
     assert!(app.sort_filter_modal.filter.statements.is_empty());
 
     press(&mut app, KeyCode::Esc);
-    assert!(!app.sort_filter_modal.active);
+    assert_ne!(app.overlay, Overlay::SortFilter);
 }
 
 /// The sidebar is one Surface: one border, no bordered buttons, the actions in
@@ -19165,9 +19163,9 @@ fn esc_closes_the_picker_then_the_dialog() {
     );
     press(&mut app, KeyCode::Esc);
     assert!(app.pivot_melt_modal.picker.is_none());
-    assert!(app.pivot_melt_modal.active, "the dialog survives");
+    assert_eq!(app.overlay, Overlay::PivotMelt, "the dialog survives");
     press(&mut app, KeyCode::Esc);
-    assert!(!app.pivot_melt_modal.active);
+    assert_ne!(app.overlay, Overlay::PivotMelt);
 }
 
 /// A several-choice picker keeps its level: Enter keeps the toggles made in it, Esc
@@ -19203,7 +19201,7 @@ fn enter_on_an_incomplete_form_stays_and_says_why() {
     press(&mut app, KeyCode::Char('p'));
     for _ in 0..2 {
         assert!(press(&mut app, KeyCode::Enter).is_none());
-        assert!(app.pivot_melt_modal.active);
+        assert_eq!(app.overlay, Overlay::PivotMelt);
         assert!(app.pivot_melt_modal.attention, "the gap line re-accents");
         assert!(!app.modal_showing());
         press(&mut app, KeyCode::Down);
@@ -19296,7 +19294,7 @@ fn sort_and_filter_edits_what_is_in_effect() {
         let _ = tx.send(next);
     }
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(!app.sort_filter_modal.active);
+    assert_ne!(app.overlay, Overlay::SortFilter);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(
         state.view_sort_columns(),
@@ -20753,7 +20751,7 @@ fn test_inspector_opens_moves_between_rows_and_fields_and_closes() {
 
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert!(app.at_table());
-    assert!(!app.inspector_modal.active);
+    assert_ne!(app.overlay, Overlay::Inspect);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.start_row() + state.table_state.selected().unwrap(), 1);
 
@@ -20880,7 +20878,7 @@ fn test_inspector_reads_hidden_and_binary_fields_on_enter() {
         app.inspector_modal.filter.is_empty(),
         "Esc clears the find first"
     );
-    assert!(app.inspector_modal.active);
+    assert_eq!(app.overlay, Overlay::Inspect);
     press_key(&mut app, KeyCode::Up, KeyModifiers::NONE);
     assert_eq!(inspected_field(&app), "blob");
     let screen = draw_inspector(&mut app);
@@ -20945,7 +20943,7 @@ fn test_inspector_follows_the_view_and_leaves_enter_to_drill() {
     press_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     pump_until_idle(&mut app, &rx, &tx);
     assert!(app.data_table_state.as_ref().unwrap().is_drilled_down());
-    assert!(!app.inspector_modal.active);
+    assert_ne!(app.overlay, Overlay::Inspect);
 }
 
 /// #548: a huge value is read a screen at a time. Tab focuses it and End
@@ -20992,9 +20990,9 @@ fn test_inspector_reads_a_huge_value_to_its_end_in_two_keys() {
     assert_eq!(copies.lock().unwrap().last().unwrap().len(), huge.len());
     // Esc gives the focus back to the list, then closes.
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-    assert!(app.inspector_modal.active);
+    assert_eq!(app.overlay, Overlay::Inspect);
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-    assert!(!app.inspector_modal.active);
+    assert_ne!(app.overlay, Overlay::Inspect);
 }
 
 /// Every row of `app` drawn at `width`×`height`, one string per terminal row.
@@ -21372,7 +21370,7 @@ fn test_inspector_copies_the_row_as_json() {
     let (mut app, _rx, _tx, copies) = open_inspector_fixture(dir.path());
     press_key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
     press_key(&mut app, KeyCode::Char('Y'), KeyModifiers::NONE);
-    assert!(app.inspector_modal.active, "the inspector stays open");
+    assert_eq!(app.overlay, Overlay::Inspect, "the inspector stays open");
     let copied = copies.lock().unwrap().last().unwrap().clone();
     let json: serde_json::Value = serde_json::from_str(&copied).unwrap();
     assert_eq!(json["id"], 1);
@@ -21501,7 +21499,7 @@ fn test_inspector_finds_text_inside_a_value() {
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     assert!(app.inspector_modal.value_find.is_none());
     press_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-    assert!(app.inspector_modal.active);
+    assert_eq!(app.overlay, Overlay::Inspect);
 }
 
 /// #548: on a wide terminal the fields and the value sit side by side, and a

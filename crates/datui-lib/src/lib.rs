@@ -4601,8 +4601,7 @@ impl App {
                     let result = state.deferred(|s| s.melt(spec));
                     match result {
                         Ok(()) => {
-                            self.pivot_melt_modal.close();
-                            self.overlay = Overlay::None;
+                            self.close_overlay();
                             self.spawn_async_collect("Computing melt...");
                             None
                         }
@@ -5386,10 +5385,9 @@ impl App {
                 });
                 match installed {
                     Some(Ok(())) => {
-                        self.pivot_melt_modal.close();
                         // Only from the modal: a trip home meanwhile stays home.
                         if self.overlay == Overlay::PivotMelt {
-                            self.overlay = Overlay::None;
+                            self.close_overlay();
                         }
                         // The wait passes to the read of its rows.
                         self.spawn_async_collect(Self::LOADING_BUFFER);
@@ -5451,7 +5449,7 @@ impl App {
                     .read
                     .as_ref()
                     .is_some_and(|read| read.key() == (frame, row));
-                if self.inspector_modal.active && asked {
+                if self.overlay == Overlay::Inspect && asked {
                     self.inspector_modal.read =
                         Some(inspector_modal::FieldRead::Read { frame, row, values });
                 }
@@ -5462,7 +5460,7 @@ impl App {
                 let Job::InspectJson { token } = job else {
                     return None;
                 };
-                if !current || !self.inspector_modal.active {
+                if !current || self.overlay != Overlay::Inspect {
                     return None;
                 }
                 let modal = &mut self.inspector_modal;
@@ -5510,7 +5508,7 @@ impl App {
                 None
             }
             Answer::ValueWritten(open) => {
-                if current && self.inspector_modal.active {
+                if current && self.overlay == Overlay::Inspect {
                     self.external.open = Some(open);
                 }
                 None

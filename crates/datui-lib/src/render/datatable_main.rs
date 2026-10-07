@@ -22,7 +22,7 @@ pub fn render(
 ) {
     let active_sidebar = ActiveSidebar::from_modals(
         app.overlay.shows(&crate::Overlay::Info),
-        app.sort_filter_modal.active,
+        app.overlay == crate::Overlay::SortFilter,
         app.view_modal.active,
     );
 
@@ -169,7 +169,7 @@ pub fn render(
         }
     }
 
-    if app.sort_filter_modal.active {
+    if app.overlay == crate::Overlay::SortFilter {
         crate::render::sort_filter_sidebar::render(sort_area, buf, &mut app.sort_filter_modal, ctx);
     }
 
@@ -184,7 +184,7 @@ pub fn render(
     }
 
     // A takeover: the form beside a preview of the reshaped rows.
-    if app.pivot_melt_modal.active {
+    if app.overlay == crate::Overlay::PivotMelt {
         pivot_melt::render(main_area, buf, &mut app.pivot_melt_modal, ctx);
     }
 
@@ -195,8 +195,7 @@ pub fn render(
         export::render_export_modal(modal_area, buf, &mut app.export_modal, ctx);
     }
 
-    if app.inspector_modal.active
-        && app.overlay == crate::Overlay::Inspect
+    if app.overlay == crate::Overlay::Inspect
         && let Some(state) = app.data_table_state.as_ref()
     {
         // A takeover: the row's fields want the width a long value reads at, and

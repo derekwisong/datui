@@ -35,7 +35,7 @@ impl App {
     /// follows the spec it leaves staged.
     pub(crate) fn pivot_melt_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let out = self.pivot_melt_form_key(event);
-        if self.pivot_melt_modal.active {
+        if self.overlay == Overlay::PivotMelt {
             self.request_reshape_preview();
         }
         out
@@ -139,7 +139,7 @@ impl App {
         result: Result<PreviewFrame, String>,
     ) {
         let preview = &mut self.pivot_melt_modal.preview;
-        if !self.pivot_melt_modal.active || preview.epoch != epoch {
+        if self.overlay != Overlay::PivotMelt || preview.epoch != epoch {
             return;
         }
         if preview.running == Some(token) {
@@ -160,7 +160,7 @@ impl App {
 
     /// Whether the builder's preview has an answer still to come.
     pub fn reshape_preview_pending(&self) -> bool {
-        self.pivot_melt_modal.active && self.pivot_melt_modal.preview.running.is_some()
+        self.overlay == Overlay::PivotMelt && self.pivot_melt_modal.preview.running.is_some()
     }
 
     /// Keys in the builder's form.

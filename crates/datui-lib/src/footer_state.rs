@@ -44,7 +44,7 @@ impl App {
                 footer.dataset = self.dataset_label();
                 // The builder covers the table: its position and view are not on
                 // screen, so the status names where you are instead.
-                if self.overlay == Overlay::PivotMelt && self.pivot_melt_modal.active {
+                if self.overlay == Overlay::PivotMelt {
                     footer.stages.push("pivot & melt".to_string());
                 } else {
                     self.table_status(&mut footer);

@@ -1293,7 +1293,6 @@ fn ctrl_c_quits_from_the_sort_and_chart_search_boxes() {
 
     let (mut p, _dir) = loaded_pump();
     p.app.overlay = Overlay::SortFilter;
-    p.app.sort_filter_modal.active = true;
     p.app.sort_filter_modal.active_tab = SortFilterTab::Columns;
     p.app.sort_filter_modal.focus = SortFilterField::Find;
     assert!(

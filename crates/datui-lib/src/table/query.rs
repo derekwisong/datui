@@ -866,6 +866,35 @@ impl DataTableState {
         self.apply_transformations();
     }
 
+    /// The sidebar's Apply: the column order, the frozen count, the filters and the
+    /// sort as one change, planned once and read from the top.
+    pub fn apply_view(
+        &mut self,
+        order: Vec<String>,
+        locked: usize,
+        filters: Vec<FilterStatement>,
+        columns: Vec<String>,
+        descending: Vec<bool>,
+    ) {
+        self.set_column_order(order);
+        self.set_locked_columns(locked);
+        if filters != self.filters
+            || columns != self.sort_columns
+            || descending != self.sort_descending
+        {
+            self.widths.relearn();
+        }
+        if let Some(first) = descending.first() {
+            self.sort_ascending = !first;
+        }
+        self.filters = filters;
+        self.sort_columns = columns;
+        self.sort_descending = descending;
+        self.start_row = 0;
+        self.drop_buffer();
+        self.apply_transformations();
+    }
+
     pub fn filter(&mut self, filters: Vec<FilterStatement>) {
         // The sidebar sends the filters again on any apply; only a change is new rows.
         if filters != self.filters {

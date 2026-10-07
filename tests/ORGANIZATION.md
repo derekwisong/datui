@@ -255,3 +255,23 @@ and stay apart, as do the cloud, live and AWS targets.
 
 The same 219 tests pass in the three targets, under `cargo test`, under nextest,
 and with `NO_COLOR=1` set for the run.
+
+### `app`, apart from `integration_test`
+
+`tests/app/main.rs` declares `capture`, `terminal_escape`, `catalog` and
+`public_datasets` (both with the `cloud` and `http` features), and
+`quality_export` (was quality_intent_export_test). `table_sample.rs` in the same
+directory is still a module of `integration_test`. `quality_spill_test` and
+`quality_bench_test` stay apart: each sets Polars' spill directory and `TMPDIR`
+before Polars reads them, once per process.
+
+| Measure | Before | After |
+|---|---|---|
+| Executables in the workspace | 24, 6.8 GiB | 20, 5.3 GiB |
+| These five | 1,900 MiB, about 375–390 each | 389 MiB |
+| Rebuild after a one-line `datui-lib` edit | 8.9 s wall, 26 units, 22.8 s across the root test units; these five 5.6 s | 8.4–9.5 s wall, 22 units, 19.4–24.4 s; `app` 1.4–2.8 s |
+| Rebuild after a one-line edit of one module | 0.6 s | 0.5 s |
+| `scripts/dev/test.sh full`, built | 23.7 s wall | 23.4 s wall; 3,983 passed, 31 ignored |
+
+Other agents kept the load average near 10 during these runs, so the rebuild
+times are ranges over two runs.

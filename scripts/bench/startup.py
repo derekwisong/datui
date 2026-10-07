@@ -82,7 +82,7 @@ CSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]")
 # Public catalog files (crates/datui-lib/src/home/public_catalog.toml).
 REMOTE = {
     "taxi-http": (
-        "NYC yellow taxis, Jan 2025 (HTTPS, 59 MB Parquet)",
+        "NYC yellow taxis, Jan 2025 (HTTPS, 56 MiB Parquet)",
         "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2025-01.parquet",
     ),
     "noaa-s3": (
@@ -432,9 +432,10 @@ def cmd_table(opts) -> int:
     for rows in [parse_rows(r) for r in opts.rows.split(",")]:
         files = generate(root, rows)
         for kind in ("parquet", "csv"):
-            size = files[kind].stat().st_size / 1e6
+            # Binary units, as peak RSS is given.
+            size = fmt_mib(files[kind].stat().st_size / 2**20)
             for cache in caches:
-                label = f"{kind.upper() if kind == 'csv' else 'Parquet'}, {human_rows(rows)} rows ({size:,.0f} MB)"
+                label = f"{kind.upper() if kind == 'csv' else 'Parquet'}, {human_rows(rows)} rows ({size})"
                 cases.append(Case(label, str(files[kind]), cache))
     if opts.remote:
         for label, url in REMOTE.values():

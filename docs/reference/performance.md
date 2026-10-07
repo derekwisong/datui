@@ -18,19 +18,19 @@ settings: the terminal does not answer the background color query of
 
 | File | Cache | First rows | Peak RSS |
 |---|---|---:|---:|
-| Parquet, 1M rows (13 MB) | warm | 9 ms | 69 MiB |
-| Parquet, 1M rows (13 MB) | cold | 12 ms | 69 MiB |
-| CSV, 1M rows (58 MB) | warm | 16 ms | 180 MiB |
-| CSV, 1M rows (58 MB) | cold | 17 ms | 179 MiB |
-| Parquet, 10M rows (132 MB) | warm | 9 ms | 69 MiB |
-| Parquet, 10M rows (132 MB) | cold | 10 ms | 69 MiB |
-| CSV, 10M rows (586 MB) | warm | 12 ms | 695 MiB |
-| CSV, 10M rows (586 MB) | cold | 14 ms | 696 MiB |
-| Parquet, 30M rows (397 MB) | warm | 9 ms | 70 MiB |
-| Parquet, 30M rows (397 MB) | cold | 13 ms | 69 MiB |
-| CSV, 30M rows (1,779 MB) | warm | 12 ms | 1.43 GiB |
-| CSV, 30M rows (1,779 MB) | cold | 14 ms | 1.38 GiB |
-| [NYC yellow taxis, Jan 2025](https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2025-01.parquet) (HTTPS, 59 MB Parquet) | remote | 638 ms | 86 MiB |
+| Parquet, 1M rows (13 MiB) | warm | 9 ms | 69 MiB |
+| Parquet, 1M rows (13 MiB) | cold | 12 ms | 69 MiB |
+| CSV, 1M rows (55 MiB) | warm | 16 ms | 180 MiB |
+| CSV, 1M rows (55 MiB) | cold | 17 ms | 179 MiB |
+| Parquet, 10M rows (126 MiB) | warm | 9 ms | 69 MiB |
+| Parquet, 10M rows (126 MiB) | cold | 10 ms | 69 MiB |
+| CSV, 10M rows (559 MiB) | warm | 12 ms | 695 MiB |
+| CSV, 10M rows (559 MiB) | cold | 14 ms | 696 MiB |
+| Parquet, 30M rows (379 MiB) | warm | 9 ms | 70 MiB |
+| Parquet, 30M rows (379 MiB) | cold | 13 ms | 69 MiB |
+| CSV, 30M rows (1.66 GiB) | warm | 12 ms | 1.43 GiB |
+| CSV, 30M rows (1.66 GiB) | cold | 14 ms | 1.38 GiB |
+| [NYC yellow taxis, Jan 2025](https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2025-01.parquet) (HTTPS, 56 MiB Parquet) | remote | 638 ms | 86 MiB |
 | [NOAA GHCN-D 2023 TMAX](https://registry.opendata.aws/noaa-ghcn/) (`s3://noaa-ghcn-pds/parquet/by_year/YEAR=2023/ELEMENT=TMAX/`, 9 files) | remote | 541 ms | 86 MiB |
 
 - Only the rows on screen are read before the first frame, so first rows does

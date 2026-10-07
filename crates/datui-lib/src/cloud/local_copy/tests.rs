@@ -23,6 +23,18 @@ fn files(dir: &Path) -> Vec<RemoteObject> {
         .collect()
 }
 
+/// `bytes` handed to `write` `chunk` at a time, as a download does.
+fn send(
+    write: &mut dyn FnMut(&[u8]) -> Result<()>,
+    bytes: &[u8],
+    chunk: usize,
+) -> std::result::Result<u64, StreamError> {
+    for piece in bytes.chunks(chunk) {
+        write(piece).map_err(StreamError::Write)?;
+    }
+    Ok(bytes.len() as u64)
+}
+
 /// The URL's bytes from the "bucket" under `source`.
 fn bytes_of(source: &Path, url: &str) -> Vec<u8> {
     let key = url.trim_start_matches("s3://lake/events/");
@@ -52,12 +64,7 @@ fn a_copy_reads_as_the_remote_scan_would() {
         root.path(),
         &objects,
         &ReadWatch::default(),
-        |object, write| {
-            for chunk in bytes_of(source.path(), &object.url).chunks(7) {
-                write(chunk)?;
-            }
-            Ok(())
-        },
+        |object, write| send(write, &bytes_of(source.path(), &object.url), 7),
     )
     .unwrap();
     assert_eq!(copy.objects(), 2);
@@ -101,7 +108,7 @@ fn a_plan_reading_an_object_not_copied_is_left_alone() {
         root.path(),
         &objects[..1],
         &ReadWatch::default(),
-        |object, write| write(&bytes_of(source.path(), &object.url)),
+        |object, write| send(write, &bytes_of(source.path(), &object.url), usize::MAX),
     )
     .unwrap();
     let urls = objects
@@ -120,13 +127,16 @@ fn a_stopped_or_failed_fetch_leaves_no_files() {
     let entries = || std::fs::read_dir(root.path()).unwrap().count();
 
     let stop = ReadWatch::default();
+    // Stopped partway, the download gives up as `stream_into` does.
     let stopped = LocalCopy::fetch(root.path(), &objects, &stop, |object, write| {
-        let bytes = bytes_of(source.path(), &object.url);
-        write(&bytes[..10])?;
+        send(write, &bytes_of(source.path(), &object.url)[..10], 10)?;
         stop.stop();
-        write(&bytes[10..])
+        Err(StreamError::Cut)
     });
-    assert!(stopped.is_err());
+    assert_eq!(
+        stopped.unwrap_err().to_string(),
+        crate::analysis::sampling::CANCELLED
+    );
     assert_eq!(entries(), 0, "the partial copy is gone");
 
     let failed = LocalCopy::fetch(
@@ -135,19 +145,25 @@ fn a_stopped_or_failed_fetch_leaves_no_files() {
         &ReadWatch::default(),
         |object, write| {
             if object.url.contains("part=1") {
-                return Err(eyre!("404"));
+                return Err(StreamError::Open("404".into()));
             }
-            write(&bytes_of(source.path(), &object.url))
+            send(write, &bytes_of(source.path(), &object.url), usize::MAX)
         },
     );
-    assert!(failed.is_err());
+    assert!(failed.unwrap_err().to_string().contains("Could not copy"));
     assert_eq!(entries(), 0, "the first object went with it");
 
     let short = LocalCopy::fetch(
         root.path(),
         &objects,
         &ReadWatch::default(),
-        |object, write| write(&bytes_of(source.path(), &object.url)[1..]),
+        |object, write| {
+            send(
+                write,
+                &bytes_of(source.path(), &object.url)[1..],
+                usize::MAX,
+            )
+        },
     );
     assert!(short.unwrap_err().to_string().contains("changed"));
     assert_eq!(entries(), 0);
@@ -165,7 +181,7 @@ fn a_copy_lives_while_held_and_a_sweep_clears_orphans() {
             root.path(),
             &objects,
             &ReadWatch::default(),
-            |object, write| write(&bytes_of(source.path(), &object.url)),
+            |object, write| send(write, &bytes_of(source.path(), &object.url), usize::MAX),
         )
         .unwrap()
     };
@@ -204,7 +220,7 @@ fn two_objects_never_share_a_file() {
         &objects,
         &ReadWatch::default(),
         // Asked only for the first: the second has nowhere to go.
-        |object, write| write(&bytes_of(source.path(), &object.url)),
+        |object, write| send(write, &bytes_of(source.path(), &object.url), usize::MAX),
     )
     .unwrap_err();
     assert!(

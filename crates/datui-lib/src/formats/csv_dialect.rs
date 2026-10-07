@@ -4,44 +4,35 @@
 //! | Frictionless | Here | Done by |
 //! |---|---|---|
 //! | `commentChar` | `--comment` | Polars' `comment_prefix`, before the header and in the data |
-//! | `headerRows`, `headerJoin` | `--header-rows`, `header_join` | [`header_names`] reads those lines; Polars reads the rest without a header |
+//! | `headerRows`, `headerJoin` | `--header-rows`, `header_join` | [`head`] reads those lines; Polars reads the rest without a header |
 //! | `skipInitialSpace` | `--skip-initial-space` | [`skip_initial_space`], lazy expressions over the text columns |
 //!
 //! Header names are trimmed whatever the dialect: [`shown_names`].
 
 use std::io::BufRead;
+use std::path::{Path, PathBuf};
 
 use polars::prelude::*;
+
+use crate::OpenOptions;
 
 /// What `header_join` is when nothing sets it: Frictionless' `headerJoin` default.
 pub const DEFAULT_HEADER_JOIN: &str = " ";
 
 pub use datui_cli::check_comment_char;
 
-/// The longest header line [`header_names`] reads: far wider than any real header,
+/// The longest header line [`named_lines`] reads: far wider than any real header,
 /// and a bound on what a file with no line breaks can make it hold.
 const MAX_HEADER_LINE: u64 = 16 << 20;
 
 /// The names of the columns, from the lines `rows` names (1-based, counted from the top
-/// of the file before anything is skipped), each split on `separator` and trimmed.
+/// of the file before anything is skipped), each split on `separator` and trimmed;
+/// `lines` are the lines `read` names as [`named_lines`] read them, and one not read
+/// is blank.
 ///
 /// A column's name is its pieces from those lines, in the order `rows` gives them,
 /// joined with `join`; a blank piece adds nothing. A line that starts with `comment`
-/// is a header line all the same, since the user named it, and loses the prefix. A
-/// file that ends before the last line named is an error: it has no header there.
-pub fn header_names(
-    source: impl BufRead,
-    rows: &[usize],
-    join: &str,
-    separator: u8,
-    comment: Option<&str>,
-) -> color_eyre::Result<Vec<String>> {
-    let lines = named_lines(source, rows)?;
-    Ok(names_of(&lines, rows, rows, join, separator, comment))
-}
-
-/// [`header_names`] from `lines`, the lines `read` names as [`named_lines`] read them;
-/// of those, the names come from the lines `rows` names, and one not read is blank.
+/// is a header line all the same, since the user named it, and loses the prefix.
 pub fn names_of(
     lines: &[Vec<u8>],
     read: &[usize],
@@ -74,9 +65,122 @@ pub fn names_of(
         .collect()
 }
 
+/// What a read takes from the top of a delimited file before its scan.
+pub(crate) struct FileHead {
+    pub file: PathBuf,
+    /// The names its header lines give, when `--header-rows` is in effect.
+    pub names: Option<Vec<String>>,
+    /// Each column's unit, from the delimited spec's unit line.
+    pub units: Vec<(String, String)>,
+    /// The data lines the scan infers types from, split and trimmed; empty unless asked for.
+    pub window: Vec<Vec<String>>,
+    /// Whether the lines read hold bytes that are not UTF-8, which read as U+FFFD.
+    pub lossy: bool,
+}
+
+/// The rows Polars infers a CSV's types from when nothing says how many.
+const POLARS_INFER_ROWS: usize = 100;
+
+/// The head of the file at `file`, through its decompressor when `compression` names
+/// one: see [`head_of`]. A file is opened only when there is something to read.
+pub(crate) fn head(
+    file: &Path,
+    options: &OpenOptions,
+    compression: Option<crate::CompressionFormat>,
+    with_window: bool,
+) -> color_eyre::Result<FileHead> {
+    if !with_window && wanted_lines(options).is_empty() {
+        return Ok(FileHead::empty(file));
+    }
+    let source = crate::formats::readers::csv::text_source(file, compression)?;
+    head_of(source, file, options, with_window)
+}
+
+impl FileHead {
+    fn empty(file: &Path) -> FileHead {
+        FileHead {
+            file: file.to_path_buf(),
+            names: None,
+            units: Vec::new(),
+            window: Vec::new(),
+            lossy: false,
+        }
+    }
+}
+
+/// The header lines `--header-rows` and the delimited spec name, top first.
+fn wanted_lines(options: &OpenOptions) -> Vec<usize> {
+    let mut wanted: Vec<usize> = options.header_rows().unwrap_or_default().to_vec();
+    if let Some(read) = &options.delimited {
+        wanted.extend(read.delimited().head_lines());
+    }
+    wanted.sort_unstable();
+    wanted.dedup();
+    wanted
+}
+
+/// The one read of a delimited file's top, `source` holding its text: the names its
+/// header lines give, the units its spec's unit line gives, and, `with_window`, the
+/// data lines the scan infers types from ([`window_of`]), all in one pass.
+pub(crate) fn head_of(
+    mut source: impl BufRead,
+    file: &Path,
+    options: &OpenOptions,
+    with_window: bool,
+) -> color_eyre::Result<FileHead> {
+    let separator = options.separator_or(b',');
+    let comment = options.comment_char.as_deref();
+    let rows = options.header_rows();
+    let wanted = wanted_lines(options);
+    let lines = named_lines(&mut source, &wanted)?;
+    let names = rows.map(|rows| {
+        names_of(
+            &lines,
+            &wanted,
+            rows,
+            &options.header_join,
+            separator,
+            comment,
+        )
+    });
+    let units = options.delimited.as_ref().map_or_else(Vec::new, |read| {
+        read.delimited()
+            .facts_of(&wanted, &lines, separator, &options.header_join)
+            .units
+    });
+    let mut lossy = lines.iter().any(|line| std::str::from_utf8(line).is_err());
+    let mut rows_seen = Vec::new();
+    if with_window {
+        // On to the data: past the lines skipped beyond the header, and Polars' own
+        // header line when none is named.
+        let read = wanted.last().copied().unwrap_or(0);
+        skip_lines(
+            &mut source,
+            options.skip_lines.unwrap_or(0).saturating_sub(read),
+        )?;
+        if rows.is_none() {
+            window(&mut source, 1, separator, comment)?;
+        }
+        if let Some(n) = options.skip_rows {
+            window(&mut source, n, separator, comment)?;
+        }
+        let infer = options.infer_schema_length.unwrap_or(POLARS_INFER_ROWS);
+        let (seen, window_lossy) = window_of(&mut source, infer, separator, comment)?;
+        rows_seen = seen;
+        lossy |= window_lossy;
+    }
+    Ok(FileHead {
+        file: file.to_path_buf(),
+        names,
+        units,
+        window: rows_seen,
+        lossy,
+    })
+}
+
 /// The lines `rows` names (1-based, from the top of the file), in the order `rows`
 /// gives them, each with its line break. Only those lines are held, each up to a
-/// bound; a file that ends before the last of them is an error.
+/// bound; a file that ends before the last of them is an error: it has no header there.
 pub fn named_lines(mut source: impl BufRead, rows: &[usize]) -> color_eyre::Result<Vec<Vec<u8>>> {
     use std::io::Read;
     let last = rows.iter().copied().max().unwrap_or(0);
@@ -395,6 +499,17 @@ pub fn skip_initial_space(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn header_names(
+        source: &[u8],
+        rows: &[usize],
+        join: &str,
+        separator: u8,
+        comment: Option<&str>,
+    ) -> color_eyre::Result<Vec<String>> {
+        let lines = named_lines(source, rows)?;
+        Ok(names_of(&lines, rows, rows, join, separator, comment))
+    }
 
     fn names(text: &str, rows: &[usize], comment: Option<&str>) -> Vec<String> {
         header_names(text.as_bytes(), rows, " ", b',', comment).unwrap()

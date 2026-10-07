@@ -23,7 +23,7 @@ cargo build --release --locked -p datui
 | `--json FILE` | | Write every run |
 
 The generated files are seeded (seed 561) and written once under `--data`. The
-default sizes take about 3 GB of disk. Linux only. On a platform without
+default sizes take about 2.8 GiB of disk. Linux only. On a platform without
 `posix_fadvise` the table has warm rows only.
 
 ## The first-rows hook

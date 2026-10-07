@@ -16,6 +16,7 @@ use polars::prelude::LazyFrame;
 
 /// What datui hands to other programs: values to open, where they are written, and the
 /// clipboard.
+#[derive(Default)]
 pub struct External {
     /// A value the inspector wrote for another program, for the run loop to open:
     /// it owns the terminal that a waiting program takes over.
@@ -29,6 +30,7 @@ pub struct External {
 }
 
 /// Standard input and output when datui sits in a pipe, and the recording of what it read.
+#[derive(Default)]
 pub struct Pipes {
     /// What `-` reads in place of standard input: a test's pipe.
     pub(crate) stdin_reader: Option<Box<dyn std::io::Read + Send>>,

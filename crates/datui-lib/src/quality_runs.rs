@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 /// What Data Quality runs keep: results, samples and local copies within the memory budget, and
 /// the evidence view's way back.
+#[derive(Default)]
 pub struct QualityRuns {
     /// Reports, newest first, within [`QUALITY_MEMORY_BUDGET`].
     pub(crate) cache: Vec<QualityCacheEntry>,

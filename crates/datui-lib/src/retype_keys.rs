@@ -8,6 +8,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use polars::prelude::DataType;
 
 /// The retype and combine forms.
+#[derive(Default)]
 pub struct ColumnForms {
     /// The type picker, while it is open.
     pub retype: Option<crate::retype_modal::RetypeModal>,

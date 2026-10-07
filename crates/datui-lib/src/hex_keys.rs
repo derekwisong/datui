@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The hex view, and the number its next read is tagged with.
+#[derive(Default)]
 pub struct HexState {
     /// The hex view (`InputMode::Hex`), kept while it is up.
     pub view: Option<crate::hex_view::HexView>,
@@ -27,7 +28,7 @@ impl App {
 
     /// The hex view on screen, if it is.
     pub fn hex_view(&self) -> Option<&HexView> {
-        self.hex_view
+        self.hex
             .view
             .as_ref()
             .filter(|_| self.overlay == Overlay::Hex)
@@ -80,11 +81,11 @@ impl App {
         record_size: Option<usize>,
         source: HexSource,
     ) {
-        self.hex_view.serial += 1;
-        let mut view = HexView::new(source, origin, fallback, self.hex_view.serial);
+        self.hex.serial += 1;
+        let mut view = HexView::new(source, origin, fallback, self.hex.serial);
         view.record_size = record_size.map(|n| n.clamp(1, MAX_RECORD_SIZE));
         view.input = crate::widgets::text_input::TextInput::new().with_theme(&self.theme);
-        self.hex_view.view = Some(view);
+        self.hex.view = Some(view);
         self.open_overlay(Overlay::Hex);
     }
 
@@ -111,7 +112,7 @@ impl App {
     /// Leave the hex view the way it was entered: home, the table, or (from the
     /// command line) out of datui.
     fn leave_hex(&mut self, quit: bool) -> Option<AppEvent> {
-        let origin = self.hex_view.view.as_ref()?.origin;
+        let origin = self.hex.view.as_ref()?.origin;
         match origin {
             Origin::Home => {
                 self.enter_home();
@@ -142,7 +143,7 @@ impl App {
 
     /// What `q` says it does in the hex view.
     pub(crate) fn hex_q_label(&self) -> &'static str {
-        match self.hex_view.view.as_ref().map(|v| v.origin) {
+        match self.hex.view.as_ref().map(|v| v.origin) {
             Some(Origin::Home) => "Home",
             Some(Origin::Table | Origin::Info) if self.source.opened_from_home => "Home",
             _ => "Quit",
@@ -155,7 +156,7 @@ impl App {
             return None;
         }
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
-        let view = self.hex_view.view.as_mut()?;
+        let view = self.hex.view.as_mut()?;
 
         // The spec picker owns the keys while it is open.
         if let Some(picker) = view.picker.as_mut() {
@@ -273,7 +274,7 @@ impl App {
 
     /// Enter in a prompt: go to the offset, set the bytes per row, or find.
     fn hex_prompt_submit(&mut self, kind: PromptKind) -> Option<AppEvent> {
-        let view = self.hex_view.view.as_mut()?;
+        let view = self.hex.view.as_mut()?;
         let text = view.input.value().to_string();
         match kind {
             PromptKind::GoTo => {
@@ -318,7 +319,7 @@ impl App {
 
     /// `n` and `N`: the next or previous match of the last pattern, from the cursor.
     fn hex_find_again(&mut self, forward: bool) -> Option<AppEvent> {
-        let view = self.hex_view.view.as_ref()?;
+        let view = self.hex.view.as_ref()?;
         let pattern = view.found.as_ref()?.pattern.clone();
         let len = view.len();
         if len == 0 {
@@ -342,7 +343,7 @@ impl App {
     /// Find `pattern` from `from` on a worker. The keys wait, and Esc stops it.
     fn start_hex_find(&mut self, pattern: crate::hex_view::Pattern, from: u64, forward: bool) {
         self.stop_hex_find();
-        let Some(view) = self.hex_view.view.as_mut() else {
+        let Some(view) = self.hex.view.as_mut() else {
             return;
         };
         let stop = Arc::new(AtomicBool::new(false));
@@ -387,7 +388,7 @@ impl App {
     /// A find answered: the cursor goes to the match.
     pub(crate) fn hex_found(&mut self, run: HexFindRun, hit: HexHit) {
         self.status_message = None;
-        let Some(view) = self.hex_view.view.as_mut().filter(|v| v.serial == run.view) else {
+        let Some(view) = self.hex.view.as_mut().filter(|v| v.serial == run.view) else {
             return;
         };
         view.found = Some(Found {
@@ -433,14 +434,14 @@ impl App {
             .iter()
             .map(|found| found.spec.name.clone())
             .collect();
-        if let Some(view) = self.hex_view.view.as_mut() {
+        if let Some(view) = self.hex.view.as_mut() {
             view.picker = Some(crate::widgets::ui::PickerState::new(names));
         }
     }
 
     /// Read the hex view's file with the spec `name`.
     fn read_hex_with_spec(&mut self, name: String) -> Option<AppEvent> {
-        let view = self.hex_view.view.as_ref()?;
+        let view = self.hex.view.as_ref()?;
         let path = view.path.clone();
         let from_home = view.origin == Origin::Home;
         let options = crate::OpenOptions {

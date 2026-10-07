@@ -16,6 +16,7 @@ use crate::{App, AppEvent, ExportProgress, Overlay, chart_export, numfmt, output
 use chart_export::{ChartExportFormat, ChartExportRequest, ExportOptions, Figure};
 
 /// The chart view, its export form, and the preparations it keeps or waits on.
+#[derive(Default)]
 pub struct Charts {
     pub modal: ChartModal,
     pub export_modal: crate::chart_export_modal::ChartExportModal,

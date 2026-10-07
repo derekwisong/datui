@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 
 /// The home screen's work in flight and what it keeps for the session: probes, listings,
 /// search, previews and schemas.
+#[derive(Default)]
 pub struct HomeApp {
     /// Network roots currently being listed off-thread, so a probe is not started
     /// twice. Entries are never removed for a root that never answers — that thread

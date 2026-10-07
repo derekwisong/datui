@@ -9,6 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 /// What the Info panel shows of the dataset beyond its schema: file facts, codebook, catalog
 /// entry and documentation.
+#[derive(Default)]
 pub struct InfoState {
     /// What the Info panel's read found about the open file, and the
     /// `dataset_generation` it belongs to. Asked for when the panel opens, read on a

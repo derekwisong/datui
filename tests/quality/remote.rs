@@ -172,7 +172,7 @@ fn edit_and_run(
     change(&mut app.analysis_modal.data_quality_plan);
     screen(app);
     let mut first = press(app, KeyCode::Enter);
-    if app.analysis_modal.data_quality_confirm_run {
+    if app.confirmation_modal.asks_full_scan() {
         // A full scan asks first; Enter there runs it.
         first = press(app, KeyCode::Enter);
     }
@@ -315,10 +315,7 @@ fn a_full_scan_is_compared_again_without_a_request() {
     let text = screen(&mut app);
     assert!(text.contains("Changed: Compare"), "{text}");
     assert!(press(&mut app, KeyCode::Enter).is_none(), "nothing to run");
-    assert!(
-        !app.analysis_modal.data_quality_confirm_run,
-        "nothing to ask"
-    );
+    assert!(!app.confirmation_modal.asks_full_scan(), "nothing to ask");
     assert!(!app.is_busy());
     let compared = app.analysis_modal.data_quality_results.clone().unwrap();
     assert_eq!(compared.evaluated_rows, full.evaluated_rows);
@@ -427,7 +424,7 @@ fn measured(app: &App) -> String {
 /// Run a full scan staged in Setup, confirming it, and settle.
 fn run_staged(app: &mut App, rx: &mpsc::Receiver<AppEvent>) -> Vec<QualityStage> {
     let mut first = press(app, KeyCode::Enter);
-    if app.analysis_modal.data_quality_confirm_run {
+    if app.confirmation_modal.asks_full_scan() {
         first = press(app, KeyCode::Enter);
     }
     settle(app, rx, first)
@@ -659,7 +656,7 @@ fn a_cancel_mid_fetch_leaves_no_copy() {
     full_scan(&mut app.analysis_modal.data_quality_plan);
     let before = s3.wire.count();
     let mut next = press(&mut app, KeyCode::Enter);
-    if app.analysis_modal.data_quality_confirm_run {
+    if app.confirmation_modal.asks_full_scan() {
         next = press(&mut app, KeyCode::Enter);
     }
     loop {

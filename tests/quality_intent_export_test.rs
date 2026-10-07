@@ -4,7 +4,7 @@
 //! source, which these tests delete first.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use datui::analysis_modal::{AnalysisFocus, SetupRow};
+use datui::analysis_modal::{AnalysisFocus, AnalysisTool, SetupRow};
 use datui::data_quality::{QualityPage, QualityPrecision};
 use datui::output_file::Overwrite;
 use datui::quality_export::{REPORT_FORMAT, REPORT_VERSION, ReportFile};
@@ -209,7 +209,10 @@ fn intent_after_a_run_reuses_the_rows_it_read() {
     write_orders(&path, 5_000);
     let (mut app, rx) = open_setup(path.clone(), 1_000);
     let next = press(&mut app, KeyCode::Enter);
-    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    assert!(matches!(
+        next,
+        Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
+    ));
     assert_eq!(drain(&mut app, &rx, next), 1);
     let first = app.analysis_modal.data_quality_results.clone().unwrap();
     assert_eq!(first.precision, QualityPrecision::Sampled);
@@ -241,7 +244,10 @@ fn intent_after_a_run_reuses_the_rows_it_read() {
     assert_no_read(&app, &rx);
 
     let next = press(&mut app, KeyCode::Enter);
-    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    assert!(matches!(
+        next,
+        Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
+    ));
     assert_eq!(drain(&mut app, &rx, next), 1);
     let results = app.analysis_modal.data_quality_results.clone().unwrap();
     assert_eq!(results.reads.unwrap().reads, 0, "no source read");

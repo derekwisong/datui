@@ -1,5 +1,6 @@
 //! The analysis modal's keys.
 
+use crate::feedback::Confirm;
 use crate::{
     ANALYSIS_READ_WAITS, App, AppEvent, QUALITY_RUN_WAITS, analysis_modal, data_quality,
     sample_modal, sampling,
@@ -307,7 +308,7 @@ impl App {
                         }
                         return None;
                     }
-                    KeyCode::Enter => return self.run_quality_setup(),
+                    KeyCode::Enter => return self.run_quality_setup(false),
                     KeyCode::Char('d') => {
                         self.release_quality_rows();
                         return None;
@@ -529,7 +530,7 @@ impl App {
                     }
                     let before = self.analysis_modal.data_quality_plan.clone();
                     self.analysis_modal.data_quality_plan.sample_seed = sample_modal::new_seed();
-                    let event = self.run_quality_setup();
+                    let event = self.run_quality_setup(false);
                     // Refused, with the reason on Setup's line: the plan stays the
                     // one the report was run with, and the reason is said here.
                     if let Some(note) = self.analysis_modal.data_quality_setup_note.take() {
@@ -708,12 +709,14 @@ impl App {
                         .current_results()
                         .map(|r| r.total_rows)
                         .unwrap_or_default();
-                    self.pending_read_all = true;
-                    self.confirmation_modal.show(format!(
-                        "Read all {} rows? It can take much longer than the sample. \
-                         Esc stops waiting; the read finishes in the background.",
-                        crate::numfmt::group_chrome(total)
-                    ));
+                    self.confirmation_modal.show(
+                        format!(
+                            "Read all {} rows? It can take much longer than the sample. \
+                             Esc stops waiting; the read finishes in the background.",
+                            crate::numfmt::group_chrome(total)
+                        ),
+                        Confirm::ReadAll,
+                    );
                     self.confirmation_modal.yes_label = "Read all";
                 }
                 KeyCode::Tab | KeyCode::BackTab => {

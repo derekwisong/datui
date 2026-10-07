@@ -3,6 +3,7 @@
 
 use crate::analysis_modal::AnalysisProgress;
 use crate::export_modal::ExportFormat;
+use crate::feedback::Confirm;
 use crate::jobs::{Answer, Job, Progress};
 use crate::quality_memory::{
     KeptQualitySample, QUALITY_RELEASED_REMEMBERED, QualityCacheEntry, QualityCopyJob, RetainedCopy,
@@ -1201,7 +1202,6 @@ impl App {
             modal.data_quality_plan = before;
         }
         modal.data_quality_setup_note = None;
-        modal.data_quality_confirm_run = false;
         modal.data_quality_picker = None;
         if modal.data_quality_results.is_some() {
             let back = match modal.data_quality_setup_return {
@@ -1259,10 +1259,10 @@ impl App {
     /// Waits, with the reason on Setup, while a cancelled run is still stopping: a
     /// second read beside it is how memory runs out. A full scan asks first, and
     /// Esc there leaves the draft staged and the last report as it was.
-    pub(crate) fn run_quality_setup(&mut self) -> Option<AppEvent> {
+    /// `confirmed` is the full-scan question's Yes.
+    pub(crate) fn run_quality_setup(&mut self, confirmed: bool) -> Option<AppEvent> {
         use data_quality::QualityPage;
         if self.cancelled_analysis_running().is_some() {
-            self.analysis_modal.data_quality_confirm_run = false;
             self.analysis_modal.data_quality_setup_note = Some(QUALITY_RUN_WAITS.to_string());
             return None;
         }
@@ -1279,15 +1279,14 @@ impl App {
                 .as_ref()
                 .is_some_and(|last| last.same_measurement(plan)))
             || self.quality_cached(plan);
-        if plan.requires_confirmation() && !here && !self.analysis_modal.data_quality_confirm_run {
+        if plan.requires_confirmation() && !here && !confirmed {
             // Asked with the one confirmation; its Yes comes back here.
             let message = self.quality_full_scan_question(plan);
-            self.analysis_modal.data_quality_confirm_run = true;
-            self.confirmation_modal.show(message);
+            self.confirmation_modal
+                .show(message, Confirm::QualityFullScan);
             self.confirmation_modal.yes_label = "Run";
             return None;
         }
-        self.analysis_modal.data_quality_confirm_run = false;
         self.commit_quality_plan();
         let modal = &mut self.analysis_modal;
         if modal.data_quality_results.is_some()
@@ -1332,7 +1331,9 @@ impl App {
         }
         self.analysis_modal.computing = Some(progress);
         self.busy = true;
-        Some(AppEvent::AnalysisDataQualityCompute)
+        Some(AppEvent::AnalysisCompute(
+            analysis_modal::AnalysisTool::DataQuality,
+        ))
     }
 
     /// The draft is the plan now: Setup closes on it, and its sample becomes the

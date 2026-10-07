@@ -1,5 +1,7 @@
 //! The info panel's keys.
 
+use crate::cli::FileFormat;
+use crate::widgets::info::FileFacts;
 use crate::widgets::info::InfoTab;
 use crate::{App, AppEvent, InputMode};
 use crossterm::event::{KeyCode, KeyEvent};
@@ -193,5 +195,80 @@ impl App {
         self.info_modal.close();
         self.input_mode = InputMode::Normal;
         self.switch_table(Some(name))
+    }
+
+    /// Take the offer on the note the cursor is on: read its column as text.
+    ///
+    /// Only a note that carries the offer has one, and the offer is taken off a note
+    /// datui could not act on, so the `Ok(false)` arms here are for a note that has
+    /// gone stale under the cursor rather than for anything to tell the user about. A
+    /// failure is the scan's, and is shown the way any other failed read is.
+    fn read_the_selected_note_s_column_as_text(&mut self) {
+        let Some(state) = self.data_table_state.as_mut() else {
+            return;
+        };
+        let notes = state.notes();
+        let Some(column) = notes
+            .get(self.info_modal.notes_selected_index)
+            .and_then(|note| note.read_as_text.clone())
+        else {
+            return;
+        };
+        // Rebuilt here, read off the UI thread. A failure is left showing on the state.
+        if let Ok(true) = state.deferred(|s| s.read_column_as_text(&column)) {
+            // The note that offered this is gone and the list is shorter, so the
+            // cursor would otherwise sit past the end. Kept as near to where the
+            // user left it as the shorter list allows, rather than thrown to the
+            // top: one or two notes went, not all of them.
+            let notes = state.notes().len();
+            self.info_modal.notes_selected_index = self
+                .info_modal
+                .notes_selected_index
+                .min(notes.saturating_sub(1));
+            self.info_modal.notes_scroll_offset = 0;
+            self.spawn_async_collect(Self::LOADING_BUFFER);
+        }
+    }
+
+    /// Which of the Info panel's optional tabs the current dataset offers.
+    fn info_tabs_on_offer(&self) -> crate::widgets::info::TabsOffered {
+        let facts_tab = self.info_facts_tab();
+        self.data_table_state
+            .as_ref()
+            .map(|state| crate::widgets::info::TabsOffered {
+                documentation: self.info_documentation.is_open(),
+                ..crate::widgets::info::TabsOffered::of(state, facts_tab)
+            })
+            .unwrap_or_default()
+    }
+
+    /// The format of the dataset on screen, as the open read it.
+    pub(crate) fn opened_format(&self) -> Option<FileFormat> {
+        self.opened
+            .as_ref()
+            .and_then(|(_, options)| options.format)
+            .or_else(|| self.path.as_deref().and_then(FileFormat::from_path))
+    }
+
+    /// The format's tab of the Info panel that the file facts fill: for one local file,
+    /// not a hive directory, whose reader has a facts read. See
+    /// [`crate::widgets::info::InfoContext::facts_tab`].
+    pub(crate) fn info_facts_tab(&self) -> Option<&'static str> {
+        self.info_facts()
+            .and_then(|(format, _)| format.summary_tab())
+    }
+
+    /// The format whose facts read the Info panel's worker makes for the dataset on
+    /// screen, and that read, once the panel has asked for the file's facts.
+    pub(crate) fn info_facts(&self) -> Option<(FileFormat, crate::readers::Facts)> {
+        match self.file_facts()? {
+            // A directory, which has no footer of its own.
+            FileFacts::Read {
+                size: None,
+                detail: None,
+                ..
+            } => None,
+            _ => self.facts_of_open(),
+        }
     }
 }

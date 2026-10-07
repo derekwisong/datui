@@ -2307,6 +2307,7 @@ fn a_superseded_scan_does_not_continue_the_load() {
 /// screen, whatever the tool: every one of them is judged by its job.
 #[test]
 fn stale_analysis_answers_are_ignored() {
+    use crate::analysis_modal::AnalysisTool;
     use crate::data_quality::{DataQualityResults, QualityPrecision};
     use crate::statistics::AnalysisResults;
     use crate::{Answer, App, AppEvent, Job, Outcome};
@@ -2323,9 +2324,9 @@ fn stale_analysis_answers_are_ignored() {
         distribution_analyses: vec![],
     };
     let answers = vec![
-        Answer::Described(results()),
-        Answer::Distributions(results()),
-        Answer::Correlations(results()),
+        Answer::Analysis(AnalysisTool::Describe, results()),
+        Answer::Analysis(AnalysisTool::DistributionAnalysis, results()),
+        Answer::Analysis(AnalysisTool::CorrelationMatrix, results()),
         Answer::DataQuality {
             results: Box::new(DataQualityResults {
                 total_rows: Some(999_999),
@@ -3040,7 +3041,10 @@ fn a_table_copy_with_no_size_yet_asks_first() {
         app.confirmation_modal.active,
         "an unknown size asks; it never collects unprompted"
     );
-    assert!(app.pending_copy.is_some());
+    assert!(matches!(
+        app.confirmation_modal.asking,
+        Some(crate::feedback::Confirm::Copy(..))
+    ));
 }
 
 /// A Table copy writes binary as base64, so the guard counts it at that size
@@ -3089,7 +3093,12 @@ fn a_table_copy_counts_binary_at_its_base64_size() {
     // bytes alone, or the stub the buffer holds, would not be.
     let (app, next) = copy(Some(3 * 1024 * 1024));
     assert!(app.confirmation_modal.active, "large blobs ask first");
-    assert!(app.pending_copy.is_some() && next.is_none());
+    assert!(
+        matches!(
+            app.confirmation_modal.asking,
+            Some(crate::feedback::Confirm::Copy(..))
+        ) && next.is_none()
+    );
 
     let (app, next) = copy(Some(100));
     assert!(!app.confirmation_modal.active, "small blobs copy");
@@ -3097,7 +3106,12 @@ fn a_table_copy_counts_binary_at_its_base64_size() {
 
     let (app, next) = copy(None);
     assert!(app.confirmation_modal.active, "unmeasured blobs ask");
-    assert!(app.pending_copy.is_some() && next.is_none());
+    assert!(
+        matches!(
+            app.confirmation_modal.asking,
+            Some(crate::feedback::Confirm::Copy(..))
+        ) && next.is_none()
+    );
 }
 
 /// A local directory's footers, read to open it, give its binary columns their
@@ -3312,11 +3326,10 @@ fn a_dataset_owed_a_re_read_does_not_print_its_partial_as_the_total() {
 
     // An export is running and holds a lease, so the errand the failure raises has
     // to wait.
-    app.export_progress = Some(crate::ExportProgress {
-        file_path: std::path::PathBuf::from("/tmp/out.csv"),
-        current_phase: "Collecting".to_string(),
-        written: None,
-    });
+    app.export_progress = Some(crate::ExportProgress::new(
+        std::path::Path::new("/tmp/out.csv"),
+        "Collecting",
+    ));
     let _lease = app.hold_the_generation();
     let live = app.dataset_generation;
     App::record_footers(&app.pending_footers_result, live, None);
@@ -3515,11 +3528,10 @@ fn a_pass_that_failed_waits_for_work_already_asked_for() {
 
     // An export is collecting: it holds a lease on this exact generation, and its
     // answer is thrown away if anything bumps it.
-    app.export_progress = Some(crate::ExportProgress {
-        file_path: std::path::PathBuf::from("/tmp/out.csv"),
-        current_phase: "Collecting".to_string(),
-        written: None,
-    });
+    app.export_progress = Some(crate::ExportProgress::new(
+        std::path::Path::new("/tmp/out.csv"),
+        "Collecting",
+    ));
     let lease = app.hold_the_generation();
     let waiting_on = app.task_generation();
 
@@ -4211,3 +4223,6 @@ mod csv_inference_tests;
 
 /// Every text field the app shows, driven through the real `App`.
 mod text_input_flows;
+
+/// Every confirmation's Yes, No and Esc.
+mod confirm_tests;

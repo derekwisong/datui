@@ -1,13 +1,17 @@
 //! The export modal's keys: the shared form keys (`crate::form`), then what each
 //! field does with them.
 
+use crate::cli::{CompressionFormat, FileFormat};
 use crate::export::{ExportOptions, ExportRequest};
 use crate::export_modal::ExportFocus;
+use crate::export_modal::ExportFormat;
+use crate::feedback::Confirm;
 use crate::form::FormKey;
 use crate::logging::LogFailure;
 use crate::output_file::Overwrite;
 use crate::{App, AppEvent, home};
 use crossterm::event::KeyEvent;
+use std::path::{Path, PathBuf};
 
 impl App {
     /// Keys in the export modal.
@@ -89,10 +93,10 @@ impl App {
         };
         if request.path.exists() {
             let path_display = request.path.display().to_string();
-            self.pending_export = Some(request);
             self.confirmation_modal.show_destructive(
                 format!("File already exists:\n{path_display}\n\nOverwrite it?"),
                 "Overwrite",
+                Confirm::Export(Box::new(request)),
             );
             // Suspended, not closed: declining returns to the filled form with the
             // typed path intact.
@@ -105,5 +109,142 @@ impl App {
         self.export_modal.suspend();
         self.input_mode = self.export_returns_to();
         Some(AppEvent::Export(request))
+    }
+
+    /// Hand the export modal's path input a key, and when the value changed, follow
+    /// the typed extension with the format radio — the alternative was Parquet bytes
+    /// in a file named `out.csv`, with nothing on screen saying so. Cursor-only keys
+    /// change nothing and re-pick nothing, so a format chosen after typing stands.
+    fn export_path_key(&mut self, event: &KeyEvent) {
+        let before = self.export_modal.path_input.value().to_string();
+        self.export_modal
+            .path_input
+            .handle_key(event, Some(&self.cache));
+        if self.export_modal.path_input.value() != before {
+            self.export_modal.sync_format_to_path();
+            // Typing is the correction the message asked for.
+            self.export_modal.path_error = None;
+        }
+    }
+
+    fn ensure_file_extension(
+        path: &Path,
+        format: ExportFormat,
+        compression: Option<CompressionFormat>,
+    ) -> PathBuf {
+        let current_ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let mut new_path = path.to_path_buf();
+
+        if current_ext.is_empty() {
+            // No extension: use default for format (and add compression if selected)
+            let desired_ext = if let Some(comp) = compression {
+                format!("{}.{}", format.extension(), comp.extension())
+            } else {
+                format.extension().to_string()
+            };
+            new_path.set_extension(&desired_ext);
+        } else {
+            // User provided an extension: keep it. Only add compression suffix when compression is selected.
+            let is_compression_only = matches!(
+                current_ext.to_lowercase().as_str(),
+                "gz" | "zst" | "bz2" | "xz"
+            ) && ExportFormat::from_extension(current_ext).is_none();
+
+            if is_compression_only {
+                // Path has only compression ext (e.g. file.gz); stem may have format (file.csv.gz)
+                let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                let stem_has_format = stem
+                    .split('.')
+                    .next_back()
+                    .and_then(ExportFormat::from_extension)
+                    .is_some();
+                if stem_has_format {
+                    if let Some(comp) = compression
+                        && let Some(format_ext) = stem
+                            .split('.')
+                            .next_back()
+                            .and_then(ExportFormat::from_extension)
+                            .map(|f| f.extension())
+                    {
+                        new_path =
+                            PathBuf::from(stem.rsplit_once('.').map(|x| x.0).unwrap_or(stem));
+                        new_path.set_extension(format!("{}.{}", format_ext, comp.extension()));
+                    }
+                } else if let Some(comp) = compression {
+                    new_path.set_extension(format!("{}.{}", format.extension(), comp.extension()));
+                } else {
+                    new_path.set_extension(format.extension());
+                }
+            } else if let Some(comp) = compression
+                && format.supports_compression()
+            {
+                new_path.set_extension(format!("{}.{}", current_ext, comp.extension()));
+            }
+            // else: path stays as-is (e.g. foo.feather stays foo.feather)
+            // else: path with format extension stays as-is
+        }
+
+        new_path
+    }
+
+    /// The export format to offer by default for a dataset opened from `path`.
+    ///
+    /// The format the open read wins (`format`: what it sniffed, or `--format`), then
+    /// the extension. A compressed CSV keeps its CSV identity: `sales.csv.gz` has
+    /// extension `gz`, and the `.csv` that matters is in the stem, so reading the
+    /// extension alone offered no default at all.
+    pub(crate) fn export_format_for(
+        path: &Path,
+        format: Option<FileFormat>,
+    ) -> Option<ExportFormat> {
+        format
+            .or_else(|| FileFormat::from_path(path))
+            .or_else(|| {
+                CompressionFormat::from_extension(path)
+                    .and(path.file_stem())
+                    .and_then(|stem| FileFormat::from_path(Path::new(stem)))
+            })
+            .and_then(crate::readers::export_default)
+    }
+
+    /// What the status line says while an export writes its file.
+    pub(crate) fn export_write_phase(request: &ExportRequest) -> &'static str {
+        if request.options.compression(request.format).is_some() {
+            "Writing and compressing file"
+        } else {
+            "Writing file"
+        }
+    }
+
+    /// What the error modal says when writing an export, report or chart fails.
+    /// Why an export did not write, for the dialog's status line, which sits under
+    /// the path it is about.
+    pub(crate) fn format_export_error(error: &color_eyre::eyre::Report) -> String {
+        use std::io::{self, ErrorKind};
+
+        for cause in error.chain() {
+            if let Some(io_err) = cause.downcast_ref::<io::Error>() {
+                // Matched by type, not kind: an encoder's own errors share
+                // kinds such as InvalidInput with the destination checks.
+                let msg = match (crate::output_file::Refused::of(io_err), io_err.kind()) {
+                    (Some(refused), _) => format!("{refused}."),
+                    // A CSV open in a spreadsheet app, on Windows.
+                    (None, _) if crate::error_display::held_by_another_program(io_err) => {
+                        "it is open in another program; close it there and try again.".to_string()
+                    }
+                    (None, ErrorKind::PermissionDenied) => "permission denied.".to_string(),
+                    (None, ErrorKind::IsADirectory) => "it is a directory.".to_string(),
+                    (None, _) => crate::error_display::user_message_from_io(io_err, None),
+                };
+                return format!("Cannot write: {msg}");
+            }
+            if let Some(pe) = cause.downcast_ref::<polars::prelude::PolarsError>() {
+                let msg = crate::error_display::user_message_from_polars(pe);
+                return format!("Export failed: {}", msg);
+            }
+        }
+        let error_str = error.to_string();
+        let first_line = error_str.lines().next().unwrap_or("Unknown error").trim();
+        format!("Export failed: {}", first_line)
     }
 }

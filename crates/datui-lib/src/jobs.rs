@@ -375,12 +375,11 @@ pub(crate) enum Answer {
         message: String,
         conversion: Option<Box<crate::error_display::ConversionFailure>>,
     },
-    /// [`Job::Analysis`]: Describe's statistics.
-    Described(crate::statistics::AnalysisResults),
-    /// [`Job::Analysis`]: the distributions.
-    Distributions(crate::statistics::AnalysisResults),
-    /// [`Job::Analysis`]: the correlation matrix.
-    Correlations(crate::statistics::AnalysisResults),
+    /// [`Job::Analysis`]: a Describe, Distributions or Correlations result.
+    Analysis(
+        crate::analysis_modal::AnalysisTool,
+        crate::statistics::AnalysisResults,
+    ),
     /// [`Job::Analysis`]: a Data Quality report, the rows a sampled run read, and the
     /// plan it ran with.
     DataQuality {

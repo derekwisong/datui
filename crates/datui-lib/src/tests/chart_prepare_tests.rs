@@ -136,11 +136,7 @@ fn leaving_the_dataset_abandons_an_export_write() {
         },
         Some("Exporting chart..."),
     );
-    app.export_progress = Some(crate::ExportProgress {
-        file_path: path,
-        current_phase: "Exporting chart".to_string(),
-        written: None,
-    });
+    app.export_progress = Some(crate::ExportProgress::new(&path, "Exporting chart"));
     let task_generation = app.task_generation();
 
     app.abandon_load();
@@ -179,11 +175,10 @@ fn an_export_counts_the_bytes_it_has_written() {
     );
     let export = app.job_for_tests(Job::Export, Some("Exporting..."));
     let ticket = export.ticket();
-    app.export_progress = Some(crate::ExportProgress {
-        file_path: PathBuf::from("/tmp/out.csv"),
-        current_phase: "Collecting data".to_string(),
-        written: None,
-    });
+    app.export_progress = Some(crate::ExportProgress::new(
+        &PathBuf::from("/tmp/out.csv"),
+        "Collecting data",
+    ));
     // An export that has ended.
     let older = app.job_for_tests(Job::Export, None);
     let passed = older.ticket();

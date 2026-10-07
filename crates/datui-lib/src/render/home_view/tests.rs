@@ -1948,11 +1948,8 @@ fn a_long_field_name_is_cut_before_its_value() {
 #[test]
 fn variants_pack_densely_and_break_between_items() {
     let ctx = RenderContext::for_test();
-    let table = |name: &str, n: usize| crate::members::Table {
-        name: name.to_string(),
-        kind: "record type".to_string(),
-        internal: false,
-        columns: (0..n).map(|i| (format!("c{i}"), String::new())).collect(),
+    let table = |name: &str, n: usize| {
+        crate::members::Table::plain(name, "record type", (0..n).map(|i| format!("c{i}")))
     };
     let variants = [
         table("Status", 6),

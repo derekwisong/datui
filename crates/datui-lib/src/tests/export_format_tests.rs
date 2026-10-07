@@ -161,7 +161,7 @@ fn end_on_an_uncounted_remote_dataset_waits_for_the_count() {
         .unwrap()
         .with_open(OpenFacts {
             remote_source: true,
-            remote_files: Some(crate::widgets::datatable::RemoteFiles {
+            remote_files: Some(crate::table::RemoteFiles {
                 urls: Arc::new(vec!["one".to_string(), "two".to_string()]),
                 scan: Arc::new(
                     move |urls: &[String], _as_text: &[polars::prelude::PlSmallStr]| {

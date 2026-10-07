@@ -1,8 +1,8 @@
 //! A view's sample as its rows land: the rows on hand stand while nothing reorders
 //! them, and the frame ends as one chunk a column.
 
+use crate::table::DataTableState;
 use crate::table_sample::{Drawn, SampleRows};
-use crate::widgets::datatable::DataTableState;
 use polars::prelude::*;
 use std::sync::Arc;
 

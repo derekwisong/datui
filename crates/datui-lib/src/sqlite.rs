@@ -92,6 +92,25 @@ pub struct Table {
     pub columns: Vec<(String, String)>,
 }
 
+impl Table {
+    /// A table of a file other than a database: never internal, its columns untyped.
+    pub fn plain(
+        name: impl Into<String>,
+        kind: &str,
+        columns: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            kind: kind.to_string(),
+            internal: false,
+            columns: columns
+                .into_iter()
+                .map(|c| (c.into(), String::new()))
+                .collect(),
+        }
+    }
+}
+
 /// How SQLite reads a declared type: the affinity rules of its documentation, in
 /// order, so `VARCHAR(10)` is text and `POINT` (holding "INT") an integer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2016,14 +2035,6 @@ fn scan(input: crate::readers::ScanIn<'_>) -> color_eyre::Result<crate::scan::Sc
             }));
             Ok(opened.lf.into())
         }
-        Pick::Several(tables) => Ok(crate::scan::Scan::Tables {
-            file: file.to_path_buf(),
-            tables: tables
-                .into_iter()
-                .filter(|t| !t.internal)
-                .map(|t| t.name)
-                .collect(),
-            format: input.format,
-        }),
+        Pick::Several(tables) => Ok(crate::members::several(&input, tables)),
     }
 }

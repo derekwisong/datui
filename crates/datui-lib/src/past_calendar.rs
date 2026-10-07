@@ -638,7 +638,7 @@ pub fn guard_plan(plan: &mut DslPlan) {
         *plan = inner;
         return;
     }
-    crate::widgets::datatable::for_each_input(plan, &mut guard_plan);
+    crate::table::for_each_input(plan, &mut guard_plan);
 }
 
 #[cfg(test)]

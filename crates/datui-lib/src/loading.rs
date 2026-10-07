@@ -18,7 +18,7 @@
 //!   removes its file and a footer pass stops issuing reads; its download and converted
 //!   file are let go; its hold is released.
 //! - **Handover.** The dataset is built holding the load's download or converted file,
-//!   with everything else the open found ([`crate::widgets::datatable::OpenFacts`]), and
+//!   with everything else the open found ([`crate::table::OpenFacts`]), and
 //!   on install takes the load's footer counter. From then on they are the dataset's:
 //!   what is left of the load is the read of the first rows ([`Phase::FirstRows`]), and
 //!   abandoning that stops neither.
@@ -33,8 +33,8 @@ use polars::prelude::LazyFrame;
 
 use crate::download::TempDownload;
 use crate::schema_union::FooterProgress;
+use crate::table::DataTableState;
 use crate::unfinished::{Unfinished, Writer};
-use crate::widgets::datatable::DataTableState;
 use crate::{CompressionFormat, FileFormat, OpenOptions, source, stdin};
 
 use crate::jobs::Hold;

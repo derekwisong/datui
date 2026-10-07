@@ -368,7 +368,7 @@ pub(crate) enum Answer {
     /// there.
     Kind(Option<crate::discover::EntryKind>),
     /// [`Job::Rows`]: the rows read.
-    Rows(crate::widgets::datatable::CollectResult),
+    Rows(crate::table::CollectResult),
     /// [`Job::Rows`]: the read failed. `conversion` is a value that would not
     /// convert, for the SQL prompt to say in its own words.
     RowsFailed {

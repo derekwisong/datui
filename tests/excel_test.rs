@@ -166,7 +166,7 @@ fn a_bad_sheet_error_names_the_sheets_that_exist() {
             table: Some(sheet.to_string()),
             ..OpenOptions::default()
         };
-        datui::widgets::datatable::DataTableState::from_excel(&path, &options)
+        datui::excel::read(&path, &options)
     };
 
     let msg = match from_excel("99") {

@@ -15,19 +15,16 @@
 pub mod dict;
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::error_display::FileError;
 use color_eyre::Result;
 use polars::prelude::*;
 
-use crate::OpenOptions;
 use crate::model_files::MetaValue;
 use crate::notes::Note;
-use crate::segments::{Converted, Segments};
-use crate::text_formats::{Detail, Pieces, capped_list, count, note};
-use crate::unfinished::Writer;
+use crate::text_formats::{Detail, capped_list, count, note};
 use dict::{FixType, Layers, Resolved};
 
 /// What datui does with a FIX log: see [`crate::readers`].
@@ -36,8 +33,12 @@ pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
     // once.
     convert: Some(|input| {
         let layers = layers(input.formats, &input.options.dicts)?;
-        crate::text_formats::read_one(input, |pieces| {
-            convert(input.display, input.options, layers, input.writer, pieces)
+        crate::text_formats::convert_with(input, FixReader::new(layers), |reader, lf| {
+            if reader.stats().messages == 0 {
+                let e = FileError::new(input.display, "no FIX messages: no line holds 8=FIX.");
+                return Err(e.into());
+            }
+            Ok((reader.finish_frame(lf), notes(reader), detail(reader)))
         })
     }),
     scan: crate::readers::read_into,
@@ -1009,40 +1010,19 @@ pub fn layers(registry: &crate::formats::Registry, dicts: &[PathBuf]) -> Result<
     Ok(Layers::new(custom))
 }
 
-/// Read a FIX log, given a piece at a time by `pieces`, into segments written through
-/// `writer`.
-pub(crate) fn convert(
-    display: &Path,
-    options: &OpenOptions,
-    layers: Layers,
-    writer: &Writer,
-    pieces: &mut Pieces<'_>,
-) -> Result<(Converted, Detail)> {
-    let mut reader = FixReader::new(layers);
-    let mut segments = Segments::new(options, writer);
-    pieces(&mut |piece| {
-        reader.push(piece);
-        if let Some(df) = reader.take_batch()? {
-            segments.write(&df)?;
-        }
+impl crate::text_formats::BatchReader for FixReader {
+    fn push(&mut self, piece: &[u8]) -> Result<()> {
+        self.push(piece);
         Ok(())
-    })?;
-    let last = reader.finish()?;
-    if reader.stats().messages == 0 {
-        return Err(FileError::new(display, "no FIX messages: no line holds 8=FIX.").into());
     }
-    segments.write(&last)?;
-    let (lf, files) = segments.finish()?;
-    let lf = reader.finish_frame(lf);
-    Ok((
-        Converted {
-            lf,
-            files,
-            notes: notes(&reader),
-            other_tables: Vec::new(),
-        },
-        detail(&reader),
-    ))
+
+    fn take_batch(&mut self) -> PolarsResult<Option<DataFrame>> {
+        self.take_batch()
+    }
+
+    fn finish(&mut self) -> Result<DataFrame> {
+        Ok(self.finish()?)
+    }
 }
 
 #[cfg(test)]
@@ -1065,7 +1045,7 @@ mod tests {
         ] {
             let dict = dir.path().join(name);
             std::fs::write(&dict, text).unwrap();
-            let options = OpenOptions {
+            let options = crate::OpenOptions {
                 dicts: vec![dict.clone()],
                 ..Default::default()
             };

@@ -273,14 +273,13 @@ pub fn run_preview(
     let message = |e: color_eyre::Report| crate::error_display::user_message_from_report(&e, None);
     let (result, new_columns, melted_columns) = match spec {
         PreviewSpec::Pivot(spec) => {
-            let job =
-                crate::widgets::datatable::PivotJob::new(input.clone().lazy(), spec.clone(), false);
+            let job = crate::table::PivotJob::new(input.clone().lazy(), spec.clone(), false);
             let df = job.run().map_err(message)?;
             let new = df.width().saturating_sub(spec.index.len());
             (df, Some(new), None)
         }
         PreviewSpec::Melt(spec) => {
-            let lf = crate::widgets::datatable::DataTableState::melt_lf(input.clone().lazy(), spec)
+            let lf = crate::table::DataTableState::melt_lf(input.clone().lazy(), spec)
                 .map_err(message)?;
             let df = lf
                 .collect()

@@ -26,8 +26,8 @@ impl App {
         }
         self.view_modal.table_state.select(Some(0));
         self.refresh_view_list();
-        self.view_modal.active = true;
         self.view_modal.mode = ViewModalMode::List;
+        self.open_overlay(crate::Overlay::View);
     }
 
     /// Rebuild the list's rows from the store, scored and annotated against

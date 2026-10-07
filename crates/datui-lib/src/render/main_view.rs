@@ -39,7 +39,7 @@ impl MainViewContent {
             MainViewContent::ValueCounts
         } else {
             MainViewContent::from_app_state(
-                app.analysis_modal.active,
+                app.overlay == crate::Overlay::Analysis,
                 app.overlay.shows(&crate::Overlay::Chart),
             )
         }
@@ -112,7 +112,7 @@ pub fn mode_hints(app: &crate::App, content: MainViewContent) -> Vec<Hint> {
             if app.overlay == crate::Overlay::PivotMelt {
                 return crate::widgets::pivot_melt::hints(&app.pivot_melt_modal);
             }
-            if !app.at_table() || app.view_modal.active {
+            if !app.at_table() {
                 return Vec::new();
             }
             let mut keys = Vec::new();
@@ -1014,7 +1014,7 @@ mod tests {
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = crate::App::new(tx, crate::tests::test_runtime());
-        app.analysis_modal.active = true;
+        app.overlay = crate::Overlay::Analysis;
         app.analysis_modal.selected_tool = Some(AnalysisTool::DataQuality);
         for page in [
             QualityPage::Setup,
@@ -1049,7 +1049,7 @@ mod tests {
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = crate::App::new(tx, crate::tests::test_runtime());
-        app.analysis_modal.active = true;
+        app.overlay = crate::Overlay::Analysis;
         let g = crate::glyphs::get();
         let has = |app: &crate::App, key: &str| {
             super::analysis_control_keys(app)

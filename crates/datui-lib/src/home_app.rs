@@ -10,8 +10,7 @@ use crate::open_options::OpenOptions;
 #[cfg(feature = "cloud")]
 use crate::wait_on_runtime;
 use crate::{
-    APP_NAME, App, AppEvent, InputMode, Overlay, catalog, config, discover, home, loading, source,
-    widgets,
+    APP_NAME, App, AppEvent, InputMode, catalog, config, discover, home, loading, source, widgets,
 };
 use color_eyre::Result;
 use std::collections::HashMap;
@@ -1341,11 +1340,7 @@ impl App {
         if self.return_from_quality_evidence(false) {
             self.analysis_modal.close();
         }
-        // The view modal keys and renders off its own `active`, not the input
-        // mode, so left open here it would come back as a zombie over the next
-        // dataset opened.
-        self.view_modal.close();
-        self.inspector_modal.close();
+        self.close_overlays();
         self.stop_find();
         self.hex_view.view = None;
         // A count of the dataset being left is read for nobody.
@@ -1384,7 +1379,6 @@ impl App {
                 self.home.selected = idx;
             }
         }
-        self.overlay = Overlay::None;
         self.input_mode = InputMode::Home;
     }
 

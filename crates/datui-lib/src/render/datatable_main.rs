@@ -23,7 +23,7 @@ pub fn render(
     let active_sidebar = ActiveSidebar::from_modals(
         app.overlay.shows(&crate::Overlay::Info),
         app.overlay == crate::Overlay::SortFilter,
-        app.view_modal.active,
+        app.overlay == crate::Overlay::View,
     );
 
     let datatable_layout = DatatableLayout::compute(
@@ -173,7 +173,7 @@ pub fn render(
         crate::render::sort_filter_sidebar::render(sort_area, buf, &mut app.sort_filter_modal, ctx);
     }
 
-    if app.view_modal.active {
+    if app.overlay == crate::Overlay::View {
         crate::render::view_sidebar::render(
             sort_area,
             buf,

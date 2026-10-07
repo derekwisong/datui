@@ -44,6 +44,10 @@ pub enum Overlay {
     Hex,
     /// The Sample form (`S`).
     Sample,
+    /// The analysis screen (`a`).
+    Analysis,
+    /// The saved views sidebar (`V`).
+    View,
 }
 
 impl Overlay {
@@ -87,7 +91,7 @@ impl App {
 
     /// Close the overlay, dropping what it held for this opening, and go back to
     /// what it was opened over.
-    pub(crate) fn close_overlay(&mut self) {
+    pub fn close_overlay(&mut self) {
         match self.overlay {
             Overlay::Copy => self.copy_modal.close(),
             Overlay::Inspect => self.inspector_modal.close(),
@@ -104,9 +108,18 @@ impl App {
                 self.reset_chart_state();
             }
             Overlay::ChartExport => self.chart.export_modal.close(),
+            Overlay::Analysis => self.analysis_modal.close(),
+            Overlay::View => self.view_modal.close(),
             _ => {}
         }
         self.step_back();
+    }
+
+    /// Close every overlay, down to the table.
+    pub(crate) fn close_overlays(&mut self) {
+        while self.overlay != Overlay::None {
+            self.close_overlay();
+        }
     }
 
     /// Go back to what the overlay was opened over, keeping what it holds: it waits

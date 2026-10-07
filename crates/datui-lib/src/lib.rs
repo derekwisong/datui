@@ -1849,7 +1849,8 @@ impl App {
         // that keeps the rows it was opened on, read the new ones.
         let refreshes = self.overlay == Overlay::ValueCounts
             || (self.overlay == Overlay::Chart && self.chart.modal.picker.is_none())
-            || (self.analysis_modal.active && self.analysis_modal.current_results().is_some());
+            || (self.overlay == Overlay::Analysis
+                && self.analysis_modal.current_results().is_some());
         let key = if self.in_normal_table_view() {
             Some(match follow.standing {
                 Standing::Paused => "Resume",
@@ -1972,7 +1973,7 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let quit = ctrl && matches!(key.code, KeyCode::Char('q' | 'c'));
         let home = ctrl && key.code == KeyCode::Char('o');
-        let cancel_analysis = self.analysis_modal.active
+        let cancel_analysis = self.overlay == Overlay::Analysis
             && self.analysis_modal.computing.is_some()
             && key.code == KeyCode::Esc;
         let cancel_pivot = self.pivot_computing() && key.code == KeyCode::Esc;
@@ -2091,8 +2092,6 @@ impl App {
     pub fn in_normal_table_view(&self) -> bool {
         self.at_table()
             && !self.help.is_open()
-            && !self.view_modal.active
-            && !self.analysis_modal.active
             && !self.error_modal.active
             && !self.confirmation_modal.active
             && self.context_menu.is_none()
@@ -2147,8 +2146,6 @@ impl App {
             && self.at_table()
             && self.data_table_state.is_some()
             && !self.help.is_open()
-            && !self.view_modal.active
-            && !self.analysis_modal.active
             && !self.error_modal.active
             && !self.confirmation_modal.active
     }
@@ -2244,24 +2241,26 @@ impl App {
             Overlay::None => match self.input_mode {
                 InputMode::Editing => true,
                 InputMode::Home => false,
-                InputMode::Normal => {
-                    self.analysis_modal.sample_scope_typing()
-                        || self.analysis_modal.quality_expected_typing()
-                        || self.analysis_modal.intent_typing()
-                        || self.analysis_modal.export_typing()
-                        || (self.view_modal.active
-                            && self.view_modal.mode != ViewModalMode::List
-                            && matches!(
-                                self.view_modal.form_focus,
-                                FormFocus::Name
-                                    | FormFocus::Description
-                                    | FormFocus::ExactPath
-                                    | FormFocus::RelativePath
-                                    | FormFocus::PathPattern
-                                    | FormFocus::FilenamePattern
-                            ))
-                }
+                InputMode::Normal => false,
             },
+            Overlay::Analysis => {
+                self.analysis_modal.sample_scope_typing()
+                    || self.analysis_modal.quality_expected_typing()
+                    || self.analysis_modal.intent_typing()
+                    || self.analysis_modal.export_typing()
+            }
+            Overlay::View => {
+                self.view_modal.mode != ViewModalMode::List
+                    && matches!(
+                        self.view_modal.form_focus,
+                        FormFocus::Name
+                            | FormFocus::Description
+                            | FormFocus::ExactPath
+                            | FormFocus::RelativePath
+                            | FormFocus::PathPattern
+                            | FormFocus::FilenamePattern
+                    )
+            }
             Overlay::Export { .. } => matches!(
                 self.export_modal.focus,
                 ExportFocus::PathInput | ExportFocus::CsvDelimiter
@@ -2317,7 +2316,7 @@ impl App {
         self.is_busy()
             || (self.row_count_pending() && !self.awaiting_open_confirmation())
             // The clock beside "source read finishing" keeps time until it has.
-            || (self.analysis_modal.active && self.cancelled_analysis_running().is_some())
+            || (self.overlay == Overlay::Analysis && self.cancelled_analysis_running().is_some())
             || self.chart_preparing()
             || self.value_counts_computing()
             || (self.input_mode == InputMode::Home
@@ -3254,8 +3253,8 @@ impl App {
     pub fn keys_context(&self) -> datui_cli::keys::Context {
         use crate::analysis_modal::{AnalysisTool, AnalysisView};
         use datui_cli::keys::Context;
-        if self.analysis_modal.active {
-            return match self.analysis_modal.view {
+        match self.overlay {
+            Overlay::Analysis => match self.analysis_modal.view {
                 AnalysisView::DistributionDetail => Context::DistributionDetail,
                 AnalysisView::CorrelationDetail => Context::CorrelationDetail,
                 AnalysisView::Main => match self.analysis_modal.selected_tool {
@@ -3264,12 +3263,8 @@ impl App {
                     Some(AnalysisTool::DataQuality) => Context::DataQuality,
                     Some(AnalysisTool::Describe) | None => Context::Describe,
                 },
-            };
-        }
-        if self.view_modal.active {
-            return Context::Views;
-        }
-        match self.overlay {
+            },
+            Overlay::View => Context::Views,
             Overlay::None => match self.input_mode {
                 InputMode::Normal => Context::Table,
                 InputMode::Editing => match self.prompt.input_type {
@@ -3462,7 +3457,6 @@ impl App {
 
         if event.code == KeyCode::Esc
             && self.at_table()
-            && !self.analysis_modal.active
             && !self.error_modal.active
             && !self.confirmation_modal.active
             && self.return_from_quality_evidence(true)
@@ -3590,10 +3584,7 @@ impl App {
         // in Normal). No is_press()/is_release() check: some terminals do not report key
         // kind correctly. Exclude view/analysis modals so they can handle Left/Right
         // themselves.
-        let in_main_table = !(!self.at_table()
-            || self.help.is_open()
-            || self.view_modal.active
-            || self.analysis_modal.active);
+        let in_main_table = self.at_table() && !self.help.is_open();
         // The footer offers the column's keys once the column cursor moves, until a
         // key that is not about the column.
         if in_main_table && event.is_press() {
@@ -3657,14 +3648,8 @@ impl App {
             Overlay::PivotMelt => return self.pivot_melt_key(event),
             Overlay::Info => return self.info_key(event),
             Overlay::Chart | Overlay::ChartExport => return self.chart_key(event),
-        }
-
-        if self.analysis_modal.active {
-            return self.analysis_key(event);
-        }
-
-        if self.view_modal.active {
-            return self.view_key(event);
+            Overlay::Analysis => return self.analysis_key(event),
+            Overlay::View => return self.view_key(event),
         }
 
         if self.input_mode == InputMode::Editing {
@@ -3988,6 +3973,7 @@ impl App {
                     // The results a close put down come back on the view they are of.
                     let view = self.data_table_state.as_ref().map(|s| s.len_generation());
                     self.analysis_modal.open(view);
+                    self.open_overlay(Overlay::Analysis);
                     // The sample outlives a close, but its scope names this
                     // dataset's rows: another dataset starts from its current view.
                     if self.analysis_modal.sample_dataset != Some(self.dataset_generation) {
@@ -5318,7 +5304,7 @@ impl App {
                     self.retain_quality_sample(&kept);
                 }
                 if current
-                    && self.analysis_modal.active
+                    && self.overlay == Overlay::Analysis
                     && self.analysis_modal.selected_tool
                         == Some(analysis_modal::AnalysisTool::DataQuality)
                 {
@@ -5467,8 +5453,7 @@ impl App {
             }
             (_, Answer::Exported(path)) => {
                 // Written: the dialog held for a failure is done with.
-                self.export_modal.close();
-                self.export_counts = None;
+                self.forget_export();
                 if current {
                     self.export_progress = None;
                     self.flash_path("Exported to ", &path);

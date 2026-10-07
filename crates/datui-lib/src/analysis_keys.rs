@@ -69,7 +69,7 @@ impl App {
                         self.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
                         self.sync_sample_form_focus();
                     } else {
-                        self.analysis_modal.close();
+                        self.close_overlay();
                     }
                 }
                 KeyCode::Char('?') => {

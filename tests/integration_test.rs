@@ -1699,7 +1699,11 @@ fn test_esc_cancels_a_distribution_analysis_in_flight() {
     app.event(AppEvent::Key(esc));
     assert!(app.analysis_modal.computing.is_none());
     assert_eq!(app.analysis_modal.selected_tool, None);
-    assert!(app.analysis_modal.active, "still on the analysis screen");
+    assert_eq!(
+        app.overlay,
+        Overlay::Analysis,
+        "still on the analysis screen"
+    );
     assert_eq!(app.flash_message(), Some("Analysis cancelled"));
 
     // The worker finishes anyway; what it sends is stale.
@@ -2105,7 +2109,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         "returning from Detail should land back on the same column"
     );
 
-    app.analysis_modal.close();
+    app.close_overlay();
     app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('a'),
         KeyModifiers::NONE,
@@ -2210,7 +2214,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         KeyModifiers::NONE,
     )));
     drain_events(&mut app, &rx);
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     let area = Rect::new(0, 0, 80, 24);
     let mut evidence_buffer = Buffer::empty(area);
     app.render(area, &mut evidence_buffer);
@@ -2226,19 +2230,19 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         KeyCode::Char('a'),
         KeyModifiers::NONE,
     )));
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
-    assert!(app.analysis_modal.active);
+    assert_eq!(app.overlay, Overlay::Analysis);
     assert!(app.analysis_modal.quality.observation_detail);
     assert_eq!(
         app.data_table_state.as_ref().unwrap().len_generation(),
         original_view
     );
 
-    app.analysis_modal.close();
+    app.close_overlay();
     let state = app.data_table_state.as_mut().unwrap();
     state.deferred(|s| s.reverse());
     app.event(AppEvent::Key(KeyEvent::new(
@@ -2539,7 +2543,7 @@ fn enter_on_a_tool_enters_its_pane_and_esc_steps_back() {
         AnalysisFocus::Sidebar,
         "Esc: the tools"
     );
-    assert!(app.analysis_modal.active, "Esc steps back one level");
+    assert_eq!(app.overlay, Overlay::Analysis, "Esc steps back one level");
     press(&mut app, KeyCode::Up);
     press(&mut app, KeyCode::Enter);
     assert_eq!(
@@ -2552,9 +2556,9 @@ fn enter_on_a_tool_enters_its_pane_and_esc_steps_back() {
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Esc);
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     press(&mut app, KeyCode::Char('a'));
-    assert!(app.analysis_modal.active);
+    assert_eq!(app.overlay, Overlay::Analysis);
     assert_eq!(
         app.analysis_modal.selected_tool,
         Some(AnalysisTool::Describe)
@@ -2991,7 +2995,7 @@ fn data_quality_reads_as_a_report() {
         KeyModifiers::NONE,
     )));
     drain_events(&mut app, &rx);
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     pump_until_idle(&mut app, &rx, &tx);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(state.num_rows(), 4);
@@ -3140,7 +3144,7 @@ fn a_sampled_finding_opens_its_sampled_rows() {
     }
     drain_events(&mut app, &rx);
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     let state = app.data_table_state.as_ref().unwrap();
     assert_eq!(
         state.num_rows(),
@@ -3151,7 +3155,11 @@ fn a_sampled_finding_opens_its_sampled_rows() {
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
-    assert!(app.analysis_modal.active, "Esc goes back to the report");
+    assert_eq!(
+        app.overlay,
+        Overlay::Analysis,
+        "Esc goes back to the report"
+    );
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 5_000);
 }
 
@@ -3299,8 +3307,9 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
     );
     press(&mut app, KeyCode::Esc);
     assert!(!app.analysis_modal.quality.findings.narrowed());
-    assert!(
-        app.analysis_modal.active,
+    assert_eq!(
+        app.overlay,
+        Overlay::Analysis,
         "Esc showed every finding; it did not leave"
     );
     press(&mut app, KeyCode::Char('t'));
@@ -3383,13 +3392,13 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
     }
     drain_events(&mut app, &rx);
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     assert_eq!(
         app.data_table_state.as_ref().unwrap().num_rows(),
         identity.rows_involved
     );
     press(&mut app, KeyCode::Esc);
-    assert!(app.analysis_modal.active);
+    assert_eq!(app.overlay, Overlay::Analysis);
     assert!(
         app.analysis_modal.quality.observation_detail,
         "Esc from the rows is the finding again"
@@ -3435,7 +3444,7 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
     );
     press(&mut app, KeyCode::Enter);
     assert!(!app.analysis_modal.quality.observation_detail);
-    assert!(app.analysis_modal.active && !app.is_busy());
+    assert!(app.overlay == Overlay::Analysis && !app.is_busy());
 }
 
 /// A full scan keeps no rows, so a finding's rows are a read of their own: Enter
@@ -3551,10 +3560,10 @@ fn full_scan_evidence_is_read_only_on_confirm() {
     }
     drain_events(&mut app, &rx);
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 900);
     press(&mut app, KeyCode::Esc);
-    assert!(app.analysis_modal.active);
+    assert_eq!(app.overlay, Overlay::Analysis);
 }
 
 /// A finding's rows over a compressed CSV scan its decompressed copy: capture there
@@ -3619,7 +3628,7 @@ fn evidence_rows_over_a_decompressed_file_hold_it() {
     }
     drain_events(&mut app, &rx);
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(!app.analysis_modal.active, "the rows are on screen");
+    assert_ne!(app.overlay, Overlay::Analysis, "the rows are on screen");
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 10);
 
     let Err(error) = app.capture_view() else {
@@ -3729,7 +3738,11 @@ fn one_sample_serves_every_analysis_tool() {
     let next = key(&mut app, KeyCode::Char('v'));
     run(&mut app, next);
     pump_until_idle(&mut app, &rx, &tx);
-    assert!(!app.analysis_modal.active, "the sample replaces the tool");
+    assert_ne!(
+        app.overlay,
+        Overlay::Analysis,
+        "the sample replaces the tool"
+    );
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 100);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
@@ -3739,7 +3752,7 @@ fn one_sample_serves_every_analysis_tool() {
         "the view says what it is and the way out"
     );
     key(&mut app, KeyCode::Esc);
-    assert!(app.analysis_modal.active);
+    assert_eq!(app.overlay, Overlay::Analysis);
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), 1_000);
     assert!(app.analysis_modal.describe_results.is_some());
 
@@ -4188,9 +4201,9 @@ fn data_quality_reads_nothing_until_setup_runs() {
     // Reopened, the unchanged report comes back from the session cache. Esc
     // steps back to the tools, then closes.
     press(&mut app, KeyCode::Esc);
-    assert!(app.analysis_modal.active);
+    assert_eq!(app.overlay, Overlay::Analysis);
     press(&mut app, KeyCode::Esc);
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     press(&mut app, KeyCode::Char('a'));
     app.analysis_modal.sidebar_state.select(Some(3));
     assert!(press(&mut app, KeyCode::Enter).is_none());
@@ -4933,10 +4946,14 @@ fn intervals_are_chosen_in_setup_and_inspected_without_a_read() {
     drain_events(&mut app, &rx);
     pump_until_idle(&mut app, &rx, &tx);
     // With the file gone, only the kept sample could have answered.
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     assert_eq!(app.data_table_state.as_ref().unwrap().num_rows(), count);
     press(&mut app, KeyCode::Esc);
-    assert!(app.analysis_modal.active, "Esc goes back to the detail");
+    assert_eq!(
+        app.overlay,
+        Overlay::Analysis,
+        "Esc goes back to the detail"
+    );
     assert_eq!(app.analysis_modal.quality.page, QualityPage::IntervalDetail);
     // Esc from the detail is the list, the interval still selected.
     press(&mut app, KeyCode::Esc);
@@ -5105,7 +5122,7 @@ fn trends_and_gaps_are_inspected_without_a_read() {
     press(&mut app, KeyCode::Right);
     press(&mut app, KeyCode::Down);
     type_text(&mut app, "q?");
-    assert!(app.analysis_modal.active, "q typed, not quit");
+    assert_eq!(app.overlay, Overlay::Analysis, "q typed, not quit");
     press(&mut app, KeyCode::Enter);
     let editor = render(&mut app, 80, 24);
     assert!(
@@ -5386,7 +5403,7 @@ fn a_file_changed_on_disk_is_read_again_once_opened_again() {
     // Back to the report: the session's, from its cache.
     press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Esc);
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
     open_quality_setup(&mut app);
     assert!(app.analysis_modal.quality.from_cache);
     assert_eq!(amount_nulls(&app), 0, "the snapshot, not the file");
@@ -17925,14 +17942,15 @@ fn home_f1_opens_help_mid_filter() {
 #[test]
 fn v_with_no_matching_view_opens_the_list() {
     let (mut app, _rx, _tx) = open_query_filter_fixture("t_fallback.csv");
-    assert!(!app.view_modal.active);
+    assert_ne!(app.overlay, Overlay::View);
 
     app.event(AppEvent::Key(KeyEvent::new(
         KeyCode::Char('V'),
         KeyModifiers::SHIFT,
     )));
-    assert!(
-        app.view_modal.active,
+    assert_eq!(
+        app.overlay,
+        Overlay::View,
         "V without a match shows what exists rather than staying silent"
     );
 
@@ -17940,7 +17958,7 @@ fn v_with_no_matching_view_opens_the_list() {
         KeyCode::Esc,
         KeyModifiers::NONE,
     )));
-    assert!(!app.view_modal.active);
+    assert_ne!(app.overlay, Overlay::View);
 }
 
 /// The view modal keys and renders off its own `active`, not the input mode,
@@ -17954,10 +17972,14 @@ fn view_modal_does_not_survive_going_home() {
         KeyCode::Char('v'),
         KeyModifiers::NONE,
     )));
-    assert!(app.view_modal.active);
+    assert_eq!(app.overlay, Overlay::View);
 
     app.enter_home();
-    assert!(!app.view_modal.active, "going home closes the views list");
+    assert_ne!(
+        app.overlay,
+        Overlay::View,
+        "going home closes the views list"
+    );
 }
 
 /// A helper for the modal tests: one key press with no modifiers.
@@ -21927,12 +21949,12 @@ fn out_of_range_dates_draw_on_every_screen() {
             assert!(screen.contains(least[0]), "Describe's min:\n{screen}");
         }
         for _ in 0..6 {
-            if !app.analysis_modal.active {
+            if app.overlay != Overlay::Analysis {
                 break;
             }
             press_through(&mut app, KeyCode::Esc);
         }
-        assert!(!app.analysis_modal.active);
+        assert_ne!(app.overlay, Overlay::Analysis);
     }
 
     // Data Quality split by a datetime: by partition each value is its own
@@ -21997,12 +22019,12 @@ fn out_of_range_dates_draw_on_every_screen() {
             draw_wide(&mut app, &format!("{grain:?} {page:?}"));
         }
         for _ in 0..6 {
-            if !app.analysis_modal.active {
+            if app.overlay != Overlay::Analysis {
                 break;
             }
             press_through(&mut app, KeyCode::Esc);
         }
-        assert!(!app.analysis_modal.active);
+        assert_ne!(app.overlay, Overlay::Analysis);
     }
 
     // A chart over the datetimes: the axis falls back to the stored numbers.

@@ -276,8 +276,8 @@ fn run_study(app: &mut App, rx: &mpsc::Receiver<AppEvent>, study: &Study) {
         rows: SAMPLE_ROWS,
         seed: SEED,
     };
+    app.overlay = datui::Overlay::Analysis;
     let modal = &mut app.analysis_modal;
-    modal.active = true;
     modal.selected_tool = Some(AnalysisTool::DataQuality);
     modal.focus = AnalysisFocus::Main;
     modal.sample = sample.clone();

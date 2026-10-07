@@ -114,8 +114,8 @@ fn quality_run_under_way(
         )
         .unwrap(),
     );
+    app.overlay = crate::Overlay::Analysis;
     let modal = &mut app.analysis_modal;
-    modal.active = true;
     modal.selected_tool = Some(analysis_modal::AnalysisTool::DataQuality);
     modal.focus = analysis_modal::AnalysisFocus::Main;
     let plan = data_quality::DataQualityPlan::default();

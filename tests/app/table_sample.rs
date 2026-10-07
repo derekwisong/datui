@@ -181,7 +181,7 @@ fn analysis_and_charts_read_the_views_sample() {
     assert_eq!(results.sample_size, None, "the sample, read whole");
     key(&mut app, KeyCode::Esc);
     key(&mut app, KeyCode::Esc);
-    assert!(!app.analysis_modal.active);
+    assert_ne!(app.overlay, Overlay::Analysis);
 
     key(&mut app, KeyCode::Char('c'));
     assert_eq!(app.overlay, Overlay::Chart);

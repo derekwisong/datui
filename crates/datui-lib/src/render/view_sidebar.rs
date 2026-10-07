@@ -497,7 +497,6 @@ mod tests {
 
     fn list_modal() -> ViewModal {
         let mut modal = ViewModal::new();
-        modal.active = true;
         modal.rows = vec![
             ViewRow {
                 view: a_view("salary review", Some("Sorted by salary")),
@@ -534,7 +533,6 @@ mod tests {
     fn the_list_offers_only_what_acts_and_cuts_with_a_mark() {
         let g = crate::glyphs::get();
         let mut modal = ViewModal::new();
-        modal.active = true;
         let rows = render_to_rows(&mut modal, 40, 12);
         let text = rows.join("\n");
         assert!(!text.contains("Apply"), "{text}");

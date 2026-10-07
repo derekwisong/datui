@@ -245,7 +245,7 @@ impl App {
                 // Rows on their way, or a read waiting for Enter, keep the
                 // finding open: Esc from the rows comes back to it. Enter on
                 // a finding with no rows closes it.
-                if self.analysis_modal.active
+                if self.overlay == crate::Overlay::Analysis
                     && !self.error_modal.active
                     && self.analysis_modal.quality.evidence_read.is_none()
                     && self.analysis_modal.computing.is_none()

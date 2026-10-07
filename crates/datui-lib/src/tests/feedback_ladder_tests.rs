@@ -30,7 +30,7 @@ fn the_views_save_refusal_stays_on_the_surface() {
     let df = polars::df!("a" => [1i64, 2]).unwrap();
     app.data_table_state =
         Some(crate::table::DataTableState::new(df.lazy(), None, None, None, None, true).unwrap());
-    app.view_modal.active = true;
+    app.overlay = crate::Overlay::View;
     key(&mut app, KeyCode::Char('s'));
     assert!(!app.error_modal.active, "a refusal is not a failure");
     assert!(

@@ -2340,7 +2340,7 @@ fn stale_analysis_answers_are_ignored() {
             plan: Box::default(),
         },
     ];
-    app.analysis_modal.active = true;
+    app.overlay = crate::Overlay::Analysis;
     app.analysis_modal.selected_tool = Some(crate::analysis_modal::AnalysisTool::DataQuality);
     let runs: Vec<_> = answers
         .iter()

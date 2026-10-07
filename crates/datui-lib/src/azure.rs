@@ -1079,23 +1079,6 @@ pub fn store(
     account: &str,
     container: &str,
     settings: &AzureSettings,
-) -> Result<std::sync::Arc<dyn object_store::ObjectStore>, String> {
-    Ok(std::sync::Arc::new(build(account, container, settings)?))
-}
-
-/// The same store, for one page of a listing at a time.
-pub fn paginated_store(
-    account: &str,
-    container: &str,
-    settings: &AzureSettings,
-) -> Result<std::sync::Arc<dyn object_store::list::PaginatedListStore>, String> {
-    Ok(std::sync::Arc::new(build(account, container, settings)?))
-}
-
-fn build(
-    account: &str,
-    container: &str,
-    settings: &AzureSettings,
 ) -> Result<object_store::azure::MicrosoftAzure, String> {
     let mut builder = object_store::azure::MicrosoftAzureBuilder::new()
         .with_account(account)

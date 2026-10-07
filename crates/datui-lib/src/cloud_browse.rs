@@ -545,60 +545,36 @@ pub fn object_path(key: &str) -> object_store::path::Path {
     object_store::path::Path::parse(key).unwrap_or_else(|_| object_store::path::Path::from(key))
 }
 
-/// An object store for a bucket, with no key.
-///
-/// The store builders already in `lib.rs` require a `bucket/key` URL, because every
-/// caller they had was opening one object. Listing a bucket has no key, so this builds
-/// from the bucket name alone.
-pub fn store_for_bucket(
-    kind: ProviderKind,
-    bucket: &str,
-    settings: &S3Settings,
-    unsigned: bool,
-    google_token: Option<&str>,
-    google_credentials: Option<&Path>,
-) -> Result<std::sync::Arc<dyn object_store::ObjectStore>, String> {
-    match kind {
-        ProviderKind::Gcs => Ok(std::sync::Arc::new(gcs_store(
-            bucket,
-            unsigned,
-            google_token,
-            google_credentials,
-        )?)),
-        ProviderKind::S3 => {
-            let store = s3_builder(bucket, settings)
-                .build()
-                .map_err(|e| format!("S3 is not configured: {e}"))?;
-            Ok(std::sync::Arc::new(store))
-        }
-        ProviderKind::Azure => Err("an Azure container needs its account".to_string()),
-    }
-}
+/// An object store that also lists a page at a time: every store datui builds is both.
+pub trait Store: object_store::ObjectStore + object_store::list::PaginatedListStore {}
 
-/// [`store_for_bucket`], as the store that lists a page at a time.
-pub fn pager_for_bucket(
-    kind: ProviderKind,
-    bucket: &str,
-    settings: &S3Settings,
-    unsigned: bool,
-    google_token: Option<&str>,
-    google_credentials: Option<&Path>,
-) -> Result<std::sync::Arc<dyn object_store::list::PaginatedListStore>, String> {
-    match kind {
-        ProviderKind::Gcs => Ok(std::sync::Arc::new(gcs_store(
-            bucket,
-            unsigned,
-            google_token,
-            google_credentials,
-        )?)),
-        ProviderKind::S3 => {
-            let store = s3_builder(bucket, settings)
-                .build()
-                .map_err(|e| format!("S3 is not configured: {e}"))?;
-            Ok(std::sync::Arc::new(store))
-        }
-        ProviderKind::Azure => Err("an Azure container needs its account".to_string()),
+impl<T: object_store::ObjectStore + object_store::list::PaginatedListStore> Store for T {}
+
+/// The store for a resolved place, signed as the resolver decided, and the key inside it.
+pub fn store(
+    resolved: &crate::cloud_sources::Resolved,
+) -> Result<(std::sync::Arc<dyn Store>, String), String> {
+    if let Some((account, container, key)) = crate::source::azure_parts(&resolved.url) {
+        let store = crate::azure::store(&account, &container, &resolved.azure)?;
+        return Ok((std::sync::Arc::new(store), key));
     }
+    let (kind, bucket, key) = split_bucket_url(&resolved.url)
+        .ok_or_else(|| format!("not an object-store URL: {}", resolved.url))?;
+    let store: std::sync::Arc<dyn Store> = match kind {
+        ProviderKind::Gcs => std::sync::Arc::new(gcs_store(
+            &bucket,
+            resolved.signing == Signing::Unsigned,
+            resolved.gcloud.as_ref().map(|(_, token)| token.as_str()),
+            resolved.google_credentials.as_deref(),
+        )?),
+        ProviderKind::S3 => std::sync::Arc::new(
+            s3_builder(&bucket, &resolved.s3)
+                .build()
+                .map_err(|e| format!("S3 is not configured: {e}"))?,
+        ),
+        ProviderKind::Azure => return Err("an Azure container needs its account".to_string()),
+    };
+    Ok((store, key))
 }
 
 /// A Google Cloud Storage store for one bucket, signed as the resolver decided.
@@ -665,26 +641,8 @@ pub async fn peek_kind(
 async fn peek_page(
     resolved: &crate::cloud_sources::Resolved,
 ) -> Result<(crate::discover::EntryKind, crate::discover::Holds), String> {
-    use object_store::list::{PaginatedListOptions, PaginatedListStore};
-    let (store, prefix): (std::sync::Arc<dyn PaginatedListStore>, String) =
-        if let Some((account, container, key)) = crate::source::azure_parts(&resolved.url) {
-            (
-                crate::azure::paginated_store(&account, &container, &resolved.azure)?,
-                key,
-            )
-        } else {
-            let (kind, bucket, key) = split_bucket_url(&resolved.url)
-                .ok_or_else(|| format!("not an object-store URL: {}", resolved.url))?;
-            let store = pager_for_bucket(
-                kind,
-                &bucket,
-                &resolved.s3,
-                resolved.signing == Signing::Unsigned,
-                resolved.gcloud.as_ref().map(|(_, token)| token.as_str()),
-                resolved.google_credentials.as_deref(),
-            )?;
-            (store, key)
-        };
+    use object_store::list::PaginatedListOptions;
+    let (store, prefix) = store(resolved)?;
     let prefix = format!("{}/", prefix.trim_matches('/'));
     let page = store
         .list_paginated(
@@ -730,28 +688,7 @@ async fn verified_kind(
     resolved: &crate::cloud_sources::Resolved,
     objects: &[(String, u64)],
 ) -> Option<crate::discover::EntryKind> {
-    // Azure lists through a store `store_for_bucket` cannot build — it needs the
-    // account as well as the container — but `azure::store` builds one, and the read
-    // that follows is the same ranged fetch. Skipped here, an Azure prefix of separate
-    // tables kept the listing's optimistic `multi` and opened as one table, which is
-    // the answer every other provider's footers overturn.
-    let store = match crate::source::azure_parts(&resolved.url) {
-        Some((account, container, _)) => {
-            crate::azure::store(&account, &container, &resolved.azure).ok()?
-        }
-        None => {
-            let (provider, bucket, _) = split_bucket_url(&resolved.url)?;
-            store_for_bucket(
-                provider,
-                &bucket,
-                &resolved.s3,
-                resolved.signing == Signing::Unsigned,
-                resolved.gcloud.as_ref().map(|(_, token)| token.as_str()),
-                resolved.google_credentials.as_deref(),
-            )
-            .ok()?
-        }
-    };
+    let store: std::sync::Arc<dyn object_store::ObjectStore> = store(resolved).ok()?.0;
     kind_from_footers(&store, objects).await
 }
 
@@ -1145,16 +1082,9 @@ async fn list_level(
     if resolved.kind == ProviderKind::Azure {
         return list_azure_objects(resolved, watch).await;
     }
-    let (kind, bucket, prefix) =
+    let (kind, bucket, _) =
         split_bucket_url(&resolved.url).ok_or_else(|| format!("not an object-store URL: {url}"))?;
-    let pager = pager_for_bucket(
-        kind,
-        &bucket,
-        &resolved.s3,
-        resolved.signing == Signing::Unsigned,
-        resolved.gcloud.as_ref().map(|(_, token)| token.as_str()),
-        resolved.google_credentials.as_deref(),
-    )?;
+    let (pager, prefix) = store(resolved)?;
 
     // Rows keep the source the listing was asked for, so opening one reaches the same
     // server.
@@ -1310,9 +1240,9 @@ async fn list_azure_objects(
     resolved: &crate::cloud_sources::Resolved,
     watch: &Watch,
 ) -> Result<Level, String> {
-    let (account, container, prefix) = crate::source::azure_parts(&resolved.url)
+    let (account, container, _) = crate::source::azure_parts(&resolved.url)
         .ok_or_else(|| format!("not an Azure URL: {}", resolved.url))?;
-    let pager = crate::azure::paginated_store(&account, &container, &resolved.azure)?;
+    let (pager, prefix) = store(resolved)?;
     let prefix = prefix.trim_matches('/').to_string();
     list_pages(pager.as_ref(), &prefix, watch, |result| {
         let prefixes: Vec<String> = result
@@ -1750,19 +1680,12 @@ async fn google_bearer(source: &Source) -> Result<String, String> {
     }
     // Building a store needs a bucket name, and there is none: the store is built only
     // to be asked for a credential.
-    let builder = match &source.google_credentials {
-        Some(file) => object_store::gcp::GoogleCloudStorageBuilder::new()
-            .with_application_credentials(file.to_string_lossy()),
-        None => object_store::gcp::GoogleCloudStorageBuilder::from_env(),
-    };
-    let store = builder
-        .with_bucket_name("datui-credential-probe")
-        .with_config(
-            object_store::gcp::GoogleConfigKey::Client(crate::user_agent::CLIENT_KEY),
-            crate::user_agent::get(),
-        )
-        .build()
-        .map_err(|e| format!("Google Cloud Storage is not configured: {e}"))?;
+    let store = gcs_store(
+        "datui-credential-probe",
+        false,
+        None,
+        source.google_credentials.as_deref(),
+    )?;
     store
         .credentials()
         .get_credential()

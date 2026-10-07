@@ -267,9 +267,8 @@ pub(crate) fn indexed<T: Any + Send + Sync>(
     path: &Path,
     index: impl FnOnce(&[u8]) -> Result<T, String>,
 ) -> color_eyre::Result<(Arc<Bytes>, Arc<T>)> {
-    use crate::error_display::{FileError, in_file};
-    let bytes = Arc::new(Bytes::map(path).map_err(|e| in_file(path, e.into()))?);
-    let index = cached(path, || index(bytes.as_slice())).map_err(|e| FileError::new(path, e))?;
+    let bytes = Arc::new(Bytes::map(path)?);
+    let index = cached(path, || index(bytes.as_slice())).map_err(|e| color_eyre::eyre::eyre!(e))?;
     Ok((bytes, index))
 }
 
@@ -322,7 +321,7 @@ pub(crate) fn scan<L: Log>(input: ScanIn<'_>) -> color_eyre::Result<Scan> {
     let mut opened = Opened::for_table(log.detail(), &tables, &picked, log.notes(), "the log");
     let lf = log
         .table(bytes, &picked, &mut opened)
-        .map_err(|e| crate::error_display::FileError::new(&path, e))?;
+        .map_err(|e| color_eyre::eyre::eyre!(e))?;
     Ok(opened.scan(input, lf))
 }
 

@@ -15,7 +15,6 @@ use color_eyre::Result;
 use std::sync::Arc;
 
 use crate::columns::{Builder, Cell, Kind};
-use crate::error_display::{FileError, in_file};
 use object::{Object, ObjectSection, ObjectSymbol, SectionFlags, SymbolFlags, SymbolSection};
 use polars::prelude::*;
 
@@ -317,8 +316,8 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
             crate::sqlite::Pick::Several(_) => SYMBOLS.to_string(),
         },
     };
-    let bytes = crate::fixed_records::Bytes::map(path).map_err(|e| in_file(path, e.into()))?;
-    let elf = read(bytes.as_slice()).map_err(|e| FileError::new(path, e))?;
+    let bytes = crate::fixed_records::Bytes::map(path)?;
+    let elf = read(bytes.as_slice()).map_err(|e| color_eyre::eyre::eyre!(e))?;
     let mut notes = Vec::new();
     if elf.left_out > 0 {
         notes.push(crate::limits::left_out(

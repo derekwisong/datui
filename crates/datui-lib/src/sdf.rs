@@ -21,8 +21,7 @@ pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
     convert: Some(|input| {
         crate::text_formats::convert_with(input, SdfReader::new(), |reader, lf| {
             if reader.stats().records == 0 {
-                let e = crate::error_display::FileError::new(input.display, "no SDF records");
-                return Err(e.into());
+                return Err(color_eyre::eyre::eyre!("no SDF records"));
             }
             let lf = type_fields(lf, reader.fields());
             Ok((lf, notes(reader.stats()), detail(reader)))

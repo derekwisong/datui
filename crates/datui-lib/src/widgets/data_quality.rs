@@ -10,7 +10,7 @@ use crate::glyphs;
 use crate::numfmt;
 use crate::quality_report::{
     CHECKS_SHOWN, Check, Coverage, Evidence, EvidenceRows, FindingOrder, FindingsView, Outcome,
-    QualityReport, Severity, advice, build_report, checks, coverage, describe, verdict,
+    QualityReport, Severity, advice, coverage, describe, verdict,
 };
 use crate::quality_trends::{
     GapCheck, GapKind, Gaps, TrendBar, TrendMeasure, TrendRow, TrendView, trend_view,
@@ -1062,8 +1062,8 @@ fn render_overview(
         render_run_prompt(area, config.theme, buf);
         return;
     };
-    let report = build_report(results);
-    let all_checks = checks(results, &report);
+    let report = results.report();
+    let all_checks = results.checks();
     let notes = config.state.notes();
     let notes_height = if notes.is_empty() {
         0
@@ -1073,7 +1073,7 @@ fn render_overview(
     // Coverage sits under the verdict on every report, clean or not: four lines
     // where there is room, two on a short terminal.
     let coverage = coverage_lines(
-        &coverage(results, &all_checks, config.measured),
+        &coverage(results, all_checks, config.measured),
         area.width.saturating_sub(2),
         if area.height >= 16 { 4 } else { 2 },
         config.theme,
@@ -1088,7 +1088,7 @@ fn render_overview(
         .horizontal_margin(1)
         .vertical_margin(1)
         .split(area);
-    render_verdict(config, &report, sections[0], buf);
+    render_verdict(config, report, sections[0], buf);
     Paragraph::new(coverage).render(
         Rect {
             y: sections[0].y + 1,
@@ -1130,7 +1130,7 @@ fn render_overview(
             .render(list, buf);
         return;
     }
-    let shown = config.findings.shown(&report);
+    let shown = config.findings.shown(report);
     // Narrowed or reordered, the list says so above itself, and what it holds.
     let facets = config.findings.describe();
     if !facets.is_empty() && list.height > 1 {
@@ -1178,12 +1178,12 @@ fn render_overview(
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(3), Constraint::Fill(1)])
             .split(list);
-        render_findings(config, &report, table_state, parts[0], buf);
-        Paragraph::new(check_lines(&all_checks, parts[1].width, None, config.theme))
+        render_findings(config, report, table_state, parts[0], buf);
+        Paragraph::new(check_lines(all_checks, parts[1].width, None, config.theme))
             .render(parts[1], buf);
         return;
     }
-    render_findings(config, &report, table_state, list, buf);
+    render_findings(config, report, table_state, list, buf);
 }
 
 /// The answer before the evidence: a mark and the counts. What they were measured on
@@ -1684,10 +1684,10 @@ fn render_finding_detail(
     let Some(results) = config.results else {
         return;
     };
-    let report = build_report(results);
+    let report = results.report();
     let Some(finding) = table_state
         .selected()
-        .and_then(|position| config.findings.selected(&report, position))
+        .and_then(|position| config.findings.selected(report, position))
     else {
         return;
     };
@@ -1735,7 +1735,7 @@ fn render_finding_detail(
     if finding.kind.is_none() {
         lines.push(Line::raw(""));
         lines.extend(check_lines(
-            &checks(results, &report),
+            results.checks(),
             inner,
             (!config.checks_expanded).then_some(CHECKS_SHOWN),
             theme,
@@ -2023,7 +2023,7 @@ fn render_columns(
         render_run_prompt(area, config.theme, buf);
         return;
     };
-    let report = build_report(results);
+    let report = results.report();
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(2), Constraint::Fill(1)])
@@ -3822,7 +3822,7 @@ fn render_detail(
 
     // The column's findings first, in the report's own words; the measurements
     // under them are the evidence.
-    let report = build_report(results);
+    let report = results.report();
     let mut findings = report
         .findings
         .iter()

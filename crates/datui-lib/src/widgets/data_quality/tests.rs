@@ -221,6 +221,25 @@ fn column_detail_is_aligned_rows_without_a_box() {
     );
 }
 
+/// The report and its checks are built once for a run's results, not once per
+/// frame: the overview, a finding's detail and the columns draw from the same one.
+#[test]
+fn the_report_is_built_once_per_results() {
+    use crate::quality_report::REPORTS_BUILT;
+    let screen = Screen::new();
+    let before = REPORTS_BUILT.with(std::cell::Cell::get);
+    for _ in 0..3 {
+        screen.draw(screen.config(QualityPage::Overview), 0, 80, 24);
+        screen.draw(screen.config(QualityPage::Columns), 0, 80, 24);
+        screen.draw(screen.config(QualityPage::Detail), 0, 80, 24);
+    }
+    assert_eq!(REPORTS_BUILT.with(std::cell::Cell::get) - before, 1);
+    // A copy is built again: it may have been changed.
+    let copy = screen.results.clone();
+    copy.report();
+    assert_eq!(REPORTS_BUILT.with(std::cell::Cell::get) - before, 2);
+}
+
 /// Section titles are words on a rule, never SCREAMING.
 #[test]
 fn no_page_has_an_uppercase_title() {
@@ -359,9 +378,9 @@ fn evidence_says_where_its_rows_come_from() {
     let screen = Screen::new();
     let mut sampled = screen.results.clone();
     sampled.precision = QualityPrecision::Sampled;
-    let report = build_report(&sampled);
+    let report = sampled.report();
     let position = FindingsView::default()
-        .shown(&report)
+        .shown(report)
         .iter()
         .position(|index| {
             report.findings[*index].kind == Some(crate::data_quality::ObservationKind::Nulls)

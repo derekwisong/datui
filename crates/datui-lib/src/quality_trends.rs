@@ -129,6 +129,26 @@ impl TrendView<'_> {
     }
 }
 
+/// Whether the segments are a sample's, then the segments with rows the sample drew
+/// none of and the segments it drew few of: what [`TrendView::coverage`] counts,
+/// without building the view.
+pub fn segment_coverage(results: &DataQualityResults) -> (bool, usize, usize) {
+    let sampled = matches!(
+        results.precision,
+        QualityPrecision::Sampled | QualityPrecision::Estimated
+    );
+    let thin = if sampled {
+        results
+            .segments
+            .iter()
+            .filter(|segment| segment.evaluated_rows < THIN_SEGMENT_ROWS)
+            .count()
+    } else {
+        0
+    };
+    (sampled, results.unsampled_segments.len(), thin)
+}
+
 /// The Trends table for `metric`, `bars` wide: rows per segment first (the exact
 /// count, then on a sample the rows it drew), then every column the measure is above
 /// zero in somewhere, the one that moves most first. Each bar pools consecutive
@@ -962,6 +982,8 @@ mod tests {
         assert_eq!(view.slots.len(), 35);
         assert_eq!(view.per_bar, 1);
         assert_eq!(view.coverage().0, results.unsampled_segments.len());
+        let (unsampled, thin) = view.coverage();
+        assert_eq!(segment_coverage(&results), (view.sampled, unsampled, thin));
         assert_eq!(view.lines[0].names, ["rows"]);
         assert_eq!(view.lines[1].names, ["sampled rows"]);
         let missed = view.bars.iter().position(|bar| bar.unsampled == 1).unwrap();

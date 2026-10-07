@@ -828,6 +828,57 @@ pub struct QualityReport {
     pub no_rows: bool,
 }
 
+/// The report and checks a [`DataQualityResults`] reads as, built the first time
+/// either is asked for and kept with the results: a frame draws them and a key moves
+/// through them without building them again. Both read the results' observations,
+/// columns, identity, intent and precision, which no one changes once a run's
+/// results are installed. A copy of the results starts empty, so a copy changed
+/// before it is drawn reads as changed.
+#[derive(Debug, Default)]
+pub struct ReportCache(std::sync::OnceLock<Built>);
+
+impl Clone for ReportCache {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+#[derive(Debug)]
+struct Built {
+    report: QualityReport,
+    checks: Vec<Check>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Reports this thread has built for a cache, for the tests that count them.
+    pub(crate) static REPORTS_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl ReportCache {
+    fn get(&self, results: &DataQualityResults) -> &Built {
+        self.0.get_or_init(|| {
+            #[cfg(test)]
+            REPORTS_BUILT.with(|built| built.set(built.get() + 1));
+            let report = build_report(results);
+            let checks = checks(results, &report);
+            Built { report, checks }
+        })
+    }
+}
+
+impl DataQualityResults {
+    /// The findings these results read as; see [`ReportCache`].
+    pub fn report(&self) -> &QualityReport {
+        &self.derived.get(self).report
+    }
+
+    /// Every check, most important first; see [`ReportCache`].
+    pub fn checks(&self) -> &[Check] {
+        &self.derived.get(self).checks
+    }
+}
+
 pub fn build_report(results: &DataQualityResults) -> QualityReport {
     let mut findings = Vec::new();
     // Group observations that say the same thing so the list says it once.

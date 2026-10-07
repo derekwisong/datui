@@ -10,7 +10,7 @@
 use crate::data_quality::{
     ColumnQualityProfile, DataQualityPlan, DataQualityResults, QualityPrecision, interval_label,
 };
-use crate::quality_report::{Outcome, Severity, build_report, checks, coverage, describe, verdict};
+use crate::quality_report::{Outcome, Severity, coverage, describe, verdict};
 use crate::sampling::SampleMethod;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -636,9 +636,9 @@ pub fn report_file(
     plan: &DataQualityPlan,
     exported_at: &str,
 ) -> ReportFile {
-    let report = build_report(results);
-    let all_checks = checks(results, &report);
-    let covered = coverage(results, &all_checks, plan);
+    let report = results.report();
+    let all_checks = results.checks();
+    let covered = coverage(results, all_checks, plan);
     let severity = |severity: Severity| match severity {
         Severity::Problem => "problem",
         Severity::Note => "note",
@@ -669,7 +669,7 @@ pub fn report_file(
                 }),
             }),
         },
-        verdict: verdict(&report),
+        verdict: verdict(report),
         coverage: CoverageJson {
             exact: covered.exact,
             sampled: covered.sampled,

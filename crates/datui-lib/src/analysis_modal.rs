@@ -860,10 +860,7 @@ impl AnalysisModal {
             QualityPage::Intent => 0,
             QualityPage::Intervals => results.temporal.len(),
             QualityPage::IntervalDetail => self.interval_facts().len(),
-            QualityPage::Overview => self
-                .data_quality_findings
-                .shown(&crate::quality_report::build_report(results))
-                .len(),
+            QualityPage::Overview => self.data_quality_findings.shown(results.report()).len(),
             QualityPage::Columns | QualityPage::Detail => results.columns.len(),
             QualityPage::Segments => results.segments.len(),
             QualityPage::SegmentDetail => {
@@ -899,12 +896,11 @@ impl AnalysisModal {
 
     /// The report on screen and the finding under the cursor, as Overview lists
     /// them: narrowed and ordered.
-    pub fn selected_finding(&self) -> Option<(QualityReport, Finding)> {
-        let results = self.data_quality_results.as_ref()?;
-        let report = crate::quality_report::build_report(results);
+    pub fn selected_finding(&self) -> Option<(&QualityReport, Finding)> {
+        let report = self.data_quality_results.as_ref()?.report();
         let finding = self
             .data_quality_findings
-            .selected(&report, self.data_quality_table_state.selected()?)?
+            .selected(report, self.data_quality_table_state.selected()?)?
             .clone();
         Some((report, finding))
     }
@@ -915,7 +911,7 @@ impl AnalysisModal {
         let Some(results) = self.data_quality_results.as_ref() else {
             return;
         };
-        let report = crate::quality_report::build_report(results);
+        let report = results.report();
         let view = &self.data_quality_findings;
         let findings = |count: usize| match count {
             0 => "none".to_string(),
@@ -923,7 +919,7 @@ impl AnalysisModal {
             count => format!("{} findings", crate::numfmt::group_chrome(count)),
         };
         let (title, choices, current) = if by_column {
-            let columns = crate::quality_report::column_choices(&report, results);
+            let columns = crate::quality_report::column_choices(report, results);
             let width = columns
                 .iter()
                 .map(|(name, _)| crate::glyphs::display_width(name))
@@ -944,7 +940,7 @@ impl AnalysisModal {
             }));
             ("Findings by Column", choices, current)
         } else {
-            let checks = crate::quality_report::check_choices(&report);
+            let checks = crate::quality_report::check_choices(report);
             let width = checks
                 .iter()
                 .map(|(name, _)| crate::glyphs::display_width(name))
@@ -977,25 +973,25 @@ impl AnalysisModal {
 
     /// The next order for the findings, keeping the finding under the cursor under it.
     pub fn cycle_findings_order(&mut self) {
-        let selected = self.selected_finding();
+        let selected = self.selected_finding().map(|(_, finding)| finding);
         self.data_quality_findings.order = self.data_quality_findings.order.next();
-        self.reselect_finding(selected.map(|(_, finding)| finding));
+        self.reselect_finding(selected);
     }
 
     /// Show every finding again, in the order chosen.
     pub fn clear_findings_narrowing(&mut self) {
-        let selected = self.selected_finding();
+        let selected = self.selected_finding().map(|(_, finding)| finding);
         self.data_quality_findings.column = None;
         self.data_quality_findings.check = None;
-        self.reselect_finding(selected.map(|(_, finding)| finding));
+        self.reselect_finding(selected);
     }
 
     /// Put the cursor on `finding` where the list now shows it, or on the first.
     fn reselect_finding(&mut self, finding: Option<Finding>) {
         let position = self.data_quality_results.as_ref().and_then(|results| {
-            let report = crate::quality_report::build_report(results);
+            let report = results.report();
             let finding = finding?;
-            let shown = self.data_quality_findings.shown(&report);
+            let shown = self.data_quality_findings.shown(report);
             shown.iter().position(|index| {
                 let listed = &report.findings[*index];
                 listed.same_as(&finding)
@@ -1554,14 +1550,14 @@ impl AnalysisModal {
             PlanChoice::TextColumn(column) => return Some(column),
             PlanChoice::Format(column, format) => set_time_format(plan, &column, format),
             PlanChoice::FindingColumn(column) => {
-                let selected = self.selected_finding();
+                let selected = self.selected_finding().map(|(_, finding)| finding);
                 self.data_quality_findings.column = column;
-                self.reselect_finding(selected.map(|(_, finding)| finding));
+                self.reselect_finding(selected);
             }
             PlanChoice::FindingCheck(check) => {
-                let selected = self.selected_finding();
+                let selected = self.selected_finding().map(|(_, finding)| finding);
                 self.data_quality_findings.check = check;
-                self.reselect_finding(selected.map(|(_, finding)| finding));
+                self.reselect_finding(selected);
             }
         }
         None

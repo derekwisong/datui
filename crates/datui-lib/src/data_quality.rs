@@ -2236,6 +2236,8 @@ pub struct DataQualityResults {
     pub intent: Option<Box<crate::quality_intent::IntentResults>>,
     /// What the rows were read from, as the run that measured them labeled it.
     pub source: Option<Box<crate::quality_export::SourceIdentity>>,
+    /// The report and checks read from the rest, once built.
+    pub derived: crate::quality_report::ReportCache,
 }
 
 /// A segment the scope has rows in and a sample drew none of.
@@ -2407,6 +2409,7 @@ impl DataQualityResults {
             unsampled_segments: Vec::new(),
             intent: None,
             source: None,
+            derived: Default::default(),
         }
     }
 
@@ -2994,6 +2997,7 @@ fn profile_quality(
         unsampled_segments,
         intent,
         source: None,
+        derived: Default::default(),
     };
     Ok(results)
 }
@@ -3295,6 +3299,7 @@ fn compute_full_quality(
         unsampled_segments: Vec::new(),
         intent,
         source: None,
+        derived: Default::default(),
     })
 }
 

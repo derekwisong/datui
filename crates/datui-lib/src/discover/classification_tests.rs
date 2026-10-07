@@ -815,22 +815,7 @@ fn a_parquet_file_named_like_a_writers_file_is_still_measured() {
     let dir = tempfile::tempdir().unwrap();
     write(dir.path(), "_2024_sales.parquet", &["id", "amount"]);
 
-    let mut entry = Entry {
-        path: dir.path().join("_2024_sales.parquet"),
-        kind: EntryKind::File,
-        name: "_2024_sales.parquet".into(),
-        size: None,
-        modified: None,
-        rows: None,
-        cols: None,
-        cols_sampled: false,
-        columns: Vec::new(),
-        cost: Cost::default(),
-        holds: Default::default(),
-        opens_whole_directory: false,
-        format_spec: None,
-        table: None,
-    };
+    let mut entry = Entry::new(dir.path().join("_2024_sales.parquet"), EntryKind::File);
     enrich(&mut entry);
     assert_eq!(entry.rows, Some(1), "its footer was read");
     assert_eq!(entry.cols, Some(2));
@@ -1255,22 +1240,8 @@ fn write_nested(dir: &Path, name: &str, struct_name: &str, fields: &[&str]) {
 
 fn measured(dir: &Path) -> Entry {
     let (kind, holds) = look_at_directory(dir);
-    let mut entry = Entry {
-        path: dir.to_path_buf(),
-        kind,
-        name: dir.file_name().unwrap().to_string_lossy().into_owned(),
-        size: None,
-        modified: None,
-        rows: None,
-        cols: None,
-        cols_sampled: false,
-        columns: Vec::new(),
-        cost: Cost::default(),
-        holds,
-        opens_whole_directory: false,
-        format_spec: None,
-        table: None,
-    };
+    let mut entry = Entry::new(dir.to_path_buf(), kind);
+    entry.holds = holds;
     enrich(&mut entry);
     entry
 }

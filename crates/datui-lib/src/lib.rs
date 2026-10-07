@@ -415,7 +415,8 @@ pub enum AppEvent {
         /// The listing stopped at [`crate::discover::MAX_ENTRIES_PER_DIR`].
         cut_short: bool,
     },
-    /// The rows of a network directory read so far, while its listing goes on.
+    /// Rows of a network directory read since its last batch, while its listing goes
+    /// on.
     HomeProbeProgress {
         root: PathBuf,
         rows: Vec<crate::discover::Entry>,
@@ -659,16 +660,12 @@ pub enum WhatEnter {
 impl App {
     /// See [`WhatEnter`].
     pub fn what_enter_does(&self) -> WhatEnter {
-        // One walk of the list, not four. Every `selected_*` helper rebuilds it, and this
-        // runs from the control bar on every frame, beside a
-        // `selected_directory_to_enter` that walks it once more.
-        let rows = self.home.visible();
-        let entry = match rows.get(self.home.selected) {
+        let entry = match self.home.selected_row() {
             // A place row browses into the place, which is what `→` does on it too, so
             // it is labelled the same and offered once. An HTTP place has no listing to
             // browse and says so instead.
             Some(home::Row::Place { path, .. }) => {
-                return if home::place_is_browsable(path) {
+                return if home::place_is_browsable(&path) {
                     WhatEnter::GoesInside
                 } else {
                     WhatEnter::Explains
@@ -682,7 +679,7 @@ impl App {
             // The door reads the directory it names whatever that directory is labelled —
             // the lake tables included, which is the one row that reads them at all.
             Some(home::Row::Door { .. }) => return WhatEnter::OpensDirectory,
-            Some(home::Row::Entry { entry, .. }) => *entry,
+            Some(home::Row::Entry { entry, .. }) => entry,
         };
         // A bookmark opens whole.
         if entry.kind != discover::EntryKind::File && self.home.bookmark(&entry.path).is_some() {
@@ -1031,6 +1028,9 @@ pub struct App {
     home_schema_inflight: Vec<PathBuf>,
     /// Invalidates listings and measurements from a request the user has moved past.
     home_generation: u64,
+    /// Rows came in for a listing still being read; it is listed again before the
+    /// next frame.
+    home_refresh_owed: bool,
     /// Home screen state. Rebuilt from the filesystem whenever home is entered;
     /// nothing here is persisted beyond the recents list.
     pub home: home::HomeState,
@@ -4733,6 +4733,7 @@ impl App {
             home_search_inflight: false,
             home_search_generation: 0,
             home_generation: 0,
+            home_refresh_owed: false,
             home_schema_inflight: Vec::new(),
             last_load_error: None,
             pending_clear_recents: false,
@@ -4942,16 +4943,17 @@ impl App {
         if self.input_mode != InputMode::Home {
             return;
         }
-        if std::mem::take(&mut self.home.pending_enrich) {
-            self.request_home_measurements();
+        if self.home_refresh_owed {
+            self.home_refresh();
         }
         #[cfg(feature = "http")]
         self.size_selected_web_file();
-        if std::mem::take(&mut self.home.pending_classify) {
+        // The rows on screen as the frame left them: each pass asks for those still
+        // unknown, a batch at a time. Not under the path prompt, which hides the list.
+        if !self.home.path_input_active {
+            self.request_home_measurements();
             self.request_home_classifications();
-        }
-        #[cfg(feature = "cloud")]
-        if std::mem::take(&mut self.home.pending_peek) {
+            #[cfg(feature = "cloud")]
             self.peek_cloud_directories();
         }
     }

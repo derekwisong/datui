@@ -154,6 +154,125 @@ pub enum CloudLook {
     Failed,
 }
 
+/// What a home row is called, decided once for the list and the pane beside it.
+#[derive(Debug, Default, PartialEq)]
+pub struct RowLabel {
+    /// The list's word beside the name: a count, a kind, the curated word, a source id.
+    pub short: String,
+    /// The pane's `kind` line, which has the room to say it in words.
+    pub words: String,
+    /// `short` is the word a source or catalog gives the place.
+    pub curated: bool,
+    /// `short` is the source id the path names, or that the source is gone.
+    pub source: bool,
+    /// The source the path names has left the config.
+    pub missing_source: bool,
+}
+
+/// What `entry` is called. `look` is where a bucket directory is in being looked into,
+/// drawn on the row at spinner `frame`; `known_sources`, the sources a URL can name, or
+/// `None` where the trail already names it.
+pub fn describe(
+    entry: &Entry,
+    place_kind: Option<&'static str>,
+    look: Option<CloudLook>,
+    frame: usize,
+    known_sources: Option<&[crate::config::CloudConnectionConfig]>,
+) -> RowLabel {
+    // The door into a directory is an action, not a thing: a label, a curated word or a
+    // source id is about the directory, and `bigquery (all files)  dataset` would say
+    // the door is the dataset.
+    if entry.opens_whole_directory {
+        return RowLabel::default();
+    }
+    let g = crate::glyphs::get();
+    // What a source calls a place it names (`dataset`, `project`), and a catalog's
+    // local dataset that is not there (`missing`): before any count, so the curated
+    // row stays marked as one.
+    let curated =
+        place_kind.filter(|_| matches!(entry.kind, EntryKind::Directory | EntryKind::Unknown));
+    let look_glyph = look.map(|look| match look {
+        CloudLook::Waiting => g.ellipsis,
+        CloudLook::Looking => g.spinner[frame % g.spinner.len()],
+        CloudLook::Failed => "?",
+    });
+    let short = match curated {
+        Some(word) => word.to_string(),
+        // A directory not yet counted: a bucket's own word, else that it is being
+        // looked into, rather than a word for the kind of place it is.
+        None if entry.kind == EntryKind::Directory && entry.holds.formats.is_empty() => {
+            object_place_label(&entry.path)
+                .or(look_glyph)
+                .map(str::to_string)
+                .unwrap_or_else(|| entry.label().into_owned())
+        }
+        None => entry.label().into_owned(),
+    };
+    // Two stores can hold the same bucket and key, so a row from one named in its URL
+    // says which where a label would otherwise go, or that the source has since left
+    // the config rather than failing only when it is opened.
+    let path_text = entry.path.to_string_lossy();
+    let named = crate::source::split_source_id(&path_text).0;
+    let missing_source = named
+        .is_some_and(|id| known_sources.is_some_and(|known| !known.iter().any(|k| k.name == id)));
+    let (short, source) = match (named, known_sources) {
+        (Some(id), Some(_)) if short.is_empty() && missing_source => {
+            (format!("source not found: {id}"), true)
+        }
+        (Some(id), Some(_)) if short.is_empty() => (id.to_string(), true),
+        // Nothing has looked into it and it has nothing else to say: an ellipsis claims
+        // nothing, where `dir` was a claim and a blank reads as a file's empty label.
+        _ if short.is_empty() && entry.kind == EntryKind::Unknown => {
+            (g.ellipsis.to_string(), false)
+        }
+        _ => (short, false),
+    };
+    let words = match (&entry.table, entry.kind) {
+        (Some(table), _) => {
+            let of = match (&entry.format_spec, table.format) {
+                (Some(spec), _) => spec.clone(),
+                (None, Some(format)) => format.name().to_string(),
+                (None, None) => String::new(),
+            };
+            format!("{of} {}", table.kind).trim_start().to_string()
+        }
+        (None, _) if curated.is_some() => curated.unwrap_or_default().to_string(),
+        (None, EntryKind::File) => match (
+            &entry.format_spec,
+            crate::FileFormat::from_path(&entry.path),
+        ) {
+            (Some(spec), _) => format!("{spec} file"),
+            (None, Some(format)) => format!("{} file", format.name()),
+            // Named nothing, and found by its bytes to be data.
+            (None, None) => "data file".to_string(),
+        },
+        (None, EntryKind::Hive) => "hive table".to_string(),
+        (None, EntryKind::MultiFile) => "multi-file table".to_string(),
+        (None, kind) if kind.is_lake_table() => {
+            format!(
+                "{} table",
+                kind.lake_name().unwrap_or_default().to_lowercase()
+            )
+        }
+        (None, EntryKind::Directory) => match look {
+            Some(CloudLook::Failed) => format!("? {} listing failed, Ctrl+R retries", g.middot),
+            // Nothing to say yet; the row's spinner says it is being found out.
+            Some(_) => String::new(),
+            None => object_place_label(&entry.path)
+                .unwrap_or("directory")
+                .to_string(),
+        },
+        _ => String::new(),
+    };
+    RowLabel {
+        short,
+        words,
+        curated: curated.is_some(),
+        source,
+        missing_source,
+    }
+}
+
 /// How a cloud source is addressed on the home screen: `cloud://<id>`. Not a URL any
 /// library reads; it names the level above a source's buckets, which no real URL can.
 pub const CLOUD_PLACE: &str = "cloud://";
@@ -240,15 +359,15 @@ fn place_key(path: &Path) -> String {
 }
 
 /// The catalogs' datasets and bookmarks by place, for the lookups every drawn row
-/// makes. Built with each listing, from the catalogs it was built for.
+/// makes.
 #[derive(Debug, Default)]
 pub struct CatalogPlaces {
     /// Catalog and dataset, by [`place_key`]: the first listed of two at one place.
     datasets: std::collections::HashMap<String, (usize, usize)>,
     /// Catalog, dataset and bookmark, by [`place_key`].
     bookmarks: std::collections::HashMap<String, (usize, usize, usize)>,
-    /// How many datasets and bookmarks the catalogs held. Catalogs replaced since
-    /// with a different count are scanned instead until the next listing.
+    /// How many datasets and bookmarks the catalogs held. Catalogs set other than by
+    /// [`HomeState::set_catalogs`] are scanned instead.
     counted: (usize, usize),
 }
 
@@ -751,7 +870,7 @@ pub struct Root {
 }
 
 /// A titled group of rows on the home screen.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Section {
     pub title: String,
     /// How the section is doing, at the far end of the rule: the filesystem it is on,
@@ -806,6 +925,17 @@ pub struct Section {
     /// grouped section. Filled from the cache when the listing is built, never by
     /// reading a place.
     pub place_labels: std::collections::HashMap<PathBuf, String>,
+}
+
+impl Section {
+    /// A section of `rows` under `title`, everything else at its default.
+    pub fn titled(title: impl Into<String>, rows: Vec<Entry>) -> Self {
+        Section {
+            title: title.into(),
+            rows,
+            ..Default::default()
+        }
+    }
 }
 
 /// Where a cloud source's listing stands.
@@ -1512,23 +1642,16 @@ pub struct HomeState {
     /// How a path is judged to be network-backed. Swappable so the "never touch a
     /// remote path on this thread" rule can be tested without a remote.
     pub network_check: fn(&Path) -> bool,
-    /// How often and how lately each recent was opened: ranks matches (#547 M9).
+    /// How often and how lately each recent was opened: ranks matches (#547 M9). Set
+    /// with [`HomeState::set_visits`], which lists the rows again.
     pub visits: std::collections::HashMap<PathBuf, crate::cache::Visits>,
     /// The recent opened last. Recent is ranked by frecency, and the cursor lands here
     /// so the last file is still one Enter away.
     pub newest_recent: Option<PathBuf>,
-    /// Network roots whose listing has come back, keyed by path.
-    pub probed: std::collections::HashMap<PathBuf, std::sync::Arc<[Entry]>>,
-    /// Network roots that did not answer.
-    pub unreachable: std::collections::HashSet<PathBuf>,
-    /// The rows of network directories still being listed, read so far.
-    pub listing_so_far: std::collections::HashMap<PathBuf, Vec<Entry>>,
-    /// Network directories whose listing stopped at [`discover::MAX_ENTRIES_PER_DIR`].
-    pub cut_short: std::collections::HashSet<PathBuf>,
+    /// Where the listing of each network root and remote directory is.
+    pub probes: Probes,
     /// The names a filter asked the server for, in a cloud directory cut short.
     pub narrowed: Option<Narrowed>,
-    /// Why a cloud listing was refused, when the service said.
-    pub probe_errors: std::collections::HashMap<PathBuf, String>,
     /// What cloud directories turned out to hold when peeked into: `hive` or `multi`.
     /// Kept for the session, so a directory is peeked at once however often it is listed.
     pub cloud_kinds: std::collections::HashMap<PathBuf, (EntryKind, crate::discover::Holds)>,
@@ -1543,13 +1666,6 @@ pub struct HomeState {
     /// chosen from the viewport as it is then — which is what keeps paging quickly
     /// from queueing a classification for every row it passed over.
     pub classify_in_flight: bool,
-    /// Set while rows on screen are still unmeasured, so the main loop knows to draw
-    /// another frame and measure the next batch.
-    pub pending_enrich: bool,
-    /// The same, for rows on screen nothing has looked into yet.
-    pub pending_classify: bool,
-    /// The same, for cloud directories on screen nothing has peeked into yet.
-    pub pending_peek: bool,
     /// Cloud directories with a peek out. Their own set rather than a claim written into
     /// [`Self::cloud_kinds`]: a claim is an answer, and writing one before the request
     /// comes back put `dir` on a row that had a count and staked "never again this
@@ -1582,7 +1698,8 @@ pub struct HomeState {
     /// buckets. Empty on a machine with no cloud credentials, which is the common case
     /// and not a failure.
     pub cloud: Vec<CloudSource>,
-    /// The catalogs shown, each a section of its own.
+    /// The catalogs shown, each a section of its own. Set with
+    /// [`HomeState::set_catalogs`], which indexes their places.
     pub catalogs: Vec<ShownCatalog>,
     /// HTTP(S) catalog files whose size was asked for this session (a HEAD).
     pub sized: std::collections::HashSet<PathBuf>,
@@ -1611,7 +1728,7 @@ pub struct HomeState {
     pub landing: bool,
     /// The rows as last listed. See [`RowsCache`].
     pub rows_cache: RowsCache,
-    /// The catalogs' places, as of the last listing.
+    /// The catalogs' places. See [`HomeState::set_catalogs`].
     pub catalog_places: CatalogPlaces,
 }
 
@@ -1755,18 +1872,11 @@ impl Default for HomeState {
             listing_in_flight: false,
             measure_in_flight: false,
             classify_in_flight: false,
-            pending_classify: false,
-            pending_peek: false,
             peeking: std::collections::HashSet::new(),
-            probed: std::collections::HashMap::new(),
-            unreachable: std::collections::HashSet::new(),
-            listing_so_far: std::collections::HashMap::new(),
-            cut_short: std::collections::HashSet::new(),
+            probes: Probes::default(),
             narrowed: None,
-            probe_errors: std::collections::HashMap::new(),
             cloud_kinds: std::collections::HashMap::new(),
             peek_failed: std::collections::HashSet::new(),
-            pending_enrich: false,
             waiting_since: None,
             enriched: std::collections::HashMap::new(),
             folds: std::collections::HashMap::new(),
@@ -1789,16 +1899,10 @@ pub struct ListingRequest {
     pub recents: Vec<PathBuf>,
     pub desktop_dirs: Vec<PathBuf>,
     pub browsing: Option<PathBuf>,
-    pub probed: std::collections::HashMap<PathBuf, std::sync::Arc<[Entry]>>,
-    pub unreachable: std::collections::HashSet<PathBuf>,
-    /// Rows of network directories still being listed. See [`HomeState::listing_so_far`].
-    pub listing_so_far: std::collections::HashMap<PathBuf, Vec<Entry>>,
-    /// See [`HomeState::cut_short`].
-    pub cut_short: std::collections::HashSet<PathBuf>,
+    /// See [`HomeState::probes`].
+    pub probes: Probes,
     /// See [`HomeState::narrowed`].
     pub narrowed: Option<Narrowed>,
-    /// Why a cloud listing was refused.
-    pub probe_errors: std::collections::HashMap<PathBuf, String>,
     pub network_check: fn(&Path) -> bool,
     /// Cloud sources and the buckets already enumerated for them.
     pub cloud: Vec<CloudSource>,
@@ -1962,16 +2066,144 @@ pub fn measured_from(probe: &Entry, original: &Entry) -> Measured {
     }
 }
 
-/// A row a completed probe already produced for this exact path, if any.
-fn probed_entry(
-    probed: &std::collections::HashMap<PathBuf, std::sync::Arc<[Entry]>>,
-    path: &Path,
-) -> Option<Entry> {
-    probed
-        .values()
-        .flat_map(|rows| rows.iter())
-        .find(|e| e.path == path)
-        .cloned()
+/// Where the listing of one network root or remote directory is. Read off the
+/// interface thread; see [`HomeState::pending_probes`].
+#[derive(Debug, Clone)]
+pub enum Probe {
+    /// Still being read: the rows so far, in the order they came.
+    Listing(Vec<Entry>),
+    /// Answered. `cut_short`: the listing stopped at [`discover::MAX_ENTRIES_PER_DIR`].
+    Listed {
+        rows: std::sync::Arc<[Entry]>,
+        cut_short: bool,
+    },
+    /// Did not answer, with why when the service said.
+    Unreachable(Option<String>),
+}
+
+/// Every probe, by the place it lists.
+#[derive(Debug, Clone, Default)]
+pub struct Probes(std::collections::HashMap<PathBuf, Probe>);
+
+impl Probes {
+    pub fn get(&self, place: &Path) -> Option<&Probe> {
+        self.0.get(place)
+    }
+
+    /// The rows of a listing that has answered.
+    pub fn listed(&self, place: &Path) -> Option<&[Entry]> {
+        match self.0.get(place)? {
+            Probe::Listed { rows, .. } => Some(rows),
+            _ => None,
+        }
+    }
+
+    /// The rows read so far of a listing still going on.
+    pub fn so_far(&self, place: &Path) -> Option<&[Entry]> {
+        match self.0.get(place)? {
+            Probe::Listing(rows) => Some(rows),
+            _ => None,
+        }
+    }
+
+    /// Answered, or written off: nothing more to ask.
+    pub fn settled(&self, place: &Path) -> bool {
+        matches!(
+            self.0.get(place),
+            Some(Probe::Listed { .. } | Probe::Unreachable(_))
+        )
+    }
+
+    pub fn cut_short(&self, place: &Path) -> bool {
+        matches!(
+            self.0.get(place),
+            Some(Probe::Listed {
+                cut_short: true,
+                ..
+            })
+        )
+    }
+
+    pub fn unreachable(&self, place: &Path) -> bool {
+        matches!(self.0.get(place), Some(Probe::Unreachable(_)))
+    }
+
+    /// Why the listing was refused, when the service said.
+    pub fn error(&self, place: &Path) -> Option<&str> {
+        match self.0.get(place)? {
+            Probe::Unreachable(why) => why.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// What the place lists now: its answer, or the rows so far as the finished
+    /// listing will order them (a bucket's directories above its objects, a
+    /// directory's as [`discover::sort_entries`] does), or nothing yet.
+    fn rows(&self, place: &Path) -> Vec<Entry> {
+        match self.0.get(place) {
+            Some(Probe::Listed { rows, .. }) => rows.to_vec(),
+            Some(Probe::Listing(rows)) => {
+                let mut rows = rows.clone();
+                if is_object_store_url(place) {
+                    rows.sort_by_key(|row| row.kind != EntryKind::Directory);
+                } else {
+                    discover::sort_entries(&mut rows);
+                }
+                rows
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The places answered, with their rows.
+    pub fn answered(&self) -> impl Iterator<Item = (&PathBuf, &[Entry])> {
+        self.0.iter().filter_map(|(place, probe)| match probe {
+            Probe::Listed { rows, .. } => Some((place, &rows[..])),
+            _ => None,
+        })
+    }
+
+    /// A row an answered probe produced for this exact path, if any.
+    fn entry(&self, path: &Path) -> Option<Entry> {
+        self.answered()
+            .flat_map(|(_, rows)| rows.iter())
+            .find(|e| e.path == path)
+            .cloned()
+    }
+
+    /// Rows read since the last batch, while the listing is still out.
+    pub fn read(&mut self, place: &Path, rows: &[Entry]) {
+        if let Probe::Listing(so_far) = self
+            .0
+            .entry(place.to_path_buf())
+            .or_insert(Probe::Listing(Vec::new()))
+        {
+            so_far.extend_from_slice(rows);
+        }
+    }
+
+    pub fn insert(&mut self, place: PathBuf, probe: Probe) {
+        self.0.insert(place, probe);
+    }
+
+    /// Forget a place's listing, so it is asked for again.
+    pub fn forget(&mut self, place: &Path) {
+        self.0.remove(place);
+    }
+
+    /// Forget a listing still being read: it was stopped.
+    pub fn stopped(&mut self, place: &Path) {
+        if let Some(Probe::Listing(_)) = self.0.get(place) {
+            self.0.remove(place);
+        }
+    }
+
+    fn listed_mut(&mut self, place: &Path) -> Option<&mut std::sync::Arc<[Entry]>> {
+        match self.0.get_mut(place)? {
+            Probe::Listed { rows, .. } => Some(rows),
+            _ => None,
+        }
+    }
 }
 
 /// Build the home listing.
@@ -1997,12 +2229,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         recents,
         desktop_dirs,
         browsing,
-        probed,
-        unreachable,
-        listing_so_far,
-        cut_short,
+        probes,
         narrowed,
-        probe_errors,
         network_check,
         cloud,
         catalogs,
@@ -2027,23 +2255,15 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             _ => None,
         });
         sections.push(Section {
-            title: source.map(|s| s.label.clone()).unwrap_or(id),
             subtitle: source.map(|s| s.note.clone()).filter(|n| !n.is_empty()),
-            origin: None,
-            rows,
             unavailable: source.is_none() || failure.is_some(),
             unavailable_note: if source.is_none() {
                 Some("source not found".to_string())
             } else {
                 failure
             },
-            folded_by_default: false,
-            remote_root: None,
             waiting: source.is_some_and(|s| s.busy()),
-            grouped_by_place: false,
-            door: None,
-            place_labels: Default::default(),
-            root: None,
+            ..Section::titled(source.map(|s| s.label.clone()).unwrap_or(id), rows)
         });
         annotate(&mut sections, known, network_check, &mounts);
         return Listing {
@@ -2062,16 +2282,11 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         // and kept showing nothing.
         let remote = network_check(&dir);
         // A remote listing still being read shows what it has, and says so.
-        let so_far = remote && !probed.contains_key(&dir) && listing_so_far.contains_key(&dir);
+        let so_far = remote && probes.so_far(&dir).is_some();
         // A SQLite database is a place too, whose rows are its tables.
         let database = !remote && dir.is_file();
         let (mut rows, truncated) = if remote {
-            let rows = probed
-                .get(&dir)
-                .map(|rows| rows.to_vec())
-                .or_else(|| listing_so_far.get(&dir).cloned())
-                .unwrap_or_default();
-            (rows, cut_short.contains(&dir))
+            (probes.rows(&dir), probes.cut_short(&dir))
         } else if database {
             let tables = discover::database_rows(&dir);
             let rows = if tables.is_empty() {
@@ -2127,7 +2342,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         } else {
             None
         };
-        let unavailable = remote && unreachable.contains(&dir);
+        let unavailable = remote && probes.unreachable(&dir);
         // The first row inside any directory opens the whole of it, since `Enter` on the
         // rows below opens one file. The other door.
         let mut door = (!database)
@@ -2145,47 +2360,42 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             door.modified = None;
             door.name = door_name(door, &rows);
         }
-        sections.push(Section {
-            // The URL without a source ID: the title bar's trail already says which
-            // source, and `s3://lab@data` is not a name anyone would write. An Azure
-            // account or container is titled by name, not by its long URL.
-            title: {
-                let text = dir.to_string_lossy();
-                if let Some(dataset) = catalogs
-                    .iter()
-                    .flat_map(|c| c.datasets.iter())
-                    .find(|d| is_object_store_url(&d.location) && same_place(&d.location, &dir))
-                {
-                    dataset.name.clone()
-                } else if let Some((_, account)) = cloud_account(&dir) {
-                    account
-                } else if let Some((_, container, key)) = crate::source::azure_parts(&text) {
-                    format!("{container}/{}", key.trim_matches('/'))
-                        .trim_end_matches('/')
-                        .to_string()
-                } else {
-                    match crate::source::split_source_id(&text) {
-                        (Some(_), plain) => plain.into_owned(),
-                        (None, _) => display_path(&dir),
-                    }
+        // The URL without a source ID: the title bar's trail already says which
+        // source, and `s3://lab@data` is not a name anyone would write. An Azure
+        // account or container is titled by name, not by its long URL.
+        let title = {
+            let text = dir.to_string_lossy();
+            if let Some(dataset) = catalogs
+                .iter()
+                .flat_map(|c| c.datasets.iter())
+                .find(|d| is_object_store_url(&d.location) && same_place(&d.location, &dir))
+            {
+                dataset.name.clone()
+            } else if let Some((_, account)) = cloud_account(&dir) {
+                account
+            } else if let Some((_, container, key)) = crate::source::azure_parts(&text) {
+                format!("{container}/{}", key.trim_matches('/'))
+                    .trim_end_matches('/')
+                    .to_string()
+            } else {
+                match crate::source::split_source_id(&text) {
+                    (Some(_), plain) => plain.into_owned(),
+                    (None, _) => display_path(&dir),
                 }
-            },
+            }
+        };
+        sections.push(Section {
             subtitle,
-            origin: None,
             root: Some(dir.clone()),
-            rows,
             unavailable,
             // A browsed remote place that did not answer has nothing to add; one whose
             // listing was refused says why.
-            unavailable_note: probe_errors.get(&dir).cloned(),
-            folded_by_default: false,
+            unavailable_note: probes.error(&dir).map(str::to_string),
             // Its wait is drawn in place of the whole list until rows arrive (see
-            // `awaiting_listing`), and on the heading once they do.
-            remote_root: None,
+            // `awaiting_listing`), and on the heading once they do; no `remote_root`.
             waiting: so_far,
-            grouped_by_place: false,
             door,
-            place_labels: Default::default(),
+            ..Section::titled(title, rows)
         });
         annotate(&mut sections, known, network_check, &mounts);
         return Listing {
@@ -2213,7 +2423,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
             // A probe of the containing root has already classified and measured
             // this; reuse it, so the same dataset does not read as `hive` under
             // its directory and `dir` under Recent.
-            if let Some(known) = probed_entry(probed, p) {
+            if let Some(known) = probes.entry(p) {
                 return known;
             }
             if let Some(variant) = discover::variant_row(p, formats) {
@@ -2274,12 +2484,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         // where a directory big enough to hit the cap realistically lives.
         let mut truncated = false;
         let rows = if root.network {
-            truncated = cut_short.contains(&root.path);
-            probed
-                .get(&root.path)
-                .map(|rows| rows.to_vec())
-                .or_else(|| listing_so_far.get(&root.path).cloned())
-                .unwrap_or_default()
+            truncated = probes.cut_short(&root.path);
+            probes.rows(&root.path)
         } else if root.available {
             let scan = discover::scan_dir_specs(&root.path, formats);
             truncated = scan.truncated;
@@ -2305,8 +2511,8 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         // A root that cannot be *read* stays: a network share that has stopped
         // answering is the case the section heading exists to report, and silently
         // dropping it is the worst answer.
-        let unreachable = root.network && unreachable.contains(&root.path);
-        let waiting = root.network && !unreachable && !probed.contains_key(&root.path);
+        let unreachable = root.network && probes.unreachable(&root.path);
+        let waiting = root.network && !unreachable && probes.listed(&root.path).is_none();
         // A network root is worth flagging: it is the one that will be slow, and
         // the one that can stop answering.
         // Naming the filesystem rather than saying "network" costs one word and says
@@ -2337,19 +2543,13 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         root_sections.push((
             root.origin,
             Section {
-                title: display_path(&root.path),
                 subtitle: (!state.is_empty()).then(|| state.join(" · ")),
                 origin: Some(root.origin.note()),
                 root: Some(root.path.clone()),
-                rows,
                 unavailable: !root.available || unreachable,
-                unavailable_note: None,
-                folded_by_default: false,
                 remote_root: root.network.then(|| root.path.clone()),
                 waiting,
-                grouped_by_place: false,
-                door: None,
-                place_labels: Default::default(),
+                ..Section::titled(display_path(&root.path), rows)
             },
         ));
     }
@@ -2387,23 +2587,13 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     if !recent_rows.is_empty() {
         let place_labels = place_labels(&recent_rows, known, network_check);
         sections.push(Section {
-            title: HomeState::RECENT_SECTION.to_string(),
-            subtitle: None,
-            origin: None,
-            root: None,
-            rows: recent_rows,
-            unavailable: false,
-            unavailable_note: None,
-            folded_by_default: false,
-            remote_root: None,
-            waiting: false,
             // Every trace of recent use lives here. The directories recents live in
             // used to be sections of their own, titled by path and drawn exactly like
             // a configured directory, with `recent` at the far end of the rule the
             // only thing saying why they were there. Now they are rows of this one.
             grouped_by_place: true,
-            door: None,
             place_labels,
+            ..Section::titled(HomeState::RECENT_SECTION, recent_rows)
         });
     }
 
@@ -2419,21 +2609,10 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
     // configured directories below them went off the screen. Buckets are one level
     // down, listed once per session, never expanded here.
     if !cloud.is_empty() {
-        sections.push(Section {
-            title: HomeState::CLOUD_SECTION.to_string(),
-            subtitle: None,
-            origin: None,
-            rows: cloud.iter().map(source_entry).collect(),
-            unavailable: false,
-            unavailable_note: None,
-            folded_by_default: false,
-            remote_root: None,
-            waiting: false,
-            grouped_by_place: false,
-            door: None,
-            place_labels: Default::default(),
-            root: None,
-        });
+        sections.push(Section::titled(
+            HomeState::CLOUD_SECTION.to_string(),
+            cloud.iter().map(source_entry).collect(),
+        ));
     }
 
     // Catalogs in order: yours, the listed files, then the bundled one, which is for
@@ -2459,21 +2638,10 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
 
     if !elsewhere.is_empty() {
         sections.push(Section {
-            title: "Elsewhere".to_string(),
-            // The title says what these are; a note repeating it said nothing.
-            subtitle: None,
-            origin: None,
-            rows: elsewhere,
-            unavailable: false,
-            unavailable_note: None,
-            // Places to look, not datasets: folded until asked for.
+            // Places to look, not datasets: folded until asked for. No subtitle: the
+            // title says what these are, and a note repeating it said nothing.
             folded_by_default: true,
-            remote_root: None,
-            waiting: false,
-            grouped_by_place: false,
-            door: None,
-            place_labels: Default::default(),
-            root: None,
+            ..Section::titled("Elsewhere", elsewhere)
         });
     }
 
@@ -2952,12 +3120,8 @@ impl HomeState {
             recents: recents.to_vec(),
             desktop_dirs: desktop_dirs.to_vec(),
             browsing: self.browsing.clone(),
-            probed: self.probed.clone(),
-            unreachable: self.unreachable.clone(),
-            listing_so_far: self.listing_so_far.clone(),
-            cut_short: self.cut_short.clone(),
+            probes: self.probes.clone(),
             narrowed: self.narrowed.clone(),
-            probe_errors: self.probe_errors.clone(),
             network_check: self.network_check,
             cloud: self.cloud.clone(),
             catalogs: self.catalogs.clone(),
@@ -2981,7 +3145,6 @@ impl HomeState {
             name_by_spec(&self.formats, &mut section.rows);
         }
         self.sections = listing.sections;
-        self.catalog_places = CatalogPlaces::of(&self.catalogs);
         self.changed();
         self.missing = listing.missing;
         // Browsing, the first section is the directory browsed.
@@ -3541,8 +3704,8 @@ impl HomeState {
     fn project_of_bucket(&self, bucket_root: &Path) -> Option<PathBuf> {
         let root = bucket_root.to_string_lossy();
         let root = root.trim_end_matches('/');
-        self.probed
-            .iter()
+        self.probes
+            .answered()
             .filter(|(place, _)| cloud_account(place).is_some())
             .find(|(_, rows)| {
                 rows.iter()
@@ -3663,19 +3826,8 @@ impl HomeState {
             if !cloud_rows.is_empty() {
                 let subtitle = format!("cloud · {} names", cloud_rows.len());
                 self.sections.push(Section {
-                    title: Self::SEARCH_SECTION.to_string(),
                     subtitle: Some(subtitle),
-                    origin: None,
-                    rows: cloud_rows,
-                    unavailable: false,
-                    unavailable_note: None,
-                    folded_by_default: false,
-                    remote_root: None,
-                    waiting: false,
-                    grouped_by_place: false,
-                    door: None,
-                    place_labels: Default::default(),
-                    root: None,
+                    ..Section::titled(Self::SEARCH_SECTION, cloud_rows)
                 });
             }
             return;
@@ -3725,19 +3877,8 @@ impl HomeState {
         let subtitle = self.found_subtitle(rows.is_empty());
 
         self.sections.push(Section {
-            title: Self::SEARCH_SECTION.to_string(),
             subtitle: Some(subtitle),
-            origin: None,
-            rows,
-            unavailable: false,
-            unavailable_note: None,
-            folded_by_default: false,
-            remote_root: None,
-            waiting: false,
-            grouped_by_place: false,
-            door: None,
-            place_labels: Default::default(),
-            root: None,
+            ..Section::titled(Self::SEARCH_SECTION, rows)
         });
     }
 
@@ -3941,6 +4082,19 @@ impl HomeState {
     /// The rows have changed under the cache: built again on the next read.
     fn changed(&mut self) {
         *self.rows_cache.built.get_mut() = None;
+    }
+
+    /// Show these catalogs.
+    pub fn set_catalogs(&mut self, catalogs: Vec<ShownCatalog>) {
+        self.catalog_places = CatalogPlaces::of(&catalogs);
+        self.catalogs = catalogs;
+        self.changed();
+    }
+
+    /// How often and how lately each recent was opened, which ranks matches.
+    pub fn set_visits(&mut self, visits: std::collections::HashMap<PathBuf, crate::cache::Visits>) {
+        self.visits = visits;
+        self.changed();
     }
 
     /// The sections, to change in place. The rows are listed again from them on the
@@ -4326,7 +4480,7 @@ impl HomeState {
                 add(bucket);
             }
         }
-        for (root, rows) in &self.probed {
+        for (root, rows) in self.probes.answered() {
             add(root);
             for row in rows.iter() {
                 add(&row.path);
@@ -4353,9 +4507,9 @@ impl HomeState {
     /// The door counts: it is something to open, and every caller here wants what the
     /// cursor is on. What it must not be is a row in a path-keyed map, which is why it
     /// is [`Row::Door`] and not an entry among the section's rows.
-    pub fn selected_entry(&self) -> Option<Entry> {
+    pub fn selected_entry(&self) -> Option<&Entry> {
         match self.selected_row()? {
-            Row::Entry { entry, .. } | Row::Door { entry, .. } => Some(entry.clone()),
+            Row::Entry { entry, .. } | Row::Door { entry, .. } => Some(entry),
             _ => None,
         }
     }
@@ -4408,10 +4562,7 @@ impl HomeState {
         // filesystem, and matching on the word "network" meant NFS roots were never
         // listed at all.
         for root in self.sections.iter().filter_map(|s| s.remote_root.as_ref()) {
-            if !self.probed.contains_key(root)
-                && !self.unreachable.contains(root)
-                && !out.contains(root)
-            {
+            if !self.probes.settled(root) && !out.contains(root) {
                 out.push(root.clone());
             }
         }
@@ -4421,8 +4572,7 @@ impl HomeState {
         if let Some(dir) = &self.browsing
             && check(dir)
             && cloud_source_id(dir).is_none()
-            && !self.probed.contains_key(dir)
-            && !self.unreachable.contains(dir)
+            && !self.probes.settled(dir)
             && !out.contains(dir)
         {
             out.push(dir.clone());
@@ -4470,25 +4620,24 @@ impl HomeState {
                 .is_some_and(|s| s.status == CloudStatus::Listing && s.buckets.is_empty())
                 .then_some(dir);
         }
-        ((self.network_check)(dir)
-            && !self.probed.contains_key(dir)
-            && !self.unreachable.contains(dir))
-        .then_some(dir)
+        ((self.network_check)(dir) && !self.probes.settled(dir)).then_some(dir)
     }
 
     /// Record what a probe found. An empty listing is still an answer.
-    pub fn probe_ready(&mut self, root: PathBuf, rows: Vec<Entry>) {
-        self.unreachable.remove(&root);
-        self.probe_errors.remove(&root);
-        self.listing_so_far.remove(&root);
-        self.cut_short.remove(&root);
-        self.probed.insert(root.clone(), rows.into());
+    pub fn probe_ready(&mut self, root: PathBuf, rows: Vec<Entry>, cut_short: bool) {
+        self.probes.insert(
+            root.clone(),
+            Probe::Listed {
+                rows: rows.into(),
+                cut_short,
+            },
+        );
         self.apply_cloud_kinds(&root);
     }
 
     /// Label the rows of a cloud listing with what peeking inside them found.
     pub fn apply_cloud_kinds(&mut self, root: &Path) {
-        let Some(rows) = self.probed.get_mut(root) else {
+        let Some(rows) = self.probes.listed_mut(root) else {
             return;
         };
         // Copied only when a listing being built still holds these rows.
@@ -4562,11 +4711,9 @@ impl HomeState {
         out
     }
 
-    /// Record that a probe could not read the root.
-    pub fn probe_failed(&mut self, root: PathBuf) {
-        self.probed.remove(&root);
-        self.listing_so_far.remove(&root);
-        self.unreachable.insert(root);
+    /// Record that a probe could not read the root, and why when the service said.
+    pub fn probe_failed(&mut self, root: PathBuf, why: Option<String>) {
+        self.probes.insert(root, Probe::Unreachable(why));
     }
 
     /// Measure a batch of rows on the calling thread.
@@ -5207,6 +5354,57 @@ pub fn expand_user_path(raw: &str) -> PathBuf {
 mod holds_flow_tests {
     use super::*;
 
+    /// The list and the pane are told one thing: the curated word in both, and for a
+    /// bucket directory, where looking into it is.
+    #[test]
+    fn a_rows_label_is_one_decision_for_the_list_and_the_pane() {
+        let mut directory = Entry::for_test(Path::new("s3://bucket/warehouse"), "warehouse");
+        directory.kind = EntryKind::Directory;
+        let said = |look, place_kind| describe(&directory, place_kind, look, 0, None);
+        let g = crate::glyphs::get();
+
+        let waiting = said(Some(CloudLook::Waiting), None);
+        assert_eq!(
+            (waiting.short.as_str(), waiting.words.as_str()),
+            (g.ellipsis, "")
+        );
+        assert_eq!(said(Some(CloudLook::Looking), None).words, "");
+        assert!(
+            said(Some(CloudLook::Failed), None)
+                .words
+                .contains("listing failed")
+        );
+        assert_eq!(said(None, None).words, "directory");
+        let curated = said(None, Some("dataset"));
+        assert_eq!(
+            (curated.short.as_str(), curated.words.as_str()),
+            ("dataset", "dataset")
+        );
+        assert!(curated.curated);
+
+        directory.holds = crate::discover::Holds {
+            formats: vec![("parquet".to_string(), 12)],
+            ..Default::default()
+        };
+        let counted = describe(&directory, None, None, 0, None);
+        assert_eq!(counted.short, "12 parquet");
+        assert_eq!(
+            counted.words, "directory",
+            "the count is the pane's `contains` line"
+        );
+        let curated = describe(&directory, Some("dataset"), None, 0, None);
+        assert_eq!(
+            curated.short, "dataset",
+            "the curated word wins over the count"
+        );
+
+        directory.opens_whole_directory = true;
+        assert_eq!(
+            describe(&directory, Some("dataset"), None, 0, None),
+            RowLabel::default()
+        );
+    }
+
     /// A path under the home directory is written the way it is typed back: `~\` on
     /// Windows, and `~\` typed at the prompt expands.
     #[cfg(windows)]
@@ -5254,12 +5452,12 @@ mod holds_flow_tests {
         row.holds = counted(15);
 
         let mut home = HomeState::default();
-        home.probed.insert(root.clone(), vec![row].into());
+        home.probe_ready(root.clone(), vec![row], false);
         home.cloud_kinds.insert(path, in_flight());
         home.apply_cloud_kinds(&root);
 
         assert_eq!(
-            home.probed[&root][0].holds.label(),
+            home.probes.listed(&root).unwrap()[0].holds.label(),
             "15 parquet",
             "the placeholder erased a count the row already had"
         );
@@ -5305,7 +5503,7 @@ mod holds_flow_tests {
             ..Default::default()
         };
         let root = std::path::PathBuf::from("gs://pitscope");
-        home.probe_ready(root.clone(), vec![row.clone()]);
+        home.probe_ready(root.clone(), vec![row.clone()], false);
         home.browsing = Some(root);
         home.rebuild(&[]);
         assert_eq!(
@@ -5339,13 +5537,19 @@ mod holds_flow_tests {
         row.holds = counted(15);
 
         let mut home = HomeState::default();
-        home.probed.insert(root.clone(), vec![row].into());
+        home.probe_ready(root.clone(), vec![row], false);
         home.cloud_kinds
             .insert(path, (EntryKind::MultiFile, counted(40)));
         home.apply_cloud_kinds(&root);
 
-        assert_eq!(home.probed[&root][0].holds.label(), "40 parquet");
-        assert_eq!(home.probed[&root][0].kind, EntryKind::MultiFile);
+        assert_eq!(
+            home.probes.listed(&root).unwrap()[0].holds.label(),
+            "40 parquet"
+        );
+        assert_eq!(
+            home.probes.listed(&root).unwrap()[0].kind,
+            EntryKind::MultiFile
+        );
     }
 
     #[test]
@@ -5360,13 +5564,16 @@ mod holds_flow_tests {
         row.holds = counted(40);
 
         let mut home = HomeState::default();
-        home.probed.insert(root.clone(), vec![row].into());
+        home.probe_ready(root.clone(), vec![row], false);
         home.cloud_kinds
             .insert(settled, (EntryKind::Directory, counted(1)));
         home.apply_cloud_kinds(&root);
 
-        assert_eq!(home.probed[&root][0].kind, EntryKind::Hive);
-        assert_eq!(home.probed[&root][0].holds.label(), "40 parquet");
+        assert_eq!(home.probes.listed(&root).unwrap()[0].kind, EntryKind::Hive);
+        assert_eq!(
+            home.probes.listed(&root).unwrap()[0].holds.label(),
+            "40 parquet"
+        );
     }
 
     /// A peek is a request, so it is spent on the row the cursor is on.
@@ -5390,7 +5597,7 @@ mod holds_flow_tests {
                 row
             })
             .collect();
-        home.probe_ready(root.clone(), rows);
+        home.probe_ready(root.clone(), rows, false);
         home.browsing = Some(root.clone());
         home.rebuild(&[]);
         // One already answered, and one with a request already out.
@@ -5430,21 +5637,7 @@ mod holds_flow_tests {
         row.holds = counted(15);
 
         let mut home = HomeState::default();
-        home.sections.push(Section {
-            title: "Here".to_string(),
-            subtitle: None,
-            origin: None,
-            rows: vec![row],
-            unavailable: false,
-            unavailable_note: None,
-            folded_by_default: false,
-            remote_root: None,
-            waiting: false,
-            grouped_by_place: false,
-            door: None,
-            place_labels: Default::default(),
-            root: None,
-        });
+        home.sections.push(Section::titled("Here", vec![row]));
         // A measurement of a file carries no `holds`, and the same struct measures both.
         home.enriched.insert(
             path,

@@ -742,28 +742,6 @@ async fn peek_page(
     ))
 }
 
-/// Parquet footers read to decide whether a directory is one table.
-///
-/// Three is enough to catch a directory of separate tables, whose files have nothing in
-/// common with each other, while costing a fraction of what counting the dataset does.
-/// A directory that survives this is read as one table and its real schema union is built
-/// at open time, where every footer is read.
-const VERIFY_FOOTERS: usize = 3;
-
-/// Which of a directory's files to read, spread across the listing rather than taken from
-/// its head.
-///
-/// Keys come back in lexicographic order, so the first files of a directory written table
-/// by table can easily be the same table — `circuits`, `constructor_standings`,
-/// `constructors` — while its ends never are.
-fn footers_to_verify(files: usize) -> Vec<usize> {
-    if files <= VERIFY_FOOTERS {
-        (0..files).collect()
-    } else {
-        vec![0, files / 2, files - 1]
-    }
-}
-
 /// Whether a directory the listing called `multi` holds one table, from a few of its
 /// footers. `None` when it could not be decided, and the listing's answer stands: the
 /// optimistic reading is the reversible one.
@@ -808,12 +786,10 @@ async fn kind_from_footers(
     if parquet.len() < 2 {
         return None;
     }
-    let picks = footers_to_verify(parquet.len());
-
     let meter = std::sync::Arc::new(crate::measurements::Meter::default());
     let store = store.clone();
     let mut reads = tokio::task::JoinSet::new();
-    for index in picks {
+    for index in crate::discover::spread(parquet.len()) {
         let (key, size) = parquet[index].clone();
         let (store, meter) = (store.clone(), meter.clone());
         reads.spawn(async move {
@@ -835,14 +811,9 @@ async fn kind_from_footers(
             per_file.push(footer.schema.iter_names().map(|n| n.to_string()).collect());
         }
     }
-    // One readable footer says nothing about agreement, and none says nothing at all.
-    if per_file.len() < 2 {
-        return None;
-    }
-    Some(if crate::schema_union::is_nested(&per_file) {
-        crate::discover::EntryKind::MultiFile
-    } else {
-        crate::discover::EntryKind::Directory
+    crate::discover::one_table_from(&per_file).map(|one| match one {
+        true => crate::discover::EntryKind::MultiFile,
+        false => crate::discover::EntryKind::Directory,
     })
 }
 
@@ -3259,8 +3230,10 @@ mod one_table_tests {
     /// be three files of the same table by alphabetical accident.
     #[test]
     fn the_files_read_span_the_listing() {
-        assert_eq!(footers_to_verify(2), vec![0, 1]);
-        assert_eq!(footers_to_verify(3), vec![0, 1, 2]);
-        assert_eq!(footers_to_verify(15), vec![0, 7, 14]);
+        use crate::discover::spread;
+        assert_eq!(spread(1), vec![0]);
+        assert_eq!(spread(2), vec![0, 1]);
+        assert_eq!(spread(3), vec![0, 1, 2]);
+        assert_eq!(spread(15), vec![0, 7, 14]);
     }
 }

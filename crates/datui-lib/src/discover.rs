@@ -1034,19 +1034,17 @@ pub fn directory_format(dir: &Path) -> DirectoryFormat {
     // it is a directory of Parquet, and opening the `LICENSE` to find out is a read per
     // file for an answer already given.
     //
-    // A spread rather than every one, for the reason `sample_footers` takes a spread:
+    // A spread rather than every one, for the reason [`spread`] gives:
     // the cost is one open per file, and a directory written by one job holds one kind of
     // thing. They have to agree — a directory where the ends disagree is not one table by
     // any reading — and then all of them are taken as that format, because a scan that
     // reads what it can and says what it could not is what happens to the odd one out.
     if by_format.is_empty() && !nameless.is_empty() {
         nameless.sort();
-        let mut picks = vec![0, nameless.len() / 2, nameless.len() - 1];
-        picks.dedup();
+        let picks = spread(nameless.len());
         let sniffed: Vec<crate::FileFormat> = picks
             .iter()
-            .filter_map(|i| nameless.get(*i))
-            .filter_map(|f| sniff_format(f))
+            .filter_map(|i| sniff_format(&nameless[*i]))
             .collect();
         if sniffed.len() == picks.len()
             && let Some(found) = sniffed.first().copied()
@@ -1792,7 +1790,11 @@ fn enrich_dataset(
         // them costs.
         let sampled = sample_footers(&files);
         let names: Vec<Vec<String>> = sampled.iter().map(column_names).collect();
-        if entry.kind == EntryKind::MultiFile && !files_nest(&names) {
+        let tops: Vec<Vec<String>> = names
+            .iter()
+            .map(|n| crate::schema_union::top_level_columns(n))
+            .collect();
+        if entry.kind == EntryKind::MultiFile && one_table_from(&tops) == Some(false) {
             // Whether the directory is one table is asked of everything under it, because
             // that is what opening it would union. What it *holds* is the files the
             // label counts — the ones directly inside — and a downgraded row is never
@@ -1962,41 +1964,41 @@ fn direct_children(files: &[PathBuf], dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// The footers at the ends and the middle of a directory too large to read every one of.
+/// Which of `files` to read for a few of them: the ends and the middle.
 ///
-/// The ends and the middle, because keys and filenames sort: a directory written table by
-/// table can easily start with several files of the same table, so its head answers
-/// nothing. The last file earns its place twice over — in a directory written over time
-/// it is the newest, which is where a column added last year is.
-fn sample_footers(files: &[PathBuf]) -> Vec<crate::parquet_footer::Footer> {
-    if files.is_empty() {
-        return Vec::new();
-    }
-    let mut picks = vec![0, files.len() / 2, files.len() - 1];
+/// Keys and filenames sort, so a directory written table by table can easily start with
+/// several files of the same table and its head answers nothing. The last file earns its
+/// place twice over: in a directory written over time it is the newest, which is where a
+/// column added last year is. Three reads, whatever the directory's size.
+pub(crate) fn spread(files: usize) -> Vec<usize> {
+    let mut picks = match files {
+        0 => Vec::new(),
+        n => vec![0, n / 2, n - 1],
+    };
     picks.dedup();
     picks
-        .iter()
-        .filter_map(|i| files.get(*i))
-        .filter_map(|file| crate::parquet_footer::read_parquet_metadata(file))
-        .collect()
 }
 
-/// Whether a spread of a directory's files agree on a schema.
+/// Whether a few files' top-level columns are one table, on disk or in a bucket.
 ///
-/// Fewer than two readable footers decide nothing, and the directory keeps the kind its
-/// names suggested.
-fn files_nest(sampled: &[Vec<String>]) -> bool {
-    let per_file: Vec<Vec<String>> = sampled
-        .iter()
-        .map(|names| crate::schema_union::top_level_columns(names))
-        .collect();
-    per_file.len() < 2 || crate::schema_union::is_nested(&per_file)
+/// `None` from fewer than two: one footer says nothing about agreement, and the
+/// directory keeps the kind its names suggested.
+pub(crate) fn one_table_from(footers: &[Vec<String>]) -> Option<bool> {
+    (footers.len() >= 2).then(|| crate::schema_union::is_nested(footers))
+}
+
+/// The footers of the [`spread`] of a directory too large to read every one of.
+fn sample_footers(files: &[PathBuf]) -> Vec<crate::parquet_footer::Footer> {
+    spread(files.len())
+        .into_iter()
+        .filter_map(|i| crate::parquet_footer::read_parquet_metadata(&files[i]))
+        .collect()
 }
 
 /// Ask a directory with no footers whether its files are one table, by the names at the
 /// front of them.
 ///
-/// The same rule as [`files_nest`] on the same evidence — the column names — from the
+/// The same rule as [`one_table_from`] on the same evidence — the column names — from the
 /// only place a CSV or an NDJSON file keeps them. Without this a directory of forty
 /// unrelated CSVs was labelled `40 csv`, `Enter` promised one table because nothing had
 /// looked, and the read then refused it: the permissive rule with the strict reader,

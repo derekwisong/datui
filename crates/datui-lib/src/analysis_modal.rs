@@ -143,14 +143,14 @@ pub struct EvidenceRead {
     pub summary: Vec<(&'static str, String)>,
 }
 
-/// A latency threshold as Setup offers it.
-pub fn threshold_label(seconds: Option<i64>) -> &'static str {
+/// A latency threshold as Setup offers it, or its length when it is none of those.
+pub fn threshold_label(seconds: Option<i64>) -> String {
     match seconds {
-        None => "none",
-        Some(3_600) => "1 hour",
-        Some(86_400) => "1 day",
-        Some(604_800) => "1 week",
-        Some(_) => "custom",
+        None => "none".to_string(),
+        Some(3_600) => "1 hour".to_string(),
+        Some(86_400) => "1 day".to_string(),
+        Some(604_800) => "1 week".to_string(),
+        Some(seconds) => crate::numfmt::duration(seconds),
     }
 }
 
@@ -1412,12 +1412,7 @@ impl AnalysisModal {
             SetupRow::Latency if self.data_quality_plan.interval_pairs().is_empty() => Vec::new(),
             SetupRow::Latency => [None, Some(3_600), Some(86_400), Some(604_800)]
                 .into_iter()
-                .map(|seconds| {
-                    (
-                        threshold_label(seconds).to_string(),
-                        PlanChoice::Latency(seconds),
-                    )
-                })
+                .map(|seconds| (threshold_label(seconds), PlanChoice::Latency(seconds)))
                 .collect(),
             // Each text column with the first value on screen, so choosing which one
             // holds times is choosing among things seen.

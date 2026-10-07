@@ -302,7 +302,7 @@ fn render_header(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buf
                 "  Cancelling: {} {} {}",
                 cancelling.what(),
                 glyphs::get().middot,
-                crate::numfmt::duration(cancelling.since.elapsed().as_secs() as i64)
+                crate::numfmt::clock(cancelling.since.elapsed())
             ),
             Style::default().fg(config.theme.warning()),
         ));
@@ -632,7 +632,7 @@ fn setup_value(config: &DataQualityWidgetConfig<'_>, row: SetupRow) -> (String, 
             ("needs an interval to measure".to_string(), true)
         }
         SetupRow::Latency => (
-            crate::analysis_modal::threshold_label(plan.latency_threshold_seconds).to_string(),
+            crate::analysis_modal::threshold_label(plan.latency_threshold_seconds),
             plan.latency_threshold_seconds.is_none(),
         ),
         SetupRow::WindowBy => match (&plan.grain, plan.interval_clock) {
@@ -1063,7 +1063,7 @@ fn setup_status(config: &DataQualityWidgetConfig<'_>) -> Option<(String, bool)> 
                 },
                 cancelling.what(),
                 glyphs::get().middot,
-                crate::numfmt::duration(cancelling.since.elapsed().as_secs() as i64)
+                crate::numfmt::clock(cancelling.since.elapsed())
             ),
             true,
         ));

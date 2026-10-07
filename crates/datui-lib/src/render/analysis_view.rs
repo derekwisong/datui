@@ -144,10 +144,7 @@ fn render_body(
                     Style::default().fg(ctx.text_primary),
                 ),
                 Span::styled(
-                    format!(
-                        "  {}",
-                        crate::numfmt::duration(progress.started.elapsed().as_secs() as i64)
-                    ),
+                    format!("  {}", crate::numfmt::clock(progress.started.elapsed())),
                     Style::default().fg(ctx.dimmed),
                 ),
             ]),

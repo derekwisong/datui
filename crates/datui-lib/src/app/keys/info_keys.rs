@@ -29,6 +29,30 @@ pub struct InfoState {
     pub head_web_rows: bool,
 }
 
+impl InfoState {
+    /// A new dataset is on screen at `path`: its file facts are unread, and its codebook
+    /// and catalog entry are looked up.
+    pub(crate) fn reset_for_dataset(
+        &mut self,
+        config: &crate::config::AppConfig,
+        path: Option<&std::path::Path>,
+    ) {
+        self.file_facts = None;
+        self.follow_catalogs(config, path);
+    }
+
+    /// The codebook and catalog entry of `path`, from the catalogs `config` shows.
+    pub(crate) fn follow_catalogs(
+        &mut self,
+        config: &crate::config::AppConfig,
+        path: Option<&std::path::Path>,
+    ) {
+        let shown = crate::home::catalogs(config);
+        self.codebook = path.and_then(|p| crate::home::codebook_for(&shown, p));
+        self.catalog_entry = path.and_then(|p| crate::home::catalog_entry_for(&shown, p));
+    }
+}
+
 impl App {
     /// Keys in the info panel.
     pub(crate) fn info_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {

@@ -812,6 +812,71 @@ fn end_pressed_at_one_dataset_does_not_move_the_next() {
     );
 }
 
+/// A dataset reaching the screen finds nothing the last one left in the parts of the
+/// app that keep per-dataset state: each owner's reset runs from `install_dataset`.
+#[test]
+fn a_new_dataset_keeps_nothing_the_last_one_left() {
+    use crate::table::DataTableState;
+    use crate::{App, OpenOptions};
+    use polars::prelude::*;
+
+    let frame = || {
+        DataTableState::from_lazyframe(
+            df!("id" => [1i64, 2, 3]).unwrap().lazy(),
+            &OpenOptions::default(),
+        )
+        .unwrap()
+    };
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new(tx, crate::tests::test_runtime());
+    app.install_for_tests(
+        frame(),
+        Some(std::path::PathBuf::from("first.csv")),
+        &OpenOptions::default(),
+        None,
+    );
+    assert!(app.source.original_file_format.is_some());
+    assert!(app.source.original_file_delimiter.is_some());
+    app.source.opened_from_home = true;
+    app.analysis_modal.quality.findings.column = Some("id".to_string());
+    app.analysis_modal.quality.evidence_read =
+        Some(crate::analysis::analysis_modal::EvidenceRead {
+            rows: crate::analysis::quality_report::EvidenceRows::Duplicates,
+            label: "Data Quality / Duplicate rows".to_string(),
+            sample: None,
+            scope: crate::analysis::data_quality::QualityScope::CurrentView,
+            summary: Vec::new(),
+        });
+    app.sample.paths.push((
+        "first.csv".to_string(),
+        crate::analysis::table_sample::DrawPath::Reservoir,
+    ));
+    app.views.active_id = Some("a view".to_string());
+
+    app.install_for_tests(frame(), None, &OpenOptions::default(), None);
+    assert_eq!(
+        app.analysis_modal.quality.findings,
+        crate::analysis::quality_report::FindingsView::default()
+    );
+    assert!(app.analysis_modal.quality.evidence_read.is_none());
+    assert!(app.prompt.query_running.is_none());
+    assert!(app.sample.paths.is_empty());
+    assert!(app.views.active_id.is_none());
+    assert!(app.info.file_facts.is_none());
+    assert!(app.info.codebook.is_none());
+    assert!(app.info.catalog_entry.is_none());
+    assert!(
+        app.source.opened.is_none(),
+        "a frame handed over has no path"
+    );
+    assert!(app.source.original_file_format.is_none());
+    assert!(app.source.original_file_delimiter.is_none());
+    assert!(
+        app.source.opened_from_home,
+        "q still goes home: a later open does not take home out of the stack"
+    );
+}
+
 /// Once the count is known, nothing is still counting.
 ///
 /// A staged open declines the standalone row count, because the pass reading the
@@ -2079,6 +2144,26 @@ fn a_job_holds_the_generation_until_its_answer_is_handled() {
             .is_err(),
         "no second event releases anything"
     );
+}
+
+/// An answer under a job other than its own acts as neither: it is dropped with
+/// what it carries, and the job still gives back its keys and line.
+#[test]
+fn an_answer_under_another_job_is_dropped() {
+    use crate::app::jobs::{Answer, Job, Outcome};
+    use crate::{App, AppEvent};
+
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut app = App::new(tx, crate::tests::test_runtime());
+    let copy = app.job_for_tests(Job::Copy, Some("Copying..."));
+    let ticket = copy.ticket();
+    copy.end(Outcome::answered(Answer::Exported(
+        std::path::PathBuf::from("out.csv"),
+    )));
+    assert!(app.event(AppEvent::JobEnded(ticket)).is_none());
+    assert_eq!(app.flash_message(), None, "no export is reported");
+    assert!(!app.is_busy());
+    assert_eq!(app.status_message, None);
 }
 
 /// A job the user waits on holds the keys and its line on the bar; its end gives
@@ -3947,10 +4032,10 @@ fn a_journal_reread_for_a_replaced_dataset_is_dropped() {
             .unwrap()
     };
     let detail = || {
-        Answer::JournalDescribed(Some(Box::new(crate::formats::text_formats::Detail {
+        Answer::JournalDescribed(Box::new(crate::formats::text_formats::Detail {
             tab: "Journal",
             ..Default::default()
-        })))
+        }))
     };
     let tab = |app: &App| {
         app.data_table_state

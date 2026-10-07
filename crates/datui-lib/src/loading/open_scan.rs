@@ -14,8 +14,8 @@ use crate::table::{DataTableState, OpenFacts};
 #[cfg(feature = "cloud")]
 use crate::wait_on_runtime;
 use crate::{
-    App, AppEvent, UNSUPPORTED, analysis::quality_report, cli, cloud::source,
-    formats::dataset_files, home, home::catalog, home::discover, loading,
+    App, AppEvent, UNSUPPORTED, cli, cloud::source, formats::dataset_files, home, home::catalog,
+    home::discover, loading,
 };
 use color_eyre::Result;
 #[cfg(feature = "cloud")]
@@ -40,6 +40,25 @@ pub struct OpenedSource {
     /// The dataset whose downloaded shape is kept already. See
     /// [`crate::App::remember_a_downloads_shape`].
     pub(crate) shape_remembered: Option<u64>,
+}
+
+impl OpenedSource {
+    /// A new dataset is on screen, opened from `opened` (none for a frame handed over)
+    /// and read as `format`, with `delimiter`: what `H` reopens and an export starts
+    /// from. Reached through home, `q` goes back there; a reread (`H`) never unsets it,
+    /// since it is not a new place.
+    pub(crate) fn reset_for_dataset(
+        &mut self,
+        opened: Option<(Vec<PathBuf>, OpenOptions)>,
+        from_home: bool,
+        format: Option<crate::export::export_modal::ExportFormat>,
+        delimiter: Option<u8>,
+    ) {
+        self.opened = opened;
+        self.opened_from_home |= from_home;
+        self.original_file_format = format;
+        self.original_file_delimiter = delimiter;
+    }
 }
 
 /// What a cloud open was pointed at: the URL as given, the prefix to list, and the
@@ -153,9 +172,9 @@ impl App {
         self.home_app.previews.drop_prepared();
         self.reset_chart_state();
         self.jobs.advance();
-        // Stop the dataset's footer pass: unread beats read and dropped. The open counts
-        // footers on its own counter, which the dataset takes over on install.
-        self.counting.footer_progress.cancel();
+        // The open counts footers on its own counter, which the dataset takes over on
+        // install.
+        self.counting.stop_footer_pass();
     }
 
     /// Put down what the app keeps for a retired load: its jobs, their footer lines,
@@ -298,30 +317,29 @@ impl App {
             footers,
         } = loaded;
         let options = &options;
-        self.counting.reset_for_dataset(footers);
         // One per dataset reaching the screen, not per open: a failed open leaves the last
         // dataset up, and its footer pass must still finish into it.
         self.dataset_generation = self.dataset_generation.wrapping_add(1);
+        // Each part of the app lets go of what it kept of the last dataset.
+        self.counting.reset_for_dataset(footers);
         self.quality.reset_for_dataset();
-        // The findings narrowed to the last dataset's columns would hide this one's.
-        self.analysis_modal.quality.findings = quality_report::FindingsView::default();
-        self.analysis_modal.quality.evidence_read = None;
-        // A running query or a view waiting on its pivot was over the replaced dataset.
-        self.prompt.query_running = None;
+        self.analysis_modal.quality.reset_for_dataset();
+        self.prompt.reset_for_dataset();
+        self.sample.reset_for_dataset();
+        self.views.reset_for_dataset();
+        self.info
+            .reset_for_dataset(&self.app_config, path.as_deref());
+        self.sort_filter_modal = SortFilterModal::new();
+        self.pivot_melt_modal = PivotMeltModal::new();
+        // A view waiting on its pivot, a sample being drawn and a chart being prepared
+        // were over the replaced dataset.
         self.jobs.supersede(|job| matches!(job, Job::ViewPivot(_)));
-        // The sample being drawn and its paths were the last dataset's.
         self.put_down_sample_draw();
-        self.sample.paths.clear();
         self.reset_chart_state();
         self.debug.schema_load = debug_label;
-        // Home is now in the stack, so q pops back to it; never unset, since a reread (H)
-        // is not a new place.
-        if from_home {
-            self.source.opened_from_home = true;
-        }
         // A frame handed over has no path. The spec read is dropped: it holds the file's
         // map, and a decompressed copy keeps its disk space while mapped.
-        self.source.opened = paths.map(|paths| {
+        let opened = paths.map(|paths| {
             let options = OpenOptions {
                 format_read: None,
                 sqlite: None,
@@ -332,6 +350,17 @@ impl App {
             };
             (paths, options)
         });
+        let (format, delimiter) = match path.as_deref() {
+            Some(p) => (
+                Self::export_format_for(p, state.read_as().or(options.format)),
+                // CSV's delimiter: a comma unless the user named one. A `.tsv` exports as
+                // TSV (tab preset); a tab in a `.csv` would reopen as one column.
+                Some(options.separator_or(b',')),
+            ),
+            None => (None, None),
+        };
+        self.source
+            .reset_for_dataset(opened, from_home, format, delimiter);
         // Recorded only once installed: a file that fails to load is not worth returning to.
         if let Some(path) = recent {
             // Off the opening path: the cache lock may be held by other instances. Only the
@@ -342,12 +371,6 @@ impl App {
             });
         }
         self.forget_the_rows_read();
-        self.info.file_facts = None;
-        let shown = home::catalogs(&self.app_config);
-        self.info.codebook = path.as_deref().and_then(|p| home::codebook_for(&shown, p));
-        self.info.catalog_entry = path
-            .as_deref()
-            .and_then(|p| home::catalog_entry_for(&shown, p));
         self.data_table_state = Some(state);
         // A followed file's watcher starts with its dataset and stops with it.
         if options.follow
@@ -381,20 +404,6 @@ impl App {
         self.path = path.clone();
         // Named for this file, so after its path is set.
         self.open_info_documentation();
-        if let Some(ref p) = path {
-            let read_as = self
-                .data_table_state
-                .as_ref()
-                .and_then(DataTableState::read_as);
-            self.source.original_file_format =
-                Self::export_format_for(p, read_as.or(options.format));
-            // CSV's delimiter: a comma unless the user named one. A `.tsv` exports as TSV
-            // (tab preset); a tab in a `.csv` would reopen as one column.
-            self.source.original_file_delimiter = Some(options.separator_or(b','));
-        } else {
-            self.source.original_file_format = None;
-            self.source.original_file_delimiter = None;
-        }
         // A panel still up says what it says about the dataset on screen.
         if self.overlay.shows(&crate::Overlay::Info) {
             self.read_file_facts();
@@ -410,14 +419,11 @@ impl App {
         {
             state.set_row_numbers(true);
         }
-        self.sort_filter_modal = SortFilterModal::new();
-        self.pivot_melt_modal = PivotMeltModal::new();
         self.status_message = Some(Self::LOADING_BUFFER.to_string());
 
         // Where a view meets the dataset: `--view` names one for this first open only;
         // `[views] auto_apply` dresses every open with a matching view. A fresh dataset
         // starts with none applied, so the last file's view is not checked here.
-        self.views.active_id = None;
         let (view, reason) = match self.source.startup_view.take() {
             Some(name) => match self.views.manager.get_view_by_name(&name).cloned() {
                 Some(view) => (Some(view), None),

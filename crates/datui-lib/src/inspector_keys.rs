@@ -36,8 +36,7 @@ impl App {
     }
 
     fn close_inspector(&mut self) {
-        self.inspector_modal.close();
-        self.input_mode = InputMode::Normal;
+        self.close_overlay();
     }
 
     /// The inspector's list as the row shown has it: Filled, Compare and the find
@@ -742,11 +741,11 @@ impl App {
         let state = self.data_table_state.as_mut()?;
         if state.scroll_would_trigger_collect(delta) {
             self.busy = true;
-            return Some(if delta > 0 {
-                AppEvent::DoScrollNext
+            return Some(AppEvent::Scroll(if delta > 0 {
+                crate::Scroll::Next
             } else {
-                AppEvent::DoScrollPrev
-            });
+                crate::Scroll::Prev
+            }));
         }
         if delta > 0 {
             state.select_next();

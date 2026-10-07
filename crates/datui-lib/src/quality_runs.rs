@@ -3,6 +3,7 @@
 
 use crate::analysis_modal::AnalysisProgress;
 use crate::export_modal::ExportFormat;
+use crate::feedback::Confirm;
 use crate::jobs::{Answer, Job, Progress};
 use crate::quality_memory::{
     KeptQualitySample, QUALITY_RELEASED_REMEMBERED, QualityCacheEntry, QualityCopyJob, RetainedCopy,
@@ -464,7 +465,7 @@ impl App {
     }
 
     /// The Setup setting the Data Quality page on screen lacks before it can show
-    /// anything; Enter opens it, and the control bar says so.
+    /// anything; Enter opens it, and the footer says so.
     pub(crate) fn quality_page_setup(&self) -> Option<data_quality::QualitySetup> {
         let modal = &self.analysis_modal;
         data_quality::page_setup(
@@ -678,12 +679,9 @@ impl App {
             "{} kept {} ({})",
             numfmt::group_chrome(kept.rows),
             if kept.rows == 1 { "row" } else { "rows" },
-            widgets::info::format_bytes(kept.bytes as u64)
+            crate::numfmt::bytes(kept.bytes as u64)
         );
-        let copy = format!(
-            "the local copy ({})",
-            widgets::info::format_bytes(kept.copy_bytes)
-        );
+        let copy = format!("the local copy ({})", crate::numfmt::bytes(kept.copy_bytes));
         self.flash_note(match (kept.samples > 0, kept.copy_bytes > 0) {
             (true, true) => format!("Released {rows} and {copy}; the next run reads again"),
             (false, true) => format!("Released {copy}; the next full scan fetches again"),
@@ -1204,7 +1202,6 @@ impl App {
             modal.data_quality_plan = before;
         }
         modal.data_quality_setup_note = None;
-        modal.data_quality_confirm_run = false;
         modal.data_quality_picker = None;
         if modal.data_quality_results.is_some() {
             let back = match modal.data_quality_setup_return {
@@ -1229,7 +1226,7 @@ impl App {
         if let data_quality::CopyPlan::Fetch { bytes, .. } = self.quality_copy_plan(plan) {
             lines.push(format!(
                 "Fetch: {} once, to a local copy",
-                crate::widgets::info::format_bytes(bytes)
+                crate::numfmt::bytes(bytes)
             ));
         }
         lines.push("Source writes: none".to_string());
@@ -1262,10 +1259,10 @@ impl App {
     /// Waits, with the reason on Setup, while a cancelled run is still stopping: a
     /// second read beside it is how memory runs out. A full scan asks first, and
     /// Esc there leaves the draft staged and the last report as it was.
-    pub(crate) fn run_quality_setup(&mut self) -> Option<AppEvent> {
+    /// `confirmed` is the full-scan question's Yes.
+    pub(crate) fn run_quality_setup(&mut self, confirmed: bool) -> Option<AppEvent> {
         use data_quality::QualityPage;
         if self.cancelled_analysis_running().is_some() {
-            self.analysis_modal.data_quality_confirm_run = false;
             self.analysis_modal.data_quality_setup_note = Some(QUALITY_RUN_WAITS.to_string());
             return None;
         }
@@ -1282,15 +1279,14 @@ impl App {
                 .as_ref()
                 .is_some_and(|last| last.same_measurement(plan)))
             || self.quality_cached(plan);
-        if plan.requires_confirmation() && !here && !self.analysis_modal.data_quality_confirm_run {
+        if plan.requires_confirmation() && !here && !confirmed {
             // Asked with the one confirmation; its Yes comes back here.
             let message = self.quality_full_scan_question(plan);
-            self.analysis_modal.data_quality_confirm_run = true;
-            self.confirmation_modal.show(message);
+            self.confirmation_modal
+                .show(message, Confirm::QualityFullScan);
             self.confirmation_modal.yes_label = "Run";
             return None;
         }
-        self.analysis_modal.data_quality_confirm_run = false;
         self.commit_quality_plan();
         let modal = &mut self.analysis_modal;
         if modal.data_quality_results.is_some()
@@ -1335,7 +1331,9 @@ impl App {
         }
         self.analysis_modal.computing = Some(progress);
         self.busy = true;
-        Some(AppEvent::AnalysisDataQualityCompute)
+        Some(AppEvent::AnalysisCompute(
+            analysis_modal::AnalysisTool::DataQuality,
+        ))
     }
 
     /// The draft is the plan now: Setup closes on it, and its sample becomes the

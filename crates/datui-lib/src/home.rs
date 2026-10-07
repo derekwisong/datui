@@ -966,8 +966,8 @@ pub struct CloudSource {
     pub id: String,
     /// The row's name.
     pub label: String,
-    /// The API spoken: `s3`, `gcs` or `azure`.
-    pub api: String,
+    /// The API spoken.
+    pub api: crate::source::ProviderKind,
     /// The account, endpoint or project, and where the login came from.
     pub note: String,
     /// Bucket URLs, most useful first: `s3://bucket`, `s3://<id>@bucket`, `gs://bucket`.
@@ -994,12 +994,10 @@ impl CloudSource {
             CloudStatus::Listing if self.buckets.is_empty() => String::new(),
             CloudStatus::Unlisted if self.buckets.is_empty() => "not listed".to_string(),
             _ => {
-                let (one, many) = if self.api == "azure" {
-                    ("account", "accounts")
-                } else if self.api == "gcs" {
-                    ("project", "projects")
-                } else {
-                    ("bucket", "buckets")
+                let (one, many) = match self.api {
+                    crate::source::ProviderKind::Azure => ("account", "accounts"),
+                    crate::source::ProviderKind::Gcs => ("project", "projects"),
+                    crate::source::ProviderKind::S3 => ("bucket", "buckets"),
                 };
                 match self.buckets.len() {
                     0 => format!("no {many}"),
@@ -1965,10 +1963,9 @@ impl Listing {
 /// Find out what a row is, and then what is in it.
 ///
 /// One pass, because the two questions are asked of the same filesystem and the
-/// thread that asks is already there. Classifying a row nothing has looked into is
-/// the [`crate::discover::classify_directory`] call the listing did not make;
-/// measuring is what [`crate::discover::enrich`] has always done, and it does nothing
-/// for a row that turns out to be a plain directory.
+/// thread that asks is already there. `classify_row` is the classification the
+/// listing did not make; `measure_row` measures, and does nothing for a row that
+/// turns out to be a plain directory.
 pub fn look_into(entry: &Entry) -> Entry {
     look_into_as(entry, &crate::schema_union::ReadAs::default())
 }
@@ -2206,12 +2203,6 @@ impl Probes {
     }
 }
 
-/// Build the home listing.
-///
-/// A free function taking everything it needs, so it can run on a worker thread. It
-/// is the only place the home screen touches the filesystem, and it must never be
-/// called from the thread that draws — a directory on a wedged mount, a FIFO, a
-/// failing disk all block here, and none of them can be enumerated in advance.
 /// What a cloud directory cut short at the cap holds under one name prefix, asked of
 /// the server because a filter was typed there.
 #[derive(Debug, Clone)]
@@ -2224,6 +2215,12 @@ pub struct Narrowed {
     pub truncated: bool,
 }
 
+/// Build the home listing.
+///
+/// A free function taking everything it needs, so it can run on a worker thread. It
+/// is the only place the home screen touches the filesystem, and it must never be
+/// called from the thread that draws — a directory on a wedged mount, a FIFO, a
+/// failing disk all block here, and none of them can be enumerated in advance.
 pub fn build_listing(request: &ListingRequest) -> Listing {
     let ListingRequest {
         recents,
@@ -2543,7 +2540,7 @@ pub fn build_listing(request: &ListingRequest) -> Listing {
         root_sections.push((
             root.origin,
             Section {
-                subtitle: (!state.is_empty()).then(|| state.join(" · ")),
+                subtitle: (!state.is_empty()).then(|| crate::glyphs::dotted(&state.join(" · "))),
                 origin: Some(root.origin.note()),
                 root: Some(root.path.clone()),
                 unavailable: !root.available || unreachable,
@@ -3152,9 +3149,12 @@ impl HomeState {
             && browsing == dir
             && let Some(section) = self.sections.first_mut()
         {
-            let note = format!("{} · not read as a table", format.to_ascii_lowercase());
+            let note = crate::glyphs::dotted(&format!(
+                "{} · not read as a table",
+                format.to_ascii_lowercase()
+            ));
             section.subtitle = Some(match section.subtitle.take() {
-                Some(state) => format!("{note} · {state}"),
+                Some(state) => crate::glyphs::dotted(&format!("{note} · {state}")),
                 None => note,
             });
         }
@@ -3457,7 +3457,7 @@ impl HomeState {
     /// fresh listing that is every directory in it, and any of them may turn out to be a
     /// dataset. This is [`EntryKind::is_dataset`] rather than
     /// [`EntryKind::is_known_dataset`] on purpose — the question is whether there is
-    /// anywhere to go, not how many datasets there are, which is what the control bar's
+    /// anywhere to go, not how many datasets there are, which is what the footer's
     /// count asks and answers differently.
     pub fn has_any_dataset(&self) -> bool {
         self.view().has_dataset
@@ -3688,7 +3688,7 @@ impl HomeState {
             return self
                 .cloud
                 .iter()
-                .any(|s| s.id == id && s.api == "gcs")
+                .any(|s| s.id == id && s.api == crate::source::ProviderKind::Gcs)
                 .then_some("project");
         }
         // A bookmark inside a catalog dataset opens whole, as a dataset does.
@@ -3810,7 +3810,7 @@ impl HomeState {
                             crate::glyphs::get().trail,
                             entry.name
                         );
-                        entry.cost.source = Some(source.api.clone());
+                        entry.cost.source = Some(source.api.name().to_string());
                         entry
                     })
                 })
@@ -3824,7 +3824,8 @@ impl HomeState {
             && (self.search.indexed > 0 || self.search.running || self.search.limited.is_some());
         if !local {
             if !cloud_rows.is_empty() {
-                let subtitle = format!("cloud · {} names", cloud_rows.len());
+                let subtitle =
+                    crate::glyphs::dotted(&format!("cloud · {} names", cloud_rows.len()));
                 self.sections.push(Section {
                     subtitle: Some(subtitle),
                     ..Section::titled(Self::SEARCH_SECTION, cloud_rows)
@@ -4535,7 +4536,6 @@ impl HomeState {
         self.selected_row().map(|r| r.section())
     }
 
-    /// Whether the highlighted row is a section header.
     /// The catalog whose section heading is selected, if the selection is one.
     pub fn selected_catalog(&self) -> Option<&ShownCatalog> {
         if !self.selection_is_header() {
@@ -4548,6 +4548,7 @@ impl HomeState {
             .find(|c| c.label == section.title && c.origin_note() == origin)
     }
 
+    /// Whether the highlighted row is a section header.
     pub fn selection_is_header(&self) -> bool {
         matches!(self.selected_row(), Some(Row::Header { .. }))
     }
@@ -4807,7 +4808,7 @@ impl HomeState {
     ///
     /// The highlighted row first because it is the one about to be acted on. → goes
     /// inside a directory that holds one dataset and folds the section otherwise, and the
-    /// control bar offers the key on the same test, so both read better for the row
+    /// footer offers the key on the same test, so both read better for the row
     /// being looked into in the first pass rather than the third.
     pub fn unclassified_visible(&self, limit: usize) -> Vec<Entry> {
         if limit == 0 {

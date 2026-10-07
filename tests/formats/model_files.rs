@@ -92,13 +92,7 @@ fn screen(app: &mut App) -> Vec<String> {
     let area = Rect::new(0, 0, 120, 30);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buffer[(x, y)].symbol())
-                .collect::<String>()
-        })
-        .collect()
+    common::buffer_lines(&buffer)
 }
 
 #[test]
@@ -230,14 +224,7 @@ fn the_model_tab_scrolls_a_long_value_into_view() {
     let draw = |app: &mut App| {
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
-        (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buffer[(x, y)].symbol())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        common::buffer_text(&buffer)
     };
     let first = draw(&mut app);
     assert!(first.contains("below"), "says more is below:\n{first}");

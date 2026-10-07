@@ -345,7 +345,7 @@ impl App {
                 Some(match written {
                     Some(bytes) => format!(
                         "{current_phase}...  {filename}  {}",
-                        crate::discover::format_size(*bytes)
+                        crate::numfmt::bytes(*bytes)
                     ),
                     None => format!("{current_phase}...  {filename}"),
                 })

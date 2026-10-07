@@ -1,7 +1,7 @@
 //! Keys of the type picker and the combine form, and opening them from the Info
 //! panel's Schema tab and the cell menu.
 
-use crate::form::{FormKey, PickerKey};
+use crate::form::FormKey;
 use crate::retype_modal::{Chosen, CombineField, CombineModal, RetypeModal};
 use crate::{App, AppEvent, InputMode};
 use crossterm::event::{KeyCode, KeyEvent};
@@ -124,16 +124,7 @@ impl App {
     /// The combine form's keys: the shared form keys, then what each field does.
     pub(crate) fn combine_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let modal = self.combine.as_mut()?;
-        if let Some((_, picker)) = modal.picker.as_mut() {
-            match crate::form::picker_key(picker, false, event) {
-                PickerKey::Close => modal.picker = None,
-                PickerKey::Choose | PickerKey::Toggle => modal.picker_choose(),
-                PickerKey::ChooseAndMove(forward) => {
-                    modal.picker_choose();
-                    crate::form::Form::move_focus(modal, if forward { 1 } else { -1 });
-                }
-                PickerKey::Handled | PickerKey::Other => {}
-            }
+        if crate::form::picker_form_key(modal, event) {
             return None;
         }
         modal.problem = None;

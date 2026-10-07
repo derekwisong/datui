@@ -496,8 +496,6 @@ fn test_compact_formatting() {
     assert_eq!(discover::format_rows(950), "950");
     assert_eq!(discover::format_rows(89_000), "89k");
     assert_eq!(discover::format_rows(2_400_000), "2.4M");
-    assert_eq!(discover::format_size(500), "500 B");
-    assert_eq!(discover::format_size(1536), "1.5 KB");
 }
 
 // ---------------------------------------------------------------------------
@@ -3289,7 +3287,7 @@ fn test_what_is_looked_into_is_the_viewport_and_a_screen_either_side() {
 
 #[test]
 fn test_directories_nobody_has_looked_into_are_not_counted_as_datasets() {
-    // The control bar's figure is "how many datasets are listed". A fresh listing has
+    // The footer's figure is "how many datasets are listed". A fresh listing has
     // looked into nothing, so every directory in it is `Unknown` — and `is_dataset` says
     // yes to those, because they are offered as openable and looked into first. That
     // is the right answer to "may this be opened" and the wrong one to count.
@@ -3999,7 +3997,7 @@ fn test_sections_are_ordered_by_intent_and_elsewhere_starts_folded() {
         cloud: vec![CloudSource {
             id: "s3-default".to_string(),
             label: "Amazon S3".to_string(),
-            api: "s3".to_string(),
+            api: datui::source::ProviderKind::S3,
             buckets: vec![std::path::PathBuf::from("s3://bucket")],
             ..Default::default()
         }],
@@ -4097,7 +4095,7 @@ fn cloud_home() -> HomeState {
         CloudSource {
             id: "lab".to_string(),
             label: "Lab MinIO".to_string(),
-            api: "s3".to_string(),
+            api: datui::source::ProviderKind::S3,
             note: "127.0.0.1:9000 · datui config".to_string(),
             buckets: vec![
                 PathBuf::from("s3://lab@data"),
@@ -4109,7 +4107,7 @@ fn cloud_home() -> HomeState {
         CloudSource {
             id: "onprem".to_string(),
             label: "onprem".to_string(),
-            api: "s3".to_string(),
+            api: datui::source::ProviderKind::S3,
             buckets: vec![PathBuf::from("s3://onprem@data")],
             status: CloudStatus::Failed {
                 short: "403".to_string(),
@@ -4120,7 +4118,7 @@ fn cloud_home() -> HomeState {
         CloudSource {
             id: "s3-default".to_string(),
             label: "Amazon S3".to_string(),
-            api: "s3".to_string(),
+            api: datui::source::ProviderKind::S3,
             status: CloudStatus::Listing,
             ..Default::default()
         },
@@ -4376,7 +4374,7 @@ fn test_google_steps_through_project_bucket_and_prefix() {
         cloud: vec![CloudSource {
             id: "gcs-default".to_string(),
             label: "Google Cloud".to_string(),
-            api: "gcs".to_string(),
+            api: datui::source::ProviderKind::Gcs,
             buckets: vec![
                 project.clone(),
                 PathBuf::from("cloud://gcs-default/billing"),
@@ -4546,7 +4544,7 @@ fn test_azure_steps_through_account_container_and_directory() {
         cloud: vec![CloudSource {
             id: "az".to_string(),
             label: "Azure".to_string(),
-            api: "azure".to_string(),
+            api: datui::source::ProviderKind::Azure,
             buckets: vec![
                 PathBuf::from("cloud://az/datalake001"),
                 PathBuf::from("cloud://az/archive002"),
@@ -5711,7 +5709,7 @@ mod coming_back {
     }
 
     /// Every pass over the list in a frame reads one build of its rows: the list, the
-    /// passes that pick what on screen to look into, the preview and the control bar.
+    /// passes that pick what on screen to look into, the preview and the footer.
     /// A frame with nothing changed builds none.
     #[test]
     fn a_frame_builds_the_rows_at_most_once() {
@@ -8493,7 +8491,7 @@ mod catalog {
                 .find(|line| line.find("Palmer penguins").is_some_and(|at| at < 12))
                 .unwrap_or_else(|| panic!("{w}x{h}: {lines:#?}"));
             assert!(row.contains("Palmer penguins  csv"), "{w}x{h}: {row:?}");
-            assert!(row.contains("16.1 KB"), "{w}x{h}: {row:?}");
+            assert!(row.contains("16.1 KiB"), "{w}x{h}: {row:?}");
         }
     }
 

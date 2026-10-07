@@ -72,14 +72,7 @@ fn screen(app: &mut App, width: u16, height: u16) -> String {
     let area = Rect::new(0, 0, width, height);
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
-    (0..area.height)
-        .map(|y| {
-            (0..area.width)
-                .map(|x| buffer[(x, y)].symbol())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    common::buffer_text(&buffer)
 }
 
 /// The Audio tab of the dataset on screen.

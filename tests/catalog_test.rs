@@ -734,7 +734,7 @@ fn a_web_files_size_is_a_hint_until_a_head_measures_it() {
         app.home.sections.iter().any(|s| s.title == "My datasets")
     });
     select(&mut app, "Small");
-    assert!(screen(&mut app).contains("~4.0 KB"), "the hint, marked");
+    assert!(screen(&mut app).contains("~4.0 KiB"), "the hint, marked");
     app.head_web_rows = true;
     pump(&mut app, &rx, |app| {
         app.home
@@ -742,7 +742,7 @@ fn a_web_files_size_is_a_hint_until_a_head_measures_it() {
             .is_some_and(|e| e.name == "Small" && e.size == Some(8))
     });
     let shown = screen(&mut app);
-    assert!(!shown.contains("~4.0 KB"), "{shown}");
+    assert!(!shown.contains("~4.0 KiB"), "{shown}");
 }
 
 /// A format spec that documents its records, as a catalog documents a dataset.

@@ -1,8 +1,7 @@
 use std::path::Path;
-use std::process::Command;
-use std::sync::Once;
 
-static INIT: Once = Once::new();
+mod shared;
+pub use shared::{buffer_lines, buffer_text, ensure_sample_data, sample_data_dir};
 
 pub(crate) mod fixtures;
 
@@ -199,84 +198,6 @@ mod cloud_recent_facts {
     }
 }
 
-/// Ensures that sample data files are generated before tests run.
-/// This function uses `std::sync::Once` to ensure it only runs once,
-/// even if called from multiple tests.
-pub fn ensure_sample_data() {
-    INIT.call_once(|| {
-        // When the lib is in crates/datui-lib, repo root is CARGO_MANIFEST_DIR/../..
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let sample_data_dir = repo_root.join("tests/sample-data");
-
-        // Check if key files exist to determine if we need to generate data
-        // We check for a few representative files that should always be generated
-        let key_files = [
-            "people.parquet",
-            "sales.parquet",
-            "large_dataset.parquet",
-            "empty.parquet",
-            "pivot_long.parquet",
-            "melt_wide.parquet",
-            "infer_schema_length_data.csv",
-        ];
-
-        let needs_generation = !sample_data_dir.exists()
-            || key_files
-                .iter()
-                .any(|file| !sample_data_dir.join(file).exists());
-
-        if needs_generation {
-            // Get the path to the Python script (at repo root)
-            let script_path = repo_root.join("scripts/generate_sample_data.py");
-            if !script_path.exists() {
-                panic!(
-                    "Sample data generation script not found at: {}. \
-                    Please ensure you're running tests from the repository root.",
-                    script_path.display()
-                );
-            }
-
-            // Try to find Python (python3 or python)
-            let python_cmd = if Command::new("python3").arg("--version").output().is_ok() {
-                "python3"
-            } else if Command::new("python").arg("--version").output().is_ok() {
-                "python"
-            } else {
-                panic!(
-                    "Python not found. Please install Python 3 to generate test data. \
-                    The script requires: polars>=0.20.0 and numpy>=1.24.0"
-                );
-            };
-
-            // Run the generation script
-            let output = Command::new(python_cmd)
-                .arg(script_path)
-                .output()
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "Failed to run sample data generation script: {}. \
-                        Make sure Python is installed and the script is executable.",
-                        e
-                    );
-                });
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                panic!(
-                    "Sample data generation failed!\n\
-                    Exit code: {:?}\n\
-                    stdout:\n{}\n\
-                    stderr:\n{}",
-                    output.status.code(),
-                    stdout,
-                    stderr
-                );
-            }
-        }
-    });
-}
-
 /// Whether the app is still waiting on background work: `busy`, the row count, or
 /// the buffer collect, a load-ahead included. What a test driving the app without
 /// a terminal waits on: a quiet channel says only that nothing arrived lately,
@@ -386,14 +307,6 @@ fn a_runtime_shut_down_under_a_waiting_thread_does_not_panic_it() {
     rt.shutdown_background();
     let outcome = waiter.join().expect("the waiting thread must not panic");
     assert!(outcome.is_none());
-}
-
-/// Path to the tests/sample-data directory (at repo root). Call `ensure_sample_data()` first if needed.
-pub fn sample_data_dir() -> std::path::PathBuf {
-    ensure_sample_data();
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("tests/sample-data")
 }
 
 /// End pressed while the footers are still coming waits for them, then jumps.
@@ -1099,7 +1012,7 @@ fn a_pass_that_cannot_read_the_footers_stops_the_dataset_waiting_for_it() {
 
 /// A count not yet taken is not printed as the total.
 ///
-/// The control bar takes its number straight from the field, so the only thing
+/// The footer takes its number straight from the field, so the only thing
 /// between a user and `Rows: 70` on a prefix of six thousand files is the pending
 /// flag. The integration test beside this one has a dataset whose count is real and
 /// asserts it is shown; this is the direction that goes wrong.
@@ -1550,8 +1463,8 @@ fn uncounted_remote_app() -> (crate::App, std::sync::mpsc::Receiver<crate::AppEv
     (app, rx)
 }
 
-/// The bottom line of a rendered App — the control bar, as a string.
-fn control_bar(app: &mut crate::App) -> String {
+/// The bottom line of a rendered App — the footer, as a string.
+fn footer_text(app: &mut crate::App) -> String {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::widgets::Widget;
@@ -1579,7 +1492,7 @@ fn the_bar_says_question_mark_when_the_count_failed() {
     let live = app.data_table_state.as_ref().unwrap().len_generation();
 
     assert!(
-        !control_bar(&mut app).contains("/ ?"),
+        !footer_text(&mut app).contains("/ ?"),
         "nothing has failed yet"
     );
 
@@ -1587,7 +1500,7 @@ fn the_bar_says_question_mark_when_the_count_failed() {
         len_generation: live,
     });
 
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         bar.contains("/ ?"),
         "the count failed, so the total is unknown: {bar:?}"
@@ -1614,7 +1527,7 @@ fn a_dead_frames_failed_count_leaves_this_frames_question_mark_alone() {
         len_generation: live,
     });
     assert!(
-        control_bar(&mut app).contains("/ ?"),
+        footer_text(&mut app).contains("/ ?"),
         "this frame's count failed"
     );
 
@@ -1623,7 +1536,7 @@ fn a_dead_frames_failed_count_leaves_this_frames_question_mark_alone() {
         len_generation: live.wrapping_sub(1),
     });
 
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         bar.contains("/ ?"),
         "a stranger's failure says nothing about this frame: {bar:?}"
@@ -1839,11 +1752,11 @@ fn a_parked_end_does_not_put_its_message_on_the_home_screen() {
     let (mut app, _rx) = uncounted_remote_app();
     let waiting = app.data_table_state.as_ref().unwrap().len_generation();
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
-    assert!(control_bar(&mut app).contains("Counting rows"), "parked");
+    assert!(footer_text(&mut app).contains("Counting rows"), "parked");
 
     app.enter_home();
 
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         !bar.contains("Counting rows"),
         "the home bar is the home screen's: {bar:?}"
@@ -1859,7 +1772,7 @@ fn a_parked_end_does_not_put_its_message_on_the_home_screen() {
     let _ = app.handle(&AppEvent::BackgroundLenFailed {
         len_generation: waiting,
     });
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         !bar.contains("Could not count the rows"),
         "an error about a dataset they have left is not the home screen's news: \
@@ -1883,7 +1796,7 @@ fn a_parked_end_does_not_put_its_message_on_the_next_dataset() {
 
     let (mut app, _rx) = uncounted_remote_app();
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
-    assert!(control_bar(&mut app).contains("Counting rows"), "parked");
+    assert!(footer_text(&mut app).contains("Counting rows"), "parked");
 
     app.enter_home();
 
@@ -1897,7 +1810,7 @@ fn a_parked_end_does_not_put_its_message_on_the_next_dataset() {
     app.install_for_tests(next, None, &OpenOptions::default(), None);
     app.busy = false;
 
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         !bar.contains("Counting rows"),
         "the new dataset's bar is not the old one's: {bar:?}"
@@ -1917,12 +1830,12 @@ fn a_parked_end_does_not_put_its_message_on_the_chart_view() {
 
     let (mut app, _rx) = uncounted_remote_app();
     let _ = app.key(&KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
-    assert!(control_bar(&mut app).contains("Counting rows"), "parked");
+    assert!(footer_text(&mut app).contains("Counting rows"), "parked");
 
     app.input_mode = crate::InputMode::Chart;
     app.chart_modal.active = true;
 
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         app.status_message.is_some(),
         "the End is still waiting, and the field still says so"
@@ -1971,7 +1884,7 @@ fn a_failed_count_for_a_frame_that_is_gone_retires_its_end_quietly() {
         app.end_after_count, None,
         "the End it belonged to is retired"
     );
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         !bar.contains("Counting rows"),
         "the status it put up comes down: {bar:?}"
@@ -2002,7 +1915,7 @@ fn the_bar_says_it_is_counting_for_an_end_and_says_when_that_failed() {
         !app.is_busy(),
         "the jump parked rather than blocking the keyboard"
     );
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         bar.contains("Counting rows"),
         "and the line says why the view has not moved: {bar:?}"
@@ -2011,7 +1924,7 @@ fn the_bar_says_it_is_counting_for_an_end_and_says_when_that_failed() {
     let _ = app.handle(&AppEvent::BackgroundLenFailed {
         len_generation: waiting,
     });
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         bar.contains("Could not count the rows"),
         "and says so when the count it was waiting on fails: {bar:?}"
@@ -2394,6 +2307,7 @@ fn a_superseded_scan_does_not_continue_the_load() {
 /// screen, whatever the tool: every one of them is judged by its job.
 #[test]
 fn stale_analysis_answers_are_ignored() {
+    use crate::analysis_modal::AnalysisTool;
     use crate::data_quality::{DataQualityResults, QualityPrecision};
     use crate::statistics::AnalysisResults;
     use crate::{Answer, App, AppEvent, Job, Outcome};
@@ -2410,9 +2324,9 @@ fn stale_analysis_answers_are_ignored() {
         distribution_analyses: vec![],
     };
     let answers = vec![
-        Answer::Described(results()),
-        Answer::Distributions(results()),
-        Answer::Correlations(results()),
+        Answer::Analysis(AnalysisTool::Describe, results()),
+        Answer::Analysis(AnalysisTool::DistributionAnalysis, results()),
+        Answer::Analysis(AnalysisTool::CorrelationMatrix, results()),
         Answer::DataQuality {
             results: Box::new(DataQualityResults {
                 total_rows: Some(999_999),
@@ -2989,7 +2903,7 @@ fn the_download_confirmation_is_not_busy() {
     }
 
     assert!(app.is_busy(), "the probe is running");
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(bar.contains("Checking size"), "the probe is named: {bar}");
     assert!(!bar.contains("Scanning"), "nothing is scanned yet: {bar}");
 
@@ -3001,7 +2915,7 @@ fn the_download_confirmation_is_not_busy() {
 
     assert!(app.awaiting_open_confirmation(), "the user is being asked");
     assert!(!app.is_busy(), "and nothing is running while they decide");
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(!bar.contains("..."), "nothing said to be running: {bar}");
     assert!(
         !bar.contains("Checking") && !bar.contains("Scanning"),
@@ -3127,7 +3041,10 @@ fn a_table_copy_with_no_size_yet_asks_first() {
         app.confirmation_modal.active,
         "an unknown size asks; it never collects unprompted"
     );
-    assert!(app.pending_copy.is_some());
+    assert!(matches!(
+        app.confirmation_modal.asking,
+        Some(crate::feedback::Confirm::Copy(..))
+    ));
 }
 
 /// A Table copy writes binary as base64, so the guard counts it at that size
@@ -3176,7 +3093,12 @@ fn a_table_copy_counts_binary_at_its_base64_size() {
     // bytes alone, or the stub the buffer holds, would not be.
     let (app, next) = copy(Some(3 * 1024 * 1024));
     assert!(app.confirmation_modal.active, "large blobs ask first");
-    assert!(app.pending_copy.is_some() && next.is_none());
+    assert!(
+        matches!(
+            app.confirmation_modal.asking,
+            Some(crate::feedback::Confirm::Copy(..))
+        ) && next.is_none()
+    );
 
     let (app, next) = copy(Some(100));
     assert!(!app.confirmation_modal.active, "small blobs copy");
@@ -3184,7 +3106,12 @@ fn a_table_copy_counts_binary_at_its_base64_size() {
 
     let (app, next) = copy(None);
     assert!(app.confirmation_modal.active, "unmeasured blobs ask");
-    assert!(app.pending_copy.is_some() && next.is_none());
+    assert!(
+        matches!(
+            app.confirmation_modal.asking,
+            Some(crate::feedback::Confirm::Copy(..))
+        ) && next.is_none()
+    );
 }
 
 /// A local directory's footers, read to open it, give its binary columns their
@@ -3252,7 +3179,7 @@ fn a_confirmation_keeps_its_keys_in_its_own_footer() {
     chart_prepare_tests::open(&mut app, &rx, &tx, path);
     let _ = app.key(&KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
     assert!(
-        control_bar(&mut app).contains("+/- Filter"),
+        footer_text(&mut app).contains("+/- Filter"),
         "the column's keys"
     );
 
@@ -3261,7 +3188,7 @@ fn a_confirmation_keeps_its_keys_in_its_own_footer() {
     app.copy_modal.scope = crate::copy_modal::CopyScope::Table;
     let _ = app.perform_copy();
     assert!(app.confirmation_modal.active, "an unknown size asks");
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(!bar.contains("Filter"), "not the table's: {bar}");
 }
 
@@ -3399,11 +3326,10 @@ fn a_dataset_owed_a_re_read_does_not_print_its_partial_as_the_total() {
 
     // An export is running and holds a lease, so the errand the failure raises has
     // to wait.
-    app.export_progress = Some(crate::ExportProgress {
-        file_path: std::path::PathBuf::from("/tmp/out.csv"),
-        current_phase: "Collecting".to_string(),
-        written: None,
-    });
+    app.export_progress = Some(crate::ExportProgress::new(
+        std::path::Path::new("/tmp/out.csv"),
+        "Collecting",
+    ));
     let _lease = app.hold_the_generation();
     let live = app.dataset_generation;
     App::record_footers(&app.pending_footers_result, live, None);
@@ -3602,11 +3528,10 @@ fn a_pass_that_failed_waits_for_work_already_asked_for() {
 
     // An export is collecting: it holds a lease on this exact generation, and its
     // answer is thrown away if anything bumps it.
-    app.export_progress = Some(crate::ExportProgress {
-        file_path: std::path::PathBuf::from("/tmp/out.csv"),
-        current_phase: "Collecting".to_string(),
-        written: None,
-    });
+    app.export_progress = Some(crate::ExportProgress::new(
+        std::path::Path::new("/tmp/out.csv"),
+        "Collecting",
+    ));
     let lease = app.hold_the_generation();
     let waiting_on = app.task_generation();
 
@@ -3690,28 +3615,39 @@ fn columns_arriving_during_work_already_asked_for_wait_for_it() {
     // longer a list of the kinds that happen to exist today. The chart is here
     // beside it because it is the one that a bump would *not* strand: it is
     // prepared against the frame, and the join takes a fresh one of those too.
-    type Start = fn(&mut App) -> Option<crate::jobs::Hold>;
+    /// What keeps the work under way: a hold on the generation, or a running job.
+    type Underway = (Option<crate::jobs::Hold>, Option<crate::jobs::Started>);
+    type Start = fn(&mut App) -> Underway;
     let under_way: Vec<(&str, Start)> = vec![
         ("leased background work", |app: &mut App| {
-            Some(app.hold_the_generation())
+            (Some(app.hold_the_generation()), None)
         }),
         ("a chart", |app: &mut App| {
             let mut modal = crate::chart_modal::ChartModal::new();
             modal.spec.encoding.x.field = Some("id".to_string());
-            app.chart_inflight = Some(crate::ChartInflight {
+            let prep = crate::jobs::ChartPrep {
                 dataset: None,
                 request: crate::ChartRequest::from_modal(&modal).expect("an x range"),
-                stale: false,
                 cancel: Default::default(),
-            });
-            None
+            };
+            (
+                None,
+                Some(app.job_for_tests(crate::jobs::Job::ChartPrepare(Box::new(prep)), None)),
+            )
         }),
     ];
-    let put_away = |app: &mut App, lease: Option<crate::jobs::Hold>| {
+    let put_away = |app: &mut App, (lease, job): Underway| {
         // The hold is released by dropping it; the event after it lets the errands in.
         drop(lease);
+        if let Some(job) = job {
+            let ticket = job.ticket();
+            job.end(crate::jobs::Outcome::Failed {
+                message: "put away".to_string(),
+                panicked: false,
+            });
+            app.jobs.end(ticket);
+        }
         let _ = app.handle(&AppEvent::Update);
-        app.chart_inflight = None;
     };
 
     for (what, start) in under_way {
@@ -4246,6 +4182,8 @@ mod quality_sample_tests;
 
 mod chart_prepare_tests;
 
+mod chart_golden_tests;
+
 mod view_rollback_tests;
 
 #[cfg(feature = "sql")]
@@ -4296,3 +4234,6 @@ mod csv_inference_tests;
 
 /// Every text field the app shows, driven through the real `App`.
 mod text_input_flows;
+
+/// Every confirmation's Yes, No and Esc.
+mod confirm_tests;

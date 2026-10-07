@@ -1,0 +1,246 @@
+//! The Data Quality forms: the intent and expected-values forms, Setup's rows and
+//! pickers, and the quality export.
+
+use crate::feedback::Confirm;
+use crate::form::FormKey;
+use crate::output_file::Overwrite;
+use crate::{App, AppEvent, analysis_modal, data_quality, form, intent_modal};
+use crossterm::event::{KeyCode, KeyEvent};
+
+impl App {
+    /// Open the intent form on the column under the cursor of the Column intent list.
+    pub(crate) fn open_intent_form(&mut self) {
+        let columns = self.quality_intent_columns();
+        let modal = &mut self.analysis_modal;
+        let Some((column, dtype)) = columns.get(modal.data_quality_plan_field) else {
+            return;
+        };
+        let plan = &modal.data_quality_plan;
+        modal.data_quality_intent_form = Some(intent_modal::IntentForm::new(
+            column,
+            dtype.clone(),
+            plan.time_format(column).cloned(),
+            &plan.intent,
+            &self.theme,
+        ));
+    }
+
+    /// Keys while the intent form is open: Tab and ↑↓ walk its rows, Space and ←→
+    /// change a choice, text fields type, Enter stages the declaration in Setup's
+    /// draft and Esc drops the form's edits. Nothing here reads.
+    pub(crate) fn intent_form_key(&mut self, event: &KeyEvent) {
+        let modal = &mut self.analysis_modal;
+        let Some(form) = modal.data_quality_intent_form.as_mut() else {
+            return;
+        };
+        match form::key(form, event) {
+            FormKey::Cancel => modal.data_quality_intent_form = None,
+            FormKey::Submit => match form.apply(&mut modal.data_quality_plan.intent) {
+                Ok(()) => modal.data_quality_intent_form = None,
+                Err(error) => form.error = Some(error),
+            },
+            FormKey::Act(_) => form.adjust(true),
+            FormKey::Step(_, delta) => form.adjust(delta > 0),
+            FormKey::Text(_) => {
+                if let Some(input) = form.input_mut() {
+                    let _ = input.handle_key(event, None);
+                }
+                form.error = None;
+            }
+            FormKey::Moved | FormKey::Other => {}
+        }
+    }
+
+    /// The export dialog, on a name made from the dataset's.
+    pub(crate) fn open_quality_export(&mut self) {
+        let stem = self
+            .path
+            .as_ref()
+            .and_then(|path| path.file_stem())
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| !stem.is_empty())
+            .unwrap_or("data")
+            .to_string();
+        self.analysis_modal.data_quality_export =
+            Some(crate::quality_export::ExportForm::new(&stem, &self.theme));
+    }
+
+    /// Keys while the export dialog is open: Tab moves between the path and the
+    /// form, the arrows or Space change the form, Enter writes (asking first over a
+    /// file that exists), Esc closes it.
+    pub(crate) fn quality_export_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
+        let form = self.analysis_modal.data_quality_export.as_mut()?;
+        match event.code {
+            KeyCode::Esc => self.analysis_modal.data_quality_export = None,
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down => form.toggle_focus(),
+            KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Char(' ')
+            | KeyCode::Char('h')
+            | KeyCode::Char('l')
+                if form.on_format =>
+            {
+                form.cycle_format();
+            }
+            KeyCode::Enter => match form.target() {
+                Err(error) => form.error = Some(error),
+                Ok((path, format)) => {
+                    if path.exists() {
+                        let shown = path.display().to_string();
+                        self.confirmation_modal.show_destructive(
+                            format!("File already exists:\n{shown}\n\nOverwrite it?"),
+                            "Overwrite",
+                            Confirm::QualityExport(path, format),
+                        );
+                    } else {
+                        // The dialog stays up while the report is written: a failed
+                        // write says why on its status line, the path still there.
+                        return Some(AppEvent::QualityReportExport(
+                            path,
+                            format,
+                            Overwrite::Forbid,
+                        ));
+                    }
+                }
+            },
+            _ if !form.on_format => {
+                let _ = form.path.handle_key(event, None);
+                form.error = None;
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Space on a Setup row: the Sample form, the role editor, or the row's choices.
+    pub(crate) fn open_setup_row(&mut self) -> Option<AppEvent> {
+        use analysis_modal::SetupRow;
+        self.analysis_modal.data_quality_setup_note = None;
+        match self.analysis_modal.setup_row() {
+            SetupRow::Sample => self.open_quality_sample_form(),
+            SetupRow::TimeRoles => {
+                // With no date, time or text column there is no role to assign.
+                if !self.quality_time_candidates().is_empty() {
+                    self.analysis_modal.data_quality_plan_before_edit =
+                        Some(self.analysis_modal.data_quality_plan.clone());
+                    self.analysis_modal
+                        .set_quality_page(data_quality::QualityPage::TimeRoles);
+                    self.analysis_modal.data_quality_plan_field = 0;
+                }
+            }
+            SetupRow::Intent => {
+                if !self.quality_intent_columns().is_empty() {
+                    self.analysis_modal.data_quality_plan_before_edit =
+                        Some(self.analysis_modal.data_quality_plan.clone());
+                    self.analysis_modal
+                        .set_quality_page(data_quality::QualityPage::Intent);
+                    self.analysis_modal.data_quality_plan_field = 0;
+                }
+            }
+            SetupRow::Intervals => {
+                // Two assigned roles make the first pair to choose.
+                if !self
+                    .analysis_modal
+                    .data_quality_plan
+                    .candidate_pairs()
+                    .is_empty()
+                {
+                    self.analysis_modal.data_quality_plan_before_edit =
+                        Some(self.analysis_modal.data_quality_plan.clone());
+                    self.analysis_modal
+                        .set_quality_page(data_quality::QualityPage::IntervalPairs);
+                    self.analysis_modal.data_quality_plan_field = 0;
+                }
+            }
+            SetupRow::Expected => {
+                // Windows are what a gap is counted in; with no time-window grain
+                // there is nothing to expect yet.
+                if matches!(
+                    self.analysis_modal.data_quality_plan.grain,
+                    data_quality::QualityGrain::TimeWindows { .. }
+                ) {
+                    self.analysis_modal.data_quality_expected_form =
+                        Some(analysis_modal::ExpectedForm::new(
+                            &self.analysis_modal.data_quality_plan,
+                            &self.theme,
+                        ));
+                    self.analysis_modal
+                        .set_quality_page(data_quality::QualityPage::ExpectedWindows);
+                }
+            }
+            row => {
+                let context = self.quality_plan_context();
+                self.analysis_modal.open_plan_picker(row, &context);
+            }
+        }
+        None
+    }
+
+    /// Keys in the Expected editor: ↑↓ the row, ←→ the cadence, typing in From and
+    /// Before. Enter writes it into the draft, or says on its own line why it cannot;
+    /// Esc leaves the draft as it was. Either way back to Setup's Expected row.
+    pub(crate) fn expected_form_key(&mut self, event: &KeyEvent) {
+        let every = match &self.analysis_modal.data_quality_plan.grain {
+            data_quality::QualityGrain::TimeWindows { every, .. } => every.clone(),
+            _ => String::new(),
+        };
+        let Some(form) = self.analysis_modal.data_quality_expected_form.as_mut() else {
+            return;
+        };
+        match form::key(form, event) {
+            FormKey::Cancel => {}
+            FormKey::Submit => match form.expected() {
+                Ok(expected) => self.analysis_modal.data_quality_plan.expected = expected,
+                Err(problem) => {
+                    form.error = Some(problem);
+                    return;
+                }
+            },
+            FormKey::Step(_, delta) => {
+                form.cycle(&every, delta > 0);
+                return;
+            }
+            FormKey::Text(_) => {
+                if let Some(input) = form.input_mut() {
+                    let _ = input.handle_key(event, None);
+                    form.error = None;
+                }
+                return;
+            }
+            FormKey::Act(_) | FormKey::Moved | FormKey::Other => return,
+        }
+        self.analysis_modal.data_quality_expected_form = None;
+        self.analysis_modal.data_quality_setup_note = None;
+        self.analysis_modal
+            .set_quality_page(data_quality::QualityPage::Setup);
+        self.analysis_modal.data_quality_plan_field = analysis_modal::SetupRow::Expected.index();
+    }
+
+    /// `w` on Trends: the next coarser grain, staged in Setup with the Grain row under
+    /// the cursor, for segments the sample reached too thinly. Nothing runs until
+    /// Enter, and Setup's Read says what that run reads; Esc puts the grain back.
+    pub(crate) fn stage_coarser_grain(&mut self) {
+        let Some(coarser) = self.analysis_modal.quality_result_plan().coarser_grain() else {
+            return;
+        };
+        self.open_quality_setup();
+        let plan = &mut self.analysis_modal.data_quality_plan;
+        plan.grain = coarser;
+        plan.baseline_segment = None;
+        self.analysis_modal.data_quality_plan_field = analysis_modal::SetupRow::Grain.index();
+    }
+
+    /// Enter in a Setup row's list: take the choice, and after a text column, ask
+    /// for its format with the values on screen beside each one.
+    pub(crate) fn choose_setup_picker(&mut self) {
+        self.analysis_modal.data_quality_setup_note = None;
+        if let Some(column) = self.analysis_modal.choose_plan_picker() {
+            let examples = self
+                .data_table_state
+                .as_ref()
+                .map(|state| state.buffered_values(&column, 3))
+                .unwrap_or_default();
+            self.analysis_modal.open_format_picker(&column, &examples);
+        }
+    }
+}

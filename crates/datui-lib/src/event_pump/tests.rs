@@ -493,7 +493,10 @@ fn a_dialog_s_footer_chips_press_their_keys() {
     assert!(!p.app.export_modal.active, "Esc Cancel closed the form");
 
     // A question: its Cancel chip answers it; a click beside it does nothing.
-    p.app.confirmation_modal.show("Delete it?".to_string());
+    p.app.confirmation_modal.show(
+        "Delete it?".to_string(),
+        crate::feedback::Confirm::ClearRecents,
+    );
     p.terminal_mouse(click((0, 2))).unwrap();
     settle(&mut p);
     assert!(p.app.confirmation_modal.active, "outside the question");

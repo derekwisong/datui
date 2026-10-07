@@ -44,9 +44,10 @@
 
 mod common;
 
-use datui::cloud_browse::{self, Environment, ProviderKind};
+use datui::cloud_browse::{self, Environment};
 use datui::cloud_sources;
 use datui::config::CloudConfig;
+use datui::source::ProviderKind;
 
 /// The MinIO credentials the documented container runs with. Not a secret in any sense:
 /// they are the defaults printed in MinIO's own quick-start, and this only ever points

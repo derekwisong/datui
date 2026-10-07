@@ -1,6 +1,6 @@
 //! The Value Counts screen: a takeover over the table. One header line says which
 //! column and what was read; the summary strip under it; then a line per value with
-//! its rows, percent, cumulative percent and a bar. The keys are on the control bar.
+//! its rows, percent, cumulative percent and a bar. The keys are on the footer.
 
 use crate::numfmt::{self, CellFormatter};
 use crate::render::context::RenderContext;
@@ -271,7 +271,7 @@ pub fn draw(
             pct_x,
             PCT_W,
             y,
-            &percent(line.rows as f64 / total),
+            &crate::numfmt::percent(line.rows as f64 / total),
             text,
         );
         right(
@@ -279,7 +279,7 @@ pub fn draw(
             cum_x,
             PCT_W,
             y,
-            &percent(line.cumulative as f64 / total),
+            &crate::numfmt::percent(line.cumulative as f64 / total),
             Style::default().fg(ctx.text_secondary),
         );
         // The other line sums many values: a bar beside one value's would say
@@ -448,17 +448,6 @@ fn pack(items: &[(&'static str, String)], width: usize) -> Vec<Vec<(&'static str
 fn count_text(n: u64, fmt: &CellFormatter) -> String {
     let mut scratch = String::new();
     numfmt::format_any_value(fmt, &AnyValue::UInt64(n), &mut scratch).into_owned()
-}
-
-/// A share of the rows, to a tenth of a percent; a share too small to show as one
-/// is not shown as none.
-pub fn percent(share: f64) -> String {
-    let pct = share * 100.0;
-    if pct > 0.0 && pct < 0.05 {
-        "<0.1%".to_string()
-    } else {
-        format!("{pct:.1}%")
-    }
 }
 
 /// A sum or mean: four decimals at most, trailing zeros dropped, scientific past
@@ -639,9 +628,6 @@ mod tests {
 
     #[test]
     fn shares_and_means_read_plainly() {
-        assert_eq!(percent(0.5), "50.0%");
-        assert_eq!(percent(0.0001), "<0.1%");
-        assert_eq!(percent(0.0), "0.0%");
         let plain = CellFormatter::Passthrough;
         assert_eq!(float_text(1.25, &plain), "1.25");
         assert_eq!(float_text(3.0, &plain), "3");

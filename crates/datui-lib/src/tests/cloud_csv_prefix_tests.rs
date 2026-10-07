@@ -1,4 +1,5 @@
 use crate::*;
+use polars::io::cloud::CloudOptions;
 
 /// The details pane says why a bucket directory's `(all files)` row reads nothing
 /// by the rule Enter applies, so it is never shown for one Enter would read.

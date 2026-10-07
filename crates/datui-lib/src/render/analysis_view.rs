@@ -103,7 +103,7 @@ fn render_body(
         // A run has no total to count against, so a gauge could only ever read 0%.
         // What moves is time and the stage: the spinner, the clock and the stage's
         // name say it is alive, rows are counted only where the read counts them,
-        // and the control bar says Esc cancels. Every tool, Data Quality included,
+        // and the footer says Esc cancels. Every tool, Data Quality included,
         // runs behind this one view, whose lines never move as the stages go by.
         Clear.render(area, buf);
         let g = crate::glyphs::get();
@@ -144,7 +144,10 @@ fn render_body(
                     Style::default().fg(ctx.text_primary),
                 ),
                 Span::styled(
-                    format!("  {}", elapsed(progress.started.elapsed())),
+                    format!(
+                        "  {}",
+                        crate::numfmt::duration(progress.started.elapsed().as_secs() as i64)
+                    ),
                     Style::default().fg(ctx.dimmed),
                 ),
             ]),
@@ -305,15 +308,5 @@ fn render_body(
             .centered()
             .style(ratatui::style::Style::default().fg(ctx.warning))
             .render(area, buf);
-    }
-}
-
-/// `12s`, `3m 05s`, `1h 02m`: a clock for a wait, to the second while seconds matter.
-pub(crate) fn elapsed(d: std::time::Duration) -> String {
-    let secs = d.as_secs();
-    match secs {
-        0..=59 => format!("{secs}s"),
-        60..=3599 => format!("{}m {:02}s", secs / 60, secs % 60),
-        _ => format!("{}h {:02}m", secs / 3600, (secs % 3600) / 60),
     }
 }

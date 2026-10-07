@@ -934,6 +934,23 @@ impl PivotMeltModal {
 impl crate::form::Form for PivotMeltModal {
     type Field = PivotMeltFocus;
 
+    fn shown_picker(&mut self) -> Option<(&mut crate::widgets::ui::PickerState, bool)> {
+        let multi = self.is_multi_row(self.focus);
+        self.picker.as_mut().map(|p| (p, multi))
+    }
+
+    fn dismiss_picker(&mut self) {
+        self.picker_cancel();
+    }
+
+    fn pick(&mut self, toggle: bool) {
+        if toggle {
+            self.picker_toggle();
+        } else {
+            self.picker_choose();
+        }
+    }
+
     /// The tab bar, then the active tab's rows. Melt's value rows follow its strategy.
     fn fields(&self) -> Vec<(PivotMeltFocus, crate::form::FieldKind)> {
         use crate::form::FieldKind;

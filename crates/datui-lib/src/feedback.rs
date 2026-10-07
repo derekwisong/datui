@@ -31,7 +31,7 @@ impl ErrorModal {
 }
 
 /// A completion flash (the Feedback rules' second rung): one plain sentence on
-/// the control bar, cleared by the next keypress or after two seconds,
+/// the footer, cleared by the next keypress or after two seconds,
 /// whichever comes first. Every screen's completions go here, the home screen's
 /// included. The home screen's own status line beside the filter is for what a
 /// key could not do and why, which has to survive until it is read.
@@ -64,6 +64,29 @@ impl Flash {
     }
 }
 
+/// What a confirmation's Yes does. One question is up at a time, so one of these is
+/// armed at a time, and closing the question disarms it.
+pub(crate) enum Confirm {
+    /// Read every row, as the sample.
+    ReadAll,
+    OpenLink(String),
+    ClearRecents,
+    /// Run Setup's full scan, past the question.
+    QualityFullScan,
+    HideExamples,
+    DeleteView(String),
+    ForgetPlace(std::path::PathBuf),
+    /// Overwrite the file the report's export asked about.
+    QualityExport(std::path::PathBuf, crate::quality_export::ReportFormat),
+    ChartExport(Box<crate::chart_export::ChartExportRequest>),
+    Export(Box<crate::ExportRequest>),
+    Copy(crate::clipboard::CopyFormat, bool),
+    /// Download a remote file, or read a large one whole: the open in flight asks.
+    Download,
+    /// Stop a recording or keep it, on the way out; either choice leaves.
+    Leave(crate::Leaving),
+}
+
 pub struct ConfirmationModal {
     pub active: bool,
     pub message: String,
@@ -74,6 +97,8 @@ pub struct ConfirmationModal {
     pub no_label: &'static str,
     /// How far a long message is scrolled; the render clamps it.
     pub scroll: usize,
+    /// What is being asked about.
+    pub(crate) asking: Option<Confirm>,
 }
 
 impl Default for ConfirmationModal {
@@ -85,6 +110,7 @@ impl Default for ConfirmationModal {
             yes_label: "Yes",
             no_label: "No",
             scroll: 0,
+            asking: None,
         }
     }
 }
@@ -94,36 +120,52 @@ impl ConfirmationModal {
         Self::default()
     }
 
-    pub fn show(&mut self, message: String) {
+    pub(crate) fn show(&mut self, message: String, asking: Confirm) {
         self.active = true;
         self.message = message;
         self.focus_yes = true; // Default to Yes
         self.yes_label = "Yes";
         self.no_label = "No";
         self.scroll = 0;
+        self.asking = Some(asking);
     }
 
     /// A choice between two things to do, each named; Esc does neither.
-    pub fn show_choice(
+    pub(crate) fn show_choice(
         &mut self,
         message: String,
         yes_label: &'static str,
         no_label: &'static str,
+        asking: Confirm,
     ) {
-        self.show(message);
+        self.show(message, asking);
         self.yes_label = yes_label;
         self.no_label = no_label;
     }
 
     /// A confirmation whose Yes destroys something: it starts on No, so a
     /// reflexive second Enter declines, and the action is named on the choice.
-    pub fn show_destructive(&mut self, message: String, yes_label: &'static str) {
-        self.active = true;
-        self.message = message;
+    pub(crate) fn show_destructive(
+        &mut self,
+        message: String,
+        yes_label: &'static str,
+        asking: Confirm,
+    ) {
+        self.show(message, asking);
         self.focus_yes = false;
         self.yes_label = yes_label;
-        self.no_label = "No";
-        self.scroll = 0;
+    }
+
+    /// Close the question, and hand back what it was asking about.
+    pub(crate) fn take(&mut self) -> Option<Confirm> {
+        let asking = self.asking.take();
+        self.hide();
+        asking
+    }
+
+    /// Whether the question up is the full-scan one Setup's Run asks.
+    pub fn asks_full_scan(&self) -> bool {
+        self.active && matches!(self.asking, Some(Confirm::QualityFullScan))
     }
 
     pub fn hide(&mut self) {
@@ -133,5 +175,6 @@ impl ConfirmationModal {
         self.yes_label = "Yes";
         self.no_label = "No";
         self.scroll = 0;
+        self.asking = None;
     }
 }

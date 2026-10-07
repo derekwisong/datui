@@ -2,12 +2,12 @@
 //!
 //! It stands in for the table from the moment a load starts until that load installs
 //! its dataset. Without it the previous dataset stayed on screen for the whole load —
-//! one file's rows under another file's name, with only the control bar to say so.
+//! one file's rows under another file's name, with only the footer to say so.
 //!
 //! Drawn in the same family as the home screen: no boxes, centred, one accent. The
 //! phase name is the progress indicator. It is a real, observable step ("Scanning
 //! input", "Reading schema", "Loading buffer"), unlike the percentage beside it in
-//! the control bar, which is a constant per phase.
+//! the footer, which is a constant per phase.
 
 use std::path::Path;
 
@@ -32,7 +32,7 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContex
     // A directory of many files reads a footer from each before a row is shown, and on a
     // few thousand that is seconds of a screen saying only "Reading schema". The count
     // is what makes the wait legible: a number climbing is a wait, a number stopped is
-    // a problem. `App::loading_phase` decides it for the control bar too, so the two
+    // a problem. `App::loading_phase` decides it for the footer too, so the two
     // halves of the screen cannot say different things about one wait.
     let phase = app.loading_phase(phase);
     let phase = phase.as_ref();
@@ -54,7 +54,7 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContex
                 // be a couple of words and always fitted; "Reading footers: 1,203 of
                 // 6,541" needs thirty-six columns, and cut by the terminal instead it
                 // reads "of 6" — a smaller number than the one it is counting towards.
-                truncate(
+                glyphs::fit(
                     &format!("{phase}{}", g.ellipsis),
                     // The spinner and its two spaces come first on this line.
                     (area.width as usize).saturating_sub(3),
@@ -75,15 +75,15 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContex
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| crate::home::display_path(path));
         lines.push(Line::from(Span::styled(
-            truncate(&name, area.width as usize),
+            glyphs::fit(&name, area.width as usize),
             Style::default().fg(ctx.text_primary),
         )));
         let mut detail = crate::home::display_path(path);
         if size > 0 {
-            detail = format!("{detail}   {}", crate::discover::format_size(size));
+            detail = format!("{detail}   {}", crate::numfmt::bytes(size));
         }
         lines.push(Line::from(Span::styled(
-            truncate_start(&detail, area.width as usize),
+            glyphs::fit_start(&detail, area.width as usize),
             Style::default().fg(ctx.text_secondary),
         )));
     }
@@ -105,36 +105,10 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContex
     Paragraph::new(lines).centered().render(body, buf);
 }
 
-/// Keep the head of a string, marking what was cut.
-pub(crate) fn truncate(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        return text.to_string();
-    }
-    let g = glyphs::get();
-    let keep = width.saturating_sub(g.ellipsis.chars().count());
-    text.chars().take(keep).collect::<String>() + g.ellipsis
-}
-
-/// Keep the tail of a path; the leaf is what says where the file is.
-fn truncate_start(text: &str, width: usize) -> String {
-    let count = text.chars().count();
-    if count <= width {
-        return text.to_string();
-    }
-    let g = glyphs::get();
-    let keep = width.saturating_sub(g.ellipsis.chars().count());
-    let skip = count.saturating_sub(keep);
-    g.ellipsis.to_string() + &text.chars().skip(skip).collect::<String>()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tests::test_runtime;
-
-    fn cells(buf: &Buffer) -> String {
-        buf.content().iter().map(|c| c.symbol()).collect()
-    }
 
     #[test]
     fn a_load_with_no_room_to_draw_is_skipped_rather_than_panicking() {
@@ -170,7 +144,7 @@ mod tests {
         let painted = |app: &crate::App| {
             let mut buf = Buffer::empty(area);
             render(area, &mut buf, app, &RenderContext::for_test());
-            cells(&buf)
+            crate::tests::buffer_text(&buf)
         };
 
         assert!(
@@ -226,7 +200,7 @@ mod tests {
         let painted = |app: &crate::App| {
             let mut buf = Buffer::empty(area);
             render(area, &mut buf, app, &RenderContext::for_test());
-            cells(&buf)
+            crate::tests::buffer_text(&buf)
         };
 
         let progress = app.footer_progress().clone();
@@ -334,9 +308,9 @@ mod tests {
         let mut buf = Buffer::empty(area);
         render(area, &mut buf, &app, &RenderContext::for_test());
 
-        let text = cells(&buf);
+        let text = crate::tests::buffer_text(&buf);
         assert!(text.contains("Reading schema"), "phase missing: {text:?}");
         assert!(text.contains("quarterly.parquet"), "file missing: {text:?}");
-        assert!(text.contains("2.0 KB"), "size missing: {text:?}");
+        assert!(text.contains("2.0 KiB"), "size missing: {text:?}");
     }
 }

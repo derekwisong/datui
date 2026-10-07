@@ -345,7 +345,62 @@ impl NumberFormat {
     }
 }
 
-/// Comma-group a count for the application's own chrome — the control bar's
+/// A byte count in binary units: `512 B`, `1.2 MiB`, and whole from 100 up, `340 MiB`.
+pub fn bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = n as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    match unit {
+        0 => format!("{n} B"),
+        _ if value >= 100.0 => format!("{value:.0} {}", UNITS[unit]),
+        _ => format!("{value:.1} {}", UNITS[unit]),
+    }
+}
+
+/// A length of time to the second while seconds matter: `12s`, `3m 05s`, `1h 02m`,
+/// `2d 03h`; negative with a sign.
+pub fn duration(seconds: i64) -> String {
+    let sign = if seconds < 0 { "-" } else { "" };
+    let s = seconds.unsigned_abs();
+    match s {
+        0..60 => format!("{sign}{s}s"),
+        60..3_600 => format!("{sign}{}m {:02}s", s / 60, s % 60),
+        3_600..86_400 => format!("{sign}{}h {:02}m", s / 3_600, s % 3_600 / 60),
+        _ => format!("{sign}{}d {:02}h", s / 86_400, s % 86_400 / 3_600),
+    }
+}
+
+/// [`duration`], or `-` for none.
+pub fn duration_or_dash(seconds: Option<i64>) -> String {
+    seconds.map_or_else(|| "-".to_string(), duration)
+}
+
+/// A share as a percentage: a tenth of a percent, two places below 1% so a small
+/// share never reads as none, and `<0.01%` below that.
+pub fn percent(share: f64) -> String {
+    let pct = share * 100.0;
+    if pct > 0.0 && pct < 0.01 {
+        "<0.01%".to_string()
+    } else if pct > 0.0 && pct < 1.0 {
+        format!("{pct:.2}%")
+    } else {
+        format!("{pct:.1}%")
+    }
+}
+
+/// [`percent`] of `count` in `of`, or a dash with nothing to take it over.
+pub fn percent_of(count: usize, of: usize) -> String {
+    if of == 0 {
+        return "-".to_string();
+    }
+    percent(count as f64 / of as f64)
+}
+
+/// Comma-group a count for the application's own chrome — the footer's
 /// row count, info-panel totals, and similar labels.
 ///
 /// Deliberately unconditional: these are datui's labels, not the user's data,
@@ -630,6 +685,34 @@ pub fn system_locale_tag() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durations_keep_seconds_while_they_matter() {
+        assert_eq!(duration(12), "12s");
+        assert_eq!(duration(185), "3m 05s");
+        assert_eq!(duration(3_720), "1h 02m");
+        assert_eq!(duration(-(2 * 86_400 + 3 * 3_600)), "-2d 03h");
+        assert_eq!(duration_or_dash(None), "-");
+    }
+
+    #[test]
+    fn percents_never_round_a_small_share_to_none() {
+        assert_eq!(percent(0.4), "40.0%");
+        assert_eq!(percent(0.005), "0.50%");
+        assert_eq!(percent(0.00001), "<0.01%");
+        assert_eq!(percent(0.0), "0.0%");
+        assert_eq!(percent_of(1, 0), "-");
+    }
+
+    #[test]
+    fn bytes_are_binary_units_whole_from_100_up() {
+        assert_eq!(bytes(0), "0 B");
+        assert_eq!(bytes(512), "512 B");
+        assert_eq!(bytes(1536), "1.5 KiB");
+        assert_eq!(bytes(3 << 20), "3.0 MiB");
+        assert_eq!(bytes(340 << 20), "340 MiB");
+        assert_eq!(bytes(5 << 40), "5.0 TiB");
+    }
 
     fn fmt_i64(nf: &NumberFormat, v: i64) -> String {
         let mut s = String::new();

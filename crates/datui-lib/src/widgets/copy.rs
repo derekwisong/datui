@@ -1,13 +1,11 @@
-//! Copy dialog rendering: one Surface, a FormRow per axis, the focused row's
-//! Picker below the rows, and the spec line saying what Enter will do.
+//! The copy dialog: a FormView of its axes, the spec line saying what Enter will do.
 
 use crate::copy_modal::{CopyFocus, CopyModal};
 use crate::render::context::RenderContext;
-use crate::widgets::ui::{FormRow, FormValue, HintBar, Picker, Surface};
+use crate::widgets::ui::{FormValue, FormView, HintBar};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::widgets::{Paragraph, Widget};
 
 /// Past the longest label, "Format:", plus air.
 const LABEL_WIDTH: u16 = 9;
@@ -23,95 +21,48 @@ fn row_label(focus: CopyFocus) -> &'static str {
 
 pub fn render_copy_modal(area: Rect, buf: &mut Buffer, modal: &mut CopyModal, ctx: &RenderContext) {
     let g = crate::glyphs::get();
-    let footer = match &modal.picker {
-        Some(_) => HintBar::from_ctx(ctx)
-            .hint_weighted("Enter", "Choose", 3)
-            .hint_weighted("type", "Narrow", 1)
-            .hint_weighted("Esc", "Back", 4),
-        None => {
-            let (key, label) = match modal.focus {
-                CopyFocus::Header => ("Space", "Toggle"),
-                CopyFocus::Column => ("Space", "Pick"),
-                CopyFocus::Scope | CopyFocus::Format => (g.updown_lr, "Change"),
-            };
-            HintBar::from_ctx(ctx)
-                .hint_weighted("Enter", "Copy", 3)
-                .hint_weighted(key, label, 2)
-                .hint_weighted("Tab", "Next", 1)
-                .hint_weighted("Esc", "Cancel", 4)
-        }
+    let (key, label) = match modal.focus {
+        CopyFocus::Header => ("Space", "Toggle"),
+        CopyFocus::Column => ("Space", "Pick"),
+        CopyFocus::Scope | CopyFocus::Format => (g.updown_lr, "Change"),
     };
-    crate::pointer::record(area, crate::pointer::Hit::Modal);
-    let content = Surface::new("Copy").footer(&footer).render(area, buf, ctx);
-    if content.height < 3 || content.width < 10 {
-        return;
-    }
-
-    // The spec line sits on the last content row, directly above the footer.
-    let spec_y = content.y + content.height - 1;
-
-    let rows = modal.row_order();
-    let mut y = content.y;
-    for &row in &rows {
-        if y >= spec_y {
-            break;
-        }
-        let value = match row {
-            CopyFocus::Scope => FormValue::Choice(modal.scope.as_str()),
-            CopyFocus::Format => FormValue::Choice(modal.format.as_str()),
-            CopyFocus::Header => FormValue::Toggle(modal.header()),
-            CopyFocus::Column => match modal.column.as_deref() {
-                Some(column) => FormValue::Choice(column),
-                None => FormValue::Placeholder("none"),
-            },
-        };
-        let row_area = Rect {
-            y,
-            height: 1,
-            ..content
-        };
-        FormRow {
-            label: row_label(row),
-            value,
-            focused: modal.focus == row,
-            label_width: LABEL_WIDTH,
-        }
-        .render_picking(row_area, buf, ctx, modal.picker.is_some());
-        crate::pointer::record_field::<CopyModal>(row_area, row);
-        y += 1;
-    }
-
-    // The focused row's Picker drops in below the rows and reaches down to
-    // the spec line.
-    if let Some(state) = &modal.picker {
-        // It owns the keys even with no room to draw: the rows take no clicks.
-        crate::pointer::record(content, crate::pointer::Hit::Picker);
-        let picker_y = y + 1;
-        if picker_y < spec_y {
-            let picker_area = Rect {
-                x: content.x + 2,
-                y: picker_y,
-                width: content.width.saturating_sub(2),
-                height: spec_y - picker_y,
+    let footer = HintBar::from_ctx(ctx)
+        .hint_weighted("Enter", "Copy", 3)
+        .hint_weighted(key, label, 2)
+        .hint_weighted("Tab", "Next", 1)
+        .hint_weighted("Esc", "Cancel", 4);
+    let rows = modal
+        .row_order()
+        .into_iter()
+        .map(|row| {
+            let value = match row {
+                CopyFocus::Scope => FormValue::Choice(modal.scope.as_str()),
+                CopyFocus::Format => FormValue::Choice(modal.format.as_str()),
+                CopyFocus::Header => FormValue::Toggle(modal.header()),
+                CopyFocus::Column => match modal.column.as_deref() {
+                    Some(column) => FormValue::Choice(column),
+                    None => FormValue::Placeholder("none"),
+                },
             };
-            Picker::from_state(state, true).render(picker_area, buf, ctx);
-        }
-    }
-
+            (row, row_label(row), value)
+        })
+        .collect();
     // What Enter will do, echoed live; the gap re-accents when Enter hit it.
-    let (text, style) = match modal.spec_line() {
+    let status = match modal.spec_line() {
         Ok(line) => (line, Style::default().fg(ctx.text_primary)),
         Err(gap) if modal.attention => (gap, Style::default().fg(ctx.warning)),
         Err(gap) => (gap, Style::default().fg(ctx.dimmed)),
     };
-    Paragraph::new(text).style(style).render(
-        Rect {
-            y: spec_y,
-            height: 1,
-            ..content
-        },
-        buf,
-    );
+    FormView {
+        title: "Copy",
+        footer,
+        label_width: LABEL_WIDTH,
+        rows,
+        focused: modal.focus,
+        picker: modal.picker.as_ref(),
+        status,
+    }
+    .render::<CopyModal>(area, buf, ctx);
 }
 
 #[cfg(test)]
@@ -124,14 +75,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let ctx = RenderContext::for_test();
         render_copy_modal(area, &mut buf, modal, &ctx);
-        (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        crate::tests::buffer_text(&buf)
     }
 
     #[test]

@@ -51,7 +51,7 @@ impl App {
         let rows = match (state.sampled(), &settings.chart) {
             (Some(sampled), _) => {
                 let sample = sampled.sample();
-                format!("{} · seed {}", sampled.label(), sample.seed)
+                crate::glyphs::dotted(&format!("{} · seed {}", sampled.label(), sample.seed))
             }
             (
                 None,
@@ -60,10 +60,10 @@ impl App {
                     seed: Some(seed),
                     ..
                 }),
-            ) => format!(
+            ) => crate::glyphs::dotted(&format!(
                 "sample of up to {} rows · seed {seed}",
                 crate::numfmt::group_chrome(*rows)
-            ),
+            )),
             _ => "every row".to_string(),
         };
         let mut recipe = serde_json::Map::new();

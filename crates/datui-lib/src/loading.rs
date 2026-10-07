@@ -343,7 +343,7 @@ pub(crate) enum Phase {
 }
 
 impl Phase {
-    /// What the loading screen and the control bar call this phase, and the flat
+    /// What the loading screen and the footer call this phase, and the flat
     /// percentage the bar shows beside it (0 for none).
     pub(crate) fn label(&self) -> (&str, u16) {
         match self {
@@ -589,7 +589,7 @@ pub(crate) enum Step {
         writer: Writer,
         read: Arc<AtomicU64>,
     },
-    /// Scan `paths`, saying `status` on the control bar; `display` names the dataset when
+    /// Scan `paths`, saying `status` on the footer; `display` names the dataset when
     /// what is scanned is a download.
     Scan {
         paths: Vec<PathBuf>,
@@ -656,7 +656,7 @@ impl Conversion {
         }
     }
 
-    /// What the control bar says while it runs.
+    /// What the footer says while it runs.
     pub(crate) fn status(self) -> &'static str {
         match self {
             Conversion::Streams => "Converting Arrow stream...",
@@ -1832,7 +1832,7 @@ impl Drop for Loader {
     }
 }
 
-/// What the loading screen and the control bar say while text is read as lines.
+/// What the loading screen and the footer say while text is read as lines.
 const READING_LINES: &str = "Reading as lines";
 const READING_LINES_STATUS: &str = "Reading as lines...";
 
@@ -1919,7 +1919,7 @@ pub(crate) fn in_memory(paths: &[PathBuf], options: &OpenOptions) -> Option<InMe
 
 /// What the loading screen says while a CSV is counted to drop its footer rows.
 const COUNTING_FOOTER: &str = "Counting rows to skip the footer";
-/// The control bar's line for the same wait.
+/// The footer's line for the same wait.
 const COUNTING_FOOTER_STATUS: &str = "Counting rows to skip the footer...";
 
 /// Whether the scan of `paths` counts every row first: delimited text whose footer

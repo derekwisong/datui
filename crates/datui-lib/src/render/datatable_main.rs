@@ -127,7 +127,7 @@ pub fn render(
             StatefulWidget::render(dt, table_area, buf, state);
             if let Some(status) = &query_reading {
                 // Drawn still, so the table keeps its size: the rows are the view the
-                // query replaces, under columns it may have changed. The control bar's
+                // query replaces, under columns it may have changed. The footer's
                 // words, so the two say one thing.
                 Working {
                     text: status,
@@ -276,12 +276,7 @@ pub fn render(
             crate::copy_modal::CopyModal::MOST_ROWS + 6
         };
         let modal_height = wanted.min(area.height);
-        let modal_area = Rect {
-            x: (area.width.saturating_sub(modal_width)) / 2,
-            y: (area.height.saturating_sub(modal_height)) / 2,
-            width: modal_width,
-            height: modal_height,
-        };
+        let modal_area = crate::render::layout::centered_rect(area, modal_width, modal_height);
         copy::render_copy_modal(modal_area, buf, &mut app.copy_modal, ctx);
     }
 }
@@ -304,7 +299,7 @@ pub(crate) fn render_breadcrumb(
     let back = HintBar::from_ctx(ctx).hint("Esc", "Back");
     let chip_w = back.flush_width_in(area.width.saturating_sub(12));
     let text_w = area.width.saturating_sub(chip_w + 1);
-    Paragraph::new(crate::render::loading_view::truncate(text, text_w as usize))
+    Paragraph::new(crate::glyphs::fit(text, text_w as usize))
         .style(style.add_modifier(Modifier::BOLD))
         .render(
             Rect {
@@ -431,17 +426,6 @@ mod tests {
     use super::*;
     use ratatui::buffer::Buffer;
 
-    fn rows(buf: &Buffer) -> Vec<String> {
-        let area = buf.area;
-        (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect()
-    }
-
     /// One line, no box: the text on the left, the way back on the right, and
     /// nothing drawn on the row below it.
     #[test]
@@ -455,7 +439,7 @@ mod tests {
             "<- Group: department=Engineering",
             &ctx,
         );
-        let rows = rows(&buf);
+        let rows = crate::tests::buffer_lines(&buf);
         assert!(
             rows[0].starts_with("<- Group: department=Engineering"),
             "{rows:?}"
@@ -486,7 +470,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let long = format!("<- Group: {}", "x".repeat(80));
         render_breadcrumb(area, &mut buf, &long, &ctx);
-        let row = &rows(&buf)[0];
+        let row = &crate::tests::buffer_lines(&buf)[0];
         assert!(row.contains(crate::glyphs::get().ellipsis), "{row:?}");
         assert!(row.contains("Esc") && row.contains("Back"), "{row:?}");
     }

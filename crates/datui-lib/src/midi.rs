@@ -948,7 +948,7 @@ fn read_bytes(path: &Path) -> Result<Vec<u8>> {
     let len = file.metadata()?.len();
     let most = crate::limits::get().midi_bytes.bytes();
     if len > most {
-        let size = crate::widgets::info::format_bytes;
+        let size = crate::numfmt::bytes;
         return Err(eyre!(
             "MIDI file is {}; datui reads MIDI files up to {}, and limits.midi_bytes raises it",
             size(len),

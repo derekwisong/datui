@@ -210,7 +210,9 @@ fn a_cancelled_run_says_so_until_its_worker_exits() {
     key(&mut app, KeyCode::Char('e'));
     assert!(matches!(
         key(&mut app, KeyCode::Enter),
-        Some(AppEvent::AnalysisDataQualityCompute)
+        Some(AppEvent::AnalysisCompute(
+            crate::analysis_modal::AnalysisTool::DataQuality
+        ))
     ));
 
     // The run in flight hears its own stages, and shows them.
@@ -444,8 +446,7 @@ fn stages_and_spinner_frames_do_not_move_the_layout() {
                 .enumerate()
                 .find_map(|(y, row)| row.find(stage.label()).map(|x| (y, x)))
                 .unwrap_or_else(|| panic!("{} on screen: {rows:#?}", stage.label()));
-            let clock =
-                crate::render::analysis_view::elapsed(std::time::Duration::from_secs(seconds));
+            let clock = crate::numfmt::duration(seconds as i64);
             assert!(rows[at.0].contains(&clock), "the clock beside the stage");
             drawn.push((rows, at));
         }
@@ -456,7 +457,7 @@ fn stages_and_spinner_frames_do_not_move_the_layout() {
                 // The stage's line and the one two below it, which says what
                 // it reads, are the words that change.
                 if y != at.0 && y != at.0 + 2 && row != before {
-                    // The control bar's spinner turns in its one cell.
+                    // The footer's spinner turns in its one cell.
                     let moved = row
                         .chars()
                         .zip(before.chars())
@@ -543,6 +544,8 @@ fn nothing_reads_beside_a_cancelled_run_through_another_way_in() {
     assert!(app.cancelled_analysis_running().is_none());
     assert!(matches!(
         key(&mut app, KeyCode::Enter),
-        Some(AppEvent::AnalysisChunk)
+        Some(AppEvent::AnalysisCompute(
+            crate::analysis_modal::AnalysisTool::Describe
+        ))
     ));
 }

@@ -121,7 +121,7 @@ impl FindSpec {
         found.fill_null(lit(false))
     }
 
-    /// How the pattern reads on the control bar: quoted plain text, or a regex
+    /// How the pattern reads on the footer: quoted plain text, or a regex
     /// between slashes, cut short when long.
     pub fn label(&self) -> String {
         const LONGEST: usize = 18;
@@ -672,7 +672,7 @@ pub(crate) struct FindRun {
     pub(crate) from_hit: Option<Option<usize>>,
 }
 
-/// What the control bar says while a find reads.
+/// What the footer says while a find reads.
 fn finding_status(spec: &FindSpec, read: Option<usize>) -> String {
     match read {
         // Abbreviated, as the row count beside it is: the line shares a narrow bar
@@ -963,7 +963,7 @@ impl App {
             .flatten()
     }
 
-    /// What the control bar says about the find in effect: the pattern, and which
+    /// What the footer says about the find in effect: the pattern, and which
     /// match the cursor is on when that is known.
     pub fn find_mark(&self) -> Option<String> {
         let active = self.find.active.as_ref()?;
@@ -1163,7 +1163,7 @@ impl App {
         }
     }
 
-    /// A find failed: the reason on the control bar, and nothing moved.
+    /// A find failed: the reason on the footer, and nothing moved.
     pub(crate) fn find_failed(&mut self, current: bool, message: &str) {
         if !current {
             return;

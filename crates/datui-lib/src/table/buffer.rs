@@ -688,13 +688,6 @@ impl DataTableState {
         }
     }
 
-    /// Prepare the LazyFrame and parameters for an async collect, without blocking.
-    /// Updates internal state (proximity, start_row clamping) then returns
-    /// a `CollectRequest` if a new buffer load is needed, or `None` if the current
-    /// buffer is sufficient (in which case display slices are already updated).
-    ///
-    /// Caller must ensure `num_rows_valid` (via `set_num_rows`) before calling.
-    /// `num_rows_override`, when supplied, applies that value first.
     /// Column expressions for every column in `column_order`, with binary columns replaced by a
     /// stub literal ([`binary_stub`]) so their blobs are never read. Used both for the display
     /// buffer (keeps scroll/jump collects fast) and for analysis (describe/distribution/
@@ -714,6 +707,11 @@ impl DataTableState {
             .collect()
     }
 
+    /// Plan an async collect without blocking: clamp the start row, then a
+    /// `CollectRequest` when the rows on screen need a new buffer load, or `None` when
+    /// the buffer already holds them (the display slices are updated then).
+    /// `num_rows_override`, when given, is the row count first; without a count the
+    /// plan uses [`Self::num_rows_bound`], so the first rows need not wait for one.
     pub fn prepare_async_collect(
         &mut self,
         num_rows_override: Option<usize>,

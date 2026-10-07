@@ -188,7 +188,11 @@ fn a_large_ndjson_pipe_shows_every_row() {
         vec![PathBuf::from("-")],
         OpenOptions::default(),
     );
-    pump_until_idle(&mut app, &rx, &tx);
+    // The rows show as they arrive, so idle is not the end of the pipe: wait for
+    // the last row, or for an error.
+    pump_until(&mut app, &rx, &tx, |app| {
+        app.error_message().is_some() || frame(app).height() == 5_000
+    });
     assert!(app.error_message().is_none(), "{:?}", app.error_message());
     assert_eq!(frame(&app).height(), 5_000);
     let _ = writer.join();

@@ -636,7 +636,7 @@ fn test_pivot_reads_in_the_background() {
     };
     let next = app.event(&AppEvent::Pivot(spec));
     assert!(next.is_none(), "nothing more runs on this thread");
-    assert!(app.is_busy(), "the control bar shows the pivot running");
+    assert!(app.is_busy(), "the footer shows the pivot running");
     let state = app.data_table_state.as_ref().unwrap();
     assert!(state.last_pivot_spec().is_none());
     assert!(

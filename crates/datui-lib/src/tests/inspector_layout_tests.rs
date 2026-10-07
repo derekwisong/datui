@@ -176,7 +176,7 @@ fn keys_past_the_measured_ones_are_not_cut() {
 
 /// #615: a row whose `order` is a struct holding a list of structs, drilled
 /// into twice: the title is the breadcrumb, the list is a table of its fields,
-/// and one frame holds it all, the way back on its footer and the control bar.
+/// and one frame holds it all, the way back on its footer and the footer.
 #[test]
 fn a_drill_titles_its_trail_and_tables_a_list_of_structs() {
     use polars::prelude::{DataFrame, IntoColumn, IntoSeries, NamedFrom, Series, df};

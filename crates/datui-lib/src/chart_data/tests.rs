@@ -541,7 +541,7 @@ fn rows_already_read_are_not_read_again() {
         "drawn from the rows held: {}",
         held.x_max
     );
-    let boxed = prepare_box_plot_data(&lf, &["a"], ValueRange::All, &sampling).unwrap();
+    let boxed = prepare_box_plot_data(&lf, "a", ValueRange::All, &sampling).unwrap();
     assert_eq!(boxed.stats[0].max, 99.0);
 
     let with_b = prepare_histogram_data(&lf, "b", 10, ValueRange::All, &sampling).unwrap();
@@ -693,22 +693,15 @@ fn a_histogram_range_clips_the_tails_and_counts_them() {
 fn box_plot_and_kde_take_the_range_too() {
     let lf = with_outliers();
     let boxed =
-        prepare_box_plot_data(&lf, &["fare"], ValueRange::Percentile1To99, &all_rows()).unwrap();
+        prepare_box_plot_data(&lf, "fare", ValueRange::Percentile1To99, &all_rows()).unwrap();
     assert!(boxed.stats[0].min > 0.0 && boxed.stats[0].max <= 100.0);
     assert!(boxed.clipped.unwrap().outside >= 2);
 
-    let kde = prepare_kde_data(
-        &lf,
-        &["fare"],
-        1.0,
-        ValueRange::Percentile1To99,
-        &all_rows(),
-    )
-    .unwrap();
+    let kde = prepare_kde_data(&lf, "fare", 1.0, ValueRange::Percentile1To99, &all_rows()).unwrap();
     assert!(kde.x_min > -1_000.0 && kde.x_max < 1_000.0);
     assert!(kde.clipped.unwrap().outside >= 2);
 
-    let whole = prepare_box_plot_data(&lf, &["fare"], ValueRange::All, &all_rows()).unwrap();
+    let whole = prepare_box_plot_data(&lf, "fare", ValueRange::All, &all_rows()).unwrap();
     assert_eq!(whole.stats[0].min, -10_000.0);
 }
 
@@ -1555,6 +1548,7 @@ fn stdev_quantile_first_and_last_per_x() {
     let groups = [Some("a".to_string()), Some("b".to_string())];
     let bars = prepare_bar_aggregate(
         &lf,
+        &lf.clone().collect_schema().unwrap(),
         &BarAggregate {
             category: "x",
             value: Some("y"),
@@ -1575,6 +1569,7 @@ fn stdev_quantile_first_and_last_per_x() {
     assert_eq!(bars.value_column, "last y");
     let p = prepare_bar_aggregate(
         &lf,
+        &lf.clone().collect_schema().unwrap(),
         &BarAggregate {
             category: "x",
             value: Some("y"),
@@ -1643,6 +1638,7 @@ fn distinct_counts_any_y_per_x() {
     // A bar of distinct names per sex: whole numbers.
     let bars = prepare_bar_aggregate(
         &lf,
+        &lf.clone().collect_schema().unwrap(),
         &BarAggregate {
             category: "sex",
             value: Some("name"),
@@ -1726,7 +1722,13 @@ fn other_gathers_every_value_without_a_series() {
             order: BarOrder::Label,
             cap: BAR_CAP,
         };
-        prepare_bar_aggregate(&lf, &spec, &all_rows()).unwrap()
+        prepare_bar_aggregate(
+            &lf,
+            &lf.clone().collect_schema().unwrap(),
+            &spec,
+            &all_rows(),
+        )
+        .unwrap()
     };
     let on = bars(true);
     assert_eq!(on.groups, ["a", OTHER]);
@@ -1772,7 +1774,13 @@ fn bars_aggregate_per_category_and_color() {
         order: BarOrder::Value,
         cap: BAR_CAP,
     };
-    let data = prepare_bar_aggregate(&lf, &spec, &all_rows()).unwrap();
+    let data = prepare_bar_aggregate(
+        &lf,
+        &lf.clone().collect_schema().unwrap(),
+        &spec,
+        &all_rows(),
+    )
+    .unwrap();
     assert_eq!(data.groups, ["EWR", "JFK"]);
     assert_eq!(data.value_column, "mean delay");
     assert_eq!(data.rows.total_rows, 5);
@@ -1795,7 +1803,13 @@ fn bars_aggregate_per_category_and_color() {
         quantile: 90,
         ..spec
     };
-    let data = prepare_bar_aggregate(&lf, &count, &all_rows()).unwrap();
+    let data = prepare_bar_aggregate(
+        &lf,
+        &lf.clone().collect_schema().unwrap(),
+        &count,
+        &all_rows(),
+    )
+    .unwrap();
     assert_eq!(data.bars[0].label.as_deref(), Some("UA"));
     assert_eq!(data.bars[0].value, 3.0, "a count adds up across groups");
     assert!(data.value_dtype.is_integer(), "counts print whole");
@@ -1810,7 +1824,13 @@ fn bars_aggregate_per_category_and_color() {
         color: None,
         ..spec
     };
-    let data = prepare_bar_aggregate(&odd, &mean, &all_rows()).unwrap();
+    let data = prepare_bar_aggregate(
+        &odd,
+        &odd.clone().collect_schema().unwrap(),
+        &mean,
+        &all_rows(),
+    )
+    .unwrap();
     let labels: Vec<Option<&str>> = data.bars.iter().map(|b| b.label.as_deref()).collect();
     assert_eq!(labels, [Some("DL")]);
     assert_eq!(data.no_value, 2);
@@ -1820,7 +1840,13 @@ fn bars_aggregate_per_category_and_color() {
         color: None,
         ..spec
     };
-    let data = prepare_bar_aggregate(&lf, &sum, &all_rows()).unwrap();
+    let data = prepare_bar_aggregate(
+        &lf,
+        &lf.clone().collect_schema().unwrap(),
+        &sum,
+        &all_rows(),
+    )
+    .unwrap();
     assert_eq!(
         data.bars
             .iter()

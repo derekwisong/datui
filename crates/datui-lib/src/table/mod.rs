@@ -178,7 +178,7 @@ pub struct DataTableState {
     error: Option<PolarsError>,
     pub suppress_error_display: bool, // When true, don't show errors in main view (e.g., when query input is active)
     /// The dataset's own row count, remembered from the last moment the frame was
-    /// pristine. Lets the control bar say "417 of 1,000" under a filter or query
+    /// pristine. Lets the footer say "417 of 1,000" under a filter or query
     /// without a second count; `None` until a pristine count has resolved.
     pristine_rows: Option<usize>,
     /// Taken afresh whenever `original_lf` is replaced. A checkpoint records it, so one

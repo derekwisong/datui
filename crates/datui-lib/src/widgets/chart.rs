@@ -4,7 +4,7 @@
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Chart, Clear, Dataset, GraphType, Paragraph, Widget, Wrap},
 };
@@ -25,7 +25,7 @@ use crate::widgets::axes::{
     AxisSpec, Legend, PlotAxes, Track, cut, fit_x_labels, fit_y_labels, resolution,
 };
 use crate::widgets::crosshair::{self, PlotPlace};
-use crate::widgets::ui::{Picker, SectionRule, Surface, Working};
+use crate::widgets::ui::{FormRow, FormValue, Picker, SectionRule, Surface, Working};
 use polars::prelude::Schema;
 use unicode_width::UnicodeWidthStr;
 
@@ -447,42 +447,25 @@ fn render_sidebar(
                         buf.set_string(area.x, y, g.rail, Style::default().fg(ctx.accent));
                     }
                 }
-                let label_style = if *dimmed {
-                    Style::default().fg(ctx.dimmed)
-                } else if focused {
-                    Style::default().fg(ctx.accent).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(ctx.label)
-                };
-                let label_area = Rect {
-                    x: area.x + 2,
-                    width: LABEL_WIDTH.min(area.width.saturating_sub(2)),
-                    ..row
-                };
-                Paragraph::new(*label)
-                    .style(label_style)
-                    .render(label_area, buf);
-                let value_x = area.x + 2 + LABEL_WIDTH;
-                if value_x < area.right() {
-                    let spans: Vec<Span> = if *dimmed {
-                        value
-                            .iter()
-                            .map(|s| {
-                                Span::styled(s.content.clone(), Style::default().fg(ctx.dimmed))
-                            })
-                            .collect()
-                    } else {
-                        value.clone()
-                    };
-                    Paragraph::new(Line::from(spans)).render(
-                        Rect {
-                            x: value_x,
-                            width: area.right() - value_x,
-                            ..row
-                        },
-                        buf,
-                    );
+                // Past the rail and a cell of air.
+                FormRow {
+                    label,
+                    value: FormValue::Spans {
+                        spans: value.clone(),
+                        dimmed: *dimmed,
+                    },
+                    focused,
+                    label_width: LABEL_WIDTH,
                 }
+                .render_body(
+                    Rect {
+                        x: area.x + 2,
+                        width: area.width.saturating_sub(2),
+                        ..row
+                    },
+                    buf,
+                    ctx,
+                );
             }
         }
     }

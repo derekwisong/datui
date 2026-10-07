@@ -106,19 +106,22 @@ same way. Both sides must agree on the plan format:
 
 | Python `polars` | LazyFrames | Captured views |
 |---|---|---|
-| 2.0 | Most plans read; joins are refused | Rows, with a warning |
-| 1.44 | Most plans read; joins are refused | Plans |
+| 2.0 | Most plans read; some, such as joins and `rank`, are refused | Rows, with a warning |
+| 1.44 | Most plans read; some, such as joins, are refused | Plans |
 | 1.43 | The release Polars pairs with Rust 0.55; fully tested | Plans |
 | 1.38 to 1.42 | Read in testing (scan, filter, group by, join, cast, sort, unique) | Plans |
 
 The wheel declares `polars>=1.38` and never downgrades the `polars` you have. A
 plan the wheel cannot read raises `ValueError` before the TUI opens, naming the
 release it is built for; pass `lf.collect()` or a path instead. Paths do not go
-through a plan and work with any `polars` version.
+through a plan and work with any `polars` version. A DataFrame column of Python
+objects (`pl.Object`) or `Float16` raises `ValueError` naming the column; cast a
+`Float16` column to `Float32` first.
 
-When your `polars` cannot read the captured plan, `view()` returns the view's
-rows instead, with a `UserWarning`: datui collects them at quit and holds every
-row in memory, and collecting the result reads nothing again.
+When your `polars` cannot read the captured plan, or the view has no plan form
+(a SQLite table, a text or log file), `view()` returns the view's
+rows instead, with a `UserWarning` saying why: datui collects them at quit and
+holds every row in memory, and collecting the result reads nothing again.
 
 ## Build from source
 

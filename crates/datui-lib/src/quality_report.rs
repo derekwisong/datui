@@ -707,8 +707,8 @@ impl FindingOrder {
     pub fn chip(self) -> &'static str {
         match self {
             Self::Ranked => "Ranked",
-            Self::Rows => "By Rows",
-            Self::Rate => "By Rate",
+            Self::Rows => "By rows",
+            Self::Rate => "By rate",
         }
     }
 }

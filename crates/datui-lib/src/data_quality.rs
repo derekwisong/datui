@@ -508,8 +508,8 @@ pub enum QualitySetup {
 impl QualitySetup {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Grain => "Set Grain",
-            Self::TimeRoles => "Time Roles",
+            Self::Grain => "Set grain",
+            Self::TimeRoles => "Time roles",
             Self::Intervals => "Intervals",
         }
     }

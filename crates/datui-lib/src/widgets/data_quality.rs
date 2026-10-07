@@ -2187,7 +2187,7 @@ fn render_segments(
         Paragraph::new(rule_line("Segments", Some("1"), sections[0].width, theme))
             .render(sections[0], buf);
         Paragraph::new(
-            "The rows are one segment. Set Grain in Setup (e) to split them by file, \
+            "The rows are one segment. Set grain in Setup (e) to split them by file, \
              partition, row chunk or time window, and compare the parts.",
         )
         .wrap(Wrap { trim: true })
@@ -2433,7 +2433,7 @@ fn render_trends(
     ))
     .render(title, buf);
     let mut text = vec![Line::raw(
-        "Set Grain in Setup (e) to a partition column, to days, weeks or months of a \
+        "Set grain in Setup (e) to a partition column, to days, weeks or months of a \
          date, or to chunks of rows, to follow each column from one to the next.",
     )];
     // One window found is no trend, but the windows expected around it still are.

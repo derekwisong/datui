@@ -22,23 +22,24 @@ fn row_label(focus: CopyFocus) -> &'static str {
 }
 
 pub fn render_copy_modal(area: Rect, buf: &mut Buffer, modal: &mut CopyModal, ctx: &RenderContext) {
-    let g = crate::glyphs::get();
+    let keys = HintBar::from_ctx(ctx).screen(datui_cli::keys::Context::Copy);
     let footer = match &modal.picker {
-        Some(_) => HintBar::from_ctx(ctx)
-            .hint_weighted("Enter", "Choose", 3)
-            .hint_weighted("type", "Narrow", 1)
-            .hint_weighted("Esc", "Back", 4),
+        Some(_) => keys
+            .group("Picker")
+            .key("Enter")
+            .weight(3)
+            .key("(type)")
+            .weight(1)
+            .key("Esc")
+            .weight(4),
         None => {
-            let (key, label) = match modal.focus {
-                CopyFocus::Header => ("Space", "Toggle"),
-                CopyFocus::Column => ("Space", "Pick"),
-                CopyFocus::Scope | CopyFocus::Format => (g.updown_lr, "Change"),
+            let keys = keys.group("Form").key("Enter").weight(3);
+            let keys = match modal.focus {
+                CopyFocus::Header => keys.key_as("Space", "Toggle"),
+                CopyFocus::Column => keys.key_as("Space", "Pick"),
+                CopyFocus::Scope | CopyFocus::Format => keys.key("← / →"),
             };
-            HintBar::from_ctx(ctx)
-                .hint_weighted("Enter", "Copy", 3)
-                .hint_weighted(key, label, 2)
-                .hint_weighted("Tab", "Next", 1)
-                .hint_weighted("Esc", "Cancel", 4)
+            keys.weight(2).key("Tab").weight(1).key("Esc").weight(4)
         }
     };
     crate::pointer::record(area, crate::pointer::Hit::Modal);

@@ -1190,6 +1190,7 @@ mod tests {
         let mut texts: Vec<&str> = Vec::new();
         for (screen, group, key) in keys::entries() {
             texts.extend([group.name, key.keys, key.label, key.line, key.long()]);
+            texts.extend(key.also);
             if let Some(screen) = screen {
                 texts.push(screen.title);
             }

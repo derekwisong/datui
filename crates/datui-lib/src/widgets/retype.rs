@@ -3,6 +3,7 @@
 use crate::render::context::RenderContext;
 use crate::retype_modal::{CombineField, CombineModal, RetypeModal, Stage};
 use crate::widgets::ui::{FormRow, FormValue, HintBar, Picker, Surface};
+use datui_cli::keys::Context;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -36,7 +37,10 @@ pub fn render_retype(area: Rect, buf: &mut Buffer, modal: &RetypeModal, ctx: &Re
         Stage::Type => "Cancel",
         Stage::Format { .. } => "Back",
     };
-    let footer = HintBar::from_ctx(ctx).hints(&[("Enter", "Choose"), ("Esc", back)]);
+    let footer = HintBar::from_ctx(ctx)
+        .screen(Context::Retype)
+        .key("Enter")
+        .key_as("Esc", back);
     let title = modal.title();
     let inner = Surface::new(&title).footer(&footer).render(popup, buf, ctx);
     if inner.height < 3 {
@@ -105,17 +109,18 @@ pub fn render_combine(area: Rect, buf: &mut Buffer, modal: &CombineModal, ctx: &
     }
     let popup = crate::render::layout::centered_rect(area, width, height);
     crate::pointer::record(popup, crate::pointer::Hit::Modal);
+    let keys = HintBar::from_ctx(ctx).screen(Context::Combine);
     let footer = match &modal.picker {
-        Some(_) => HintBar::from_ctx(ctx)
-            .hint_weighted("Enter", "Choose", 3)
-            .hint_weighted("type", "Narrow", 1)
-            .hint_weighted("Esc", "Back", 4),
-        None => HintBar::from_ctx(ctx)
-            .hint_weighted("Enter", "Make", 3)
-            .hint_weighted("Space", "Pick", 2)
-            .hint_weighted("Tab", "Next", 1)
-            .hint_weighted("Esc", "Cancel", 4),
+        Some(_) => keys.group("Picker").key("Enter").weight(3).key("(type)"),
+        None => keys
+            .group("Fields")
+            .key("Enter")
+            .weight(3)
+            .key("Space")
+            .weight(2)
+            .key("Tab"),
     };
+    let footer = footer.weight(1).key("Esc").weight(4);
     let content = Surface::new("Combine into Datetime")
         .footer(&footer)
         .render(popup, buf, ctx);

@@ -70,12 +70,7 @@ pub fn hints(modal: &PivotMeltModal) -> Vec<Hint> {
             vec![form("Enter"), form("Space"), form("Esc")]
         }
         None if modal.focus == PivotMeltFocus::TabBar || modal.is_choice_row(modal.focus) => {
-            let change = form("← / →");
-            vec![
-                form("Enter"),
-                Hint::new(crate::glyphs::get().updown_lr, change.label),
-                form("Esc"),
-            ]
+            vec![form("Enter"), form("← / →"), form("Esc")]
         }
         None => vec![form("Enter"), form("Esc")],
     }

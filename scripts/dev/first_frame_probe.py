@@ -38,7 +38,6 @@ import json
 import os
 import pty
 import select
-import statistics
 import struct
 import subprocess
 import sys

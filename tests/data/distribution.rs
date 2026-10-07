@@ -1,5 +1,5 @@
 use color_eyre::Result;
-use datui::statistics::{ComputeOptions, DistributionType, compute_statistics_with_options};
+use datui::statistics::{ComputeOptions, DistributionType};
 use polars::prelude::*;
 use std::path::Path;
 
@@ -44,7 +44,7 @@ fn detect_with_seed(
     seed: u64,
     options: ComputeOptions,
 ) -> Result<()> {
-    let results = compute_statistics_with_options(lf, Some(10000), seed, options)?;
+    let results = crate::analyze(lf, Some(10000), seed, options)?;
 
     let dist_analysis = results
         .distribution_analyses

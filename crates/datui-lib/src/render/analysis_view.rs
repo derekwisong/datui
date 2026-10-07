@@ -257,14 +257,11 @@ fn render_body(
             );
             return;
         }
-        let context = state.get_analysis_context();
         Clear.render(area, buf);
 
         let results_for_widget = app.analysis_modal.current_results().cloned();
         let config = analysis::AnalysisWidgetConfig {
-            state,
             results: results_for_widget.as_ref(),
-            context: &context,
             view: app.analysis_modal.view,
             selected_tool: app.analysis_modal.selected_tool,
             selected_correlation: app.analysis_modal.selected_correlation,

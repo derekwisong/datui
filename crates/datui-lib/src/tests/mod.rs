@@ -2302,7 +2302,6 @@ fn stale_analysis_answers_are_ignored() {
         total_rows: 999_999,
         sample_size: None,
         per_value: None,
-        sample_seed: 0,
         correlation_matrix: None,
         distribution_analyses: vec![],
     };

@@ -98,7 +98,7 @@ fn describe_gives_dates_and_times_their_range_in_their_own_format() {
         .unwrap()
         .column_statistics;
     let schema = df.schema().clone();
-    let sampled = compute_describe_single_aggregation(&df, &schema, 6, None, 0, false)
+    let sampled = compute_describe_single_aggregation(&df, &schema, 6, None, false)
         .unwrap()
         .column_statistics;
     let expected = [
@@ -151,7 +151,7 @@ fn describe_of_an_all_null_datetime_is_empty() {
         .unwrap();
     let df = DataFrame::new_infer_height(vec![empty.into()]).unwrap();
     let schema = df.schema().clone();
-    let stats = compute_describe_single_aggregation(&df, &schema, 2, None, 0, false)
+    let stats = compute_describe_single_aggregation(&df, &schema, 2, None, false)
         .unwrap()
         .column_statistics;
     let t = stats[0].temporal_stats.as_ref().expect("temporal stats");

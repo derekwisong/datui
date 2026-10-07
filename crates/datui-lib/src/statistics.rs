@@ -81,14 +81,9 @@ fn sorts_by_one_wide_key(lf: &LazyFrame) -> bool {
     })
 }
 
-/// Default sampling threshold: datasets >= this size are sampled.
-/// Used as fallback when sample_size is None. App uses config value.
-pub const SAMPLING_THRESHOLD: usize = 10_000;
-
 #[derive(Clone)]
 pub struct ColumnStatistics {
     pub name: String,
-    pub dtype: DataType,
     pub count: usize,
     pub null_count: usize,
     pub numeric_stats: Option<NumericStatistics>,
@@ -108,15 +103,10 @@ pub struct NumericStatistics {
     pub percentiles: HashMap<u8, f64>, // 1, 5, 25, 50, 75, 95, 99
     pub skewness: f64,
     pub kurtosis: f64,
-    pub outliers_iqr: usize,
-    pub outliers_zscore: usize,
 }
 
 #[derive(Clone)]
 pub struct CategoricalStatistics {
-    pub unique_count: usize,
-    pub mode: Option<String>,
-    pub top_values: Vec<(String, usize)>,
     pub min: Option<String>, // Lexicographically smallest string
     pub max: Option<String>, // Lexicographically largest string
 }
@@ -144,10 +134,6 @@ pub struct DistributionAnalysis {
     pub percentiles: PercentileBreakdown,
     /// At most five thousand of the column's finite values, spread across it, sorted.
     pub sorted_sample_values: Vec<f64>,
-    /// Whether the rows analyzed were a sample of the table.
-    pub is_sampled: bool,
-    /// How many values `sorted_sample_values` holds.
-    pub sample_size: usize,
     /// Every family's fit and test, or why it does not apply.
     pub fits: Vec<(DistributionType, crate::distribution_fit::FitOutcome)>,
     /// Each fitted family's quantiles at the plotting positions of
@@ -339,9 +325,7 @@ pub struct DistributionCharacteristics {
     pub mean: f64,
     pub median: f64,
     pub std_dev: f64,
-    pub variance: f64,
     pub coefficient_of_variation: f64,
-    pub mode: Option<f64>, // For unimodal distributions
 }
 
 #[derive(Clone)]
@@ -355,19 +339,8 @@ pub struct OutlierAnalysis {
 
 #[derive(Clone)]
 pub struct OutlierRow {
-    pub row_index: usize,
     pub column_value: f64,
-    pub context_data: HashMap<String, String>, // Other column values for context
-    pub detection_method: OutlierMethod,
     pub z_score: Option<f64>,
-    pub iqr_position: Option<IqrPosition>, // Below Q1-1.5*IQR or above Q3+1.5*IQR
-}
-
-#[derive(Clone, Debug)]
-pub enum OutlierMethod {
-    IQR,
-    ZScore,
-    Both,
 }
 
 #[derive(Clone, Debug)]
@@ -378,12 +351,9 @@ pub enum IqrPosition {
 
 #[derive(Clone)]
 pub struct PercentileBreakdown {
-    pub p1: f64,
-    pub p5: f64,
     pub p25: f64,
     pub p50: f64,
     pub p75: f64,
-    pub p95: f64,
     pub p99: f64,
 }
 
@@ -448,27 +418,6 @@ impl CorrelationMatrix {
     }
 }
 
-#[derive(Clone)]
-pub struct CorrelationPair {
-    pub column1: String,
-    pub column2: String,
-    pub correlation: f64,
-    pub p_value: Option<f64>,
-    pub sample_size: usize,
-    pub covariance: f64,
-    pub r_squared: f64,
-    pub stats1: ColumnStats,
-    pub stats2: ColumnStats,
-}
-
-#[derive(Clone)]
-pub struct ColumnStats {
-    pub mean: f64,
-    pub std: f64,
-    pub min: f64,
-    pub max: f64,
-}
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DistributionType {
     #[default]
@@ -522,19 +471,8 @@ pub struct AnalysisResults {
     pub sample_size: Option<usize>,
     /// Rows an equal-per-value sample kept of each value. See [`crate::sampling::PerValue`].
     pub per_value: Option<usize>,
-    pub sample_seed: u64,
     pub correlation_matrix: Option<CorrelationMatrix>,
     pub distribution_analyses: Vec<DistributionAnalysis>,
-}
-
-pub struct AnalysisContext {
-    pub has_query: bool,
-    pub query: String,
-    pub has_filters: bool,
-    pub filter_count: usize,
-    pub is_drilled_down: bool,
-    pub group_key: Option<Vec<String>>,
-    pub group_columns: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -559,47 +497,6 @@ impl Default for ComputeOptions {
             polars_streaming: true,
         }
     }
-}
-
-/// Computes statistics for a LazyFrame with default options.
-///
-/// Convenience wrapper around `compute_statistics_with_options`.
-pub fn compute_statistics(
-    lf: &LazyFrame,
-    sample_size: Option<usize>,
-    seed: u64,
-) -> Result<AnalysisResults> {
-    compute_statistics_with_options(lf, sample_size, seed, ComputeOptions::default())
-}
-
-/// Computes comprehensive statistics for a LazyFrame.
-///
-/// Main entry point for statistical analysis. Computes:
-/// - Basic statistics (count, nulls, min, max, mean) for all columns
-/// - Numeric statistics (percentiles, skewness, kurtosis, outliers) for numeric columns
-/// - Categorical statistics (unique count, mode, top values) for categorical columns
-/// - Distribution detection and analysis for numeric columns (if enabled)
-/// - Correlation matrix for numeric columns (if enabled)
-///
-/// A table with more than `sample_size` rows is analyzed from a sample of that many;
-/// see [`crate::sampling::analysis_rows`]. `None` reads every row.
-pub fn compute_statistics_with_options(
-    lf: &LazyFrame,
-    sample_size: Option<usize>,
-    seed: u64,
-    options: ComputeOptions,
-) -> Result<AnalysisResults> {
-    let sample = crate::sampling::Sample {
-        method: if sample_size.is_some() {
-            crate::sampling::SampleMethod::Spread
-        } else {
-            crate::sampling::SampleMethod::EveryRow
-        },
-        rows: sample_size.unwrap_or(0),
-        seed,
-        ..crate::sampling::Sample::default()
-    };
-    compute_statistics_for_sample(lf, &sample, None, options)
 }
 
 /// Describe's temporal statistics for one collected column, through the same
@@ -627,8 +524,10 @@ fn get_value_str(df: &DataFrame, col_name: &str, row: usize) -> Option<String> {
     }
 }
 
-/// [`compute_statistics_with_options`] over the rows a [`crate::sampling::Sample`]
-/// picks from `lf`, which is already cut to the sample's scope.
+/// Statistics for a LazyFrame, over the rows a [`crate::sampling::Sample`] picks from
+/// `lf`, which is already cut to the sample's scope. Describe for every column;
+/// numeric percentiles, skewness, kurtosis, distribution fits and the correlation
+/// matrix as `options` asks.
 pub fn compute_statistics_for_sample(
     lf: &LazyFrame,
     sample: &crate::sampling::Sample,
@@ -637,11 +536,9 @@ pub fn compute_statistics_for_sample(
 ) -> Result<AnalysisResults> {
     let schema = lf.clone().collect_schema()?;
     let use_streaming = options.polars_streaming;
-    let seed = sample.seed;
     let rows = crate::sampling::read(lf, sample, known_total, use_streaming)?;
     let total_rows = rows.total_rows;
     let actual_sample_size = rows.sample_size;
-    let should_sample = actual_sample_size.is_some();
     let per_value = rows.per_value.as_ref().map(|per_value| per_value.kept);
     let df = rows.df;
 
@@ -680,13 +577,11 @@ pub fn compute_statistics_for_sample(
                 column,
                 stats,
                 actual_sample_size.unwrap_or(count),
-                should_sample,
             ));
         }
 
         column_statistics.push(ColumnStatistics {
             name: name.to_string(),
-            dtype: dtype.clone(),
             count,
             null_count,
             numeric_stats,
@@ -706,7 +601,6 @@ pub fn compute_statistics_for_sample(
         total_rows,
         sample_size: actual_sample_size,
         per_value,
-        sample_seed: seed,
         correlation_matrix,
         distribution_analyses,
     })
@@ -719,14 +613,12 @@ pub fn analysis_results_from_describe(
     column_statistics: Vec<ColumnStatistics>,
     total_rows: usize,
     sample_size: Option<usize>,
-    sample_seed: u64,
 ) -> AnalysisResults {
     AnalysisResults {
         column_statistics,
         total_rows,
         sample_size,
         per_value: None,
-        sample_seed,
         correlation_matrix: None,
         distribution_analyses: Vec::new(),
     }
@@ -843,8 +735,6 @@ fn parse_describe_agg_row(agg_df: &DataFrame, schema: &Schema) -> Vec<ColumnStat
                 percentiles,
                 skewness: 0.0,
                 kurtosis: 3.0,
-                outliers_iqr: 0,
-                outliers_zscore: 0,
             })
         } else {
             None
@@ -852,13 +742,7 @@ fn parse_describe_agg_row(agg_df: &DataFrame, schema: &Schema) -> Vec<ColumnStat
         let categorical_stats = if is_categorical_type(dtype) {
             let min = get_str(agg_df, &format!("{}min", prefix), row);
             let max = get_str(agg_df, &format!("{}max", prefix), row);
-            Some(CategoricalStatistics {
-                unique_count: 0,
-                mode: None,
-                top_values: Vec::new(),
-                min,
-                max,
-            })
+            Some(CategoricalStatistics { min, max })
         } else {
             None
         };
@@ -875,7 +759,6 @@ fn parse_describe_agg_row(agg_df: &DataFrame, schema: &Schema) -> Vec<ColumnStat
         });
         column_statistics.push(ColumnStatistics {
             name: name_str.to_string(),
-            dtype: dtype.clone(),
             count,
             null_count,
             numeric_stats,
@@ -896,7 +779,6 @@ pub fn compute_describe_from_lazy(
     polars_streaming: bool,
 ) -> Result<AnalysisResults> {
     let schema = lf.clone().collect_schema()?;
-    let seed = sample.seed;
     if sample.method != crate::sampling::SampleMethod::EveryRow {
         let rows = crate::sampling::read(lf, sample, known_total, polars_streaming)?;
         let mut results = compute_describe_single_aggregation(
@@ -904,7 +786,6 @@ pub fn compute_describe_from_lazy(
             &schema,
             rows.total_rows,
             rows.sample_size,
-            seed,
             polars_streaming,
         )?;
         results.per_value = rows.per_value.map(|per_value| per_value.kept);
@@ -921,7 +802,6 @@ pub fn compute_describe_from_lazy(
         column_statistics,
         total_rows,
         None,
-        seed,
     ))
 }
 
@@ -932,7 +812,6 @@ pub fn compute_describe_single_aggregation(
     schema: &Schema,
     total_rows: usize,
     sample_size: Option<usize>,
-    sample_seed: u64,
     polars_streaming: bool,
 ) -> Result<AnalysisResults> {
     let exprs = build_describe_aggregation_exprs(schema);
@@ -943,7 +822,6 @@ pub fn compute_describe_single_aggregation(
         column_statistics,
         total_rows,
         sample_size,
-        sample_seed,
     ))
 }
 
@@ -1047,12 +925,10 @@ fn compute_numeric_stats(
     let q25 = percentiles[&25];
     let q75 = percentiles[&75];
 
-    let (skewness, kurtosis, outliers_iqr, outliers_zscore) = if include_advanced {
-        let (skewness, kurtosis) = skewness_and_kurtosis(&column.finite);
-        let (out_iqr, out_zscore) = detect_outliers(&column.finite, q25, q75);
-        (skewness, kurtosis, out_iqr, out_zscore)
+    let (skewness, kurtosis) = if include_advanced {
+        skewness_and_kurtosis(&column.finite)
     } else {
-        (0.0, 3.0, 0, 0)
+        (0.0, 3.0)
     };
 
     Ok(NumericStatistics {
@@ -1066,8 +942,6 @@ fn compute_numeric_stats(
         percentiles,
         skewness,
         kurtosis,
-        outliers_iqr,
-        outliers_zscore,
     })
 }
 
@@ -1151,44 +1025,7 @@ impl OutlierTest {
 
 const Z_THRESHOLD: f64 = 3.0;
 
-/// IQR and z-score outliers among every value given.
-fn detect_outliers(values: &[f64], q25: f64, q75: f64) -> (usize, usize) {
-    let Some(test) = OutlierTest::new(values, q25, q75) else {
-        return (0, 0);
-    };
-    values.iter().fold((0, 0), |(iqr, zscore), &v| {
-        (
-            iqr + usize::from(test.iqr_position(v).is_some()),
-            zscore + usize::from(test.z_score(v) > Z_THRESHOLD),
-        )
-    })
-}
-
 fn compute_categorical_stats(series: &Series) -> Result<CategoricalStatistics> {
-    let value_counts = series.value_counts(false, false, "counts".into(), false)?;
-    let unique_count = value_counts.height();
-
-    let mode = if unique_count > 0 {
-        match value_counts.get(0) {
-            Some(col) => col.first().map(|v| crate::exact::str_value(v).to_string()),
-            _ => None,
-        }
-    } else {
-        None
-    };
-
-    let mut top_values = Vec::new();
-    for i in 0..unique_count.min(10) {
-        if let (Some(value_col), Some(count_col)) = (value_counts.get(0), value_counts.get(1))
-            && let (Some(value), Some(count)) = (value_col.get(i), count_col.get(i))
-        {
-            let value_str = crate::exact::str_value(value);
-            if let Ok(count_u32) = count.try_extract::<u32>() {
-                top_values.push((value_str.to_string(), count_u32 as usize));
-            }
-        }
-    }
-
     let min = if let Ok(str_series) = series.str() {
         let mut min_val: Option<String> = None;
         for s in str_series.iter().flatten() {
@@ -1219,13 +1056,7 @@ fn compute_categorical_stats(series: &Series) -> Result<CategoricalStatistics> {
         None
     };
 
-    Ok(CategoricalStatistics {
-        unique_count,
-        mode,
-        top_values,
-        min,
-        max,
-    })
+    Ok(CategoricalStatistics { min, max })
 }
 
 /// Seeds the fit tests' simulations, so the same values get the same p-values.
@@ -1356,7 +1187,6 @@ fn distribution_analysis(
     column: &NumericColumn,
     numeric_stats: &NumericStatistics,
     rows: usize,
-    is_sampled: bool,
 ) -> DistributionAnalysis {
     let spread = column.spread();
     let fit = infer_distribution(&spread, rows);
@@ -1366,7 +1196,6 @@ fn distribution_analysis(
     let step = spread.len().div_ceil(MAX_VALUES).max(1);
     let mut sorted_sample_values: Vec<f64> = spread.into_iter().step_by(step).collect();
     sorted_sample_values.sort_by(f64::total_cmp);
-    let actual_sample_size = sorted_sample_values.len();
 
     let (sw_stat, sw_pvalue) = approximate_shapiro_wilk(&sorted_sample_values);
     let coefficient_of_variation = if numeric_stats.mean != 0.0 {
@@ -1374,8 +1203,6 @@ fn distribution_analysis(
     } else {
         0.0
     };
-
-    let mode = compute_mode(&sorted_sample_values);
 
     let characteristics = DistributionCharacteristics {
         shapiro_wilk_stat: sw_stat,
@@ -1385,9 +1212,7 @@ fn distribution_analysis(
         mean: numeric_stats.mean,
         median: numeric_stats.median,
         std_dev: numeric_stats.std,
-        variance: numeric_stats.std * numeric_stats.std,
         coefficient_of_variation,
-        mode,
     };
 
     let qq = fit
@@ -1405,24 +1230,9 @@ fn distribution_analysis(
     let outliers = compute_outlier_analysis(&column.finite, numeric_stats);
 
     let percentiles = PercentileBreakdown {
-        p1: numeric_stats
-            .percentiles
-            .get(&1)
-            .copied()
-            .unwrap_or(f64::NAN),
-        p5: numeric_stats
-            .percentiles
-            .get(&5)
-            .copied()
-            .unwrap_or(f64::NAN),
         p25: numeric_stats.q25,
         p50: numeric_stats.median,
         p75: numeric_stats.q75,
-        p95: numeric_stats
-            .percentiles
-            .get(&95)
-            .copied()
-            .unwrap_or(f64::NAN),
         p99: numeric_stats
             .percentiles
             .get(&99)
@@ -1438,47 +1248,10 @@ fn distribution_analysis(
         outliers,
         percentiles,
         sorted_sample_values,
-        is_sampled,
-        sample_size: actual_sample_size,
         fits: fit.fits,
         qq,
         histogram: HistogramCache::default(),
     }
-}
-
-fn compute_mode(values: &[f64]) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-
-    // Bin values and find most frequent bin
-    let min = values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-    let max = values.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
-    let range = max - min;
-
-    if range == 0.0 {
-        return Some(min);
-    }
-
-    let bins = 50.min(values.len());
-    let mut bin_counts = vec![0; bins];
-    let mut bin_sums = vec![0.0; bins];
-
-    for &v in values {
-        let bin = (((v - min) / range) * (bins - 1) as f64) as usize;
-        let bin = bin.min(bins - 1);
-        bin_counts[bin] += 1;
-        bin_sums[bin] += v;
-    }
-
-    // Find bin with maximum count
-    let max_bin = bin_counts
-        .iter()
-        .enumerate()
-        .max_by_key(|&(_, &count)| count)
-        .map(|(idx, _)| idx);
-
-    max_bin.map(|idx| bin_sums[idx] / bin_counts[idx] as f64)
 }
 
 /// How many outlier examples an analysis keeps, most extreme first.
@@ -1498,25 +1271,19 @@ fn compute_outlier_analysis(values: &[f64], numeric_stats: &NumericStatistics) -
         return analysis;
     };
 
-    for (idx, &value) in values.iter().enumerate() {
-        let iqr_position = test.iqr_position(value);
+    for &value in values {
+        let beyond_fences = test.iqr_position(value).is_some();
         let z_score = test.z_score(value);
-        let detection_method = match (iqr_position.is_some(), z_score > Z_THRESHOLD) {
-            (true, true) => OutlierMethod::Both,
-            (true, false) => OutlierMethod::IQR,
-            (false, true) => OutlierMethod::ZScore,
-            (false, false) => continue,
-        };
+        let beyond_z = z_score > Z_THRESHOLD;
+        if !beyond_fences && !beyond_z {
+            continue;
+        }
         analysis.total_count += 1;
-        analysis.iqr_count += usize::from(iqr_position.is_some());
-        analysis.zscore_count += usize::from(z_score > Z_THRESHOLD);
+        analysis.iqr_count += usize::from(beyond_fences);
+        analysis.zscore_count += usize::from(beyond_z);
         analysis.outlier_rows.push(OutlierRow {
-            row_index: idx,
             column_value: value,
-            context_data: HashMap::new(),
-            detection_method,
             z_score: Some(z_score),
-            iqr_position,
         });
     }
 
@@ -1967,86 +1734,6 @@ fn compute_correlation_p_value(correlation: f64, n: usize) -> f64 {
     let df = (n - 2) as f64;
     crate::distribution_fit::beta_inc(df / 2.0, 0.5, 1.0 - correlation * correlation)
         .clamp(0.0, 1.0)
-}
-
-/// Computes correlation statistics for a pair of columns.
-///
-/// Returns Pearson correlation coefficient, p-value, covariance, and sample size,
-/// over the rows where both columns hold a finite value. Requires at least 3 such
-/// rows. Two passes over the columns as they are, a rough mean first and then the
-/// sums about it, as the matrix's: no list of the pairs is built.
-pub fn compute_correlation_pair(
-    df: &DataFrame,
-    col1_name: &str,
-    col2_name: &str,
-) -> Result<CorrelationPair> {
-    let series1 = df.column(col1_name)?.as_materialized_series();
-    let series2 = df.column(col2_name)?.as_materialized_series();
-
-    let mut sample_size = 0usize;
-    let (mut sum1, mut sum2) = (0.0, 0.0);
-    let (mut min1, mut max1, mut min2, mut max2) = (f64::NAN, f64::NAN, f64::NAN, f64::NAN);
-    for_each_finite_pair(series1, series2, |v1, v2| {
-        sample_size += 1;
-        sum1 += v1;
-        sum2 += v2;
-        (min1, max1) = (min1.min(v1), max1.max(v1));
-        (min2, max2) = (min2.min(v2), max2.max(v2));
-    });
-    if sample_size < 3 {
-        return Err(color_eyre::eyre::eyre!("Not enough data for correlation"));
-    }
-    let n = sample_size as f64;
-    let (shift1, shift2) = (sum1 / n, sum2 / n);
-    let mut sums = PairSums::default();
-    for_each_finite_pair(series1, series2, |v1, v2| {
-        sums.add(v1 - shift1, v2 - shift2)
-    });
-    let (sxx, syy, sxy) = sums.spreads();
-
-    // A column with one value has no correlation with anything: undefined, not 0,
-    // which reads as a finding.
-    let correlation = sums.correlation();
-    let p_value = Some(compute_correlation_p_value(correlation, sample_size));
-    // Rounding can leave a constant's sum of squares a hair below zero.
-    let stats = |mean: f64, squares: f64, min: f64, max: f64| ColumnStats {
-        mean,
-        std: (squares.max(0.0) / (n - 1.0)).sqrt(),
-        min,
-        max,
-    };
-
-    Ok(CorrelationPair {
-        column1: col1_name.to_string(),
-        column2: col2_name.to_string(),
-        correlation,
-        p_value,
-        sample_size,
-        covariance: sxy / (n - 1.0),
-        r_squared: correlation * correlation,
-        stats1: stats(shift1 + sums.x / n, sxx, min1, max1),
-        stats2: stats(shift2 + sums.y / n, syy, min2, max2),
-    })
-}
-
-/// The rows where both columns hold a finite value, in order, cast [`CAST_ROWS`] at
-/// a time.
-fn for_each_finite_pair(a: &Series, b: &Series, mut f: impl FnMut(f64, f64)) {
-    let rows = a.len().min(b.len());
-    for start in (0..rows).step_by(CAST_ROWS) {
-        let len = CAST_ROWS.min(rows - start);
-        let (Some(a), Some(b)) = (float_piece(a, start, len), float_piece(b, start, len)) else {
-            continue;
-        };
-        for pair in a.iter().zip(b.iter()) {
-            if let (Some(v1), Some(v2)) = pair
-                && v1.is_finite()
-                && v2.is_finite()
-            {
-                f(v1, v2);
-            }
-        }
-    }
 }
 
 #[cfg(test)]

@@ -1,9 +1,7 @@
+use crate::analyze;
 use color_eyre::Result;
 use datui::distribution_fit::Fitted;
-use datui::statistics::{
-    ComputeOptions, DistributionType, compute_correlation_matrix, compute_correlation_pair,
-    compute_statistics_with_options,
-};
+use datui::statistics::{ComputeOptions, DistributionType, compute_correlation_matrix};
 use polars::prelude::*;
 
 /// 30,000 rows, a null every seventh, of a long right tail: more than the 10,000 values
@@ -34,7 +32,7 @@ fn close(actual: f64, expected: f64) -> bool {
 /// `skew(bias=False)`, `kurtosis(fisher=False, bias=False)` and nearest quantiles.
 #[test]
 fn distribution_statistics_cover_every_value() -> Result<()> {
-    let results = compute_statistics_with_options(&long_tail(), None, 0, distribution_options())?;
+    let results = analyze(&long_tail(), None, 0, distribution_options())?;
     let dist = &results.distribution_analyses[0];
 
     let outliers = &dist.outliers;
@@ -66,11 +64,6 @@ fn distribution_statistics_cover_every_value() -> Result<()> {
     assert!(close(dist.percentiles.p75, 4.0));
     assert!(close(dist.percentiles.p99, 90.9090909090909));
 
-    let numeric = results.column_statistics[0].numeric_stats.as_ref().unwrap();
-    assert_eq!(
-        (numeric.outliers_iqr, numeric.outliers_zscore),
-        (3_224, 180)
-    );
     Ok(())
 }
 
@@ -110,7 +103,7 @@ fn describe_and_distribution_agree_on_a_sample() -> Result<()> {
 
 /// A correlation is over every row where both columns are finite, the count beside
 /// it is those rows, and a NaN in one column does not void the matrix. Expected values
-/// are Polars' `corr` and `cov` on the same rows.
+/// are Polars' `corr` on the same rows.
 #[test]
 fn correlation_covers_every_finite_pair() -> Result<()> {
     let a: Vec<f64> = (0..30_000).map(|i| (i % 1000) as f64).collect();
@@ -131,13 +124,6 @@ fn correlation_covers_every_finite_pair() -> Result<()> {
     assert_eq!(matrix.sample_sizes[0][1], 25_174);
     assert!(close(matrix.correlations[0][1], 0.8191197645766106));
     assert!(close(matrix.correlations[0][0], 1.0) && close(matrix.correlations[1][1], 1.0));
-
-    let pair = compute_correlation_pair(&df, "a", "b")?;
-    assert_eq!((pair.column1.as_str(), pair.column2.as_str()), ("a", "b"));
-    assert_eq!(pair.sample_size, 25_174);
-    assert!(close(pair.correlation, 0.8191197645766106));
-    assert!(close(pair.r_squared, 0.8191197645766106f64.powi(2)));
-    assert!(close(pair.covariance, 2113.523780844375));
     Ok(())
 }
 
@@ -153,12 +139,7 @@ fn distribution_of_a_wide_integer_range_finishes() -> Result<()> {
     let lf = df!("x" => values)?.lazy();
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = sender.send(compute_statistics_with_options(
-            &lf,
-            None,
-            0,
-            distribution_options(),
-        ));
+        let _ = sender.send(analyze(&lf, None, 0, distribution_options()));
     });
     // Seconds in a debug build; generous for a loaded CI machine.
     let results = receiver
@@ -209,7 +190,7 @@ fn quantiles_leave_nan_out() -> Result<()> {
         (27.0, 52.0, 77.0)
     );
 
-    let results = compute_statistics_with_options(&lf, None, 0, distribution_options())?;
+    let results = analyze(&lf, None, 0, distribution_options())?;
     let dist = &results.distribution_analyses[0];
     assert_eq!(dist.percentiles.p50, 52.0);
     assert_eq!(dist.percentiles.p75, 77.0);
@@ -308,15 +289,6 @@ fn correlation_allocates_per_column_not_per_pair() -> Result<()> {
     let matrix = matrix.unwrap()?;
     assert_eq!(matrix.columns.len(), 24);
     assert!(allocated <= 2 * 24, "{allocated} column-sized allocations");
-
-    // A pair reads its two columns where they are, cast a piece at a time.
-    let mut pair = None;
-    let allocated = RowSizedCount::during(rows, || {
-        pair = Some(compute_correlation_pair(&df, "c0", "c1"));
-    });
-    let pair = pair.unwrap()?;
-    assert_eq!(allocated, 0, "column-sized allocations");
-    assert!((pair.correlation - matrix.correlations[0][1]).abs() < 1e-12);
     Ok(())
 }
 
@@ -365,7 +337,7 @@ fn reference_pearson(a: &[Option<f64>], b: &[Option<f64>]) -> (f64, usize) {
 /// numeric types: nulls in different rows of each column, NaN and infinities, a
 /// column of one value, one with two values, and a large offset with a small
 /// spread. Each pair's count is its own, a pair of fewer than three rows or with
-/// a constant is undefined, and the pair statistics read the same.
+/// a constant is undefined.
 #[test]
 fn correlation_agrees_with_the_reference_on_every_pair() -> Result<()> {
     let n = 600usize;
@@ -418,21 +390,6 @@ fn correlation_agrees_with_the_reference_on_every_pair() -> Result<()> {
             assert!(
                 (r - expected).abs() <= 1e-9,
                 "{name_i} {name_j}: {r} against {expected}"
-            );
-            let pair = compute_correlation_pair(&df, name_i, name_j)?;
-            assert_eq!(pair.sample_size, count);
-            assert!(
-                (pair.correlation - expected).abs() <= 1e-12,
-                "{name_i} {name_j}: {} against {expected}, matrix {r}",
-                pair.correlation
-            );
-            let (p, pair_p) = (
-                matrix.p_values.as_ref().unwrap()[i][j],
-                pair.p_value.unwrap(),
-            );
-            assert!(
-                (p - pair_p).abs() <= 1e-9 * pair_p.max(1e-300) || (p - pair_p).abs() < 1e-12,
-                "{name_i} {name_j}: p {p} against {pair_p}"
             );
             checked += 1;
         }

@@ -18,19 +18,16 @@ use crate::glyphs::PlotMarks;
 use crate::numfmt::{self, NumberFormatSettings};
 use crate::render::context::RenderContext;
 use crate::statistics::{
-    AnalysisContext, AnalysisResults, CategoricalStatistics, ColumnStatistics, CorrelationMethod,
+    AnalysisResults, CategoricalStatistics, ColumnStatistics, CorrelationMethod,
     DistributionAnalysis, DistributionType, HistogramKey, NumericStatistics, TemporalStatistics,
 };
-use crate::table::DataTableState;
 use crate::widgets::axes::{AxisSpec, PlotAxes};
 use crate::widgets::axis_numbers::{AxisFormat, AxisNumbers};
 use crate::widgets::ui::Surface;
 use polars::prelude::{AnyValue, DataType};
 
 pub struct AnalysisWidgetConfig<'a> {
-    pub state: &'a DataTableState,
     pub results: Option<&'a AnalysisResults>,
-    pub context: &'a AnalysisContext,
     pub view: AnalysisView,
     pub selected_tool: Option<AnalysisTool>,
     pub selected_correlation: Option<(usize, usize)>,
@@ -48,9 +45,7 @@ pub struct AnalysisWidgetConfig<'a> {
 }
 
 pub struct AnalysisWidget<'a> {
-    _state: &'a DataTableState,
     results: Option<&'a AnalysisResults>,
-    _context: &'a AnalysisContext,
     view: AnalysisView,
     selected_tool: Option<AnalysisTool>,
     table_state: &'a mut TableState,
@@ -83,9 +78,7 @@ impl<'a> AnalysisWidget<'a> {
         column_scroll: &'a mut ColumnScroll,
     ) -> Self {
         Self {
-            _state: config.state,
             results: config.results,
-            _context: config.context,
             view: config.view,
             selected_tool: config.selected_tool,
             table_state,
@@ -2175,9 +2168,7 @@ mod tests {
                 mean,
                 median: mean,
                 std_dev,
-                variance: std_dev * std_dev,
                 coefficient_of_variation: std_dev / mean,
-                mode: None,
             },
             outliers: OutlierAnalysis {
                 total_count: 0,
@@ -2187,17 +2178,12 @@ mod tests {
                 outlier_rows: Vec::new(),
             },
             percentiles: PercentileBreakdown {
-                p1: 0.0,
-                p5: 0.0,
                 p25: 0.0,
                 p50: 0.0,
                 p75: 0.0,
-                p95: 0.0,
                 p99: 0.0,
             },
-            sample_size: sorted.len(),
             sorted_sample_values: sorted,
-            is_sampled: false,
             fits: Vec::new(),
             qq: Vec::new(),
             histogram: Default::default(),
@@ -2679,7 +2665,6 @@ mod tests {
             total_rows: 10,
             sample_size: None,
             per_value: None,
-            sample_seed: 0,
             correlation_matrix: Some(matrix),
             distribution_analyses: vec![],
         };
@@ -2800,7 +2785,6 @@ mod tests {
                 .clone(),
             6,
             None,
-            0,
             false,
         )
         .unwrap();

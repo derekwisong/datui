@@ -825,7 +825,6 @@ fn correlations_of_sample(
         total_rows: rows.total_rows,
         sample_size: rows.sample_size,
         per_value: rows.per_value.map(|per_value| per_value.kept),
-        sample_seed: sample.seed,
         correlation_matrix: crate::statistics::compute_correlation_matrix(&rows.df).ok(),
         distribution_analyses: vec![],
     })

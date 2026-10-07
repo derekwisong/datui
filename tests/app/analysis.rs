@@ -494,10 +494,14 @@ fn test_analysing_a_union_of_scans_does_not_panic() {
 
     let app = open_local_dataset(dir.path());
     let state = app.data_table_state.as_ref().unwrap();
-    let results = datui::statistics::compute_statistics_with_options(
+    let every_row = datui::sampling::Sample {
+        method: datui::sampling::SampleMethod::EveryRow,
+        ..Default::default()
+    };
+    let results = datui::statistics::compute_statistics_for_sample(
         &state.lf_clone(),
+        &every_row,
         None,
-        0,
         datui::statistics::ComputeOptions {
             polars_streaming: true,
             ..Default::default()

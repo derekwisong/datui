@@ -2290,7 +2290,6 @@ fn analysis_describe_stubs_binary_columns_without_reading_blobs() {
         .expect("binary column present in describe");
     // Stubbed to a constant string, so describe treats it as categorical and its min/max is
     // the stub — never the raw bytes.
-    assert_eq!(blob_stat.dtype, DataType::String);
     let cat = blob_stat
         .categorical_stats
         .as_ref()

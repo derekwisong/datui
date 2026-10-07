@@ -1033,16 +1033,4 @@ impl DataTableState {
         self.collect();
         Ok(())
     }
-
-    pub fn get_analysis_context(&self) -> crate::statistics::AnalysisContext {
-        crate::statistics::AnalysisContext {
-            has_query: !self.view.active_query.is_empty(),
-            query: self.view.active_query.clone(),
-            has_filters: !self.view.filters.is_empty(),
-            filter_count: self.view.filters.len(),
-            is_drilled_down: self.is_drilled_down(),
-            group_key: self.view.drilled_down_group_key.clone(),
-            group_columns: self.view.drilled_down_group_key_columns.clone(),
-        }
-    }
 }

@@ -36,8 +36,7 @@ impl App {
     }
 
     fn close_inspector(&mut self) {
-        self.inspector_modal.close();
-        self.input_mode = InputMode::Normal;
+        self.close_overlay();
     }
 
     /// The inspector's list as the row shown has it: Filled, Compare and the find

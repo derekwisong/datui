@@ -132,6 +132,7 @@ pub mod numpy;
 mod open_options;
 mod open_scan;
 pub mod output_file;
+mod overlay;
 pub mod parquet_footer;
 pub mod past_calendar;
 mod picker_keys;
@@ -5299,8 +5300,7 @@ impl App {
             col.is_to_be_locked = false;
         }
         self.sort_filter_modal.sort.has_unapplied_changes = false;
-        self.sort_filter_modal.close();
-        self.input_mode = InputMode::Normal;
+        self.close_overlay();
         if view_unchanged {
             return None;
         }

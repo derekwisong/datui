@@ -4,7 +4,7 @@ use crate::cli::FileFormat;
 use crate::form::ListMove;
 use crate::widgets::info::FileFacts;
 use crate::widgets::info::InfoTab;
-use crate::{App, AppEvent, InputMode};
+use crate::{App, AppEvent};
 use crossterm::event::{KeyCode, KeyEvent};
 
 impl App {
@@ -70,8 +70,7 @@ impl App {
 
         match event.code {
             KeyCode::Esc | KeyCode::Char('i') if event.is_press() => {
-                self.info_modal.close();
-                self.input_mode = InputMode::Normal;
+                self.close_overlay();
             }
             // The rows counted exactly, where they are an estimate.
             KeyCode::Char('c') if event.is_press() && self.row_estimate().is_some() => {
@@ -80,8 +79,7 @@ impl App {
             // The file's bytes, in the hex view; Esc there comes back to the panel.
             KeyCode::Char('x') if event.is_press() => {
                 if let Some(path) = self.hex_target() {
-                    self.info_modal.close();
-                    self.input_mode = InputMode::Normal;
+                    self.close_overlay();
                     self.open_hex(path, crate::hex_view::Origin::Info, false, None);
                 }
             }
@@ -89,8 +87,7 @@ impl App {
             // takes the screen, so the panel closes for it.
             KeyCode::Char('H') if event.is_press() && schema_tab => {
                 if self.header_toggle_offered() {
-                    self.info_modal.close();
-                    self.input_mode = InputMode::Normal;
+                    self.close_overlay();
                     return self.toggle_header();
                 }
             }
@@ -153,8 +150,7 @@ impl App {
             self.flash_note("Already open".to_string());
             return None;
         }
-        self.info_modal.close();
-        self.input_mode = InputMode::Normal;
+        self.close_overlay();
         self.switch_table(Some(name))
     }
 

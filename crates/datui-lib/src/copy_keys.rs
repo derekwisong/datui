@@ -7,7 +7,7 @@ use crate::form::FormKey;
 use crate::jobs::{Answer, Job};
 use crate::open_options::OpenOptions;
 use crate::table::DataTableState;
-use crate::{App, AppEvent, InputMode, clipboard, copy_modal, python_script, source};
+use crate::{App, AppEvent, clipboard, copy_modal, python_script, source};
 use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent};
 use std::path::Path;
@@ -25,8 +25,7 @@ impl App {
 
         match crate::form::key(&mut self.copy_modal, event) {
             FormKey::Cancel => {
-                self.copy_modal.close();
-                self.input_mode = InputMode::Normal;
+                self.close_overlay();
             }
             // Enter copies from anywhere in the form; what it will do has been
             // echoed on the spec line all along.
@@ -69,8 +68,7 @@ impl App {
         let accepts = match self.copy_destination() {
             Ok(destination) => destination.accepts(),
             Err(e) => {
-                self.copy_modal.close();
-                self.input_mode = InputMode::Normal;
+                self.close_overlay();
                 self.error_modal.show(e);
                 return None;
             }
@@ -147,8 +145,7 @@ impl App {
                 }
             },
         };
-        self.copy_modal.close();
-        self.input_mode = InputMode::Normal;
+        self.close_overlay();
         match planned {
             Ok(Planned::Copy(payload, message)) => {
                 self.finish_copy(payload, message);

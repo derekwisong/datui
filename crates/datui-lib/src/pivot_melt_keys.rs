@@ -186,8 +186,7 @@ impl App {
 
         match crate::form::key(&mut self.pivot_melt_modal, event) {
             FormKey::Cancel => {
-                self.pivot_melt_modal.close();
-                self.input_mode = InputMode::Normal;
+                self.close_overlay();
             }
             // Enter applies from anywhere in the form; what it will do has
             // been echoed on the spec line all along.

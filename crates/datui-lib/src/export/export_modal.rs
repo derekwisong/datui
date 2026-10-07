@@ -97,9 +97,9 @@ impl ExportFormat {
     /// CSV, and types Avro lacks cast to ones it has.
     pub fn prepare(self, lf: LazyFrame) -> PolarsResult<LazyFrame> {
         match self {
-            Self::Csv | Self::Tsv | Self::Psv => crate::nested_json::lazy_as_json(lf),
-            Self::Json | Self::Ndjson => crate::nested_json::lazy_for_json(lf),
-            Self::Avro => crate::avro_types::lazy_for_avro(lf),
+            Self::Csv | Self::Tsv | Self::Psv => crate::export::nested_json::lazy_as_json(lf),
+            Self::Json | Self::Ndjson => crate::export::nested_json::lazy_for_json(lf),
+            Self::Avro => crate::export::avro_types::lazy_for_avro(lf),
             Self::Parquet | Self::Ipc => Ok(lf),
         }
     }

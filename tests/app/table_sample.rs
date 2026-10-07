@@ -216,7 +216,7 @@ fn export_writes_the_sample() {
         &rx,
         &tx,
         &path,
-        datui::export_modal::ExportFormat::Csv,
+        datui::export::export_modal::ExportFormat::Csv,
         false,
     );
     let written = CsvReadOptions::default()

@@ -809,10 +809,10 @@ impl Node {
     /// The literal as Python, bare: `1.0`, `"a"`, `True`, `None`.
     fn python_literal(&self) -> Option<String> {
         Some(match self {
-            Node::Num(n) => crate::python_script::py_float(*n),
+            Node::Num(n) => crate::export::python_script::py_float(*n),
             Node::Int(n) => n.to_string(),
-            Node::Str(s) => crate::python_script::py_str(s),
-            Node::Bool(b) => crate::python_script::py_bool(*b).to_string(),
+            Node::Str(s) => crate::export::python_script::py_str(s),
+            Node::Bool(b) => crate::export::python_script::py_bool(*b).to_string(),
             Node::Null => "None".to_string(),
             _ => return None,
         })
@@ -820,7 +820,7 @@ impl Node {
 
     /// Python Polars code for the expression.
     pub(crate) fn python(&self) -> String {
-        use crate::python_script::py_str;
+        use crate::export::python_script::py_str;
         if let Some(literal) = self.python_literal() {
             return format!("pl.lit({literal})");
         }
@@ -925,7 +925,7 @@ impl BinOp {
 impl Op {
     /// The method call, from its dot: `.str.to_uppercase()`.
     fn python(&self) -> String {
-        use crate::python_script::py_str;
+        use crate::export::python_script::py_str;
         let fixed = match self {
             Op::Mean => ".mean()",
             Op::Min => ".min()",
@@ -2043,13 +2043,13 @@ impl QueryNodes {
                 let names: Vec<String> = self
                     .group_by_names
                     .iter()
-                    .map(|n| crate::python_script::py_str(n))
+                    .map(|n| crate::export::python_script::py_str(n))
                     .collect();
                 format!("pl.all().exclude({})", names.join(", "))
             };
             steps.push(format!(".group_by({keys})"));
             steps.push(format!(".agg({aggs})"));
-            steps.push(crate::python_script::sort_call(
+            steps.push(crate::export::python_script::sort_call(
                 key_names,
                 &vec![false; key_names.len()],
             ));
@@ -2069,7 +2069,7 @@ fn python_list(nodes: &[Node]) -> String {
     nodes
         .iter()
         .map(|n| match n {
-            Node::Col(name) => crate::python_script::py_str(name),
+            Node::Col(name) => crate::export::python_script::py_str(name),
             n => n.python(),
         })
         .collect::<Vec<_>>()

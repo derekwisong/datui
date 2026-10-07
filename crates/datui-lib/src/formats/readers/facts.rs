@@ -193,7 +193,7 @@ mod tests {
 
         let avro_path = dir.path().join("t.avro");
         let mut out = std::fs::File::create(&avro_path).unwrap();
-        crate::avro_types::write(&mut df, &mut out).unwrap();
+        crate::export::avro_types::write(&mut df, &mut out).unwrap();
         drop(out);
         let detail = avro(&avro_path).unwrap().detail.unwrap();
         assert_eq!(detail.tab, "Avro");

@@ -51,11 +51,11 @@ pub(crate) const READER: crate::formats::readers::Reader = crate::formats::reade
         ))
     }),
     scan,
-    python: Some(crate::python_script::Python {
+    python: Some(crate::export::python_script::Python {
         call: "pl.from_numpy",
         eager: true,
         glob_flag: false,
-        arguments: Some(crate::python_script::numpy_arguments),
+        arguments: Some(crate::export::python_script::numpy_arguments),
     }),
     signatures: &[
         crate::formats::readers::Signature {

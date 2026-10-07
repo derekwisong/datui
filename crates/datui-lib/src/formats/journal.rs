@@ -32,13 +32,13 @@ pub(crate) const READER: crate::formats::readers::Reader = crate::formats::reade
         },
     }],
     refines: &[crate::FileFormat::Jsonl, crate::FileFormat::Json],
-    python: Some(crate::python_script::Python {
+    python: Some(crate::export::python_script::Python {
         call: "pl.scan_ndjson",
         eager: false,
         glob_flag: false,
         arguments: Some(python_arguments),
     }),
-    export: Some(crate::export_modal::ExportFormat::Ndjson),
+    export: Some(crate::export::export_modal::ExportFormat::Ndjson),
     ..crate::formats::readers::BASE
 };
 
@@ -451,8 +451,8 @@ pub(crate) fn summary(lf: &LazyFrame) -> PolarsResult<Detail> {
 
 /// Copy as Python: every record's fields, as the open read them.
 fn python_arguments(
-    call: &mut crate::python_script::Call<'_>,
-) -> Option<crate::python_script::Source> {
+    call: &mut crate::export::python_script::Call<'_>,
+) -> Option<crate::export::python_script::Source> {
     call.args.push("infer_schema_length=None".to_string());
     None
 }

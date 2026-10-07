@@ -13,8 +13,8 @@ use tempfile::NamedTempFile;
 
 use super::{Read, Typing};
 use crate::analysis::statistics::collect_lazy;
+use crate::export::python_script::py_str;
 use crate::loading::unfinished::{Claim, Writer};
-use crate::python_script::py_str;
 use crate::{CompressionFormat, OpenOptions, ParseStringsTarget};
 
 /// Decompress `path` into a new file in `temp_dir`, claimed through `writer` (see
@@ -884,7 +884,7 @@ pub(crate) fn type_string_columns(
                 "{blank_null}.str.to_time({}strict=False)",
                 format_arg(&time_fmt)
             ),
-            InferredType::Duration => crate::python_script::py_comment(&format!(
+            InferredType::Duration => crate::export::python_script::py_comment(&format!(
                 "{col_name}: datui reads these as durations (\"1d2h\"); Polars has no parser for them"
             )),
             InferredType::Int64 => {

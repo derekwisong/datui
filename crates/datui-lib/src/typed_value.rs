@@ -179,7 +179,7 @@ fn same(text: &str, dtype: &DataType, value: &AnyValue) -> bool {
 /// A literal as Python Polars: `pl.date(2024, 1, 1)`, `pl.datetime(...)`,
 /// `pl.duration(...)`, a number, a string.
 pub fn python(scalar: &Scalar) -> String {
-    use crate::python_script::{py_bool, py_float, py_str};
+    use crate::export::python_script::{py_bool, py_float, py_str};
     let unit_arg = |unit: TimeUnit| format!("time_unit={}", py_str(unit_name_short(unit)));
     match (scalar.dtype(), scalar.value()) {
         (_, AnyValue::Int64(i)) => i.to_string(),

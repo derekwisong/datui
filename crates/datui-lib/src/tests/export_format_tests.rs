@@ -1,5 +1,5 @@
 use crate::background::Counted;
-use crate::export_modal::ExportFormat;
+use crate::export::export_modal::ExportFormat;
 use crate::table::OpenFacts;
 use crate::*;
 use std::path::Path;
@@ -666,7 +666,7 @@ fn the_format_read_beats_the_extension() {
 /// does not borrow its wording.
 #[test]
 fn export_errors_name_a_refusal_only_for_a_refusal() {
-    let refused: std::io::Error = crate::output_file::Refused::NotAFile.into();
+    let refused: std::io::Error = crate::export::output_file::Refused::NotAFile.into();
     assert_eq!(
         App::format_export_error(&refused.into()),
         "Cannot write: it is not a regular file."

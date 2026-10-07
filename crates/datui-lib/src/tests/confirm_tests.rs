@@ -1,7 +1,7 @@
 //! Every confirmation, driven to Yes, to No and to Esc: what each answer does next.
 
+use crate::export::output_file::Overwrite;
 use crate::feedback::Confirm;
-use crate::output_file::Overwrite;
 use crate::*;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
@@ -31,7 +31,7 @@ fn no(app: &mut App) -> Option<AppEvent> {
 fn export_request() -> ExportRequest {
     ExportRequest {
         path: PathBuf::from("out.csv"),
-        format: crate::export_modal::ExportFormat::Csv,
+        format: crate::export::export_modal::ExportFormat::Csv,
         options: ExportOptions {
             source_file: false,
             csv_delimiter: b',',

@@ -443,7 +443,7 @@ impl DataTableState {
                 Some(DataType::Binary) => row += base64(footer_width(name)?),
                 // Buffered whole, so the buffer measured it with the row; base64 adds
                 // a third on top.
-                Some(dtype) if crate::nested_json::has_binary(dtype) => {
+                Some(dtype) if crate::export::nested_json::has_binary(dtype) => {
                     let buffered = self.view.buffered_df.as_ref().and_then(|df| {
                         let column = df.column(name).ok()?;
                         (df.height() > 0)
@@ -722,9 +722,9 @@ impl DataTableState {
             .ok_or_else(|| color_eyre::eyre::eyre!("no column {column}"))?;
         let label = crate::exact::str_value(&value).to_string();
         let mut steps = self.view_steps();
-        steps.push(match crate::python_script::py_value(&value) {
+        steps.push(match crate::export::python_script::py_value(&value) {
             Some(literal) => Step::Matching(vec![(
-                format!("pl.col({})", crate::python_script::py_str(column)),
+                format!("pl.col({})", crate::export::python_script::py_str(column)),
                 literal,
             )]),
             None => Step::Unreproducible(format!(
@@ -896,7 +896,7 @@ impl DataTableState {
                     .get(i)
                     .cloned()
                     .flatten()
-                    .zip(crate::python_script::py_value(&value)),
+                    .zip(crate::export::python_script::py_value(&value)),
             );
             key_columns.push(name.to_string());
             key_values.push(crate::exact::str_value(&value).to_string());

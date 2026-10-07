@@ -21,9 +21,9 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use datui_lib::CompressionFormat;
+use datui_lib::export::export_modal::ExportFormat;
+use datui_lib::export::output_file::Overwrite;
 use datui_lib::export::{self, ExportOptions, ExportRequest};
-use datui_lib::export_modal::ExportFormat;
-use datui_lib::output_file::Overwrite;
 use polars::prelude::*;
 
 /// Rows per generated batch, and so per row group.

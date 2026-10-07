@@ -1,5 +1,5 @@
 use super::*;
-use crate::export_modal::{ExportFocus, ExportFormat};
+use crate::export::export_modal::{ExportFocus, ExportFormat};
 use crate::{InputMode, OpenOptions, Overlay};
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use std::io::Write;
@@ -709,7 +709,7 @@ fn csv_export(path: &std::path::Path) -> crate::ExportRequest {
             json_compression: None,
             ndjson_compression: None,
         },
-        overwrite: crate::output_file::Overwrite::Forbid,
+        overwrite: crate::export::output_file::Overwrite::Forbid,
     }
 }
 
@@ -2797,7 +2797,7 @@ fn order(p: &EventPump) -> Vec<String> {
 /// a format on its row chooses it.
 #[test]
 fn a_click_focuses_a_form_row_and_acts_on_it() {
-    use crate::export_modal::{ExportFocus, ExportFormat};
+    use crate::export::export_modal::{ExportFocus, ExportFormat};
     let (mut p, _dir) = loaded_pump();
     p.terminal_key(plain(KeyCode::Char('e'))).unwrap();
     assert!(matches!(p.app.overlay, Overlay::Export { .. }));
@@ -3140,7 +3140,7 @@ fn the_last_column_resizes_from_the_right_side() {
 /// A right click on a choice steps it back; on a checkbox it only focuses.
 #[test]
 fn a_right_click_on_a_checkbox_only_focuses_it() {
-    use crate::export_modal::ExportFocus;
+    use crate::export::export_modal::ExportFocus;
     let (mut p, _dir) = loaded_pump();
     p.terminal_key(plain(KeyCode::Char('e'))).unwrap();
     let header = p.app.export_modal.csv_include_header;

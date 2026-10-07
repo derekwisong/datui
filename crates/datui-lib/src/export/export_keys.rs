@@ -2,13 +2,13 @@
 //! field does with them.
 
 use crate::cli::{CompressionFormat, FileFormat};
+use crate::export::export_modal::ExportFocus;
+use crate::export::export_modal::ExportFormat;
+use crate::export::output_file::Overwrite;
 use crate::export::{ExportOptions, ExportRequest};
-use crate::export_modal::ExportFocus;
-use crate::export_modal::ExportFormat;
 use crate::feedback::Confirm;
 use crate::form::FormKey;
 use crate::logging::LogFailure;
-use crate::output_file::Overwrite;
 use crate::{App, AppEvent, home};
 use crossterm::event::KeyEvent;
 use std::path::{Path, PathBuf};
@@ -212,7 +212,10 @@ impl App {
             if let Some(io_err) = cause.downcast_ref::<io::Error>() {
                 // Matched by type, not kind: encoder errors share kinds like InvalidInput with the
                 // destination checks.
-                let msg = match (crate::output_file::Refused::of(io_err), io_err.kind()) {
+                let msg = match (
+                    crate::export::output_file::Refused::of(io_err),
+                    io_err.kind(),
+                ) {
                     (Some(refused), _) => format!("{refused}."),
                     // A CSV open in a spreadsheet app, on Windows.
                     (None, _) if crate::error_display::held_by_another_program(io_err) => {

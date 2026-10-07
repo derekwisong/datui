@@ -14,7 +14,6 @@ use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 use ratatui::widgets::{Block, Clear};
 
 pub mod analysis;
-pub mod avro_types;
 mod background;
 pub mod cache;
 pub mod canonical;
@@ -34,8 +33,6 @@ pub mod error_display;
 pub mod event_pump;
 pub mod exact;
 pub mod export;
-mod export_keys;
-pub mod export_modal;
 pub mod external_open;
 mod feedback;
 pub mod filter_modal;
@@ -59,10 +56,8 @@ pub mod limits;
 pub mod link_open;
 pub mod loading;
 pub mod logging;
-pub mod nested_json;
 pub mod notes;
 pub mod numfmt;
-pub mod output_file;
 mod overlay;
 pub use overlay::Overlay;
 pub mod past_calendar;
@@ -70,7 +65,6 @@ mod picker_keys;
 mod pivot_melt_keys;
 pub mod pivot_melt_modal;
 pub mod pointer;
-pub mod python_script;
 mod retype_keys;
 pub mod retype_modal;
 mod run;
@@ -109,8 +103,9 @@ use chart::chart_modal::ChartColumns;
 
 pub use analysis::quality_memory::{KeptQualitySample, QUALITY_MEMORY_BUDGET, RetainedCopy};
 pub use error_display::{ErrorKindForPython, error_for_python};
+use export::export_modal::{ExportFocus, ExportModal};
+use export::output_file::Overwrite;
 pub use export::{ExportOptions, ExportRequest};
-use export_modal::{ExportFocus, ExportModal};
 use feedback::Confirm;
 pub use feedback::{ConfirmationModal, ErrorModal, Flash};
 use filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
@@ -121,7 +116,6 @@ pub use loading::open_options::{
 };
 pub use loading::unfinished::ExitSweep;
 use numfmt::NumberFormatSettings;
-use output_file::Overwrite;
 use pivot_melt_modal::{MeltSpec, PivotMeltModal, PivotSpec};
 use sort_filter_modal::SortFilterModal;
 use sort_modal::{SortColumn, order_with_hidden};
@@ -3655,13 +3649,12 @@ impl App {
                             .get_column_order()
                             .iter()
                             .filter_map(|name| state.schema().get(name))
-                            .any(crate::nested_json::is_nested);
+                            .any(crate::export::nested_json::is_nested);
                         self.export_modal.avro_renames =
                             state.get_column_order().iter().any(|name| {
-                                state
-                                    .schema()
-                                    .get(name)
-                                    .is_some_and(|dtype| crate::avro_types::renames(name, dtype))
+                                state.schema().get(name).is_some_and(|dtype| {
+                                    crate::export::avro_types::renames(name, dtype)
+                                })
                             });
                     }
                     self.open_over(|returns_to| Overlay::Export { returns_to });
@@ -4265,7 +4258,9 @@ impl App {
             .filter
             .statements
             .iter()
-            .find_map(|f| crate::python_script::SidebarFilter::problem(f, schema.get(&f.column)))
+            .find_map(|f| {
+                crate::export::python_script::SidebarFilter::problem(f, schema.get(&f.column))
+            })
     }
 
     /// Whether the dataset is delimited text, whose header `H` on Info's Schema tab

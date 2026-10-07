@@ -810,7 +810,7 @@ impl DataTableState {
         if self.view.view_numbered {
             lf = lf.with_row_index(crate::formats::schema_union::DRIFT_COLUMN, None);
         }
-        if let Some(e) = crate::python_script::filters_expr(&self.typed_filters()) {
+        if let Some(e) = crate::export::python_script::filters_expr(&self.typed_filters()) {
             lf = lf.filter(e);
         }
 
@@ -1269,7 +1269,7 @@ impl DataTableState {
             }
             python_keys.push(Some(format!(
                 "pl.col({})",
-                crate::python_script::py_str(&column)
+                crate::export::python_script::py_str(&column)
             )));
             keys.push((name.clone(), col(column)));
         }

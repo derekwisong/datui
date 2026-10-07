@@ -31,7 +31,7 @@ use std::sync::atomic::AtomicU64;
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 
-use crate::export_modal::ExportFormat;
+use crate::export::export_modal::ExportFormat;
 use crate::formats::members::Table;
 use crate::formats::segments::Converted;
 use crate::formats::text_formats::Detail;
@@ -222,7 +222,7 @@ pub(crate) struct Reader {
     /// first rows are cheap.
     pub preview: Option<Preview>,
     /// How Copy as Python reads it with Polars, where Polars does.
-    pub python: Option<crate::python_script::Python>,
+    pub python: Option<crate::export::python_script::Python>,
     /// What a view of it is exported as unless the user picks: the format itself where
     /// datui writes it.
     pub export: Option<ExportFormat>,

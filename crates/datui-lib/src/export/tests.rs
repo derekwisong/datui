@@ -624,7 +624,7 @@ fn a_streamed_csv_is_the_collected_csv() {
 /// of the same view holds; a null is an empty field.
 #[test]
 fn durations_export_as_iso_8601_by_every_route() {
-    use crate::nested_json::tests::{duration_text, durations};
+    use crate::export::nested_json::tests::{duration_text, durations};
     let rows = duration_text()[0].1.len();
     let mut expected = String::from("ms,us,ns\n");
     for row in 0..rows {

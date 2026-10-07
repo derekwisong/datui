@@ -18,11 +18,11 @@ use std::path::Path;
 /// What datui does with a SQLite database: see [`crate::formats::readers`].
 pub(crate) const READER: crate::formats::readers::Reader = crate::formats::readers::Reader {
     scan,
-    python: Some(crate::python_script::Python {
+    python: Some(crate::export::python_script::Python {
         call: "pl.read_database",
         eager: true,
         glob_flag: false,
-        arguments: Some(crate::python_script::sqlite_arguments),
+        arguments: Some(crate::export::python_script::sqlite_arguments),
     }),
     signatures: &[crate::formats::readers::Signature {
         says: |head, _| looks_like(head),

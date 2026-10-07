@@ -207,7 +207,7 @@ fn chart_export_request(
             dpi: 96.0,
             ..Default::default()
         },
-        overwrite: datui::output_file::Overwrite::Forbid,
+        overwrite: datui::export::output_file::Overwrite::Forbid,
         recipe: false,
     }
 }
@@ -754,7 +754,7 @@ fn export_csv(
         rx,
         tx,
         path,
-        datui::export_modal::ExportFormat::Csv,
+        datui::export::export_modal::ExportFormat::Csv,
         source_file,
     );
     std::fs::read_to_string(path).expect("the export wrote a file")
@@ -766,7 +766,7 @@ fn export_as(
     rx: &mpsc::Receiver<AppEvent>,
     tx: &mpsc::Sender<AppEvent>,
     path: &std::path::Path,
-    format: datui::export_modal::ExportFormat,
+    format: datui::export::export_modal::ExportFormat,
     source_file: bool,
 ) {
     let options = datui::ExportOptions {
@@ -781,7 +781,7 @@ fn export_as(
         path: path.to_path_buf(),
         format,
         options,
-        overwrite: datui::output_file::Overwrite::Forbid,
+        overwrite: datui::export::output_file::Overwrite::Forbid,
     });
     run_to_idle(app, rx, tx, start);
     assert_eq!(app.error_message(), None, "the export to {path:?} failed");
@@ -813,10 +813,13 @@ fn leftovers(dir: &Path, keep: &[&str]) -> Vec<String> {
         .collect()
 }
 
-fn csv_request(path: &Path, overwrite: datui::output_file::Overwrite) -> datui::ExportRequest {
+fn csv_request(
+    path: &Path,
+    overwrite: datui::export::output_file::Overwrite,
+) -> datui::ExportRequest {
     datui::ExportRequest {
         path: path.to_path_buf(),
-        format: datui::export_modal::ExportFormat::Csv,
+        format: datui::export::export_modal::ExportFormat::Csv,
         options: datui::ExportOptions {
             source_file: false,
             csv_delimiter: b',',

@@ -38,13 +38,13 @@ const CHUNK: usize = 4 << 20;
 pub(crate) const READER: crate::formats::readers::Reader = crate::formats::readers::Reader {
     scan,
     preview: Some(crate::formats::readers::Preview::Scan),
-    python: Some(crate::python_script::Python {
+    python: Some(crate::export::python_script::Python {
         call: "pl.LazyFrame",
         eager: false,
         glob_flag: false,
-        arguments: Some(crate::python_script::lines_arguments),
+        arguments: Some(crate::export::python_script::lines_arguments),
     }),
-    export: Some(crate::export_modal::ExportFormat::Csv),
+    export: Some(crate::export::export_modal::ExportFormat::Csv),
     ..crate::formats::readers::BASE
 };
 

@@ -6,9 +6,9 @@ use color_eyre::Result;
 use super::{BASE, EVERYWHERE, Kind, Reader, ScanIn, Signature, Trusted, Unnamed};
 #[cfg(feature = "cloud")]
 use crate::error_display::FileError;
-use crate::export_modal::ExportFormat;
+use crate::export::export_modal::ExportFormat;
+use crate::export::python_script::{self as py, Python};
 use crate::loading::scan::Scan;
-use crate::python_script::{self as py, Python};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 

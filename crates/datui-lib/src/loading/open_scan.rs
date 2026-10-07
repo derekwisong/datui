@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 /// Where the dataset on screen came from, and how it was opened.
 #[derive(Default)]
 pub struct OpenedSource {
-    pub(crate) original_file_format: Option<crate::export_modal::ExportFormat>,
+    pub(crate) original_file_format: Option<crate::export::export_modal::ExportFormat>,
     pub(crate) original_file_delimiter: Option<u8>,
     /// The paths and options the dataset on screen was opened with: what `H` reopens.
     pub(crate) opened: Option<(Vec<PathBuf>, OpenOptions)>,

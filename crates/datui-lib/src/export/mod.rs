@@ -5,6 +5,13 @@
 //! byte, encoder finish and flush succeed. Streaming bounds the export, not the plan: a
 //! sort, group-by or join still gathers its input first.
 
+pub mod avro_types;
+pub(crate) mod export_keys;
+pub mod export_modal;
+pub mod nested_json;
+pub mod output_file;
+pub mod python_script;
+
 use std::io::{self, BufWriter, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -15,8 +22,8 @@ use polars::prelude::{
 };
 
 use crate::CompressionFormat;
-use crate::export_modal::ExportFormat;
-use crate::output_file::{OutputFile, Overwrite};
+use crate::export::export_modal::ExportFormat;
+use crate::export::output_file::{OutputFile, Overwrite};
 
 #[derive(Debug, Clone)]
 pub struct ExportOptions {
@@ -271,7 +278,7 @@ fn serialize(
             .with_json_format(JsonFormat::JsonLines)
             .finish(df)?,
         ExportFormat::Ipc => IpcWriter::new(out).finish(df)?,
-        ExportFormat::Avro => crate::avro_types::write(df, out)?,
+        ExportFormat::Avro => crate::export::avro_types::write(df, out)?,
     }
     Ok(())
 }

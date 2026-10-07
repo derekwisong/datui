@@ -1,5 +1,5 @@
 use super::*;
-use crate::nested_json::tests::calendar;
+use crate::export::nested_json::tests::calendar;
 
 /// The rows of `calendar(true)` that are also in `calendar(false)`.
 const IN_RANGE: usize = 7;

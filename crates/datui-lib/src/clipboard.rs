@@ -214,7 +214,7 @@ impl CopyFormat {
 /// (`QuoteStyle::Necessary`). Raw values as in export; null is empty, never `∅`.
 pub fn delimited(df: &DataFrame, separator: u8, header: bool) -> Result<String, String> {
     let mut out = Vec::new();
-    let mut df = crate::nested_json::frame_as_json(df).map_err(|e| e.to_string())?;
+    let mut df = crate::export::nested_json::frame_as_json(df).map_err(|e| e.to_string())?;
     CsvWriter::new(&mut out)
         .with_separator(separator)
         .include_header(header)
@@ -410,7 +410,7 @@ pub fn tabular_payload(
     header: bool,
     html: bool,
 ) -> Result<Payload, String> {
-    let df = &crate::nested_json::frame_as_cells(df).map_err(|e| e.to_string())?;
+    let df = &crate::export::nested_json::frame_as_cells(df).map_err(|e| e.to_string())?;
     let text = match format {
         CopyFormat::Tsv => delimited(df, b'\t', header)?,
         CopyFormat::Csv => delimited(df, b',', header)?,
@@ -513,7 +513,8 @@ impl BoundedText {
         let first = !self.started;
         self.started = true;
         self.rows += batch.height();
-        let batch = crate::nested_json::frame_as_cells(&batch).map_err(|e| e.to_string())?;
+        let batch =
+            crate::export::nested_json::frame_as_cells(&batch).map_err(|e| e.to_string())?;
         let separator = match self.format {
             CopyFormat::Tsv => b'\t',
             CopyFormat::Csv => b',',
@@ -529,7 +530,8 @@ impl BoundedText {
             }
         };
         let mut out = Vec::new();
-        let mut batch = crate::nested_json::frame_as_json(&batch).map_err(|e| e.to_string())?;
+        let mut batch =
+            crate::export::nested_json::frame_as_json(&batch).map_err(|e| e.to_string())?;
         CsvWriter::new(&mut out)
             .with_separator(separator)
             .include_header(first && self.header)

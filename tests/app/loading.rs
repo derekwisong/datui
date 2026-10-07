@@ -5702,7 +5702,7 @@ fn a_freeze_survives_a_narrow_window() {
 #[test]
 fn every_dialog_moves_between_fields_with_the_arrows_on_open() {
     use datui::copy_modal::{CopyFocus, CopyScope};
-    use datui::export_modal::{ExportFocus, ExportFormat};
+    use datui::export::export_modal::{ExportFocus, ExportFormat};
     use datui::pivot_melt_modal::{PivotMeltFocus, PivotMeltTab};
     let (mut app, _rx, _tx) = open_query_filter_fixture("forms_arrows_on_open.csv");
 

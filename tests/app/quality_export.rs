@@ -7,7 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use datui::analysis::analysis_modal::{AnalysisFocus, AnalysisTool, SetupRow};
 use datui::analysis::data_quality::{QualityPage, QualityPrecision};
 use datui::analysis::quality_export::{REPORT_FORMAT, REPORT_VERSION, ReportFile};
-use datui::output_file::Overwrite;
+use datui::export::output_file::Overwrite;
 use datui::{App, AppEvent, JobKind, OpenOptions};
 use polars::prelude::*;
 use std::fs::File;

@@ -102,7 +102,7 @@ fn test_an_export_replaces_a_file_after_the_overwrite_is_agreed() {
     }
 
     press(&mut app, KeyCode::Char('e'));
-    app.export_modal.selected_format = datui::export_modal::ExportFormat::Csv;
+    app.export_modal.selected_format = datui::export::export_modal::ExportFormat::Csv;
     app.export_modal
         .path_input
         .set_value(target.display().to_string());
@@ -146,7 +146,7 @@ fn test_a_file_that_appears_during_an_export_is_left_alone() {
     let export = press(&mut app, KeyCode::Enter).expect("no file there: the export starts");
     assert!(matches!(
         &export,
-        AppEvent::Export(request) if request.overwrite == datui::output_file::Overwrite::Forbid
+        AppEvent::Export(request) if request.overwrite == datui::export::output_file::Overwrite::Forbid
     ));
     std::fs::write(&target, "theirs").unwrap();
     run_to_idle(&mut app, &rx, &tx, export);
@@ -174,7 +174,7 @@ fn test_a_file_that_appears_during_an_export_is_left_alone() {
 /// of a modal over an empty form.
 #[test]
 fn test_a_failed_export_reopens_the_form_as_it_was() {
-    use datui::export_modal::ExportFormat;
+    use datui::export::export_modal::ExportFormat;
     let (mut app, rx, tx) = open_query_filter_fixture("export_reopens.csv");
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("missing").join("out.csv");
@@ -263,7 +263,7 @@ fn test_a_failed_export_keeps_the_old_file() {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o604)).unwrap();
         }
-        let mut request = csv_request(&target, datui::output_file::Overwrite::Replace);
+        let mut request = csv_request(&target, datui::export::output_file::Overwrite::Replace);
         request.options.csv_compression = compression;
         run_to_idle(&mut app, &rx, &tx, AppEvent::Export(request));
 
@@ -296,7 +296,7 @@ fn test_a_failed_export_keeps_the_old_file() {
 /// writes what the streamed one does.
 #[test]
 fn test_an_export_without_the_streaming_engine_writes_the_same_file() {
-    use datui::export_modal::ExportFormat;
+    use datui::export::export_modal::ExportFormat;
     let dir = tempfile::tempdir().unwrap();
     let mut written = Vec::new();
     for streaming in [true, false] {
@@ -333,7 +333,7 @@ fn test_an_export_without_the_streaming_engine_writes_the_same_file() {
 /// as JSON text, while Parquet keeps them as lists.
 #[test]
 fn test_csv_export_writes_a_by_result_lists_as_json() {
-    use datui::export_modal::ExportFormat;
+    use datui::export::export_modal::ExportFormat;
     let (mut app, rx, tx) = open_query_filter_fixture("export_nested_by.csv");
     app.data_table_state
         .as_mut()
@@ -436,7 +436,7 @@ fn test_csv_export_writes_sql_arrays_and_structs_as_json() {
 /// and inside a list or struct, and CSV spells it the same way.
 #[test]
 fn test_json_export_writes_binary_as_base64() {
-    use datui::export_modal::ExportFormat;
+    use datui::export::export_modal::ExportFormat;
     let dir = tempfile::tempdir().unwrap();
     let blob = Series::new("blob".into(), [Some(b"hi\xff".as_slice()), None]);
     let blobs = Series::new(
@@ -621,7 +621,7 @@ fn test_durations_export_and_copy_as_iso_8601() {
 /// (two chunks) still makes one readable file.
 #[test]
 fn test_avro_export_writes_arrays_and_categoricals() {
-    use datui::export_modal::ExportFormat;
+    use datui::export::export_modal::ExportFormat;
     use polars::io::avro::AvroReader;
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path().join("src");
@@ -683,7 +683,7 @@ fn test_avro_export_writes_arrays_and_categoricals() {
 /// struct fields to fit, the record gets a name, and the values stay.
 #[test]
 fn test_avro_export_writes_valid_names() {
-    use datui::export_modal::ExportFormat;
+    use datui::export::export_modal::ExportFormat;
     use polars::io::avro::AvroReader;
     let dir = tempfile::tempdir().unwrap();
     let df = df!(
@@ -881,7 +881,7 @@ fn test_an_export_can_name_the_file_each_row_came_from() {
         &rx,
         &tx,
         &parquet,
-        datui::export_modal::ExportFormat::Parquet,
+        datui::export::export_modal::ExportFormat::Parquet,
         true,
     );
     let back = ParquetReader::new(File::open(&parquet).unwrap())
@@ -934,7 +934,7 @@ fn test_an_avro_export_can_name_the_file_each_row_came_from() {
         &rx,
         &tx,
         &out,
-        datui::export_modal::ExportFormat::Avro,
+        datui::export::export_modal::ExportFormat::Avro,
         true,
     );
     let back = AvroReader::new(File::open(&out).unwrap()).finish().unwrap();
@@ -956,7 +956,7 @@ fn test_an_avro_export_can_name_the_file_each_row_came_from() {
 /// source-file checkbox under the format's own options rather than adrift at the foot.
 #[test]
 fn test_the_export_options_panel_reads_as_one_for_every_format() {
-    use datui::export_modal::ExportFormat;
+    use datui::export::export_modal::ExportFormat;
 
     let dir = tempfile::tempdir().unwrap();
     write_parquet(dir.path(), "date=2024-01-01", df!("id" => &[1i64]).unwrap());
@@ -974,7 +974,7 @@ fn test_the_export_options_panel_reads_as_one_for_every_format() {
     assert!(app.export_modal.offer_source_file, "the files disagree");
     assert_eq!(
         app.export_modal.focus,
-        datui::export_modal::ExportFocus::FormatSelector,
+        datui::export::export_modal::ExportFocus::FormatSelector,
         "so the walk below really does change format"
     );
 
@@ -1164,7 +1164,7 @@ fn h_rereads_a_download_from_the_copy_on_hand() {
 /// the export never writes Parquet bytes into a file named `out.csv`.
 #[test]
 fn test_export_format_follows_typed_extension() {
-    use datui::export_modal::ExportFormat;
+    use datui::export::export_modal::ExportFormat;
     let (mut app, _rx, _tx) = open_query_filter_fixture("export_ext_follows.csv");
 
     press(&mut app, KeyCode::Char('e'));
@@ -1194,7 +1194,7 @@ fn test_export_format_follows_typed_extension() {
 /// An extension that names no format leaves an explicit choice alone.
 #[test]
 fn test_export_unknown_extension_keeps_the_chosen_format() {
-    use datui::export_modal::ExportFormat;
+    use datui::export::export_modal::ExportFormat;
     let (mut app, _rx, _tx) = open_query_filter_fixture("export_ext_unknown.csv");
 
     press(&mut app, KeyCode::Char('e'));
@@ -1209,7 +1209,7 @@ fn test_export_unknown_extension_keeps_the_chosen_format() {
 /// walk to — and Space still toggles the checkbox under the cursor.
 #[test]
 fn test_export_enter_applies_from_any_row() {
-    use datui::export_modal::{ExportFocus, ExportFormat};
+    use datui::export::export_modal::{ExportFocus, ExportFormat};
     let (mut app, _rx, _tx) = open_query_filter_fixture("export_enter_anywhere.csv");
 
     press(&mut app, KeyCode::Char('e'));
@@ -1252,7 +1252,7 @@ fn test_export_enter_applies_from_any_row() {
 /// a typed path's format extension follows too, where it names one.
 #[test]
 fn export_format_steps_along_its_row() {
-    use datui::export_modal::{ExportFocus, ExportFormat};
+    use datui::export::export_modal::{ExportFocus, ExportFormat};
     let (mut app, _rx, _tx) = open_query_filter_fixture("export_format_row.csv");
     let format_row = |app: &mut App| {
         let area = Rect::new(0, 0, 100, 24);
@@ -1334,7 +1334,7 @@ fn export_format_steps_along_its_row() {
 /// A text field's history is Ctrl+P / Ctrl+N; ↑ and ↓ move between fields.
 #[test]
 fn ctrl_p_recalls_the_last_export_path_and_up_moves_on() {
-    use datui::export_modal::ExportFocus;
+    use datui::export::export_modal::ExportFocus;
     let (mut app, _rx, _tx) = open_query_filter_fixture("forms_export_history.csv");
     let out = common::fixture_dir().join("forms_export_history_out.csv");
     let _ = std::fs::remove_file(&out);
@@ -1542,7 +1542,7 @@ fn out_of_range_dates_copy_and_export_as_their_stored_number() {
         &rx,
         &tx,
         &out,
-        datui::export_modal::ExportFormat::Ndjson,
+        datui::export::export_modal::ExportFormat::Ndjson,
         false,
     );
     assert_eq!(app.error_message(), None);
@@ -2035,7 +2035,7 @@ fn test_a_sniffed_file_copies_and_exports_as_the_format_read() {
     assert!(matches!(app.overlay, Overlay::Export { .. }));
     assert_eq!(
         app.export_modal.selected_format,
-        datui::export_modal::ExportFormat::Parquet
+        datui::export::export_modal::ExportFormat::Parquet
     );
     if let Some((rows, script)) = run_python_script(&app) {
         assert_eq!(rows, view_csv(&app), "{script}");
@@ -2280,7 +2280,7 @@ fn a_retype_is_saved_in_a_view_and_exported() {
         &rx,
         &tx,
         &parquet,
-        datui::export_modal::ExportFormat::Parquet,
+        datui::export::export_modal::ExportFormat::Parquet,
         false,
     );
     let written = LazyFrame::scan_parquet(

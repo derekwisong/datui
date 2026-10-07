@@ -814,9 +814,11 @@ fn filters_and_sorts_run_in_sqlite_as_polars_would() {
         // What Polars makes of the same, as the sidebar builds it.
         let typed: Vec<_> = filters
             .iter()
-            .map(|f| crate::python_script::SidebarFilter::typed(f, whole.schema().get(&f.column)))
+            .map(|f| {
+                crate::export::python_script::SidebarFilter::typed(f, whole.schema().get(&f.column))
+            })
             .collect();
-        let predicate = crate::python_script::filters_expr(&typed);
+        let predicate = crate::export::python_script::filters_expr(&typed);
         let mut lf = whole.clone().lazy();
         if let Some(p) = predicate {
             lf = lf.filter(p);

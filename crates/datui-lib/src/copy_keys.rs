@@ -7,7 +7,7 @@ use crate::form::FormKey;
 use crate::jobs::{Answer, Job};
 use crate::loading::open_options::OpenOptions;
 use crate::table::DataTableState;
-use crate::{App, AppEvent, clipboard, cloud::source, copy_modal, python_script};
+use crate::{App, AppEvent, clipboard, cloud::source, copy_modal, export::python_script};
 use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent};
 use std::path::Path;

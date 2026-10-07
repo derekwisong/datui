@@ -604,7 +604,7 @@ fn test_chart_export_waits_for_prepared_data_and_writes_in_background() {
 #[test]
 fn test_chart_export_replaces_only_what_was_agreed() {
     use datui::chart::chart_export::{ChartExportFormat, ChartExportRequest};
-    use datui::output_file::Overwrite;
+    use datui::export::output_file::Overwrite;
     let (mut app, rx, tx) = open_chart_view("chart_export_overwrite_test.csv");
     select_line(&mut app);
     app.event(AppEvent::Resize(80, 24));

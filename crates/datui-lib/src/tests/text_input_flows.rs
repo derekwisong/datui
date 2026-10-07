@@ -615,7 +615,7 @@ fn a_kept_find_keeps_its_columns_when_the_layout_changes() {
         .python_steps()
         .iter()
         .find_map(|step| match step {
-            crate::python_script::Step::Filter(filters) => {
+            crate::export::python_script::Step::Filter(filters) => {
                 Some(filters[0].searched.iter().map(|(n, _)| n.clone()).collect())
             }
             _ => None,

@@ -258,7 +258,7 @@ pub fn value_text(value: &AnyValue) -> String {
         // ISO 8601 seconds, as a CSV export and every other copy write it.
         AnyValue::Duration(v, unit) => {
             let mut out = String::new();
-            crate::nested_json::duration_iso(*v, *unit, &mut out);
+            crate::export::nested_json::duration_iso(*v, *unit, &mut out);
             out
         }
         AnyValue::Binary(bytes) => base64_text(bytes),
@@ -665,7 +665,7 @@ pub fn prefix(s: &str, budget: usize) -> &str {
 pub fn copy_text(column: &Column) -> PolarsResult<String> {
     let value = column.get(0)?;
     if is_nested_value(&value) {
-        let json = crate::nested_json::column_as_json(column)?;
+        let json = crate::export::nested_json::column_as_json(column)?;
         return Ok(match json.get(0)? {
             AnyValue::Null => String::new(),
             v => v.str_value().into_owned(),

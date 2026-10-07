@@ -184,7 +184,7 @@ fn varied() -> DataFrame {
 fn markdown_writes_what_it_wrote_holding_every_cell() {
     let empty = varied().head(Some(0));
     for df in [tricky(), varied(), empty] {
-        let df = crate::nested_json::frame_as_json(&df).unwrap();
+        let df = crate::export::nested_json::frame_as_json(&df).unwrap();
         let text = markdown(&df).unwrap();
         assert_eq!(text, markdown_reference(&df).unwrap());
         let layout = {
@@ -247,7 +247,7 @@ fn a_bounded_table_copy_writes_what_a_whole_one_would() {
 /// CSV export writes: TSV, CSV, Markdown and the HTML flavor.
 #[test]
 fn durations_copy_as_a_csv_export_writes_them() {
-    use crate::nested_json::tests::{duration_text, durations};
+    use crate::export::nested_json::tests::{duration_text, durations};
     let df = durations();
     let row = |i: usize, separator: &str| {
         duration_text()
@@ -290,7 +290,7 @@ fn durations_copy_as_a_csv_export_writes_them() {
 /// calendar, on which the writer panics, is its stored number in each.
 #[test]
 fn dates_copy_as_each_format_wrote_them() {
-    use crate::nested_json::tests::calendar;
+    use crate::export::nested_json::tests::calendar;
     let df = calendar(false);
     for format in CopyFormat::ALL {
         let payload = tabular_payload(&df, format, true, true).unwrap();

@@ -529,7 +529,7 @@ pub struct ChartExportRequest {
     pub format: ChartExportFormat,
     pub options: ExportOptions,
     /// Whether an existing file may be replaced (asked before the export started).
-    pub overwrite: crate::output_file::Overwrite,
+    pub overwrite: crate::export::output_file::Overwrite,
     /// Whether the file carries the chart's recipe, which the app writes in when the
     /// export starts.
     pub recipe: bool,

@@ -5,7 +5,7 @@ use crate::analysis::analysis_modal::AnalysisProgress;
 use crate::analysis::quality_memory::{
     KeptQualitySample, QUALITY_RELEASED_REMEMBERED, QualityCacheEntry, QualityCopyJob, RetainedCopy,
 };
-use crate::export_modal::ExportFormat;
+use crate::export::export_modal::ExportFormat;
 use crate::feedback::Confirm;
 use crate::jobs::{Answer, Job, Progress};
 use crate::table::DataTableState;

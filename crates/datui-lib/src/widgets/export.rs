@@ -3,7 +3,7 @@
 //! side by side on its row, where ←/→ visibly step along them.
 
 use crate::CompressionFormat;
-use crate::export_modal::{COMPRESSION_OPTIONS, ExportFocus, ExportFormat, ExportModal};
+use crate::export::export_modal::{COMPRESSION_OPTIONS, ExportFocus, ExportFormat, ExportModal};
 use crate::pointer::FieldId;
 use crate::render::context::RenderContext;
 use crate::widgets::ui::{FormRow, FormValue, HintBar, Surface};

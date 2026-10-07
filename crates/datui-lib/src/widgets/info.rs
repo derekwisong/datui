@@ -16,7 +16,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{HighlightSpacing, Paragraph, Row, StatefulWidget, Table, Widget};
 
-use crate::export_modal::ExportFormat;
+use crate::export::export_modal::ExportFormat;
 use crate::render::context::RenderContext;
 use crate::table::DataTableState;
 use crate::widgets::ui::{HintBar, SectionRule, Surface};

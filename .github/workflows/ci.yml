@@ -275,11 +275,18 @@ jobs:
 
       # The wheel takes any polars>=1.38, and `pip install datui` now brings 2.x, which
       # cannot read the plans the embedded Rust polars writes: frames go in as Arrow
-      # and captures come back as rows. Last, since it replaces the pinned polars.
-      - name: Run Python tests against Polars 2
+      # and captures come back as rows. Last, since they replace the pinned polars; the
+      # extension is not rebuilt.
+      - name: Run Python tests against the Polars floor
+        run: |
+          .venv/bin/pip install --disable-pip-version-check "polars==1.38.*"
+          . .venv/bin/activate && pytest python/tests/ -v
+
+      - name: Run Python tests and examples against Polars 2
         run: |
           .venv/bin/pip install --disable-pip-version-check "polars==2.*"
           . .venv/bin/activate && pytest python/tests/ -v
+          .venv/bin/python scripts/docs/doc_examples.py --python
 
   # Windows on every pull request: the build, the library and binary tests, and the
   # binary run without a terminal. The full suite stays on the windows job below

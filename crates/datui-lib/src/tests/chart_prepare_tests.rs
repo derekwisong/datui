@@ -1,5 +1,6 @@
 use crate::chart_export::ChartExportFormat;
-use crate::chart_modal::{Aggregate, ChartFocus, Mark};
+use crate::chart_jobs::ChartCache;
+use crate::chart_modal::{Aggregate, ChartFocus, ChartModal, Mark};
 use crate::chart_plot::{LinesData, PlotData};
 use crate::*;
 use std::sync::mpsc;

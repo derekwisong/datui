@@ -8,6 +8,7 @@ use crate::{App, AppEvent, logging};
 use std::sync::Arc;
 
 /// The dataset's row count, footer pass and line indexing, and what waits on them.
+#[derive(Default)]
 pub struct Counting {
     /// The footer counter of the dataset on screen, reported to by its pass behind the
     /// open; handed over by the installing load. See [`Self::footer_progress`].
@@ -77,11 +78,17 @@ pub struct Counting {
 }
 
 impl Counting {
-    /// Forget Ends waiting on the replaced dataset's footers or count: a
-    /// `len_generation` does not say which dataset, so a leftover would act on the next.
-    pub(crate) fn reset_for_dataset(&mut self) {
+    /// A new dataset is on screen, its footers counted on `footers`: the last one's
+    /// pass stops, and Ends or `:N`s waiting on its footers, count or lines are
+    /// forgotten: a `len_generation` does not say which dataset, so a leftover would
+    /// act on the next.
+    pub(crate) fn reset_for_dataset(&mut self, footers: Arc<crate::schema_union::FooterProgress>) {
+        self.footer_progress.cancel();
+        self.footer_progress = footers;
         self.end_when_the_footers_land = None;
         self.end_after_count = None;
+        self.end_when_indexed = None;
+        self.goto_when_indexed = None;
     }
 
     /// The markers a running query keeps for the view it may roll back to.
@@ -293,15 +300,6 @@ impl App {
         });
     }
 
-    /// Index the rest of a text file's lines behind its first rows, announcing
-    /// [`AppEvent::LinesIndexed`]. Not waited on; a read of every line waits on its own
-    /// worker. The last dataset's indexing stops.
-    pub(crate) fn start_indexing(&mut self) {
-        self.counting.end_when_indexed = None;
-        self.counting.goto_when_indexed = None;
-        self.index_lines();
-    }
-
     /// Run the indexing of the screen's dataset if lines remain (new, or paused for
     /// home). A dataset no longer on screen stops for good; reads waiting on it give up.
     pub(crate) fn index_lines(&mut self) {
@@ -323,36 +321,22 @@ impl App {
         self.counting.indexing_lines = Some(lines.clone());
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.counting.indexing_stop = stop.clone();
-        let generation = self.dataset_generation;
-        let tx = self.events.clone();
-        let waiting = lines.clone();
-        let spawned = std::thread::Builder::new()
-            .name("datui-index".to_string())
-            .spawn(move || {
-                loop {
-                    // Paused or replaced: whoever stopped it decides the waiting reads' fate.
-                    if stop.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    // A panic stops it where it is: the rows so far are all there is.
-                    let done =
-                        logging::catch_panic(|| lines.index_more(INDEX_STEP)).unwrap_or(true);
-                    if done {
-                        lines.stop_indexing();
-                        let rows = lines.rows();
-                        let _ = tx.send(AppEvent::LinesIndexed { generation, rows });
-                        return;
-                    }
+        let dataset = self.dataset_generation;
+        // Not waited on; a read of every line waits on its own worker.
+        self.spawn_job(Job::IndexLines { dataset }, None, move |_| {
+            loop {
+                // Paused or replaced: whoever stopped it decides the waiting reads' fate.
+                if stop.load(Ordering::Relaxed) {
+                    return Err("stopped".to_string());
                 }
-            });
-        // No thread: the lines so far are all there is, and nothing waits for more.
-        if spawned.is_err() {
-            waiting.stop_indexing();
-            self.counting.indexing_lines = None;
-            if let Some(state) = self.data_table_state.as_mut() {
-                state.lines_indexed(waiting.rows());
+                // A panic stops it where it is: the rows so far are all there is.
+                let done = logging::catch_panic(|| lines.index_more(INDEX_STEP)).unwrap_or(true);
+                if done {
+                    lines.stop_indexing();
+                    return Ok(Answer::LinesIndexed(lines.rows()));
+                }
             }
-        }
+        });
     }
 
     /// Home is up: indexing and the reads waiting on it pause until the table is back
@@ -368,7 +352,7 @@ impl App {
 
     /// More lines are indexed: the frames take them; once all are, the count and any
     /// waiting End follow.
-    fn lines_indexed(&mut self, generation: u64, rows: usize) {
+    pub(crate) fn lines_indexed(&mut self, generation: u64, rows: usize) {
         if generation != self.dataset_generation {
             return;
         }
@@ -679,10 +663,6 @@ impl App {
                         self.take_down_the_counting_status();
                     }
                 }
-                None
-            }
-            AppEvent::LinesIndexed { generation, rows } => {
-                self.lines_indexed(generation, rows);
                 None
             }
             _ => unreachable!("not an event for counting_event"),

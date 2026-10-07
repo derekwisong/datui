@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// Where the dataset on screen came from, and how it was opened.
+#[derive(Default)]
 pub struct OpenedSource {
     pub(crate) original_file_format: Option<crate::export_modal::ExportFormat>,
     pub(crate) original_file_delimiter: Option<u8>,
@@ -297,7 +298,7 @@ impl App {
             footers,
         } = loaded;
         let options = &options;
-        self.counting.reset_for_dataset();
+        self.counting.reset_for_dataset(footers);
         // One per dataset reaching the screen, not per open: a failed open leaves the last
         // dataset up, and its footer pass must still finish into it.
         self.dataset_generation = self.dataset_generation.wrapping_add(1);
@@ -347,10 +348,6 @@ impl App {
         self.info.catalog_entry = path
             .as_deref()
             .and_then(|p| home::catalog_entry_for(&shown, p));
-        // Remaining footers count on the open's counter, now the dataset's; the last
-        // dataset's pass stops.
-        self.counting.footer_progress.cancel();
-        self.counting.footer_progress = footers;
         self.data_table_state = Some(state);
         // A followed file's watcher starts with its dataset and stops with it.
         if options.follow
@@ -405,7 +402,7 @@ impl App {
         }
         // What the dataset still has to learn about itself is read behind it.
         self.start_pending_footers();
-        self.start_indexing();
+        self.index_lines();
         // `#` for text and logs, unless the flag or the config said.
         if options.row_numbers_auto
             && let Some(state) = self.data_table_state.as_mut()

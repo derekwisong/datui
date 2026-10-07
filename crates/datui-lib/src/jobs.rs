@@ -22,10 +22,9 @@
 //! - **Holds.** A continuation the pump has not dispatched, or a download waiting
 //!   on the user, also holds the generation ([`Hold`]).
 //!
-//! Not owned here: the row count (`OwedCount`), the footer pass and the home
-//! screen's workers, each keyed by its own marker. `reread_after_the_footers_joined`
-//! sends its jump straight to the channel, safe only because its callers checked
-//! nothing would be stranded.
+//! Not owned here: the row count (`OwedCount`) and the home screen's workers, each
+//! keyed by its own marker. `reread_after_the_footers_joined` sends its jump straight
+//! to the channel, safe only because its callers checked nothing would be stranded.
 //!
 //! A worker that never returns (a `hard` NFS mount, a wedged object-store read)
 //! keeps its keys and lease until superseded.
@@ -74,6 +73,7 @@ pub enum JobKind {
     UnfitCount,
     FootersJoin,
     JournalDetail,
+    IndexLines,
 }
 
 /// One started operation. Issued when it starts, carried by its worker, and handed
@@ -182,6 +182,9 @@ pub(crate) enum Job {
     FootersJoin { dataset: u64 },
     /// A piped journal's Info tab re-read once it ended, for `dataset`.
     JournalDetail { dataset: u64 },
+    /// Indexing the rest of a text file's lines behind its first rows, for the
+    /// `dataset_generation` it was started for. Stopped by its flag, it fails.
+    IndexLines { dataset: u64 },
 }
 
 /// A look at a path chosen on the home screen. Home keys act while busy, so a
@@ -288,6 +291,7 @@ impl Job {
             Job::UnfitCount { .. } => JobKind::UnfitCount,
             Job::FootersJoin { .. } => JobKind::FootersJoin,
             Job::JournalDetail { .. } => JobKind::JournalDetail,
+            Job::IndexLines { .. } => JobKind::IndexLines,
         }
     }
 
@@ -319,6 +323,7 @@ impl Job {
                 | Job::UnfitCount { .. }
                 | Job::FootersJoin { .. }
                 | Job::JournalDetail { .. }
+                | Job::IndexLines { .. }
                 | Job::ReshapePreview { .. }
                 | Job::ChartPrepare(_)
         )
@@ -335,6 +340,7 @@ impl Job {
                 | Job::UnfitCount { .. }
                 | Job::FootersJoin { .. }
                 | Job::JournalDetail { .. }
+                | Job::IndexLines { .. }
                 | Job::ChartExport { .. }
                 | Job::ChartPrepare(_)
                 | Job::OwedRows { .. }
@@ -456,6 +462,8 @@ pub(crate) enum Answer {
     FootersJoined(Option<Box<crate::table::FootersFound>>),
     /// [`Job::JournalDetail`]: the journal's Info tab, when it could be read.
     JournalDescribed(Option<Box<crate::text_formats::Detail>>),
+    /// [`Job::IndexLines`]: every line is indexed, this many rows of them.
+    LinesIndexed(usize),
 }
 
 impl Answer {
@@ -1464,6 +1472,17 @@ mod tests {
         let facts = jobs.start(Job::FileFacts { dataset: 1 }, None);
         let footers = jobs.start(Job::FootersJoin { dataset: 1 }, None);
         let journal = jobs.start(Job::JournalDetail { dataset: 1 }, None);
+        let index = jobs.start(Job::IndexLines { dataset: 1 }, None);
+        let mut modal = crate::chart_modal::ChartModal::new();
+        modal.spec.encoding.x.field = Some("a".into());
+        let chart = jobs.start(
+            Job::ChartPrepare(Box::new(ChartPrep {
+                request: crate::ChartRequest::from_modal(&modal).expect("a request"),
+                dataset: Some(1),
+                cancel: Arc::default(),
+            })),
+            None,
+        );
         assert!(!jobs.would_strand());
         assert!(jobs.try_advance());
         assert!(!jobs.is_current(rows.ticket()));
@@ -1477,6 +1496,9 @@ mod tests {
         // generation; its answer is judged by the dataset alone. So is a journal's.
         assert!(jobs.is_current(footers.ticket()));
         assert!(jobs.is_current(journal.ticket()));
+        assert!(jobs.is_current(index.ticket()));
+        // A chart's data is judged by its dataset and put down with its view.
+        assert!(jobs.is_current(chart.ticket()));
     }
 
     /// Progress is sent with the job's ticket; what runs after the answer runs after

@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 
 /// The home screen's work in flight and what it keeps for the session: probes, listings,
 /// search, previews and schemas.
+#[derive(Default)]
 pub struct HomeApp {
     /// Network roots being listed off-thread, so a probe is not started twice. Never
     /// removed for a root that does not answer: its thread is lost, and a retry would
@@ -2252,7 +2253,7 @@ impl App {
             }
             AppEvent::HomeMeasured { measured, done } => {
                 for (path, m) in measured {
-                    self.home.enriched.insert(path.clone(), m.clone());
+                    self.home.enriched.insert(path, m);
                 }
                 self.home.apply_measurements();
                 if done {
@@ -2266,7 +2267,7 @@ impl App {
                 match self.home.enriched.get_mut(&path) {
                     Some(known) => known.size = measured.size,
                     None => {
-                        self.home.enriched.insert(path.clone(), measured);
+                        self.home.enriched.insert(path, measured);
                     }
                 }
                 self.home.apply_measurements();
@@ -2280,7 +2281,7 @@ impl App {
                 // Kept even if the listing was rebuilt since: probes and peeks rebuild it often,
                 // and dropping answers would leave rows unlabeled.
                 for (path, m) in measured {
-                    self.home.enriched.insert(path.clone(), m.clone());
+                    self.home.enriched.insert(path, m);
                 }
                 // Nothing re-sorts: kinds are written into rows in place, so the listing never
                 // reshuffles under the cursor.
@@ -2427,14 +2428,14 @@ impl App {
                 if let Some(source) = self.home.cloud.iter_mut().find(|s| s.id == id) {
                     source.refreshing = false;
                     for (place, lines) in details {
-                        source.place_details.insert(place.clone(), lines.clone());
+                        source.place_details.insert(place, lines);
                     }
                     match failure {
                         // A failed refresh keeps the last buckets, and the row says it failed.
                         Some((short, detail)) => {
                             for bucket in buckets {
                                 if !source.buckets.contains(&bucket) {
-                                    source.buckets.push(bucket.clone());
+                                    source.buckets.push(bucket);
                                 }
                             }
                             source.status = home::CloudStatus::Failed { short, detail };
@@ -2491,7 +2492,7 @@ impl App {
             AppEvent::HomeProbeFailed { root, message } => {
                 self.home_app.probes_inflight.retain(|p| p != &root);
                 self.home_app.listing_cancels.remove(&root);
-                self.home.probe_failed(root.clone(), Some(message));
+                self.home.probe_failed(root, Some(message));
                 self.home_refresh();
                 None
             }
@@ -2559,7 +2560,7 @@ impl App {
             AppEvent::HomeCloudKinds { kinds, failed } => {
                 for directory in failed {
                     self.home.peeking.remove(&directory);
-                    self.home.peek_failed.insert(directory.clone());
+                    self.home.peek_failed.insert(directory);
                 }
                 let roots: Vec<PathBuf> = self
                     .home
@@ -2571,9 +2572,7 @@ impl App {
                     // Answered: out of `peeking` into the set rows are labeled from; every directory
                     // comes back, so none is asked twice.
                     self.home.peeking.remove(&directory);
-                    self.home
-                        .cloud_kinds
-                        .insert(directory.clone(), kind.clone());
+                    self.home.cloud_kinds.insert(directory, kind);
                 }
                 for root in roots {
                     self.home.apply_cloud_kinds(&root);

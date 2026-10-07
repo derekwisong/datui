@@ -33,7 +33,7 @@ impl MainViewContent {
             MainViewContent::Home
         } else if app.awaiting_dataset() {
             MainViewContent::Loading
-        } else if app.overlay == crate::Overlay::Hex && app.hex_view.view.is_some() {
+        } else if app.overlay == crate::Overlay::Hex && app.hex.view.is_some() {
             MainViewContent::Hex
         } else if app.value_counts_shown() {
             MainViewContent::ValueCounts
@@ -280,11 +280,7 @@ pub fn help_key(app: &crate::App, content: MainViewContent) -> Option<&'static s
             !app.info.documentation.is_open()
                 && (!app.home.filter.is_empty() || app.home.path_input_active)
         }
-        MainViewContent::Hex => app
-            .hex_view
-            .view
-            .as_ref()
-            .is_some_and(|v| v.prompt.is_some()),
+        MainViewContent::Hex => app.hex.view.as_ref().is_some_and(|v| v.prompt.is_some()),
         _ => false,
     };
     Some(if types { "F1" } else { "?" })
@@ -786,7 +782,7 @@ fn hex_control_keys(app: &crate::App) -> Vec<Hint> {
     let say = |keys, label| registry_hint_as(Context::Hex, None, keys, label);
     let prompt = |keys| registry_hint_in(Context::Hex, Some("Prompt"), keys);
     let prompt_as = |keys, label| registry_hint_as(Context::Hex, Some("Prompt"), keys, label);
-    let Some(view) = app.hex_view.view.as_ref() else {
+    let Some(view) = app.hex.view.as_ref() else {
         return Vec::new();
     };
     if view.picker.is_some() {

@@ -5,7 +5,7 @@
 
 use super::chart_prepare_tests::{open, pump};
 use crate::chart_export::{self, ChartExportFormat, ExportOptions};
-use crate::chart_modal::{Aggregate, Mark};
+use crate::chart_modal::{Aggregate, ChartModal, Mark};
 use crate::*;
 use std::sync::mpsc;
 

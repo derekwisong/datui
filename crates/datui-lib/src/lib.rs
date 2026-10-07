@@ -223,8 +223,8 @@ use analysis_modal::{AnalysisModal, AnalysisProgress};
 use background::{CacheWrites, InflightCollect, LenCount, OwedCount};
 use chart_export::ChartExportRequest;
 use chart_export_modal::ChartExportModal;
-use chart_jobs::{ChartCache, ChartRequest};
-use chart_modal::{ChartColumns, ChartModal};
+use chart_jobs::ChartRequest;
+use chart_modal::ChartColumns;
 
 pub use error_display::{ErrorKindForPython, error_for_python};
 pub use export::{ExportOptions, ExportRequest};
@@ -544,11 +544,6 @@ pub enum AppEvent {
     /// A frame was painted. The run loop calls [`App::frame_painted`]; a harness
     /// sends this when [`App::count_waits_for_a_frame`].
     FramePainted,
-    /// Every line of a text file opened from its first rows is indexed.
-    LinesIndexed {
-        generation: u64,
-        rows: usize,
-    },
     /// Write the on-screen Data Quality report from memory; nothing is read.
     QualityReportExport(PathBuf, crate::quality_export::ReportFormat, Overwrite),
     /// A directory named on the command line: look at it on a worker, then do what
@@ -966,7 +961,7 @@ pub struct App {
     /// The retype and combine forms.
     pub column_forms: retype_keys::ColumnForms,
     /// The hex view, and the number its next read is tagged with.
-    pub hex_view: hex_keys::HexState,
+    pub hex: hex_keys::HexState,
     error_modal: ErrorModal,
     flash: Option<Flash>,
     pub confirmation_modal: ConfirmationModal,
@@ -2162,7 +2157,7 @@ impl App {
             Overlay::Info | Overlay::ValueCounts => false,
             // The prompt and the spec picker's filter type.
             Overlay::Hex => self
-                .hex_view
+                .hex
                 .view
                 .as_ref()
                 .is_some_and(|view| view.prompt.is_some() || view.picker.is_some()),
@@ -2739,84 +2734,26 @@ impl App {
         let mut app = App {
             path: None,
             data_table_state: None,
-            counting: counting::Counting {
-                footer_progress: Arc::new(crate::schema_union::FooterProgress::default()),
-                footers_this_frame: None,
-                loaded_ahead_from: None,
-                len_count_inflight: None,
-                count_after_paint: None,
-                #[cfg(test)]
-                counts_spawned: std::cell::Cell::new(0),
-                #[cfg(test)]
-                first_rows_asked: 0,
-                len_count_failed: None,
-                end_after_count: None,
-                end_when_the_footers_land: None,
-                end_when_indexed: None,
-                indexing_stop: Arc::default(),
-                indexing_lines: None,
-                indexing_paused: false,
-                goto_when_indexed: None,
-                count_progress: Arc::default(),
-                exact_count_asked: None,
-                count_after_stop: None,
-                footers_held: None,
-                followed_fields_held: None,
-                reread_owed: None,
-                listed_this_frame: None,
-            },
+            counting: counting::Counting::default(),
             home: home::HomeState {
                 hide_unreadable: !app_config.home.show_unreadable,
                 formats: formats.clone(),
                 ..Default::default()
             },
             home_app: home_app::HomeApp {
-                probes_inflight: Vec::new(),
-                listing_cancels: HashMap::new(),
-                narrowing: None,
-                #[cfg(feature = "cloud")]
-                cloud_discovery_started: false,
-                search_inflight: false,
-                search_generation: 0,
-                last_load_error: None,
-                schema_inflight: Vec::new(),
-                generation: 0,
-                refresh_owed: false,
-                schema_cache: HashMap::new(),
-                previews: crate::home_preview::Previews::default(),
-                remembered_moved: false,
-                #[cfg(test)]
-                worker_dies: None,
                 local_desktop: link_open::local_desktop(link_open::Platform::current(), |name| {
                     std::env::var(name).ok()
                 }),
-                reads: crate::home_preview::ReadCounts::default(),
+                ..Default::default()
             },
-            source: open_scan::OpenedSource {
-                original_file_format: None,
-                original_file_delimiter: None,
-                opened: None,
-                opened_from_home: false,
-                startup_view: None,
-                shape_remembered: None,
-            },
-            pipes: run::Pipes {
-                stdin_reader: None,
-                stdout_pass: None,
-                follow_drawn: None,
-                recording_on: None,
-                recording_end_said: false,
-            },
+            source: open_scan::OpenedSource::default(),
+            pipes: run::Pipes::default(),
             events,
             debug: DebugState::default(),
             info_modal: InfoModal::new(),
             info: info_keys::InfoState {
-                file_facts: None,
-                codebook: None,
-                catalog_entry: None,
-                documentation: Default::default(),
-                info_documentation: Default::default(),
                 head_web_rows: !cache::running_as_a_cargo_test(),
+                ..Default::default()
             },
             prompt: query_prompt::QueryPrompt {
                 query_input: TextInput::new()
@@ -2856,48 +2793,22 @@ impl App {
                 paths: Vec::new(),
             },
             quality: quality_runs::QualityRuns {
-                cache: Vec::new(),
-                samples: Vec::new(),
-                released: Vec::new(),
                 memory_budget: QUALITY_MEMORY_BUDGET,
-                copies: Vec::new(),
-                copy_released: None,
-                copy_unusable: None,
-                copy_free: std::sync::Mutex::new(None),
-                evidence_return: None,
-                evidence_label: None,
+                ..Default::default()
             },
             chart: chart_jobs::Charts {
-                modal: ChartModal::new(),
                 export_modal: chart_export_modal,
-                cache: ChartCache::default(),
-                asked: None,
-                export_waiting: None,
+                ..Default::default()
             },
             export_modal: ExportModal::new(),
             copy_modal: copy_modal::CopyModal::new(),
             inspector_modal: inspector_modal::InspectorModal::new(),
-            external: run::External {
-                open: None,
-                open_dir: None,
-                clipboard: None,
-            },
-            pickers: picker_keys::Pickers {
-                go_to_column: crate::widgets::ui::PickerState::default(),
-                format_picker: crate::widgets::ui::PickerState::default(),
-                table_picker: crate::widgets::ui::PickerState::default(),
-                table_choices: None,
-            },
+            external: run::External::default(),
+            pickers: picker_keys::Pickers::default(),
             value_counts: value_counts_modal::ValueCountsModal::default(),
-            hex_view: hex_keys::HexState {
-                view: None,
-                serial: 0,
-            },
+            hex: hex_keys::HexState::default(),
             export_counts: None,
-            column_forms: retype_keys::ColumnForms {
-                retype: None,
-                combine: None,
-            },
+            column_forms: retype_keys::ColumnForms::default(),
             error_modal: ErrorModal::new(),
             flash: None,
             confirmation_modal: ConfirmationModal::new(),
@@ -4044,8 +3955,7 @@ impl App {
             AppEvent::AnalysisCompute(tool) => self.spawn_analysis(tool),
             AppEvent::BackgroundLenReady { .. }
             | AppEvent::FramePainted
-            | AppEvent::BackgroundLenFailed { .. }
-            | AppEvent::LinesIndexed { .. } => self.counting_event(event),
+            | AppEvent::BackgroundLenFailed { .. } => self.counting_event(event),
             AppEvent::BackgroundQualitySampleKept { kept } => {
                 self.retain_quality_sample(&kept);
                 None
@@ -4061,7 +3971,6 @@ impl App {
                 if let Some(event) = Self::route_named_without_looking(&paths, &options) {
                     return Some(event);
                 }
-                let (paths, options) = (paths, options);
                 let formats = self.formats.clone();
                 // The open's first phase. Unleased: an answer for an open the user left is thrown
                 // away by the loader, not waited for.
@@ -4087,11 +3996,9 @@ impl App {
                 });
                 None
             }
-            AppEvent::LookThenOpenDirectory(dir, options) => {
+            AppEvent::LookThenOpenDirectory(looking, options) => {
                 // Named on the wait so the first frame says which directory is being looked at;
                 // Ctrl+C and Ctrl+O keep working during it.
-                let looking = dir;
-                let options = options;
                 self.put_down_load_in_flight();
                 let load = self.loading.look_at_directory(looking.clone());
                 // A newer look replaces an older one.
@@ -4145,10 +4052,12 @@ impl App {
                 });
                 None
             }
-            AppEvent::ClassifyThenOpen { path, jump } => {
+            AppEvent::ClassifyThenOpen {
+                path: looking,
+                jump,
+            } => {
                 // A second Enter supersedes the first (home keys act while busy): the newer look
                 // is the one waited for, and refusing would let a dead share block every look.
-                let looking = path;
                 self.jobs.supersede(|job| matches!(job, Job::Classify(_)));
                 let look = Job::Classify(jobs::Classify {
                     path: looking.clone(),
@@ -4223,15 +4132,8 @@ impl App {
             }
             AppEvent::ApplyView(order, locked, filters, columns, descending) => {
                 if let Some(state) = &mut self.data_table_state {
-                    let change = state.deferred(|s| {
-                        s.apply_view(
-                            order.clone(),
-                            locked,
-                            filters.clone(),
-                            columns.clone(),
-                            descending.clone(),
-                        )
-                    });
+                    let change = state
+                        .deferred(|s| s.apply_view(order, locked, filters, columns, descending));
                     self.spawn_async_collect(match change {
                         crate::table::ViewChange { sort: true, .. } => "Sorting...",
                         crate::table::ViewChange { filters: true, .. } => "Filtering...",
@@ -4243,7 +4145,7 @@ impl App {
             AppEvent::ColumnOrder(order, locked_count) => {
                 if let Some(state) = &mut self.data_table_state {
                     state.deferred(|s| {
-                        s.set_column_order(order.clone());
+                        s.set_column_order(order);
                         s.set_locked_columns(locked_count);
                     });
                     self.spawn_async_collect(Self::LOADING_BUFFER);
@@ -4289,7 +4191,6 @@ impl App {
                 // memory, nothing read.
                 let results = self.analysis_modal.quality.results.clone()?;
                 let plan = self.analysis_modal.quality_result_plan().clone();
-                let (path, format, overwrite) = (path, format, overwrite);
                 self.spawn_job(
                     Job::QualityReport,
                     Some("Writing the report..."),
@@ -4339,7 +4240,6 @@ impl App {
                 };
                 self.export_progress = Some(ExportProgress::new(&request.path, phase));
                 let writing = Self::export_write_phase(&request);
-                let request = request.clone();
                 self.spawn_job(Job::Export, Some("Exporting..."), move |worker| {
                     let report = worker.reporter();
                     let written = move |bytes| {
@@ -4377,7 +4277,6 @@ impl App {
                 if let Some(state) = &self.data_table_state {
                     let lf = state.visible_lf();
                     let streaming = state.polars_streaming();
-                    let (format, header) = (format, header);
                     self.spawn_job(Job::Copy, Some("Collecting data for copy..."), move |_| {
                         // A capped destination's copy is read in batches and abandoned at the cap; others
                         // are collected whole.
@@ -4831,6 +4730,10 @@ impl App {
                 }
                 None
             }
+            (Job::IndexLines { dataset }, Answer::LinesIndexed(rows)) => {
+                self.lines_indexed(dataset, rows);
+                None
+            }
             (Job::FootersJoin { dataset }, Answer::FootersJoined(found)) => {
                 self.footers_joined(dataset, found.map(|found| *found))
             }
@@ -5225,8 +5128,33 @@ impl App {
                 drop(held);
                 None
             }
-            // Each answer is the one its job asks for; another is dropped.
-            _ => None,
+            // An answer under another job than its own, a hex answer gone stale, or a
+            // journal that could not be read again: dropped with what it carries.
+            (
+                _,
+                Answer::Load(_)
+                | Answer::NamedPaths { .. }
+                | Answer::NamedPathMissing(_)
+                | Answer::LookedAt { .. }
+                | Answer::Kind(_)
+                | Answer::Rows(_)
+                | Answer::ReshapePreviewed { .. }
+                | Answer::ViewPivoted(_)
+                | Answer::FieldsRead(_)
+                | Answer::JsonParsed(_)
+                | Answer::Indented(_)
+                | Answer::Unpacked(_)
+                | Answer::ChartPrepared(_)
+                | Answer::ChartExported
+                | Answer::FileFacts(_)
+                | Answer::UnfitCounted(_)
+                | Answer::Found(_)
+                | Answer::HexOpened(_)
+                | Answer::HexFound(_)
+                | Answer::FootersJoined(_)
+                | Answer::JournalDescribed(_)
+                | Answer::LinesIndexed(_),
+            ) => None,
         }
     }
 
@@ -5241,14 +5169,6 @@ impl App {
         message: &str,
         panicked: bool,
     ) {
-        // With one line for the reason, a panic's message gives way to the log.
-        let could_not = |what: &str| {
-            if panicked {
-                format!("Could not {what}; see the log")
-            } else {
-                format!("Could not {what}: {message}")
-            }
-        };
         // Jobs judged by something of their own rather than by being current.
         match job {
             // Judged by the open: one put down or replaced is not the one waited on.
@@ -5328,16 +5248,42 @@ impl App {
             }
             // The Info tab keeps what the open read.
             Job::JournalDetail { .. } => return,
+            // Stopped: whoever stopped it says what becomes of the reads waiting on the
+            // lines.
+            Job::IndexLines { .. } => return,
             Job::Export if !current => {
                 self.forget_export();
                 return;
             }
-            _ => {}
+            Job::Classify(_)
+            | Job::Analysis(_)
+            | Job::SampleRows
+            | Job::Pivot
+            | Job::ViewPivot(_)
+            | Job::DrillRow
+            | Job::InspectRow { .. }
+            | Job::InspectJson { .. }
+            | Job::OpenValue
+            | Job::Export
+            | Job::Copy
+            | Job::QualityReport
+            | Job::ChartExport { .. }
+            | Job::ValueCounts
+            | Job::HexOpen { .. }
+            | Job::HexFind(_) => {}
         }
         // The rest act only for the job still current.
         if !current {
             return;
         }
+        // With one line for the reason, a panic's message gives way to the log.
+        let could_not = |what: &str| {
+            if panicked {
+                format!("Could not {what}; see the log")
+            } else {
+                format!("Could not {what}: {message}")
+            }
+        };
         match job {
             Job::Classify(_) => {
                 self.home.status = None;
@@ -5409,7 +5355,23 @@ impl App {
                     self.value_counts.failed = Some((computing.column, why));
                 }
             }
-            _ => {}
+            // Handled above.
+            Job::Load(_)
+            | Job::OpenNamed(_)
+            | Job::LookAtDirectory { .. }
+            | Job::Rows(_)
+            | Job::OwedRows { .. }
+            | Job::SampleDraw(_)
+            | Job::ReshapePreview { .. }
+            | Job::InspectPretty { .. }
+            | Job::InspectUnpack { .. }
+            | Job::FileFacts { .. }
+            | Job::ChartPrepare(_)
+            | Job::Find(_)
+            | Job::UnfitCount { .. }
+            | Job::FootersJoin { .. }
+            | Job::JournalDetail { .. }
+            | Job::IndexLines { .. } => {}
         }
     }
 

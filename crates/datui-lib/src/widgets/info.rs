@@ -758,7 +758,7 @@ fn read_line(state: &DataTableState) -> Option<String> {
 /// Told `None` rather than a number, because what a state holds before it has been
 /// counted is how far its buffer reached — printed under a heading that says "total",
 /// that reads as the size of the dataset. On a directory of thousands of files still
-/// being counted it would say `Rows (total): 70` beside a control bar showing a spinner.
+/// being counted it would say `Rows (total): 70` beside a footer showing a spinner.
 fn rows_and_columns(rows: Option<usize>, columns: usize) -> String {
     let middot = crate::glyphs::get().middot;
     match rows {

@@ -2,8 +2,8 @@ use crate::config::Theme;
 use crate::numfmt::NumberFormatSettings;
 use ratatui::style::Color;
 
-/// Snapshot of theme colors and display configuration for rendering.
-/// Passed to widgets to avoid threading many individual parameters.
+/// The theme's colors and the display settings, handed to every widget a frame draws
+/// in one value.
 #[derive(Debug, Clone)]
 pub struct RenderContext {
     pub keybind_hints: Color,

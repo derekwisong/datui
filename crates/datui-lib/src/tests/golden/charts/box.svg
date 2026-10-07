@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="320" viewBox="0 0 480 320" font-family="IBM Plex Sans">
+<rect x="0.00" y="0.00" width="480.00" height="320.00" fill="#ffffff" fill-opacity="1.00"/>
+<text x="31.1" y="53.7" font-size="22.6" font-weight="600" text-anchor="start" fill="#1f2430">Golden</text>
+<text x="52.7" y="226.8" font-size="14.0" font-weight="400" text-anchor="end" fill="#5b6170">0</text>
+<text x="52.7" y="179.7" font-size="14.0" font-weight="400" text-anchor="end" fill="#5b6170">20</text>
+<text x="52.7" y="132.6" font-size="14.0" font-weight="400" text-anchor="end" fill="#5b6170">40</text>
+<line x1="59.7" y1="245.5" x2="448.9" y2="245.5" stroke="#5b6170" stroke-width="1.33"/>
+<text x="31.1" y="87.3" font-size="14.0" font-weight="600" text-anchor="start" fill="#1f2430">a</text>
+<text x="254.3" y="286.1" font-size="14.0" font-weight="600" text-anchor="middle" fill="#1f2430">g</text>
+<text x="108.3" y="264.4" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">p</text>
+<text x="205.6" y="264.4" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">q</text>
+<text x="302.9" y="264.4" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">r</text>
+<text x="400.2" y="264.4" font-size="14.0" font-weight="400" text-anchor="middle" fill="#5b6170">s</text>
+<line x1="108.3" y1="157.5" x2="108.3" y2="135.9" stroke="#2a78d6" stroke-width="2.78"/>
+<line x1="108.3" y1="221.9" x2="108.3" y2="192.2" stroke="#2a78d6" stroke-width="2.78"/>
+<line x1="93.7" y1="135.9" x2="122.9" y2="135.9" stroke="#2a78d6" stroke-width="2.78"/>
+<line x1="93.7" y1="221.9" x2="122.9" y2="221.9" stroke="#2a78d6" stroke-width="2.78"/>
+<rect x="79.13" y="157.54" width="58.38" height="34.70" fill="#2a78d6" fill-opacity="0.18"/>
+<rect x="79.13" y="157.54" width="58.38" height="34.70" fill="none" stroke="#2a78d6" stroke-width="2.78"/>
+<line x1="79.1" y1="175.3" x2="137.5" y2="175.3" stroke="#2a78d6" stroke-width="5.56"/>
+<line x1="205.6" y1="157.3" x2="205.6" y2="130.0" stroke="#eb6834" stroke-width="2.78"/>
+<line x1="205.6" y1="215.3" x2="205.6" y2="192.8" stroke="#eb6834" stroke-width="2.78"/>
+<line x1="191.0" y1="130.0" x2="220.2" y2="130.0" stroke="#eb6834" stroke-width="2.78"/>
+<line x1="191.0" y1="215.3" x2="220.2" y2="215.3" stroke="#eb6834" stroke-width="2.78"/>
+<rect x="176.44" y="157.30" width="58.38" height="35.46" fill="#eb6834" fill-opacity="0.18"/>
+<rect x="176.44" y="157.30" width="58.38" height="35.46" fill="none" stroke="#eb6834" stroke-width="2.78"/>
+<line x1="176.4" y1="174.2" x2="234.8" y2="174.2" stroke="#eb6834" stroke-width="5.56"/>
+<line x1="302.9" y1="157.6" x2="302.9" y2="133.1" stroke="#1baf7a" stroke-width="2.78"/>
+<line x1="302.9" y1="215.8" x2="302.9" y2="192.0" stroke="#1baf7a" stroke-width="2.78"/>
+<line x1="288.3" y1="133.1" x2="317.5" y2="133.1" stroke="#1baf7a" stroke-width="2.78"/>
+<line x1="288.3" y1="215.8" x2="317.5" y2="215.8" stroke="#1baf7a" stroke-width="2.78"/>
+<rect x="273.74" y="157.60" width="58.38" height="34.40" fill="#1baf7a" fill-opacity="0.18"/>
+<rect x="273.74" y="157.60" width="58.38" height="34.40" fill="none" stroke="#1baf7a" stroke-width="2.78"/>
+<line x1="273.7" y1="175.3" x2="332.1" y2="175.3" stroke="#1baf7a" stroke-width="5.56"/>
+<line x1="400.2" y1="157.1" x2="400.2" y2="132.9" stroke="#eda100" stroke-width="2.78"/>
+<line x1="400.2" y1="218.9" x2="400.2" y2="192.6" stroke="#eda100" stroke-width="2.78"/>
+<line x1="385.6" y1="132.9" x2="414.8" y2="132.9" stroke="#eda100" stroke-width="2.78"/>
+<line x1="385.6" y1="218.9" x2="414.8" y2="218.9" stroke="#eda100" stroke-width="2.78"/>
+<rect x="371.05" y="157.12" width="58.38" height="35.46" fill="#eda100" fill-opacity="0.18"/>
+<rect x="371.05" y="157.12" width="58.38" height="35.46" fill="none" stroke="#eda100" stroke-width="2.78"/>
+<line x1="371.0" y1="175.0" x2="429.4" y2="175.0" stroke="#eda100" stroke-width="5.56"/>
+</svg>

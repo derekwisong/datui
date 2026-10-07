@@ -1401,7 +1401,7 @@ fn test_a_config_with_the_removed_ui_section_still_loads() {
 }
 
 /// `-c` names one setting; a removed one is refused, with nothing applied: the
-/// control bar's `custom_controls` went with the bar, and Text left the command line.
+/// footer's `custom_controls` went with the bar, and Text left the command line.
 #[test]
 fn removed_settings_are_refused_on_the_command_line() {
     use clap::Parser;

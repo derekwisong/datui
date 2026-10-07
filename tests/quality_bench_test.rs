@@ -315,7 +315,7 @@ fn run_study(app: &mut App, rx: &mpsc::Receiver<AppEvent>, study: &Study) {
         Vec::new()
     };
     let mut first = press(app, KeyCode::Enter);
-    if app.analysis_modal.data_quality_confirm_run {
+    if app.confirmation_modal.asks_full_scan() {
         // A full scan asks first; Enter there runs it.
         first = press(app, KeyCode::Enter);
     }

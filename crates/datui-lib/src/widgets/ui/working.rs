@@ -11,7 +11,7 @@ use ratatui::widgets::{Clear, Paragraph, Widget};
 #[derive(Clone, Copy)]
 pub struct Working<'a> {
     pub text: &'a str,
-    /// The throbber frame, so this spinner turns with the control bar's.
+    /// The throbber frame, so this spinner turns with the footer's.
     pub frame: usize,
 }
 

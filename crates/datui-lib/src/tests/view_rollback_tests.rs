@@ -60,7 +60,7 @@ fn columns(app: &App) -> Vec<String> {
 }
 
 /// The bottom line of a rendered App.
-fn control_bar(app: &mut App) -> String {
+fn footer_text(app: &mut App) -> String {
     use ratatui::widgets::Widget;
     let area = ratatui::layout::Rect::new(0, 0, 120, 24);
     let mut buf = ratatui::buffer::Buffer::empty(area);
@@ -122,7 +122,7 @@ fn a_startup_view_waits_for_views_still_being_read() {
     app.set_loading_phase("Scanning input", 10);
     app.busy = true;
     // The app draws and handles a key with the views still out.
-    control_bar(&mut app);
+    footer_text(&mut app);
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Char('?'),
         KeyModifiers::NONE,
@@ -324,10 +324,10 @@ fn the_bar_offers_esc_while_a_view_applies() {
             view.settings.pivot = None;
             view.settings.column_order = vec!["id".to_string(), "val".to_string()];
         }
-        let bar = control_bar(&mut app);
+        let bar = footer_text(&mut app);
         assert!(!bar.contains("Stop"), "nothing to stop yet: {bar}");
         assert!(app.apply_view(&view).is_ok());
-        let bar = control_bar(&mut app);
+        let bar = footer_text(&mut app);
         assert!(
             bar.contains("Applying view") && bar.contains("Esc Stop"),
             "pivot {pivot}: {bar}"
@@ -352,7 +352,7 @@ fn the_bar_offers_esc_while_a_pivot_is_computed() {
         aggregation: pivot_melt_modal::PivotAggregation::First,
         sort_columns: None,
     }));
-    let bar = control_bar(&mut app);
+    let bar = footer_text(&mut app);
     assert!(
         bar.contains("Computing pivot") && bar.contains("Esc Stop"),
         "{bar}"

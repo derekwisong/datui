@@ -136,11 +136,7 @@ fn leaving_the_dataset_abandons_an_export_write() {
         },
         Some("Exporting chart..."),
     );
-    app.export_progress = Some(crate::ExportProgress {
-        file_path: path,
-        current_phase: "Exporting chart".to_string(),
-        written: None,
-    });
+    app.export_progress = Some(crate::ExportProgress::new(&path, "Exporting chart"));
     let task_generation = app.task_generation();
 
     app.abandon_load();
@@ -179,11 +175,10 @@ fn an_export_counts_the_bytes_it_has_written() {
     );
     let export = app.job_for_tests(Job::Export, Some("Exporting..."));
     let ticket = export.ticket();
-    app.export_progress = Some(crate::ExportProgress {
-        file_path: PathBuf::from("/tmp/out.csv"),
-        current_phase: "Collecting data".to_string(),
-        written: None,
-    });
+    app.export_progress = Some(crate::ExportProgress::new(
+        &PathBuf::from("/tmp/out.csv"),
+        "Collecting data",
+    ));
     // An export that has ended.
     let older = app.job_for_tests(Job::Export, None);
     let passed = older.ticket();
@@ -350,14 +345,15 @@ fn xy_request(x: &str) -> ChartRequest {
     ChartRequest::from_modal(&modal).unwrap()
 }
 
-fn prepared_xy(x: &str) -> ChartPrepared {
+fn prepared_xy() -> ChartPrepared {
     ChartPrepared::XY(ChartCacheXY {
         other: false,
-        x_column: x.to_string(),
         names: vec!["y".to_string()],
         series: vec![vec![(0.0, 1.0)]],
         breaks: vec![Vec::new()],
         series_log: None,
+        xs: vec![0.0],
+        bounds: Some([0.0, 0.0, 1.0, 1.0]),
         x_axis_kind: chart_data::XAxisTemporalKind::Numeric,
         rows: chart_data::RowsRead::default(),
         rows_note: None,
@@ -378,13 +374,13 @@ fn has_log_series(cache: &ChartCache, request: &ChartRequest) -> bool {
 fn xy_entries_are_few_and_the_one_on_screen_stays() {
     let mut cache = ChartCache::default();
     let (a, b, c) = (xy_request("a"), xy_request("b"), xy_request("c"));
-    cache.insert(a.clone(), Ok(prepared_xy("a")));
-    cache.insert(b.clone(), Ok(prepared_xy("b")));
+    cache.insert(a.clone(), Ok(prepared_xy()));
+    cache.insert(b.clone(), Ok(prepared_xy()));
     cache.touch(&a, true);
     assert!(has_log_series(&cache, &a));
     assert!(!has_log_series(&cache, &b));
 
-    cache.insert(c.clone(), Ok(prepared_xy("c")));
+    cache.insert(c.clone(), Ok(prepared_xy()));
     assert!(cache.satisfies(&a), "on screen, so kept");
     assert!(!cache.satisfies(&b), "least recently used XY went");
     assert!(cache.satisfies(&c));

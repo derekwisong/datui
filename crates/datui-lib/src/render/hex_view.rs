@@ -1,7 +1,7 @@
 //! The hex view: a takeover of the main area. A header line names the file, a header
 //! row numbers the bytes, then a row of bytes per line (offset, hex, ASCII), with the
 //! byte inspector beside them when there is room, and a status line at the foot. The
-//! keys are on the control bar.
+//! keys are on the footer.
 
 use crate::hex_view::{ByteClass, Geometry, HexView, PromptKind, class, hex_x, readings};
 use crate::render::context::RenderContext;

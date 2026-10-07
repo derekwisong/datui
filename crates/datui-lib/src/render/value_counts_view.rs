@@ -1,6 +1,6 @@
 //! The Value Counts screen: a takeover over the table. One header line says which
 //! column and what was read; the summary strip under it; then a line per value with
-//! its rows, percent, cumulative percent and a bar. The keys are on the control bar.
+//! its rows, percent, cumulative percent and a bar. The keys are on the footer.
 
 use crate::numfmt::{self, CellFormatter};
 use crate::render::context::RenderContext;

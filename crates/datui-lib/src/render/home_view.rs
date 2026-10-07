@@ -377,7 +377,7 @@ fn render_wordmark(
     }
 }
 
-/// A filled bar carrying the name and current location, mirroring the control bar at
+/// A filled bar carrying the name and current location, mirroring the footer at
 /// the foot of the screen so the list sits between two anchors.
 fn render_title_bar(area: Rect, buf: &mut Buffer, app: &crate::App, ctx: &RenderContext) {
     let location = app
@@ -2609,7 +2609,7 @@ fn render_preview(
         }
         _ => {
             // One fragment, or none. The details list above already says what this
-            // is, and the control bar already says what Enter does; a sentence
+            // is, and the footer already says what Enter does; a sentence
             // repeating either is a sentence to read past on every row.
             let variants = spec
                 .as_deref()

@@ -955,7 +955,7 @@ pub struct DisplayConfig {
     pub type_row: bool,
     /// Give the `i` key a quiet accent when datui has noticed something about the data
     /// and the Info panel has not been opened since. The notes are collected either
-    /// way; this only decides whether the control bar points at them.
+    /// way; this only decides whether the footer points at them.
     pub notes_accent: bool,
     /// Take the mouse: the wheel scrolls and a click selects. The terminal's own text
     /// selection then needs its bypass modifier (Shift in most terminals).

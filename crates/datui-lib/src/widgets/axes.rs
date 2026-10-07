@@ -189,18 +189,18 @@ impl<'a> AxisSpec<'a> {
         Self { pad: width, ..self }
     }
 
-    /// The ways to tick this axis along `track`, the preferred first: about one label
-    /// per `spacing` cells, then coarser. A second group follows when the first may
-    /// come up empty: a time axis's dates at its ends and middle.
-    fn tick_sets(
+    /// The ways to tick this axis `length` long, the preferred first: about one label
+    /// per `spacing`, then coarser, none closer than `least`, minor ticks `minor_gap`
+    /// apart at the least. Cells on screen, points in a file. A second group follows
+    /// when the first may come up empty: a time axis's dates at its ends and middle.
+    pub fn tick_sets(
         &self,
-        track: Track,
+        length: f64,
         spacing: f64,
         least: f64,
         minor_gap: f64,
     ) -> Vec<Vec<TickSet>> {
         let [lo, hi] = self.bounds;
-        let length = track.length();
         match &self.scale {
             Scale::Fixed { ticks, label } => vec![
                 strides(ticks.len())
@@ -246,7 +246,7 @@ impl<'a> AxisSpec<'a> {
                     Box::new(move |v, level| x_axis_label_at(v, kind, (lo, hi), level, &format)),
                     "",
                 );
-                let fallback = ends.tick_sets(track, spacing, least, minor_gap).remove(0);
+                let fallback = ends.tick_sets(length, spacing, least, minor_gap).remove(0);
                 vec![primary, fallback]
             }
         }
@@ -740,7 +740,17 @@ impl<'a> PlotAxes<'a> {
     /// Draw `chart`'s datasets with these axes in `area`: the grid under them, the
     /// legend over them, then the tick marks, labels and titles.
     pub fn render(&self, chart: Chart<'_>, area: Rect, buf: &mut Buffer, g: &Glyphs) -> PlotFrame {
-        let frame = self.frame(area);
+        self.render_in(self.frame(area), chart, buf, g)
+    }
+
+    /// [`Self::render`] in a frame already worked out by [`Self::frame`].
+    pub fn render_in(
+        &self,
+        frame: PlotFrame,
+        chart: Chart<'_>,
+        buf: &mut Buffer,
+        g: &Glyphs,
+    ) -> PlotFrame {
         let x_track = Track {
             start: frame.graph.left(),
             cells: frame.graph.width,
@@ -773,15 +783,24 @@ impl<'a> PlotAxes<'a> {
                     .labels(y_labels),
             )
             .legend_position(None);
-        // Placed on the marks alone, before the grid is drawn under them.
+        // The marks drawn once, on their own: the legend is placed by them, and they
+        // go over the grid, which their blank cells leave alone.
+        let mut marks = Buffer::empty(frame.chart);
+        chart.render(frame.chart, &mut marks);
         let legend = self
             .legend
             .as_ref()
-            .and_then(|legend| place_legend(&chart, &frame, legend, g));
+            .and_then(|legend| place_legend(&marks, &frame, legend, g));
         if let Some(style) = self.grid {
             draw_grid(buf, frame.graph, &x.majors, &frame.y.majors, style, g);
         }
-        chart.render(frame.chart, buf);
+        let blank = ratatui::buffer::Cell::default();
+        for (i, cell) in marks.content().iter().enumerate() {
+            if *cell != blank {
+                let (x, y) = marks.pos_of(i);
+                buf[(x, y)] = cell.clone();
+            }
+        }
         g.plot.redraw_axes(frame.chart, buf);
         draw_tick_marks(buf, &frame, &x, self.line, g);
         let label_x = frame.chart.left();
@@ -817,12 +836,12 @@ struct LegendPlace {
     name_width: usize,
 }
 
-/// Where in `frame`'s plot the legend covers the fewest of `chart`'s marks: a
+/// Where in `frame`'s plot the legend covers the fewest of the marks in `probe`: a
 /// corner, or the middle of an edge. A braille cell counts its dots, so a sparse
 /// patch wins over a dense one. Corners first on a tie, the top right first. `None`
 /// when the plot is too small to give it a quarter.
 fn place_legend(
-    chart: &Chart<'_>,
+    probe: &Buffer,
     frame: &PlotFrame,
     legend: &Legend,
     g: &Glyphs,
@@ -846,8 +865,6 @@ fn place_legend(
     {
         return None;
     }
-    let mut probe = Buffer::empty(frame.chart);
-    chart.clone().render(frame.chart, &mut probe);
     let weight = |symbol: &str| -> usize {
         let mut chars = symbol.chars();
         match (chars.next(), chars.next()) {
@@ -1014,7 +1031,7 @@ fn fraction(v: f64, [lo, hi]: [f64; 2]) -> f64 {
 /// its axis: about one per four rows, each on its tick's row, in the fullest form
 /// that fits the width and tells them apart.
 pub fn fit_y_labels(axis: &AxisSpec<'_>, track: Track, width: u16) -> Placed {
-    let groups = axis.tick_sets(track, Y_SPACING, Y_LEAST, Y_MINOR_GAP);
+    let groups = axis.tick_sets(track.length(), Y_SPACING, Y_LEAST, Y_MINOR_GAP);
     let place = |set: &TickSet, labels: Option<&Vec<String>>| {
         let row = |v: f64| track.cell(1.0 - fraction(v, set.bounds));
         Placed {
@@ -1074,7 +1091,7 @@ fn distinct<'a>(labels: impl Iterator<Item = &'a String>) -> bool {
 pub fn fit_x_labels(axis: &AxisSpec<'_>, span: (u16, u16), track: Track) -> Placed {
     let (start, end) = span;
     let column = |v: f64| track.cell(fraction(v, axis.bounds));
-    let groups = axis.tick_sets(track, X_SPACING, X_LEAST, X_MINOR_GAP);
+    let groups = axis.tick_sets(track.length(), X_SPACING, X_LEAST, X_MINOR_GAP);
     for sets in &groups {
         for level in 0..MAX_LEVELS {
             for set in sets {

@@ -5,6 +5,7 @@
 use crate::background::{CacheWrites, OwedAnswer};
 use crate::cache::CacheManager;
 use crate::cli::FileFormat;
+use crate::feedback::Confirm;
 use crate::open_options::OpenOptions;
 #[cfg(feature = "cloud")]
 use crate::wait_on_runtime;
@@ -314,7 +315,7 @@ impl App {
         let runtime = self.runtime.clone();
         let cache = self.cache.clone();
         let writes = self.cache_writes.clone();
-        // The table's rows: the screen less the title, the header and the control bar.
+        // The table's rows: the screen less the title, the header and the footer.
         let visible = (screen_height as usize).saturating_sub(3).max(1);
         let owed = self.owed_answer(AppEvent::HomePreviewReady {
             path: path.clone(),
@@ -1379,8 +1380,8 @@ impl App {
                     "Hide {}? It comes back after datui cache clear.",
                     catalog.label
                 );
-                self.pending_hide_examples = true;
-                self.confirmation_modal.show_destructive(message, "Hide");
+                self.confirmation_modal
+                    .show_destructive(message, "Hide", Confirm::HideExamples);
             } else {
                 self.home.status = Some(format!(
                     "[home] hide = [\"{}\"] in config.toml hides it",
@@ -1392,12 +1393,13 @@ impl App {
         // A place row stands for every recent under it. Forgetting them all is one
         // keystroke from forgetting one, so it asks first, the way Shift+Delete does.
         if let Some(home::Row::Place { path, held, .. }) = self.home.selected_row() {
-            self.pending_forget_place = Some(path.clone());
-            self.confirmation_modal.show(format!(
+            let message = format!(
                 "Forget {held} recently opened {} under {}?",
                 if held == 1 { "dataset" } else { "datasets" },
                 home::display_path(&path)
-            ));
+            );
+            self.confirmation_modal
+                .show(message, Confirm::ForgetPlace(path.clone()));
             return;
         }
         // A row of catalog.toml's own section goes from the file, as Ctrl+D on it does.
@@ -2161,7 +2163,7 @@ impl App {
             // refusal here is that promise broken on the one directory that needed it.
             // Until datui reads the log, its files are what there is, and what makes
             // that honest is that nothing about it is silent: a note in the panel, a
-            // chip in the control bar, and `Enter` on the row one level up still goes
+            // chip in the footer, and `Enter` on the row one level up still goes
             // inside and says datui does not read the table itself yet.
             let lake = entry.kind.lake_name();
             // A prefix in an object store used to be scanned as Parquet whatever was

@@ -137,7 +137,8 @@ runs:
         done
 
     # The fixtures are cached under a key holding every input to the generator:
-    #   - scripts/generate_sample_data.py, which reads no other file
+    #   - scripts/generate_sample_data.py, which reads only itself and the next
+    #     file, to stamp the fixtures
     #   - scripts/requirements-fixtures.txt: every package it imports, and what
     #     those pull in, at exact versions
     #   - the Python version setup-python resolved, and the runner OS and arch

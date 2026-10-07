@@ -573,7 +573,7 @@ bookmarks."Daily highs, 2024" = "by_year/YEAR=2024/ELEMENT=TMAX/"
     let line = footer(&mut app);
     assert!(line.contains("^E Docs"), "{line}");
     drive(&mut app, ctrl('e'));
-    assert!(app.documentation.is_open());
+    assert!(app.info.documentation.is_open());
     let line = footer(&mut app);
     assert!(
         line.contains("documentation") && line.ends_with("? keys"),
@@ -588,7 +588,7 @@ bookmarks."Daily highs, 2024" = "by_year/YEAR=2024/ELEMENT=TMAX/"
     drive(&mut app, key(KeyCode::Char('j')));
     assert!(app.home.filter.is_empty());
     drive(&mut app, key(KeyCode::Esc));
-    assert!(!app.documentation.is_open());
+    assert!(!app.info.documentation.is_open());
 
     // Enter opens the bookmark whole, and the dataset carries the notes.
     select(&mut app, "Daily highs, 2024");
@@ -599,7 +599,7 @@ bookmarks."Daily highs, 2024" = "by_year/YEAR=2024/ELEMENT=TMAX/"
     });
     let headers = app.data_table_state.as_ref().unwrap().headers();
     assert!(headers.iter().any(|h| h == "Q_FLAG"), "{headers:?}");
-    let book = app.codebook.as_ref().expect("the notes came with it");
+    let book = app.info.codebook.as_ref().expect("the notes came with it");
     assert_eq!(
         book.column("Q_FLAG")
             .and_then(|c| c.legend_line(None))
@@ -607,9 +607,13 @@ bookmarks."Daily highs, 2024" = "by_year/YEAR=2024/ELEMENT=TMAX/"
         Some("blank = did not fail any quality assurance check")
     );
     // Info offers the same page on its Documentation tab.
-    let (label, entry) = app.catalog_entry.clone().expect("the entry came with it");
+    let (label, entry) = app
+        .info
+        .catalog_entry
+        .clone()
+        .expect("the entry came with it");
     assert_eq!((label.as_str(), entry.name.as_str()), ("Mine", "Weather"));
-    assert!(app.info_documentation.is_open());
+    assert!(app.info.info_documentation.is_open());
 }
 
 /// Ctrl+D adds a row to catalog.toml, keeping what is written there, and on a row of
@@ -735,7 +739,7 @@ fn a_web_files_size_is_a_hint_until_a_head_measures_it() {
     });
     select(&mut app, "Small");
     assert!(screen(&mut app).contains("~4.0 KiB"), "the hint, marked");
-    app.head_web_rows = true;
+    app.info.head_web_rows = true;
     pump(&mut app, &rx, |app| {
         app.home
             .selected_entry()
@@ -838,8 +842,8 @@ fn ctrl_e_documents_a_file_a_format_spec_reads() {
     let line = footer(&mut app);
     assert!(line.contains("^E Docs"), "{line}");
     drive(&mut app, ctrl('e'));
-    assert!(app.documentation.is_open());
-    let lines = doc_lines(&app.documentation).join("\n");
+    assert!(app.info.documentation.is_open());
+    let lines = doc_lines(&app.info.documentation).join("\n");
     for said in [
         "About(\"Order entry capture\")",
         "Field(\"format spec\", \"acme.orders\")",
@@ -866,11 +870,11 @@ fn ctrl_e_documents_a_file_a_format_spec_reads() {
         assert_eq!(app.help_context(), Some(Context::Documentation));
         drive(&mut app, key(KeyCode::Esc));
         assert_eq!(app.help_context(), None);
-        assert!(app.documentation.is_open());
+        assert!(app.info.documentation.is_open());
     }
 
     drive(&mut app, key(KeyCode::Esc));
-    assert!(!app.documentation.is_open());
+    assert!(!app.info.documentation.is_open());
 
     // Opened, the Info panel's Documentation tab shows the same page.
     select(&mut app, "day.ord");
@@ -879,13 +883,13 @@ fn ctrl_e_documents_a_file_a_format_spec_reads() {
         app.data_table_state.is_some() && !app.is_busy()
     });
     assert_eq!(app.error_message(), None);
-    assert!(app.info_documentation.is_open());
+    assert!(app.info.info_documentation.is_open());
     // Named for the file just opened, not the one before it.
     assert_eq!(
-        app.info_documentation.doc.as_ref().map(|d| d.title()),
+        app.info.info_documentation.doc.as_ref().map(|d| d.title()),
         Some("day.ord")
     );
-    let lines = doc_lines(&app.info_documentation).join("\n");
+    let lines = doc_lines(&app.info.info_documentation).join("\n");
     assert!(lines.contains("Section(\"RECORD TYPES\", 2)"), "{lines}");
     assert!(lines.contains("Limit price (USD)"), "{lines}");
 }
@@ -920,8 +924,8 @@ columns.shares = {{ unit = "lots" }}
     pump(&mut app, &rx, |app| spec_row_listed(app, "Lab orders"));
     select(&mut app, "Lab orders");
     drive(&mut app, ctrl('e'));
-    assert!(app.documentation.is_open());
-    let lines = doc_lines(&app.documentation);
+    assert!(app.info.documentation.is_open());
+    let lines = doc_lines(&app.info.documentation);
     let text = lines.join("\n");
     assert_eq!(lines[0], "About(\"Orders from the lab\")", "{text}");
     for said in [
@@ -1041,8 +1045,8 @@ homepage = "https://user:pw@example.com/"
     let to_link = |app: &mut App, label: &str| {
         drive(app, key(KeyCode::Char('g')));
         for _ in 0..40 {
-            let lines = app.documentation.lines();
-            if matches!(lines.get(app.documentation.cursor),
+            let lines = app.info.documentation.lines();
+            if matches!(lines.get(app.info.documentation.cursor),
                 Some(datui::widgets::documentation::DocLine::Link(l, _)) if *l == label)
             {
                 return;
@@ -1053,7 +1057,7 @@ homepage = "https://user:pw@example.com/"
     };
 
     // No local desktop: no `o` in the footer, and `o` says why.
-    app.local_desktop = false;
+    app.home_app.local_desktop = false;
     select(&mut app, "Linked");
     drive(&mut app, ctrl('e'));
     to_link(&mut app, "documentation");
@@ -1067,11 +1071,11 @@ homepage = "https://user:pw@example.com/"
     );
     drive(&mut app, key(KeyCode::Esc));
 
-    app.local_desktop = true;
+    app.home_app.local_desktop = true;
     select(&mut app, "Linked");
     drive(&mut app, ctrl('e'));
     // The first line is the description, not a link: `o` does nothing there.
-    assert!(app.documentation.link().is_none());
+    assert!(app.info.documentation.link().is_none());
     assert!(!chips(&mut app).contains("Open"));
     drive(&mut app, key(KeyCode::Char('o')));
     assert!(!app.confirmation_modal.active);
@@ -1108,7 +1112,10 @@ homepage = "https://user:pw@example.com/"
     assert_eq!(app.confirmation_modal.message, "Open http://example.org/x?");
     drive(&mut app, key(KeyCode::Esc));
     assert!(!app.confirmation_modal.active);
-    assert!(app.documentation.is_open(), "Esc closed only the question");
+    assert!(
+        app.info.documentation.is_open(),
+        "Esc closed only the question"
+    );
     drive(&mut app, key(KeyCode::Esc));
 
     // A link with a password in it is never offered to the browser. (Catalogs

@@ -273,7 +273,7 @@ fn render_body(
             selected_theoretical_distribution: app.analysis_modal.selected_theoretical_distribution,
             histogram_scale: app.analysis_modal.histogram_scale,
             theme: &app.theme,
-            table_cell_padding: app.table_cell_padding,
+            table_cell_padding: app.display.table_cell_padding,
             number_format: &ctx.number_format,
             sample: &app.analysis_modal.sample,
             ctx,

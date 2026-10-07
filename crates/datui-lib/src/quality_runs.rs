@@ -451,6 +451,7 @@ impl App {
         scope: &data_quality::QualityScope,
     ) -> crate::quality_export::SourceIdentity {
         let format = self
+            .source
             .original_file_format
             .map(|format| format.as_str().to_string())
             .or_else(|| {
@@ -588,7 +589,7 @@ impl App {
             return false;
         };
         let columnar = matches!(
-            self.original_file_format,
+            self.source.original_file_format,
             Some(ExportFormat::Parquet | ExportFormat::Ipc)
         ) || self.path.as_ref().is_some_and(|path| {
             path.extension()

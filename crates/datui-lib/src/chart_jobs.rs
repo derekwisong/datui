@@ -893,13 +893,13 @@ impl App {
     /// What `column` holds, for an export's axis ticks.
     fn axis_numbers(&self, column: &str) -> chart_data::AxisNumbers {
         let schema = self.data_table_state.as_ref().map(|s| s.schema().as_ref());
-        chart_data::AxisNumbers::column(&self.number_format, schema, column)
+        chart_data::AxisNumbers::column(&self.display.number_format, schema, column)
     }
 
     /// What `columns` hold on one axis.
     fn axes_numbers(&self, columns: &[String]) -> chart_data::AxisNumbers {
         let schema = self.data_table_state.as_ref().map(|s| s.schema().as_ref());
-        chart_data::AxisNumbers::columns(&self.number_format, schema, columns)
+        chart_data::AxisNumbers::columns(&self.display.number_format, schema, columns)
     }
 
     /// The figure to export from the prepared chart for the current spec. `Ok(None)`
@@ -933,7 +933,7 @@ impl App {
             let aggregate = spec.encoding.y.aggregate;
             let numbers = match aggregate {
                 Aggregate::Count | Aggregate::Distinct => {
-                    chart_data::AxisNumbers::count(&self.number_format)
+                    chart_data::AxisNumbers::count(&self.display.number_format)
                 }
                 a if a.is_fractional() => self.axes_numbers(ys).fractional(),
                 _ => self.axes_numbers(ys),
@@ -1008,9 +1008,9 @@ impl App {
                     y: Axis {
                         title: if data.share { "share" } else { "count" }.to_string(),
                         numbers: if data.share {
-                            chart_data::AxisNumbers::measure(&self.number_format, "Share")
+                            chart_data::AxisNumbers::measure(&self.display.number_format, "Share")
                         } else {
-                            chart_data::AxisNumbers::count(&self.number_format)
+                            chart_data::AxisNumbers::count(&self.display.number_format)
                         },
                         ..Default::default()
                     },
@@ -1043,7 +1043,10 @@ impl App {
                     },
                     y: Axis {
                         title: "density".to_string(),
-                        numbers: chart_data::AxisNumbers::measure(&self.number_format, "Density"),
+                        numbers: chart_data::AxisNumbers::measure(
+                            &self.display.number_format,
+                            "Density",
+                        ),
                         ..Default::default()
                     },
                 }
@@ -1074,7 +1077,7 @@ impl App {
                     value: Axis {
                         title: data.value_column.clone(),
                         numbers: chart_data::AxisNumbers {
-                            format: data.value_format(&self.number_format),
+                            format: data.value_format(&self.display.number_format),
                             whole: data.value_dtype.is_integer(),
                         },
                         ..Default::default()

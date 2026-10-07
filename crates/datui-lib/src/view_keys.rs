@@ -64,7 +64,7 @@ impl App {
             KeyCode::Char('e') if !form => {
                 if let Some(view) = self.view_modal.selected_view().cloned() {
                     self.view_modal
-                        .enter_edit_mode(&view, self.history_limit, &self.theme);
+                        .enter_edit_mode(&view, self.display.history_limit, &self.theme);
                 }
             }
             // Asked with the one confirmation, on No: a reflexive second key

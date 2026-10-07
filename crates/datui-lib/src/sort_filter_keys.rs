@@ -99,7 +99,7 @@ impl App {
                     SortFilterField::Filter(i) => i,
                     _ => modal.filter.statements.len(),
                 };
-                let history_limit = self.history_limit;
+                let history_limit = self.display.history_limit;
                 modal.filter.open_editor(&self.theme, history_limit);
             }
             FormKey::Text(SortFilterField::Find) => {

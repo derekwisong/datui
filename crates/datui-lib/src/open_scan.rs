@@ -26,6 +26,25 @@ use polars::prelude::{PlRefPath, ScanArgsParquet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+/// Where the dataset on screen came from, and how it was opened.
+pub struct OpenedSource {
+    pub(crate) original_file_format: Option<crate::export_modal::ExportFormat>, // Track original file format for default export
+    pub(crate) original_file_delimiter: Option<u8>, // Track original file delimiter for CSV export default
+    /// The paths the dataset on screen was opened from, with the options it installed
+    /// with: what `H` opens again with its header turned the other way.
+    pub(crate) opened: Option<(Vec<PathBuf>, OpenOptions)>,
+    /// Whether the open dataset was reached through the home screen. `q` pops
+    /// the context: opened from home it returns there, launched straight onto
+    /// a file it quits — the user's mental stack, not a mode.
+    pub(crate) opened_from_home: bool,
+    /// `--view NAME`, waiting for the dataset from the command line to land.
+    /// Taken on the first install, so datasets opened later are not re-dressed.
+    pub(crate) startup_view: Option<String>,
+    /// The dataset whose downloaded shape is kept already. See
+    /// [`Self::remember_a_downloads_shape`].
+    pub(crate) shape_remembered: Option<u64>,
+}
+
 /// What a cloud open was pointed at: the URL as the user gave it, the prefix to list,
 /// and the glob to keep, where they named one.
 ///
@@ -105,7 +124,7 @@ impl App {
                 crate::numfmt::group_chrome(total)
             )),
             // A listing has no total to count towards, so it says how far it has got.
-            None => match self.listed_this_frame {
+            None => match self.counting.listed_this_frame {
                 Some(listed) => std::borrow::Cow::Owned(format!(
                     "Listing files: {}",
                     crate::numfmt::group_chrome(listed)
@@ -148,7 +167,7 @@ impl App {
     pub(crate) fn begin_new_dataset(&mut self) {
         self.make_way_for_an_open();
         // A preview's dataset this open did not take is a page nobody is opening.
-        self.home_previews.drop_prepared();
+        self.home_app.previews.drop_prepared();
         self.reset_chart_state();
         self.jobs.advance();
         // The dataset's footer pass is no longer wanted, and unread, unpaid-for is better
@@ -255,7 +274,7 @@ impl App {
     /// rows are counted: nothing lists a web file, so this is the only way its recent,
     /// and its catalog row, can say `344 × 9` (#547 D12). Once per dataset.
     pub(crate) fn remember_a_downloads_shape(&mut self) {
-        if self.shape_remembered == Some(self.dataset_generation) {
+        if self.source.shape_remembered == Some(self.dataset_generation) {
             return;
         }
         let Some(url) = self.path.clone().filter(|p| source::is_remote_url(p)) else {
@@ -267,7 +286,7 @@ impl App {
         let Some(rows) = state.num_rows_if_valid().filter(|_| !state.changes_rows()) else {
             return;
         };
-        self.shape_remembered = Some(self.dataset_generation);
+        self.source.shape_remembered = Some(self.dataset_generation);
         let columns: Vec<String> = state
             .source_schema()
             .iter_names()
@@ -323,23 +342,23 @@ impl App {
         self.analysis_modal.data_quality_evidence_read = None;
         // A query still running was over the dataset being replaced; its rollback
         // is that dataset's view. So was a view waiting on its pivot.
-        self.query_running = None;
+        self.prompt.query_running = None;
         self.jobs.supersede(|job| matches!(job, Job::ViewPivot(_)));
         // A sample being drawn was the last dataset's, and so were its paths.
         self.put_down_sample_draw();
-        self.sample_paths.clear();
+        self.sample.paths.clear();
         // Whatever chart state survived belongs to the dataset being replaced.
         self.reset_chart_state();
         self.debug.schema_load = debug_label;
         // Home is now in the stack, so q pops back to it; never unset, since a
         // reread from the table (H) is not a new place.
         if from_home {
-            self.opened_from_home = true;
+            self.source.opened_from_home = true;
         }
         // A frame handed over has no path to go back to.
         // Without the spec read: it holds the file's map, and a decompressed copy's map
         // keeps its disk space until the map goes, so it goes with the dataset.
-        self.opened = paths.map(|paths| {
+        self.source.opened = paths.map(|paths| {
             let options = OpenOptions {
                 format_read: None,
                 sqlite: None,
@@ -362,10 +381,10 @@ impl App {
             });
         }
         self.forget_the_rows_read();
-        self.file_facts = None;
+        self.info.file_facts = None;
         let shown = home::catalogs(&self.app_config);
-        self.codebook = path.as_deref().and_then(|p| home::codebook_for(&shown, p));
-        self.catalog_entry = path
+        self.info.codebook = path.as_deref().and_then(|p| home::codebook_for(&shown, p));
+        self.info.catalog_entry = path
             .as_deref()
             .and_then(|p| home::catalog_entry_for(&shown, p));
         // The footers it still has to read are counted on the open's counter, which is
@@ -410,14 +429,15 @@ impl App {
                 .data_table_state
                 .as_ref()
                 .and_then(DataTableState::read_as);
-            self.original_file_format = Self::export_format_for(p, read_as.or(options.format));
+            self.source.original_file_format =
+                Self::export_format_for(p, read_as.or(options.format));
             // CSV's delimiter: a comma unless the user named a separator. A `.tsv`
             // exports as TSV, whose preset is the tab; a tab in a `.csv` would reopen
             // as one column.
-            self.original_file_delimiter = Some(options.separator_or(b','));
+            self.source.original_file_delimiter = Some(options.separator_or(b','));
         } else {
-            self.original_file_format = None;
-            self.original_file_delimiter = None;
+            self.source.original_file_format = None;
+            self.source.original_file_delimiter = None;
         }
         // A panel still up says what it says about the dataset on screen.
         if self.info_modal.active {
@@ -444,9 +464,9 @@ impl App {
         // `[views] auto_apply` dresses every open that has a matching view.
         // A fresh dataset starts with no view applied: the previous file's view
         // must not wear the check mark here, nor count as applied when edited.
-        self.active_view_id = None;
-        let (view, reason) = match self.startup_view.take() {
-            Some(name) => match self.view_manager.get_view_by_name(&name).cloned() {
+        self.views.active_id = None;
+        let (view, reason) = match self.source.startup_view.take() {
+            Some(name) => match self.views.manager.get_view_by_name(&name).cloned() {
                 Some(view) => (Some(view), None),
                 None => {
                     self.error_modal.show(format!("No view named \"{name}\""));
@@ -457,7 +477,8 @@ impl App {
                 .view_dataset()
                 .zip(self.data_table_state.as_ref())
                 .and_then(|(dataset, state)| {
-                    self.view_manager
+                    self.views
+                        .manager
                         .get_most_relevant(dataset, state.source_schema())
                 })
                 .map_or((None, None), |(view, reason)| (Some(view), Some(reason))),
@@ -629,7 +650,7 @@ impl App {
         // The preview read this file's first page through the open's own steps: the
         // open installs that dataset rather than reading it again.
         let prepared = (!directory)
-            .then(|| self.home_previews.take_prepared(&path))
+            .then(|| self.home_app.previews.take_prepared(&path))
             .flatten();
         // A small file of the built-in catalog is fetched without a question: the row
         // already said what it is and what it weighs. A URL the user typed still asks.
@@ -1576,8 +1597,8 @@ impl App {
             } => {
                 // The read is a thread of its own, so a producer gone quiet does not hold
                 // up the stop: Ctrl+O and quitting remove the partial file at once.
-                let piped = self.stdin_reader.take();
-                let stdout = self.stdout_pass.take();
+                let piped = self.pipes.stdin_reader.take();
+                let stdout = self.pipes.stdout_pass.take();
                 self.spawn_job(job, Some("Reading stdin..."), move |_| {
                     let open = move || -> crate::download::Opened<Box<dyn std::io::Read + Send>> {
                         Ok((piped.unwrap_or_else(|| Box::new(std::io::stdin())), None))
@@ -1847,7 +1868,7 @@ impl App {
                 // A download is scanned from a temp path the user never typed and would not
                 // recognise; the URL they did type is what names the dataset.
                 let path = display.or_else(|| paths.first().cloned());
-                self.reads.scans += 1;
+                self.home_app.reads.scans += 1;
                 self.spawn_job(job, Some(status), move |_| {
                     Self::scan_for_open(&cloud, &formats, &paths, options, path)
                         .map(|answer| Answer::Load(Box::new(answer)))

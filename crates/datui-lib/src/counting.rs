@@ -89,6 +89,8 @@ pub struct Counting {
     /// ordinary count the pass was going to save it — hence an errand of its own, tried
     /// again after every event until the work it would cancel is done.
     pub(crate) reread_owed: Option<u64>,
+    /// The objects a listing had found when this frame began, for the same reason.
+    pub(crate) listed_this_frame: Option<usize>,
 }
 
 impl Counting {
@@ -686,7 +688,7 @@ impl App {
                     self.counting.len_count_failed = None;
                 }
                 // A count of the view a running query replaced goes back with it.
-                if let Some(run) = self.query_running.as_mut() {
+                if let Some(run) = self.prompt.query_running.as_mut() {
                     run.rollback.count_landed(
                         *len_generation,
                         *num_rows,
@@ -741,7 +743,7 @@ impl App {
                     self.count_exactly();
                     return None;
                 }
-                if let Some(run) = self.query_running.as_mut()
+                if let Some(run) = self.prompt.query_running.as_mut()
                     && run.counts.len_count_inflight == Some(*len_generation)
                 {
                     run.counts.len_count_inflight = None;

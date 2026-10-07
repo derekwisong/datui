@@ -268,10 +268,10 @@ impl App {
             }
         };
         self.export_modal.open(
-            self.original_file_format,
-            self.history_limit,
+            self.source.original_file_format,
+            self.display.history_limit,
             &self.theme,
-            self.original_file_delimiter,
+            self.source.original_file_delimiter,
         );
         let stem = self.dataset_stem();
         self.export_modal.suggest_path(&format!("{stem}-counts"));

@@ -10,7 +10,7 @@ impl App {
     /// Info's Documentation tab for the open dataset: the catalog entry it is, or is
     /// inside, with what the format spec that read it says; closed when neither says.
     pub(crate) fn open_info_documentation(&mut self) {
-        self.info_documentation.close();
+        self.info.info_documentation.close();
         let spec = self.data_table_state.as_ref().and_then(|state| {
             state
                 .format_read()
@@ -24,32 +24,36 @@ impl App {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         if let Some(doc) = widgets::documentation::Documented::new(
-            self.catalog_entry.clone(),
+            self.info.catalog_entry.clone(),
             spec.and_then(|s| s.docs()).map(std::sync::Arc::new),
             name,
         ) {
-            self.info_documentation.open(doc, None);
-            self.info_documentation.links_open = self.local_desktop;
+            self.info.info_documentation.open(doc, None);
+            self.info.info_documentation.links_open = self.home_app.local_desktop;
         }
     }
 
     /// A key while the Documentation view is open over home.
     pub(crate) fn documentation_key(&mut self, event: &KeyEvent) {
-        let page = self.documentation.view_height.max(1) as isize;
+        let page = self.info.documentation.view_height.max(1) as isize;
         match event.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Left => self.documentation.close(),
-            KeyCode::Up | KeyCode::Char('k') => self.documentation.move_cursor(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.documentation.move_cursor(1),
-            KeyCode::PageUp => self.documentation.move_cursor(-page),
-            KeyCode::PageDown => self.documentation.move_cursor(page),
-            KeyCode::Home | KeyCode::Char('g') => self.documentation.move_cursor(isize::MIN / 2),
-            KeyCode::End | KeyCode::Char('G') => self.documentation.move_cursor(isize::MAX / 2),
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Left => self.info.documentation.close(),
+            KeyCode::Up | KeyCode::Char('k') => self.info.documentation.move_cursor(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.info.documentation.move_cursor(1),
+            KeyCode::PageUp => self.info.documentation.move_cursor(-page),
+            KeyCode::PageDown => self.info.documentation.move_cursor(page),
+            KeyCode::Home | KeyCode::Char('g') => {
+                self.info.documentation.move_cursor(isize::MIN / 2)
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                self.info.documentation.move_cursor(isize::MAX / 2)
+            }
             KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Right => {
-                self.documentation.toggle_legend();
+                self.info.documentation.toggle_legend();
             }
             KeyCode::Char('y') => self.copy_documentation_line(),
             KeyCode::Char('o') => {
-                let link = self.documentation.link();
+                let link = self.info.documentation.link();
                 self.ask_to_open_link(link);
             }
             // The view takes no text, so ? is help here, as at the table.
@@ -60,7 +64,7 @@ impl App {
 
     /// `y` in the Documentation view: the line's link or value, whole.
     fn copy_documentation_line(&mut self) {
-        match self.documentation.copy_text() {
+        match self.info.documentation.copy_text() {
             Some(text) => self.copy_documentation_text(text),
             None => self.flash_note("Nothing to copy on this line".to_string()),
         }
@@ -73,7 +77,7 @@ impl App {
         let Some(link) = link else {
             return;
         };
-        if !self.local_desktop {
+        if !self.home_app.local_desktop {
             self.flash_note("o opens links on a local desktop; y copies it".to_string());
             return;
         }

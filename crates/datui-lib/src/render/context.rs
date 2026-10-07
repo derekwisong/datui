@@ -2,6 +2,19 @@ use crate::config::Theme;
 use crate::numfmt::NumberFormatSettings;
 use ratatui::style::Color;
 
+/// How the table is drawn this session: from the config, with the session's own toggles.
+pub struct DisplaySettings {
+    pub(crate) history_limit: usize, // History limit for all text inputs (from config.query.history_limit)
+    pub(crate) table_cell_padding: u16, // Spaces between columns (from config.display.cell_padding)
+    pub(crate) column_colors: bool, // When true, colorize table cells by column type (from config.display.column_colors)
+    /// Second header row of column types. Starts from `display.type_row`; `D` flips it.
+    pub(crate) dtype_row: bool,
+    // Resolved display-time number formatting. `enabled` is flipped by the F key.
+    pub(crate) number_format: NumberFormatSettings,
+    /// The terminal should be asked for its background before the next frame.
+    pub(crate) background_query: bool,
+}
+
 /// Snapshot of theme colors and display configuration for rendering.
 /// Passed to widgets to avoid threading many individual parameters.
 #[derive(Debug, Clone)]

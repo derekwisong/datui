@@ -300,7 +300,7 @@ fn an_unreachable_web_file_says_so_on_its_row_and_its_open() {
         config,
     );
     // Off under cargo test, which reaches no network unless a test asks.
-    app.head_web_rows = true;
+    app.info.head_web_rows = true;
     app.enter_home();
     let named = |app: &App| {
         app.home.visible().iter().position(

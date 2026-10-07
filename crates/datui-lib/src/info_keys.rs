@@ -6,13 +6,35 @@ use crate::widgets::info::InfoTab;
 use crate::{App, AppEvent, InputMode};
 use crossterm::event::{KeyCode, KeyEvent};
 
+/// What the Info panel shows of the dataset beyond its schema: file facts, codebook, catalog
+/// entry and documentation.
+pub struct InfoState {
+    /// What the Info panel's read found about the open file, and the
+    /// `dataset_generation` it belongs to. Asked for when the panel opens, read on a
+    /// worker ([`Job::FileFacts`], whose record says it is reading), and kept for the
+    /// dataset however the read ended, so neither drawing nor reopening reads again.
+    pub(crate) file_facts: Option<(u64, FileFacts)>,
+    /// What the dataset's columns mean, when a catalog that lists it says.
+    pub codebook: Option<std::sync::Arc<crate::codebook::Codebook>>,
+    /// The catalog entry the open dataset is, or is inside, and its catalog's label:
+    /// what Info's Documentation tab shows.
+    pub catalog_entry: Option<(String, std::sync::Arc<crate::catalog::Dataset>)>,
+    /// The Documentation view, full screen over home (Ctrl+E).
+    pub documentation: crate::widgets::documentation::DocState,
+    /// The same page for the open dataset, on Info's Documentation tab.
+    pub info_documentation: crate::widgets::documentation::DocState,
+    /// Send a HEAD for the HTTP(S) file under the cursor on home, to show its size.
+    /// Off under `cargo test`, which never reaches the network unless a test asks.
+    pub head_web_rows: bool,
+}
+
 impl App {
     /// Keys in the info panel.
     pub(crate) fn info_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         let schema_tab = self.info_modal.active_tab == InfoTab::Schema;
         let notes_tab = self.info_modal.active_tab == InfoTab::Notes;
         let documentation_tab = self.info_modal.active_tab == InfoTab::Documentation
-            && self.info_documentation.is_open();
+            && self.info.info_documentation.is_open();
         // The Metadata and the file's own tab scroll their lists the same way.
         let detail_tab = matches!(
             self.info_modal.active_tab,
@@ -81,28 +103,28 @@ impl App {
                 self.info_modal.schema_table_up(total_rows, visible);
             }
             KeyCode::Down | KeyCode::Char('j') if event.is_press() && documentation_tab => {
-                self.info_documentation.move_cursor(1);
+                self.info.info_documentation.move_cursor(1);
             }
             KeyCode::Up | KeyCode::Char('k') if event.is_press() && documentation_tab => {
-                self.info_documentation.move_cursor(-1);
+                self.info.info_documentation.move_cursor(-1);
             }
             KeyCode::PageDown if event.is_press() && documentation_tab => {
-                let page = self.info_documentation.view_height.max(1) as isize;
-                self.info_documentation.move_cursor(page);
+                let page = self.info.info_documentation.view_height.max(1) as isize;
+                self.info.info_documentation.move_cursor(page);
             }
             KeyCode::PageUp if event.is_press() && documentation_tab => {
-                let page = self.info_documentation.view_height.max(1) as isize;
-                self.info_documentation.move_cursor(-page);
+                let page = self.info.info_documentation.view_height.max(1) as isize;
+                self.info.info_documentation.move_cursor(-page);
             }
             KeyCode::Enter | KeyCode::Char(' ') if event.is_press() && documentation_tab => {
-                self.info_documentation.toggle_legend();
+                self.info.info_documentation.toggle_legend();
             }
             KeyCode::Char('o') if event.is_press() && documentation_tab => {
-                let link = self.info_documentation.link();
+                let link = self.info.info_documentation.link();
                 self.ask_to_open_link(link);
             }
             KeyCode::Char('y') if event.is_press() && documentation_tab => {
-                match self.info_documentation.copy_text() {
+                match self.info.info_documentation.copy_text() {
                     Some(text) => self.copy_documentation_text(text),
                     None => self.flash_note("Nothing to copy on this line".to_string()),
                 }
@@ -236,7 +258,7 @@ impl App {
         self.data_table_state
             .as_ref()
             .map(|state| crate::widgets::info::TabsOffered {
-                documentation: self.info_documentation.is_open(),
+                documentation: self.info.info_documentation.is_open(),
                 ..crate::widgets::info::TabsOffered::of(state, facts_tab)
             })
             .unwrap_or_default()
@@ -244,7 +266,8 @@ impl App {
 
     /// The format of the dataset on screen, as the open read it.
     pub(crate) fn opened_format(&self) -> Option<FileFormat> {
-        self.opened
+        self.source
+            .opened
             .as_ref()
             .and_then(|(_, options)| options.format)
             .or_else(|| self.path.as_deref().and_then(FileFormat::from_path))

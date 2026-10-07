@@ -148,8 +148,14 @@ fn typing_a_query_and_submitting_it_applies_the_query() {
     assert_eq!(h.app.input_mode, InputMode::Editing);
 
     h.type_str("select name where age > 40");
-    assert_eq!(h.app.query_input.value(), "select name where age > 40");
-    assert_eq!(drawn(&h.app.query_input, 40), "select name where age > 40");
+    assert_eq!(
+        h.app.prompt.query_input.value(),
+        "select name where age > 40"
+    );
+    assert_eq!(
+        drawn(&h.app.prompt.query_input, 40),
+        "select name where age > 40"
+    );
 
     h.press(KeyCode::Enter);
     assert_eq!(h.app.input_mode, InputMode::Normal);
@@ -170,10 +176,16 @@ fn reopening_the_query_bar_shows_the_query_that_is_running() {
     h.press(KeyCode::Esc);
     h.press(KeyCode::Char(':'));
 
-    assert_eq!(h.app.query_input.value(), "select name where age > 40");
-    assert_eq!(drawn(&h.app.query_input, 40), "select name where age > 40");
     assert_eq!(
-        h.app.query_input.cursor(),
+        h.app.prompt.query_input.value(),
+        "select name where age > 40"
+    );
+    assert_eq!(
+        drawn(&h.app.prompt.query_input, 40),
+        "select name where age > 40"
+    );
+    assert_eq!(
+        h.app.prompt.query_input.cursor(),
         "select name where age > 40".chars().count()
     );
 }
@@ -200,14 +212,14 @@ fn editing_keys_work_in_the_query_bar() {
     h.press(KeyCode::Backspace);
     h.press(KeyCode::Backspace);
     h.type_str("ame");
-    assert_eq!(h.app.query_input.value(), "select name");
+    assert_eq!(h.app.prompt.query_input.value(), "select name");
 
     h.press(KeyCode::Home);
-    assert_eq!(h.app.query_input.cursor(), 0);
+    assert_eq!(h.app.prompt.query_input.cursor(), 0);
     h.press(KeyCode::Delete);
-    assert_eq!(h.app.query_input.value(), "elect name");
+    assert_eq!(h.app.prompt.query_input.value(), "elect name");
     h.press(KeyCode::End);
-    assert_eq!(h.app.query_input.cursor(), 10);
+    assert_eq!(h.app.prompt.query_input.cursor(), 10);
 }
 
 #[test]
@@ -220,8 +232,14 @@ fn the_query_bar_recalls_earlier_queries_with_the_arrow_keys() {
 
     h.press(KeyCode::Char(':'));
     h.press(KeyCode::Up);
-    assert_eq!(h.app.query_input.value(), "select name where age > 40");
-    assert_eq!(drawn(&h.app.query_input, 40), "select name where age > 40");
+    assert_eq!(
+        h.app.prompt.query_input.value(),
+        "select name where age > 40"
+    );
+    assert_eq!(
+        drawn(&h.app.prompt.query_input, 40),
+        "select name where age > 40"
+    );
 }
 
 #[test]
@@ -236,9 +254,12 @@ fn the_command_line_goes_to_a_row_and_keeps_the_query() {
     query_screen(&mut h.app);
     h.press(KeyCode::Char(':'));
     assert_eq!(h.app.input_mode, InputMode::Editing);
-    assert_eq!(h.app.query_input.value(), "select name where age > 40");
+    assert_eq!(
+        h.app.prompt.query_input.value(),
+        "select name where age > 40"
+    );
     h.type_str("2");
-    assert_eq!(h.app.query_input.value(), "2");
+    assert_eq!(h.app.prompt.query_input.value(), "2");
     assert_eq!(crate::render::input_strip::prefix(&h.app), "row:");
     h.press(KeyCode::Enter);
     assert_eq!(h.app.input_mode, InputMode::Normal);
@@ -407,9 +428,9 @@ fn unicode_survives_a_round_trip_through_a_field() {
 
     h.press(KeyCode::Char(':'));
     h.type_str("where name == \"café\"");
-    assert_eq!(h.app.query_input.value(), "where name == \"café\"");
+    assert_eq!(h.app.prompt.query_input.value(), "where name == \"café\"");
     h.press(KeyCode::Backspace);
-    assert_eq!(h.app.query_input.value(), "where name == \"café");
+    assert_eq!(h.app.prompt.query_input.value(), "where name == \"café");
 }
 
 #[test]
@@ -468,10 +489,10 @@ fn the_pivot_and_melt_modal_opens_a_picker_narrowed_as_you_type() {
 fn ctrl_t_switches_the_language_and_keeps_the_text() {
     let mut h = Harness::with_data();
     h.press(KeyCode::Char(':'));
-    let first = h.app.query_mode;
+    let first = h.app.prompt.query_mode;
     h.type_str("abc");
     h.press_with(KeyCode::Char('t'), KeyModifiers::CONTROL);
-    let second = h.app.query_mode;
+    let second = h.app.prompt.query_mode;
     if crate::QueryMode::available().len() > 1 {
         assert_ne!(second, first);
     }
@@ -483,7 +504,7 @@ fn ctrl_t_switches_the_language_and_keeps_the_text() {
     );
     h.press(KeyCode::Esc);
     h.press(KeyCode::Char(':'));
-    assert_eq!(h.app.query_mode, second, "remembered");
+    assert_eq!(h.app.prompt.query_mode, second, "remembered");
 }
 
 /// The query in effect arrives selected; switched to the other language it stays
@@ -497,7 +518,7 @@ fn ctrl_t_over_the_restored_query_keeps_it_selected() {
     h.press(KeyCode::Enter);
     h.press(KeyCode::Char(':'));
     h.press_with(KeyCode::Char('t'), KeyModifiers::CONTROL);
-    assert_eq!(h.app.query_mode, crate::QueryMode::Sql);
+    assert_eq!(h.app.prompt.query_mode, crate::QueryMode::Sql);
     h.type_str("SELECT age FROM df");
     assert_eq!(h.app.query_prompt_text(), Some("SELECT age FROM df"));
 }
@@ -509,12 +530,12 @@ fn esc_closes_the_query_prompt_from_every_mode() {
     let mut h = Harness::with_data();
     for &mode in crate::QueryMode::available() {
         h.press(KeyCode::Char(':'));
-        while h.app.query_mode != mode {
+        while h.app.prompt.query_mode != mode {
             h.press_with(KeyCode::Char('t'), KeyModifiers::CONTROL);
         }
         h.press(KeyCode::Esc);
         assert_eq!(h.app.input_mode, InputMode::Normal, "{mode:?}");
-        assert_eq!(h.app.input_type, None, "{mode:?}");
+        assert_eq!(h.app.prompt.input_type, None, "{mode:?}");
         assert_eq!(h.app.query_prompt_mode(), None, "{mode:?}");
     }
 }
@@ -645,6 +666,7 @@ fn the_live_matches_follow_the_rows_on_hand() {
     h.type_str("x");
     let before = h
         .app
+        .prompt
         .find
         .live
         .as_ref()
@@ -653,6 +675,7 @@ fn the_live_matches_follow_the_rows_on_hand() {
     h.run(AppEvent::Collect);
     let after = h
         .app
+        .prompt
         .find
         .live
         .as_ref()

@@ -20,14 +20,14 @@ const MAX_INPUT_ROWS: u16 = 2;
 
 /// The prompt's prefix: what Enter does with the text.
 pub fn prefix(app: &crate::App) -> &'static str {
-    match app.input_type {
+    match app.prompt.input_type {
         Some(crate::InputType::Find) => "/",
         _ => {
             let text = app.query_prompt_text().unwrap_or_default();
             if crate::editing_keys::row_number(text).is_some() {
                 "row:"
             } else {
-                app.query_mode.prefix_colon()
+                app.prompt.query_mode.prefix_colon()
             }
         }
     }
@@ -35,8 +35,8 @@ pub fn prefix(app: &crate::App) -> &'static str {
 
 /// Why the prompt's last run failed, if it did.
 pub fn error(app: &crate::App) -> Option<String> {
-    match app.input_type {
-        Some(crate::InputType::Find) => app.find.error.clone(),
+    match app.prompt.input_type {
+        Some(crate::InputType::Find) => app.prompt.find.error.clone(),
         Some(crate::InputType::Query) => app.query_prompt_error(),
         None => None,
     }
@@ -56,10 +56,10 @@ pub fn rows(app: &crate::App, width: u16, room: u16) -> u16 {
 /// two lines keeps both before the column list does; an error keeps its line, and
 /// the statement gives up its second.
 fn plan(app: &crate::App, width: u16, room: u16) -> (u16, u16) {
-    let input = match app.input_type {
-        Some(crate::InputType::Query) if app.query_mode == QueryMode::Sql => {
+    let input = match app.prompt.input_type {
+        Some(crate::InputType::Query) if app.prompt.query_mode == QueryMode::Sql => {
             let text_width = width.saturating_sub(prefix_width(app) + 2);
-            (app.sql_input.visual_rows(text_width) as u16).clamp(1, MAX_INPUT_ROWS)
+            (app.prompt.sql_input.visual_rows(text_width) as u16).clamp(1, MAX_INPUT_ROWS)
         }
         _ => 1,
     };
@@ -77,8 +77,8 @@ fn plan(app: &crate::App, width: u16, room: u16) -> (u16, u16) {
 /// Whether the command line lists columns under its input: while a query is being
 /// typed, not a row number.
 fn columns_line(app: &crate::App) -> bool {
-    app.input_type == Some(crate::InputType::Query)
-        && !app.sql_columns.is_empty()
+    app.prompt.input_type == Some(crate::InputType::Query)
+        && !app.prompt.sql_columns.is_empty()
         && crate::editing_keys::row_number(app.query_prompt_text().unwrap_or_default()).is_none()
 }
 
@@ -121,14 +121,14 @@ pub fn render(
     // At the right of the find's line: how it matches, each switch beside its key
     // (lit while on), and what it lights up on screen.
     let mut right_width = 0u16;
-    if app.input_type == Some(crate::InputType::Find) {
+    if app.prompt.input_type == Some(crate::InputType::Find) {
         let dim = Style::default().fg(ctx.dimmed);
         let on = Style::default().fg(ctx.text_primary);
-        let column = app.find.column.as_deref().unwrap_or("column");
+        let column = app.prompt.find.column.as_deref().unwrap_or("column");
         let switches = [
-            ("^R", "regex".to_string(), app.find.regex),
-            ("^T", "letters".to_string(), app.find.fuzzy),
-            ("^L", format!("in {column}"), app.find.in_column),
+            ("^R", "regex".to_string(), app.prompt.find.regex),
+            ("^T", "letters".to_string(), app.prompt.find.fuzzy),
+            ("^L", format!("in {column}"), app.prompt.find.in_column),
         ];
         let count = app.live_on_screen().map(|n| {
             Span::styled(
@@ -178,12 +178,12 @@ pub fn render(
             .saturating_sub(lead + right_width + u16::from(right_width > 0)),
         height: input_rows,
     };
-    match app.input_type {
-        Some(crate::InputType::Find) => (&app.find.input).render(input_area, buf),
+    match app.prompt.input_type {
+        Some(crate::InputType::Find) => (&app.prompt.find.input).render(input_area, buf),
         _ => {
             let input = app.query_input_shown();
             input.render(input_area, buf);
-            if app.query_mode == QueryMode::Sql && input.is_empty() {
+            if app.prompt.query_mode == QueryMode::Sql && input.is_empty() {
                 render_placeholder(input_area, buf, ctx, input.is_focused());
             }
         }
@@ -249,7 +249,7 @@ fn render_columns(
     // A word that names no column is a keyword or a function: the whole list is
     // more use then than an empty one.
     let shown: Vec<&(String, polars::prelude::DataType)> = if matched.is_empty() {
-        app.sql_columns.iter().collect()
+        app.prompt.sql_columns.iter().collect()
     } else {
         matched
     };
@@ -315,9 +315,9 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = crate::App::new(tx, crate::tests::test_runtime());
         app.input_mode = crate::InputMode::Editing;
-        app.input_type = Some(crate::InputType::Query);
-        app.query_mode = mode;
-        app.sql_columns = vec![
+        app.prompt.input_type = Some(crate::InputType::Query);
+        app.prompt.query_mode = mode;
+        app.prompt.sql_columns = vec![
             ("Round".to_string(), DataType::Int64),
             ("Date".to_string(), DataType::String),
             ("Team 1".to_string(), DataType::String),
@@ -333,9 +333,9 @@ mod tests {
     fn the_prefix_names_row_sql_or_q() {
         let mut app = command_line(QueryMode::Q);
         assert_eq!(prefix(&app), "q:");
-        app.query_input.set_value("1200");
+        app.prompt.query_input.set_value("1200");
         assert_eq!(prefix(&app), "row:");
-        app.query_input.set_value("1200 rows");
+        app.prompt.query_input.set_value("1200 rows");
         assert_eq!(prefix(&app), "q:");
         #[cfg(feature = "sql")]
         {
@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn the_columns_narrow_to_the_word_typed() {
         let mut app = command_line(QueryMode::Q);
-        app.query_input.set_value("select Te");
+        app.prompt.query_input.set_value("select Te");
         assert_eq!(rows(&app, 80, 2), 2);
         let screen = draw(&mut app, 80, 2).join("\n");
         assert!(screen.contains("q: select Te"), "{screen}");
@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn columns_that_do_not_fit_are_counted() {
         let mut app = command_line(QueryMode::Q);
-        app.sql_columns = (0..40)
+        app.prompt.sql_columns = (0..40)
             .map(|i| (format!("measurement_{i}"), DataType::Float64))
             .collect();
         let screen = draw(&mut app, 60, 2).join("\n");
@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn a_row_number_takes_one_line() {
         let mut app = command_line(QueryMode::Q);
-        app.query_input.set_value("42");
+        app.prompt.query_input.set_value("42");
         assert_eq!(rows(&app, 80, 2), 1);
     }
 
@@ -383,10 +383,10 @@ mod tests {
     #[test]
     fn an_empty_sql_input_shows_an_example() {
         let mut app = command_line(QueryMode::Sql);
-        app.sql_input.set_focused(true);
+        app.prompt.sql_input.set_focused(true);
         let screen = draw(&mut app, 80, 2).join("\n");
         assert!(screen.contains(SQL_PLACEHOLDER), "{screen}");
-        app.sql_input.set_value("S");
+        app.prompt.sql_input.set_value("S");
         let screen = draw(&mut app, 80, 2).join("\n");
         assert!(!screen.contains(SQL_PLACEHOLDER), "{screen}");
     }

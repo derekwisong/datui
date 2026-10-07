@@ -198,7 +198,7 @@ impl App {
     /// The view on screen as a Python Polars script: the open's reader, then every
     /// step that made the view. See [`python_script`].
     pub fn python_script(&self, state: &DataTableState) -> String {
-        let (paths, options) = match &self.opened {
+        let (paths, options) = match &self.source.opened {
             Some((paths, options)) => (Some(paths.as_slice()), options.clone()),
             None => (None, OpenOptions::default()),
         };
@@ -271,14 +271,15 @@ impl App {
 
     /// The clipboard destination, built at the first copy.
     pub(crate) fn copy_destination(&mut self) -> Result<&mut dyn clipboard::Destination, String> {
-        if self.clipboard.is_none() {
+        if self.external.clipboard.is_none() {
             let choice = clipboard::BackendChoice::parse(&self.app_config.clipboard.backend)
                 .unwrap_or_default();
             let limit = usize::try_from(self.app_config.clipboard.osc52_limit.bytes())
                 .unwrap_or(usize::MAX);
-            self.clipboard = Some(clipboard::destination(choice, limit)?);
+            self.external.clipboard = Some(clipboard::destination(choice, limit)?);
         }
         Ok(self
+            .external
             .clipboard
             .as_deref_mut()
             .expect("destination just built"))
@@ -344,6 +345,6 @@ impl App {
     /// Replace the clipboard destination, so tests can watch what a copy sends
     /// without a display server or a terminal in the loop.
     pub fn set_clipboard_destination(&mut self, destination: Box<dyn clipboard::Destination>) {
-        self.clipboard = Some(destination);
+        self.external.clipboard = Some(destination);
     }
 }

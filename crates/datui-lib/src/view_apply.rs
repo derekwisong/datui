@@ -12,6 +12,12 @@ use crate::{
 use color_eyre::Result;
 use polars::prelude::DataFrame;
 
+/// Saved views, and the one applied to the dataset on screen.
+pub struct SavedViews {
+    pub(crate) manager: crate::view::Views,
+    pub(crate) active_id: Option<String>, // ID of currently applied view
+}
+
 impl App {
     /// Open the views list for the dataset on screen, scored against it.
     pub(crate) fn open_view_list(&mut self) {
@@ -31,7 +37,8 @@ impl App {
             return;
         };
         let rows: Vec<ViewRow> = self
-            .view_manager
+            .views
+            .manager
             .find_relevant_views(dataset, state.source_schema())
             .into_iter()
             .map(|(view, score)| {
@@ -43,7 +50,7 @@ impl App {
                 }
             })
             .collect();
-        self.view_modal.broken_views = self.view_manager.broken_views.clone();
+        self.view_modal.broken_views = self.views.manager.broken_views.clone();
         let selected = self.view_modal.table_state.selected().unwrap_or(0);
         self.view_modal.table_state.select(if rows.is_empty() {
             None
@@ -59,7 +66,7 @@ impl App {
     /// table shaped like this one.
     pub(crate) fn open_save_view_form(&mut self) {
         self.view_modal
-            .enter_create_mode(self.history_limit, &self.theme);
+            .enter_create_mode(self.display.history_limit, &self.theme);
 
         let query = self.data_table_state.as_ref().and_then(|state| {
             let (query, sql_query, fuzzy_query) = active_query_settings(
@@ -70,7 +77,8 @@ impl App {
             sql_query.or(fuzzy_query).or(query)
         });
         self.view_modal.name_input.suggest(
-            self.view_manager
+            self.views
+                .manager
                 .suggest_name(self.path.as_deref(), query.as_deref()),
         );
 
@@ -145,9 +153,10 @@ impl App {
             return;
         }
         let renaming_to_taken = match &self.view_modal.editing_view_id {
-            None => self.view_manager.view_exists(&name),
+            None => self.views.manager.view_exists(&name),
             Some(id) => self
-                .view_manager
+                .views
+                .manager
                 .get_view_by_name(&name)
                 .is_some_and(|other| other.id != *id),
         };
@@ -188,7 +197,7 @@ impl App {
         };
 
         let saved = if let Some(editing_id) = self.view_modal.editing_view_id.clone() {
-            let Some(mut view) = self.view_manager.get_view_by_id(&editing_id).cloned() else {
+            let Some(mut view) = self.views.manager.get_view_by_id(&editing_id).cloned() else {
                 return;
             };
             view.name = name;
@@ -196,7 +205,7 @@ impl App {
             let stored_schema = view.match_criteria.schema_columns.take();
             view.match_criteria = match_criteria;
             let editing_the_active_view =
-                self.active_view_id.as_deref() == Some(editing_id.as_str());
+                self.views.active_id.as_deref() == Some(editing_id.as_str());
             // The same principle as the settings below: editing an unapplied
             // view must not swap the columns it matches on for the columns of
             // whatever table happens to be open. The toggle still works — off
@@ -215,12 +224,12 @@ impl App {
                 view.settings = view_settings_of(state);
                 view.settings.chart = self.saved_chart();
             }
-            match self.view_manager.update_view(&view) {
+            match self.views.manager.update_view(&view) {
                 Ok(()) => true,
                 Err(e) => {
                     // Deleted elsewhere, it has left the list too; otherwise the form
                     // stays, edits and all, to try again.
-                    if self.view_manager.get_view_by_id(&editing_id).is_none() {
+                    if self.views.manager.get_view_by_id(&editing_id).is_none() {
                         self.refresh_view_list();
                         self.view_modal.exit_form();
                     }
@@ -374,16 +383,17 @@ impl App {
     ) {
         if let Some(path) = &self.path {
             use crate::logging::LogFailure;
-            self.view_manager
+            self.views
+                .manager
                 .record_use(&view.id, path)
                 .or_log("record a view's use");
         }
-        let previous = self.active_view_id.replace(view.id.clone());
+        let previous = self.views.active_id.replace(view.id.clone());
         self.restore_view_chart(view.settings.chart.as_ref());
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
-        self.query_running = Some(QueryRun {
+        self.prompt.query_running = Some(QueryRun {
             origin: RunOrigin::View {
                 previous,
                 matched: why.map(|why| (view.name.clone(), why)),
@@ -399,7 +409,7 @@ impl App {
             if let Some(why) = why {
                 self.flash_view_applied(&view.name, why);
             }
-            self.query_running = None;
+            self.prompt.query_running = None;
             self.busy = false;
             self.status_message = None;
             self.first_rows_settled();
@@ -416,7 +426,7 @@ impl App {
             .jobs
             .current(|job| matches!(job, Job::ViewPivot(_)))
             .is_some();
-        let rows = self.query_running.as_ref().is_some_and(|run| {
+        let rows = self.prompt.query_running.as_ref().is_some_and(|run| {
             matches!(run.origin, RunOrigin::View { .. })
                 && self
                     .data_table_state
@@ -607,7 +617,8 @@ impl App {
             },
         };
 
-        self.view_manager
+        self.views
+            .manager
             .create_view(name, description, match_criteria, settings)
     }
 }

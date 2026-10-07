@@ -6,6 +6,40 @@ use crate::widgets::text_input::TextInput;
 use crate::{App, InputMode, InputType, QueryRun, RunOrigin, sql_assist};
 use polars::datatypes::DataType;
 
+/// The command line: its inputs per mode, completion, and the query it is running.
+pub struct QueryPrompt {
+    // One input per command line language, each with its own history. The history
+    // ids ("query", "sql") name files already on disk; they stay as they are so no
+    // history is lost or read as another language's.
+    pub(crate) query_input: TextInput, // q, history id "query"
+    pub(crate) sql_input: TextInput,   // SQL, history id "sql"
+    /// The find prompt (`/`) and the find `n` and `N` repeat; history id "find".
+    pub find: crate::find::Find,
+    /// The column cursor moved last: the footer offers the column's keys.
+    pub(crate) column_hints: bool,
+    pub(crate) input_type: Option<InputType>,
+    pub(crate) query_mode: QueryMode,
+    /// The language Ctrl+T last chose, which the command line opens on until a query
+    /// in effect says otherwise.
+    pub(crate) query_mode_chosen: Option<QueryMode>,
+    /// The command line holds the query in effect, selected and untouched: Ctrl+T
+    /// carries it selected, so typing still replaces it.
+    pub(crate) query_text_restored: bool,
+    /// The columns of `df`, for the command line's list and completion. Taken from
+    /// the schema when it opens.
+    pub(crate) sql_columns: Vec<(String, DataType)>,
+    /// A Tab completion in progress in the command line.
+    pub(crate) sql_completion: Option<sql_assist::Cycle>,
+    /// A query whose first collect is running, and the view to go back to if it
+    /// fails. From the prompt, the prompt stays open until it is done.
+    pub(crate) query_running: Option<QueryRun>,
+    /// Why the last statement failed once it ran, shown under it in the prompt.
+    pub(crate) query_run_error: Option<String>,
+    /// Bumped when a running statement's failure lands in the prompt. Keys typed while
+    /// it ran were not answers to it; see `EventPump`.
+    pub(crate) inline_failures: u64,
+}
+
 impl App {
     /// A query or view whose first rows could not be read is not applied: put back
     /// what it replaced and say why where its origin says to.
@@ -37,11 +71,11 @@ impl App {
             }
         };
         let sql = mode == QueryMode::Sql;
-        self.query_run_error = Some(match conversion {
+        self.prompt.query_run_error = Some(match conversion {
             Some(failure) if sql => failure.sql_message(rows),
             _ => message.to_string(),
         });
-        self.inline_failures = self.inline_failures.wrapping_add(1);
+        self.prompt.inline_failures = self.prompt.inline_failures.wrapping_add(1);
     }
 
     /// Put back the view a running query or view replaced, with its row count, and
@@ -52,15 +86,15 @@ impl App {
         }
         self.counting.restore(run.counts);
         if let RunOrigin::View { previous, .. } = &run.origin {
-            self.active_view_id = previous.clone();
+            self.views.active_id = previous.clone();
         }
         run.origin
     }
 
     /// The command line's language while it is open.
     pub fn query_prompt_mode(&self) -> Option<QueryMode> {
-        (self.input_mode == InputMode::Editing && self.input_type == Some(InputType::Query))
-            .then_some(self.query_mode)
+        (self.input_mode == InputMode::Editing && self.prompt.input_type == Some(InputType::Query))
+            .then_some(self.prompt.query_mode)
     }
 
     /// `:` at the table: the command line, holding the query in effect, selected,
@@ -70,17 +104,19 @@ impl App {
             return;
         };
         self.input_mode = InputMode::Editing;
-        self.input_type = Some(InputType::Query);
-        self.query_run_error = None;
-        self.sql_completion = None;
-        self.query_input.set_value(state.get_active_query());
-        self.sql_input.set_value(state.get_active_sql_query());
-        self.query_input.select_all();
-        self.sql_input.select_all();
+        self.prompt.input_type = Some(InputType::Query);
+        self.prompt.query_run_error = None;
+        self.prompt.sql_completion = None;
+        self.prompt.query_input.set_value(state.get_active_query());
+        self.prompt
+            .sql_input
+            .set_value(state.get_active_sql_query());
+        self.prompt.query_input.select_all();
+        self.prompt.sql_input.select_all();
         state.suppress_error_display = true;
-        self.sql_columns = state.sql_table_columns();
-        self.query_mode = self.opening_query_mode();
-        self.query_text_restored = !self.query_input_shown().is_empty();
+        self.prompt.sql_columns = state.sql_table_columns();
+        self.prompt.query_mode = self.opening_query_mode();
+        self.prompt.query_text_restored = !self.query_input_shown().is_empty();
         self.sync_query_focus();
     }
 
@@ -97,35 +133,35 @@ impl App {
             }
         });
         active
-            .or(self.query_mode_chosen)
+            .or(self.prompt.query_mode_chosen)
             .unwrap_or(self.app_config.query.default_mode)
             .resolve()
     }
 
     /// The command line's input for its current language.
     pub(crate) fn query_input_mut(&mut self) -> &mut TextInput {
-        match self.query_mode {
-            QueryMode::Sql => &mut self.sql_input,
-            QueryMode::Q => &mut self.query_input,
+        match self.prompt.query_mode {
+            QueryMode::Sql => &mut self.prompt.sql_input,
+            QueryMode::Q => &mut self.prompt.query_input,
         }
     }
 
     /// The command line's input for its current language.
     pub(crate) fn query_input_shown(&self) -> &TextInput {
-        match self.query_mode {
-            QueryMode::Sql => &self.sql_input,
-            QueryMode::Q => &self.query_input,
+        match self.prompt.query_mode {
+            QueryMode::Sql => &self.prompt.sql_input,
+            QueryMode::Q => &self.prompt.query_input,
         }
     }
 
     /// Switch the prompt's mode. Each mode keeps its own text; an error from the
     /// last run belongs to the mode that ran it.
     pub(crate) fn set_query_mode(&mut self, mode: QueryMode) {
-        self.query_mode = mode.resolve();
+        self.prompt.query_mode = mode.resolve();
         if let Some(state) = &mut self.data_table_state {
             state.dismiss_error();
         }
-        self.query_run_error = None;
+        self.prompt.query_run_error = None;
         self.sync_query_focus();
     }
 
@@ -133,9 +169,9 @@ impl App {
     /// name) being typed, and on further presses step through the other names that
     /// match.
     pub(crate) fn complete_column_name(&mut self) {
-        let sql = self.query_mode == QueryMode::Sql;
-        let columns = std::mem::take(&mut self.sql_columns);
-        let mut cycle = self.sql_completion.take();
+        let sql = self.prompt.query_mode == QueryMode::Sql;
+        let columns = std::mem::take(&mut self.prompt.sql_columns);
+        let mut cycle = self.prompt.sql_completion.take();
         let input = self.query_input_mut();
         let line = input
             .line_at(input.cursor_line())
@@ -158,8 +194,8 @@ impl App {
             input.replace_before_cursor(step.span, &step.insert);
             sql_assist::landed(&mut cycle, input.value(), input.cursor());
         }
-        self.sql_completion = cycle;
-        self.sql_columns = columns;
+        self.prompt.sql_completion = cycle;
+        self.prompt.sql_columns = columns;
     }
 
     /// The columns of `df` the word at the command line's cursor could name, for
@@ -167,13 +203,13 @@ impl App {
     pub(crate) fn sql_column_matches(&self) -> Vec<&(String, DataType)> {
         let input = self.query_input_shown();
         let line = input.line_at(input.cursor_line()).unwrap_or_default();
-        let word = match self.query_mode {
+        let word = match self.prompt.query_mode {
             QueryMode::Sql => sql_assist::word_before(line, input.cursor_col()),
             QueryMode::Q => sql_assist::q_word_before(line, input.cursor_col()),
         }
         .map(|w| w.text)
         .unwrap_or_default();
-        sql_assist::matching(&self.sql_columns, &word)
+        sql_assist::matching(&self.prompt.sql_columns, &word)
     }
 
     /// The command line's text, while it is open.
@@ -185,12 +221,12 @@ impl App {
     /// Why the last run failed, for the line under the input: a statement that
     /// failed while running, else one that could not be planned.
     pub fn query_prompt_error(&self) -> Option<String> {
-        if let Some(error) = &self.query_run_error {
+        if let Some(error) = &self.prompt.query_run_error {
             return Some(error.clone());
         }
         let state = self.data_table_state.as_ref()?;
         let error = state.error()?;
-        Some(if self.query_mode == QueryMode::Sql {
+        Some(if self.prompt.query_mode == QueryMode::Sql {
             crate::error_display::sql_error_message(error, state.sql_table_rows())
         } else {
             crate::error_display::user_message_from_polars(error)
@@ -199,7 +235,7 @@ impl App {
 
     /// Bumped each time a running statement's failure is put in the prompt.
     pub fn inline_failures(&self) -> u64 {
-        self.inline_failures
+        self.prompt.inline_failures
     }
 
     /// Plan a query in `mode` and read its first rows in the background. A query that
@@ -207,7 +243,7 @@ impl App {
     /// that plans stays pending — the prompt open, when it came from there — until its
     /// rows are in; if they fail, the view it replaced comes back.
     pub(crate) fn run_query(&mut self, mode: QueryMode, text: &str, status: &str) {
-        self.query_run_error = None;
+        self.prompt.query_run_error = None;
         let Some(state) = self.data_table_state.as_mut() else {
             return;
         };
@@ -221,7 +257,7 @@ impl App {
         if state.error().is_some() {
             return;
         }
-        self.query_running = Some(QueryRun {
+        self.prompt.query_running = Some(QueryRun {
             origin: RunOrigin::Query(mode),
             frame: state.len_generation(),
             rollback,
@@ -230,7 +266,7 @@ impl App {
         });
         if !self.spawn_async_collect(status) {
             // Nothing to read: the rows on hand already show it.
-            self.query_running = None;
+            self.prompt.query_running = None;
             if self.query_prompt_mode() == Some(mode) {
                 self.leave_query_prompt_after_run();
             }
@@ -240,18 +276,18 @@ impl App {
     /// The query still running over the frame on screen, taken. One whose frame has
     /// since been replaced is dropped: its rollback would undo what replaced it.
     pub(crate) fn take_query_run(&mut self) -> Option<QueryRun> {
-        let run = self.query_running.take()?;
+        let run = self.prompt.query_running.take()?;
         let frame = self.data_table_state.as_ref()?.len_generation();
         (run.frame == frame).then_some(run)
     }
 
     /// A query ran and its rows are in: the prompt closes on them.
     pub(crate) fn leave_query_prompt_after_run(&mut self) {
-        self.sql_completion = None;
+        self.prompt.sql_completion = None;
         self.input_mode = InputMode::Normal;
-        self.input_type = None;
-        self.sql_input.set_focused(false);
-        self.query_input.set_focused(false);
+        self.prompt.input_type = None;
+        self.prompt.sql_input.set_focused(false);
+        self.prompt.query_input.set_focused(false);
         if let Some(state) = &mut self.data_table_state {
             state.suppress_error_display = false;
         }
@@ -259,21 +295,21 @@ impl App {
 
     /// Only the current language's input carries the cursor.
     pub(crate) fn sync_query_focus(&mut self) {
-        let mode = self.query_mode;
-        self.sql_input.set_focused(mode == QueryMode::Sql);
-        self.query_input.set_focused(mode == QueryMode::Q);
+        let mode = self.prompt.query_mode;
+        self.prompt.sql_input.set_focused(mode == QueryMode::Sql);
+        self.prompt.query_input.set_focused(mode == QueryMode::Q);
     }
 
     /// Esc from anywhere in the prompt: nothing runs and nothing typed survives.
     pub(crate) fn close_query_prompt(&mut self) {
-        self.query_run_error = None;
-        self.sql_completion = None;
-        self.query_input.clear();
-        self.sql_input.clear();
-        self.query_input.set_focused(false);
-        self.sql_input.set_focused(false);
+        self.prompt.query_run_error = None;
+        self.prompt.sql_completion = None;
+        self.prompt.query_input.clear();
+        self.prompt.sql_input.clear();
+        self.prompt.query_input.set_focused(false);
+        self.prompt.sql_input.set_focused(false);
         self.input_mode = InputMode::Normal;
-        self.input_type = None;
+        self.prompt.input_type = None;
         if let Some(state) = &mut self.data_table_state {
             state.dismiss_error();
             state.suppress_error_display = false;

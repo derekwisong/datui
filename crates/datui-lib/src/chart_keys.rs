@@ -192,10 +192,11 @@ impl App {
         let description = sentence_case(&self.chart_modal.how());
         self.chart_export_modal.open(
             &self.theme,
-            self.history_limit,
+            self.display.history_limit,
             ExportDefaults {
                 description,
                 source: self
+                    .info
                     .catalog_entry
                     .as_ref()
                     .map(|(_, entry)| entry.credit())

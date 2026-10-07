@@ -13,6 +13,20 @@ use crate::table_sample::{Limit, MemoryCheck, MemoryProbe};
 use crate::{App, AppEvent, analysis_modal, data_quality, sampling};
 use std::sync::Arc;
 
+/// The sample form, and what the draws learned of memory and of the paths they took.
+pub struct SampleState {
+    /// The Sample form over the table (`S`): the view's sample, the step under its
+    /// query.
+    pub form: Option<crate::sample_modal::SampleForm>,
+    /// Where the memory available now is read from, which a sample is checked
+    /// against. The system's, unless a test says otherwise.
+    pub(crate) memory_probe: crate::table_sample::MemoryProbe,
+    /// How each random sample of a stream was drawn on this dataset, by what it was
+    /// drawn from: drawn again, the same seed keeps the same rows whether or not the
+    /// count has come in since.
+    pub(crate) paths: Vec<(String, crate::table_sample::DrawPath)>,
+}
+
 /// What the status line says while a sample is drawn.
 const DRAWING: &str = "Sampling...";
 
@@ -30,14 +44,14 @@ impl App {
     pub(crate) fn memory_check(&self) -> MemoryCheck {
         MemoryCheck {
             limit: Limit::of_setting(self.app_config.analysis.sample_memory_limit),
-            probe: Arc::clone(&self.memory_probe),
+            probe: Arc::clone(&self.sample.memory_probe),
         }
     }
 
     /// Read the memory available now from `probe` rather than from the system: for a
     /// test that decides how much there is.
     pub fn set_memory_probe(&mut self, probe: MemoryProbe) {
-        self.memory_probe = probe;
+        self.sample.memory_probe = probe;
     }
 
     /// Draw `sample` as the view's sample, in place of any it has. The table shows
@@ -108,7 +122,8 @@ impl App {
         let path_key = Self::sample_path_key(source, &sample.scope);
         let path = (sample.method == sampling::SampleMethod::Spread).then(|| {
             path.or_else(|| {
-                self.sample_paths
+                self.sample
+                    .paths
                     .iter()
                     .find(|(key, _)| *key == path_key)
                     .map(|(_, path)| *path)
@@ -384,8 +399,8 @@ impl App {
             return None;
         }
         if let Some(path) = drawn.path {
-            self.sample_paths.retain(|(key, _)| *key != draw.path_key);
-            self.sample_paths.push((draw.path_key.clone(), path));
+            self.sample.paths.retain(|(key, _)| *key != draw.path_key);
+            self.sample.paths.push((draw.path_key.clone(), path));
         }
         if let Some(state) = self.data_table_state.as_mut() {
             state.sample_drawn(drawn);
@@ -463,11 +478,12 @@ impl App {
         self.sample_changed();
         if let Some(path) = &self.path {
             use crate::logging::LogFailure;
-            self.view_manager
+            self.views
+                .manager
                 .record_use(&view.id, path)
                 .or_log("record a view's use");
         }
-        self.active_view_id = Some(view.id.clone());
+        self.views.active_id = Some(view.id.clone());
         self.restore_view_chart(view.settings.chart.as_ref());
         let mut settings = view.settings.clone();
         settings.sample = None;

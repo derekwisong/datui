@@ -22347,7 +22347,7 @@ fn wide_table_pages_beside_frozen_and_hidden_columns() {
 
     // The picker lists the shown columns in order, never a hidden one.
     press_and_draw(&mut app, KeyCode::Char('g'), size);
-    assert_eq!(app.go_to_column.items(), order.as_slice());
+    assert_eq!(app.pickers.go_to_column.items(), order.as_slice());
     // A frozen column is on screen already: choosing it moves nothing.
     type_and_draw(&mut app, "id_000", size);
     press_and_draw(&mut app, KeyCode::Enter, size);

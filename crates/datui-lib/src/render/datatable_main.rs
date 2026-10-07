@@ -136,10 +136,13 @@ pub fn render(
                 .render_centered(table_area, buf, ctx);
             }
             if app.info_modal.active {
-                let facts =
-                    crate::App::facts_shown(&app.file_facts, app.dataset_generation, facts_reading);
+                let facts = crate::App::facts_shown(
+                    &app.info.file_facts,
+                    app.dataset_generation,
+                    facts_reading,
+                );
                 let info_ctx = InfoContext {
-                    format: app.original_file_format,
+                    format: app.source.original_file_format,
                     declared_types,
                     facts,
                     facts_tab,
@@ -148,12 +151,13 @@ pub fn render(
                 let mut info_widget = DataTableInfo::new(state, info_ctx, &mut app.info_modal, ctx);
                 info_widget.hex = hex;
                 info_widget.header_toggle = header_toggle;
-                info_widget.codebook = app.codebook.as_deref();
+                info_widget.codebook = app.info.codebook.as_deref();
                 info_widget.estimate = estimate;
                 info_widget.documentation = app
+                    .info
                     .info_documentation
                     .is_open()
-                    .then_some(&mut app.info_documentation);
+                    .then_some(&mut app.info.info_documentation);
                 info_widget.render(sort_area, buf);
             }
         }
@@ -173,7 +177,7 @@ pub fn render(
             sort_area,
             buf,
             &mut app.view_modal,
-            app.active_view_id.as_deref(),
+            app.views.active_id.as_deref(),
             ctx,
         );
     }
@@ -201,39 +205,39 @@ pub fn render(
             buf,
             &mut app.inspector_modal,
             state,
-            app.codebook.as_deref(),
+            app.info.codebook.as_deref(),
             ctx,
         );
     }
 
     if app.input_mode == crate::InputMode::GoToColumn {
-        render_go_to_column(data_area, buf, &app.go_to_column, ctx);
+        render_go_to_column(data_area, buf, &app.pickers.go_to_column, ctx);
     }
 
     if app.input_mode == crate::InputMode::PickFormat {
         render_picker(
             data_area,
             buf,
-            &app.format_picker,
+            &app.pickers.format_picker,
             ("Format", "Read", "No format matches"),
             ctx,
         );
     }
 
     if app.input_mode == crate::InputMode::Retype
-        && let Some(modal) = &app.retype
+        && let Some(modal) = &app.column_forms.retype
     {
         crate::widgets::retype::render_retype(area, buf, modal, ctx);
     }
 
     if app.input_mode == crate::InputMode::Combine
-        && let Some(modal) = &app.combine
+        && let Some(modal) = &app.column_forms.combine
     {
         crate::widgets::retype::render_combine(area, buf, modal, ctx);
     }
 
     if app.input_mode == crate::InputMode::Sample
-        && let Some(form) = &app.sample_form
+        && let Some(form) = &app.sample.form
     {
         // A dialog over the table: what it covers takes no clicks.
         crate::pointer::record(data_area, crate::pointer::Hit::Modal);
@@ -241,7 +245,7 @@ pub fn render(
     }
 
     if app.input_mode == crate::InputMode::PickTable
-        && let Some(tables) = app.table_choices.as_ref()
+        && let Some(tables) = app.pickers.table_choices.as_ref()
     {
         let details: Vec<String> = tables
             .tables
@@ -258,7 +262,7 @@ pub fn render(
         render_picker_with(
             data_area,
             buf,
-            &app.table_picker,
+            &app.pickers.table_picker,
             ("Table", "Open", "No table matches"),
             Some(&details),
             ctx,

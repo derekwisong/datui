@@ -306,7 +306,7 @@ fn a_glob_or_several_files_read_nothing() {
     press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
 
     install(&mut app, "/nowhere/a.parquet");
-    app.opened = Some((
+    app.source.opened = Some((
         vec![
             PathBuf::from("/nowhere/a.parquet"),
             PathBuf::from("/nowhere/b.parquet"),

@@ -11,6 +11,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// The hex view, and the number its next read is tagged with.
+pub struct HexState {
+    /// The hex view (`InputMode::Hex`), kept while it is up.
+    pub view: Option<crate::hex_view::HexView>,
+    /// Bumped per hex view opened, so a find's answer for another is dropped.
+    pub(crate) serial: u64,
+}
+
 impl App {
     /// Whether any format spec is on the search path: `B` has something to offer.
     pub(crate) fn has_format_specs(&self) -> bool {
@@ -19,7 +27,8 @@ impl App {
 
     /// The hex view on screen, if it is.
     pub fn hex_view(&self) -> Option<&HexView> {
-        self.hex
+        self.hex_view
+            .view
             .as_ref()
             .filter(|_| self.input_mode == InputMode::Hex)
     }
@@ -28,6 +37,7 @@ impl App {
     /// `x` shows as hex: not a glob, a remote source, standard input, or several paths.
     pub(crate) fn hex_target(&self) -> Option<PathBuf> {
         let several = self
+            .source
             .opened
             .as_ref()
             .is_some_and(|(paths, options)| paths.len() > 1 || options.hive);
@@ -75,11 +85,11 @@ impl App {
         if !current {
             return;
         }
-        self.hex_serial += 1;
-        let mut view = HexView::new(source, origin, fallback, self.hex_serial);
+        self.hex_view.serial += 1;
+        let mut view = HexView::new(source, origin, fallback, self.hex_view.serial);
         view.record_size = record_size.map(|n| n.clamp(1, MAX_RECORD_SIZE));
         view.input = crate::widgets::text_input::TextInput::new().with_theme(&self.theme);
-        self.hex = Some(view);
+        self.hex_view.view = Some(view);
         self.info_modal.close();
         self.input_mode = InputMode::Hex;
     }
@@ -107,20 +117,22 @@ impl App {
     /// Leave the hex view the way it was entered: home, the table, or (from the
     /// command line) out of datui.
     fn leave_hex(&mut self, quit: bool) -> Option<AppEvent> {
-        let origin = self.hex.as_ref()?.origin;
+        let origin = self.hex_view.view.as_ref()?.origin;
         match origin {
             Origin::Home => {
                 self.enter_home();
                 None
             }
-            Origin::Table | Origin::Info if quit && !self.opened_from_home => Some(AppEvent::Exit),
+            Origin::Table | Origin::Info if quit && !self.source.opened_from_home => {
+                Some(AppEvent::Exit)
+            }
             Origin::Table | Origin::Info if quit => {
                 self.enter_home();
                 None
             }
             Origin::Table | Origin::Info => {
                 self.stop_hex_find();
-                self.hex = None;
+                self.hex_view.view = None;
                 self.input_mode = if self.data_table_state.is_some() {
                     InputMode::Normal
                 } else {
@@ -140,9 +152,9 @@ impl App {
 
     /// What `q` says it does in the hex view.
     pub(crate) fn hex_q_label(&self) -> &'static str {
-        match self.hex.as_ref().map(|v| v.origin) {
+        match self.hex_view.view.as_ref().map(|v| v.origin) {
             Some(Origin::Home) => "Home",
-            Some(Origin::Table | Origin::Info) if self.opened_from_home => "Home",
+            Some(Origin::Table | Origin::Info) if self.source.opened_from_home => "Home",
             _ => "Quit",
         }
     }
@@ -153,7 +165,7 @@ impl App {
             return None;
         }
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
-        let view = self.hex.as_mut()?;
+        let view = self.hex_view.view.as_mut()?;
 
         // The spec picker owns the keys while it is open.
         if let Some(picker) = view.picker.as_mut() {
@@ -271,7 +283,7 @@ impl App {
 
     /// Enter in a prompt: go to the offset, set the bytes per row, or find.
     fn hex_prompt_submit(&mut self, kind: PromptKind) -> Option<AppEvent> {
-        let view = self.hex.as_mut()?;
+        let view = self.hex_view.view.as_mut()?;
         let text = view.input.value().to_string();
         match kind {
             PromptKind::GoTo => {
@@ -316,7 +328,7 @@ impl App {
 
     /// `n` and `N`: the next or previous match of the last pattern, from the cursor.
     fn hex_find_again(&mut self, forward: bool) -> Option<AppEvent> {
-        let view = self.hex.as_ref()?;
+        let view = self.hex_view.view.as_ref()?;
         let pattern = view.found.as_ref()?.pattern.clone();
         let len = view.len();
         if len == 0 {
@@ -340,7 +352,7 @@ impl App {
     /// Find `pattern` from `from` on a worker. The keys wait, and Esc stops it.
     fn start_hex_find(&mut self, pattern: crate::hex_view::Pattern, from: u64, forward: bool) {
         self.stop_hex_find();
-        let Some(view) = self.hex.as_mut() else {
+        let Some(view) = self.hex_view.view.as_mut() else {
             return;
         };
         let stop = Arc::new(AtomicBool::new(false));
@@ -391,7 +403,7 @@ impl App {
             return;
         }
         self.status_message = None;
-        let Some(view) = self.hex.as_mut().filter(|v| v.serial == run.view) else {
+        let Some(view) = self.hex_view.view.as_mut().filter(|v| v.serial == run.view) else {
             return;
         };
         view.found = Some(Found {
@@ -437,19 +449,20 @@ impl App {
             .iter()
             .map(|found| found.spec.name.clone())
             .collect();
-        if let Some(view) = self.hex.as_mut() {
+        if let Some(view) = self.hex_view.view.as_mut() {
             view.picker = Some(crate::widgets::ui::PickerState::new(names));
         }
     }
 
     /// Read the hex view's file with the spec `name`.
     fn read_hex_with_spec(&mut self, name: String) -> Option<AppEvent> {
-        let view = self.hex.as_ref()?;
+        let view = self.hex_view.view.as_ref()?;
         let path = view.path.clone();
         let from_home = view.origin == Origin::Home;
         let options = crate::OpenOptions {
             spec_name: Some(name),
             ..self
+                .source
                 .opened
                 .as_ref()
                 .filter(|(paths, _)| paths.first() == Some(&path))
@@ -464,10 +477,10 @@ impl App {
             format: None,
             ..options
         };
-        self.opened_from_home = from_home || self.opened_from_home;
+        self.source.opened_from_home = from_home || self.source.opened_from_home;
         // The table takes the screen; a read that fails says why over it.
         self.stop_hex_find();
-        self.hex = None;
+        self.hex_view.view = None;
         self.input_mode = InputMode::Normal;
         self.set_loading_phase("Scanning input", 10);
         self.name_what_is_loading(path.clone());

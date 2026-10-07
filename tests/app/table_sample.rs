@@ -36,7 +36,7 @@ fn key(app: &mut App, code: KeyCode) -> Option<AppEvent> {
 fn draw(app: &mut App, size: &str) {
     key(app, KeyCode::Char('S'));
     assert_eq!(app.input_mode, InputMode::Sample);
-    let form = app.sample_form.as_mut().expect("the Sample form");
+    let form = app.sample.form.as_mut().expect("the Sample form");
     form.size.set_value(size);
     form.seed.set_value("7");
     key(app, KeyCode::Enter);
@@ -131,7 +131,7 @@ fn a_query_runs_over_the_sample_and_clearing_it_keeps_the_query() {
 
     // No sample: the form takes it away.
     key(&mut app, KeyCode::Char('S'));
-    let form = app.sample_form.as_mut().unwrap();
+    let form = app.sample.form.as_mut().unwrap();
     while form.draft.method != SampleMethod::EveryRow {
         form.field = datui::sample_modal::SampleField::Method;
         form.adjust(true);
@@ -235,7 +235,8 @@ fn a_sample_past_the_memory_available_warns_and_enter_again_draws() {
     draw(&mut app, "5000");
     assert_eq!(app.input_mode, InputMode::Sample, "the form stays");
     let warning = app
-        .sample_form
+        .sample
+        .form
         .as_ref()
         .and_then(|form| form.error.clone())
         .expect("a warning");
@@ -363,7 +364,7 @@ fn the_same_seed_draws_the_same_rows_before_and_after_the_count() {
 
     // Back to the filtered view, whose count comes in now; drawn again, the same.
     key(&mut app, KeyCode::Char('S'));
-    let form = app.sample_form.as_mut().unwrap();
+    let form = app.sample.form.as_mut().unwrap();
     while form.draft.method != SampleMethod::EveryRow {
         form.field = datui::sample_modal::SampleField::Method;
         form.adjust(true);
@@ -423,7 +424,7 @@ fn a_pivot_is_refused_never_dropped() {
 
     // Taking the sample away would leave the pivot off the source.
     key(&mut app, KeyCode::Char('S'));
-    let form = app.sample_form.as_mut().unwrap();
+    let form = app.sample.form.as_mut().unwrap();
     while form.draft.method != SampleMethod::EveryRow {
         form.field = datui::sample_modal::SampleField::Method;
         form.adjust(true);
@@ -440,7 +441,7 @@ fn a_pivot_is_refused_never_dropped() {
 
     // Drawn again from the source, under the pivot.
     key(&mut app, KeyCode::Char('S'));
-    let form = app.sample_form.as_mut().unwrap();
+    let form = app.sample.form.as_mut().unwrap();
     form.draft.method = SampleMethod::Spread;
     form.kind = datui::sample_modal::RowsKind::Source;
     form.size.set_value("50");
@@ -461,7 +462,7 @@ fn a_redraw_that_fails_keeps_the_sample_it_would_replace() {
     let before = ids(&app);
     // A time range of a column that holds no times cannot be read.
     key(&mut app, KeyCode::Char('S'));
-    let form = app.sample_form.as_mut().unwrap();
+    let form = app.sample.form.as_mut().unwrap();
     form.kind = datui::sample_modal::RowsKind::Time;
     form.context.time_columns = vec!["id".to_string()];
     form.time_column = 0;
@@ -483,7 +484,7 @@ fn the_estimate_is_of_the_columns_drawn() {
     let (mut app, rx, tx) = open(parquet("table_sample_estimate.parquet", 1_000));
     run_query(&mut app, &rx, &tx, "select id");
     key(&mut app, KeyCode::Char('S'));
-    let form = app.sample_form.as_ref().unwrap();
+    let form = app.sample.form.as_ref().unwrap();
     let (view, source) = (
         form.bytes_per_row.unwrap(),
         form.source_bytes_per_row.unwrap(),

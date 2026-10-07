@@ -21,6 +21,13 @@ pub struct DebugState {
 }
 
 impl DebugState {
+    /// Name the action a key took, when the overlay is on to show it.
+    pub fn action(&mut self, name: impl FnOnce() -> String) {
+        if self.enabled {
+            self.last_action = name();
+        }
+    }
+
     pub fn on_key(&mut self, event: &crossterm::event::KeyEvent) {
         self.num_key_events += 1;
         self.last_key_event_name = format!("{:?}", event.code);

@@ -1334,7 +1334,9 @@ impl App {
         }
         self.analysis_modal.computing = Some(progress);
         self.busy = true;
-        Some(AppEvent::AnalysisDataQualityCompute)
+        Some(AppEvent::AnalysisCompute(
+            analysis_modal::AnalysisTool::DataQuality,
+        ))
     }
 
     /// The draft is the plan now: Setup closes on it, and its sample becomes the

@@ -1,4 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use datui::analysis_modal::AnalysisTool;
 use datui::event_pump::EventPump;
 use datui::{App, AppEvent, InputMode, JobKind, OpenOptions, QueryMode};
 use polars::prelude::*;
@@ -1662,7 +1663,12 @@ fn test_esc_cancels_a_distribution_analysis_in_flight() {
     app.analysis_modal.sidebar_state.select(Some(1));
     show_sample_form(&mut app);
     let next = app.event(&key(KeyCode::Enter));
-    assert!(matches!(next, Some(AppEvent::AnalysisDistributionCompute)));
+    assert!(matches!(
+        next,
+        Some(AppEvent::AnalysisCompute(
+            AnalysisTool::DistributionAnalysis
+        ))
+    ));
     assert_eq!(
         app.analysis_modal.selected_tool,
         Some(AnalysisTool::DistributionAnalysis)
@@ -1753,7 +1759,10 @@ fn m_switches_the_correlation_matrix_between_pearson_and_spearman() {
     app.analysis_modal.sidebar_state.select(Some(2));
     show_sample_form(&mut app);
     let next = app.event(&key(KeyCode::Enter));
-    assert!(matches!(next, Some(AppEvent::AnalysisCorrelationCompute)));
+    assert!(matches!(
+        next,
+        Some(AppEvent::AnalysisCompute(AnalysisTool::CorrelationMatrix))
+    ));
     app.event(&next.unwrap());
     drain_events(&mut app, &rx);
     assert_eq!(
@@ -1816,7 +1825,10 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
-    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    assert!(matches!(
+        next,
+        Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
+    ));
     while let Some(ev) = next {
         next = app.event(&ev);
     }
@@ -1841,7 +1853,10 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
-    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    assert!(matches!(
+        next,
+        Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
+    ));
     app.event(&next.unwrap());
     drain_events(&mut app, &rx);
 
@@ -2592,7 +2607,10 @@ fn data_quality_on_a_local_file_leads_with_the_result() {
         KeyModifiers::NONE,
     )));
     assert!(
-        matches!(next, Some(AppEvent::AnalysisDataQualityCompute)),
+        matches!(
+            next,
+            Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
+        ),
         "a local default plan runs without ceremony"
     );
     while let Some(ev) = next {
@@ -3729,7 +3747,10 @@ fn one_sample_serves_every_analysis_tool() {
         datui::data_quality::QualityPage::Setup
     );
     let next = key(&mut app, KeyCode::Enter);
-    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    assert!(matches!(
+        next,
+        Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
+    ));
     run(&mut app, next);
     assert_eq!(
         app.analysis_modal.selected_tool,
@@ -3776,7 +3797,10 @@ fn one_sample_serves_every_analysis_tool() {
     assert_eq!(app.analysis_modal.data_quality_plan.sample_seed, 7);
     assert_ne!(app.analysis_modal.sample.seed, 7);
     let next = key(&mut app, KeyCode::Enter);
-    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    assert!(matches!(
+        next,
+        Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
+    ));
     assert_eq!(app.analysis_modal.sample.seed, 7);
     run(&mut app, next);
 
@@ -3831,7 +3855,10 @@ fn the_data_quality_ceremony_takes_the_cursor_with_it() {
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
-    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    assert!(matches!(
+        next,
+        Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
+    ));
 }
 
 /// e opens the plan editor, and the editor owns the keyboard: ↑↓ change the field,
@@ -3935,7 +3962,10 @@ fn r_from_the_sidebar_runs_a_sampled_report_again() {
     app.analysis_modal.data_quality_plan = sampled;
     let seed = app.analysis_modal.data_quality_plan.sample_seed;
     let next = press(&mut app, KeyCode::Char('r'));
-    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    assert!(matches!(
+        next,
+        Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
+    ));
     assert_ne!(app.analysis_modal.data_quality_plan.sample_seed, seed);
 }
 
@@ -4100,7 +4130,10 @@ fn data_quality_reads_nothing_until_setup_runs() {
     // One Run: one read, one report.
     press(&mut app, KeyCode::Tab);
     let next = press(&mut app, KeyCode::Enter);
-    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    assert!(matches!(
+        next,
+        Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
+    ));
     let (finished, stages) = drain_quality(&mut app, &rx, next);
     assert_eq!(finished, 1, "one Run dispatches once");
     assert!(stages > 0, "the run names its stages");
@@ -4164,7 +4197,10 @@ fn run_quality_reads(
 ) -> Vec<datui::data_quality::QualityStage> {
     let first = press(app, KeyCode::Enter);
     assert!(
-        matches!(first, Some(AppEvent::AnalysisDataQualityCompute)),
+        matches!(
+            first,
+            Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
+        ),
         "Enter runs"
     );
     let mut reads = Vec::new();
@@ -4560,7 +4596,10 @@ fn data_quality_setup_edits_never_outlive_esc() {
 
     // r on the report runs the plan the report was measured with, a new seed aside.
     let next = press(&mut app, KeyCode::Char('r'));
-    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    assert!(matches!(
+        next,
+        Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
+    ));
     drain_quality(&mut app, &rx, next);
     let plan = &app.analysis_modal.data_quality_plan;
     assert_ne!(plan.sample_seed, seed);
@@ -4661,7 +4700,10 @@ fn text_read_as_time_in_setup_gives_windows_and_intervals() {
     assert!(!app.is_busy());
 
     let next = press(&mut app, KeyCode::Enter);
-    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    assert!(matches!(
+        next,
+        Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
+    ));
     drain_quality(&mut app, &rx, next);
     let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
     let labels = results
@@ -5136,7 +5178,10 @@ fn expected_windows_on_a_full_scan_run_without_asking() {
     assert!(press(&mut app, KeyCode::Enter).is_none());
     assert!(app.confirmation_modal.asks_full_scan(), "a full scan asks");
     let next = press(&mut app, KeyCode::Enter);
-    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    assert!(matches!(
+        next,
+        Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
+    ));
     let (finished, _) = drain_quality(&mut app, &rx, next);
     assert_eq!(finished, 1);
 
@@ -5247,7 +5292,10 @@ fn a_failed_rerun_keeps_the_last_report() {
     press(&mut app, KeyCode::Char('e'));
     app.analysis_modal.data_quality_plan.sample_seed = 4;
     let next = press(&mut app, KeyCode::Enter);
-    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    assert!(matches!(
+        next,
+        Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
+    ));
     let (finished, _) = drain_quality(&mut app, &rx, next);
     assert_eq!(finished, 0, "the rerun failed");
     assert!(app.modal_showing(), "and says why");
@@ -5647,7 +5695,10 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
         app.analysis_modal.sample.scope,
         QualityScope::ViewRows { start: 2, end: 3 }
     );
-    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    assert!(matches!(
+        next,
+        Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
+    ));
     app.event(&next.unwrap());
     drain_events(&mut app, &rx);
     assert_eq!(
@@ -5688,7 +5739,10 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
     // The last report stays until a run replaces it.
     let next = key(&mut app, KeyCode::Enter);
     assert!(app.analysis_modal.data_quality_results.is_some());
-    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    assert!(matches!(
+        next,
+        Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
+    ));
     app.event(&next.unwrap());
     drain_events(&mut app, &rx);
 
@@ -5741,7 +5795,10 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
         KeyCode::Enter,
         KeyModifiers::NONE,
     )));
-    assert!(matches!(next, Some(AppEvent::AnalysisDataQualityCompute)));
+    assert!(matches!(
+        next,
+        Some(AppEvent::AnalysisCompute(AnalysisTool::DataQuality))
+    ));
     app.event(&next.unwrap());
     drain_events(&mut app, &rx);
     let results = app.analysis_modal.data_quality_results.as_ref().unwrap();
@@ -5759,7 +5816,7 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
     let plan = &mut app.analysis_modal.data_quality_plan;
     plan.scope = QualityScope::WholeSource;
     plan.dataset_rows = 1;
-    app.event(&AppEvent::AnalysisDataQualityCompute);
+    app.event(&AppEvent::AnalysisCompute(AnalysisTool::DataQuality));
     drain_events(&mut app, &rx);
     let sampled = app.analysis_modal.data_quality_results.as_ref().unwrap();
     // The sampler counts the whole scope as it spreads the sample over it.
@@ -5773,7 +5830,7 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
     let plan = &mut app.analysis_modal.data_quality_plan;
     plan.method = datui::sampling::SampleMethod::EveryRow;
     plan.compute = datui::data_quality::QualityCompute::Full;
-    app.event(&AppEvent::AnalysisDataQualityCompute);
+    app.event(&AppEvent::AnalysisCompute(AnalysisTool::DataQuality));
     drain_events(&mut app, &rx);
     let full = app.analysis_modal.data_quality_results.as_ref().unwrap();
     assert_eq!(full.total_rows, Some(4));
@@ -5786,7 +5843,7 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
     plan.compute = datui::data_quality::QualityCompute::Sample;
     plan.dataset_rows = 3;
     plan.grain = datui::data_quality::QualityGrain::File;
-    app.event(&AppEvent::AnalysisDataQualityCompute);
+    app.event(&AppEvent::AnalysisCompute(AnalysisTool::DataQuality));
     drain_events(&mut app, &rx);
     let by_file = app.analysis_modal.data_quality_results.as_ref().unwrap();
     assert_eq!(by_file.total_rows, Some(4));

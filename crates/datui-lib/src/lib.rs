@@ -1,7 +1,7 @@
 use color_eyre::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use polars::datatypes::DataType;
-use polars::prelude::{DataFrame, LazyFrame, Schema, col};
+use polars::prelude::{DataFrame, LazyFrame, col};
 use std::collections::HashMap;
 
 use std::path::{Path, PathBuf};
@@ -263,6 +263,50 @@ pub use cli::{CompressionFormat, FileFormat, ReadMode, RemoteRead, Stored, Summa
 #[cfg(test)]
 pub mod tests;
 
+/// A move through the table's rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scroll {
+    Next,
+    Prev,
+    PageDown,
+    PageUp,
+    HalfDown,
+    HalfUp,
+    Start,
+    End,
+}
+
+impl Scroll {
+    /// Rows the move goes, to ask whether the buffer holds where it lands.
+    fn delta(self, state: &DataTableState) -> i64 {
+        let page = state.visible_rows as i64;
+        let half = (state.visible_rows / 2).max(1) as i64;
+        match self {
+            Scroll::Next => 1,
+            Scroll::Prev => -1,
+            Scroll::PageDown => page,
+            Scroll::PageUp => -page,
+            Scroll::HalfDown => half,
+            Scroll::HalfUp => -half,
+            Scroll::Start | Scroll::End => 0,
+        }
+    }
+
+    /// Make the move; true when the rows it lands on have to be read.
+    fn run(self, state: &mut DataTableState) -> bool {
+        match self {
+            Scroll::Next => state.select_next(),
+            Scroll::Prev => state.select_previous(),
+            Scroll::PageDown => state.page_down(),
+            Scroll::PageUp => state.page_up(),
+            Scroll::HalfDown => state.half_page_down(),
+            Scroll::HalfUp => state.half_page_up(),
+            Scroll::Start => state.scroll_to_start(),
+            Scroll::End => state.scroll_to_end(),
+        }
+    }
+}
+
 pub enum AppEvent {
     Key(KeyEvent),
     /// A key to take as if typed: what Enter on a help line presses. The event pump
@@ -490,23 +534,11 @@ pub enum AppEvent {
     Update,
     Reset,
     Resize(u16, u16), // resized (width, height)
-    DoScrollDown,     // Deferred scroll: perform page_down after one frame (throbber)
-    DoScrollUp,       // Deferred scroll: perform page_up
-    DoScrollNext,     // Deferred scroll: perform select_next (one row down)
-    DoScrollPrev,     // Deferred scroll: perform select_previous (one row up)
-    DoScrollEnd,      // Deferred scroll: jump to last page (throbber)
-    DoScrollHome,     // Deferred scroll: jump to first page (throbber)
-    DoScrollHalfDown, // Deferred scroll: half page down
-    DoScrollHalfUp,   // Deferred scroll: half page up
-    GoToLine(usize),  // Deferred: jump to line number (when collect needed)
-    /// Run the next chunk of analysis (describe/distribution); drives per-column progress.
-    AnalysisChunk,
-    /// Run distribution analysis (deferred so progress overlay can show first).
-    AnalysisDistributionCompute,
-    /// Run correlation matrix (deferred so progress overlay can show first).
-    AnalysisCorrelationCompute,
-    /// Run the configured data-quality plan off the UI thread.
-    AnalysisDataQualityCompute,
+    /// A scroll deferred one frame, so the spinner shows while its rows are read.
+    Scroll(Scroll),
+    GoToLine(usize), // Deferred: jump to line number (when collect needed)
+    /// Run an analysis tool off the UI thread; deferred so its progress shows first.
+    AnalysisCompute(analysis_modal::AnalysisTool),
     /// A Data Quality run that stopped short had already read its sample: kept, so
     /// the read it paid for is not thrown away.
     BackgroundQualitySampleKept {
@@ -864,17 +896,41 @@ pub struct ExportProgress {
     pub written: Option<u64>,
 }
 
-/// In-progress analysis computation state (orchestration in App; modal only displays progress).
-#[allow(dead_code)]
-struct AnalysisComputationState {
-    df: Option<DataFrame>,
-    schema: Option<Arc<Schema>>,
-    partial_stats: Vec<crate::statistics::ColumnStatistics>,
-    current: usize,
-    total: usize,
-    total_rows: usize,
-    sample_seed: u64,
-    sample_size: Option<usize>,
+impl ExportProgress {
+    /// An export to `file_path` starting `phase`, nothing written yet.
+    pub fn new(file_path: &Path, phase: &str) -> Self {
+        Self {
+            file_path: file_path.to_path_buf(),
+            current_phase: phase.to_string(),
+            written: None,
+        }
+    }
+}
+
+/// The correlation matrix of the sample's numeric columns. Only those are read: nothing
+/// else is correlated, and on a wide table the rest is most of what a full read holds.
+fn correlations_of_sample(
+    lf: &LazyFrame,
+    sample: &sampling::Sample,
+    known_total: Option<usize>,
+    streaming: bool,
+) -> Result<crate::statistics::AnalysisResults> {
+    let schema = lf.clone().collect_schema()?;
+    let numeric: Vec<polars::prelude::Expr> = schema
+        .iter()
+        .filter(|(_, dtype)| dtype.is_numeric())
+        .map(|(name, _)| col(name.clone()))
+        .collect();
+    let rows = crate::sampling::read(&lf.clone().select(numeric), sample, known_total, streaming)?;
+    Ok(crate::statistics::AnalysisResults {
+        column_statistics: vec![],
+        total_rows: rows.total_rows,
+        sample_size: rows.sample_size,
+        per_value: rows.per_value.map(|per_value| per_value.kept),
+        sample_seed: sample.seed,
+        correlation_matrix: crate::statistics::compute_correlation_matrix(&rows.df).ok(),
+        distribution_analyses: vec![],
+    })
 }
 
 /// At most one query type can be active. Returns (query, sql_query, fuzzy_query) with only the
@@ -1322,7 +1378,6 @@ pub struct App {
     /// Status text for the control bar, at the table view. Shown whether or not the app
     /// is busy: an End waiting on a remote row count parks without setting `busy`.
     status_message: Option<String>,
-    analysis_computation: Option<AnalysisComputationState>,
     app_config: AppConfig,
     /// The terminal should be asked for its background before the next frame.
     background_query: bool,
@@ -1474,46 +1529,89 @@ impl App {
         true
     }
 
+    /// Run Describe, Distributions or Correlations on the sample, off the UI thread.
+    /// Data Quality runs its own plan.
+    fn spawn_analysis(&mut self, tool: analysis_modal::AnalysisTool) -> Option<AppEvent> {
+        use analysis_modal::AnalysisTool;
+        type Compute = fn(
+            &LazyFrame,
+            &sampling::Sample,
+            Option<usize>,
+            bool,
+        ) -> Result<crate::statistics::AnalysisResults>;
+        let (status, compute): (&str, Compute) = match tool {
+            AnalysisTool::DataQuality => return self.run_quality_compute(),
+            AnalysisTool::Describe => ("Running analysis...", |lf, sample, known, streaming| {
+                crate::statistics::compute_describe_from_lazy(lf, known, sample, streaming)
+            }),
+            AnalysisTool::DistributionAnalysis => (
+                "Analyzing distributions...",
+                |lf, sample, known, streaming| {
+                    let options = crate::statistics::ComputeOptions {
+                        include_distribution_info: true,
+                        include_distribution_analyses: true,
+                        include_correlation_matrix: false,
+                        include_skewness_kurtosis_outliers: true,
+                        polars_streaming: streaming,
+                    };
+                    crate::statistics::compute_statistics_for_sample(lf, sample, known, options)
+                },
+            ),
+            AnalysisTool::CorrelationMatrix => {
+                ("Computing correlation matrix...", correlations_of_sample)
+            }
+        };
+        let Some(state) = &self.data_table_state else {
+            self.analysis_modal.computing = None;
+            self.busy = false;
+            return None;
+        };
+        // Binary columns are stubbed by the source: their blobs are never read for
+        // analysis (multi-GB blobs across partitions can exhaust memory).
+        let (source, known_total) = self.sample_source(state);
+        let streaming = match tool {
+            AnalysisTool::CorrelationMatrix => state.polars_streaming(),
+            _ => self.app_config.performance.streaming,
+        };
+        let sample = self.analysis_modal.sample.clone();
+        self.spawn_job(
+            Job::Analysis(jobs::AnalysisRun::default()),
+            Some(status),
+            move |_| {
+                let results = source
+                    .cut(&sample.scope)
+                    .and_then(|lf| compute(&lf, &sample, known_total, streaming))
+                    .map_err(|e| format!("{e}"))?;
+                Ok(Answer::Analysis(tool, results))
+            },
+        );
+        None
+    }
+
     /// Run the selected tool again from scratch, as `r` and `a` do.
     fn start_analysis_run(&mut self) -> Option<AppEvent> {
         let tool = self.analysis_modal.selected_tool?;
         if tool != analysis_modal::AnalysisTool::DataQuality && self.read_waits_for_cancelled() {
             return None;
         }
-        let (phase, event) = match tool {
+        let phase = match tool {
             analysis_modal::AnalysisTool::Describe => {
                 self.analysis_modal.describe_results = None;
-                self.analysis_computation = Some(AnalysisComputationState {
-                    df: None,
-                    schema: None,
-                    partial_stats: Vec::new(),
-                    current: 0,
-                    total: 0,
-                    total_rows: 0,
-                    sample_seed: self.analysis_modal.sample.seed,
-                    sample_size: None,
-                });
-                ("Describing data", AppEvent::AnalysisChunk)
+                "Describing data"
             }
             analysis_modal::AnalysisTool::DistributionAnalysis => {
                 self.analysis_modal.distribution_results = None;
-                (
-                    "Analyzing distributions",
-                    AppEvent::AnalysisDistributionCompute,
-                )
+                "Analyzing distributions"
             }
             analysis_modal::AnalysisTool::CorrelationMatrix => {
                 self.analysis_modal.correlation_results = None;
-                (
-                    "Computing correlations",
-                    AppEvent::AnalysisCorrelationCompute,
-                )
+                "Computing correlations"
             }
             analysis_modal::AnalysisTool::DataQuality => return None,
         };
         self.analysis_modal.computing = Some(AnalysisProgress::new(phase));
         self.busy = true;
-        Some(event)
+        Some(AppEvent::AnalysisCompute(tool))
     }
 
     /// Stop waiting for the analysis in flight.
@@ -1552,7 +1650,6 @@ impl App {
         // second Enter replayed now would start it again behind the Esc.
         self.screen_generation = self.screen_generation.wrapping_add(1);
         self.analysis_modal.computing = None;
-        self.analysis_computation = None;
         self.busy = false;
         self.status_message = None;
         // Reading the sample to look at changed nothing on screen; the tool stays.
@@ -2983,6 +3080,18 @@ impl App {
         self.jobs.would_strand()
     }
 
+    /// A move through the rows: made now when the buffer holds where it lands, or
+    /// deferred a frame, busy, while the rows are read.
+    fn scroll_key(&mut self, scroll: Scroll) -> Option<AppEvent> {
+        let state = self.data_table_state.as_mut()?;
+        if state.scroll_would_trigger_collect(scroll.delta(state)) {
+            self.busy = true;
+            return Some(AppEvent::Scroll(scroll));
+        }
+        scroll.run(state);
+        None
+    }
+
     /// Run a scroll on `data_table_state` and resolve the busy/spawn cycle.
     /// `scroll` returns true when its movement leaves the buffered window (caller must collect).
     /// We clear `busy` ourselves when no collect is needed or the spawn no-ops, otherwise
@@ -2991,7 +3100,7 @@ impl App {
     /// shows the throbber — setting `start_row` alone used to leave the old buffer on
     /// screen, drawn from its first row — unless the view is already there, in which
     /// case only the selection settles and no frame or key is spent.
-    fn jump_key(&mut self, jump: AppEvent) -> Option<AppEvent> {
+    fn jump_key(&mut self, jump: Scroll) -> Option<AppEvent> {
         // The end of a remote dataset is not known until its rows are counted, and a
         // jump to a guess reads every file up to it. Wait for the count instead; keys
         // keep working meanwhile.
@@ -3006,7 +3115,7 @@ impl App {
         // match it to. A filter and a sort are rebuilt over the joined scan, so they are
         // on this side of it even though they are not pristine.
         // Lines still being indexed: the end is where the indexing ends.
-        if matches!(jump, AppEvent::DoScrollEnd)
+        if jump == Scroll::End
             && let Some(state) = self.data_table_state.as_ref()
             && state.indexing().is_some()
         {
@@ -3014,7 +3123,7 @@ impl App {
             self.status_message = Some(Self::COUNTING_FOR_END.to_string());
             return None;
         }
-        if matches!(jump, AppEvent::DoScrollEnd)
+        if jump == Scroll::End
             && let Some(state) = self.data_table_state.as_ref()
             && state.footers_pending().is_some()
             && state.scan_is_the_root()
@@ -3027,7 +3136,7 @@ impl App {
         // Any other frame whose end is not known yet waits for its count too, rather than
         // jumping to the end of the rows read so far. A count waiting on a paint starts
         // now; one already running or riding in a collect is waited on.
-        if matches!(jump, AppEvent::DoScrollEnd)
+        if jump == Scroll::End
             && let Some(state) = self.data_table_state.as_ref()
             && !state.is_num_rows_valid()
         {
@@ -3045,16 +3154,16 @@ impl App {
             return None;
         }
         let state = self.data_table_state.as_mut()?;
-        let (already_there, settle): (bool, fn(&mut DataTableState) -> bool) = match jump {
-            AppEvent::DoScrollHome => (state.start_row() == 0, DataTableState::scroll_to_start),
-            _ => (state.at_end(), DataTableState::scroll_to_end),
+        let already_there = match jump {
+            Scroll::Start => state.start_row() == 0,
+            _ => state.at_end(),
         };
         if already_there {
-            settle(state);
+            jump.run(state);
             return None;
         }
         self.busy = true;
-        Some(jump)
+        Some(AppEvent::Scroll(jump))
     }
 
     fn handle_scroll<F>(&mut self, scroll: F) -> Option<AppEvent>
@@ -3301,7 +3410,6 @@ impl App {
             screen_generation: 0,
             input_dropped: false,
             status_message: None,
-            analysis_computation: None,
             app_config,
             background_query: false,
             formats,
@@ -3786,9 +3894,7 @@ impl App {
             && let Some(state) = self.data_table_state.as_mut()
         {
             state.move_cursor(mv);
-            if self.debug.enabled {
-                self.debug.last_action = format!("move_cursor({mv:?})");
-            }
+            self.debug.action(|| format!("move_cursor({mv:?})"));
             return None;
         }
 
@@ -3980,12 +4086,8 @@ impl App {
                 // The type row is drawn from the schema the table already has, so
                 // this is a render-time flip like `,`. Session-only.
                 self.dtype_row = !self.dtype_row;
-                if self.debug.enabled {
-                    self.debug.last_action = format!(
-                        "toggle_dtype_row({})",
-                        if self.dtype_row { "on" } else { "off" }
-                    );
-                }
+                let on = if self.dtype_row { "on" } else { "off" };
+                self.debug.action(|| format!("toggle_dtype_row({on})"));
                 None
             }
             KeyCode::Char('F') => {
@@ -3997,16 +4099,12 @@ impl App {
                 // the next frame with no re-collect. Session-only: the config
                 // file stays the source of truth at launch.
                 self.number_format.enabled = !self.number_format.enabled;
-                if self.debug.enabled {
-                    self.debug.last_action = format!(
-                        "toggle_number_format({})",
-                        if self.number_format.enabled {
-                            "on"
-                        } else {
-                            "off"
-                        }
-                    );
-                }
+                let on = if self.number_format.enabled {
+                    "on"
+                } else {
+                    "off"
+                };
+                self.debug.action(|| format!("toggle_number_format({on})"));
                 None
             }
             KeyCode::Esc => {
@@ -4070,156 +4168,32 @@ impl App {
                 }
                 None
             }
-            code if event.is_press() && DOWN_KEYS.contains(&code) => {
-                let would_collect = self
-                    .data_table_state
-                    .as_ref()
-                    .map(|s| s.scroll_would_trigger_collect(1))
-                    .unwrap_or(false);
-                if would_collect {
-                    self.busy = true;
-                    Some(AppEvent::DoScrollNext)
-                } else {
-                    if let Some(ref mut s) = self.data_table_state {
-                        s.select_next();
-                    }
-                    None
-                }
-            }
-            code if event.is_press() && UP_KEYS.contains(&code) => {
-                let would_collect = self
-                    .data_table_state
-                    .as_ref()
-                    .map(|s| s.scroll_would_trigger_collect(-1))
-                    .unwrap_or(false);
-                if would_collect {
-                    self.busy = true;
-                    Some(AppEvent::DoScrollPrev)
-                } else {
-                    if let Some(ref mut s) = self.data_table_state {
-                        s.select_previous();
-                    }
-                    None
-                }
-            }
-            KeyCode::PageDown if event.is_press() => {
-                let would_collect = self
-                    .data_table_state
-                    .as_ref()
-                    .map(|s| s.scroll_would_trigger_collect(s.visible_rows as i64))
-                    .unwrap_or(false);
-                if would_collect {
-                    self.busy = true;
-                    Some(AppEvent::DoScrollDown)
-                } else {
-                    if let Some(ref mut s) = self.data_table_state {
-                        s.page_down();
-                    }
-                    None
-                }
-            }
-            KeyCode::Home if event.is_press() => self.jump_key(AppEvent::DoScrollHome),
-            KeyCode::End | KeyCode::Char('G') if event.is_press() => {
-                self.jump_key(AppEvent::DoScrollEnd)
-            }
+            code if event.is_press() && DOWN_KEYS.contains(&code) => self.scroll_key(Scroll::Next),
+            code if event.is_press() && UP_KEYS.contains(&code) => self.scroll_key(Scroll::Prev),
+            KeyCode::PageDown if event.is_press() => self.scroll_key(Scroll::PageDown),
+            KeyCode::Home if event.is_press() => self.jump_key(Scroll::Start),
+            KeyCode::End | KeyCode::Char('G') if event.is_press() => self.jump_key(Scroll::End),
             KeyCode::Char('f')
                 if event.modifiers.contains(KeyModifiers::CONTROL) && event.is_press() =>
             {
-                let would_collect = self
-                    .data_table_state
-                    .as_ref()
-                    .map(|s| s.scroll_would_trigger_collect(s.visible_rows as i64))
-                    .unwrap_or(false);
-                if would_collect {
-                    self.busy = true;
-                    Some(AppEvent::DoScrollDown)
-                } else {
-                    if let Some(ref mut s) = self.data_table_state {
-                        s.page_down();
-                    }
-                    None
-                }
+                self.scroll_key(Scroll::PageDown)
             }
             KeyCode::Char('b')
                 if event.modifiers.contains(KeyModifiers::CONTROL) && event.is_press() =>
             {
-                let would_collect = self
-                    .data_table_state
-                    .as_ref()
-                    .map(|s| s.scroll_would_trigger_collect(-(s.visible_rows as i64)))
-                    .unwrap_or(false);
-                if would_collect {
-                    self.busy = true;
-                    Some(AppEvent::DoScrollUp)
-                } else {
-                    if let Some(ref mut s) = self.data_table_state {
-                        s.page_up();
-                    }
-                    None
-                }
+                self.scroll_key(Scroll::PageUp)
             }
             KeyCode::Char('d')
                 if event.modifiers.contains(KeyModifiers::CONTROL) && event.is_press() =>
             {
-                let half = self
-                    .data_table_state
-                    .as_ref()
-                    .map(|s| (s.visible_rows / 2).max(1) as i64)
-                    .unwrap_or(1);
-                let would_collect = self
-                    .data_table_state
-                    .as_ref()
-                    .map(|s| s.scroll_would_trigger_collect(half))
-                    .unwrap_or(false);
-                if would_collect {
-                    self.busy = true;
-                    Some(AppEvent::DoScrollHalfDown)
-                } else {
-                    if let Some(ref mut s) = self.data_table_state {
-                        s.half_page_down();
-                    }
-                    None
-                }
+                self.scroll_key(Scroll::HalfDown)
             }
             KeyCode::Char('u')
                 if event.modifiers.contains(KeyModifiers::CONTROL) && event.is_press() =>
             {
-                let half = self
-                    .data_table_state
-                    .as_ref()
-                    .map(|s| (s.visible_rows / 2).max(1) as i64)
-                    .unwrap_or(1);
-                let would_collect = self
-                    .data_table_state
-                    .as_ref()
-                    .map(|s| s.scroll_would_trigger_collect(-half))
-                    .unwrap_or(false);
-                if would_collect {
-                    self.busy = true;
-                    Some(AppEvent::DoScrollHalfUp)
-                } else {
-                    if let Some(ref mut s) = self.data_table_state {
-                        s.half_page_up();
-                    }
-                    None
-                }
+                self.scroll_key(Scroll::HalfUp)
             }
-            KeyCode::PageUp if event.is_press() => {
-                let would_collect = self
-                    .data_table_state
-                    .as_ref()
-                    .map(|s| s.scroll_would_trigger_collect(-(s.visible_rows as i64)))
-                    .unwrap_or(false);
-                if would_collect {
-                    self.busy = true;
-                    Some(AppEvent::DoScrollUp)
-                } else {
-                    if let Some(ref mut s) = self.data_table_state {
-                        s.page_up();
-                    }
-                    None
-                }
-            }
+            KeyCode::PageUp if event.is_press() => self.scroll_key(Scroll::PageUp),
             KeyCode::Enter if event.is_press() => {
                 if self.input_mode != InputMode::Normal {
                     return None;
@@ -4520,7 +4494,7 @@ impl App {
         let out = self.dispatch_event(event);
         // Not while this handler is returning a continuation. A follow-up is the rest of
         // the event just handled — the analysis sets `computing` and returns
-        // `AnalysisChunk`, and the phase that chunk will spawn has not spawned — so
+        // `AnalysisCompute`, and the job that will run has not spawned — so
         // nothing holds the generation yet, and the errands would advance it out from
         // under the errand that is halfway through. They run after every event and are
         // built to wait; one more event is nothing to them.
@@ -4646,14 +4620,7 @@ impl App {
                 self.spawn_async_collect(Self::LOADING_BUFFER);
                 None
             }
-            AppEvent::DoScrollDown => self.handle_scroll(|s| s.page_down()),
-            AppEvent::DoScrollUp => self.handle_scroll(|s| s.page_up()),
-            AppEvent::DoScrollNext => self.handle_scroll(|s| s.select_next()),
-            AppEvent::DoScrollPrev => self.handle_scroll(|s| s.select_previous()),
-            AppEvent::DoScrollEnd => self.handle_scroll(|s| s.scroll_to_end()),
-            AppEvent::DoScrollHome => self.handle_scroll(|s| s.scroll_to_start()),
-            AppEvent::DoScrollHalfDown => self.handle_scroll(|s| s.half_page_down()),
-            AppEvent::DoScrollHalfUp => self.handle_scroll(|s| s.half_page_up()),
+            AppEvent::Scroll(scroll) => self.handle_scroll(|s| scroll.run(s)),
             AppEvent::GoToLine(n) => {
                 let n = *n;
                 // Past the lines indexed so far: gone to once they all are.
@@ -4671,132 +4638,7 @@ impl App {
                 }
                 self.handle_scroll(|s| s.scroll_to_row_centered(n))
             }
-            AppEvent::AnalysisChunk => {
-                // Binary columns are stubbed by the source: their blobs are never read
-                // for analysis (multi-GB blobs across partitions can exhaust memory).
-                let (source, known_total) = match &self.data_table_state {
-                    Some(state) => self.sample_source(state),
-                    None => {
-                        self.analysis_computation = None;
-                        self.analysis_modal.computing = None;
-                        self.busy = false;
-                        return None;
-                    }
-                };
-                let comp = self.analysis_computation.take()?;
-                if comp.df.is_none() {
-                    let sample = self.analysis_modal.sample.clone();
-                    let streaming = self.app_config.performance.streaming;
-                    self.spawn_job(
-                        Job::Analysis(jobs::AnalysisRun::default()),
-                        Some("Running analysis..."),
-                        move |_| {
-                            let results = source
-                                .cut(&sample.scope)
-                                .and_then(|lf| {
-                                    crate::statistics::compute_describe_from_lazy(
-                                        &lf,
-                                        known_total,
-                                        &sample,
-                                        streaming,
-                                    )
-                                })
-                                .map_err(|e| format!("{e}"))?;
-                            Ok(Answer::Described(results))
-                        },
-                    );
-                }
-                None
-            }
-            AppEvent::AnalysisDistributionCompute => {
-                if let Some(state) = &self.data_table_state {
-                    let (source, known_total) = self.sample_source(state);
-                    let sample = self.analysis_modal.sample.clone();
-                    let streaming = self.app_config.performance.streaming;
-                    self.spawn_job(
-                        Job::Analysis(jobs::AnalysisRun::default()),
-                        Some("Analyzing distributions..."),
-                        move |_| {
-                            let options = crate::statistics::ComputeOptions {
-                                include_distribution_info: true,
-                                include_distribution_analyses: true,
-                                include_correlation_matrix: false,
-                                include_skewness_kurtosis_outliers: true,
-                                polars_streaming: streaming,
-                            };
-                            let results = source
-                                .cut(&sample.scope)
-                                .and_then(|lf| {
-                                    crate::statistics::compute_statistics_for_sample(
-                                        &lf,
-                                        &sample,
-                                        known_total,
-                                        options,
-                                    )
-                                })
-                                .map_err(|e| format!("{e}"))?;
-                            Ok(Answer::Distributions(results))
-                        },
-                    );
-                } else {
-                    self.analysis_modal.computing = None;
-                    self.busy = false;
-                }
-                None
-            }
-            AppEvent::AnalysisCorrelationCompute => {
-                if let Some(state) = &self.data_table_state {
-                    let (source, known_total) = self.sample_source(state);
-                    let streaming = state.polars_streaming();
-                    let sample = self.analysis_modal.sample.clone();
-                    let seed = sample.seed;
-                    self.spawn_job(
-                        Job::Analysis(jobs::AnalysisRun::default()),
-                        Some("Computing correlation matrix..."),
-                        move |_| {
-                            // Only the numeric columns: nothing else is correlated, and on a
-                            // wide table the rest is most of what a full read would hold.
-                            let result = source
-                                .cut(&sample.scope)
-                                .and_then(|lf| {
-                                    let schema = lf.clone().collect_schema()?;
-                                    let numeric: Vec<polars::prelude::Expr> = schema
-                                        .iter()
-                                        .filter(|(_, dtype)| dtype.is_numeric())
-                                        .map(|(name, _)| col(name.clone()))
-                                        .collect();
-                                    crate::sampling::read(
-                                        &lf.select(numeric),
-                                        &sample,
-                                        known_total,
-                                        streaming,
-                                    )
-                                })
-                                .map(|rows| {
-                                    let matrix =
-                                        crate::statistics::compute_correlation_matrix(&rows.df)
-                                            .ok();
-                                    crate::statistics::AnalysisResults {
-                                        column_statistics: vec![],
-                                        total_rows: rows.total_rows,
-                                        sample_size: rows.sample_size,
-                                        per_value: rows.per_value.map(|per_value| per_value.kept),
-                                        sample_seed: seed,
-                                        correlation_matrix: matrix,
-                                        distribution_analyses: vec![],
-                                    }
-                                });
-                            let results = result.map_err(|e| format!("{e}"))?;
-                            Ok(Answer::Correlations(results))
-                        },
-                    );
-                } else {
-                    self.analysis_modal.computing = None;
-                    self.busy = false;
-                }
-                None
-            }
-            AppEvent::AnalysisDataQualityCompute => self.run_quality_compute(),
+            AppEvent::AnalysisCompute(tool) => self.spawn_analysis(*tool),
             AppEvent::BackgroundLenReady { .. }
             | AppEvent::FramePainted
             | AppEvent::BackgroundLenFailed { .. }
@@ -5065,11 +4907,8 @@ impl App {
             AppEvent::Export(request) => {
                 if self.data_table_state.is_some() {
                     self.busy = true;
-                    self.export_progress = Some(ExportProgress {
-                        file_path: request.path.clone(),
-                        current_phase: "Preparing export".to_string(),
-                        written: None,
-                    });
+                    self.export_progress =
+                        Some(ExportProgress::new(&request.path, "Preparing export"));
                     // Drawn before the export starts.
                     Some(AppEvent::DoExport(request.clone()))
                 } else {
@@ -5111,11 +4950,7 @@ impl App {
                     crate::export::Route::Streamed => Self::export_write_phase(request),
                     crate::export::Route::Collected => "Collecting data",
                 };
-                self.export_progress = Some(ExportProgress {
-                    file_path: request.path.clone(),
-                    current_phase: phase.to_string(),
-                    written: None,
-                });
+                self.export_progress = Some(ExportProgress::new(&request.path, phase));
                 let writing = Self::export_write_phase(request);
                 let request = request.clone();
                 self.spawn_job(Job::Export, Some("Exporting..."), move |worker| {
@@ -5760,24 +5595,22 @@ impl App {
                 self.rows_failed(current, waited, &message, conversion.as_deref());
                 None
             }
-            Answer::Described(results) => {
+            Answer::Analysis(tool, results) => {
                 if current {
-                    self.analysis_modal.describe_results = Some(results);
-                    self.analysis_modal.computing = None;
-                }
-                None
-            }
-            Answer::Distributions(results) => {
-                if current {
-                    self.analysis_modal.distribution_results = Some(results);
-                    self.analysis_modal.computing = None;
-                }
-                None
-            }
-            Answer::Correlations(results) => {
-                if current {
-                    self.analysis_modal.install_correlations(results);
-                    self.analysis_modal.computing = None;
+                    let modal = &mut self.analysis_modal;
+                    match tool {
+                        analysis_modal::AnalysisTool::Describe => {
+                            modal.describe_results = Some(results)
+                        }
+                        analysis_modal::AnalysisTool::DistributionAnalysis => {
+                            modal.distribution_results = Some(results)
+                        }
+                        analysis_modal::AnalysisTool::CorrelationMatrix => {
+                            modal.install_correlations(results)
+                        }
+                        analysis_modal::AnalysisTool::DataQuality => {}
+                    }
+                    modal.computing = None;
                 }
                 None
             }

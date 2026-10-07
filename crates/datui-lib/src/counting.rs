@@ -79,7 +79,7 @@ impl App {
         // the page here first would be one fetched to be thrown away.
         if self.end_when_the_footers_land.take() == Some(self.dataset_generation) {
             self.status_message = None;
-            if let Some(next) = self.jump_key(AppEvent::DoScrollEnd) {
+            if let Some(next) = self.jump_key(crate::Scroll::End) {
                 // The jump reads the page it lands on, so reading this one first would
                 // be a page fetched to be thrown away.
                 let _ = self.events.send(next);
@@ -368,7 +368,7 @@ impl App {
         }
         if self.end_when_indexed.take() == Some(generation) {
             self.take_down_the_counting_status();
-            if let Some(next) = self.jump_key(AppEvent::DoScrollEnd) {
+            if let Some(next) = self.jump_key(crate::Scroll::End) {
                 let _ = self.events.send(next);
                 return;
             }
@@ -581,7 +581,7 @@ impl App {
                     if self.end_after_count == Some(*len_generation) {
                         self.end_after_count = None;
                         self.status_message = None;
-                        return self.jump_key(AppEvent::DoScrollEnd);
+                        return self.jump_key(crate::Scroll::End);
                     }
                 } else if self.end_after_count == Some(*len_generation) {
                     // This is the count End was waiting on, and it answers a frame that

@@ -2394,6 +2394,7 @@ fn a_superseded_scan_does_not_continue_the_load() {
 /// screen, whatever the tool: every one of them is judged by its job.
 #[test]
 fn stale_analysis_answers_are_ignored() {
+    use crate::analysis_modal::AnalysisTool;
     use crate::data_quality::{DataQualityResults, QualityPrecision};
     use crate::statistics::AnalysisResults;
     use crate::{Answer, App, AppEvent, Job, Outcome};
@@ -2410,9 +2411,9 @@ fn stale_analysis_answers_are_ignored() {
         distribution_analyses: vec![],
     };
     let answers = vec![
-        Answer::Described(results()),
-        Answer::Distributions(results()),
-        Answer::Correlations(results()),
+        Answer::Analysis(AnalysisTool::Describe, results()),
+        Answer::Analysis(AnalysisTool::DistributionAnalysis, results()),
+        Answer::Analysis(AnalysisTool::CorrelationMatrix, results()),
         Answer::DataQuality {
             results: Box::new(DataQualityResults {
                 total_rows: Some(999_999),
@@ -3412,11 +3413,10 @@ fn a_dataset_owed_a_re_read_does_not_print_its_partial_as_the_total() {
 
     // An export is running and holds a lease, so the errand the failure raises has
     // to wait.
-    app.export_progress = Some(crate::ExportProgress {
-        file_path: std::path::PathBuf::from("/tmp/out.csv"),
-        current_phase: "Collecting".to_string(),
-        written: None,
-    });
+    app.export_progress = Some(crate::ExportProgress::new(
+        std::path::Path::new("/tmp/out.csv"),
+        "Collecting",
+    ));
     let _lease = app.hold_the_generation();
     let live = app.dataset_generation;
     App::record_footers(&app.pending_footers_result, live, None);
@@ -3615,11 +3615,10 @@ fn a_pass_that_failed_waits_for_work_already_asked_for() {
 
     // An export is collecting: it holds a lease on this exact generation, and its
     // answer is thrown away if anything bumps it.
-    app.export_progress = Some(crate::ExportProgress {
-        file_path: std::path::PathBuf::from("/tmp/out.csv"),
-        current_phase: "Collecting".to_string(),
-        written: None,
-    });
+    app.export_progress = Some(crate::ExportProgress::new(
+        std::path::Path::new("/tmp/out.csv"),
+        "Collecting",
+    ));
     let lease = app.hold_the_generation();
     let waiting_on = app.task_generation();
 

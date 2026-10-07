@@ -210,7 +210,9 @@ fn a_cancelled_run_says_so_until_its_worker_exits() {
     key(&mut app, KeyCode::Char('e'));
     assert!(matches!(
         key(&mut app, KeyCode::Enter),
-        Some(AppEvent::AnalysisDataQualityCompute)
+        Some(AppEvent::AnalysisCompute(
+            crate::analysis_modal::AnalysisTool::DataQuality
+        ))
     ));
 
     // The run in flight hears its own stages, and shows them.
@@ -543,6 +545,8 @@ fn nothing_reads_beside_a_cancelled_run_through_another_way_in() {
     assert!(app.cancelled_analysis_running().is_none());
     assert!(matches!(
         key(&mut app, KeyCode::Enter),
-        Some(AppEvent::AnalysisChunk)
+        Some(AppEvent::AnalysisCompute(
+            crate::analysis_modal::AnalysisTool::Describe
+        ))
     ));
 }

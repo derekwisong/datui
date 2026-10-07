@@ -5224,21 +5224,15 @@ impl App {
         waited: bool,
         answer: Answer,
     ) -> Option<AppEvent> {
-        match answer {
-            Answer::FootersJoined(found) => match job {
-                Job::FootersJoin { dataset } => {
-                    self.footers_joined(dataset, found.map(|found| *found))
-                }
-                _ => None,
-            },
-            Answer::Load(answer) => {
+        match (job, answer) {
+            (Job::FootersJoin { dataset }, Answer::FootersJoined(found)) => {
+                self.footers_joined(dataset, found.map(|found| *found))
+            }
+            (Job::Load(load), Answer::Load(answer)) => {
                 // The open's to judge, by its own identity rather than the generation: an
                 // answer for an open given up or replaced, or for a phase it has left,
                 // changes nothing on screen, and what it carries — a download's file, a
                 // dataset — is dropped with it.
-                let Job::Load(load) = job else {
-                    return None;
-                };
                 let step = self.loading.answered(
                     load,
                     *answer,
@@ -5247,16 +5241,16 @@ impl App {
                 );
                 self.run_load_step(step)
             }
-            Answer::NamedPaths {
-                paths,
-                options,
-                directory,
-            } => {
+            (
+                Job::OpenNamed(load),
+                Answer::NamedPaths {
+                    paths,
+                    options,
+                    directory,
+                },
+            ) => {
                 // The user left the open while its paths were looked at, or another took
                 // its place.
-                let Job::OpenNamed(load) = job else {
-                    return None;
-                };
                 if !self.loading.looking_at_paths(load) {
                     return None;
                 }
@@ -5266,10 +5260,7 @@ impl App {
                     None => AppEvent::Open(paths, *options),
                 })
             }
-            Answer::NamedPathMissing(path) => {
-                let Job::OpenNamed(load) = job else {
-                    return None;
-                };
+            (Job::OpenNamed(load), Answer::NamedPathMissing(path)) => {
                 if !self.loading.looking_at_paths(load) {
                     return None;
                 }
@@ -5279,30 +5270,27 @@ impl App {
                 }
                 Some(AppEvent::NamedPathMissing(path))
             }
-            Answer::LookedAt {
-                kind,
-                holds,
-                options,
-            } => {
+            (
+                Job::LookAtDirectory { load, path },
+                Answer::LookedAt {
+                    kind,
+                    holds,
+                    options,
+                },
+            ) => {
                 // The user pressed Ctrl+O and went to the home screen, a newer look
                 // replaced this one, or another open took its place while this was
                 // reading. Their choice is the one on screen, and this is the answer to a
                 // question nobody is waiting for.
-                let Job::LookAtDirectory { load, path } = job else {
-                    return None;
-                };
                 if !self.loading.looking_at_directory(load) {
                     return None;
                 }
                 // An `Open` that follows carries the same open on.
                 self.open_the_directory_looked_at(path, kind, holds.as_deref(), *options)
             }
-            Answer::Kind(found) => {
+            (Job::Classify(asked), Answer::Kind(found)) => {
                 // Superseded: a newer look, a trip away from home, or something that took
                 // the screen over owns the wait, so this one touches nothing.
-                let Job::Classify(asked) = job else {
-                    return None;
-                };
                 if !current {
                     return None;
                 }
@@ -5329,11 +5317,8 @@ impl App {
                 };
                 self.open_what_it_is(path, kind, asked.jump)
             }
-            Answer::Rows(result) => {
+            (Job::Rows(inflight), Answer::Rows(result)) => {
                 // A stale page is dropped; the wait belongs to whatever replaced it.
-                let Job::Rows(inflight) = job else {
-                    return None;
-                };
                 if !current {
                     return None;
                 }
@@ -5378,25 +5363,31 @@ impl App {
                 }
                 None
             }
-            Answer::RowsFailed {
-                message,
-                conversion,
-            } => {
+            (
+                _,
+                Answer::RowsFailed {
+                    message,
+                    conversion,
+                },
+            ) => {
                 self.rows_failed(current, waited, &message, conversion.as_deref());
                 None
             }
-            Answer::Analysis(install, results) => {
+            (_, Answer::Analysis(install, results)) => {
                 if current {
                     install(&mut self.analysis_modal, results);
                     self.analysis_modal.computing = None;
                 }
                 None
             }
-            Answer::DataQuality {
-                results,
-                kept,
-                plan,
-            } => {
+            (
+                _,
+                Answer::DataQuality {
+                    results,
+                    kept,
+                    plan,
+                },
+            ) => {
                 // Kept whatever became of the run's results: the rows are the rows the
                 // key names, and a read is not to be thrown away.
                 if let Some(kept) = kept {
@@ -5419,15 +5410,15 @@ impl App {
                 }
                 None
             }
-            Answer::SampleDrawn(drawn) => self.sample_drawn(job, current, drawn),
-            Answer::Sample { df, label } => {
+            (job, Answer::SampleDrawn(drawn)) => self.sample_drawn(job, current, drawn),
+            (_, Answer::Sample { df, label }) => {
                 if current {
                     self.analysis_modal.computing = None;
                     self.show_sample_view(df, label);
                 }
                 None
             }
-            Answer::Pivoted { spec, pivoted } => {
+            (_, Answer::Pivoted { spec, pivoted }) => {
                 // Superseded means something replaced the view, which owns the wait.
                 if !current {
                     return None;
@@ -5452,18 +5443,13 @@ impl App {
                 }
                 None
             }
-            Answer::ReshapePreviewed { input, result } => {
-                if let Job::ReshapePreview { epoch, token } = job {
-                    self.reshape_preview_ended(epoch, token, input, result);
-                }
+            (Job::ReshapePreview { epoch, token }, Answer::ReshapePreviewed { input, result }) => {
+                self.reshape_preview_ended(epoch, token, input, result);
                 None
             }
-            Answer::ViewPivoted(pivoted) => {
+            (Job::ViewPivot(pivot), Answer::ViewPivoted(pivoted)) => {
                 // Superseded means the view was cancelled or something replaced it, which
                 // owns the wait.
-                let Job::ViewPivot(pivot) = job else {
-                    return None;
-                };
                 let (view, why) = *pivot;
                 if !current {
                     return None;
@@ -5484,18 +5470,15 @@ impl App {
                 }
                 None
             }
-            Answer::DrillRow { group_index, row } => {
+            (_, Answer::DrillRow { group_index, row }) => {
                 // Superseded means something replaced the view, which owns the wait.
                 if current {
                     self.drill_into(group_index, &row);
                 }
                 None
             }
-            Answer::FieldsRead(values) => {
+            (Job::InspectRow { frame, row }, Answer::FieldsRead(values)) => {
                 // Superseded means something replaced the view, which owns the wait.
-                let Job::InspectRow { frame, row } = job else {
-                    return None;
-                };
                 if !current {
                     return None;
                 }
@@ -5510,11 +5493,8 @@ impl App {
                 }
                 None
             }
-            Answer::JsonParsed(root) => {
+            (Job::InspectJson { token }, Answer::JsonParsed(root)) => {
                 // Superseded means something replaced the view, which owns the wait.
-                let Job::InspectJson { token } = job else {
-                    return None;
-                };
                 if !current || !self.inspector_modal.active {
                     return None;
                 }
@@ -5528,10 +5508,7 @@ impl App {
                 }
                 None
             }
-            Answer::Indented(text) => {
-                let Job::InspectPretty { token } = job else {
-                    return None;
-                };
+            (Job::InspectPretty { token }, Answer::Indented(text)) => {
                 let modal = &mut self.inspector_modal;
                 if current
                     && let Some(inspector_modal::Pretty::Pending { token: t, place }) =
@@ -5545,10 +5522,7 @@ impl App {
                 }
                 None
             }
-            Answer::Unpacked(decoded) => {
-                let Job::InspectUnpack { token } = job else {
-                    return None;
-                };
+            (Job::InspectUnpack { token }, Answer::Unpacked(decoded)) => {
                 let modal = &mut self.inspector_modal;
                 if current
                     && let Some(inspector_modal::Unpack::Pending { token: t, place }) =
@@ -5562,13 +5536,13 @@ impl App {
                 }
                 None
             }
-            Answer::ValueWritten(open) => {
+            (_, Answer::ValueWritten(open)) => {
                 if current && self.inspector_modal.active {
                     self.external.open = Some(open);
                 }
                 None
             }
-            Answer::Exported(path) => {
+            (_, Answer::Exported(path)) => {
                 // Written: the dialog held for a failure is done with.
                 self.export_modal.close();
                 self.export_counts = None;
@@ -5578,43 +5552,37 @@ impl App {
                 }
                 None
             }
-            Answer::Copied { payload, message } => {
+            (_, Answer::Copied { payload, message }) => {
                 if current {
                     self.export_progress = None;
                     self.finish_copy(payload, message);
                 }
                 None
             }
-            Answer::QualityReportWritten(path) => {
+            (_, Answer::QualityReportWritten(path)) => {
                 self.analysis_modal.quality.export = None;
                 if current {
                     self.flash_path("Report written to ", &path);
                 }
                 None
             }
-            Answer::ChartPrepared(prepared) => {
-                if let Job::ChartPrepare(prep) = job {
-                    self.chart_prepared(*prep, current, Ok(*prepared));
-                }
+            (Job::ChartPrepare(prep), Answer::ChartPrepared(prepared)) => {
+                self.chart_prepared(*prep, current, Ok(*prepared));
                 None
             }
-            Answer::ChartExported => {
+            (Job::ChartExport { path, format }, Answer::ChartExported) => {
                 // Leaving the chart's dataset supersedes the write: one that finishes
                 // after Ctrl-O must not reopen its modal over the home screen.
-                if let Job::ChartExport { path, format } = job
-                    && current
-                {
+                if current {
                     self.finish_chart_export(&path, format, Ok(()));
                 }
                 None
             }
-            Answer::FileFacts(facts) => {
-                if let Job::FileFacts { dataset } = job {
-                    self.file_facts_landed(dataset, facts);
-                }
+            (Job::FileFacts { dataset }, Answer::FileFacts(facts)) => {
+                self.file_facts_landed(dataset, facts);
                 None
             }
-            Answer::UnfitCounted(unfit) => {
+            (Job::UnfitCount { dataset, version }, Answer::UnfitCounted(unfit)) => {
                 // Every value fitting says nothing in the Notes; the log says it ran.
                 let columns: Vec<&str> = unfit.iter().map(|u| u.column.as_str()).collect();
                 let said = if columns.is_empty() {
@@ -5623,8 +5591,7 @@ impl App {
                     columns.join(", ")
                 };
                 log::debug!(target: "datui", "values column types made null, by column: {said}");
-                if let Job::UnfitCount { dataset, version } = job
-                    && dataset == self.dataset_generation
+                if dataset == self.dataset_generation
                     && let Some(state) = self.data_table_state.as_mut()
                 {
                     match version {
@@ -5634,21 +5601,19 @@ impl App {
                 }
                 None
             }
-            Answer::Found(found) => {
-                if let Job::Find(run) = job {
-                    self.find_answered(run, current, found);
-                }
+            (Job::Find(run), Answer::Found(found)) => {
+                self.find_answered(run, current, found);
                 None
             }
-            Answer::HexOpened(source) => {
+            (job, Answer::HexOpened(source)) => {
                 self.hex_opened(job, current, *source);
                 None
             }
-            Answer::HexFound(hit) => {
+            (job, Answer::HexFound(hit)) => {
                 self.hex_found(job, current, hit);
                 None
             }
-            Answer::ValueCounts(counts) => {
+            (_, Answer::ValueCounts(counts)) => {
                 // Superseded means the screen moved on: another column, a cancel, a
                 // trip away.
                 if current {
@@ -5659,10 +5624,12 @@ impl App {
             }
             // What a test's answer carries goes with it.
             #[cfg(test)]
-            Answer::Probe(held) => {
+            (_, Answer::Probe(held)) => {
                 drop(held);
                 None
             }
+            // Each answer is the one its job asks for; another is dropped.
+            _ => None,
         }
     }
 

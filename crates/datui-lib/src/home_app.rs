@@ -824,10 +824,8 @@ impl App {
             let cached_for = |source: &crate::cloud_sources::Source| {
                 cache.cloud_listing(&source.id, &source.fingerprint())
             };
-            let found = {
-                let env = crate::cloud_browse::Environment::current();
-                crate::cloud_sources::discover(&cloud, &env)
-            };
+            // Looked for again, and kept for the opens and listings that follow.
+            let found = crate::cloud_sources::rediscover(&cloud).to_vec();
             // Shown or not: a bucket under Recent opens with the login that listed it
             // whatever `discover` says. Not a hidden source, which may be hidden for a
             // login that no longer works; the default login opens its buckets instead.

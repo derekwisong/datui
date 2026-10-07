@@ -5766,6 +5766,42 @@ mod coming_back {
         }
     }
 
+    /// Every pass over the list in a frame reads one build of its rows: the list, the
+    /// passes that pick what on screen to look into, the preview and the control bar.
+    /// A frame with nothing changed builds none.
+    #[test]
+    fn a_frame_builds_the_rows_at_most_once() {
+        let tmp = TempDir::new().unwrap();
+        many_directories(tmp.path());
+        let (mut app, _rx) = home_app(local_config(tmp.path()));
+        draw(&mut app);
+        let built = app.home.rows_built();
+        draw(&mut app);
+        assert_eq!(
+            app.home.rows_built(),
+            built,
+            "nothing changed, nothing built"
+        );
+
+        app.home.filter.push('d');
+        draw(&mut app);
+        assert_eq!(
+            app.home.rows_built(),
+            built + 1,
+            "a filter typed, one build"
+        );
+        draw(&mut app);
+        assert_eq!(app.home.rows_built(), built + 1);
+
+        app.home.move_selection(3);
+        draw(&mut app);
+        assert_eq!(
+            app.home.rows_built(),
+            built + 1,
+            "moving the cursor builds none"
+        );
+    }
+
     #[test]
     fn esc_from_a_directory_puts_the_cursor_back_on_it_level_by_level() {
         let tmp = TempDir::new().unwrap();

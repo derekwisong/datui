@@ -722,7 +722,7 @@ fn render_plot(
     plot: Option<Plot<'_>>,
     g: &Glyphs,
 ) -> Option<PlotPlace> {
-    let text_secondary = theme.get("text_secondary");
+    let text_secondary = theme.text_secondary();
     let hint = |buf: &mut ratatui::buffer::Buffer| {
         Paragraph::new(missing(modal))
             .style(Style::default().fg(text_secondary))
@@ -1191,7 +1191,7 @@ fn render_xy_chart(
         sub,
     };
     if let Some(at) = cursor {
-        let style = Style::default().fg(theme.get("accent"));
+        let style = Style::default().fg(theme.accent());
         crosshair::draw(buf, &place, at, style, g);
         Paragraph::new(readout).render(readout_area, buf);
     }
@@ -1209,11 +1209,11 @@ fn readout_entries(
     names: &[String],
     other_at: Option<usize>,
 ) -> Vec<crosshair::Entry> {
-    let value_style = Style::default().fg(theme.get("text_primary"));
+    let value_style = Style::default().fg(theme.text_primary());
     let x_title = if x_title.is_empty() { "x" } else { x_title };
     let mut entries = vec![crosshair::Entry {
         name: x_title.to_string(),
-        name_style: Style::default().fg(theme.get("text_secondary")),
+        name_style: Style::default().fg(theme.text_secondary()),
         value: written,
         value_style,
     }];
@@ -1224,7 +1224,7 @@ fn readout_entries(
     {
         let (value, value_style) = match value {
             Some(v) => (crosshair::format_number(v, y), value_style),
-            None => (g.null.to_string(), Style::default().fg(theme.get("dimmed"))),
+            None => (g.null.to_string(), Style::default().fg(theme.dimmed())),
         };
         entries.push(crosshair::Entry {
             name: name.clone(),
@@ -1245,9 +1245,9 @@ fn plot_axes<'a>(
     marker: ratatui::symbols::Marker,
     grid: bool,
 ) -> PlotAxes<'a> {
-    let style = Style::default().fg(theme.get("text_primary"));
+    let style = Style::default().fg(theme.text_primary());
     PlotAxes {
-        grid: grid.then(|| Style::default().fg(theme.get("chart_grid"))),
+        grid: grid.then(|| Style::default().fg(theme.chart_grid())),
         ..PlotAxes::new(x, y, style, marker)
     }
 }
@@ -1299,7 +1299,7 @@ fn curve_datasets<'a>(
 /// rows of every value without a series of its own.
 fn series_style(theme: &Theme, i: usize, other_at: Option<usize>) -> Style {
     if other_at == Some(i) {
-        return Style::default().fg(theme.get("dimmed"));
+        return Style::default().fg(theme.dimmed());
     }
     let colors = theme.series_colors();
     Style::default().fg(colors[i % colors.len()])
@@ -1357,7 +1357,7 @@ fn render_histogram_chart(
     (x, y): (&Axis, &Axis),
     g: &Glyphs,
 ) {
-    let text_secondary = theme.get("text_secondary");
+    let text_secondary = theme.text_secondary();
     if data.bins.is_empty() {
         Paragraph::new("No data for histogram")
             .style(Style::default().fg(text_secondary))
@@ -1407,7 +1407,7 @@ fn render_histogram_chart(
 
     let frame = axes.frame(area);
     let points = bin_columns(data, [x_min_bounds, x_max_bounds], frame.graph.width);
-    let style = Style::default().fg(theme.get("chart_1"));
+    let style = Style::default().fg(theme.chart_1());
     let dataset = Dataset::default()
         .name("")
         .marker(g.plot.bar)
@@ -1450,7 +1450,7 @@ fn render_kde_chart(
     (x, y): (&Axis, &Axis),
     g: &Glyphs,
 ) {
-    let text_secondary = theme.get("text_secondary");
+    let text_secondary = theme.text_secondary();
     if data.series.is_empty() {
         Paragraph::new("No data for KDE")
             .style(Style::default().fg(text_secondary))
@@ -1488,7 +1488,7 @@ fn render_box_plot_chart(
     (x_title, y): (&str, &Axis),
     g: &Glyphs,
 ) {
-    let text_secondary = theme.get("text_secondary");
+    let text_secondary = theme.text_secondary();
     if data.stats.is_empty() {
         Paragraph::new("No data for box plot")
             .style(Style::default().fg(text_secondary))
@@ -1571,7 +1571,7 @@ fn render_heatmap_chart(
         .split(area);
     // The axes' titles sit as every plot's do: Y over its labels, X at the right
     // under its own.
-    let title_style = Style::default().fg(theme.get("text_primary"));
+    let title_style = Style::default().fg(theme.text_primary());
     let y_title = cut(&y.title, layout[0].width as usize, g);
     buf.set_string(layout[0].x, layout[0].y, &y_title, title_style);
 
@@ -1597,7 +1597,7 @@ fn render_heatmap_chart(
         return;
     }
 
-    let label_style = Style::default().fg(theme.get("text_primary"));
+    let label_style = Style::default().fg(theme.text_primary());
     for (row, label) in &y_labels {
         let pad = usize::from(y_label_width).saturating_sub(label.width()) as u16;
         buf.set_stringn(
@@ -1611,7 +1611,7 @@ fn render_heatmap_chart(
 
     // Ten steps of density, the same in either glyph set.
     const RAMP: [&str; 10] = [" ", ".", ":", "-", "=", "+", "*", "#", "%", "@"];
-    let style = Style::default().fg(theme.get("chart_1"));
+    let style = Style::default().fg(theme.chart_1());
     let max_x_bin = data.x_bins.saturating_sub(1) as f64;
     let max_y_bin = data.y_bins.saturating_sub(1) as f64;
     for row in 0..plot_area.height {

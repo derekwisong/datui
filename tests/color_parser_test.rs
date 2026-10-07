@@ -264,20 +264,9 @@ fn test_theme_from_config() {
     let theme = result.unwrap();
 
     // Check that colors are accessible
-    assert_ne!(theme.get("chip_key"), Color::Reset);
-    assert_ne!(theme.get("error"), Color::Reset);
-    assert_ne!(theme.get("success"), Color::Reset);
-}
-
-#[test]
-fn test_theme_get_unknown_color() {
-    use datui::config::AppConfig;
-
-    let config = AppConfig::default();
-    let theme = Theme::from_config(&config.theme).unwrap();
-
-    // Unknown color should return Reset
-    assert_eq!(theme.get("unknown_color"), Color::Reset);
+    assert_ne!(theme.chip_key(), Color::Reset);
+    assert_ne!(theme.error(), Color::Reset);
+    assert_ne!(theme.success(), Color::Reset);
 }
 
 #[test]

@@ -2788,8 +2788,8 @@ fn data_quality_reads_as_a_report() {
     for (page, own) in [
         (QualityPage::Overview, "Enter Details"),
         (QualityPage::Columns, "Enter Inspect"),
-        (QualityPage::Segments, "Enter Set Grain"),
-        (QualityPage::Trends, "Enter Set Grain"),
+        (QualityPage::Segments, "Enter Set grain"),
+        (QualityPage::Trends, "Enter Set grain"),
     ] {
         if page != QualityPage::Overview {
             app.event(&AppEvent::Key(KeyEvent::new(
@@ -2808,7 +2808,7 @@ fn data_quality_reads_as_a_report() {
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
     let screen = common::buffer_text(&buffer);
-    assert!(screen.contains("Set Grain") && !screen.contains("Metric"));
+    assert!(screen.contains("Set grain") && !screen.contains("Metric"));
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
         KeyModifiers::NONE,
@@ -2887,7 +2887,7 @@ fn data_quality_reads_as_a_report() {
         "no threshold without an interval:\n{screen}"
     );
     // Text columns can take a role, read through a format.
-    assert!(bar_now(&mut app).contains("Time Roles"));
+    assert!(bar_now(&mut app).contains("Time roles"));
     // Enter runs from any row; the plan is the one measured, so the report opens.
     app.event(&AppEvent::Key(KeyEvent::new(
         KeyCode::Enter,
@@ -2925,7 +2925,7 @@ fn data_quality_reads_as_a_report() {
     assert!(screen.contains("Duplicate rows"));
     assert!(screen.contains("4 more checks"));
     assert!(
-        screen.contains("All Checks"),
+        screen.contains("All checks"),
         "the bar says Enter shows the rest"
     );
     app.event(&AppEvent::Key(KeyEvent::new(
@@ -2939,7 +2939,7 @@ fn data_quality_reads_as_a_report() {
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
     let screen = common::buffer_text(&buffer);
-    assert!(screen.contains("Nearly unique") && screen.contains("Fewer Checks"));
+    assert!(screen.contains("Nearly unique") && screen.contains("Fewer checks"));
     for code in [KeyCode::Esc, KeyCode::Home] {
         app.event(&AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
     }
@@ -2967,7 +2967,7 @@ fn data_quality_reads_as_a_report() {
         "facts and advice as a list, not a lecture"
     );
     assert!(
-        screen.contains("Show Rows"),
+        screen.contains("Show rows"),
         "the bar names what Enter does"
     );
     app.event(&AppEvent::Key(KeyEvent::new(
@@ -3044,7 +3044,7 @@ fn a_long_finding_scrolls() {
     press(&mut app, KeyCode::End);
     let screen = render(&mut app);
     assert!(!screen.contains(" more "), "nothing left below at the end");
-    assert!(screen.contains("Show Rows"), "the Enter line is reachable");
+    assert!(screen.contains("Show rows"), "the Enter line is reachable");
     press(&mut app, KeyCode::Home);
     assert_eq!(app.analysis_modal.data_quality_detail_scroll.offset, 0);
     press(&mut app, KeyCode::Esc);
@@ -3117,7 +3117,7 @@ fn a_sampled_finding_opens_its_sampled_rows() {
         screen.contains(&format!("Enter: the {expected} sampled rows")),
         "the popup says which rows open"
     );
-    assert!(screen.contains("Show Rows"));
+    assert!(screen.contains("Show rows"));
     assert!(!screen.contains("full profile"));
 
     let mut next = app.event(&enter());
@@ -3280,7 +3280,7 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
         assert_glyph_slots(&screen);
     }
     assert!(
-        render(&mut app, 120, 30).contains("All Findings"),
+        render(&mut app, 120, 30).contains("All findings"),
         "Esc says what it does"
     );
     press(&mut app, KeyCode::Esc);
@@ -3361,7 +3361,7 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
         )),
         "{screen}"
     );
-    assert!(screen.contains("Show Rows"), "{screen}");
+    assert!(screen.contains("Show rows"), "{screen}");
     assert_glyph_slots(&screen);
     let mut next = press(&mut app, KeyCode::Enter);
     while let Some(event) = next {
@@ -3416,7 +3416,7 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
     let screen = render(&mut app, 80, 24);
     assert!(screen.contains("every value parses"), "{screen}");
     assert!(
-        screen.contains("Close") && !screen.contains("Show Rows"),
+        screen.contains("Close") && !screen.contains("Show rows"),
         "{screen}"
     );
     press(&mut app, KeyCode::Enter);
@@ -3496,7 +3496,7 @@ fn full_scan_evidence_is_read_only_on_confirm() {
         screen.contains("full scan keeps none, asks first"),
         "{screen}"
     );
-    assert!(screen.contains("Read Rows"), "{screen}");
+    assert!(screen.contains("Read rows"), "{screen}");
 
     // Enter stages the read and shows it; nothing reads yet.
     assert!(press(&mut app, KeyCode::Enter).is_none());
@@ -4919,7 +4919,7 @@ fn intervals_are_chosen_in_setup_and_inspected_without_a_read() {
         press(&mut app, KeyCode::Down);
     }
     assert_eq!(app.analysis_modal.selected_interval_fact(), Some(fact));
-    assert!(render(&mut app, 100, 30).contains("Show Rows"));
+    assert!(render(&mut app, 100, 30).contains("Show rows"));
     std::fs::remove_file(&path).unwrap();
     let mut next = press(&mut app, KeyCode::Enter);
     while let Some(event) = next {
@@ -25682,12 +25682,12 @@ fn test_terminal_background_switches_the_palette_under_auto() {
     ] {
         app.event(&AppEvent::TerminalBackground(mode));
         assert_eq!(
-            app.theme().get("table_header_bg"),
+            app.theme().table_header_bg(),
             hex(&stock.table_header_bg),
             "{mode:?}"
         );
-        assert_eq!(app.theme().get("dimmed"), hex(&stock.dimmed), "{mode:?}");
-        assert_eq!(app.theme().get("accent"), hex("#123456"), "{mode:?}");
+        assert_eq!(app.theme().dimmed(), hex(&stock.dimmed), "{mode:?}");
+        assert_eq!(app.theme().accent(), hex("#123456"), "{mode:?}");
         // Drawn with it.
         let mut buf = Buffer::empty(area);
         Widget::render(&mut app, area, &mut buf);
@@ -25704,7 +25704,7 @@ fn test_terminal_background_switches_the_palette_under_auto() {
     let mut app = App::new_with_config(tx, common::test_runtime(), theme, light);
     app.event(&AppEvent::TerminalBackground(ThemeMode::Dark));
     assert_eq!(
-        app.theme().get("table_header_bg"),
+        app.theme().table_header_bg(),
         hex(&ColorConfig::light().table_header_bg)
     );
     app.event(&AppEvent::TerminalFocused);
@@ -25731,7 +25731,7 @@ fn test_first_frame_uses_the_terminals_last_answer() {
         app.settle_first_palette(answered);
         app
     };
-    let header = |app: &App| app.theme().get("table_header_bg");
+    let header = |app: &App| app.theme().table_header_bg();
     let dark = hex(&ColorConfig::dark().table_header_bg);
     let light = hex(&ColorConfig::light().table_header_bg);
 
@@ -25782,18 +25782,18 @@ fn test_terminal_background_switches_between_named_themes() {
     for _ in 0..2 {
         app.event(&AppEvent::TerminalBackground(ThemeMode::Light));
         let light = ColorConfig::light();
-        assert_eq!(app.theme().get("accent"), hex(&light.accent));
-        assert_eq!(app.theme().get("dimmed"), hex(&light.dimmed));
-        assert_eq!(app.theme().get("find_match"), hex("#ff9e64"));
+        assert_eq!(app.theme().accent(), hex(&light.accent));
+        assert_eq!(app.theme().dimmed(), hex(&light.dimmed));
+        assert_eq!(app.theme().find_match(), hex("#ff9e64"));
 
         app.event(&AppEvent::TerminalBackground(ThemeMode::Dark));
-        assert_eq!(app.theme().get("accent"), hex("#e0af68"));
-        assert_eq!(app.theme().get("dimmed"), hex("#111111"));
+        assert_eq!(app.theme().accent(), hex("#e0af68"));
+        assert_eq!(app.theme().dimmed(), hex("#111111"));
         assert_eq!(
-            app.theme().get("controls_bg"),
+            app.theme().controls_bg(),
             hex(&ColorConfig::dark().controls_bg)
         );
-        assert_eq!(app.theme().get("find_match"), hex("#ff9e64"));
+        assert_eq!(app.theme().find_match(), hex("#ff9e64"));
     }
     assert_eq!(app.flash_message(), None);
 

@@ -10,10 +10,11 @@ use ratatui::style::Style;
 use ratatui::widgets::{Paragraph, Widget};
 
 /// What a form dialog draws. `footer` is the form's own keys; while a picker is open
-/// its keys stand in.
+/// its keys stand in, from the `Picker` group of `screen`'s registry entries.
 pub struct FormView<'a, F> {
     pub title: &'a str,
-    pub footer: HintBar<'a>,
+    pub screen: datui_cli::keys::Context,
+    pub footer: HintBar,
     /// Where the values start, past the longest label.
     pub label_width: u16,
     /// Each field shown, its label and its value.
@@ -29,9 +30,14 @@ impl<'a, F: Copy + PartialEq> FormView<'a, F> {
     pub fn render<T: Form<Field = F>>(self, area: Rect, buf: &mut Buffer, ctx: &RenderContext) {
         let footer = match self.picker {
             Some(_) => HintBar::from_ctx(ctx)
-                .hint_weighted("Enter", "Choose", 3)
-                .hint_weighted("type", "Narrow", 1)
-                .hint_weighted("Esc", "Back", 4),
+                .screen(self.screen)
+                .group("Picker")
+                .key("Enter")
+                .weight(3)
+                .key("(type)")
+                .weight(1)
+                .key("Esc")
+                .weight(4),
             None => self.footer,
         };
         crate::pointer::record(area, crate::pointer::Hit::Modal);

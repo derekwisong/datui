@@ -3,6 +3,7 @@
 use crate::render::context::RenderContext;
 use crate::retype_modal::{CombineField, CombineModal, RetypeModal, Stage};
 use crate::widgets::ui::{FormValue, FormView, HintBar, Picker, Surface};
+use datui_cli::keys::Context;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -36,7 +37,10 @@ pub fn render_retype(area: Rect, buf: &mut Buffer, modal: &RetypeModal, ctx: &Re
         Stage::Type => "Cancel",
         Stage::Format { .. } => "Back",
     };
-    let footer = HintBar::from_ctx(ctx).hints(&[("Enter", "Choose"), ("Esc", back)]);
+    let footer = HintBar::from_ctx(ctx)
+        .screen(Context::Retype)
+        .key("Enter")
+        .key_as("Esc", back);
     let title = modal.title();
     let inner = Surface::new(&title).footer(&footer).render(popup, buf, ctx);
     if inner.height < 3 {
@@ -105,10 +109,16 @@ pub fn render_combine(area: Rect, buf: &mut Buffer, modal: &CombineModal, ctx: &
     }
     let popup = crate::render::layout::centered_rect(area, width, height);
     let footer = HintBar::from_ctx(ctx)
-        .hint_weighted("Enter", "Make", 3)
-        .hint_weighted("Space", "Pick", 2)
-        .hint_weighted("Tab", "Next", 1)
-        .hint_weighted("Esc", "Cancel", 4);
+        .screen(Context::Combine)
+        .group("Fields")
+        .key("Enter")
+        .weight(3)
+        .key("Space")
+        .weight(2)
+        .key("Tab")
+        .weight(1)
+        .key("Esc")
+        .weight(4);
     let kinds: Vec<&str> = crate::column_types::DerivedKind::ALL
         .iter()
         .map(|k| k.name())
@@ -143,6 +153,7 @@ pub fn render_combine(area: Rect, buf: &mut Buffer, modal: &CombineModal, ctx: &
     };
     FormView {
         title: "Combine into Datetime",
+        screen: Context::Combine,
         footer,
         label_width: LABEL_WIDTH,
         rows,

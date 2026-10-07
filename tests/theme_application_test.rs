@@ -48,9 +48,9 @@ fn test_theme_color_retrieval() {
     let theme = Theme::from_config(&config.theme).unwrap();
 
     // Test that we can retrieve colors
-    let primary = theme.get("chip_key");
-    let error = theme.get("error");
-    let success = theme.get("success");
+    let primary = theme.chip_key();
+    let error = theme.error();
+    let success = theme.success();
 
     // Colors should not be Reset (unless NO_COLOR is set)
     use ratatui::style::Color;

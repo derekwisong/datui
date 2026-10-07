@@ -21,6 +21,7 @@ use crate::inspector_reader::{self as reader, Content, TextForm, Window};
 use crate::render::context::RenderContext;
 use crate::table::{DataTableState, InspectField, InspectRow, NullKind};
 use crate::widgets::ui::{HintBar, SectionRule, Surface};
+use datui_cli::keys::Context;
 use polars::prelude::*;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -1464,25 +1465,27 @@ struct FooterFacts {
 
 /// The keys that act now, primary first; the weights say which yield first on
 /// a narrow footer, the way out last.
-fn footer<'a>(
-    modal: &InspectorModal,
-    pane: &'a Pane,
-    f: &FooterFacts,
-    ctx: &RenderContext,
-) -> HintBar<'a> {
-    let g = crate::glyphs::get();
-    let mut bar = HintBar::from_ctx(ctx);
+fn footer(modal: &InspectorModal, pane: &Pane, f: &FooterFacts, ctx: &RenderContext) -> HintBar {
+    let bar = HintBar::from_ctx(ctx).screen(Context::Inspector);
     if modal.finding {
         return bar
-            .hint_weighted("Enter", "Done", 3)
-            .hint_weighted("type", "Find", 1)
-            .hint_weighted("Esc", "Clear", 4);
+            .group("Find")
+            .key("Enter")
+            .weight(3)
+            .key("(type)")
+            .weight(1)
+            .key("Esc")
+            .weight(4);
     }
     if modal.value_find.as_ref().is_some_and(|f| f.editing) {
         return bar
-            .hint_weighted("Enter", "Find", 3)
-            .hint_weighted("type", "Text", 1)
-            .hint_weighted("Esc", "Clear", 4);
+            .group("Find")
+            .key_as("Enter", "Find")
+            .weight(3)
+            .key_as("(type)", "Text")
+            .weight(1)
+            .key("Esc")
+            .weight(4);
     }
     let copy = match pane.copy {
         CopyAs::Base64 => "Copy base64",
@@ -1492,62 +1495,72 @@ fn footer<'a>(
     };
     let view = pane.next_view().map(View::label);
     if modal.focus == Focus::Value {
+        let mut bar = bar.group("Value");
         if f.value_overflows {
-            bar = bar
-                .hint_weighted(g.updown, "Scroll", 8)
-                .hint_weighted("Home/End", "Top/End", 6);
+            bar = bar.key("↑ / ↓").weight(8).key("Home / End").weight(6);
         }
-        bar = bar.hint_weighted("/", "Find", 7);
+        bar = bar.key("/").weight(7);
         if modal
             .value_find
             .as_ref()
             .is_some_and(|f| !f.hits.is_empty())
         {
-            bar = bar.hint_weighted("n/N", "Next", 7);
+            bar = bar.key("n / N").weight(7);
         }
+        bar = bar.group("Output");
         if let Some(view) = view {
-            bar = bar.hint_weighted("e", view, 5);
+            bar = bar.key_as("e", view).weight(5);
         }
         if pane.content.wraps() {
             let wrap = match modal.wrap {
                 reader::Wrap::Word => "Hard wrap",
                 reader::Wrap::Hard => "Word wrap",
             };
-            bar = bar.hint_weighted("w", wrap, 3);
+            bar = bar.key_as("w", wrap).weight(3);
         }
         if f.has_value {
-            bar = bar
-                .hint_weighted("y", copy, 4)
-                .hint_weighted("o", "Open", 2);
+            bar = bar.key_as("y", copy).weight(4).key("o").weight(2);
         }
-        bar = bar.hint_weighted(g.updown_lr, "Row", 1);
-        return bar.hint_weighted("Esc", "Fields", 10);
+        return bar
+            .group("Fields")
+            .key("← / →")
+            .weight(1)
+            .group("Value")
+            .key("Esc")
+            .weight(10);
     }
+    let mut bar = bar.group("Fields");
     if let Some(label) = f.enter {
-        bar = bar.hint_weighted("Enter", label, 9);
+        bar = bar.key_as("Enter", label).weight(9);
     }
     if f.read_key {
-        bar = bar.hint_weighted("r", "Read", 9);
+        bar = bar.key("r").weight(9);
     }
     if f.has_value {
-        bar = bar.hint_weighted("Tab", "Value", 8);
+        bar = bar.key("Tab").weight(8);
         if !matches!(f.enter, Some("Read" | "Retry")) {
-            bar = bar.hint_weighted("y", copy, 7);
+            bar = bar
+                .group("Output")
+                .key_as("y", copy)
+                .weight(7)
+                .group("Fields");
         }
     }
     // The arrows are the first keys anyone tries: their chip yields before the
     // view key, which nothing else would reveal.
     if f.many_fields {
-        bar = bar.hint_weighted(g.updown, "Field", 4);
+        bar = bar.key("↑ / ↓").weight(4);
     }
-    bar = bar
-        .hint_weighted(g.updown_lr, "Row", 6)
-        .hint_weighted("/", "Find", 5);
+    bar = bar.key("← / →").weight(6).key("/").weight(5);
     if let Some(view) = view {
-        bar = bar.hint_weighted("e", view, 5);
+        bar = bar
+            .group("Output")
+            .key_as("e", view)
+            .weight(5)
+            .group("Fields");
     }
     if f.list_overflows {
-        bar = bar.hint_weighted("PgUp/PgDn", "Page", 3);
+        bar = bar.key("PgUp / PgDn").weight(3);
     }
     // The toggle names its state: what `f` hides is the nulls and empties.
     let filled = match (f.comparing, modal.filled_only) {
@@ -1555,14 +1568,14 @@ fn footer<'a>(
         (false, true) => "Nulls: hidden",
         (false, false) => "Nulls: shown",
     };
-    bar = bar.hint_weighted("Y", "Copy row", 2);
+    bar = bar.group("Output").key("Y").weight(2).group("Fields");
     // Comparing, Esc is the way out of Compare, and says so.
     if !modal.compare {
-        bar = bar.hint_weighted("c", "Compare", 2);
+        bar = bar.key("c").weight(2);
     }
-    bar = bar.hint_weighted("f", filled, 1);
+    bar = bar.key_as("f", filled).weight(1);
     if f.comparing {
-        bar = bar.hint_weighted("m", "Pin", 1);
+        bar = bar.key("m").weight(1);
     }
     // Esc backs out a level at a time: the find, Compare, then the inspector.
     let esc = if !modal.filter.is_empty() {
@@ -1572,7 +1585,7 @@ fn footer<'a>(
     } else {
         "Close"
     };
-    bar.hint_weighted("Esc", esc, 10)
+    bar.key_as("Esc", esc).weight(10)
 }
 
 /// The rows the list shows, and its name and type columns' widths.
@@ -2092,7 +2105,6 @@ fn render_drill(
     root_title: &str,
     ctx: &RenderContext,
 ) {
-    let g = crate::glyphs::get();
     let Some(drill) = modal.drill.clone() else {
         return;
     };
@@ -2193,13 +2205,12 @@ fn render_drill(
             ctx,
         );
     } else {
+        bar = bar.screen(Context::Inspector).group("Nested");
         if opens {
-            bar = bar.hint_weighted("Enter", "Open", 9);
+            bar = bar.key("Enter").weight(9);
         }
         if focused.is_some() {
-            bar = bar
-                .hint_weighted("Tab", "Value", 8)
-                .hint_weighted("y", "Copy", 7);
+            bar = bar.key("Tab").weight(8).key("y").weight(7);
         }
         if len > 1 {
             let word = match shape {
@@ -2207,15 +2218,15 @@ fn render_drill(
                 Shape::Object => "Key",
                 _ => "Item",
             };
-            bar = bar.hint_weighted(g.updown, word, 6);
+            bar = bar.key_as("↑ / ↓", word).weight(6);
         }
         if let Some(view) = pane.next_view() {
-            bar = bar.hint_weighted("e", view.label(), 3);
+            bar = bar.key_as("e", view.label()).weight(3);
         }
         if len > list_h {
-            bar = bar.hint_weighted("PgUp/PgDn", "Page", 2);
+            bar = bar.key("PgUp / PgDn").weight(2);
         }
-        bar = bar.hint_weighted("Esc", "Back", 10);
+        bar = bar.key("Esc").weight(10);
     }
 
     let labels: Vec<&str> = drill.levels.iter().map(|l| l.label.as_str()).collect();

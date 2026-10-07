@@ -9,6 +9,7 @@ use crate::render::context::RenderContext;
 use crate::sort_filter_modal::{SortFilterField, SortFilterModal, SortFilterTab};
 use crate::widgets::column_widths::WidthChoice;
 use crate::widgets::ui::{HintBar, Picker, SectionRule, Surface};
+use datui_cli::keys::Context;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -24,13 +25,19 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
     // editor owns Enter — the apply key that still works. That is Ctrl+J, not
     // Ctrl+Enter: without the keyboard-enhancement protocol many terminals send
     // Ctrl+Enter as a plain Enter.
+    let footer = HintBar::from_ctx(ctx)
+        .screen(Context::SortFilter)
+        .group("Sidebar");
     let footer = if editing {
-        HintBar::from_ctx(ctx).hint_weighted("^J", "Apply", 2)
+        footer.key("Ctrl+J").weight(2)
     } else {
-        HintBar::from_ctx(ctx)
-            .hint_weighted("Enter", "Apply", 3)
-            .hint_weighted("Tab", "Next", 1)
-            .hint_weighted("Esc", "Cancel", 4)
+        footer
+            .key("Enter")
+            .weight(3)
+            .key("Tab")
+            .weight(1)
+            .key("Esc")
+            .weight(4)
     };
     let staged = modal.sort.has_unapplied_changes || modal.filter.has_unapplied_changes();
     let footer = if !editing && staged {
@@ -119,49 +126,73 @@ pub fn render(area: Rect, buf: &mut Buffer, modal: &mut SortFilterModal, ctx: &R
             .render(hints_area, buf);
         return;
     }
-    let lr = g.updown_lr;
+    let bar = HintBar::from_ctx(ctx).screen(Context::SortFilter);
+    let editor = || bar.clone().group("Filter editor");
+    let sidebar = || bar.clone().group("Sidebar");
+    // What a row in effect takes besides Space: its place, and leaving.
+    let in_effect = |bar: HintBar| {
+        bar.group("In effect")
+            .key("[ / ]")
+            .weight(3)
+            .key("d")
+            .weight(2)
+            .key("C")
+            .weight(1)
+    };
     let hints = match (modal.focus, modal.filter.editor.as_ref().map(|e| e.step)) {
-        (_, Some(FilterEditStep::Value)) => HintBar::from_ctx(ctx)
-            .hint_weighted("Enter", "Save", 2)
-            .hint_weighted("Esc", "Back", 1),
-        (_, Some(_)) => HintBar::from_ctx(ctx)
-            .hint_weighted("type", "Narrow", 1)
-            .hint_weighted("Enter", "Next", 3)
-            .hint_weighted("Esc", "Back", 2),
-        _ if modal.sort_picker.is_some() => HintBar::from_ctx(ctx)
-            .hint_weighted("type", "Narrow", 1)
-            .hint_weighted("Enter", "Add", 3)
-            .hint_weighted("Esc", "Back", 2),
-        (SortFilterField::TabBar, _) => HintBar::from_ctx(ctx).hint_weighted(lr, "Tabs", 1),
-        (SortFilterField::Sort(_), _) => HintBar::from_ctx(ctx)
-            .hint_weighted("Space", "Flip", 4)
-            .hint_weighted("[ ]", "Move", 3)
-            .hint_weighted("d", "Remove", 2)
-            .hint_weighted("C", "Clear", 1),
+        (_, Some(FilterEditStep::Value)) => editor()
+            .key_as("Enter", "Save")
+            .weight(2)
+            .key("Esc")
+            .weight(1),
+        (_, Some(_)) => editor()
+            .key("(type)")
+            .weight(1)
+            .key("Enter")
+            .weight(3)
+            .key("Esc")
+            .weight(2),
+        _ if modal.sort_picker.is_some() => editor()
+            .key("(type)")
+            .weight(1)
+            .key_as("Enter", "Add")
+            .weight(3)
+            .key("Esc")
+            .weight(2),
+        (SortFilterField::TabBar, _) => sidebar().key_as("← / →", "Tabs").weight(1),
+        (SortFilterField::Sort(_), _) => in_effect(sidebar().key_as("Space", "Flip").weight(4)),
         // The first filter joins nothing, so it has no and/or to toggle.
-        (SortFilterField::Filter(0), _) => HintBar::from_ctx(ctx)
-            .hint_weighted("Space", "Edit", 5)
-            .hint_weighted("[ ]", "Move", 3)
-            .hint_weighted("d", "Remove", 2)
-            .hint_weighted("C", "Clear", 1),
-        (SortFilterField::Filter(_), _) => HintBar::from_ctx(ctx)
-            .hint_weighted("Space", "Edit", 5)
-            .hint_weighted(lr, "And/Or", 4)
-            .hint_weighted("[ ]", "Move", 3)
-            .hint_weighted("d", "Remove", 2)
-            .hint_weighted("C", "Clear", 1),
-        (SortFilterField::AddSort | SortFilterField::AddFilter, _) => HintBar::from_ctx(ctx)
-            .hint_weighted("Space", "Add", 2)
-            .hint_weighted("C", "Clear", 1),
-        (SortFilterField::Find, _) => HintBar::from_ctx(ctx).hint_weighted("type", "Find", 1),
-        (SortFilterField::Column(_), _) => HintBar::from_ctx(ctx)
-            .hint_weighted("Space", "Sort", 7)
-            .hint_weighted("1-9", "Jump", 3)
-            .hint_weighted("L", "Lock", 6)
-            .hint_weighted("v", "Hide", 4)
-            .hint_weighted("<>", "Width", 5)
-            .hint_weighted("f", "Fit", 2)
-            .hint_weighted("C", "Clear", 1),
+        (SortFilterField::Filter(0), _) => in_effect(sidebar().key_as("Space", "Edit").weight(5)),
+        (SortFilterField::Filter(_), _) => in_effect(
+            sidebar()
+                .key_as("Space", "Edit")
+                .weight(5)
+                .key_as("← / →", "And/Or")
+                .weight(4),
+        ),
+        (SortFilterField::AddSort | SortFilterField::AddFilter, _) => sidebar()
+            .key_as("Space", "Add")
+            .weight(2)
+            .group("In effect")
+            .key("C")
+            .weight(1),
+        (SortFilterField::Find, _) => bar.group("Columns").key_as("(type)", "Find").weight(1),
+        (SortFilterField::Column(_), _) => bar
+            .group("Columns")
+            .key("Space")
+            .weight(7)
+            .key("1-9")
+            .weight(3)
+            .key("L")
+            .weight(6)
+            .key("v")
+            .weight(4)
+            .key("< / >")
+            .weight(5)
+            .key("f")
+            .weight(2)
+            .key("C")
+            .weight(1),
     };
     hints.render_flush(hints_area, buf);
 }

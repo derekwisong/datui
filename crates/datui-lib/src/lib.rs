@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc::Sender};
 use widgets::info::{FileFacts, InfoModal};
 
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 
 use ratatui::widgets::{Block, Clear};
@@ -3461,11 +3461,6 @@ impl App {
             self.peek_cloud_directories();
         }
     }
-
-    /// Get a color from the theme by name
-    fn color(&self, name: &str) -> Color {
-        self.theme.get(name)
-    }
 }
 
 impl App {
@@ -6437,7 +6432,7 @@ impl App {
         let main_view_content = MainViewContent::current(self);
 
         Clear.render(area, buf);
-        let background_color = self.color("background");
+        let background_color = self.theme.background();
         Block::default()
             .style(Style::default().bg(background_color))
             .render(area, buf);

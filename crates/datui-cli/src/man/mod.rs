@@ -854,6 +854,9 @@ fn render_keys(page: &Page, read: Read) -> String {
     key_group(&mut out, None, keys::GLOBAL.keys);
     out.push_str(&format!(".SS {}\n", arg(&text("Help"))));
     key_group(&mut out, None, keys::HELP.keys);
+    out.push_str(&format!(".SS {}\n", arg(&text("Question"))));
+    para(&mut out, "When datui asks before acting.");
+    key_group(&mut out, None, keys::QUESTION.keys);
     for screen in keys::SCREENS {
         out.push_str(&format!(".SS {}\n", arg(&text(screen.title))));
         para(&mut out, screen.reached);

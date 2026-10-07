@@ -26,9 +26,14 @@ pub fn render_chart_export_modal(
     ctx: &RenderContext,
 ) {
     let footer = HintBar::from_ctx(ctx)
-        .hint_weighted("Enter", "Export", 3)
-        .hint_weighted("Tab", "Next", 1)
-        .hint_weighted("Esc", "Cancel", 4);
+        .screen(datui_cli::keys::Context::Chart)
+        .group("Export dialog")
+        .key("Enter")
+        .weight(3)
+        .key("Tab")
+        .weight(1)
+        .key("Esc")
+        .weight(4);
     crate::pointer::record(area, crate::pointer::Hit::Modal);
     let content = Surface::new("Export Chart")
         .footer(&footer)

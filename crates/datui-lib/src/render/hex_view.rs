@@ -170,7 +170,11 @@ pub fn draw(
             area,
             buf,
             picker,
-            ("Format", "Read", "No spec matches"),
+            (
+                "Format",
+                datui_cli::keys::Context::FormatPicker,
+                "No spec matches",
+            ),
             ctx,
         );
     }

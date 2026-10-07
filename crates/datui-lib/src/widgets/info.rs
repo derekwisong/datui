@@ -1938,32 +1938,33 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
                 .state
                 .format_detail()
                 .is_some_and(|d| !d.tables.is_empty());
-        let mut footer = HintBar::from_ctx(ctx).hint_weighted(g.updown_lr, "Tabs", 3);
+        let mut footer = HintBar::from_ctx(ctx)
+            .screen(datui_cli::keys::Context::Info)
+            .key("← / →")
+            .weight(3);
         if tables {
-            footer = footer
-                .hint_weighted("Enter", "Open", 2)
-                .hint_weighted(g.updown, "Move", 2);
+            footer = footer.key("Enter").weight(2).key("↑ / ↓").weight(2);
         } else if scrolls {
-            footer = footer.hint_weighted(g.updown, "Scroll", 2);
+            footer = footer.key_as("↑ / ↓", "Scroll").weight(2);
         }
         if tab == InfoTab::Documentation && offered.documentation {
-            footer = footer.hint_weighted("Enter", "Values", 1);
+            footer = footer.key_as("Enter", "Values").weight(1);
             if self
                 .documentation
                 .as_deref()
                 .is_some_and(|d| d.offers_open())
             {
-                footer = footer.hint_weighted("o", "Open", 1);
+                footer = footer.key("o").weight(1);
             }
-            footer = footer.hint_weighted("y", "Copy", 1);
+            footer = footer.key("y").weight(1);
         }
         if tab == InfoTab::Schema && self.header_toggle {
-            footer = footer.hint_weighted("H", "Header", -1);
+            footer = footer.key("H").weight(-1);
         }
         if self.hex {
-            footer = footer.hint_weighted("x", "Hex", 0);
+            footer = footer.key("x").weight(0);
         }
-        let footer = footer.hint_weighted("Esc", "Close", 4);
+        let footer = footer.key("Esc").weight(4);
         // A frame of three rows has one inside it: the body's, so a panel too
         // short for a note still says so rather than showing only keys.
         let surface = Surface::new("Info");

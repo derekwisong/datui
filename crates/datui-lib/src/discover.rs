@@ -547,9 +547,13 @@ impl Entry {
     /// A file entry with a chosen display name, for tests that need a search result
     /// without running a walk to produce one.
     pub fn for_test(path: &Path, name: &str) -> Self {
-        let mut entry = Self::new(path.to_path_buf(), EntryKind::File);
-        entry.name = name.to_string();
-        entry
+        Self::new(path.to_path_buf(), EntryKind::File).with_name(name)
+    }
+
+    /// The row under a name other than its path's last part.
+    pub(crate) fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
     }
 
     pub(crate) fn new(path: PathBuf, kind: EntryKind) -> Self {
@@ -2277,8 +2281,7 @@ pub fn split_row(path: &Path) -> Option<Entry> {
 }
 
 fn split_entry(dir: &Path, split: String) -> Entry {
-    let mut entry = Entry::new(dir.join(&split), EntryKind::File);
-    entry.name = split;
+    let mut entry = Entry::new(dir.join(&split), EntryKind::File).with_name(split);
     entry.table = Some(TableOf {
         format: Some(crate::FileFormat::Arrow),
         kind: "split".to_string(),
@@ -2319,8 +2322,8 @@ fn variant_entry(
     table: crate::sqlite::Table,
     modified: Option<std::time::SystemTime>,
 ) -> Entry {
-    let mut entry = Entry::new(crate::members::place(file, &table.name), EntryKind::File);
-    entry.name = table.name;
+    let mut entry =
+        Entry::new(crate::members::place(file, &table.name), EntryKind::File).with_name(table.name);
     entry.modified = modified;
     entry.columns = table.columns.into_iter().map(|(name, _)| name).collect();
     entry.cols = (!entry.columns.is_empty()).then_some(entry.columns.len());
@@ -2354,8 +2357,8 @@ fn table_entry(
     table: crate::sqlite::Table,
     modified: Option<std::time::SystemTime>,
 ) -> Entry {
-    let mut entry = Entry::new(crate::members::place(file, &table.name), EntryKind::File);
-    entry.name = table.name;
+    let mut entry =
+        Entry::new(crate::members::place(file, &table.name), EntryKind::File).with_name(table.name);
     entry.modified = modified;
     entry.columns = table.columns.into_iter().map(|(name, _)| name).collect();
     entry.cols = (!entry.columns.is_empty()).then_some(entry.columns.len());

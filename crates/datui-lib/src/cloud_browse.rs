@@ -1197,12 +1197,8 @@ async fn list_level(
                     .find(|part| !part.is_empty())
                     .unwrap_or(common.as_ref())
                     .to_string();
-                let mut row = crate::discover::Entry::directory(Path::new(&format!(
-                    "{base}/{}",
-                    common.as_ref()
-                )));
-                row.name = name;
-                row
+                crate::discover::Entry::directory(Path::new(&format!("{base}/{}", common.as_ref())))
+                    .with_name(name)
             })
             .collect();
         let objects = result
@@ -1237,22 +1233,10 @@ fn object_row(
     name: String,
     object: &object_store::ObjectMeta,
 ) -> crate::discover::Entry {
-    crate::discover::Entry {
-        path,
-        kind,
-        name,
-        size: Some(object.size),
-        modified: Some(object.last_modified.into()),
-        rows: None,
-        cols: None,
-        cols_sampled: false,
-        columns: Vec::new(),
-        cost: Default::default(),
-        holds: Default::default(),
-        opens_whole_directory: false,
-        format_spec: None,
-        table: None,
-    }
+    let mut row = crate::discover::Entry::new(path, kind).with_name(name);
+    row.size = Some(object.size);
+    row.modified = Some(object.last_modified.into());
+    row
 }
 
 /// One level under `prefix`, a page at a time, as `rows_of` makes each page into
@@ -1363,11 +1347,12 @@ async fn list_azure_objects(
                     .find(|part| !part.is_empty())
                     .unwrap_or(common)
                     .to_string();
-                let mut row = crate::discover::Entry::directory(Path::new(
-                    &crate::source::azure_url(&account, &container, &format!("{common}/")),
-                ));
-                row.name = name;
-                row
+                crate::discover::Entry::directory(Path::new(&crate::source::azure_url(
+                    &account,
+                    &container,
+                    &format!("{common}/"),
+                )))
+                .with_name(name)
             })
             .collect();
         let objects = result
@@ -1662,10 +1647,8 @@ pub async fn list_account(
             .map(|bucket| {
                 // Opening a bucket found here has to use the login that found it.
                 crate::cloud_sources::remember_bucket(&source, &bucket);
-                let mut entry =
-                    crate::discover::Entry::directory(Path::new(&format!("gs://{bucket}")));
-                entry.name = bucket;
-                entry
+                crate::discover::Entry::directory(Path::new(&format!("gs://{bucket}")))
+                    .with_name(bucket)
             })
             .collect());
     }
@@ -1679,11 +1662,10 @@ pub async fn list_account(
         Ok(containers
             .into_iter()
             .map(|container| {
-                let mut entry = crate::discover::Entry::directory(Path::new(
-                    &crate::source::azure_url(&account, &container, ""),
-                ));
-                entry.name = container;
-                entry
+                crate::discover::Entry::directory(Path::new(&crate::source::azure_url(
+                    &account, &container, "",
+                )))
+                .with_name(container)
             })
             .collect())
     })

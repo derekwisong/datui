@@ -405,51 +405,29 @@ impl InspectorModal {
         true
     }
 
-    pub fn next_field(&mut self) {
-        if self.step(1) || self.visible.is_empty() {
+    /// Move the focus by `step`: through the items of a level drilled into, or
+    /// through the fields, ↑↓ wrapping round and a page scrolling the list as far.
+    pub fn move_field(&mut self, step: crate::form::ListMove) {
+        use crate::form::ListMove;
+        let page = self.list_page.max(1);
+        if self.step(step.delta(page)) || self.visible.is_empty() {
             return;
         }
         let n = self.visible.len();
-        self.select_position((self.focused_position() + 1) % n);
-    }
-
-    pub fn prev_field(&mut self) {
-        if self.step(-1) || self.visible.is_empty() {
-            return;
-        }
-        let n = self.visible.len();
-        self.select_position((self.focused_position() + n - 1) % n);
-    }
-
-    pub fn first_field(&mut self) {
-        if !self.step(isize::MIN) {
-            self.select_position(0);
-        }
-    }
-
-    pub fn last_field(&mut self) {
-        if !self.step(isize::MAX) {
-            self.select_position(self.visible.len().saturating_sub(1));
-        }
-    }
-
-    /// A page of fields down (`1`) or up (`-1`): the list scrolls a page and the
-    /// focus moves as far.
-    pub fn page_fields(&mut self, direction: isize) {
-        let page = self.list_page.max(1) as isize;
-        if self.step(direction * page) {
-            return;
-        }
-        let last = self.visible.len().saturating_sub(1);
-        let at = self
-            .focused_position()
-            .saturating_add_signed(direction * page)
-            .min(last);
-        self.list_offset = self
-            .list_offset
-            .saturating_add_signed(direction * page)
-            .min(last);
-        self.select_position(at);
+        let at = self.focused_position();
+        let to = match step {
+            ListMove::Up => (at + n - 1) % n,
+            ListMove::Down => (at + 1) % n,
+            ListMove::PageUp | ListMove::PageDown => {
+                self.list_offset = self
+                    .list_offset
+                    .saturating_add_signed(step.delta(page))
+                    .min(n - 1);
+                step.apply(at, n, page)
+            }
+            ListMove::Home | ListMove::End => step.apply(at, n, page),
+        };
+        self.select_position(to);
     }
 
     /// Choose the view `e` moves to.
@@ -622,7 +600,7 @@ mod tests {
     fn the_focus_moves_among_the_fields_listed() {
         let mut m = InspectorModal::new();
         m.open(fields(&["id", "description", "amount", "status"]), None);
-        m.next_field();
+        m.move_field(crate::form::ListMove::Down);
         assert_eq!(m.focused().unwrap().name, "description");
         m.set_visible(vec![2, 3]);
         assert_eq!(
@@ -630,9 +608,9 @@ mod tests {
             "amount",
             "unlisted: the first listed"
         );
-        m.next_field();
+        m.move_field(crate::form::ListMove::Down);
         assert_eq!(m.focused().unwrap().name, "status");
-        m.next_field();
+        m.move_field(crate::form::ListMove::Down);
         assert_eq!(m.focused().unwrap().name, "amount", "round to the top");
         m.set_visible(vec![0, 1, 2, 3]);
         assert_eq!(m.focused().unwrap().name, "amount");
@@ -650,13 +628,13 @@ mod tests {
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
         m.open(fields(&names), None);
         m.list_page = 10;
-        m.page_fields(1);
+        m.move_field(crate::form::ListMove::PageDown);
         assert_eq!((m.focused_position(), m.list_offset), (10, 10));
         for _ in 0..4 {
-            m.page_fields(1);
+            m.move_field(crate::form::ListMove::PageDown);
         }
         assert_eq!(m.focused_position(), 49, "stops at the last");
-        m.page_fields(-1);
+        m.move_field(crate::form::ListMove::PageUp);
         assert_eq!(m.focused_position(), 39);
     }
 
@@ -676,7 +654,7 @@ mod tests {
     fn reopening_keeps_the_field_while_it_exists() {
         let mut m = InspectorModal::new();
         m.open(fields(&["a", "b", "c"]), None);
-        m.last_field();
+        m.move_field(crate::form::ListMove::End);
         m.close();
         m.open(fields(&["c", "a"]), None);
         assert_eq!(m.focused().unwrap().name, "c");
@@ -690,7 +668,7 @@ mod tests {
         let mut m = InspectorModal::new();
         m.open(fields(&["a", "b", "c"]), Some("b"));
         assert_eq!(m.focused().unwrap().name, "b");
-        m.last_field();
+        m.move_field(crate::form::ListMove::End);
         m.close();
         // The cursor wins over the field focused last time.
         m.open(fields(&["a", "b", "c"]), Some("a"));
@@ -703,7 +681,7 @@ mod tests {
         m.open(fields(&["a", "b"]), None);
         m.choose_view(View::Escaped);
         assert_eq!(m.view, Some(View::Escaped));
-        m.next_field();
+        m.move_field(crate::form::ListMove::Down);
         assert_eq!(m.view, None, "another field starts in its own view");
     }
 }

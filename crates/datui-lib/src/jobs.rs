@@ -31,9 +31,9 @@
 //!   continuation the event pump has not dispatched, and a download waiting on the
 //!   user ([`Hold`]).
 //!
-//! Not owned here: the row count (`OwedCount`), the footer pass and the home
-//! screen's workers. Each is keyed by something other than the
-//! generation and answers what its own marker waits for.
+//! Not owned here: the row count (`OwedCount`) and the home screen's workers. Each
+//! is keyed by something other than the generation and answers what its own
+//! marker waits for.
 //!
 //! One handoff goes around the holds: `reread_after_the_footers_joined` sends its
 //! jump straight to the channel, which is safe only because both its callers have

@@ -5543,8 +5543,32 @@ impl App {
                 drop(held);
                 None
             }
-            // Each answer is the one its job asks for; another is dropped.
-            _ => None,
+            // An answer under another job than its own, a hex answer gone stale, or a
+            // journal that could not be read again: dropped with what it carries.
+            (
+                _,
+                Answer::Load(_)
+                | Answer::NamedPaths { .. }
+                | Answer::NamedPathMissing(_)
+                | Answer::LookedAt { .. }
+                | Answer::Kind(_)
+                | Answer::Rows(_)
+                | Answer::ReshapePreviewed { .. }
+                | Answer::ViewPivoted(_)
+                | Answer::FieldsRead(_)
+                | Answer::JsonParsed(_)
+                | Answer::Indented(_)
+                | Answer::Unpacked(_)
+                | Answer::ChartPrepared(_)
+                | Answer::ChartExported
+                | Answer::FileFacts(_)
+                | Answer::UnfitCounted(_)
+                | Answer::Found(_)
+                | Answer::HexOpened(_)
+                | Answer::HexFound(_)
+                | Answer::FootersJoined(_)
+                | Answer::JournalDescribed(_),
+            ) => None,
         }
     }
 
@@ -5562,15 +5586,6 @@ impl App {
         message: &str,
         panicked: bool,
     ) {
-        // Where there is one line for the reason, a panic's message (an internal error
-        // with the log's path under it) gives way to the log.
-        let could_not = |what: &str| {
-            if panicked {
-                format!("Could not {what}; see the log")
-            } else {
-                format!("Could not {what}: {message}")
-            }
-        };
         // The jobs judged by something of their own rather than by being current.
         match job {
             // Judged by the open, as its answers are: one put down or replaced is not the
@@ -5655,12 +5670,36 @@ impl App {
                 self.forget_export();
                 return;
             }
-            _ => {}
+            Job::Classify(_)
+            | Job::Analysis(_)
+            | Job::SampleRows
+            | Job::Pivot
+            | Job::ViewPivot(_)
+            | Job::DrillRow
+            | Job::InspectRow { .. }
+            | Job::InspectJson { .. }
+            | Job::OpenValue
+            | Job::Export
+            | Job::Copy
+            | Job::QualityReport
+            | Job::ChartExport { .. }
+            | Job::ValueCounts
+            | Job::HexOpen { .. }
+            | Job::HexFind(_) => {}
         }
         // The rest act only for the job still current.
         if !current {
             return;
         }
+        // Where there is one line for the reason, a panic's message (an internal error
+        // with the log's path under it) gives way to the log.
+        let could_not = |what: &str| {
+            if panicked {
+                format!("Could not {what}; see the log")
+            } else {
+                format!("Could not {what}: {message}")
+            }
+        };
         match job {
             Job::Classify(_) => {
                 self.home.status = None;
@@ -5733,7 +5772,22 @@ impl App {
                     self.value_counts.failed = Some((computing.column, why));
                 }
             }
-            _ => {}
+            // Handled above.
+            Job::Load(_)
+            | Job::OpenNamed(_)
+            | Job::LookAtDirectory { .. }
+            | Job::Rows(_)
+            | Job::OwedRows { .. }
+            | Job::SampleDraw(_)
+            | Job::ReshapePreview { .. }
+            | Job::InspectPretty { .. }
+            | Job::InspectUnpack { .. }
+            | Job::FileFacts { .. }
+            | Job::ChartPrepare(_)
+            | Job::Find(_)
+            | Job::UnfitCount { .. }
+            | Job::FootersJoin { .. }
+            | Job::JournalDetail { .. } => {}
         }
     }
 

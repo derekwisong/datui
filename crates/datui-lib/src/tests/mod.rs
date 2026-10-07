@@ -4246,6 +4246,8 @@ mod quality_sample_tests;
 
 mod chart_prepare_tests;
 
+mod chart_golden_tests;
+
 mod view_rollback_tests;
 
 #[cfg(feature = "sql")]

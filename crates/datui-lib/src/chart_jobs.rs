@@ -908,7 +908,7 @@ impl App {
 
     /// The figure to export from the prepared chart for the current spec. `Ok(None)`
     /// means that chart is still being prepared and the caller should wait for it.
-    fn build_chart_figure(&self) -> Result<Option<chart_export::Figure>> {
+    pub(crate) fn build_chart_figure(&self) -> Result<Option<chart_export::Figure>> {
         use chart_export::{Axis, Figure, Plot, Series};
         if self.data_table_state.is_none() {
             return Err(color_eyre::eyre::eyre!("No data loaded"));

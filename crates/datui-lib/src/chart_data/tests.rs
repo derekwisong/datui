@@ -474,7 +474,7 @@ fn a_parquet_file_is_sampled_in_runs() {
         .unwrap();
     let lf = LazyFrame::scan_parquet(PlRefPath::try_from_path(&path).unwrap(), Default::default())
         .unwrap();
-    assert!(crate::statistics::slices_reach_into_the_scan(
+    assert!(crate::sampling::slices_reach_into_the_scan(
         &lf.clone().select([col("id"), col("fare")])
     ));
     let data = prepare_histogram_data(

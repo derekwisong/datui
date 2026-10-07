@@ -629,7 +629,7 @@ fn read_columns(
     let lf = lf
         .clone()
         .select(unique.iter().map(|c| col(c.clone())).collect::<Vec<_>>());
-    let read = crate::statistics::analysis_rows(
+    let read = crate::sampling::analysis_rows(
         &lf,
         sampling.limit,
         sampling.known_total,
@@ -2473,7 +2473,7 @@ fn refuse_too_many_groups(
     most: usize,
     sampling: &ChartSampling,
 ) -> Result<()> {
-    let read = crate::statistics::analysis_rows(
+    let read = crate::sampling::analysis_rows(
         &lf.clone().select([col(x)]),
         Some(GROUPS_SAMPLE),
         sampling.known_total,

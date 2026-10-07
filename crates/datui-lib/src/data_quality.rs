@@ -6,7 +6,7 @@ use polars::prelude::*;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-// A dataset-grain sample is spread across the whole scope (see `statistics::analysis_rows`).
+// A dataset-grain sample is spread across the whole scope (see `sampling::analysis_rows`).
 const DEFAULT_SAMPLE_ROWS: usize = 10_000;
 const DEFAULT_CHUNK_ROWS: usize = 1_000_000;
 const QUALITY_WINDOW_START: &str = "__datui_quality_window_start";
@@ -2669,8 +2669,8 @@ impl QualitySample {
     }
 
     /// `df`, cut from these rows, described as the sampler described them.
-    pub fn analysis_rows(&self, df: DataFrame) -> crate::statistics::AnalysisRows {
-        crate::statistics::AnalysisRows {
+    pub fn analysis_rows(&self, df: DataFrame) -> crate::sampling::AnalysisRows {
+        crate::sampling::AnalysisRows {
             sample_size: (self.precision == QualityPrecision::Sampled).then_some(df.height()),
             total_rows: self.total_rows.unwrap_or(df.height()),
             per_value: self.per_value.clone(),

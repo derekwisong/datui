@@ -24,7 +24,7 @@ the executables Cargo builds.
 | `./scripts/dev/test.sh unit data_quality::` | Library test executable; only data-quality tests execute |
 | `./scripts/dev/test.sh integration integration_test test_data_quality` | App integration executable; matching quality tests execute |
 | `./scripts/dev/test.sh integration home_test` | Home integration executable |
-| `./scripts/dev/test.sh integration statistics_test` | Analysis integration executable |
+| `./scripts/dev/test.sh integration data statistics::` | Data integration executable; only its statistics module executes |
 | `./scripts/dev/test.sh cli` | CLI library tests |
 | `./scripts/dev/test.sh preflight` | Formatting (workspace and fuzz targets) and workspace clippy with all targets |
 | `./scripts/dev/test.sh features` | Clippy on `datui` and `datui-lib`, all targets, with no default features and then each feature alone |
@@ -61,7 +61,7 @@ broad check merely because another small scoped check finished.
 Select multiple affected targets explicitly when needed:
 
 ```bash,repo
-cargo test --locked -p datui --test statistics_test --test distribution_detection_test
+cargo test --locked -p datui --test data --test view_store_test
 ```
 
 For changes to the binary itself, also run `cargo check --locked -p datui` and
@@ -171,8 +171,7 @@ Run it after adding tests that build an `App` or touch the cache or config.
 | `tests/integration_test.rs` | Load, query, display, end to end; `remote_quality::` (in `tests/quality/remote.rs`) counts Data Quality's requests at an in-process S3 bucket (`tests/common/fake_s3.rs`) |
 | `tests/quality_spill_test.rs` | What a full Data Quality scan leaves on disk. Its own process: it sets Polars' spill directory before Polars reads it |
 | `tests/quality_bench_test.rs` | Data Quality's cost: time, requests, bytes, peak memory and spill. Ignored; `scripts/dev/quality_bench.py BEFORE_REF` runs it here and at an earlier commit |
-| `tests/statistics_test.rs`, `tests/distribution_detection_test.rs` | Analysis |
-| `tests/pivot_melt_backend_test.rs` | Reshaping |
+| `tests/data/` | One executable, a module each: `statistics`, `distribution` (analysis), `reshape` (pivot and melt), `excel` |
 | `tests/view_store_test.rs` | Saved views on disk and their scoring |
 | `tests/home_test.rs`, `tests/search_test.rs`, `tests/locality_test.rs` | Home screen, recursive search, filesystem detection |
 | `tests/config_test.rs`, `tests/config_integration_test.rs`, `tests/theme_application_test.rs` | Configuration and themes |

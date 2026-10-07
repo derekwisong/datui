@@ -14,9 +14,9 @@ use polars::prelude::*;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
-mod common;
+use crate::common;
 
-use common::pump_open_until_loaded;
+use crate::common::pump_open_until_loaded;
 
 fn open_excel(name: &str, options: OpenOptions) -> DataFrame {
     common::ensure_sample_data();

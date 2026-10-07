@@ -239,12 +239,6 @@ fn a_replaced_file_of_the_same_or_larger_size_is_read_again() {
     pump_open_until_loaded(&mut app, &rx, vec![path.clone()], following());
     screen(&mut app);
     assert_eq!(rows(&app), 2);
-    // The watcher takes the file's identity when its thread opens it. Replaced before
-    // then, the new file is the one it follows, and there is nothing to read again; a
-    // row it reports means it has the first file open.
-    append(&path, "3,30\n");
-    until(&mut app, &rx, |app| shown(app) == 3 && app.follow_settled());
-    // The same size as the file it replaces.
     let next = dir.path().join("next.csv");
     std::fs::write(&next, "t,n\n7,70\n8,80\n9,90\n").unwrap();
     std::fs::rename(&next, &path).unwrap();

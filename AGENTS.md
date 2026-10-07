@@ -47,7 +47,7 @@ executables. `scripts/dev/test.sh --help` lists the scoped commands;
 | Home/search | `scripts/dev/test.sh integration home_test FILTER` or `integration search_test FILTER` |
 | Config/theme | `scripts/dev/test.sh integration config_test FILTER`, plus the relevant theme/App tests |
 | CLI definitions | `scripts/dev/test.sh check datui-cli`, then `scripts/dev/test.sh cli` |
-| A specific integration file | `scripts/dev/test.sh integration TARGET FILTER` (omit `.rs`) |
+| A specific integration target | `scripts/dev/test.sh integration TARGET FILTER`: a `tests/*.rs` file without `.rs`, or a directory with a `main.rs` (`data`) |
 | Formatting/lint before submission | `scripts/dev/test.sh preflight` |
 | Broad validation | `scripts/dev/test.sh full` |
 

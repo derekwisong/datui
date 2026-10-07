@@ -28,25 +28,39 @@ fn guidance_notes() -> [&'static str; 8] {
 }
 
 /// The list as an entry row is drawn in, at `name_width`.
-fn rows<'f>(
-    ctx: &'f RenderContext,
-    name_width: usize,
-    show_meta: bool,
-    filter: &'f str,
-) -> ListDraw<'f> {
+fn rows(ctx: &RenderContext, name_width: usize, show_meta: bool) -> ListDraw<'_> {
     ListDraw {
         ctx,
         width: name_width,
         name_width,
         show_meta,
-        filter,
         frame: 0,
+    }
+}
+
+/// `[[cloud.connections]]` of these names.
+fn connections(names: &[&str]) -> Vec<crate::config::CloudConnectionConfig> {
+    names
+        .iter()
+        .map(|name| crate::config::CloudConnectionConfig {
+            name: name.to_string(),
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// What a row is marked by for `filter`: the matched characters of `column` when the
+/// row is listed by one, else of `name`.
+fn marks_for(filter: &str, name: &str, column: Option<&str>) -> Vec<usize> {
+    match column {
+        Some(column) => crate::home::substring_positions(filter, column),
+        None => crate::home::fuzzy_positions(filter, name),
     }
 }
 
 /// The list as a section header is drawn in, `width` wide.
 fn header_row(ctx: &RenderContext, width: usize) -> ListDraw<'_> {
-    rows(ctx, width, true, "")
+    rows(ctx, width, true)
 }
 
 /// The pane's guidance is a value, not a sentence: short, lower case, unpunctuated,
@@ -96,16 +110,11 @@ fn row(path: &str, kind: crate::discover::EntryKind) -> Entry {
 fn blank_meta_columns_go_to_the_name() {
     let ctx = RenderContext::for_test();
     let text = |entry: &Entry| -> String {
-        entry_line(
-            entry,
-            false,
-            EntryNotes::default(),
-            &rows(&ctx, 26, true, ""),
-        )
-        .spans
-        .iter()
-        .map(|s| s.content.as_ref())
-        .collect()
+        entry_line(entry, false, EntryNotes::default(), &rows(&ctx, 26, true))
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
     };
     let mut public = row("/data/food_nutrition.csv", EntryKind::File);
     public.name = "Food nutrition (fast food)".to_string();
@@ -166,7 +175,7 @@ fn the_row_and_the_pane_agree_on_what_a_directory_is() {
                 place_kind: curated,
                 ..EntryNotes::default()
             },
-            &rows(&ctx, 40, false, ""),
+            &rows(&ctx, 40, false),
         )
         .spans
         .iter()
@@ -204,7 +213,7 @@ fn a_cloud_directory_is_labelled_by_what_it_holds() {
                 looking,
                 ..EntryNotes::default()
             },
-            &rows(&ctx, 40, false, ""),
+            &rows(&ctx, 40, false),
         )
         .spans
         .iter()
@@ -262,7 +271,7 @@ fn every_row_reads_name_slash_two_spaces_label() {
                 place_kind,
                 ..EntryNotes::default()
             },
-            &rows(&ctx, 60, true, ""),
+            &rows(&ctx, 60, true),
         )
         .spans
         .iter()
@@ -328,18 +337,13 @@ fn the_row_that_opens_a_directory_draws_without_a_label() {
                 &door,
                 false,
                 EntryNotes::default(),
-                &rows(&ctx, width, true, ""),
+                &rows(&ctx, width, true),
             );
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             assert!(!text.is_empty(), "at {width} cells, {kind:?}");
         }
         // And with room to spare it reads as itself, with no label beside it.
-        let line = entry_line(
-            &door,
-            false,
-            EntryNotes::default(),
-            &rows(&ctx, 40, true, ""),
-        );
+        let line = entry_line(&door, false, EntryNotes::default(), &rows(&ctx, 40, true));
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("us-states (all files)"), "{kind:?}: {text:?}");
         assert!(!text.contains("parquet"), "{kind:?}: {text:?}");
@@ -352,7 +356,7 @@ fn the_row_that_opens_a_directory_draws_without_a_label() {
     let mut door = row("s3://lab@bucket/exports", EntryKind::Directory);
     door.name = "exports (all files)".to_string();
     door.opens_whole_directory = true;
-    let known = ["lab".to_string()];
+    let known = connections(&["lab"]);
     let text: String = entry_line(
         &door,
         false,
@@ -361,7 +365,7 @@ fn the_row_that_opens_a_directory_draws_without_a_label() {
             place_kind: Some("dataset"),
             ..EntryNotes::default()
         },
-        &rows(&ctx, 60, true, ""),
+        &rows(&ctx, 60, true),
     )
     .spans
     .iter()
@@ -555,7 +559,7 @@ fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
             entry,
             false,
             EntryNotes::default(),
-            &rows(&ctx, width, true, ""),
+            &rows(&ctx, width, true),
         );
         offset_of_meta(line, entry)
     };
@@ -597,7 +601,7 @@ fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
                 place_kind: Some("dataset"),
                 ..EntryNotes::default()
             },
-            &rows(&ctx, width, true, ""),
+            &rows(&ctx, width, true),
         )
         .spans
         .iter()
@@ -635,7 +639,7 @@ fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
                 place_kind: Some("dataset"),
                 ..EntryNotes::default()
             },
-            &rows(&ctx, width, true, ""),
+            &rows(&ctx, width, true),
         );
         offset_of_meta(line, &curated_multi)
     };
@@ -654,7 +658,7 @@ fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
     gone.size = Some(4096);
     gone.rows = Some(12);
     gone.cols = Some(3);
-    let known: [String; 1] = ["other".to_string()];
+    let known = connections(&["other"]);
     let missing = |width: usize| -> usize {
         let line = entry_line(
             &gone,
@@ -663,7 +667,7 @@ fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
                 known_sources: Some(&known),
                 ..EntryNotes::default()
             },
-            &rows(&ctx, width, true, ""),
+            &rows(&ctx, width, true),
         );
         offset_of_meta(line, &gone)
     };
@@ -684,9 +688,10 @@ fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
             false,
             EntryNotes {
                 matched_column: Some("amount"),
+                marks: &marks_for("amount", "", Some("amount")),
                 ..EntryNotes::default()
             },
-            &rows(&ctx, width, true, "amount"),
+            &rows(&ctx, width, true),
         )
         .spans
         .iter()
@@ -711,7 +716,7 @@ fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
         formats: vec![("parquet".to_string(), 12000)],
         ..Default::default()
     };
-    let sources = ["prod".to_string()];
+    let sources = connections(&["prod"]);
     let offset = |width: usize| -> usize {
         let line = entry_line(
             &named,
@@ -720,7 +725,7 @@ fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
                 known_sources: Some(&sources),
                 ..EntryNotes::default()
             },
-            &rows(&ctx, width, true, ""),
+            &rows(&ctx, width, true),
         );
         offset_of_meta(line, &named)
     };
@@ -743,7 +748,7 @@ fn a_label_gives_way_to_the_name_on_a_narrow_screen() {
                 matched_column: Some("transaction_amount"),
                 ..EntryNotes::default()
             },
-            &rows(&ctx, width, true, ""),
+            &rows(&ctx, width, true),
         );
         offset_of_meta(line, entry)
     };
@@ -906,7 +911,7 @@ fn an_unmeasured_recent_from_a_store_shows_an_ellipsis_for_its_shape() {
                 indent,
                 ..EntryNotes::default()
             },
-            &rows(&ctx, 60, true, ""),
+            &rows(&ctx, 60, true),
         )
         .spans
         .iter()
@@ -985,7 +990,7 @@ fn a_nested_row_keeps_the_meta_columns_where_the_place_row_ends() {
                 indent,
                 ..EntryNotes::default()
             },
-            &rows(&ctx, width, true, ""),
+            &rows(&ctx, width, true),
         );
         let at = line
             .spans
@@ -1021,7 +1026,7 @@ fn a_nested_row_keeps_the_meta_columns_where_the_place_row_ends() {
                 indent: NEST_INDENT,
                 ..EntryNotes::default()
             },
-            &rows(&ctx, name_width, true, ""),
+            &rows(&ctx, name_width, true),
         ));
         assert_eq!(entry_width, row_width(name_width, true));
         let place = place_line(
@@ -1198,7 +1203,7 @@ fn a_recent_from_a_source_names_it_or_says_it_is_gone() {
     let path = std::path::Path::new("s3://lab@data/sales.parquet");
     let mut entry = Entry::for_test(path, "sales.parquet");
     entry.kind = EntryKind::Unknown;
-    let text = |known: Option<&[String]>| -> String {
+    let text = |known: Option<&[crate::config::CloudConnectionConfig]>| -> String {
         entry_line(
             &entry,
             false,
@@ -1206,14 +1211,14 @@ fn a_recent_from_a_source_names_it_or_says_it_is_gone() {
                 known_sources: known,
                 ..EntryNotes::default()
             },
-            &rows(&ctx, 80, false, ""),
+            &rows(&ctx, 80, false),
         )
         .spans
         .iter()
         .map(|s| s.content.to_string())
         .collect()
     };
-    let lab = ["lab".to_string()];
+    let lab = connections(&["lab"]);
     assert!(text(Some(&lab)).contains("sales.parquet  lab"));
     assert!(text(Some(&[])).contains("source not found: lab"));
     // Inside a source the trail already says which, so nothing is added.
@@ -1278,16 +1283,18 @@ fn no_mark_ever_lands_on_a_cut_notes_ellipsis() {
     let ctx = RenderContext::for_test();
     let entry = Entry::for_test(std::path::Path::new("/tmp/x"), "x");
     let g = glyphs::get();
+    let marks = marks_for("usd", "", Some("transaction_amount_usd"));
     for width in 1..=40usize {
         let line = entry_line(
             &entry,
             false,
             EntryNotes {
                 matched_column: Some("transaction_amount_usd"),
+                marks: &marks,
                 known_sources: Some(&[]),
                 ..EntryNotes::default()
             },
-            &rows(&ctx, width, false, "usd"),
+            &rows(&ctx, width, false),
         );
         let marked: String = line
             .spans
@@ -1333,7 +1340,7 @@ fn no_mark_ever_lands_on_a_cut_notes_ellipsis() {
 #[test]
 fn a_column_note_on_a_row_from_a_source_leaves_the_meta_columns_alone() {
     let ctx = RenderContext::for_test();
-    let known = ["prod".to_string()];
+    let known = connections(&["prod"]);
     // The same row in every way but the source id, so the only thing that can
     // move the meta columns is the cell the id goes in.
     let mut plain = Entry::for_test(
@@ -1352,26 +1359,29 @@ fn a_column_note_on_a_row_from_a_source_leaves_the_meta_columns_alone() {
     // the row in the list. Only one of them is drawn. Cutting the other moved the
     // meta columns of this row and no other — the columns coming unstuck on the one
     // row a search was about.
+    let marks = marks_for("cust", "", Some("customer_identifier"));
     for width in 6..=30usize {
         let with_note = entry_line(
             &sourced,
             false,
             EntryNotes {
                 matched_column: Some("customer_identifier"),
+                marks: &marks,
                 known_sources: Some(&known),
                 ..EntryNotes::default()
             },
-            &rows(&ctx, width, true, "cust"),
+            &rows(&ctx, width, true),
         );
         let without = entry_line(
             &plain,
             false,
             EntryNotes {
                 matched_column: Some("customer_identifier"),
+                marks: &marks,
                 known_sources: Some(&[]),
                 ..EntryNotes::default()
             },
-            &rows(&ctx, width, true, "cust"),
+            &rows(&ctx, width, true),
         );
         assert_eq!(
             meta_offset(&with_note),
@@ -1385,15 +1395,17 @@ fn a_column_note_on_a_row_from_a_source_leaves_the_meta_columns_alone() {
 fn row_spans(name: &str, filter: &str, column: Option<&str>) -> Vec<(String, bool)> {
     let ctx = RenderContext::for_test();
     let entry = Entry::for_test(std::path::Path::new("/tmp/x"), name);
+    let marks = marks_for(filter, name, column);
     let line = entry_line(
         &entry,
         false,
         EntryNotes {
             matched_column: column,
+            marks: &marks,
             known_sources: Some(&[]),
             ..EntryNotes::default()
         },
-        &rows(&ctx, 60, false, filter),
+        &rows(&ctx, 60, false),
     );
     line.spans
         .iter()
@@ -1715,7 +1727,7 @@ fn the_door_keeps_what_it_opens_when_its_name_is_cut() {
             &door,
             true,
             EntryNotes::default(),
-            &rows(&ctx, width.saturating_sub(META_WIDTH as usize), true, ""),
+            &rows(&ctx, width.saturating_sub(META_WIDTH as usize), true),
         )
         .spans
         .iter()

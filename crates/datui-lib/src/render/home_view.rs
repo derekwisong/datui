@@ -660,22 +660,11 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
         area.width as usize
     };
 
-    // Sources a URL can name. Taken from the config rather than from the sources
-    // listed so far, so a source that is hidden or still being discovered is not
-    // reported as missing.
-    let known_sources: Vec<String> = app
-        .app_config
-        .cloud
-        .connections
-        .iter()
-        .map(|s| s.name.clone())
-        .collect();
     let list = ListDraw {
         ctx,
         width: area.width as usize,
         name_width,
         show_meta,
-        filter: &app.home.filter,
         frame: app.throbber_frame as usize,
     };
     let mut lines: Vec<Line> = Vec::new();
@@ -709,7 +698,7 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     &list,
                 ));
             }
-            crate::home::Row::Entry { entry, .. }
+            crate::home::Row::Entry { entry, hit, .. }
                 if crate::home::cloud_source_id(&entry.path).is_some() =>
             {
                 let source = app.home.cloud_source_of(&entry.path);
@@ -719,29 +708,30 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     selected,
                     area.width as usize,
                     app.throbber_frame as usize,
-                    &app.home.filter,
+                    &hit.positions,
                     ctx,
                 ));
             }
-            crate::home::Row::Entry { entry, nested, .. } => {
-                // When a row is here because of a column rather than its name, say so:
-                // otherwise it reads as the filter having gone wrong.
-                let via = if crate::home::fuzzy_score(&app.home.filter, &entry.name).is_some() {
-                    None
-                } else {
-                    crate::home::matching_column(&app.home.filter, entry)
-                };
+            crate::home::Row::Entry {
+                entry, nested, hit, ..
+            } => {
                 lines.push(entry_line(
                     entry,
                     selected,
                     EntryNotes {
-                        matched_column: via,
-                        // Inside a source the trail already names it.
+                        // When a row is here because of a column rather than its name,
+                        // say so: otherwise it reads as the filter having gone wrong.
+                        matched_column: hit.column_of(entry),
+                        marks: &hit.positions,
+                        // Sources a URL can name. Taken from the config rather than
+                        // from the sources listed so far, so a source that is hidden or
+                        // still being discovered is not reported as missing. Inside a
+                        // source the trail already names it.
                         known_sources: app
                             .home
                             .browsing
                             .is_none()
-                            .then_some(known_sources.as_slice()),
+                            .then_some(app.app_config.cloud.connections.as_slice()),
                         place_kind: app.home.place_kind(&entry.path),
                         looking: looking_glyph(app, entry),
                         indent: if *nested { NEST_INDENT } else { 0 },
@@ -1099,7 +1089,6 @@ struct ListDraw<'f> {
     /// What an entry's name may take beside the meta columns.
     name_width: usize,
     show_meta: bool,
-    filter: &'f str,
     /// The throbber's frame, for a section still listing.
     frame: usize,
 }
@@ -1109,8 +1098,11 @@ struct ListDraw<'f> {
 struct EntryNotes<'a> {
     /// The column the filter matched, when the name did not.
     matched_column: Option<&'a str>,
+    /// The characters the filter matched: in the name, or in `matched_column` when
+    /// there is one.
+    marks: &'a [usize],
     /// Sources a URL may name; `None` where the trail already names it.
-    known_sources: Option<&'a [String]>,
+    known_sources: Option<&'a [crate::config::CloudConnectionConfig]>,
     place_kind: Option<&'static str>,
     looking: Option<&'static str>,
     indent: usize,
@@ -1332,7 +1324,7 @@ fn source_line<'a>(
     selected: bool,
     width: usize,
     frame: usize,
-    filter: &str,
+    marks: &[usize],
     ctx: &RenderContext,
 ) -> Line<'a> {
     let g = glyphs::get();
@@ -1384,7 +1376,7 @@ fn source_line<'a>(
         .max(16)
         .min(width.saturating_sub(fixed));
     let mut name = entry.name.clone();
-    let mut positions = crate::home::fuzzy_positions(filter, &name);
+    let mut positions = marks.to_vec();
     if name.chars().count() > name_w && name_w > 1 {
         let kept = name_w - 1;
         name = name.chars().take(kept).collect::<String>() + g.ellipsis;
@@ -1432,6 +1424,7 @@ fn entry_line<'a>(
 ) -> Line<'a> {
     let EntryNotes {
         matched_column,
+        marks,
         known_sources,
         place_kind,
         looking,
@@ -1443,7 +1436,6 @@ fn entry_line<'a>(
         ctx,
         name_width,
         show_meta,
-        filter,
         ..
     } = *list;
     // The selection marker is the loudest thing on screen, and the only thing that
@@ -1507,7 +1499,7 @@ fn entry_line<'a>(
     // its URL says which, where a kind would otherwise go. A recent whose source has
     // since left the config says that instead of failing only when it is opened.
     let missing_source = named_source
-        .is_some_and(|id| known_sources.is_some_and(|known| !known.iter().any(|k| k == id)));
+        .is_some_and(|id| known_sources.is_some_and(|known| !known.iter().any(|k| k.name == id)));
     let missing_note = named_source.map(|id| format!("source not found: {id}"));
     // Whether the cell ends up holding the source id or the warning rather than a
     // label. The path having an id is not the same question: a peeked prefix under a
@@ -1708,7 +1700,7 @@ fn entry_line<'a>(
     // columns would otherwise get marks scattered over letters that had nothing to do
     // with it.
     let mut name_positions = if matched_column.is_none() {
-        crate::home::fuzzy_positions(filter, &name)
+        marks.to_vec()
     } else {
         Vec::new()
     };
@@ -1847,7 +1839,7 @@ fn entry_line<'a>(
                 Some((shown, kept)) => (shown.as_str(), *kept),
                 None => (column, column.chars().count()),
             };
-            let mut positions = crate::home::substring_positions(filter, column);
+            let mut positions = marks.to_vec();
             positions.retain(|p| *p < kept);
             spans.extend(highlight_spans(shown, &positions, kind_style, hit_style));
         }

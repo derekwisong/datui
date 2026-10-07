@@ -28,23 +28,15 @@ struct NoteRow {
     dim: bool,
 }
 
-/// Which notes to draw, as a half-open range.
+/// Which notes to draw, as a half-open range. `heights` are each note's rows (a blank
+/// line between notes), `stored` the last scroll, `show` the rows available.
+/// Guarantees:
 ///
-/// `heights` is each note's rows; a blank line sits between adjacent notes. `stored` is
-/// where the panel was last scrolled to, and `show` the rows available.
-///
-/// Guarantees, whatever it is given:
-///
-/// - `first <= selected < last`, so the note the cursor is on is always drawn;
-/// - the notes in the range fit `show` rows, unless the range is one note that does not
-///   fit on its own — then it is drawn as far as it goes, since leaving it out would
-///   make it unreachable;
-/// - `last` is as large as it can be, so rows are never left blank while a whole note
-///   is out of view.
-///
-/// Review after review found defects in this arithmetic when it was inline in the
-/// render, expressed in rows and mixed with drawing. It is a function so the rules
-/// above can be checked directly rather than through a terminal.
+/// - `first <= selected < last`: the cursor's note is always drawn;
+/// - the range fits `show`, unless it is one note too tall alone (drawn as far as it
+///   goes, else unreachable);
+/// - `last` is as large as possible, never leaving rows blank while a whole note is
+///   hidden.
 fn notes_window(heights: &[usize], selected: usize, stored: usize, show: usize) -> (usize, usize) {
     if heights.is_empty() {
         return (0, 0);
@@ -96,13 +88,9 @@ fn note_rows(note: &crate::notes::Note, selected: bool, width: usize) -> Vec<Not
     rows
 }
 
-/// Break `text` on spaces so no line runs past `width` columns.
-///
-/// Measured in columns rather than characters: a column name can be any text the data
-/// holds, and a name whose characters are double-width would otherwise be clipped by
-/// the terminal after this said it fitted. A single word longer than the panel is left
-/// whole rather than split mid-word, though the terminal still clips what runs past
-/// the edge — the wrapping protects the note's height, not a single long word.
+/// Break `text` on spaces so no line passes `width` columns, measured in columns
+/// (double-width names). A word longer than the panel stays whole (the terminal clips
+/// it): wrapping protects the note's height.
 pub(crate) fn wrap_to(text: &str, width: usize) -> Vec<String> {
     use unicode_width::UnicodeWidthStr;
     if width == 0 {
@@ -158,10 +146,9 @@ pub(crate) fn short_count(n: u64) -> String {
     n.to_string()
 }
 
-/// Break one line of text into lines no wider than `width` columns, between words: the
-/// spaces at a break are dropped, and leading spaces (a template's indentation) kept.
-/// Only a word wider than `width` is broken, where it reaches the edge, so a long URL
-/// or hash is shown whole rather than clipped.
+/// Break one line into lines of at most `width` columns between words, dropping
+/// break spaces and keeping leading indentation. Only a word wider than `width` is
+/// broken, at the edge, so a long URL or hash shows whole.
 fn wrap_words(text: &str, width: usize) -> Vec<String> {
     use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
     let mut lines = Vec::new();
@@ -235,14 +222,13 @@ pub(crate) fn meta_text(value: &crate::model_files::MetaValue) -> String {
     }
 }
 
-/// The most of one metadata value a detail tab draws. A chat template is a few KB and
-/// is shown whole; a GGUF can carry a whole `tokenizer.json` as one string, megabytes
-/// that would be wrapped again on every frame.
+/// The most of one metadata value a detail tab draws: a chat template shows whole, a
+/// GGUF's embedded `tokenizer.json` (megabytes) would be rewrapped every frame.
 pub(crate) const VALUE_SHOWN_BYTES: usize = 64 * 1024;
 
-/// The metadata as drawn lines: the key on a value's first line, blank under it, and
-/// each value cut at its own newlines and wrapped to what is left of `width`. A value
-/// past [`VALUE_SHOWN_BYTES`] ends with a line saying how much more there is.
+/// Metadata as drawn lines: the key on a value's first line, each value split at its
+/// newlines and wrapped to the rest of `width`; past [`VALUE_SHOWN_BYTES`] a line says
+/// how much more.
 pub(crate) fn metadata_lines(
     metadata: &[(String, crate::model_files::MetaValue)],
     width: usize,
@@ -321,9 +307,8 @@ pub enum InfoTab {
     Schema,
     /// A delimited spec's metadata line, as key and value.
     Metadata,
-    /// What the file says besides its rows, as its reader found it
-    /// ([`crate::text_formats::Detail`]): a model's totals, a VCD header. Titled by
-    /// the detail.
+    /// What the file says besides its rows ([`crate::text_formats::Detail`]): a model's
+    /// totals, a VCD header. Titled by the detail.
     Format,
     Resources,
     Partitions,
@@ -366,9 +351,8 @@ impl TabsOffered {
 }
 
 impl InfoTab {
-    /// The tabs on offer, in order: the file's own tab only when it says something
-    /// besides its rows, beside the schema it explains; Partitions only for a
-    /// partitioned dataset; Notes only when datui has something to say about the data.
+    /// The tabs on offer, in order: the file's own tab when it says something (beside the
+    /// schema), Partitions for partitioned data, Notes when datui has notes.
     pub fn visible(offered: TabsOffered) -> Vec<InfoTab> {
         let mut tabs = vec![InfoTab::Schema];
         if offered.documentation {
@@ -443,9 +427,8 @@ pub struct InfoModal {
     pub detail_scroll: usize,
     /// The list lines a detail tab last had room for; set during render.
     pub detail_visible: usize,
-    /// The entry the cursor is on, in a detail tab whose list is the file's tables
-    /// (Excel's worksheets, SQLite's tables), where Enter opens one. The render clamps
-    /// it and keeps it in view.
+    /// The cursor in a detail tab listing the file's tables (worksheets, SQLite tables),
+    /// where Enter opens one; the render clamps it and keeps it in view.
     pub detail_selected: usize,
 }
 
@@ -497,10 +480,8 @@ impl InfoModal {
         self.detail_scroll = self.detail_scroll.saturating_add_signed(delta);
     }
 
-    /// Move the cursor through the notes. Returns true when something changed.
-    ///
-    /// Only the index moves: the render scrolls to whatever is selected, so how tall a
-    /// note happens to be can never decide how far the cursor may go.
+    /// Move the cursor through the notes; true if changed. Only the index moves: the render
+    /// scrolls to the selection, so note heights never limit the cursor.
     pub fn notes_move(&mut self, delta: isize, total: usize) -> bool {
         if total == 0 {
             return false;
@@ -574,13 +555,9 @@ impl InfoModal {
     }
 }
 
-/// What the open file says about itself beyond its rows: its size on disk and, for a
-/// format whose reader has a facts read ([`crate::readers::Reader::facts`]), its tab
-/// of this panel and the footer it was made from.
-///
-/// Read on a worker, once per dataset, and drawn from here. A stat or a footer read on a
-/// mount that has stopped answering hangs the thread that makes it, so neither is made
-/// where keys are read or frames drawn (#457).
+/// What the open file says beyond its rows: its size and, where its reader has a facts
+/// read ([`crate::readers::Reader::facts`]), its tab and the footer behind it. Read on a
+/// worker once per dataset: a stat or footer read on a dead mount hangs its thread.
 #[derive(Debug, Clone)]
 pub enum FileFacts {
     /// Asked for; the worker has not answered.
@@ -601,11 +578,8 @@ pub enum FileFacts {
 }
 
 impl FileFacts {
-    /// Stat `path` and, with `facts`, its format's facts read. Blocking: call it on a
-    /// worker.
-    ///
-    /// The reason for a failure is short enough for the panel's one line; the whole
-    /// error goes to the log.
+    /// Stat `path` and, with `facts`, read its format's facts. Blocking: call on a worker.
+    /// Failures are short for the panel's line; the full error is logged.
     pub(crate) fn read(
         path: &Path,
         facts: Option<crate::readers::Facts>,
@@ -648,10 +622,8 @@ impl FileFacts {
     }
 }
 
-/// Context for the info panel: the format, and what the file says about itself.
-///
-/// What the open cost is not here: it belongs to the dataset, and the panel already
-/// has the dataset.
+/// Context for the info panel: the format and what the file says. Open costs belong to
+/// the dataset, which the panel already has.
 pub struct InfoContext<'a> {
     pub format: Option<ExportFormat>,
     /// The file declares its columns' types, as its format's descriptor says.
@@ -659,9 +631,8 @@ pub struct InfoContext<'a> {
     /// `None` when there is no one file on this machine to ask: a remote source, a
     /// glob, or a dataset opened from several paths.
     pub facts: Option<&'a FileFacts>,
-    /// The format's tab that the facts fill, for one local file whose reader has a
-    /// facts read: offered, named and given its room before they land, so nothing moves
-    /// when they do.
+    /// The format's tab the facts fill (one local file with a facts read), offered, named
+    /// and sized before they land so nothing moves.
     pub facts_tab: Option<&'static str>,
     /// The facts read a footer that gives the Compression column, whose room is kept
     /// while it is read.
@@ -728,12 +699,9 @@ fn read_line(state: &DataTableState) -> Option<String> {
     })
 }
 
-/// The first line of the Schema tab: the dataset's size, or that it does not know yet.
-///
-/// Told `None` rather than a number, because what a state holds before it has been
-/// counted is how far its buffer reached — printed under a heading that says "total",
-/// that reads as the size of the dataset. On a directory of thousands of files still
-/// being counted it would say `Rows (total): 70` beside a footer showing a spinner.
+/// The Schema tab's first line: the size, or that it is not known yet. `None` rather
+/// than an uncounted state's number, which is only how far the buffer reached (`Rows
+/// (total): 70` beside a counting spinner).
 fn rows_and_columns(rows: Option<usize>, columns: usize) -> String {
     let middot = crate::glyphs::get().middot;
     match rows {
@@ -928,9 +896,8 @@ impl<'a> DataTableInfo<'a> {
             }
             None => self.ctx.schema_source().to_string(),
         };
-        // Per column, how many of the footers read carry it. Only a dataset of files
-        // can vary this per column; for a single file the dataset-level fact already
-        // sits in the block title, so no column repeats it.
+        // Per column, how many read footers carry it; only multi-file datasets vary (a single
+        // file's fact is in the block title).
         let presence = dataset.map(|dataset| {
             let readable = dataset.files.saturating_sub(dataset.unreadable.len());
             let present_by_name: HashMap<&str, usize> = dataset
@@ -984,9 +951,8 @@ impl<'a> DataTableInfo<'a> {
         };
         let visible_height = inner.height as usize;
 
-        // One row of header; one more reserved for the out-of-view count when
-        // the columns do not all fit, so their existence is stated before any
-        // scrolling ("… 3 more" beats half a schema presented as whole).
+        // One header row, plus one for the out-of-view count when columns overflow, so hidden
+        // columns are stated before scrolling.
         let fits = total_rows <= visible_height.saturating_sub(1);
         let data_height = visible_height.saturating_sub(1 + usize::from(!fits));
         self.modal.schema_visible_height = data_height;
@@ -1073,9 +1039,8 @@ impl<'a> DataTableInfo<'a> {
                 (false, false) => vec![Constraint::Percentage(50), Constraint::Percentage(50)],
             }
         };
-        // The rail and the tint while the table has focus; the accent alone when
-        // it does not, so the cursor stays visible without claiming focus. The
-        // rail's column is kept either way, so focus arriving moves nothing.
+        // Rail and tint while focused; accent alone otherwise, the rail's column kept so
+        // focus moves nothing.
         let g = crate::glyphs::get();
         let (highlight, symbol) = if body_focused {
             (self.theme.highlight_style(), g.selector)
@@ -1299,12 +1264,9 @@ impl<'a> DataTableInfo<'a> {
         self.render_measurements(area, buf, &mut y, LABEL_WIDTH);
     }
 
-    /// What the open cost, under its own heading at the foot of the tab.
-    ///
-    /// Only what was measured: a row appears for a stretch of work that happened, and a
-    /// stretch that made no requests of its own shows a time and a count and stops
-    /// there. A figure datui cannot stand behind is not shown as a zero — see
-    /// [`crate::measurements`] and `docs/user-guide/dataset-info.md`.
+    /// What the open cost, under its heading at the tab's foot. Only what was measured: no
+    /// zeros for figures datui cannot stand behind (see [`crate::measurements`] and
+    /// `docs/user-guide/dataset-info.md`).
     fn render_measurements(&self, area: Rect, buf: &mut Buffer, y: &mut u16, label_w: u16) {
         let meter = self.state.measurements();
         let mut rows: Vec<(&str, String)> = [
@@ -1324,11 +1286,8 @@ impl<'a> DataTableInfo<'a> {
             return;
         }
         let bottom = area.y + area.height;
-        // The heading and at least one row, or neither: a heading alone says a section
-        // was cut off where there may have been nothing to cut. The blank line is at
-        // `y`, the heading at `y + 1` and the first row at `y + 2`, so all three have
-        // to fit — for every tab layout there is exactly one height at which checking
-        // any fewer leaves a bare heading.
+        // The heading with at least one row, or neither: blank at `y`, heading at `y + 1`,
+        // first row at `y + 2` must all fit.
         if *y + 2 >= bottom {
             return;
         }
@@ -1438,9 +1397,8 @@ impl<'a> DataTableInfo<'a> {
         self.render_detail_list(area, buf, &lines, detail.list_title, &detail.list, pick);
     }
 
-    /// A detail tab's head lines, then a blank line, a rule titled `title` and the list
-    /// as key and value, scrolled by `detail_scroll`. Each value is drawn whole: it
-    /// wraps over as many lines as it takes.
+    /// A detail tab: head lines, a blank, a rule titled `title`, then the key/value list
+    /// scrolled by `detail_scroll`, each value wrapped whole.
     fn render_detail(
         &mut self,
         area: Rect,
@@ -1596,15 +1554,9 @@ impl<'a> DataTableInfo<'a> {
         }
     }
 
-    /// What datui noticed: each note's summary and the line saying what it is based on.
-    ///
-    /// Whole notes only. A note half on screen is worse than one left off: a claim with
-    /// no basis under it, and a basis with no claim above it, are both the misreading
-    /// the basis exists to prevent. Which notes those are is [`notes_window`]'s job,
-    /// and its post-conditions are what make that true.
-    ///
-    /// Deliberately plain: no error styling, nothing that reads as an alarm. These are
-    /// observations about the data, not faults in it.
+    /// What datui noticed: each note's summary and its basis line. Whole notes only (a
+    /// claim without its basis, or the reverse, misleads), as [`notes_window`] ensures.
+    /// Plain styling: observations, not alarms.
     fn render_notes_tab(&mut self, area: Rect, buf: &mut Buffer) {
         let notes = self.state.notes();
         if area.height == 0 || area.width <= 4 || notes.is_empty() {
@@ -1620,18 +1572,12 @@ impl<'a> DataTableInfo<'a> {
         let heights: Vec<usize> = blocks.iter().map(Vec::len).collect();
         let dim = Style::default().fg(self.theme.dimmed);
 
-        // Try the whole panel first. Only when that leaves notes out is a row needed
-        // to count them, and only then do the notes have one row fewer — deciding it
-        // in advance spent a row that a note which exactly fitted could have used.
+        // Try the whole panel first; reserve a count row only when notes are left out.
         let full = area.height as usize;
         let (first, last) = notes_window(&heights, selected, self.modal.notes_scroll_offset, full);
         let all_shown = first == 0 && last == heights.len();
-        // A row for the count of what is hidden, but only when something is hidden and
-        // the note can spare it. A note that exactly fills the panel keeps its last
-        // row: saying "no room to show one" about a note that fits is worse than not
-        // saying how many are behind it.
-        // A row is worth spending on the offer too: a note that says a column is not
-        // read from some files, with no way to see what is there, is half a note.
+        // A row for the hidden count only when something is hidden and the note can spare it,
+        // and for the read-as-text offer, without which the note is half a note.
         let offer = notes[selected]
             .read_as_text
             .as_ref()
@@ -1639,10 +1585,8 @@ impl<'a> DataTableInfo<'a> {
         let reserve = (!all_shown || offer.is_some()) && heights[selected] < full;
         let show = if reserve { full - 1 } else { full };
         if heights[selected] > show {
-            // The note the cursor is on cannot show its summary and the line it rests
-            // on. Drawing the summary alone would be a claim from nowhere, so say what
-            // is there instead. Says "this one", not "one": a shorter note elsewhere in
-            // the list may well fit, and the cursor can be moved to it.
+            // The selected note cannot show summary and basis: say so ("this one": another note
+            // may fit).
             let count = notes.len();
             Paragraph::new(Line::from(Span::styled(
                 format!(
@@ -1687,11 +1631,8 @@ impl<'a> DataTableInfo<'a> {
             }
         }
 
-        // The offer and the count of what is out of view share the last row, so the
-        // room goes to the count first and the offer takes what is left. The count is
-        // a handful of characters and the offer is as long as a column name; giving
-        // the offer its width first would push the count off the edge, and the two
-        // drawn over each other read as neither.
+        // The offer and the hidden count share the last row: the short count first, the offer
+        // gets the rest, so neither overwrites the other.
         let (above, below) = (first, notes.len() - last);
         let hidden = match (reserve, above, below) {
             (false, _, _) | (_, 0, 0) => None,
@@ -1719,9 +1660,7 @@ impl<'a> DataTableInfo<'a> {
             .unwrap_or(0);
         if let Some(offer) = offer.as_ref() {
             let room = last_row.width.saturating_sub(taken) as usize;
-            // Cut with a mark, never silently. `Enter  read measurement_value` is a
-            // whole sentence that has lost `as text`, and `Enter  read me` is an offer
-            // about a column called `me`; both read as something datui did not say.
+            // Cut with a mark, never silently: a truncated offer can read as a different one.
             let offer = if offer.width() > room {
                 // Cut by width rather than by word: the spacing after the key name is
                 // part of how the line reads, and wrapping would close it up.
@@ -1798,24 +1737,13 @@ impl<'a> DataTableInfo<'a> {
     }
 }
 
-/// How long a stretch took, in a unit that does not round it away.
-///
-/// Milliseconds under a second, to two places. Most of these figures are under a
-/// second — a local directory of a few files is walked in a fraction of a millisecond —
-/// and in seconds to two places every one of them prints `0.00s`, which reads as "not
-/// measured" rather than "quick".
-///
-/// Two places rather than one because a one-file directory's listing really is tens of
-/// microseconds. There is still a floor: under five microseconds this prints
-/// `0.00 ms`. Nothing datui can do makes a five-microsecond walk legible, and a figure
-/// that small is honestly reported as none.
+/// How long a stretch took without rounding it away: milliseconds to two places under a
+/// second (seconds would print `0.00s` for most), floor `0.00 ms` under five
+/// microseconds.
 fn format_took(took: std::time::Duration) -> String {
     let ms = took.as_secs_f64() * 1000.0;
-    // Rounded to the two places that are printed, then chosen. Rounding to whole
-    // milliseconds instead moves the switch to 999.5 ms, which is a wide band of
-    // figures the doc promises in milliseconds and would hand back in seconds; and not
-    // rounding at all prints `1000.00 ms` for 999.997, which reads as larger than the
-    // `1.00s` a tick later.
+    // Round to the printed places before choosing the unit, so 999.997 ms prints `1.00s`,
+    // not `1000.00 ms`.
     if (ms * 100.0).round() < 100_000.0 {
         format!("{ms:.2} ms")
     } else {
@@ -1830,28 +1758,19 @@ fn wire_line(wire: crate::measurements::OverTheWire) -> String {
         format_int(wire.requests),
         if wire.requests == 1 { "" } else { "s" }
     );
-    // A byte figure only where datui counted the bytes. Everything that reports
-    // requests today also weighs them; this is what stops a stretch that one day does
-    // not from printing `0 B`, which would say its requests came back empty.
+    // Bytes only where datui counted them, so an unweighed stretch never prints `0 B`.
     if let Some(bytes) = wire.bytes {
         line.push_str(&format!(", {}", crate::numfmt::bytes(bytes)));
     }
     line
 }
 
-/// One measurement as a line: how long, over how many of whatever it counted, and —
-/// where datui made the requests itself — how many and how much came back.
-///
-/// `unit` is not always "files". The listing counts the dataset's files; a footer pass
-/// counts footers read, and those are not the same number — a dataset that opens before
-/// its footers are read has them read again behind the open, and one that cannot settle
-/// its row count reads them all again to count. Calling both "files" would put a figure
-/// larger than the dataset under the word the listing uses for the dataset's size.
+/// One measurement as a line: time, count of what it counted, and requests and bytes
+/// where datui made them. `unit` varies: footer passes count footers, which may
+/// exceed the dataset's files.
 fn measurement_line(cost: &crate::measurements::Cost, unit: &str, singular: &str) -> String {
     let mut line = format_took(cost.took);
-    // A stretch that never learned a count says a time and stops, rather than putting
-    // a number that is not the size of the dataset under the word the other rows use
-    // for exactly that.
+    // Without a count, just the time: no number that is not the dataset's size.
     if let Some(files) = cost.files {
         let unit = if files == 1 { singular } else { unit };
         line.push_str(&format!(", {} {unit}", format_int(files)));
@@ -1862,9 +1781,8 @@ fn measurement_line(cost: &crate::measurements::Cost, unit: &str, singular: &str
     line
 }
 
-/// The total as a line: a time, and the requests behind it.
-///
-/// No file count, deliberately — see [`crate::measurements::Meter::total`].
+/// The total as a line: time and requests, no file count (see
+/// [`crate::measurements::Meter::total`]).
 fn total_line(total: &crate::measurements::Total) -> String {
     let mut line = format_took(total.took);
     if let Some(wire) = total.over_the_wire {
@@ -1965,9 +1883,8 @@ impl<'a> Widget for &mut DataTableInfo<'a> {
         let tab_rows = u16::from(content.height >= 4);
         let gap = u16::from(content.height >= 6);
 
-        // Tab line: the active tab carries the accent. The tab bar never takes
-        // focus (the tabs switch from anywhere), so it carries no rail; the slot
-        // stays, keeping the names where they were.
+        // Tab line: the active tab is accented; the bar never takes focus (tabs switch from
+        // anywhere), so no rail, slot kept.
         let tabs = InfoTab::visible(offered);
         let active = tabs[tab.index(offered)];
         let current = tab.index(offered);

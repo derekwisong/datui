@@ -139,7 +139,7 @@ Most memory the buffered rows may take, estimated from the schema; 0 for no limi
 Use the Polars streaming engine where it applies. Default: \fBtrue\fR.
 .TP
 \fBperformance.threads\fR (\fIinteger\fR)
-Most threads Polars computes with; 0 for every core. It caps speed, not memory; POLARS_MAX_THREADS, when set, wins, and in Python it has no effect once Polars is imported. Default: \fB0\fR.
+Most threads Polars computes with; 0 for every core. It caps speed, not memory; POLARS_MAX_THREADS, when set, wins. The datui command only: the Python module runs its own Polars, which POLARS_MAX_THREADS sizes when it first computes. Default: \fB0\fR.
 .SS "[analysis]"
 Analysis, Data Quality and charts.
 .TP

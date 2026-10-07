@@ -347,10 +347,13 @@ fn run_impl(
     };
 
     // Polars sizes its thread pool from the environment the first time it computes,
-    // which is after this: the settings were read without it.
+    // which is after this: the settings were read without it. Only the binary's own
+    // process: a host (Python) has threads that read the environment outside std's
+    // lock, and its environment is not datui's to change.
     let asked_threads = std::env::var_os("POLARS_MAX_THREADS");
-    if let Some(threads) =
-        startup::polars_threads(config.performance.threads, asked_threads.as_deref())
+    if matches!(input, RunInput::Cli(_))
+        && let Some(threads) =
+            startup::polars_threads(config.performance.threads, asked_threads.as_deref())
     {
         // SAFETY: the other threads alive now (the key reader, the runtime's idle
         // workers, the saved-views reader) read the environment only through std,

@@ -760,6 +760,13 @@ fn render_list(area: Rect, buf: &mut Buffer, app: &mut crate::App, ctx: &RenderC
                     *count, tables, selected, name_width, show_meta, ctx,
                 ));
             }
+            crate::home::Row::Up { .. } => lines.push(note_row(
+                glyphs::get().up.to_string(),
+                selected,
+                name_width,
+                show_meta,
+                ctx,
+            )),
         }
     }
 
@@ -969,11 +976,13 @@ fn more_line(
     show_meta: bool,
     ctx: &RenderContext,
 ) -> Line<'static> {
-    let text = format!(
-        "{} {hidden} more in {places} {}",
-        glyphs::get().ellipsis,
-        if places == 1 { "place" } else { "places" }
-    );
+    let ellipsis = glyphs::get().ellipsis;
+    let more = crate::numfmt::group_chrome(hidden);
+    let text = match places {
+        0 => format!("{ellipsis} {more} more files"),
+        1 => format!("{ellipsis} {more} more in 1 place"),
+        _ => format!("{ellipsis} {more} more in {places} places"),
+    };
     note_row(text, selected, name_width, show_meta, ctx)
 }
 

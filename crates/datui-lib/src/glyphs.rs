@@ -47,6 +47,8 @@ pub struct Glyphs {
     pub rule_broken: &'static str,
     /// Truncation marker.
     pub ellipsis: &'static str,
+    /// The home screen's row up a level.
+    pub up: &'static str,
     /// Between row and column counts: `2.4M × 18`.
     pub times: &'static str,
     /// Section collapse markers; both must be the same display width.
@@ -329,6 +331,7 @@ const UNICODE: Glyphs = Glyphs {
     rule: "│",
     rule_broken: "┆",
     ellipsis: "…",
+    up: "..",
     times: "×",
     collapsed: "▸ ",
     expanded: "▾ ",
@@ -422,6 +425,7 @@ const ASCII: Glyphs = Glyphs {
     rule: "|",
     rule_broken: ":",
     ellipsis: "...",
+    up: "..",
     times: "x",
     collapsed: "+ ",
     expanded: "- ",
@@ -548,6 +552,7 @@ macro_rules! with_string_slots {
             rule,
             rule_broken,
             ellipsis,
+            up,
             times,
             collapsed,
             expanded,

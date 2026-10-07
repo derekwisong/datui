@@ -316,6 +316,7 @@ pub fn enter_label(enter: crate::WhatEnter) -> &'static str {
         crate::WhatEnter::LooksFirst => "Look",
         crate::WhatEnter::FoldsSection => "Fold",
         crate::WhatEnter::ShowsMore => "Show all",
+        crate::WhatEnter::GoesUp => "Up",
         crate::WhatEnter::ShowsHidden => "Show",
         crate::WhatEnter::OpensFile => "Open",
         crate::WhatEnter::OpensHex => "Hex",

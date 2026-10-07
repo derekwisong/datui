@@ -505,12 +505,6 @@ pub enum AppEvent {
     DoExport(ExportRequest),
     /// A followed file's watcher found more rows, or that the file went.
     Followed(crate::follow::News),
-    /// The Info tab of a piped journal, read again once it ended, for the dataset of
-    /// that generation.
-    FollowedDetail {
-        dataset_generation: u64,
-        detail: Box<crate::text_formats::Detail>,
-    },
     Exit,
     Crash(String),
     QQuery(String),
@@ -1519,8 +1513,8 @@ impl App {
     }
 
     /// Read a piped journal's Info tab again once it has ended, over every entry: the
-    /// one the open read describes the entries that had arrived then. Not a job, which
-    /// the user would wait on; the table works meanwhile.
+    /// one the open read describes the entries that had arrived then. Nobody waits on
+    /// it; the table works meanwhile.
     fn describe_ended_journal(&mut self) {
         let Some(lf) = self
             .data_table_state
@@ -1529,18 +1523,11 @@ impl App {
         else {
             return;
         };
-        let generation = self.dataset_generation;
-        let tx = self.events.clone();
-        self.runtime.spawn_blocking(move || {
-            let detail = logging::catch_panic(|| crate::journal::summary(&lf).ok())
-                .ok()
-                .flatten();
-            if let Some(detail) = detail {
-                let _ = tx.send(AppEvent::FollowedDetail {
-                    dataset_generation: generation,
-                    detail: Box::new(detail),
-                });
-            }
+        let dataset = self.dataset_generation;
+        self.spawn_job(Job::JournalDetail { dataset }, None, move |_| {
+            Ok(Answer::JournalDescribed(
+                crate::journal::summary(&lf).ok().map(Box::new),
+            ))
         });
     }
 
@@ -4698,17 +4685,6 @@ impl App {
                 self.followed(news);
                 None
             }
-            AppEvent::FollowedDetail {
-                dataset_generation,
-                detail,
-            } => {
-                if *dataset_generation == self.dataset_generation
-                    && let Some(state) = self.data_table_state.as_mut()
-                {
-                    state.set_format_detail((**detail).clone());
-                }
-                None
-            }
             AppEvent::DoExport(request) => {
                 let Some(state) = &self.data_table_state else {
                     self.export_progress = None;
@@ -5225,6 +5201,14 @@ impl App {
         answer: Answer,
     ) -> Option<AppEvent> {
         match (job, answer) {
+            (Job::JournalDetail { dataset }, Answer::JournalDescribed(Some(detail))) => {
+                if dataset == self.dataset_generation
+                    && let Some(state) = self.data_table_state.as_mut()
+                {
+                    state.set_format_detail(*detail);
+                }
+                None
+            }
             (Job::FootersJoin { dataset }, Answer::FootersJoined(found)) => {
                 self.footers_joined(dataset, found.map(|found| *found))
             }
@@ -5842,6 +5826,8 @@ impl App {
             Job::UnfitCount { .. } => {
                 log::warn!(target: "datui", "counting values that did not fit their type failed: {message}");
             }
+            // The Info tab keeps what the open read.
+            Job::JournalDetail { .. } => {}
         }
     }
 

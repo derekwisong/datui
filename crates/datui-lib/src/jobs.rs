@@ -87,6 +87,7 @@ pub enum JobKind {
     HexFind,
     UnfitCount,
     FootersJoin,
+    JournalDetail,
 }
 
 /// One started operation. Issued when it starts, carried by its worker, and handed
@@ -198,6 +199,9 @@ pub(crate) enum Job {
     /// The pass behind a staged open reading every footer, for the `dataset_generation`
     /// it was started for: judged by that, since it outlives several collects.
     FootersJoin { dataset: u64 },
+    /// A piped journal's Info tab read again once it ended, for the
+    /// `dataset_generation` it was read for.
+    JournalDetail { dataset: u64 },
 }
 
 /// A look at a path chosen on the home screen. Every key acts on the home screen even
@@ -311,6 +315,7 @@ impl Job {
             Job::HexFind(_) => JobKind::HexFind,
             Job::UnfitCount { .. } => JobKind::UnfitCount,
             Job::FootersJoin { .. } => JobKind::FootersJoin,
+            Job::JournalDetail { .. } => JobKind::JournalDetail,
         }
     }
 
@@ -335,8 +340,8 @@ impl Job {
     /// - the looks at a path named on the command line, whose answers are meant to be
     ///   thrown away when the user moves on (Ctrl+O out of a long look must not hold
     ///   the next dataset's rows behind it);
-    /// - the Info panel's file facts and the footer pass, judged by the dataset rather
-    ///   than the generation;
+    /// - the Info panel's file facts, a journal's detail and the footer pass, judged
+    ///   by the dataset rather than the generation;
     /// - the Pivot & Melt preview, judged by the builder's request;
     /// - a chart's data, judged by its dataset and asked for again whenever it is
     ///   missing.
@@ -353,6 +358,7 @@ impl Job {
                 | Job::FileFacts { .. }
                 | Job::UnfitCount { .. }
                 | Job::FootersJoin { .. }
+                | Job::JournalDetail { .. }
                 | Job::ReshapePreview { .. }
                 | Job::ChartPrepare(_)
         )
@@ -369,6 +375,7 @@ impl Job {
                 | Job::SampleDraw(_)
                 | Job::UnfitCount { .. }
                 | Job::FootersJoin { .. }
+                | Job::JournalDetail { .. }
                 | Job::ChartExport { .. }
                 | Job::ChartPrepare(_)
                 | Job::OwedRows { .. }
@@ -488,6 +495,8 @@ pub(crate) enum Answer {
     /// [`Job::FootersJoin`]: what the footers say; `None` when the pass could not read
     /// them, so the dataset stops waiting for it.
     FootersJoined(Option<Box<crate::table::FootersFound>>),
+    /// [`Job::JournalDetail`]: the journal's Info tab, when it could be read.
+    JournalDescribed(Option<Box<crate::text_formats::Detail>>),
 }
 
 impl Answer {

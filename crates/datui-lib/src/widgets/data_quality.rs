@@ -1,20 +1,22 @@
-use crate::analysis_modal::{AnalysisFocus, AnalysisTool, DetailScroll, EvidenceRead, SetupRow};
-use crate::config::Theme;
-use crate::data_quality::{
+use crate::analysis::analysis_modal::{
+    AnalysisFocus, AnalysisTool, DetailScroll, EvidenceRead, SetupRow,
+};
+use crate::analysis::data_quality::{
     ColumnQualityProfile, CopyPlan, DataQualityPlan, DataQualityResults, IntervalClock,
     IntervalFact, NoCopy, ObservationKind, QualityComparison, QualityCompute, QualityGrain,
     QualityMetric, QualityPage, QualityPrecision, QualityScope, SegmentCount,
     TemporalLatencyProfile, TemporalRole, interval_label, window_cadence,
 };
-use crate::glyphs;
-use crate::numfmt;
-use crate::quality_report::{
+use crate::analysis::quality_report::{
     CHECKS_SHOWN, Check, Coverage, Evidence, EvidenceRows, FindingOrder, FindingsView, Outcome,
     QualityReport, Severity, advice, coverage, describe, verdict,
 };
-use crate::quality_trends::{
+use crate::analysis::quality_trends::{
     GapCheck, GapKind, Gaps, TrendBar, TrendMeasure, TrendRow, TrendView, trend_view,
 };
+use crate::config::Theme;
+use crate::glyphs;
+use crate::numfmt;
 use crate::render::context::RenderContext;
 use crate::render::layout::dialog_in;
 use crate::table::DataTableState;
@@ -67,7 +69,7 @@ pub struct KeptRows {
     /// Samples kept: one per scope, method, size and seed a run read.
     pub samples: usize,
     pub rows: usize,
-    /// Near enough to budget by: [`crate::data_quality::QualitySample::estimated_bytes`].
+    /// Near enough to budget by: [`crate::analysis::data_quality::QualitySample::estimated_bytes`].
     pub bytes: usize,
     /// Bytes on disk in a full scan's local copy of a remote source; 0 for none.
     pub copy_bytes: u64,
@@ -142,7 +144,7 @@ pub struct DataQualityWidgetConfig<'a> {
     /// The Trends line a bar detail shows.
     pub trend_line: usize,
     /// The Expected editor, while it is open.
-    pub expected_form: Option<&'a crate::analysis_modal::ExpectedForm>,
+    pub expected_form: Option<&'a crate::analysis::analysis_modal::ExpectedForm>,
     pub segments_by_change: bool,
     pub page: QualityPage,
     pub setup: SetupView<'a>,
@@ -160,9 +162,9 @@ pub struct DataQualityWidgetConfig<'a> {
     /// The dialogs' Surfaces and the table's number formatting.
     pub ctx: &'a RenderContext,
     /// One column's declared intent, being edited over the Column intent list.
-    pub intent_form: Option<&'a crate::intent_modal::IntentForm>,
+    pub intent_form: Option<&'a crate::analysis::intent_modal::IntentForm>,
     /// The dialog writing the report on screen to a file.
-    pub export_form: Option<&'a crate::quality_export::ExportForm>,
+    pub export_form: Option<&'a crate::analysis::quality_export::ExportForm>,
 }
 
 /// The tool list's width: the width every analysis tool gives it, and none on a
@@ -557,7 +559,7 @@ fn setup_value(config: &DataQualityWidgetConfig<'_>, row: SetupRow) -> (String, 
         SetupRow::Sample => {
             // The view's rows, when counted: a sample never promises more.
             let sample = plan.sample();
-            let known = (sample.scope == crate::data_quality::QualityScope::CurrentView)
+            let known = (sample.scope == crate::analysis::data_quality::QualityScope::CurrentView)
                 .then(|| config.state.num_rows_if_valid())
                 .flatten();
             (sample.summary_within(known), false)
@@ -630,7 +632,7 @@ fn setup_value(config: &DataQualityWidgetConfig<'_>, row: SetupRow) -> (String, 
             ("needs an interval to measure".to_string(), true)
         }
         SetupRow::Latency => (
-            crate::analysis_modal::threshold_label(plan.latency_threshold_seconds),
+            crate::analysis::analysis_modal::threshold_label(plan.latency_threshold_seconds),
             plan.latency_threshold_seconds.is_none(),
         ),
         SetupRow::WindowBy => match (&plan.grain, plan.interval_clock) {
@@ -777,8 +779,10 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
         QualityCompute::Full => {
             lines.extend(copy_lines(view, full_passes(config)));
             // Each column an interval is windowed by is a grouping of its own.
-            let clocks =
-                crate::data_quality::interval_passes(plan, state.quality_schema(&plan.scope));
+            let clocks = crate::analysis::data_quality::interval_passes(
+                plan,
+                state.quality_schema(&plan.scope),
+            );
             if clocks > 1 {
                 lines.push(format!(
                     "Window by {}: {clocks} of those passes, 1 per column",
@@ -792,10 +796,10 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
             ));
         }
         QualityCompute::Sample => lines.push(match &plan.method {
-            crate::sampling::SampleMethod::FirstRows => {
+            crate::analysis::sampling::SampleMethod::FirstRows => {
                 format!("First {n} rows of the scope")
             }
-            crate::sampling::SampleMethod::PerPartition { column } => format!(
+            crate::analysis::sampling::SampleMethod::PerPartition { column } => format!(
                 "1 pass over every eligible row {} {n} kept per {column}",
                 glyphs::get().middot
             ),
@@ -874,7 +878,7 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
     } else if sampled
         && view.reads_blocks
         && !exact
-        && matches!(plan.method, crate::sampling::SampleMethod::Spread)
+        && matches!(plan.method, crate::analysis::sampling::SampleMethod::Spread)
     {
         // A ceiling of the whole file would say more than the runs read.
         "the row groups the runs fall in".to_string()
@@ -1033,7 +1037,8 @@ fn full_passes(config: &DataQualityWidgetConfig<'_>) -> usize {
     if !matches!(plan.grain, QualityGrain::Dataset) {
         passes += 1;
     }
-    passes += crate::data_quality::interval_passes(plan, state.quality_schema(&plan.scope));
+    passes +=
+        crate::analysis::data_quality::interval_passes(plan, state.quality_schema(&plan.scope));
     // The declared key is a grouping of its columns: one pass of its own.
     passes += usize::from(!plan.intent.key.is_empty());
     if planned_scope_rows(state, plan).is_none() {
@@ -1460,7 +1465,7 @@ fn render_findings(
     // Ordered by a number, the number is on every row, right-aligned, so the order
     // can be read; the summary gives up the room.
     let ordered = config.findings.order != FindingOrder::Ranked;
-    let numbers = |finding: &crate::quality_report::Finding| {
+    let numbers = |finding: &crate::analysis::quality_report::Finding| {
         if finding.kind.is_none() {
             return (String::new(), String::new());
         }
@@ -1478,7 +1483,7 @@ fn render_findings(
     };
     let (count_width, rate_width) = (widest(|(count, _)| count), widest(|(_, rate)| rate));
     // The number the list is ordered by leads, each in its own aligned column.
-    let affected = |finding: &crate::quality_report::Finding| {
+    let affected = |finding: &crate::analysis::quality_report::Finding| {
         let (count, rate) = numbers(finding);
         match config.findings.order {
             FindingOrder::Rate => format!("{rate:>rate_width$}  {count:>count_width$}"),
@@ -1803,7 +1808,7 @@ fn render_finding_detail(
 /// kept, reads ones it did not keep once asked, or says why there are none.
 fn evidence_line(
     config: &DataQualityWidgetConfig<'_>,
-    finding: &crate::quality_report::Finding,
+    finding: &crate::analysis::quality_report::Finding,
     results: &DataQualityResults,
 ) -> String {
     let rows = match finding.evidence(results) {
@@ -2225,15 +2230,15 @@ fn render_segments(
 
     // Per segment without choosing anything: rows, emptiness, and its largest move against
     // its comparison. Enter shows the rest.
-    let rows_label = |segment: &crate::data_quality::SegmentQualityProfile| match segment.total_rows
-    {
-        Some(total) if total != segment.evaluated_rows => format!(
-            "{} of {}",
-            numfmt::group_chrome(segment.evaluated_rows),
-            numfmt::group_chrome(total)
-        ),
-        _ => numfmt::group_chrome(segment.evaluated_rows),
-    };
+    let rows_label =
+        |segment: &crate::analysis::data_quality::SegmentQualityProfile| match segment.total_rows {
+            Some(total) if total != segment.evaluated_rows => format!(
+                "{} of {}",
+                numfmt::group_chrome(segment.evaluated_rows),
+                numfmt::group_chrome(total)
+            ),
+            _ => numfmt::group_chrome(segment.evaluated_rows),
+        };
     let label_width = results
         .segments
         .iter()
@@ -2251,7 +2256,7 @@ fn render_segments(
         .max(4) as u16
         + 2;
     let compared = config.plan.comparison != QualityComparison::None;
-    let order = crate::data_quality::segment_order(results, config.segments_by_change);
+    let order = crate::analysis::data_quality::segment_order(results, config.segments_by_change);
     let rows = order
         .iter()
         .map(|&index| &results.segments[index])
@@ -2304,7 +2309,7 @@ fn render_segment_detail(
     };
     let theme = config.theme;
     let dimmed = Style::default().fg(theme.dimmed());
-    let changes = crate::data_quality::segment_changes(results, segment_index);
+    let changes = crate::analysis::data_quality::segment_changes(results, segment_index);
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(2), Constraint::Fill(1)])
@@ -2403,7 +2408,7 @@ fn render_trends(
         .constraints([Constraint::Fill(1)])
         .margin(1)
         .areas(area);
-    if crate::data_quality::shows_trend(config.plan, results) {
+    if crate::analysis::data_quality::shows_trend(config.plan, results) {
         render_trend_table(config, results, table_state, area, buf);
         return;
     }
@@ -2423,7 +2428,7 @@ fn render_trends(
          date, or to chunks of rows, to follow each column from one to the next.",
     )];
     // One window found is no trend, but the windows expected around it still are.
-    if let Some(gaps) = crate::quality_trends::expected_gaps(config.plan, results) {
+    if let Some(gaps) = crate::analysis::quality_trends::expected_gaps(config.plan, results) {
         text.extend([Line::raw(""), Line::raw(gaps_summary(config.plan, &gaps))]);
     }
     Paragraph::new(text)
@@ -2520,7 +2525,7 @@ fn render_intervals(
     let over = match threshold {
         Some(_) => format!(
             "Over: duration > {}, of rows with both ends",
-            crate::analysis_modal::threshold_label(threshold)
+            crate::analysis::analysis_modal::threshold_label(threshold)
         ),
         None => "Negative: end before start, of rows with both ends".to_string(),
     };
@@ -2748,7 +2753,7 @@ fn render_interval_detail(
         match profile.threshold_seconds {
             Some(_) => format!(
                 "duration > {}, strictly",
-                crate::analysis_modal::threshold_label(profile.threshold_seconds)
+                crate::analysis::analysis_modal::threshold_label(profile.threshold_seconds)
             ),
             None => "none: set Latency over in Setup".to_string(),
         },
@@ -3020,7 +3025,7 @@ fn trend_notes(
             reach.push(format!(
                 "{} under {} sampled rows",
                 numfmt::group_chrome(thin),
-                crate::quality_report::THIN_SEGMENT_ROWS
+                crate::analysis::quality_report::THIN_SEGMENT_ROWS
             ));
         }
         let mut note = reach.join(", ");
@@ -3029,7 +3034,7 @@ fn trend_notes(
         }
         notes.push(note);
     }
-    if let Some(gaps) = crate::quality_trends::expected_gaps(plan, results) {
+    if let Some(gaps) = crate::analysis::quality_trends::expected_gaps(plan, results) {
         notes.push(gaps_summary(plan, &gaps));
     }
     notes
@@ -3055,7 +3060,7 @@ fn gaps_summary(plan: &DataQualityPlan, gaps: &Gaps) -> String {
         Gaps::TooMany { windows } => format!(
             "Expected {cadence}: {} in range, over {} {dot} narrow in Setup (e)",
             counted_unit(*windows, unit),
-            numfmt::group_chrome(crate::quality_trends::MAX_EXPECTED_WINDOWS),
+            numfmt::group_chrome(crate::analysis::quality_trends::MAX_EXPECTED_WINDOWS),
             dot = glyphs::get().middot,
         ),
         // From typed past the last window found, with Before blank.
@@ -3150,7 +3155,8 @@ fn render_trend_table(
                 Span::styled(mark, if mark == g.unsampled { dimmed } else { accent })
             })
             .collect::<Vec<_>>();
-        let name = crate::quality_report::columns_label(&row.names, name_width as usize - 2);
+        let name =
+            crate::analysis::quality_report::columns_label(&row.names, name_width as usize - 2);
         Row::new(vec![
             Cell::from(if row.rows() {
                 Span::styled(name, dimmed)
@@ -3237,7 +3243,7 @@ fn render_trend_detail(
     .render(title, buf);
 
     // The line as Trends drew it, its selected bar pointed at from below.
-    let name = crate::quality_report::columns_label(&line.names, name_width as usize - 2);
+    let name = crate::analysis::quality_report::columns_label(&line.names, name_width as usize - 2);
     let lead = |text: String, width: u16| {
         format!(
             "{text}{}",
@@ -3302,7 +3308,11 @@ fn trend_bar_fields(
     };
     let mut rows = vec![row(
         "Span",
-        segment_text(&crate::quality_trends::bar_span(view, bar, &plan.grain)),
+        segment_text(&crate::analysis::quality_trends::bar_span(
+            view,
+            bar,
+            &plan.grain,
+        )),
     )];
     // How much of the bar the run reached, before any number taken from it.
     let mut reach = vec![counted_unit(bar.segments(), unit)];
@@ -3317,7 +3327,7 @@ fn trend_bar_fields(
             reach.push(format!(
                 "{} under {} sampled rows",
                 numfmt::group_chrome(bar.thin),
-                crate::quality_report::THIN_SEGMENT_ROWS
+                crate::analysis::quality_report::THIN_SEGMENT_ROWS
             ));
         }
         if bar.unsampled + bar.thin == 0 {
@@ -3345,7 +3355,7 @@ fn trend_bar_fields(
             ),
         },
     ));
-    let compared = crate::quality_trends::compared_bar(view, index, plan);
+    let compared = crate::analysis::quality_trends::compared_bar(view, index, plan);
     let against = if plan.comparison == QualityComparison::Baseline {
         "Baseline bar"
     } else {
@@ -3427,16 +3437,16 @@ fn trend_bar_fields(
     } else if config.metric == QualityMetric::DistinctShare {
         Some("none: a distinct share does not stand for the whole".to_string())
     } else {
-        crate::quality_trends::wilson_interval(count, of).map(|(low, high)| {
+        crate::analysis::quality_trends::wilson_interval(count, of).map(|(low, high)| {
             let mut text = format!(
                 "{} to {}",
                 crate::numfmt::percent(low),
                 crate::numfmt::percent(high)
             );
-            if (of as usize) < crate::quality_report::THIN_SEGMENT_ROWS {
+            if (of as usize) < crate::analysis::quality_report::THIN_SEGMENT_ROWS {
                 text.push_str(&format!(
                     ", from under {} {noun}",
-                    crate::quality_report::THIN_SEGMENT_ROWS
+                    crate::analysis::quality_report::THIN_SEGMENT_ROWS
                 ));
             }
             text
@@ -3451,7 +3461,7 @@ fn trend_bar_fields(
             || (every_row && other_bar.eligible == Some(other_bar.evaluated));
         rows.push(row(
             against,
-            match crate::quality_trends::bar_change(line, index, other, exact) {
+            match crate::analysis::quality_trends::bar_change(line, index, other, exact) {
                 Some(change) => format!(
                     "{} to {}, {:+.1} points: {}",
                     crate::numfmt::percent(change.before),
@@ -3463,7 +3473,9 @@ fn trend_bar_fields(
                         "not judged for a distinct share"
                     } else if change.clear {
                         "a clear change"
-                    } else if change.points().abs() < crate::data_quality::MATERIAL_CHANGE_PP {
+                    } else if change.points().abs()
+                        < crate::analysis::data_quality::MATERIAL_CHANGE_PP
+                    {
                         "under a point"
                     } else {
                         "within sampling noise"
@@ -3496,7 +3508,7 @@ fn render_gaps(
         .constraints([Constraint::Fill(1)])
         .margin(1)
         .areas(area);
-    let Some(gaps) = crate::quality_trends::expected_gaps(plan, results) else {
+    let Some(gaps) = crate::analysis::quality_trends::expected_gaps(plan, results) else {
         Paragraph::new(
             "No expected windows: set Expected in Setup (e) to say which windows rows \
              belong in.",
@@ -3522,9 +3534,9 @@ fn render_gaps(
     let mut notes = vec![format!(
         "{}, {}: {} of {} {}",
         check.column,
-        crate::quality_trends::calendar_span(
+        crate::analysis::quality_trends::calendar_span(
             check.from,
-            crate::quality_trends::floor_window(
+            crate::analysis::quality_trends::floor_window(
                 check.before - chrono::Duration::microseconds(1),
                 every
             ),
@@ -3619,7 +3631,7 @@ fn render_gaps(
         .iter()
         .map(|run| {
             let mut cells = vec![
-                Cell::from(crate::quality_trends::calendar_span(
+                Cell::from(crate::analysis::quality_trends::calendar_span(
                     run.first, run.last, every,
                 )),
                 Cell::from(run.kind.label()),
@@ -3711,7 +3723,10 @@ fn render_expected_windows(config: &DataQualityWidgetConfig<'_>, area: Rect, buf
     );
     put_line(Line::raw(""), area, &mut y, buf);
     let cadence = form.cadence_label(every);
-    for (field, label) in crate::analysis_modal::EXPECTED_ROWS.iter().enumerate() {
+    for (field, label) in crate::analysis::analysis_modal::EXPECTED_ROWS
+        .iter()
+        .enumerate()
+    {
         let row_area = Rect {
             y,
             height: 1,
@@ -3729,7 +3744,9 @@ fn render_expected_windows(config: &DataQualityWidgetConfig<'_>, area: Rect, buf
                 label_width: 10,
             }
             .render(row_area, buf, ctx);
-            crate::pointer::record_field::<crate::analysis_modal::ExpectedForm>(row_area, field);
+            crate::pointer::record_field::<crate::analysis::analysis_modal::ExpectedForm>(
+                row_area, field,
+            );
         }
         y += 1;
     }
@@ -4041,7 +4058,7 @@ fn detail_measurements(
                 .map(|(variant, count)| {
                     format!(
                         "{} ({})",
-                        crate::quality_report::quoted(variant, END_WIDTH),
+                        crate::analysis::quality_report::quoted(variant, END_WIDTH),
                         numfmt::group_chrome(*count)
                     )
                 })
@@ -4334,7 +4351,9 @@ fn planned_read_bytes(state: &DataTableState, plan: &DataQualityPlan) -> Option<
         QualityCompute::Metadata => 0,
         // The head reads what it keeps; otherwise a ceiling: a spread sample is a few dozen
         // runs of one file or one stream, and per-partition streams the scope.
-        QualityCompute::Sample if plan.method == crate::sampling::SampleMethod::FirstRows => {
+        QualityCompute::Sample
+            if plan.method == crate::analysis::sampling::SampleMethod::FirstRows =>
+        {
             planned_scope_rows(state, plan)?.min(dataset_rows(plan))
         }
         QualityCompute::Sample => planned_scope_rows(state, plan)?,
@@ -4360,7 +4379,7 @@ fn planned_scope_rows(state: &DataTableState, plan: &DataQualityPlan) -> Option<
 pub(crate) fn planned_read_label(state: &DataTableState, plan: &DataQualityPlan) -> String {
     let bytes = planned_read_bytes(state, plan);
     let sampled = plan.compute == QualityCompute::Sample
-        && plan.method != crate::sampling::SampleMethod::FirstRows
+        && plan.method != crate::analysis::sampling::SampleMethod::FirstRows
         && planned_scope_rows(state, plan).is_some_and(|rows| rows > dataset_rows(plan));
     match bytes {
         Some(bytes) if sampled => format!("up to {}", crate::numfmt::bytes(bytes as u64)),

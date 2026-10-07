@@ -9,8 +9,8 @@ impl DataTableState {
     ///
     /// `row_index_column` is left empty: only the caller knows which index its own
     /// frame carries, and every caller fills it in.
-    fn quality_source_drift(&self) -> crate::data_quality::QualitySourceContext {
-        crate::data_quality::QualitySourceContext {
+    fn quality_source_drift(&self) -> crate::analysis::data_quality::QualitySourceContext {
+        crate::analysis::data_quality::QualitySourceContext {
             file_names: self.drift_files.clone(),
             file_starts: self.drift_file_starts.clone(),
             row_index_column: String::new(),
@@ -43,19 +43,24 @@ impl DataTableState {
         {
             return 0;
         }
-        crate::data_quality::conflict_reads(&self.drift_file_group, &self.view.drift_groups)
+        crate::analysis::data_quality::conflict_reads(
+            &self.drift_file_group,
+            &self.view.drift_groups,
+        )
     }
 
     /// Reads one column of named files at the type each of them wrote it in, for the
     /// values a type conflict hides. `None` when the dataset's files all agree, or
     /// when this frame is not the dataset as it opened.
-    pub(crate) fn quality_conflict_scan(&self) -> Option<crate::data_quality::QualityConflictScan> {
+    pub(crate) fn quality_conflict_scan(
+        &self,
+    ) -> Option<crate::analysis::data_quality::QualityConflictScan> {
         let dataset = self.dataset_at_open.clone()?;
         if !self.view.drift_column_present || !dataset.drifts() {
             return None;
         }
         if let Some(remote) = self.remote_files.as_ref() {
-            return Some(crate::data_quality::QualityConflictScan(
+            return Some(crate::analysis::data_quality::QualityConflictScan(
                 remote.scan.clone(),
             ));
         }
@@ -68,8 +73,8 @@ impl DataTableState {
         )
         .map(Arc::new);
         let partition_columns = self.partition_columns.clone();
-        Some(crate::data_quality::QualityConflictScan(Arc::new(
-            move |files: &[String], as_text: &[PlSmallStr]| {
+        Some(crate::analysis::data_quality::QualityConflictScan(
+            Arc::new(move |files: &[String], as_text: &[PlSmallStr]| {
                 let drifts = drift.is_some();
                 let lf = crate::formats::schema_union::lenient_scan(
                     files,
@@ -84,8 +89,8 @@ impl DataTableState {
                     partition_columns.as_deref().unwrap_or(&[]),
                     drifts,
                 ))
-            },
-        )))
+            }),
+        ))
     }
 
     /// Frame and optional row-to-file map used by the data-quality worker. The hidden
@@ -97,16 +102,19 @@ impl DataTableState {
     pub(crate) fn data_quality_scan(
         &self,
         ordered: bool,
-    ) -> (LazyFrame, Option<crate::data_quality::QualitySourceContext>) {
+    ) -> (
+        LazyFrame,
+        Option<crate::analysis::data_quality::QualitySourceContext>,
+    ) {
         let known_files =
             !self.drift_files.is_empty() && self.drift_files.len() == self.drift_file_starts.len();
         let source = if self.can_name_source_files() {
-            Some(crate::data_quality::QualitySourceContext {
+            Some(crate::analysis::data_quality::QualitySourceContext {
                 row_index_column: crate::formats::schema_union::DRIFT_COLUMN.to_string(),
                 ..self.quality_source_drift()
             })
         } else if self.is_pristine() && known_files {
-            Some(crate::data_quality::QualitySourceContext {
+            Some(crate::analysis::data_quality::QualitySourceContext {
                 row_index_column: "__datui_quality_row".to_string(),
                 ..self.quality_source_drift()
             })
@@ -139,11 +147,14 @@ impl DataTableState {
     /// deferred to the background worker so opening the plan performs no I/O.
     pub(crate) fn data_quality_source_scan(
         &self,
-    ) -> (LazyFrame, Option<crate::data_quality::QualitySourceContext>) {
+    ) -> (
+        LazyFrame,
+        Option<crate::analysis::data_quality::QualitySourceContext>,
+    ) {
         let known_files =
             !self.drift_files.is_empty() && self.drift_files.len() == self.drift_file_starts.len();
         let source = if known_files {
-            Some(crate::data_quality::QualitySourceContext {
+            Some(crate::analysis::data_quality::QualitySourceContext {
                 row_index_column: if self.drift_at_open {
                     crate::formats::schema_union::DRIFT_COLUMN.to_string()
                 } else {
@@ -175,7 +186,10 @@ impl DataTableState {
 
     /// The columns a Data Quality scope reads: the loaded source's for a source
     /// scope, the view's otherwise.
-    pub(crate) fn quality_schema(&self, scope: &crate::data_quality::QualityScope) -> &Schema {
+    pub(crate) fn quality_schema(
+        &self,
+        scope: &crate::analysis::data_quality::QualityScope,
+    ) -> &Schema {
         if scope.uses_source() {
             &self.original_schema
         } else {
@@ -185,7 +199,7 @@ impl DataTableState {
 
     pub(crate) fn quality_temporal_columns(
         &self,
-        scope: &crate::data_quality::QualityScope,
+        scope: &crate::analysis::data_quality::QualityScope,
     ) -> Vec<String> {
         self.quality_schema(scope)
             .iter()
@@ -200,7 +214,7 @@ impl DataTableState {
     /// through a format.
     pub(crate) fn quality_text_columns(
         &self,
-        scope: &crate::data_quality::QualityScope,
+        scope: &crate::analysis::data_quality::QualityScope,
     ) -> Vec<String> {
         self.quality_schema(scope)
             .iter()
@@ -236,7 +250,7 @@ impl DataTableState {
     /// keeps this state to restore its query, filters, sort and buffer.
     pub(crate) fn quality_evidence_view(
         &self,
-        scope: &crate::data_quality::QualityScope,
+        scope: &crate::analysis::data_quality::QualityScope,
         predicate: Expr,
     ) -> Result<Self> {
         let options = crate::OpenOptions {
@@ -273,20 +287,24 @@ impl DataTableState {
     /// source's for a source scope, the view's otherwise. Nothing is read here.
     pub(crate) fn quality_scope_frame(
         &self,
-        scope: &crate::data_quality::QualityScope,
+        scope: &crate::analysis::data_quality::QualityScope,
     ) -> Result<(LazyFrame, Arc<Schema>)> {
         Ok(if scope.uses_source() {
             let mut lf = self.query_source();
-            let source = if matches!(scope, crate::data_quality::QualityScope::SourceFiles(_)) {
+            let source = if matches!(
+                scope,
+                crate::analysis::data_quality::QualityScope::SourceFiles(_)
+            ) {
                 lf = lf.with_row_index("__datui_quality_row", None);
-                Some(crate::data_quality::QualitySourceContext {
+                Some(crate::analysis::data_quality::QualitySourceContext {
                     row_index_column: "__datui_quality_row".to_string(),
                     ..self.quality_source_drift()
                 })
             } else {
                 None
             };
-            let lf = crate::data_quality::apply_quality_scope(lf, scope, source.as_ref())?;
+            let lf =
+                crate::analysis::data_quality::apply_quality_scope(lf, scope, source.as_ref())?;
             let lf = if source.is_some() {
                 lf.drop(by_name(["__datui_quality_row"], false, false))
             } else {
@@ -295,7 +313,7 @@ impl DataTableState {
             (lf, self.original_schema.clone())
         } else {
             (
-                crate::data_quality::apply_quality_scope(self.visible_lf(), scope, None)?,
+                crate::analysis::data_quality::apply_quality_scope(self.visible_lf(), scope, None)?,
                 self.view.schema.clone(),
             )
         })

@@ -1,5 +1,5 @@
 use super::*;
-use crate::data_quality::fixtures::measure;
+use crate::analysis::data_quality::fixtures::measure;
 
 /// A value that fits keeps its spaces; one that does not wraps under itself.
 #[test]
@@ -217,7 +217,7 @@ fn column_detail_is_aligned_rows_without_a_box() {
 /// frame: the overview, a finding's detail and the columns draw from the same one.
 #[test]
 fn the_report_is_built_once_per_results() {
-    use crate::quality_report::REPORTS_BUILT;
+    use crate::analysis::quality_report::REPORTS_BUILT;
     let screen = Screen::new();
     let before = REPORTS_BUILT.with(std::cell::Cell::get);
     for _ in 0..3 {
@@ -314,7 +314,7 @@ fn coverage_accompanies_every_verdict_at_80x24_and_60x20() {
     clean.observations.clear();
     clean.precision = QualityPrecision::Sampled;
     clean.total_rows = Some(80);
-    clean.reads = Some(crate::data_quality::ObservedReads {
+    clean.reads = Some(crate::analysis::data_quality::ObservedReads {
         reads: 1,
         counted: 1,
         rows: 80,
@@ -375,7 +375,8 @@ fn evidence_says_where_its_rows_come_from() {
         .shown(report)
         .iter()
         .position(|index| {
-            report.findings[*index].kind == Some(crate::data_quality::ObservationKind::Nulls)
+            report.findings[*index].kind
+                == Some(crate::analysis::data_quality::ObservationKind::Nulls)
         })
         .unwrap();
     let detail = |results: &DataQualityResults, kept: bool, width, height| {

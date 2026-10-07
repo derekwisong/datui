@@ -13,8 +13,7 @@ use ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
 
 use ratatui::widgets::{Block, Clear};
 
-mod analysis_keys;
-pub mod analysis_modal;
+pub mod analysis;
 pub mod avro_types;
 mod background;
 pub mod cache;
@@ -38,8 +37,6 @@ pub mod context_menu;
 mod copy_keys;
 pub mod copy_modal;
 mod counting;
-pub mod data_quality;
-pub mod distribution_fit;
 mod documentation_keys;
 mod editing_keys;
 pub mod error_display;
@@ -68,7 +65,6 @@ pub mod inspector_drill;
 mod inspector_keys;
 pub mod inspector_modal;
 pub mod inspector_reader;
-pub mod intent_modal;
 mod jobs;
 pub mod limits;
 pub mod link_open;
@@ -90,24 +86,11 @@ mod pivot_melt_keys;
 pub mod pivot_melt_modal;
 pub mod pointer;
 pub mod python_script;
-pub mod quality_export;
-mod quality_form_keys;
-pub mod quality_intent;
-mod quality_keys;
-mod quality_memory;
-pub mod quality_report;
-mod quality_runs;
-pub mod quality_trends;
 mod query_prompt;
 mod retype_keys;
 pub mod retype_modal;
 mod run;
 pub use run::{ended_by_signal, run, run_captured};
-mod sample_draw;
-mod sample_keys;
-pub mod sample_modal;
-pub mod sampling;
-pub mod table_sample;
 // Public for the fuzz targets in `fuzz/`.
 pub mod query;
 mod render;
@@ -123,7 +106,6 @@ pub mod sql_group;
 #[cfg(feature = "sql")]
 mod sql_plan;
 pub mod startup;
-pub mod statistics;
 pub mod stdin;
 pub mod table;
 pub mod table_switch;
@@ -134,9 +116,6 @@ pub mod terminal_input;
 pub mod themes;
 pub mod typed_value;
 mod unfinished;
-pub mod value_counts;
-mod value_counts_keys;
-pub mod value_counts_modal;
 pub mod view;
 mod view_apply;
 mod view_keys;
@@ -149,13 +128,14 @@ pub use config::{
     rgb_to_basic_ansi,
 };
 
-use analysis_modal::{AnalysisModal, AnalysisProgress};
+use analysis::analysis_modal::{AnalysisModal, AnalysisProgress};
 use background::{CacheWrites, InflightCollect, LenCount, OwedCount};
 use chart_export::ChartExportRequest;
 use chart_export_modal::ChartExportModal;
 use chart_jobs::ChartRequest;
 use chart_modal::ChartColumns;
 
+pub use analysis::quality_memory::{KeptQualitySample, QUALITY_MEMORY_BUDGET, RetainedCopy};
 pub use error_display::{ErrorKindForPython, error_for_python};
 pub use export::{ExportOptions, ExportRequest};
 use export_modal::{ExportFocus, ExportModal};
@@ -170,7 +150,6 @@ pub use open_options::{
 };
 use output_file::Overwrite;
 use pivot_melt_modal::{MeltSpec, PivotMeltModal, PivotSpec};
-pub use quality_memory::{KeptQualitySample, QUALITY_MEMORY_BUDGET, RetainedCopy};
 use sort_filter_modal::SortFilterModal;
 use sort_modal::{SortColumn, order_with_hidden};
 use table::{DataTableState, DrillRow};
@@ -449,7 +428,7 @@ pub enum AppEvent {
     Scroll(Scroll),
     GoToLine(usize), // Deferred: jump to line number (when collect needed)
     /// Run an analysis tool off the UI thread; deferred so its progress shows first.
-    AnalysisCompute(analysis_modal::AnalysisTool),
+    AnalysisCompute(analysis::analysis_modal::AnalysisTool),
     /// The sample a stopped Data Quality run had read, kept for the next run.
     BackgroundQualitySampleKept {
         kept: KeptQualitySample,
@@ -478,7 +457,11 @@ pub enum AppEvent {
     /// sends this when [`App::count_waits_for_a_frame`].
     FramePainted,
     /// Write the on-screen Data Quality report from memory; nothing is read.
-    QualityReportExport(PathBuf, crate::quality_export::ReportFormat, Overwrite),
+    QualityReportExport(
+        PathBuf,
+        crate::analysis::quality_export::ReportFormat,
+        Overwrite,
+    ),
     /// A directory named on the command line: look at it on a worker, then do what
     /// `Enter` on its row would. An event so the first frame, with a spinner and a
     /// way out, is drawn before a look that can take seconds.
@@ -749,23 +732,28 @@ impl ExportProgress {
 /// The correlation matrix of the sample's numeric columns, reading only those.
 fn correlations_of_sample(
     lf: &LazyFrame,
-    sample: &sampling::Sample,
+    sample: &analysis::sampling::Sample,
     known_total: Option<usize>,
     streaming: bool,
-) -> Result<crate::statistics::AnalysisResults> {
+) -> Result<crate::analysis::statistics::AnalysisResults> {
     let schema = lf.clone().collect_schema()?;
     let numeric: Vec<polars::prelude::Expr> = schema
         .iter()
         .filter(|(_, dtype)| dtype.is_numeric())
         .map(|(name, _)| col(name.clone()))
         .collect();
-    let rows = crate::sampling::read(&lf.clone().select(numeric), sample, known_total, streaming)?;
-    Ok(crate::statistics::AnalysisResults {
+    let rows = crate::analysis::sampling::read(
+        &lf.clone().select(numeric),
+        sample,
+        known_total,
+        streaming,
+    )?;
+    Ok(crate::analysis::statistics::AnalysisResults {
         column_statistics: vec![],
         total_rows: rows.total_rows,
         sample_size: rows.sample_size,
         per_value: rows.per_value.map(|per_value| per_value.kept),
-        correlation_matrix: crate::statistics::compute_correlation_matrix(&rows.df).ok(),
+        correlation_matrix: crate::analysis::statistics::compute_correlation_matrix(&rows.df).ok(),
         distribution_analyses: vec![],
     })
 }
@@ -881,9 +869,9 @@ pub struct App {
     pub view_modal: ViewModal,
     pub analysis_modal: AnalysisModal,
     /// The sample form, and what the draws learned of memory and of the paths they took.
-    pub sample: sample_draw::SampleState,
+    pub sample: analysis::sample_draw::SampleState,
     /// What Data Quality runs keep within the memory budget.
-    quality: quality_runs::QualityRuns,
+    quality: analysis::quality_runs::QualityRuns,
     /// The chart view, its export form, and the preparations it keeps or waits on.
     pub chart: chart_jobs::Charts,
     pub export_modal: ExportModal,
@@ -894,7 +882,7 @@ pub struct App {
     /// The go-to-column, format and table pickers.
     pub pickers: picker_keys::Pickers,
     /// The Value Counts screen (`F`).
-    pub value_counts: value_counts_modal::ValueCountsModal,
+    pub value_counts: analysis::value_counts_modal::ValueCountsModal,
     /// The counts the export dialog writes, when it was opened from Value Counts.
     export_counts: Option<polars::prelude::DataFrame>,
     /// The retype and combine forms.
@@ -1037,7 +1025,7 @@ impl App {
 
     /// The analysis on screen was run on a sample: what `r` and `a` act on.
     fn analysis_results_are_sampled(&self) -> bool {
-        self.analysis_modal.view == analysis_modal::AnalysisView::Main
+        self.analysis_modal.view == analysis::analysis_modal::AnalysisView::Main
             && self.analysis_modal.computing.is_none()
             && self
                 .analysis_modal
@@ -1095,42 +1083,49 @@ impl App {
 
     /// Run Describe, Distributions or Correlations on the sample, off the UI thread.
     /// Data Quality runs its own plan.
-    fn spawn_analysis(&mut self, tool: analysis_modal::AnalysisTool) -> Option<AppEvent> {
-        use analysis_modal::AnalysisTool;
+    fn spawn_analysis(&mut self, tool: analysis::analysis_modal::AnalysisTool) -> Option<AppEvent> {
+        use analysis::analysis_modal::AnalysisTool;
         type Compute = fn(
             &LazyFrame,
-            &sampling::Sample,
+            &analysis::sampling::Sample,
             Option<usize>,
             bool,
-        ) -> Result<crate::statistics::AnalysisResults>;
-        type Install = fn(&mut analysis_modal::AnalysisModal, crate::statistics::AnalysisResults);
+        ) -> Result<crate::analysis::statistics::AnalysisResults>;
+        type Install = fn(
+            &mut analysis::analysis_modal::AnalysisModal,
+            crate::analysis::statistics::AnalysisResults,
+        );
         let (status, compute, install): (&str, Compute, Install) = match tool {
             AnalysisTool::DataQuality => return self.run_quality_compute(),
             AnalysisTool::Describe => (
                 "Running analysis...",
                 |lf, sample, known, streaming| {
-                    crate::statistics::compute_describe_from_lazy(lf, known, sample, streaming)
+                    crate::analysis::statistics::compute_describe_from_lazy(
+                        lf, known, sample, streaming,
+                    )
                 },
                 |modal, results| modal.describe_results = Some(results),
             ),
             AnalysisTool::DistributionAnalysis => (
                 "Analyzing distributions...",
                 |lf, sample, known, streaming| {
-                    let options = crate::statistics::ComputeOptions {
+                    let options = crate::analysis::statistics::ComputeOptions {
                         include_distribution_info: true,
                         include_distribution_analyses: true,
                         include_correlation_matrix: false,
                         include_skewness_kurtosis_outliers: true,
                         polars_streaming: streaming,
                     };
-                    crate::statistics::compute_statistics_for_sample(lf, sample, known, options)
+                    crate::analysis::statistics::compute_statistics_for_sample(
+                        lf, sample, known, options,
+                    )
                 },
                 |modal, results| modal.distribution_results = Some(results),
             ),
             AnalysisTool::CorrelationMatrix => (
                 "Computing correlation matrix...",
                 correlations_of_sample,
-                analysis_modal::AnalysisModal::install_correlations,
+                analysis::analysis_modal::AnalysisModal::install_correlations,
             ),
         };
         let Some(state) = &self.data_table_state else {
@@ -1162,23 +1157,25 @@ impl App {
     /// Run the selected tool again from scratch, as `r` and `a` do.
     fn start_analysis_run(&mut self) -> Option<AppEvent> {
         let tool = self.analysis_modal.selected_tool?;
-        if tool != analysis_modal::AnalysisTool::DataQuality && self.read_waits_for_cancelled() {
+        if tool != analysis::analysis_modal::AnalysisTool::DataQuality
+            && self.read_waits_for_cancelled()
+        {
             return None;
         }
         let phase = match tool {
-            analysis_modal::AnalysisTool::Describe => {
+            analysis::analysis_modal::AnalysisTool::Describe => {
                 self.analysis_modal.describe_results = None;
                 "Describing data"
             }
-            analysis_modal::AnalysisTool::DistributionAnalysis => {
+            analysis::analysis_modal::AnalysisTool::DistributionAnalysis => {
                 self.analysis_modal.distribution_results = None;
                 "Analyzing distributions"
             }
-            analysis_modal::AnalysisTool::CorrelationMatrix => {
+            analysis::analysis_modal::AnalysisTool::CorrelationMatrix => {
                 self.analysis_modal.correlation_results = None;
                 "Computing correlations"
             }
-            analysis_modal::AnalysisTool::DataQuality => return None,
+            analysis::analysis_modal::AnalysisTool::DataQuality => return None,
         };
         self.analysis_modal.computing = Some(AnalysisProgress::new(phase));
         self.busy = true;
@@ -1225,7 +1222,9 @@ impl App {
         // Data Quality keeps its last report and returns to Setup. A read that runs to
         // its end is shown by the header and Setup until the worker exits; one that
         // stops at its next batch is done, and a flash says so.
-        if self.analysis_modal.selected_tool == Some(analysis_modal::AnalysisTool::DataQuality) {
+        if self.analysis_modal.selected_tool
+            == Some(analysis::analysis_modal::AnalysisTool::DataQuality)
+        {
             self.open_quality_setup();
             if !read_runs_out {
                 self.flash_note("Run cancelled".to_string());
@@ -1233,7 +1232,7 @@ impl App {
             return;
         }
         self.analysis_modal.selected_tool = None;
-        self.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
+        self.analysis_modal.focus = analysis::analysis_modal::AnalysisFocus::Sidebar;
         self.flash_note("Analysis cancelled".to_string());
     }
 
@@ -2343,7 +2342,10 @@ impl App {
             let plan = request.plan;
             // The count is answered after the page goes out: it may need its own pass.
             Ok(
-                match crate::statistics::collect_lazy(request.lf, request.polars_streaming) {
+                match crate::analysis::statistics::collect_lazy(
+                    request.lf,
+                    request.polars_streaming,
+                ) {
                     Ok(df) => {
                         let returned = df.height();
                         let requested = request.buffer_end - request.buffer_start;
@@ -2728,12 +2730,12 @@ impl App {
             pivot_melt_modal: PivotMeltModal::new(),
             view_modal: ViewModal::new(),
             analysis_modal: AnalysisModal::with_sample_rows(app_config.analysis.sample_rows),
-            sample: sample_draw::SampleState {
+            sample: analysis::sample_draw::SampleState {
                 form: None,
-                memory_probe: std::sync::Arc::new(table_sample::available_memory),
+                memory_probe: std::sync::Arc::new(analysis::table_sample::available_memory),
                 paths: Vec::new(),
             },
-            quality: quality_runs::QualityRuns {
+            quality: analysis::quality_runs::QualityRuns {
                 memory_budget: QUALITY_MEMORY_BUDGET,
                 ..Default::default()
             },
@@ -2746,7 +2748,7 @@ impl App {
             inspector_modal: inspector_modal::InspectorModal::new(),
             external: run::External::default(),
             pickers: picker_keys::Pickers::default(),
-            value_counts: value_counts_modal::ValueCountsModal::default(),
+            value_counts: analysis::value_counts_modal::ValueCountsModal::default(),
             hex: hex_keys::HexState::default(),
             export_counts: None,
             column_forms: retype_keys::ColumnForms::default(),
@@ -2883,7 +2885,7 @@ impl App {
 
     /// The screen the keys typed now go to, as the key registry names it.
     pub fn keys_context(&self) -> datui_cli::keys::Context {
-        use crate::analysis_modal::{AnalysisTool, AnalysisView};
+        use crate::analysis::analysis_modal::{AnalysisTool, AnalysisView};
         use datui_cli::keys::Context;
         match self.overlay {
             Overlay::Analysis => match self.analysis_modal.view {
@@ -2939,8 +2941,8 @@ impl App {
             Confirm::Leave(leaving) => self.leave_recording(leaving, stop),
             Confirm::ReadAll => {
                 // Every row is a sample method like the others: shown in the strip, `s` changes it.
-                let sample = sampling::Sample {
-                    method: sampling::SampleMethod::EveryRow,
+                let sample = analysis::sampling::Sample {
+                    method: analysis::sampling::SampleMethod::EveryRow,
                     ..self.analysis_modal.sample.clone()
                 };
                 self.apply_sample(sample)
@@ -3570,7 +3572,8 @@ impl App {
                     // The sample outlives a close, but its scope names this dataset's rows: another
                     // dataset starts from its current view.
                     if self.analysis_modal.sample_dataset != Some(self.dataset_generation) {
-                        self.analysis_modal.sample.scope = data_quality::QualityScope::CurrentView;
+                        self.analysis_modal.sample.scope =
+                            analysis::data_quality::QualityScope::CurrentView;
                         self.analysis_modal.sample_dataset = Some(self.dataset_generation);
                     }
                     // A view with a sample: every tool reads it, whole.
@@ -4136,8 +4139,10 @@ impl App {
                     Job::QualityReport,
                     Some("Writing the report..."),
                     move |_| {
-                        crate::quality_export::write(&path, &results, &plan, format, overwrite)
-                            .map_err(|error| Self::format_export_error(&error))?;
+                        crate::analysis::quality_export::write(
+                            &path, &results, &plan, format, overwrite,
+                        )
+                        .map_err(|error| Self::format_export_error(&error))?;
                         Ok(Answer::QualityReportWritten(path))
                     },
                 );
@@ -4226,7 +4231,7 @@ impl App {
                                 lf, format, header, limit,
                             )
                             .map(|(text, rows)| (crate::clipboard::Payload::text(text), rows)),
-                            None => crate::statistics::collect_lazy(lf, streaming)
+                            None => crate::analysis::statistics::collect_lazy(lf, streaming)
                                 .map_err(|e| crate::error_display::user_message_from_polars(&e))
                                 .and_then(|df| {
                                     crate::clipboard::tabular_payload(
@@ -4835,7 +4840,7 @@ impl App {
                 if current
                     && self.overlay == Overlay::Analysis
                     && self.analysis_modal.selected_tool
-                        == Some(analysis_modal::AnalysisTool::DataQuality)
+                        == Some(analysis::analysis_modal::AnalysisTool::DataQuality)
                 {
                     // Labeled with the plan it ran with, whatever has been staged since.
                     self.cache_quality_result(&results, (*plan).clone());
@@ -4843,7 +4848,7 @@ impl App {
                     self.analysis_modal.quality.results = Some(*results);
                     self.analysis_modal.quality.from_cache = false;
                     self.analysis_modal
-                        .set_quality_page(crate::data_quality::QualityPage::Overview);
+                        .set_quality_page(crate::analysis::data_quality::QualityPage::Overview);
                     self.analysis_modal.computing = None;
                 }
                 None
@@ -5511,7 +5516,7 @@ impl App {
             Some((group_index, DrillRow::Read(lf))) => {
                 let streaming = state.polars_streaming();
                 self.spawn_job(Job::DrillRow, Some(Self::READING_GROUP), move |_| {
-                    let row = crate::statistics::collect_lazy(*lf, streaming)
+                    let row = crate::analysis::statistics::collect_lazy(*lf, streaming)
                         .map_err(|e| crate::error_display::user_message_from_polars(&e))?;
                     Ok(Answer::DrillRow { group_index, row })
                 });

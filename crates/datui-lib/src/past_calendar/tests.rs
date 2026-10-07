@@ -187,7 +187,7 @@ fn date_math_near_the_ends_of_the_nanosecond_range_is_null() {
             })
             .collect();
         for streaming in [false, true] {
-            let out = crate::statistics::collect_lazy(
+            let out = crate::analysis::statistics::collect_lazy(
                 frame(&stamps).select([guarded.clone()]),
                 streaming,
             )
@@ -415,7 +415,7 @@ fn a_date_a_datetime_cannot_count_is_null_as_one() {
             .collect()
             .unwrap();
         for streaming in [false, true] {
-            let out = crate::statistics::collect_lazy(
+            let out = crate::analysis::statistics::collect_lazy(
                 dates_and_datetimes(&DAYS).select([guarded.clone()]),
                 streaming,
             )

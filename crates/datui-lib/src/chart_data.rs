@@ -148,7 +148,7 @@ impl ChartSampling {
         Self {
             limit,
             known_total: None,
-            seed: crate::sampling::Sample::default().seed,
+            seed: crate::analysis::sampling::Sample::default().seed,
             streaming: false,
             full_passes: true,
             held: HeldRows::default(),
@@ -308,7 +308,7 @@ fn read_columns(
     let lf = lf
         .clone()
         .select(unique.iter().map(|c| col(c.clone())).collect::<Vec<_>>());
-    let read = crate::sampling::analysis_rows(
+    let read = crate::analysis::sampling::analysis_rows(
         &lf,
         sampling.limit,
         sampling.known_total,
@@ -777,7 +777,7 @@ fn until_cancelled(e: Expr, cancel: &Arc<AtomicBool>) -> Expr {
 /// Collect a pass of the envelope, streamed whatever the setting: it holds a few
 /// numbers per step. A pass stopped by `cancel` is an error that says so.
 fn envelope_pass(lf: LazyFrame, cancel: &Arc<AtomicBool>) -> Result<DataFrame> {
-    crate::statistics::collect_lazy(lf, true).map_err(|e| {
+    crate::analysis::statistics::collect_lazy(lf, true).map_err(|e| {
         if cancel.load(Ordering::Relaxed) {
             color_eyre::eyre::eyre!(ENVELOPE_CANCELLED)
         } else {
@@ -1843,7 +1843,7 @@ fn stream_counts(
         None,
     )?;
     // Streaming whatever the setting: a count per category is all this holds.
-    crate::statistics::collect_lazy(sink, true)?;
+    crate::analysis::statistics::collect_lazy(sink, true)?;
     let tally = std::mem::replace(
         &mut *state.lock().unwrap_or_else(|e| e.into_inner()),
         Tally::new(category, max),
@@ -2163,7 +2163,7 @@ fn group_plan(
 /// per group, and streaming checks `cancel` between morsels); a plan streaming cannot
 /// take runs in memory to the end. A cancelled pass errors saying so.
 fn aggregate_pass(lf: LazyFrame, sampling: &ChartSampling) -> Result<DataFrame> {
-    crate::statistics::collect_lazy(lf, true).map_err(|e| {
+    crate::analysis::statistics::collect_lazy(lf, true).map_err(|e| {
         if sampling.cancel.load(Ordering::Relaxed) {
             color_eyre::eyre::eyre!(ENVELOPE_CANCELLED)
         } else {
@@ -2183,7 +2183,7 @@ fn refuse_too_many_groups(
     most: usize,
     sampling: &ChartSampling,
 ) -> Result<()> {
-    let read = crate::sampling::analysis_rows(
+    let read = crate::analysis::sampling::analysis_rows(
         &lf.clone().select([col(x)]),
         Some(GROUPS_SAMPLE),
         sampling.known_total,

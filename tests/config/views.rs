@@ -500,10 +500,10 @@ fn a_view_keeps_the_sorted_view_its_row_range_was_drawn_through() {
 
     press(&mut app, KeyCode::Char('S'));
     let form = app.sample.form.as_mut().unwrap();
-    form.kind = datui::sample_modal::RowsKind::Range;
+    form.kind = datui::analysis::sample_modal::RowsKind::Range;
     form.range_from.set_value("1");
     form.range_to.set_value("200");
-    form.draft.method = datui::sampling::SampleMethod::FirstRows;
+    form.draft.method = datui::analysis::sampling::SampleMethod::FirstRows;
     form.size.set_value("200");
     press(&mut app, KeyCode::Enter);
     drain_events(&mut app, &rx);

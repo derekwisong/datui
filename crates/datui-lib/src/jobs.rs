@@ -214,10 +214,10 @@ pub(crate) struct ChartPrep {
 /// sample holds `rows`.
 #[derive(Clone)]
 pub(crate) struct SampleDraw {
-    pub(crate) sample: crate::sampling::Sample,
-    pub(crate) rows: Arc<crate::table_sample::SampleRows>,
+    pub(crate) sample: crate::analysis::sampling::Sample,
+    pub(crate) rows: Arc<crate::analysis::table_sample::SampleRows>,
     /// Stops the draw; the rows so far stay.
-    pub(crate) watch: crate::sampling::ReadWatch,
+    pub(crate) watch: crate::analysis::sampling::ReadWatch,
     /// Drawn from the view's query or filters rather than the source under them.
     pub(crate) through: bool,
     /// The steps laid on the built sample: query, filters, sort and columns of the view
@@ -226,7 +226,7 @@ pub(crate) struct SampleDraw {
     /// Analysis asked for it, and runs its tool once it is drawn.
     pub(crate) then_analyze: bool,
     /// How a random sample of a stream is drawn, decided before it starts.
-    pub(crate) path: Option<crate::table_sample::DrawPath>,
+    pub(crate) path: Option<crate::analysis::table_sample::DrawPath>,
     /// What the draw is remembered by, for drawing it the same way again.
     pub(crate) path_key: String,
     /// The drawn rows' columns, once cut to scope. The view becomes the sample's when
@@ -248,7 +248,7 @@ impl std::fmt::Debug for SampleDraw {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AnalysisRun {
     /// A Data Quality run's watch: how it is told to stop, and what it has read.
-    pub(crate) watch: Option<crate::data_quality::QualityWatch>,
+    pub(crate) watch: Option<crate::analysis::data_quality::QualityWatch>,
     /// Cancelled during a read that cannot stop part way: it runs to its end.
     pub(crate) runs_out: bool,
 }
@@ -378,20 +378,23 @@ pub(crate) enum Answer {
     /// [`Job::Analysis`]: a Describe, Distributions or Correlations result, and
     /// where on the modal it goes.
     Analysis(
-        fn(&mut crate::analysis_modal::AnalysisModal, crate::statistics::AnalysisResults),
-        crate::statistics::AnalysisResults,
+        fn(
+            &mut crate::analysis::analysis_modal::AnalysisModal,
+            crate::analysis::statistics::AnalysisResults,
+        ),
+        crate::analysis::statistics::AnalysisResults,
     ),
     /// [`Job::Analysis`]: a Data Quality report, the rows a sampled run read, and the
     /// plan it ran with.
     DataQuality {
-        results: Box<crate::data_quality::DataQualityResults>,
+        results: Box<crate::analysis::data_quality::DataQualityResults>,
         kept: Option<crate::KeptQualitySample>,
-        plan: Box<crate::data_quality::DataQualityPlan>,
+        plan: Box<crate::analysis::data_quality::DataQualityPlan>,
     },
     /// [`Job::SampleRows`]: rows to show as a table.
     Sample { df: DataFrame, label: String },
     /// [`Job::SampleDraw`]: the draw ended; its rows are in the job's chunks.
-    SampleDrawn(crate::table_sample::Drawn),
+    SampleDrawn(crate::analysis::table_sample::Drawn),
     /// [`Job::Pivot`]: the pivot.
     Pivoted {
         spec: crate::pivot_melt_modal::PivotSpec,
@@ -442,7 +445,7 @@ pub(crate) enum Answer {
     /// [`Job::Find`]: the cell found, or `None` when nothing in the view matches.
     Found(Option<crate::find::Found>),
     /// [`Job::ValueCounts`]: the column's values, counted.
-    ValueCounts(Box<crate::value_counts::ValueCounts>),
+    ValueCounts(Box<crate::analysis::value_counts::ValueCounts>),
     /// [`Job::HexOpen`]: the file, mapped.
     HexOpened(Box<crate::hex_view::HexSource>),
     /// [`Job::HexFind`]: where the pattern is, if anywhere.
@@ -509,7 +512,7 @@ pub enum Progress {
     /// An export has written `bytes` of its file.
     ExportWriting { phase: &'static str, bytes: u64 },
     /// A Data Quality run entered a stage.
-    QualityPhase(crate::data_quality::QualityPhase),
+    QualityPhase(crate::analysis::data_quality::QualityPhase),
     /// A find has read `rows` of the view.
     Finding { rows: usize },
     /// A find in the hex view has read `read` of the file's `total` bytes.

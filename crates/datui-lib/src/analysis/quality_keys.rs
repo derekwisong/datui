@@ -3,14 +3,17 @@
 use std::ops::ControlFlow;
 
 use crate::form::ListMove;
-use crate::{App, AppEvent, QUALITY_RUN_WAITS, analysis_modal, data_quality, sample_modal};
+use crate::{
+    App, AppEvent, QUALITY_RUN_WAITS, analysis::analysis_modal, analysis::data_quality,
+    analysis::sample_modal,
+};
 use crossterm::event::{KeyCode, KeyEvent};
 
 impl App {
     /// A key on Data Quality's main view: `Break` with its answer when this took it,
     /// `Continue` for the analysis modal's own keys.
     pub(crate) fn quality_key(&mut self, event: &KeyEvent) -> ControlFlow<Option<AppEvent>> {
-        use crate::data_quality::QualityPage;
+        use crate::analysis::data_quality::QualityPage;
 
         // A finding's popup scrolls when it holds more than the screen does.
         if self.analysis_modal.quality.observation_detail
@@ -103,7 +106,7 @@ impl App {
                     );
                 }
                 _ => {
-                    let roles = crate::data_quality::TemporalRole::ALL.len();
+                    let roles = crate::analysis::data_quality::TemporalRole::ALL.len();
                     self.move_setup_editor(event, field, roles);
                 }
             }
@@ -313,7 +316,7 @@ impl App {
                     .results
                     .as_ref()
                     .is_some_and(|results| {
-                        crate::quality_trends::expected_gaps(
+                        crate::analysis::quality_trends::expected_gaps(
                             self.analysis_modal.quality_result_plan(),
                             results,
                         )
@@ -335,13 +338,15 @@ impl App {
                         .map(|segment| segment.label.clone())
                     {
                         let mut plan = self.analysis_modal.quality_result_plan().clone();
-                        plan.comparison = crate::data_quality::QualityComparison::Baseline;
+                        plan.comparison =
+                            crate::analysis::data_quality::QualityComparison::Baseline;
                         plan.baseline_segment = Some(label.clone());
                         results.compare_segments(&plan);
                         self.cache_quality_result(&results, plan.clone());
                         self.analysis_modal.quality.last_plan = Some(plan);
                         let working = &mut self.analysis_modal.quality.plan;
-                        working.comparison = crate::data_quality::QualityComparison::Baseline;
+                        working.comparison =
+                            crate::analysis::data_quality::QualityComparison::Baseline;
                         working.baseline_segment = Some(label);
                     }
                     self.analysis_modal.quality.results = Some(results);
@@ -496,7 +501,7 @@ impl App {
             modal.quality.plan = plan;
         }
         modal.quality.setup_note = None;
-        modal.set_quality_page(crate::data_quality::QualityPage::Setup);
+        modal.set_quality_page(crate::analysis::data_quality::QualityPage::Setup);
         modal.quality.plan_field = row.index();
     }
 }

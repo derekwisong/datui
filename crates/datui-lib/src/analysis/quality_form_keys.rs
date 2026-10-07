@@ -4,7 +4,9 @@
 use crate::feedback::Confirm;
 use crate::form::FormKey;
 use crate::output_file::Overwrite;
-use crate::{App, AppEvent, analysis_modal, data_quality, form, intent_modal};
+use crate::{
+    App, AppEvent, analysis::analysis_modal, analysis::data_quality, analysis::intent_modal, form,
+};
 use crossterm::event::{KeyCode, KeyEvent};
 
 impl App {
@@ -61,8 +63,9 @@ impl App {
             .filter(|stem| !stem.is_empty())
             .unwrap_or("data")
             .to_string();
-        self.analysis_modal.quality.export =
-            Some(crate::quality_export::ExportForm::new(&stem, &self.theme));
+        self.analysis_modal.quality.export = Some(
+            crate::analysis::quality_export::ExportForm::new(&stem, &self.theme),
+        );
     }
 
     /// Keys in the export dialog: Tab between path and form, arrows or Space change the

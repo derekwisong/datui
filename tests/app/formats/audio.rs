@@ -300,13 +300,13 @@ fn a_compressed_wav_is_refused_by_name() {
 /// nothing on the clean first channel.
 #[test]
 fn data_quality_finds_clipping_silence_and_dc_offset() {
-    use datui::data_quality::{ObservationKind, QualityCompute};
+    use datui::analysis::data_quality::{ObservationKind, QualityCompute};
     let (mut app, rx) = open("tone.wav");
     press(&mut app, KeyCode::Char('a'));
     app.analysis_modal.sidebar_state.select(Some(3));
     press(&mut app, KeyCode::Enter);
     let plan = &mut app.analysis_modal.quality.plan;
-    plan.method = datui::sampling::SampleMethod::EveryRow;
+    plan.method = datui::analysis::sampling::SampleMethod::EveryRow;
     plan.compute = QualityCompute::Full;
     // A full scan asks first; the second Enter runs it.
     press(&mut app, KeyCode::Enter);

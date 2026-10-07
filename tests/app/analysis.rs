@@ -7,7 +7,7 @@ use super::*;
 /// is dropped rather than installed.
 #[test]
 fn test_esc_cancels_a_distribution_analysis_in_flight() {
-    use datui::analysis_modal::AnalysisTool;
+    use datui::analysis::analysis_modal::AnalysisTool;
 
     common::ensure_sample_data();
     let (tx, rx) = mpsc::channel();
@@ -66,7 +66,7 @@ fn test_esc_cancels_a_distribution_analysis_in_flight() {
 /// cannot read keeps the form open with why.
 #[test]
 fn the_sample_size_is_typed_in_shorthand() {
-    use datui::sample_modal::SampleField;
+    use datui::analysis::sample_modal::SampleField;
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sizes.csv");
@@ -105,8 +105,8 @@ fn the_sample_size_is_typed_in_shorthand() {
 /// title, with nothing read again: y = x³ is a perfect rank relation but not a line.
 #[test]
 fn m_switches_the_correlation_matrix_between_pearson_and_spearman() {
-    use datui::analysis_modal::AnalysisTool;
-    use datui::statistics::CorrelationMethod;
+    use datui::analysis::analysis_modal::AnalysisTool;
+    use datui::analysis::statistics::CorrelationMethod;
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cubes.csv");
@@ -166,7 +166,7 @@ fn m_switches_the_correlation_matrix_between_pearson_and_spearman() {
 /// close on the same view.
 #[test]
 fn enter_on_a_tool_enters_its_pane_and_esc_steps_back() {
-    use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
+    use datui::analysis::analysis_modal::{AnalysisFocus, AnalysisTool};
 
     let (mut app, rx, _tx) = open_query_filter_fixture("analysis_focus.csv");
     let press = |app: &mut App, code: KeyCode| {
@@ -187,7 +187,7 @@ fn enter_on_a_tool_enters_its_pane_and_esc_steps_back() {
     assert_eq!(app.analysis_modal.focus, AnalysisFocus::Main);
     assert_eq!(
         app.analysis_modal.sample_form.as_ref().unwrap().field,
-        datui::sample_modal::SampleField::Rows,
+        datui::analysis::sample_modal::SampleField::Rows,
         "the cursor lands on the first setting"
     );
     // Esc hands the cursor back to the list and leaves the form waiting; Enter
@@ -291,8 +291,8 @@ fn the_correlation_matrix_starts_on_a_pair() {
 /// reads too, and the header says which rows those are. Esc in the form discards.
 #[test]
 fn one_sample_serves_every_analysis_tool() {
-    use datui::analysis_modal::AnalysisTool;
-    use datui::data_quality::QualityScope;
+    use datui::analysis::analysis_modal::AnalysisTool;
+    use datui::analysis::data_quality::QualityScope;
 
     let dir = common::fixture_dir();
     let path = dir.join("shared_sample.parquet");
@@ -350,7 +350,7 @@ fn one_sample_serves_every_analysis_tool() {
     assert!(app.analysis_modal.sample_form.is_none());
     assert_eq!(
         app.analysis_modal.sample.method,
-        datui::sampling::SampleMethod::Spread
+        datui::analysis::sampling::SampleMethod::Spread
     );
 
     key(&mut app, KeyCode::Char('s'));
@@ -397,7 +397,7 @@ fn one_sample_serves_every_analysis_tool() {
 
     // Data Quality starts from the same rows without being told again, but opens
     // its Setup rather than reading: only its Run reads.
-    app.analysis_modal.focus = datui::analysis_modal::AnalysisFocus::Sidebar;
+    app.analysis_modal.focus = datui::analysis::analysis_modal::AnalysisFocus::Sidebar;
     app.analysis_modal.sidebar_state.select(Some(3));
     let next = key(&mut app, KeyCode::Enter);
     assert!(
@@ -408,7 +408,7 @@ fn one_sample_serves_every_analysis_tool() {
     assert!(!app.is_busy());
     assert_eq!(
         app.analysis_modal.quality.page,
-        datui::data_quality::QualityPage::Setup
+        datui::analysis::data_quality::QualityPage::Setup
     );
     let next = key(&mut app, KeyCode::Enter);
     assert!(matches!(
@@ -443,7 +443,7 @@ fn one_sample_serves_every_analysis_tool() {
     key(&mut app, KeyCode::Char('s'));
     for _ in 0..8 {
         if app.analysis_modal.sample_form.as_ref().unwrap().field
-            == datui::sample_modal::SampleField::Seed
+            == datui::analysis::sample_modal::SampleField::Seed
         {
             break;
         }
@@ -451,7 +451,7 @@ fn one_sample_serves_every_analysis_tool() {
     }
     assert_eq!(
         app.analysis_modal.sample_form.as_ref().unwrap().field,
-        datui::sample_modal::SampleField::Seed
+        datui::analysis::sample_modal::SampleField::Seed
     );
     key(&mut app, KeyCode::Char('7'));
     // The form's Enter applies to Setup's draft; the sample every tool reads
@@ -494,15 +494,15 @@ fn test_analysing_a_union_of_scans_does_not_panic() {
 
     let app = open_local_dataset(dir.path());
     let state = app.data_table_state.as_ref().unwrap();
-    let every_row = datui::sampling::Sample {
-        method: datui::sampling::SampleMethod::EveryRow,
+    let every_row = datui::analysis::sampling::Sample {
+        method: datui::analysis::sampling::SampleMethod::EveryRow,
         ..Default::default()
     };
-    let results = datui::statistics::compute_statistics_for_sample(
+    let results = datui::analysis::statistics::compute_statistics_for_sample(
         &state.lf_clone(),
         &every_row,
         None,
-        datui::statistics::ComputeOptions {
+        datui::analysis::statistics::ComputeOptions {
             polars_streaming: true,
             ..Default::default()
         },
@@ -596,7 +596,7 @@ fn test_view_getters_describe_the_grouped_view_while_drilled() {
 /// was pressed. The bound is what the table drew, not a count kept beside it.
 #[test]
 fn test_describe_scrolls_to_its_last_statistic_and_back_in_one_press() {
-    use datui::analysis_modal::AnalysisFocus;
+    use datui::analysis::analysis_modal::AnalysisFocus;
 
     common::ensure_sample_data();
     let (tx, rx) = mpsc::channel();
@@ -746,7 +746,10 @@ fn test_value_counts_count_the_column_and_step_columns() {
     counts_key(&mut app, &rx, &tx, KeyCode::Char('c'));
     assert!(!app.value_counts.shows_histogram());
     let summary = &app.value_counts.current().unwrap().summary;
-    assert_eq!(summary.sum, Some(datui::value_counts::Number::Int(60)));
+    assert_eq!(
+        summary.sum,
+        Some(datui::analysis::value_counts::Number::Int(60))
+    );
     assert_eq!(summary.mean, Some(6.0));
     assert_eq!(summary.min, Some(AnyValue::Int64(1)));
     assert_eq!(summary.max, Some(AnyValue::Int64(10)));
@@ -858,7 +861,7 @@ fn test_value_counts_count_the_queried_view() {
 /// nothing.
 #[test]
 fn test_value_counts_top_values_then_other() {
-    let top = datui::value_counts::TOP_N;
+    let top = datui::analysis::value_counts::TOP_N;
     let mut csv = String::from("id\n");
     for i in 0..top + 5 {
         csv.push_str(&format!("{i}\n"));

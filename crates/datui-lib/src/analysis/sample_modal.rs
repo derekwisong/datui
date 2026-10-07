@@ -6,8 +6,8 @@
 //! a kind of rows shows only that kind's inputs, with the context they need (the
 //! partition values that exist, the numbered files) and nothing else.
 
-use crate::data_quality::QualityScope;
-use crate::sampling::{Sample, SampleMethod};
+use crate::analysis::data_quality::QualityScope;
+use crate::analysis::sampling::{Sample, SampleMethod};
 use crate::widgets::text_input::TextInput;
 
 /// Which rows the sample is drawn from.
@@ -564,7 +564,7 @@ impl SampleForm {
 
     /// The sample size typed, when it reads as one.
     fn typed_size(&self) -> Option<usize> {
-        crate::sampling::parse_size(self.size.value()).ok()
+        crate::analysis::sampling::parse_size(self.size.value()).ok()
     }
 
     /// The file numbers typed so far, for marking the list under the Files row.
@@ -652,7 +652,7 @@ impl SampleForm {
             ..self.draft.clone()
         };
         if self.fields().contains(&SampleField::Size) {
-            sample.rows = crate::sampling::parse_size(self.size.value())
+            sample.rows = crate::analysis::sampling::parse_size(self.size.value())
                 .map_err(|e| e.to_string())?
                 .min(u32::MAX as usize);
         }

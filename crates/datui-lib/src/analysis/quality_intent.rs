@@ -6,11 +6,11 @@
 //! violation is counted as a fact out of the rows or values checked, never folded
 //! into a score.
 
-use crate::data_quality::{
+use crate::analysis::data_quality::{
     DataQualityPlan, ObservationKind, QualityObservation, QualityPrecision, TimeInterpretation,
     TimeKind,
 };
-use crate::statistics::collect_lazy;
+use crate::analysis::statistics::collect_lazy;
 use color_eyre::Result;
 use polars::prelude::*;
 
@@ -1070,9 +1070,9 @@ pub(crate) fn supersede(observations: &mut Vec<QualityObservation>, plan: &DataQ
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_quality::fixtures::measure;
-    use crate::data_quality::{DataQualityResults, QualityCompute, compute_data_quality};
-    use crate::quality_report::{Outcome, build_report, checks, coverage, describe};
+    use crate::analysis::data_quality::fixtures::measure;
+    use crate::analysis::data_quality::{DataQualityResults, QualityCompute, compute_data_quality};
+    use crate::analysis::quality_report::{Outcome, build_report, checks, coverage, describe};
 
     fn fixture() -> DataFrame {
         df!(
@@ -1208,10 +1208,13 @@ mod tests {
                 .iter()
                 .find(|finding| finding.kind == Some(kind))
                 .unwrap_or_else(|| panic!("{kind:?}"));
-            assert_eq!(finding.severity, crate::quality_report::Severity::Problem);
+            assert_eq!(
+                finding.severity,
+                crate::analysis::quality_report::Severity::Problem
+            );
         }
         let all = checks(&results, &report);
-        assert_eq!(all[0].name, crate::quality_report::INTENT_CHECK);
+        assert_eq!(all[0].name, crate::analysis::quality_report::INTENT_CHECK);
         assert_eq!(all[0].basis, QualityPrecision::Exact);
         assert!(matches!(all[0].outcome, Outcome::Found { .. }));
         let repeated = report
@@ -1442,7 +1445,7 @@ mod tests {
             },
             ..DataQualityPlan::default()
         };
-        crate::analysis_modal::set_time_format(
+        crate::analysis::analysis_modal::set_time_format(
             &mut plan,
             "day",
             Some((TimeKind::Date, "%Y-%m-%d")),

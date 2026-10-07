@@ -2,10 +2,10 @@
 //! column and what was read; the summary strip under it; then a line per value with
 //! its rows, percent, cumulative percent and a bar. The keys are on the footer.
 
+use crate::analysis::value_counts::{LineKind, Number, Order, Summary, ValueCounts};
+use crate::analysis::value_counts_modal::ValueCountsModal;
 use crate::numfmt::{self, CellFormatter};
 use crate::render::context::RenderContext;
-use crate::value_counts::{LineKind, Number, Order, Summary, ValueCounts};
-use crate::value_counts_modal::ValueCountsModal;
 use polars::prelude::{AnyValue, DataType};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -484,7 +484,7 @@ pub fn float_text(v: f64, fmt: &CellFormatter) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sampling::ReadWatch;
+    use crate::analysis::sampling::ReadWatch;
     use polars::prelude::*;
 
     fn screen(modal: &mut ValueCountsModal, width: u16, height: u16) -> Vec<String> {
@@ -504,10 +504,10 @@ mod tests {
     }
 
     fn counted(df: DataFrame, column: &str) -> ValueCountsModal {
-        let counts = crate::value_counts::Plan {
+        let counts = crate::analysis::value_counts::Plan {
             lf: df.lazy(),
             column: column.to_string(),
-            read: crate::value_counts::Read::Exact,
+            read: crate::analysis::value_counts::Read::Exact,
             known_total: None,
             streaming: false,
         }
@@ -525,7 +525,7 @@ mod tests {
             df!("pay" => [Some(1i64), Some(1), Some(2), None, Some(1)]).unwrap(),
             "pay",
         );
-        modal.view = Some(crate::value_counts_modal::CountsView::Listing);
+        modal.view = Some(crate::analysis::value_counts_modal::CountsView::Listing);
         let rows = screen(&mut modal, 80, 12);
         let g = crate::glyphs::get();
         assert!(rows[0].starts_with("Value Counts"), "{rows:#?}");
@@ -548,7 +548,7 @@ mod tests {
     #[test]
     fn the_strip_groups_its_counts() {
         let mut modal = counted(df!("n" => (0..1_500i64).collect::<Vec<_>>()).unwrap(), "n");
-        modal.view = Some(crate::value_counts_modal::CountsView::Listing);
+        modal.view = Some(crate::analysis::value_counts_modal::CountsView::Listing);
         let rows = screen(&mut modal, 100, 12);
         assert!(rows[1].contains("Rows 1,500"), "{rows:#?}");
         assert!(rows[1].contains("Distinct 1,500"), "{rows:#?}");
@@ -560,7 +560,7 @@ mod tests {
             df!("amount" => [1.5f64, 2.25, 1.5, 1000.0]).unwrap(),
             "amount",
         );
-        modal.view = Some(crate::value_counts_modal::CountsView::Listing);
+        modal.view = Some(crate::analysis::value_counts_modal::CountsView::Listing);
         let rows = screen(&mut modal, 40, 12);
         assert!(rows[1].contains("Rows 4"));
         assert!(rows.iter().any(|r| r.contains("Sum 1005.25")), "{rows:#?}");
@@ -596,7 +596,7 @@ mod tests {
     fn before_the_counts_the_screen_says_it_is_counting() {
         let mut modal = ValueCountsModal::default();
         modal.open(vec!["k".to_string()], 0, 1);
-        modal.computing = Some(crate::value_counts_modal::Computing {
+        modal.computing = Some(crate::analysis::value_counts_modal::Computing {
             column: "k".to_string(),
             exact: false,
             watch: ReadWatch::default(),
@@ -613,9 +613,9 @@ mod tests {
 
     #[test]
     fn the_other_line_has_no_bar() {
-        let ids: Vec<i64> = (0..crate::value_counts::TOP_N as i64 + 50).collect();
+        let ids: Vec<i64> = (0..crate::analysis::value_counts::TOP_N as i64 + 50).collect();
         let mut modal = counted(df!("id" => ids).unwrap(), "id");
-        modal.view = Some(crate::value_counts_modal::CountsView::Listing);
+        modal.view = Some(crate::analysis::value_counts_modal::CountsView::Listing);
         modal.move_to_end();
         let rows = screen(&mut modal, 80, 8);
         let g = crate::glyphs::get();

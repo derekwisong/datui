@@ -12,8 +12,8 @@ use polars::prelude::*;
 use tempfile::NamedTempFile;
 
 use super::{Read, Typing};
+use crate::analysis::statistics::collect_lazy;
 use crate::python_script::py_str;
-use crate::statistics::collect_lazy;
 use crate::unfinished::{Claim, Writer};
 use crate::{CompressionFormat, OpenOptions, ParseStringsTarget};
 

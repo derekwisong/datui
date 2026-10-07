@@ -1204,7 +1204,7 @@ mod tests {
             Some(99_999)
         );
         for streaming in [false, true] {
-            let df = crate::statistics::collect_lazy(lf.clone(), streaming).unwrap();
+            let df = crate::analysis::statistics::collect_lazy(lf.clone(), streaming).unwrap();
             assert_eq!(df.height(), 100_000, "streaming {streaming}");
         }
     }

@@ -9,18 +9,18 @@ use ratatui::{
     },
 };
 
-use crate::analysis_modal::{
+use crate::analysis::analysis_modal::{
     AnalysisFocus, AnalysisTool, AnalysisView, ColumnScroll, HistogramScale,
 };
-use crate::config::Theme;
-use crate::distribution_fit::{FitOutcome, FitTest};
-use crate::glyphs::PlotMarks;
-use crate::numfmt::{self, NumberFormatSettings};
-use crate::render::context::RenderContext;
-use crate::statistics::{
+use crate::analysis::distribution_fit::{FitOutcome, FitTest};
+use crate::analysis::statistics::{
     AnalysisResults, CategoricalStatistics, ColumnStatistics, CorrelationMethod,
     DistributionAnalysis, DistributionType, HistogramKey, NumericStatistics, TemporalStatistics,
 };
+use crate::config::Theme;
+use crate::glyphs::PlotMarks;
+use crate::numfmt::{self, NumberFormatSettings};
+use crate::render::context::RenderContext;
 use crate::widgets::axes::{AxisSpec, PlotAxes};
 use crate::widgets::axis_numbers::{AxisFormat, AxisNumbers};
 use crate::widgets::ui::Surface;
@@ -40,7 +40,7 @@ pub struct AnalysisWidgetConfig<'a> {
     /// Display-time number formatting, so counts here match the data table.
     pub number_format: &'a NumberFormatSettings,
     /// The shared sample the results were read with, for the header.
-    pub sample: &'a crate::sampling::Sample,
+    pub sample: &'a crate::analysis::sampling::Sample,
     pub ctx: &'a RenderContext,
 }
 
@@ -61,7 +61,7 @@ pub struct AnalysisWidget<'a> {
     theme: &'a Theme,
     table_cell_padding: u16,
     number_format: &'a NumberFormatSettings,
-    sample: &'a crate::sampling::Sample,
+    sample: &'a crate::analysis::sampling::Sample,
     ctx: &'a RenderContext,
     /// The selected tool's statistic scroll; the table sets how far it goes.
     column_scroll: &'a mut ColumnScroll,
@@ -466,7 +466,7 @@ impl<'a> AnalysisWidget<'a> {
 /// The correlation matrix as the screen shows it: by the method chosen.
 #[derive(Clone, Copy)]
 struct Shown<'a> {
-    matrix: &'a crate::statistics::CorrelationMatrix,
+    matrix: &'a crate::analysis::statistics::CorrelationMatrix,
     method: CorrelationMethod,
 }
 
@@ -1412,7 +1412,7 @@ fn render_distribution_selector(
     // Tested families by p-value, then the ones that do not apply; the same order
     // the modal's ↑↓ walks.
     let distribution_scores: Vec<(DistributionType, Option<&FitOutcome>)> =
-        crate::distribution_fit::listing_order(&dist.fits)
+        crate::analysis::distribution_fit::listing_order(&dist.fits)
             .into_iter()
             .map(|family| (family, dist.fit(family)))
             .collect();
@@ -2101,7 +2101,7 @@ mod tests {
     }
 
     fn analysis(mean: f64, std_dev: f64, sorted: Vec<f64>) -> DistributionAnalysis {
-        use crate::statistics::{
+        use crate::analysis::statistics::{
             DistributionCharacteristics, OutlierAnalysis, PercentileBreakdown,
         };
         DistributionAnalysis {
@@ -2149,7 +2149,7 @@ mod tests {
         dist.fits = vec![(
             DistributionType::Normal,
             FitOutcome::Tested(FitTest {
-                fitted: crate::distribution_fit::Fitted::Normal {
+                fitted: crate::analysis::distribution_fit::Fitted::Normal {
                     mean: 100.0,
                     sd: 80.0,
                 },
@@ -2252,7 +2252,7 @@ mod tests {
     /// nothing reuse it, and a new width builds it again.
     #[test]
     fn a_histogram_is_built_once_per_layout() {
-        use crate::statistics::HISTOGRAMS_BUILT;
+        use crate::analysis::statistics::HISTOGRAMS_BUILT;
         let dist = skewed_normal_fit();
         let g = crate::glyphs::unicode();
         let built = || HISTOGRAMS_BUILT.with(std::cell::Cell::get);
@@ -2535,8 +2535,8 @@ mod tests {
         assert_eq!(format_count(10_000, &settings("thousands", true)), "10,000");
     }
 
-    fn correlation_matrix(r: f64, pairs: usize) -> crate::statistics::CorrelationMatrix {
-        crate::statistics::CorrelationMatrix {
+    fn correlation_matrix(r: f64, pairs: usize) -> crate::analysis::statistics::CorrelationMatrix {
+        crate::analysis::statistics::CorrelationMatrix {
             columns: vec!["price".to_string(), "volume".to_string()],
             correlations: vec![vec![1.0, r], vec![r, 1.0]],
             p_values: Some(vec![vec![0.0, 0.004], vec![0.004, 0.0]]),
@@ -2599,7 +2599,7 @@ mod tests {
     fn the_correlation_matrix_keeps_the_selected_column_in_view() {
         let names: Vec<String> = (0..6).map(|i| format!("col_{i}")).collect();
         let n = names.len();
-        let matrix = crate::statistics::CorrelationMatrix {
+        let matrix = crate::analysis::statistics::CorrelationMatrix {
             columns: names,
             correlations: vec![vec![0.5; n]; n],
             p_values: None,
@@ -2725,9 +2725,9 @@ mod tests {
     fn describe_shows_a_datetime_range_and_leaves_std_blank() {
         let theme =
             crate::config::Theme::from_config(&crate::config::ThemeConfig::default()).unwrap();
-        let results = crate::statistics::compute_describe_single_aggregation(
-            &crate::statistics::describe_tests::temporal_frame(),
-            &crate::statistics::describe_tests::temporal_frame()
+        let results = crate::analysis::statistics::compute_describe_single_aggregation(
+            &crate::analysis::statistics::describe_tests::temporal_frame(),
+            &crate::analysis::statistics::describe_tests::temporal_frame()
                 .schema()
                 .clone(),
             6,
@@ -2748,7 +2748,7 @@ mod tests {
             area,
             &mut buf,
             &mut TableState::default(),
-            &mut crate::analysis_modal::ColumnScroll::default(),
+            &mut crate::analysis::analysis_modal::ColumnScroll::default(),
         );
         let text = crate::tests::buffer_text(&buf);
         let mut lines = text.lines();

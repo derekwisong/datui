@@ -3,11 +3,11 @@
 //! and Data Quality all take their rows from [`read`], so a sample means the same
 //! thing whichever tool shows it.
 
-use crate::data_quality::{
+use crate::analysis::data_quality::{
     QualityScope, QualitySourceContext, apply_quality_scope, prepare_source_quality_scan,
 };
+use crate::analysis::statistics::collect_lazy;
 use crate::numfmt;
-use crate::statistics::collect_lazy;
 use color_eyre::Result;
 use color_eyre::eyre::Report;
 use polars::prelude::*;

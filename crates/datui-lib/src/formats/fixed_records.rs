@@ -1253,14 +1253,14 @@ mod tests {
             lf.clone().slice(990, 50),
         ];
         for query in queries {
-            let streamed = crate::statistics::collect_lazy(query.clone(), true).unwrap();
+            let streamed = crate::analysis::statistics::collect_lazy(query.clone(), true).unwrap();
             let in_memory = query.collect().unwrap();
             assert!(
                 streamed.equals_missing(&in_memory),
                 "{streamed}\n{in_memory}"
             );
         }
-        let groups = crate::statistics::collect_lazy(
+        let groups = crate::analysis::statistics::collect_lazy(
             lf.group_by([col("group")])
                 .agg([len()])
                 .sort(["group"], Default::default()),
@@ -1283,9 +1283,11 @@ mod tests {
         let window = records.window(99_990, 50).unwrap();
         assert_eq!(window.height(), 10);
         for streaming in [false, true] {
-            let sliced =
-                crate::statistics::collect_lazy(records.lazy().slice(99_990, 50), streaming)
-                    .unwrap();
+            let sliced = crate::analysis::statistics::collect_lazy(
+                records.lazy().slice(99_990, 50),
+                streaming,
+            )
+            .unwrap();
             assert!(window.equals_missing(&sliced), "{sliced}");
         }
         assert_eq!(
@@ -1306,7 +1308,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        crate::statistics::collect_lazy(sink, true).unwrap();
+        crate::analysis::statistics::collect_lazy(sink, true).unwrap();
         assert_eq!(*got.lock().unwrap(), 50_000);
     }
 
@@ -1318,7 +1320,7 @@ mod tests {
         price.logical = Logical::Decimal { scale: 2 };
         let bytes: Vec<u8> = (0u32..1_000).flat_map(|v| v.to_le_bytes()).collect();
         let lf = records(bytes, vec![price], usize::MAX).lazy();
-        let page = crate::statistics::collect_lazy(
+        let page = crate::analysis::statistics::collect_lazy(
             lf.sort(
                 ["price"],
                 SortMultipleOptions::default().with_order_descending(true),

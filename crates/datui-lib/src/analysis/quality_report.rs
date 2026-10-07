@@ -4,7 +4,7 @@
 //! once per result; the engine, cache and drill-in work on observations, which a
 //! finding only groups and ranks.
 
-use crate::data_quality::{
+use crate::analysis::data_quality::{
     ColumnQualityProfile, DataQualityPlan, DataQualityResults, ObservationKind, QualityObservation,
     QualityPrecision, QualityScope, TextReading, text_reading,
 };
@@ -287,7 +287,7 @@ pub enum EvidenceRows {
     /// Every row the named files hold.
     Files(QualityScope),
     /// Rows equal to another in every column, copies together; see
-    /// [`crate::data_quality::duplicate_rows`].
+    /// [`crate::analysis::data_quality::duplicate_rows`].
     Duplicates,
 }
 
@@ -2153,13 +2153,13 @@ const EXAMPLE_WIDTH: usize = 72;
 /// is out of, the rule as declared, and what the rows in memory showed of it. A
 /// sample's numbers say so.
 struct Declared<'a> {
-    intent: &'a crate::quality_intent::IntentResults,
+    intent: &'a crate::analysis::quality_intent::IntentResults,
     sampled: bool,
     /// "rows", or "sampled rows".
     rows_word: &'static str,
     /// The finding's share of what it is out of.
     share: String,
-    check: Option<&'a crate::quality_intent::ColumnCheck>,
+    check: Option<&'a crate::analysis::quality_intent::ColumnCheck>,
     column: &'a str,
 }
 
@@ -2302,10 +2302,10 @@ fn unparsed_number_headline(detail: &Detail<'_>, evidence: &mut Vec<String>) -> 
     let Some(declared) = Declared::of(detail) else {
         return detail.finding.summary.clone();
     };
-    let reading = declared
-        .check
-        .and_then(|check| check.intent.number)
-        .map_or("number", crate::quality_intent::NumberReading::label);
+    let reading = declared.check.and_then(|check| check.intent.number).map_or(
+        "number",
+        crate::analysis::quality_intent::NumberReading::label,
+    );
     if let Some(check) = declared
         .check
         .filter(|check| !check.unparsed_examples.is_empty())
@@ -2377,8 +2377,8 @@ mod tests {
     fn reads(finding: &Finding) -> (Option<ObservationKind>, Option<Variant>) {
         (finding.kind, finding.variant)
     }
-    use crate::data_quality::SharedNulls;
-    use crate::data_quality::fixtures::{observation, profile, results_with};
+    use crate::analysis::data_quality::SharedNulls;
+    use crate::analysis::data_quality::fixtures::{observation, profile, results_with};
     use polars::prelude::DataType;
 
     /// Sixteen columns missing on the same rows are one fact, and it says so.
@@ -2602,7 +2602,7 @@ mod tests {
     /// and what else bounds the result, each count beside its denominator.
     #[test]
     fn coverage_separates_checked_skipped_and_unavailable() {
-        use crate::data_quality::{
+        use crate::analysis::data_quality::{
             ObservedReads, SegmentQualityProfile, TemporalRole, TemporalRoleAssignment,
         };
         let columns = vec![
@@ -2612,7 +2612,7 @@ mod tests {
         ];
         let plan = DataQualityPlan::default();
         let measured = |mut results: DataQualityResults| {
-            results.identity = Some(crate::data_quality::IdentityProfile {
+            results.identity = Some(crate::analysis::data_quality::IdentityProfile {
                 duplicate_groups: 0,
                 extra_rows: 0,
                 rows_involved: 0,
@@ -2894,7 +2894,7 @@ mod tests {
             vec![text],
             vec![observation(ObservationKind::ParseableText, "amount", 95)],
         );
-        results.examples = vec![crate::data_quality::FindingExamples {
+        results.examples = vec![crate::analysis::data_quality::FindingExamples {
             kind: ObservationKind::ParseableText,
             column: "amount".to_string(),
             values: vec!["\"n/a\"".to_string()],
@@ -2933,12 +2933,12 @@ mod tests {
                 5,
             )],
         );
-        results.identity = Some(crate::data_quality::IdentityProfile {
+        results.identity = Some(crate::analysis::data_quality::IdentityProfile {
             duplicate_groups: 2,
             extra_rows: 3,
             rows_involved: 5,
             evaluated_rows: 100,
-            examples: vec![crate::data_quality::DuplicateExample {
+            examples: vec![crate::analysis::data_quality::DuplicateExample {
                 copies: 3,
                 values: vec!["7".to_string()],
             }],

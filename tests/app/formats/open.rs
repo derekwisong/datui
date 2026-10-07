@@ -536,7 +536,7 @@ fn time_a_large_file() {
     ];
     for (name, query) in queries {
         let (took, peak) = with_peak_anon(|| {
-            datui::statistics::collect_lazy(query, true).unwrap();
+            datui::analysis::statistics::collect_lazy(query, true).unwrap();
         });
         println!("{name}: {took:?}, peak anonymous memory {} MiB", peak >> 20);
     }
@@ -668,7 +668,7 @@ fn time_a_large_framed_file() {
         (0..3)
             .map(|_| {
                 with_peak_anon(|| {
-                    datui::statistics::collect_lazy(query.clone(), true).unwrap();
+                    datui::analysis::statistics::collect_lazy(query.clone(), true).unwrap();
                 })
             })
             .min()
@@ -711,7 +711,7 @@ fn time_a_large_framed_file() {
     // The same queries over the table decoded whole into memory first.
     let mut whole = None;
     let (took, peak) = with_peak_anon(|| {
-        whole = Some(datui::statistics::collect_lazy(lf.clone(), true).unwrap());
+        whole = Some(datui::analysis::statistics::collect_lazy(lf.clone(), true).unwrap());
     });
     println!(
         "decoded whole: {took:?}, peak anonymous memory {} MiB",

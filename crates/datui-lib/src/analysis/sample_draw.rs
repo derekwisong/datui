@@ -1,25 +1,25 @@
 //! The view's sample: the draw that fills it as the table shows it, and taking it
 //! away. The sample is a view step between source and query
 //! ([`crate::table::Sampled`]); a [`Job::SampleDraw`] draws it off the UI thread a
-//! chunk at a time ([`crate::table_sample`]), each chunk laid under the view's
+//! chunk at a time ([`crate::analysis::table_sample`]), each chunk laid under the view's
 //! frames as it lands, like a followed pipe's rows.
 
+use crate::analysis::table_sample::{Limit, MemoryCheck, MemoryProbe};
 use crate::jobs::{Answer, Job, SampleDraw};
 use crate::table::DataTableState;
-use crate::table_sample::{Limit, MemoryCheck, MemoryProbe};
-use crate::{App, AppEvent, analysis_modal, data_quality, sampling};
+use crate::{App, AppEvent, analysis::analysis_modal, analysis::data_quality, analysis::sampling};
 use std::sync::Arc;
 
 /// The sample form, and what the draws learned of memory and of the paths they took.
 pub struct SampleState {
     /// The Sample form over the table (`S`).
-    pub form: Option<crate::sample_modal::SampleForm>,
+    pub form: Option<crate::analysis::sample_modal::SampleForm>,
     /// Where available memory is read from for the sample's check: the system's,
     /// unless a test sets it.
-    pub(crate) memory_probe: crate::table_sample::MemoryProbe,
+    pub(crate) memory_probe: crate::analysis::table_sample::MemoryProbe,
     /// How each random sample of a stream was drawn on this dataset, by source: redrawn,
     /// the same seed keeps the same rows whether or not the count has come in.
-    pub(crate) paths: Vec<(String, crate::table_sample::DrawPath)>,
+    pub(crate) paths: Vec<(String, crate::analysis::table_sample::DrawPath)>,
 }
 
 /// What the status line says while a sample is drawn.
@@ -68,12 +68,12 @@ impl App {
     pub(crate) fn draw_table_sample(
         &mut self,
         sample: sampling::Sample,
-        path: Option<crate::table_sample::DrawPath>,
+        path: Option<crate::analysis::table_sample::DrawPath>,
         replay: Option<crate::view::ViewSettings>,
         anyway: bool,
         then_analyze: bool,
     ) {
-        use crate::data_quality::QualityScope;
+        use crate::analysis::data_quality::QualityScope;
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
@@ -121,13 +121,13 @@ impl App {
                     .map(|(_, path)| *path)
             })
             .unwrap_or(match known_total {
-                Some(of) => crate::table_sample::DrawPath::Bernoulli { of },
-                None => crate::table_sample::DrawPath::Reservoir,
+                Some(of) => crate::analysis::table_sample::DrawPath::Bernoulli { of },
+                None => crate::analysis::table_sample::DrawPath::Reservoir,
             })
         });
         let bytes_per_row = Some(source.sample_row_bytes(sample.scope.uses_source()));
         let streaming = self.app_config.performance.streaming;
-        let rows = Arc::new(crate::table_sample::SampleRows::default());
+        let rows = Arc::new(crate::analysis::table_sample::SampleRows::default());
         let (memory, watch) = if anyway {
             (MemoryCheck::off(), sampling::ReadWatch::default())
         } else {
@@ -158,16 +158,22 @@ impl App {
             let lf = cut.cut(&sample.scope).map_err(failed)?;
             let schema = lf.clone().collect_schema().map_err(|e| failed(e.into()))?;
             report(crate::Progress::SampleBegun(schema));
-            let live = crate::table_sample::Live {
+            let live = crate::analysis::table_sample::Live {
                 rows,
                 notify: Arc::new(move || report(crate::Progress::SampleGrew)),
                 memory,
                 watch,
                 bytes_per_row,
             };
-            let drawn =
-                crate::table_sample::draw(&lf, &sample, known_total, path, streaming, &live)
-                    .map_err(failed)?;
+            let drawn = crate::analysis::table_sample::draw(
+                &lf,
+                &sample,
+                known_total,
+                path,
+                streaming,
+                &live,
+            )
+            .map_err(failed)?;
             Ok(Answer::SampleDrawn(drawn))
         });
     }
@@ -176,9 +182,9 @@ impl App {
     /// the view as shown (in order, for a row range) with every column whole.
     fn table_sample_source(
         state: &DataTableState,
-        scope: &crate::data_quality::QualityScope,
+        scope: &crate::analysis::data_quality::QualityScope,
     ) -> (sampling::SampleSource, Option<usize>) {
-        use crate::data_quality::QualityScope;
+        use crate::analysis::data_quality::QualityScope;
         if scope.uses_source() {
             let (lf, source) = state.data_quality_source_scan();
             return (sampling::SampleSource::loaded(lf, source), None);
@@ -378,7 +384,7 @@ impl App {
         &mut self,
         job: Job,
         current: bool,
-        drawn: crate::table_sample::Drawn,
+        drawn: crate::analysis::table_sample::Drawn,
     ) -> Option<AppEvent> {
         let Job::SampleDraw(draw) = job else {
             return None;
@@ -417,7 +423,7 @@ impl App {
         if self.draw_fills_view(draw)
             && let Some(state) = self.data_table_state.as_mut()
         {
-            state.sample_drawn(crate::table_sample::Drawn {
+            state.sample_drawn(crate::analysis::table_sample::Drawn {
                 cut: true,
                 path: draw.path,
                 ..Default::default()

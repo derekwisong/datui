@@ -634,7 +634,7 @@ impl App {
                     .and_then(|f| id.focus_in(f))
             })?;
         // A form in the result pane takes the keys once the pane has them.
-        analysis.focus = crate::analysis_modal::AnalysisFocus::Main;
+        analysis.focus = crate::analysis::analysis_modal::AnalysisFocus::Main;
         Some(kind)
     }
 
@@ -642,7 +642,7 @@ impl App {
     /// the arrows would.
     pub fn point_at_tool(&mut self, tool: usize) {
         self.flash = None;
-        self.analysis_modal.focus = crate::analysis_modal::AnalysisFocus::Sidebar;
+        self.analysis_modal.focus = crate::analysis::analysis_modal::AnalysisFocus::Sidebar;
         self.analysis_modal.sidebar_state.select(Some(tool));
     }
 

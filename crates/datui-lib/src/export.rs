@@ -92,7 +92,7 @@ pub fn run(
     mut written: impl FnMut(u64) + Send + 'static,
 ) -> Result<()> {
     let lf = request.format.prepare(lf)?;
-    let polars_streaming = crate::statistics::may_stream(&lf, polars_streaming);
+    let polars_streaming = crate::analysis::statistics::may_stream(&lf, polars_streaming);
     // Before the plan runs, so a destination that cannot be written fails first.
     let mut out = OutputFile::create(&request.path, request.overwrite)?;
     match request.route(polars_streaming) {
@@ -103,7 +103,7 @@ pub fn run(
             sink(lf, request.format, &request.options, file.into_writable())?;
         }
         _ => {
-            let mut df = crate::statistics::collect_lazy(lf, polars_streaming)?;
+            let mut df = crate::analysis::statistics::collect_lazy(lf, polars_streaming)?;
             written(0);
             let file = Counted::new(out.file(), written);
             encode(&mut df, request.format, &request.options, file)?;

@@ -1,12 +1,12 @@
 use super::*;
-use crate::analysis_modal::{AnalysisFocus, DetailScroll, SetupRow};
-use crate::config::Theme;
-use crate::data_quality::fixtures::measure;
-use crate::data_quality::{
+use crate::analysis::analysis_modal::{AnalysisFocus, DetailScroll, SetupRow};
+use crate::analysis::data_quality::fixtures::measure;
+use crate::analysis::data_quality::{
     DataQualityPlan, DataQualityResults, QualityCompute, QualityMetric, QualityPage,
 };
-use crate::quality_export::ExportForm;
-use crate::quality_intent::{ColumnIntent, DeclaredIntent};
+use crate::analysis::quality_export::ExportForm;
+use crate::analysis::quality_intent::{ColumnIntent, DeclaredIntent};
+use crate::config::Theme;
 use crate::render::context::RenderContext;
 use crate::table::DataTableState;
 use crate::widgets::data_quality::{SetupView, render};
@@ -30,7 +30,7 @@ struct Screen {
     results: DataQualityResults,
     theme: Theme,
     ctx: RenderContext,
-    findings: crate::quality_report::FindingsView,
+    findings: crate::analysis::quality_report::FindingsView,
 }
 
 /// What a draw puts over the page: the intent form or the export dialog.
@@ -79,7 +79,7 @@ impl Screen {
             results,
             theme: Theme::from_config(&crate::config::ThemeConfig::default()).unwrap(),
             ctx: RenderContext::for_test(),
-            findings: crate::quality_report::FindingsView::default(),
+            findings: crate::analysis::quality_report::FindingsView::default(),
         }
     }
 

@@ -1,7 +1,7 @@
 //! The dialog that writes the Data Quality report on screen to a file: a path and
 //! a form, and a line saying what the form holds or why Enter did not write.
 
-use crate::quality_export::ExportForm;
+use crate::analysis::quality_export::ExportForm;
 use crate::render::layout::dialog_in;
 use crate::widgets::data_quality::DataQualityWidgetConfig;
 use crate::widgets::ui::{FormRow, FormValue, Surface};

@@ -226,11 +226,11 @@ fn over_the_limit_a_chart_reads_a_spread_sample_and_says_so() {
             total_rows: n as usize,
             sample_size: Some(1_000),
             envelope_steps: None,
-            seed: Some(crate::sampling::Sample::default().seed),
+            seed: Some(crate::analysis::sampling::Sample::default().seed),
         }
     );
     // The seed draws the same sample again; the terminal joins it as ASCII.
-    let seed = crate::sampling::Sample::default().seed;
+    let seed = crate::analysis::sampling::Sample::default().seed;
     assert_eq!(
         chart_notes(&result.rows, None, "·"),
         [format!("sample of 1,000 of 50k rows · seed {seed}")]
@@ -265,7 +265,7 @@ fn a_parquet_file_is_sampled_in_runs() {
         .unwrap();
     let lf = LazyFrame::scan_parquet(PlRefPath::try_from_path(&path).unwrap(), Default::default())
         .unwrap();
-    assert!(crate::sampling::slices_reach_into_the_scan(
+    assert!(crate::analysis::sampling::slices_reach_into_the_scan(
         &lf.clone().select([col("id"), col("fare")])
     ));
     let data = prepare_histogram_by(
@@ -284,7 +284,7 @@ fn a_parquet_file_is_sampled_in_runs() {
             total_rows: n as usize,
             sample_size: Some(2_000),
             envelope_steps: None,
-            seed: Some(crate::sampling::Sample::default().seed),
+            seed: Some(crate::analysis::sampling::Sample::default().seed),
         }
     );
     assert!(data.x_max > 90_000.0, "reaches the end: {}", data.x_max);

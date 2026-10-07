@@ -168,7 +168,8 @@ mod tests {
     fn filters_sorts_and_group_bys_run_on_the_streaming_engine() {
         let source = counting(100_000);
         let lf = lazy(&source);
-        let streaming = |lf: LazyFrame| crate::statistics::collect_lazy(lf, true).unwrap();
+        let streaming =
+            |lf: LazyFrame| crate::analysis::statistics::collect_lazy(lf, true).unwrap();
         let n = streaming(
             lf.clone()
                 .filter(col("a").gt(lit(500_000i64)))

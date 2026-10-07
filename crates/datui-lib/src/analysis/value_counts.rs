@@ -8,8 +8,8 @@
 //! is then the user's call. Where the sampler would stream every row anyway, the
 //! exact count is the same read and is what runs.
 
+use crate::analysis::sampling::ReadWatch;
 use crate::chart_data::{COUNT_COLUMN, Counted, Tally, count_frame};
-use crate::sampling::ReadWatch;
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use polars::prelude::*;
@@ -84,7 +84,7 @@ impl Plan {
             .cloned()
             .ok_or_else(|| eyre!("no column {}", self.column))?;
         if let Some((rows, seed)) = self.sample(&lf) {
-            let read = crate::sampling::sample_rows_counting(
+            let read = crate::analysis::sampling::sample_rows_counting(
                 &lf,
                 Some(rows),
                 self.known_total,
@@ -121,14 +121,15 @@ impl Plan {
             || self
                 .known_total
                 .is_none_or(|rows| rows > sample_rows.saturating_mul(LARGE_SAMPLES));
-        (large && crate::sampling::slices_reach_into_the_scan(lf)).then_some((sample_rows, seed))
+        (large && crate::analysis::sampling::slices_reach_into_the_scan(lf))
+            .then_some((sample_rows, seed))
     }
 }
 
 /// Count `column` of `lf` in one streamed pass, stopping between batches when
 /// `watch` says to.
 fn stream_counts(lf: &LazyFrame, column: &str, watch: &ReadWatch) -> Result<Counted> {
-    let tally = crate::sampling::stream_fold(
+    let tally = crate::analysis::sampling::stream_fold(
         lf.clone(),
         Some(watch),
         false,

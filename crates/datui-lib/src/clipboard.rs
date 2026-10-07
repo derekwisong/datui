@@ -457,7 +457,7 @@ pub fn bounded_table_text(
         .map_err(polars_error)?;
     // Streaming whatever the setting: the in-memory engine collects the whole result
     // before the first batch, which is what stopping at the cap is here to avoid.
-    crate::statistics::collect_lazy(sink, true).map_err(polars_error)?;
+    crate::analysis::statistics::collect_lazy(sink, true).map_err(polars_error)?;
     let mut text = std::mem::replace(
         &mut *state.lock().map_err(|_| "copy lock failed".to_string())?,
         BoundedText::new(format, header, limit),

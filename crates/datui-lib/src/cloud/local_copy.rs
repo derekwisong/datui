@@ -7,7 +7,7 @@
 //! is released, the dataset is opened again or replaced, or datui exits. A copy
 //! that did not finish is removed when the fetch stops.
 
-use crate::sampling::ReadWatch;
+use crate::analysis::sampling::ReadWatch;
 use color_eyre::Result;
 use color_eyre::eyre::eyre;
 use polars::lazy::dsl::{DslPlan, ScanSources};

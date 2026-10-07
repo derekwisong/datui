@@ -1,7 +1,7 @@
 //! Analysis modal view rendering (progress overlay, AnalysisWidget, or no-data message).
 //! Also provides help overlay title/text for analysis so the main render loop does not need analysis-specific layout.
 
-use crate::analysis_modal;
+use crate::analysis::analysis_modal;
 use crate::render::context::RenderContext;
 use crate::widgets::{analysis, data_quality};
 use ratatui::layout::Rect;
@@ -114,7 +114,7 @@ fn render_body(
             let rows = progress
                 .read
                 .as_ref()
-                .and_then(crate::sampling::ReadWatch::rows_seen)
+                .and_then(crate::analysis::sampling::ReadWatch::rows_seen)
                 .map(|rows| {
                     format!(
                         " {} {} rows so far",
@@ -152,7 +152,7 @@ fn render_body(
             Line::from(Span::styled(
                 if quality
                     && app.analysis_modal.quality.plan.compute
-                        == crate::data_quality::QualityCompute::Metadata
+                        == crate::analysis::data_quality::QualityCompute::Metadata
                 {
                     "   Reads file metadata only, no values".to_string()
                 } else if let Some(sampled) =

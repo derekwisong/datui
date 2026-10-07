@@ -12,7 +12,9 @@ use crate::chart_modal::{Aggregate, ChartModal, ChartSpec, ColorCounts, Mark};
 use crate::chart_plot::{LinesData, PlotContext, PlotData, plot};
 use crate::jobs::{Answer, ChartPrep, Job};
 use crate::output_file::Overwrite;
-use crate::{App, AppEvent, ExportProgress, Overlay, chart_export, numfmt, output_file, sampling};
+use crate::{
+    App, AppEvent, ExportProgress, Overlay, analysis::sampling, chart_export, numfmt, output_file,
+};
 use chart_export::{ChartExportFormat, ChartExportRequest, ExportOptions, Figure};
 
 /// The chart view, its export form, and the preparations it keeps or waits on.

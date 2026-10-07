@@ -1,7 +1,7 @@
 use super::*;
-use crate::analysis_modal::ExpectedForm;
-use crate::data_quality::ExpectedWindows;
-use crate::data_quality::fixtures::measure;
+use crate::analysis::analysis_modal::ExpectedForm;
+use crate::analysis::data_quality::ExpectedWindows;
+use crate::analysis::data_quality::fixtures::measure;
 use polars::prelude::{DataType, IntoLazy, LazyFrame, col, df};
 use ratatui::style::Color;
 use std::sync::Arc;
@@ -378,7 +378,7 @@ fn a_distinct_share_is_not_judged_between_bars() {
 fn one_window_found_still_sums_up_the_expected_ones() {
     let mut screen = Screen::sampled();
     screen.plan = DataQualityPlan {
-        compute: crate::data_quality::QualityCompute::Full,
+        compute: crate::analysis::data_quality::QualityCompute::Full,
         expected: Some(ExpectedWindows {
             weekdays: false,
             from: Some("2024-01-01".to_string()),
@@ -392,7 +392,7 @@ fn one_window_found_still_sums_up_the_expected_ones() {
             .eq(polars::prelude::lit(19_724)),
     );
     screen.results = measure(&one_day, None, &screen.plan);
-    assert!(!crate::data_quality::shows_trend(
+    assert!(!crate::analysis::data_quality::shows_trend(
         &screen.plan,
         &screen.results
     ));

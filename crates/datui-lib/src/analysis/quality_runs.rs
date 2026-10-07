@@ -1,17 +1,17 @@
 //! Data quality runs: the Setup plan, the run itself, the evidence rows it opens,
 //! and the samples, copies and cached results it keeps within its memory budget.
 
-use crate::analysis_modal::AnalysisProgress;
+use crate::analysis::analysis_modal::AnalysisProgress;
+use crate::analysis::quality_memory::{
+    KeptQualitySample, QUALITY_RELEASED_REMEMBERED, QualityCacheEntry, QualityCopyJob, RetainedCopy,
+};
 use crate::export_modal::ExportFormat;
 use crate::feedback::Confirm;
 use crate::jobs::{Answer, Job, Progress};
-use crate::quality_memory::{
-    KeptQualitySample, QUALITY_RELEASED_REMEMBERED, QualityCacheEntry, QualityCopyJob, RetainedCopy,
-};
 use crate::table::DataTableState;
 use crate::{
-    App, AppEvent, QUALITY_RUN_WAITS, analysis_modal, data_quality, glyphs, jobs, numfmt,
-    quality_report, sampling, widgets,
+    App, AppEvent, QUALITY_RUN_WAITS, analysis::analysis_modal, analysis::data_quality,
+    analysis::quality_report, analysis::sampling, glyphs, jobs, numfmt, widgets,
 };
 use color_eyre::Result;
 use polars::prelude::LazyFrame;
@@ -22,13 +22,13 @@ use std::sync::Arc;
 /// the evidence view's way back.
 #[derive(Default)]
 pub struct QualityRuns {
-    /// Reports, newest first, within [`QUALITY_MEMORY_BUDGET`](crate::quality_memory::QUALITY_MEMORY_BUDGET).
+    /// Reports, newest first, within [`QUALITY_MEMORY_BUDGET`](crate::analysis::quality_memory::QUALITY_MEMORY_BUDGET).
     pub(crate) cache: Vec<QualityCacheEntry>,
-    /// See [`KeptQualitySample`]. Newest first, within [`QUALITY_MEMORY_BUDGET`](crate::quality_memory::QUALITY_MEMORY_BUDGET).
+    /// See [`KeptQualitySample`]. Newest first, within [`QUALITY_MEMORY_BUDGET`](crate::analysis::quality_memory::QUALITY_MEMORY_BUDGET).
     pub(crate) samples: Vec<KeptQualitySample>,
     /// Acquisitions the budget released, newest first: (dataset, view, sample).
     pub(crate) released: Vec<(u64, u64, sampling::Sample)>,
-    /// [`QUALITY_MEMORY_BUDGET`](crate::quality_memory::QUALITY_MEMORY_BUDGET), smaller in a test that fills it.
+    /// [`QUALITY_MEMORY_BUDGET`](crate::analysis::quality_memory::QUALITY_MEMORY_BUDGET), smaller in a test that fills it.
     pub(crate) memory_budget: usize,
     /// Local copies full scans read instead of a remote source, newest first, within
     /// `analysis.quality_local_copy`. Removed from disk when released, when the dataset
@@ -446,7 +446,7 @@ impl App {
         &self,
         state: &DataTableState,
         scope: &data_quality::QualityScope,
-    ) -> crate::quality_export::SourceIdentity {
+    ) -> crate::analysis::quality_export::SourceIdentity {
         let format = self
             .source
             .original_file_format
@@ -496,12 +496,12 @@ impl App {
                 None => path.display().to_string(),
             }
         });
-        crate::quality_export::SourceIdentity {
+        crate::analysis::quality_export::SourceIdentity {
             location,
             remote,
             format,
             view,
-            ..crate::quality_export::SourceIdentity::default()
+            ..crate::analysis::quality_export::SourceIdentity::default()
         }
         .with_files(state.quality_source_file_names())
     }
@@ -760,7 +760,7 @@ impl App {
     }
 
     /// Hold reports and retained rows to the memory budget
-    /// ([`QUALITY_MEMORY_BUDGET`](crate::quality_memory::QUALITY_MEMORY_BUDGET)). First to go: reports
+    /// ([`QUALITY_MEMORY_BUDGET`](crate::analysis::quality_memory::QUALITY_MEMORY_BUDGET)). First to go: reports
     /// whose rows are retained (remade without reading); then the oldest rows (reread
     /// next run, as Setup says); last, row-less full-scan reports (dearest to remake).
     /// The newest report and rows always stay.
@@ -903,7 +903,7 @@ impl App {
                 watch.stage(data_quality::QualityStage::CopyingSource, true, true)?;
                 let copy = fetch(&objects, &root).map_err(|error| {
                     if watch.cancelled() {
-                        color_eyre::eyre::eyre!(crate::sampling::CANCELLED)
+                        color_eyre::eyre::eyre!(crate::analysis::sampling::CANCELLED)
                     } else {
                         error
                     }
@@ -940,7 +940,7 @@ impl App {
         root: &Path,
         cloud: &crate::config::CloudConfig,
         runtime: &tokio::runtime::Handle,
-        stop: &crate::sampling::ReadWatch,
+        stop: &crate::analysis::sampling::ReadWatch,
     ) -> Result<crate::cloud::local_copy::LocalCopy> {
         use crate::cloud::download::StreamError;
         use object_store::ObjectStoreExt;
@@ -973,7 +973,9 @@ impl App {
                     StreamError::Short { expected, got } => color_eyre::eyre::eyre!(
                         "Could not copy {url}: it ended after {got} of {expected} bytes"
                     ),
-                    StreamError::Cut => color_eyre::eyre::eyre!(crate::sampling::CANCELLED),
+                    StreamError::Cut => {
+                        color_eyre::eyre::eyre!(crate::analysis::sampling::CANCELLED)
+                    }
                 })
         })
     }
@@ -1508,7 +1510,7 @@ impl App {
                 let (lf, held) =
                     Self::quality_scope_on_copy(lf, copy_job, &watch, fetch, kept_copy)
                         .map_err(|error| format!("{error}"))?;
-                let (results, rows) = crate::data_quality::compute_data_quality_watched(
+                let (results, rows) = crate::analysis::data_quality::compute_data_quality_watched(
                     &lf,
                     cached_rows,
                     &plan,
@@ -1519,8 +1521,12 @@ impl App {
                 );
                 let results = match (results, audio) {
                     (Ok(mut results), Some(audio)) => {
-                        crate::data_quality::add_signal_observations(&mut results, &audio, &watch)
-                            .map(|()| results)
+                        crate::analysis::data_quality::add_signal_observations(
+                            &mut results,
+                            &audio,
+                            &watch,
+                        )
+                        .map(|()| results)
                     }
                     (results, _) => results,
                 };

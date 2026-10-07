@@ -361,9 +361,9 @@ impl DataTableState {
     /// columns may read less; binary columns are never read.
     pub(crate) fn quality_reads_whole_source(
         &self,
-        scope: &crate::data_quality::QualityScope,
+        scope: &crate::analysis::data_quality::QualityScope,
     ) -> bool {
-        use crate::data_quality::QualityScope;
+        use crate::analysis::data_quality::QualityScope;
         let columns = || {
             self.original_schema
                 .iter()
@@ -787,9 +787,9 @@ impl DataTableState {
     /// signal's: the data as loaded, or an unmodified view.
     pub(crate) fn window_for_quality(
         &self,
-        scope: &crate::data_quality::QualityScope,
+        scope: &crate::analysis::data_quality::QualityScope,
     ) -> Option<Arc<dyn crate::formats::pushdown::Windowed>> {
-        use crate::data_quality::QualityScope;
+        use crate::analysis::data_quality::QualityScope;
         matches!(scope, QualityScope::WholeSource | QualityScope::CurrentView)
             .then(|| {
                 self.fixed_window
@@ -893,7 +893,7 @@ impl DataTableState {
             crate::follow::from_marks(&self.view.lf, follow.path(), follow.marks(), row, None)?;
         let streaming = self.polars_streaming;
         Some(Arc::new(move || {
-            let df = crate::statistics::collect_lazy(row_count_lf(&rest), streaming)?;
+            let df = crate::analysis::statistics::collect_lazy(row_count_lf(&rest), streaming)?;
             let after = match df.get(0).and_then(|row| row.first().cloned()) {
                 Some(AnyValue::UInt64(n)) => n as usize,
                 _ => 0,

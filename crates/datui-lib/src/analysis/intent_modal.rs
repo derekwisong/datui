@@ -2,8 +2,8 @@
 //! part of the key, required, read as a number, an allowed set, a range. It stages
 //! into Setup's draft, which only Run reads with.
 
-use crate::data_quality::TimeInterpretation;
-use crate::quality_intent::{
+use crate::analysis::data_quality::TimeInterpretation;
+use crate::analysis::quality_intent::{
     ColumnIntent, DeclaredIntent, NumberReading, ValueKind, allows_set, check_intent,
     format_allowed, parse_allowed, reads_as_number,
 };

@@ -1455,7 +1455,7 @@ impl ChartModal {
         let Some(typed) = draft.typed.take() else {
             return true;
         };
-        match crate::sampling::parse_size(&typed) {
+        match crate::analysis::sampling::parse_size(&typed) {
             Ok(rows) => {
                 let rows = rows.min(CHART_ROW_LIMIT_MAX);
                 // A sample of at least every row is every row.

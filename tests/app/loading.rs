@@ -235,7 +235,7 @@ fn test_startup_buffer_race_does_not_lose_rows() {
 /// both.
 #[test]
 fn evidence_rows_over_a_decompressed_file_hold_it() {
-    use datui::data_quality::{QualityCompute, QualityPrecision};
+    use datui::analysis::data_quality::{QualityCompute, QualityPrecision};
     use flate2::{Compression, write::GzEncoder};
     use std::io::Write;
 
@@ -272,7 +272,7 @@ fn evidence_rows_over_a_decompressed_file_hold_it() {
     press(&mut app, KeyCode::Char('a'));
     app.analysis_modal.sidebar_state.select(Some(3));
     show_sample_form(&mut app);
-    app.analysis_modal.quality.plan.method = datui::sampling::SampleMethod::EveryRow;
+    app.analysis_modal.quality.plan.method = datui::analysis::sampling::SampleMethod::EveryRow;
     app.analysis_modal.quality.plan.compute = QualityCompute::Full;
     assert!(press(&mut app, KeyCode::Enter).is_none());
     let next = press(&mut app, KeyCode::Enter);
@@ -318,8 +318,8 @@ fn evidence_rows_over_a_decompressed_file_hold_it() {
 /// the format does not read on its own.
 #[test]
 fn text_read_as_time_in_setup_gives_windows_and_intervals() {
-    use datui::analysis_modal::SetupRow;
-    use datui::data_quality::{ObservationKind, QualityPage};
+    use datui::analysis::analysis_modal::SetupRow;
+    use datui::analysis::data_quality::{ObservationKind, QualityPage};
 
     let (mut app, rx, _tx, _path) = open_text_times_fixture("dq_setup_text_times.parquet");
     press(&mut app, KeyCode::Char('a'));
@@ -342,7 +342,7 @@ fn text_read_as_time_in_setup_gives_windows_and_intervals() {
     press(&mut app, KeyCode::Right);
     while candidates(&app)
         .iter()
-        .find(|role| role.role == datui::data_quality::TemporalRole::Received)
+        .find(|role| role.role == datui::analysis::data_quality::TemporalRole::Received)
         .unwrap()
         .column
         != "sent"
@@ -442,8 +442,10 @@ fn text_read_as_time_in_setup_gives_windows_and_intervals() {
 /// run kept, even once the file is gone.
 #[test]
 fn intervals_are_chosen_in_setup_and_inspected_without_a_read() {
-    use datui::analysis_modal::SetupRow;
-    use datui::data_quality::{IntervalClock, IntervalFact, QualityPage, QualityPrecision};
+    use datui::analysis::analysis_modal::SetupRow;
+    use datui::analysis::data_quality::{
+        IntervalClock, IntervalFact, QualityPage, QualityPrecision,
+    };
 
     let name = "dq_intervals_detail.parquet";
     let (mut app, rx, tx, path) = open_text_times_fixture(name);
@@ -480,11 +482,11 @@ fn intervals_are_chosen_in_setup_and_inspected_without_a_read() {
     press(&mut app, KeyCode::Enter);
     let plan = &app.analysis_modal.quality.plan;
     assert_eq!(
-        plan.role_column(datui::data_quality::TemporalRole::Created),
+        plan.role_column(datui::analysis::data_quality::TemporalRole::Created),
         Some("created")
     );
     assert_eq!(
-        plan.role_column(datui::data_quality::TemporalRole::Processed),
+        plan.role_column(datui::analysis::data_quality::TemporalRole::Processed),
         Some("sent")
     );
     let screen = render(&mut app, 100, 30);
@@ -638,8 +640,8 @@ fn intervals_are_chosen_in_setup_and_inspected_without_a_read() {
 /// Setup states which windows rows are expected in, and stating them reads nothing.
 #[test]
 fn trends_and_gaps_are_inspected_without_a_read() {
-    use datui::analysis_modal::SetupRow;
-    use datui::data_quality::{QualityGrain, QualityPage, QualityStage};
+    use datui::analysis::analysis_modal::SetupRow;
+    use datui::analysis::data_quality::{QualityGrain, QualityPage, QualityStage};
 
     let (mut app, rx, _tx) = open_weekday_feed("dq_trends_gaps.csv");
     press(&mut app, KeyCode::Char('a'));
@@ -689,9 +691,9 @@ fn trends_and_gaps_are_inspected_without_a_read() {
     assert_eq!(app.analysis_modal.quality.page, QualityPage::Trends);
 
     // A bar opens to its facts, and the bars walk, from what the report holds.
-    let amount = datui::quality_trends::trend_view(
+    let amount = datui::analysis::quality_trends::trend_view(
         &results,
-        datui::data_quality::QualityMetric::NullRate,
+        datui::analysis::data_quality::QualityMetric::NullRate,
         1,
     )
     .lines
@@ -834,7 +836,8 @@ fn a_file_changed_on_disk_is_read_again_once_opened_again() {
 #[test]
 fn metadata_only_reads_no_values() {
     let (mut app, rx, _tx, path) = open_quality_fixture("dq_metadata_only.parquet", 1_000, 7);
-    app.analysis_modal.quality.plan.compute = datui::data_quality::QualityCompute::Metadata;
+    app.analysis_modal.quality.plan.compute =
+        datui::analysis::data_quality::QualityCompute::Metadata;
     std::fs::remove_file(&path).unwrap();
     let area = Rect::new(0, 0, 100, 30);
     let mut buffer = Buffer::empty(area);
@@ -845,7 +848,7 @@ fn metadata_only_reads_no_values() {
     let results = app.analysis_modal.quality.results.as_ref().unwrap();
     assert_eq!(
         results.precision,
-        datui::data_quality::QualityPrecision::Metadata
+        datui::analysis::data_quality::QualityPrecision::Metadata
     );
     assert_eq!(results.evaluated_rows, 0);
     assert_eq!(results.columns.len(), 3);
@@ -6017,7 +6020,7 @@ fn out_of_range_dates_draw_on_every_screen() {
     // Data Quality split by a datetime: by partition each value is its own
     // segment, named as the table names it; in time windows one past the
     // calendar falls in none, as a null does, where truncating it overflowed.
-    use datui::data_quality::{QualityGrain, QualityPage};
+    use datui::analysis::data_quality::{QualityGrain, QualityPage};
     for (grain, segment, segments) in [
         (
             QualityGrain::Partition("t_ms".into()),

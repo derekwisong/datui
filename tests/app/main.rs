@@ -4,7 +4,7 @@
 //! `scripts/dev/test.sh integration app loading::` or `app formats_follow::`.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use datui::analysis_modal::AnalysisTool;
+use datui::analysis::analysis_modal::AnalysisTool;
 use datui::event_pump::EventPump;
 use datui::{App, AppEvent, InputMode, JobKind, OpenOptions, Overlay, QueryMode};
 use polars::prelude::*;
@@ -420,7 +420,7 @@ fn drain_quality(
 fn run_quality_reads(
     app: &mut App,
     rx: &mpsc::Receiver<AppEvent>,
-) -> Vec<datui::data_quality::QualityStage> {
+) -> Vec<datui::analysis::data_quality::QualityStage> {
     let first = press(app, KeyCode::Enter);
     assert!(
         matches!(
@@ -531,7 +531,7 @@ fn write_quality_fixture(path: &Path, rows: usize, gap: usize) {
 /// `a`, Data Quality, Enter: its Setup, which reads nothing.
 fn open_quality_setup(app: &mut App) {
     press(app, KeyCode::Char('a'));
-    app.analysis_modal.focus = datui::analysis_modal::AnalysisFocus::Sidebar;
+    app.analysis_modal.focus = datui::analysis::analysis_modal::AnalysisFocus::Sidebar;
     app.analysis_modal.sidebar_state.select(Some(3));
     assert!(press(app, KeyCode::Enter).is_none());
     assert!(!app.is_busy());
@@ -2245,7 +2245,7 @@ fn counts_key(
 
 /// Each listed line as `(label, rows)`.
 fn counted_lines(app: &App) -> Vec<(String, u64)> {
-    use datui::value_counts::LineKind;
+    use datui::analysis::value_counts::LineKind;
     let modal = &app.value_counts;
     let counts = modal.current().expect("counts on screen");
     counts

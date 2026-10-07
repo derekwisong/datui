@@ -1,6 +1,6 @@
 use super::*;
-use crate::data_quality::fixtures::measure;
-use crate::data_quality::{TemporalRoleAssignment, TimeInterpretation, TimeKind};
+use crate::analysis::data_quality::fixtures::measure;
+use crate::analysis::data_quality::{TemporalRoleAssignment, TimeInterpretation, TimeKind};
 use polars::prelude::*;
 
 const HOUR: i64 = 3_600_000_000;

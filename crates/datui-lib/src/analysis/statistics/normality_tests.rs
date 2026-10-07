@@ -35,7 +35,7 @@ fn the_normality_p_value_is_a_p_value() {
     assert!(shapiro_francia_pvalue(0.9995, 2_590).unwrap() > 0.05);
     assert_eq!(shapiro_francia_pvalue(0.99, 4), None);
     let normal: Vec<f64> = (1..=500)
-        .map(|i| crate::distribution_fit::normal_quantile(i as f64 / 501.0))
+        .map(|i| crate::analysis::distribution_fit::normal_quantile(i as f64 / 501.0))
         .collect();
     let (_, p) = approximate_shapiro_wilk(&normal);
     assert!(p.unwrap() > 0.5, "{p:?}");
@@ -45,7 +45,7 @@ fn the_normality_p_value_is_a_p_value() {
 /// time in twenty, and skewed ones nearly always.
 #[test]
 fn the_normality_p_value_is_calibrated() {
-    let mut rng = crate::distribution_fit::Rng::new(2_026);
+    let mut rng = crate::analysis::distribution_fit::Rng::new(2_026);
     let mut sample = |skewed: bool| -> Vec<f64> {
         (0..100)
             .map(|_| {

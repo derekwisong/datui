@@ -14,8 +14,8 @@ use crate::table::{DataTableState, OpenFacts};
 #[cfg(feature = "cloud")]
 use crate::wait_on_runtime;
 use crate::{
-    App, AppEvent, UNSUPPORTED, cli, cloud::source, formats::dataset_files, home, home::catalog,
-    home::discover, loading, quality_report,
+    App, AppEvent, UNSUPPORTED, analysis::quality_report, cli, cloud::source,
+    formats::dataset_files, home, home::catalog, home::discover, loading,
 };
 use color_eyre::Result;
 #[cfg(feature = "cloud")]

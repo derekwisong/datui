@@ -5,8 +5,8 @@
 //! time range) carries its context on the lines under it. The keys are on the
 //! footer, like everywhere else.
 
+use crate::analysis::sample_modal::{SampleField, SampleForm};
 use crate::render::context::RenderContext;
-use crate::sample_modal::{SampleField, SampleForm};
 use crate::widgets::ui::{FormRow, FormValue, Surface};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -110,7 +110,7 @@ pub fn render(form: &SampleForm, focused: bool, area: Rect, buf: &mut Buffer, ct
             SampleField::Size => {
                 let per = if matches!(
                     form.draft.method,
-                    crate::sampling::SampleMethod::PerPartition { .. }
+                    crate::analysis::sampling::SampleMethod::PerPartition { .. }
                 ) {
                     "Rows per value"
                 } else {

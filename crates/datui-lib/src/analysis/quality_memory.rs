@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::{data_quality, sampling};
+use crate::{analysis::data_quality, analysis::sampling};
 
 /// A Data Quality report, by everything its plan says: the acquisition it measured
 /// and the report's own choices.
@@ -32,7 +32,7 @@ pub struct KeptQualitySample {
     /// The source as the run that read these rows found it, stated when it began: a
     /// report measured on them later is labeled with this, not with the file as it
     /// stands then.
-    pub(crate) source: crate::quality_export::SourceIdentity,
+    pub(crate) source: crate::analysis::quality_export::SourceIdentity,
 }
 
 impl KeptQualitySample {

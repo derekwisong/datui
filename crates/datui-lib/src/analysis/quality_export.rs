@@ -7,11 +7,11 @@
 //! `docs/reference/data-quality.md`; a change that breaks a reader bumps
 //! [`REPORT_VERSION`].
 
-use crate::data_quality::{
+use crate::analysis::data_quality::{
     ColumnQualityProfile, DataQualityPlan, DataQualityResults, QualityPrecision, interval_label,
 };
-use crate::quality_report::{Outcome, Severity, coverage, describe, verdict};
-use crate::sampling::SampleMethod;
+use crate::analysis::quality_report::{Outcome, Severity, coverage, describe, verdict};
+use crate::analysis::sampling::SampleMethod;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -223,8 +223,8 @@ fn utc(time: chrono::NaiveDateTime) -> String {
 }
 
 /// A gap run's kind as the JSON names it.
-fn gap_kind(kind: crate::quality_trends::GapKind) -> &'static str {
-    use crate::quality_trends::GapKind;
+fn gap_kind(kind: crate::analysis::quality_trends::GapKind) -> &'static str {
+    use crate::analysis::quality_trends::GapKind;
     match kind {
         GapKind::Empty => "empty",
         GapKind::Unsampled => "not_sampled",
@@ -233,9 +233,10 @@ fn gap_kind(kind: crate::quality_trends::GapKind) -> &'static str {
 }
 
 fn gaps_json(plan: &DataQualityPlan, results: &DataQualityResults) -> Option<GapsJson> {
-    use crate::quality_trends::Gaps;
-    let gaps = crate::quality_trends::expected_gaps(plan, results)?;
-    let crate::data_quality::QualityGrain::TimeWindows { column, every } = &plan.grain else {
+    use crate::analysis::quality_trends::Gaps;
+    let gaps = crate::analysis::quality_trends::expected_gaps(plan, results)?;
+    let crate::analysis::data_quality::QualityGrain::TimeWindows { column, every } = &plan.grain
+    else {
         return None;
     };
     let mut json = GapsJson {
@@ -284,7 +285,9 @@ fn gaps_json(plan: &DataQualityPlan, results: &DataQualityResults) -> Option<Gap
                     kind: gap_kind(run.kind).to_string(),
                     first: utc(run.first),
                     last: utc(run.last),
-                    span: crate::quality_trends::calendar_span(run.first, run.last, every),
+                    span: crate::analysis::quality_trends::calendar_span(
+                        run.first, run.last, every,
+                    ),
                     windows: run.windows,
                     rows: run.rows,
                 })
@@ -986,10 +989,11 @@ pub fn to_markdown(
         line(String::new());
     }
 
-    if let Some(gaps) = crate::quality_trends::expected_gaps(plan, results)
-        && let crate::data_quality::QualityGrain::TimeWindows { column, every } = &plan.grain
+    if let Some(gaps) = crate::analysis::quality_trends::expected_gaps(plan, results)
+        && let crate::analysis::data_quality::QualityGrain::TimeWindows { column, every } =
+            &plan.grain
     {
-        use crate::quality_trends::Gaps;
+        use crate::analysis::quality_trends::Gaps;
         line("## Gaps".to_string());
         line(String::new());
         let cadence = plan
@@ -1031,7 +1035,7 @@ pub fn to_markdown(
                     for run in &check.runs {
                         line(format!(
                             "| {} | {} | {} | {} |",
-                            cell(&crate::quality_trends::calendar_span(
+                            cell(&crate::analysis::quality_trends::calendar_span(
                                 run.first, run.last, every
                             )),
                             gap_kind(run.kind).replace('_', " "),
@@ -1128,13 +1132,15 @@ pub fn to_markdown(
         (
             "Expected",
             setup.expected.as_ref().map_or_else(none, |expected| {
-                let windows = crate::data_quality::ExpectedWindows {
+                let windows = crate::analysis::data_quality::ExpectedWindows {
                     weekdays: expected.weekdays,
                     from: expected.from.clone(),
                     before: expected.before.clone(),
                 };
                 let every = match &plan.grain {
-                    crate::data_quality::QualityGrain::TimeWindows { every, .. } => every.as_str(),
+                    crate::analysis::data_quality::QualityGrain::TimeWindows { every, .. } => {
+                        every.as_str()
+                    }
                     _ => "",
                 };
                 format!(
@@ -1164,7 +1170,7 @@ pub fn to_markdown(
         if !intent.allowed.is_empty() {
             rules.push(format!(
                 "one of {}",
-                crate::quality_intent::format_allowed(&intent.allowed)
+                crate::analysis::quality_intent::format_allowed(&intent.allowed)
             ));
         }
         match (&intent.min, &intent.max) {
@@ -1291,9 +1297,9 @@ impl ExportForm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_quality::QualityCompute;
-    use crate::data_quality::fixtures::measure;
-    use crate::quality_intent::{ColumnIntent, DeclaredIntent};
+    use crate::analysis::data_quality::QualityCompute;
+    use crate::analysis::data_quality::fixtures::measure;
+    use crate::analysis::quality_intent::{ColumnIntent, DeclaredIntent};
     use polars::prelude::*;
 
     fn measured() -> (DataQualityResults, DataQualityPlan) {
@@ -1388,7 +1394,7 @@ mod tests {
         }
         // Every row takes no size or seed, so the setup names none.
         let every_row = DataQualityPlan {
-            method: crate::sampling::SampleMethod::EveryRow,
+            method: crate::analysis::sampling::SampleMethod::EveryRow,
             ..plan
         };
         let text = render(
@@ -1419,11 +1425,11 @@ mod tests {
             .with_column(col("day").cast(DataType::Date));
         let plan = DataQualityPlan {
             compute: QualityCompute::Full,
-            grain: crate::data_quality::QualityGrain::TimeWindows {
+            grain: crate::analysis::data_quality::QualityGrain::TimeWindows {
                 column: "day".to_string(),
                 every: "1d".to_string(),
             },
-            expected: Some(crate::data_quality::ExpectedWindows {
+            expected: Some(crate::analysis::data_quality::ExpectedWindows {
                 weekdays: false,
                 from: Some("2024-01-01".to_string()),
                 before: Some("2024-01-12".to_string()),

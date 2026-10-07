@@ -13,7 +13,7 @@
 mod common;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use datui::data_quality::{QualityCompute, QualityGrain};
+use datui::analysis::data_quality::{QualityCompute, QualityGrain};
 use datui::{App, AppEvent, OpenOptions};
 use polars::prelude::*;
 use std::path::{Path, PathBuf};
@@ -127,7 +127,7 @@ fn a_full_scan_leaves_no_temporary_files() {
     press(&mut app, KeyCode::Enter);
     let full = |app: &mut App, grain: QualityGrain| {
         let plan = &mut app.analysis_modal.quality.plan;
-        plan.method = datui::sampling::SampleMethod::EveryRow;
+        plan.method = datui::analysis::sampling::SampleMethod::EveryRow;
         plan.compute = QualityCompute::Full;
         plan.grain = grain;
         assert!(press(app, KeyCode::Enter).is_none(), "a full scan asks");

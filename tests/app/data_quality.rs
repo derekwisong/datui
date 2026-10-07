@@ -4,8 +4,8 @@ use super::*;
 
 #[test]
 fn test_data_quality_plan_runs_in_background_and_opens_overview() {
-    use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
-    use datui::data_quality::QualityPage;
+    use datui::analysis::analysis_modal::{AnalysisFocus, AnalysisTool};
+    use datui::analysis::data_quality::QualityPage;
 
     common::ensure_sample_data();
     let (tx, rx) = mpsc::channel();
@@ -76,8 +76,8 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         .as_mut()
         .unwrap()
         .observations
-        .push(datui::data_quality::QualityObservation {
-            kind: datui::data_quality::ObservationKind::Nulls,
+        .push(datui::analysis::data_quality::QualityObservation {
+            kind: datui::analysis::data_quality::ObservationKind::Nulls,
             column: "example".to_string(),
             affected_rows: 1,
             evaluated_rows: 10,
@@ -155,8 +155,8 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     // profile: #196 asks for it and nothing read it before.
     // Result pages read the plan the result was measured with.
     let measured = app.analysis_modal.quality.last_plan.as_mut().unwrap();
-    measured.grain = datui::data_quality::QualityGrain::RowChunks(5);
-    measured.comparison = datui::data_quality::QualityComparison::Previous;
+    measured.grain = datui::analysis::data_quality::QualityGrain::RowChunks(5);
+    measured.comparison = datui::analysis::data_quality::QualityComparison::Previous;
     app.analysis_modal.set_quality_page(QualityPage::Segments);
     let wide = Rect::new(0, 0, 160, 40);
     let mut buffer = Buffer::empty(wide);
@@ -251,7 +251,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     )));
     assert_eq!(
         app.analysis_modal.quality.plan.comparison,
-        datui::data_quality::QualityComparison::Baseline
+        datui::analysis::data_quality::QualityComparison::Baseline
     );
     assert!(app.analysis_modal.quality.plan.baseline_segment.is_some());
     assert!(!app.is_busy());
@@ -268,7 +268,7 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     )));
     assert_eq!(
         app.analysis_modal.quality.metric,
-        datui::data_quality::QualityMetric::EmptyRate
+        datui::analysis::data_quality::QualityMetric::EmptyRate
     );
 
     // Enter on a highlighted column must open that column, not the first one.
@@ -330,14 +330,14 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
         let results = app.analysis_modal.quality.results.as_mut().unwrap();
         // Changed in place, the report is built again.
         results.edit(|results| {
-            results.observations = vec![datui::data_quality::QualityObservation {
-                kind: datui::data_quality::ObservationKind::TypeConflict,
+            results.observations = vec![datui::analysis::data_quality::QualityObservation {
+                kind: datui::analysis::data_quality::ObservationKind::TypeConflict,
                 column: "fee".to_string(),
                 affected_rows: 2,
                 evaluated_rows: 7,
                 fact: "1 of 3 files holds a type the scan cannot read".to_string(),
                 normalized_category: None,
-                files: vec![datui::data_quality::QualityFileEvidence {
+                files: vec![datui::analysis::data_quality::QualityFileEvidence {
                     number: 2,
                     name: "b.parquet".to_string(),
                     rows: 2,
@@ -381,9 +381,9 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
     let original_view = app.data_table_state.as_ref().unwrap().len_generation();
     let results = app.analysis_modal.quality.results.as_mut().unwrap();
     results.edit(|results| {
-        results.precision = datui::data_quality::QualityPrecision::Exact;
-        results.observations = vec![datui::data_quality::QualityObservation {
-            kind: datui::data_quality::ObservationKind::Nulls,
+        results.precision = datui::analysis::data_quality::QualityPrecision::Exact;
+        results.observations = vec![datui::analysis::data_quality::QualityObservation {
+            kind: datui::analysis::data_quality::ObservationKind::Nulls,
             column,
             affected_rows: 0,
             evaluated_rows: results.evaluated_rows,
@@ -456,8 +456,8 @@ fn test_data_quality_plan_runs_in_background_and_opens_overview() {
 /// command instead of opening help. Ctrl-C quits from it, as from anywhere (#649).
 #[test]
 fn test_data_quality_scope_input_owns_question_mark() {
-    use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
-    use datui::data_quality::QualityPage;
+    use datui::analysis::analysis_modal::{AnalysisFocus, AnalysisTool};
+    use datui::analysis::data_quality::QualityPage;
 
     common::ensure_sample_data();
     let (tx, rx) = mpsc::channel();
@@ -508,7 +508,7 @@ fn test_data_quality_scope_input_owns_question_mark() {
     }
     assert_eq!(
         app.analysis_modal.sample_form.as_ref().unwrap().field,
-        datui::sample_modal::SampleField::RangeFrom
+        datui::analysis::sample_modal::SampleField::RangeFrom
     );
     assert!(app.text_field_focused());
 
@@ -548,8 +548,8 @@ fn test_data_quality_scope_input_owns_question_mark() {
 /// sidebar and result here exactly as in the other tools.
 #[test]
 fn data_quality_on_a_local_file_leads_with_the_result() {
-    use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
-    use datui::data_quality::QualityPage;
+    use datui::analysis::analysis_modal::{AnalysisFocus, AnalysisTool};
+    use datui::analysis::data_quality::QualityPage;
 
     let (mut app, rx, _tx) = open_query_filter_fixture("dq_local_lead.csv");
 
@@ -623,7 +623,7 @@ fn data_quality_on_a_local_file_leads_with_the_result() {
 /// finding still opens exactly its rows.
 #[test]
 fn data_quality_reads_as_a_report() {
-    use datui::data_quality::QualityPage;
+    use datui::analysis::data_quality::QualityPage;
 
     let dir = common::fixture_dir();
     let path = dir.join("dq_report.parquet");
@@ -693,7 +693,7 @@ fn data_quality_reads_as_a_report() {
     // The run started from the form, so the cursor is already on the report.
     assert_eq!(
         app.analysis_modal.focus,
-        datui::analysis_modal::AnalysisFocus::Main
+        datui::analysis::analysis_modal::AnalysisFocus::Main
     );
 
     let area = Rect::new(0, 0, 110, 30);
@@ -776,7 +776,7 @@ fn data_quality_reads_as_a_report() {
     assert_eq!(app.analysis_modal.quality.page, QualityPage::Setup);
     assert_eq!(
         app.analysis_modal.setup_row(),
-        datui::analysis_modal::SetupRow::Grain
+        datui::analysis::analysis_modal::SetupRow::Grain
     );
     assert!(app.analysis_modal.quality.picker.is_some());
     let bar_now = |app: &mut App| {
@@ -806,7 +806,7 @@ fn data_quality_reads_as_a_report() {
     assert!(app.analysis_modal.quality.picker.is_none());
     assert_ne!(
         app.analysis_modal.quality.plan.grain,
-        datui::data_quality::QualityGrain::Dataset
+        datui::analysis::data_quality::QualityGrain::Dataset
     );
     assert!(app.analysis_modal.quality_plan_pending());
     assert!(!app.is_busy() && app.analysis_modal.computing.is_none());
@@ -836,7 +836,7 @@ fn data_quality_reads_as_a_report() {
     }
     assert_eq!(
         app.analysis_modal.setup_row(),
-        datui::analysis_modal::SetupRow::TimeRoles
+        datui::analysis::analysis_modal::SetupRow::TimeRoles
     );
     let mut buffer = Buffer::empty(area);
     app.render(area, &mut buffer);
@@ -944,7 +944,7 @@ fn data_quality_reads_as_a_report() {
 /// counts what is below, and lists the values with the most rows first.
 #[test]
 fn a_long_finding_scrolls() {
-    use datui::data_quality::QualityPage;
+    use datui::analysis::data_quality::QualityPage;
 
     let dir = common::fixture_dir();
     let path = dir.join("dq_long_finding.parquet");
@@ -1014,7 +1014,7 @@ fn a_long_finding_scrolls() {
 /// from its seed: the count the popup promises is the count in the table.
 #[test]
 fn a_sampled_finding_opens_its_sampled_rows() {
-    use datui::data_quality::{QualityPage, QualityPrecision};
+    use datui::analysis::data_quality::{QualityPage, QualityPrecision};
 
     let dir = common::fixture_dir();
     let path = dir.join("dq_sampled_evidence.parquet");
@@ -1054,7 +1054,7 @@ fn a_sampled_finding_opens_its_sampled_rows() {
     assert_eq!(app.analysis_modal.quality.page, QualityPage::Overview);
     let results = app.analysis_modal.quality.results.as_ref().unwrap();
     assert_eq!(results.precision, QualityPrecision::Sampled);
-    let report = datui::quality_report::build_report(results);
+    let report = datui::analysis::quality_report::build_report(results);
     let index = report
         .findings
         .iter()
@@ -1108,8 +1108,8 @@ fn a_sampled_finding_opens_its_sampled_rows() {
 /// the rows it kept, even once the file is gone; a finding with no rows says why.
 #[test]
 fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
-    use datui::data_quality::{QualityPage, QualityPrecision};
-    use datui::quality_report::FindingOrder;
+    use datui::analysis::data_quality::{QualityPage, QualityPrecision};
+    use datui::analysis::quality_report::FindingOrder;
 
     let name = "dq_findings_kept.parquet";
     let (mut app, rx, tx, path) = open_findings_fixture(name);
@@ -1125,7 +1125,7 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
     assert_eq!(app.analysis_modal.quality.page, QualityPage::Overview);
     let results = app.analysis_modal.quality.results.clone().unwrap();
     assert_eq!(results.precision, QualityPrecision::Sampled);
-    let report = datui::quality_report::build_report(&results);
+    let report = datui::analysis::quality_report::build_report(&results);
     let render = |app: &mut App, width, height| {
         let area = Rect::new(0, 0, width, height);
         let mut buffer = Buffer::empty(area);
@@ -1218,8 +1218,10 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
     let after = app.analysis_modal.quality.results.as_ref().unwrap();
     assert_eq!(after.observations.len(), results.observations.len());
     assert_eq!(
-        datui::quality_report::verdict(&datui::quality_report::build_report(after)),
-        datui::quality_report::verdict(&report)
+        datui::analysis::quality_report::verdict(&datui::analysis::quality_report::build_report(
+            after
+        )),
+        datui::analysis::quality_report::verdict(&report)
     );
 
     // From here on only the kept rows can answer.
@@ -1309,14 +1311,14 @@ fn findings_narrow_order_and_open_kept_evidence_without_a_read() {
 /// shows what it would read, Esc reads nothing, and only Enter on that reads.
 #[test]
 fn full_scan_evidence_is_read_only_on_confirm() {
-    use datui::data_quality::QualityPrecision;
+    use datui::analysis::data_quality::QualityPrecision;
 
     let (mut app, rx, tx, _path) = open_findings_fixture("dq_findings_full.parquet");
     press(&mut app, KeyCode::Char('a'));
     app.analysis_modal.sidebar_state.select(Some(3));
     show_sample_form(&mut app);
-    app.analysis_modal.quality.plan.method = datui::sampling::SampleMethod::EveryRow;
-    app.analysis_modal.quality.plan.compute = datui::data_quality::QualityCompute::Full;
+    app.analysis_modal.quality.plan.method = datui::analysis::sampling::SampleMethod::EveryRow;
+    app.analysis_modal.quality.plan.compute = datui::analysis::data_quality::QualityCompute::Full;
     assert!(press(&mut app, KeyCode::Enter).is_none());
     assert!(app.confirmation_modal.asks_full_scan());
     // The one confirmation, with what the scan reads and writes and its own keys.
@@ -1430,8 +1432,8 @@ fn full_scan_evidence_is_read_only_on_confirm() {
 /// tool, and there was no visible way to run the plan at all.
 #[test]
 fn the_data_quality_ceremony_takes_the_cursor_with_it() {
-    use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
-    use datui::data_quality::QualityPage;
+    use datui::analysis::analysis_modal::{AnalysisFocus, AnalysisTool};
+    use datui::analysis::data_quality::QualityPage;
 
     let (mut app, _rx, _tx) = open_query_filter_fixture("dq_ceremony_focus.csv");
 
@@ -1441,7 +1443,7 @@ fn the_data_quality_ceremony_takes_the_cursor_with_it() {
     )));
     // A full-scan plan requires confirmation, so running the tool opens the
     // ceremony instead of reading at once.
-    app.analysis_modal.sample.method = datui::sampling::SampleMethod::EveryRow;
+    app.analysis_modal.sample.method = datui::analysis::sampling::SampleMethod::EveryRow;
     app.analysis_modal.sidebar_state.select(Some(3));
     show_sample_form(&mut app);
     let next = app.event(AppEvent::Key(KeyEvent::new(
@@ -1480,7 +1482,7 @@ fn the_data_quality_ceremony_takes_the_cursor_with_it() {
 /// so unless the cursor moves in with e, no key could ever reach a field.
 #[test]
 fn e_moves_the_cursor_into_the_plan_editor() {
-    use datui::analysis_modal::AnalysisFocus;
+    use datui::analysis::analysis_modal::AnalysisFocus;
 
     let (mut app, rx, _tx) = open_query_filter_fixture("dq_editor_focus.csv");
 
@@ -1509,7 +1511,7 @@ fn e_moves_the_cursor_into_the_plan_editor() {
     )));
     assert_eq!(
         app.analysis_modal.quality.page,
-        datui::data_quality::QualityPage::Setup
+        datui::analysis::data_quality::QualityPage::Setup
     );
     assert_eq!(
         app.analysis_modal.focus,
@@ -1542,7 +1544,7 @@ fn e_moves_the_cursor_into_the_plan_editor() {
 /// raises no confirmation over the report and changes nothing.
 #[test]
 fn r_from_the_sidebar_runs_a_sampled_report_again() {
-    use datui::analysis_modal::AnalysisFocus;
+    use datui::analysis::analysis_modal::AnalysisFocus;
 
     let (mut app, rx, _tx) = open_query_filter_fixture("dq_run_key_focus.csv");
 
@@ -1564,8 +1566,8 @@ fn r_from_the_sidebar_runs_a_sampled_report_again() {
 
     let full = {
         let mut plan = app.analysis_modal.quality.plan.clone();
-        plan.method = datui::sampling::SampleMethod::EveryRow;
-        plan.compute = datui::data_quality::QualityCompute::Full;
+        plan.method = datui::analysis::sampling::SampleMethod::EveryRow;
+        plan.compute = datui::analysis::data_quality::QualityCompute::Full;
         plan
     };
     let sampled = std::mem::replace(&mut app.analysis_modal.quality.plan, full.clone());
@@ -1590,8 +1592,8 @@ fn r_from_the_sidebar_runs_a_sampled_report_again() {
 /// report already here.
 #[test]
 fn data_quality_reads_nothing_until_setup_runs() {
-    use datui::analysis_modal::SetupRow;
-    use datui::data_quality::{QualityGrain, QualityPage};
+    use datui::analysis::analysis_modal::SetupRow;
+    use datui::analysis::data_quality::{QualityGrain, QualityPage};
 
     let (mut app, rx, _tx, _path) = open_text_times_fixture("dq_setup_reads_nothing.parquet");
     press(&mut app, KeyCode::Char('a'));
@@ -1604,7 +1606,7 @@ fn data_quality_reads_nothing_until_setup_runs() {
     let shared = app.analysis_modal.sample.clone();
 
     // Choosing Data Quality opens Setup on that sample, and reads nothing.
-    app.analysis_modal.focus = datui::analysis_modal::AnalysisFocus::Sidebar;
+    app.analysis_modal.focus = datui::analysis::analysis_modal::AnalysisFocus::Sidebar;
     app.analysis_modal.sidebar_state.select(Some(3));
     assert!(press(&mut app, KeyCode::Enter).is_none());
     assert!(!app.is_busy());
@@ -1647,7 +1649,7 @@ fn data_quality_reads_nothing_until_setup_runs() {
     assert_eq!(app.analysis_modal.quality.plan.grain, QualityGrain::Dataset);
     assert_eq!(
         app.analysis_modal.focus,
-        datui::analysis_modal::AnalysisFocus::Sidebar,
+        datui::analysis::analysis_modal::AnalysisFocus::Sidebar,
         "with no report yet, the cursor goes back to the tools"
     );
 
@@ -1667,8 +1669,8 @@ fn data_quality_reads_nothing_until_setup_runs() {
     // Declining a full read leaves the sample and the report as they were, and
     // the draft staged.
     press(&mut app, KeyCode::Char('e'));
-    app.analysis_modal.quality.plan.method = datui::sampling::SampleMethod::EveryRow;
-    app.analysis_modal.quality.plan.compute = datui::data_quality::QualityCompute::Full;
+    app.analysis_modal.quality.plan.method = datui::analysis::sampling::SampleMethod::EveryRow;
+    app.analysis_modal.quality.plan.compute = datui::analysis::data_quality::QualityCompute::Full;
     assert!(press(&mut app, KeyCode::Enter).is_none());
     assert!(app.confirmation_modal.asks_full_scan());
     assert!(press(&mut app, KeyCode::Esc).is_none());
@@ -1722,7 +1724,7 @@ fn data_quality_reads_nothing_until_setup_runs() {
 /// Setup says each of these before Run.
 #[test]
 fn data_quality_edits_read_only_what_they_must() {
-    use datui::data_quality::{
+    use datui::analysis::data_quality::{
         QualityGrain, QualityScope, QualityStage, TemporalRole, TemporalRoleAssignment,
     };
 
@@ -1782,10 +1784,11 @@ fn data_quality_edits_read_only_what_they_must() {
     );
 
     // Edits that change only the report.
-    let edit = |app: &mut App, change: &dyn Fn(&mut datui::data_quality::DataQualityPlan)| {
-        press(app, KeyCode::Char('e'));
-        change(&mut app.analysis_modal.quality.plan);
-    };
+    let edit =
+        |app: &mut App, change: &dyn Fn(&mut datui::analysis::data_quality::DataQualityPlan)| {
+            press(app, KeyCode::Char('e'));
+            change(&mut app.analysis_modal.quality.plan);
+        };
     edit(&mut app, &|plan| {
         plan.temporal_roles = vec![
             TemporalRoleAssignment {
@@ -1833,8 +1836,8 @@ fn data_quality_edits_read_only_what_they_must() {
 
     // Other rows: a new sample, counted in its pass.
     for change in [
-        &(|plan: &mut datui::data_quality::DataQualityPlan| plan.sample_seed = 7)
-            as &dyn Fn(&mut datui::data_quality::DataQualityPlan),
+        &(|plan: &mut datui::analysis::data_quality::DataQualityPlan| plan.sample_seed = 7)
+            as &dyn Fn(&mut datui::analysis::data_quality::DataQualityPlan),
         &|plan| plan.dataset_rows = 400,
         &|plan| plan.scope = QualityScope::FirstRows(2_000),
     ] {
@@ -1874,7 +1877,7 @@ fn data_quality_edits_read_only_what_they_must() {
 /// counts in that pass.
 #[test]
 fn data_quality_setup_names_every_count_pass_on_one_parquet_file() {
-    use datui::data_quality::{QualityGrain, QualityScope, QualityStage};
+    use datui::analysis::data_quality::{QualityGrain, QualityScope, QualityStage};
     use datui::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
 
     let dir = common::fixture_dir();
@@ -1976,7 +1979,7 @@ fn data_quality_setup_names_every_count_pass_on_one_parquet_file() {
 /// it; a full run says every row was read and how many rows its passes traversed.
 #[test]
 fn data_quality_coverage_sits_under_every_verdict() {
-    use datui::data_quality::{QualityCompute, QualityPage};
+    use datui::analysis::data_quality::{QualityCompute, QualityPage};
 
     let (mut app, rx, _tx, _path) = open_text_times_fixture("dq_coverage.parquet");
     press(&mut app, KeyCode::Char('a'));
@@ -2008,7 +2011,7 @@ fn data_quality_coverage_sits_under_every_verdict() {
     );
 
     press(&mut app, KeyCode::Char('e'));
-    app.analysis_modal.quality.plan.method = datui::sampling::SampleMethod::EveryRow;
+    app.analysis_modal.quality.plan.method = datui::analysis::sampling::SampleMethod::EveryRow;
     app.analysis_modal.quality.plan.compute = QualityCompute::Full;
     assert!(press(&mut app, KeyCode::Enter).is_none());
     assert!(app.confirmation_modal.asks_full_scan());
@@ -2036,8 +2039,8 @@ fn data_quality_coverage_sits_under_every_verdict() {
 /// into `r`.
 #[test]
 fn data_quality_setup_edits_never_outlive_esc() {
-    use datui::analysis_modal::{AnalysisFocus, SetupRow};
-    use datui::data_quality::{QualityComparison, QualityPage};
+    use datui::analysis::analysis_modal::{AnalysisFocus, SetupRow};
+    use datui::analysis::data_quality::{QualityComparison, QualityPage};
 
     let (mut app, rx, _tx, _path) = open_text_times_fixture("dq_setup_esc_discards.parquet");
     press(&mut app, KeyCode::Char('a'));
@@ -2096,8 +2099,8 @@ fn data_quality_setup_edits_never_outlive_esc() {
 
     // A report of every row has no sample to draw again: r does nothing there.
     press(&mut app, KeyCode::Char('e'));
-    app.analysis_modal.quality.plan.method = datui::sampling::SampleMethod::EveryRow;
-    app.analysis_modal.quality.plan.compute = datui::data_quality::QualityCompute::Full;
+    app.analysis_modal.quality.plan.method = datui::analysis::sampling::SampleMethod::EveryRow;
+    app.analysis_modal.quality.plan.compute = datui::analysis::data_quality::QualityCompute::Full;
     press(&mut app, KeyCode::Enter);
     let next = press(&mut app, KeyCode::Enter);
     drain_quality(&mut app, &rx, next);
@@ -2112,7 +2115,9 @@ fn data_quality_setup_edits_never_outlive_esc() {
 /// report on screen, which reads nothing, so Run does not ask.
 #[test]
 fn expected_windows_on_a_full_scan_run_without_asking() {
-    use datui::data_quality::{ExpectedWindows, QualityCompute, QualityGrain, QualityPage};
+    use datui::analysis::data_quality::{
+        ExpectedWindows, QualityCompute, QualityGrain, QualityPage,
+    };
 
     let (mut app, rx, _tx) = open_weekday_feed("dq_expected_full.csv");
     press(&mut app, KeyCode::Char('a'));
@@ -2120,7 +2125,7 @@ fn expected_windows_on_a_full_scan_run_without_asking() {
     show_sample_form(&mut app);
     {
         let plan = &mut app.analysis_modal.quality.plan;
-        plan.method = datui::sampling::SampleMethod::EveryRow;
+        plan.method = datui::analysis::sampling::SampleMethod::EveryRow;
         plan.compute = QualityCompute::Full;
         plan.grain = QualityGrain::TimeWindows {
             column: "day".into(),
@@ -2150,7 +2155,7 @@ fn expected_windows_on_a_full_scan_run_without_asking() {
     assert!(!app.is_busy() && app.analysis_modal.computing.is_none());
     assert_eq!(app.analysis_modal.quality.page, QualityPage::Trends);
     assert!(
-        datui::quality_trends::expected_gaps(
+        datui::analysis::quality_trends::expected_gaps(
             app.analysis_modal.quality_result_plan(),
             app.analysis_modal.quality.results.as_ref().unwrap(),
         )
@@ -2171,7 +2176,7 @@ fn a_failed_rerun_keeps_the_last_report() {
     }
     assert_eq!(
         run_quality_reads(&mut app, &rx),
-        [datui::data_quality::QualityStage::ReadingSample]
+        [datui::analysis::data_quality::QualityStage::ReadingSample]
     );
     let report = format!("{:?}", app.analysis_modal.quality.results);
     let measured = app.analysis_modal.quality.last_plan.clone().unwrap();
@@ -2210,7 +2215,8 @@ fn a_failed_rerun_keeps_the_last_report() {
     // The setup the report was measured with is still served from its rows.
     press(&mut app, KeyCode::Char('e'));
     app.analysis_modal.quality.plan.sample_seed = 3;
-    app.analysis_modal.quality.plan.grain = datui::data_quality::QualityGrain::RowChunks(100_000);
+    app.analysis_modal.quality.plan.grain =
+        datui::analysis::data_quality::QualityGrain::RowChunks(100_000);
     assert!(run_quality_reads(&mut app, &rx).is_empty(), "no read");
     assert!(!app.modal_showing());
 }
@@ -2228,7 +2234,7 @@ fn kept_rows_are_released_from_setup() {
     }
     assert_eq!(
         run_quality_reads(&mut app, &rx),
-        [datui::data_quality::QualityStage::ReadingSample]
+        [datui::analysis::data_quality::QualityStage::ReadingSample]
     );
     let screen = |app: &mut App| {
         let area = Rect::new(0, 0, 160, 40);
@@ -2238,7 +2244,8 @@ fn kept_rows_are_released_from_setup() {
     };
 
     press(&mut app, KeyCode::Char('e'));
-    app.analysis_modal.quality.plan.grain = datui::data_quality::QualityGrain::RowChunks(100);
+    app.analysis_modal.quality.plan.grain =
+        datui::analysis::data_quality::QualityGrain::RowChunks(100);
     let text = screen(&mut app);
     assert!(text.contains("500 rows kept"), "{text}");
     assert!(text.contains("Rows: from an earlier run"), "{text}");
@@ -2264,7 +2271,7 @@ fn kept_rows_are_released_from_setup() {
 
     assert_eq!(
         run_quality_reads(&mut app, &rx),
-        [datui::data_quality::QualityStage::ReadingSample],
+        [datui::analysis::data_quality::QualityStage::ReadingSample],
         "the sample is read again"
     );
     press(&mut app, KeyCode::Char('e'));
@@ -2277,7 +2284,7 @@ fn kept_rows_are_released_from_setup() {
 /// says so in its stages, and are shown beside their file.
 #[test]
 fn conflict_evidence_is_read_only_by_a_full_scan() {
-    use datui::data_quality::{ObservationKind, QualityCompute, QualityStage};
+    use datui::analysis::data_quality::{ObservationKind, QualityCompute, QualityStage};
     let dir = tempfile::tempdir().unwrap();
     write_parquet(
         dir.path(),
@@ -2330,7 +2337,7 @@ fn conflict_evidence_is_read_only_by_a_full_scan() {
     press(&mut app, KeyCode::Char('e'));
     {
         let plan = &mut app.analysis_modal.quality.plan;
-        plan.method = datui::sampling::SampleMethod::EveryRow;
+        plan.method = datui::analysis::sampling::SampleMethod::EveryRow;
         plan.compute = QualityCompute::Full;
     }
     assert!(
@@ -2372,7 +2379,7 @@ fn conflict_evidence_is_read_only_by_a_full_scan() {
 #[test]
 fn an_empty_scope_is_never_a_clean_report() {
     let (mut app, rx, _tx, _path) = open_quality_fixture("dq_empty_scope.csv", 1_000, 0);
-    app.analysis_modal.quality.plan.scope = datui::data_quality::QualityScope::ViewRows {
+    app.analysis_modal.quality.plan.scope = datui::analysis::data_quality::QualityScope::ViewRows {
         start: 5_000,
         end: 6_000,
     };
@@ -2403,17 +2410,17 @@ fn an_empty_scope_is_never_a_clean_report() {
         open_quality_setup(&mut app);
         let plan = &mut app.analysis_modal.quality.plan;
         // A declared key and a required column are no more checked than the rest.
-        plan.intent = datui::quality_intent::DeclaredIntent {
+        plan.intent = datui::analysis::quality_intent::DeclaredIntent {
             key: vec!["id".into()],
-            columns: vec![datui::quality_intent::ColumnIntent {
+            columns: vec![datui::analysis::quality_intent::ColumnIntent {
                 column: "name".into(),
                 required: true,
                 ..Default::default()
             }],
         };
         if full {
-            plan.method = datui::sampling::SampleMethod::EveryRow;
-            plan.compute = datui::data_quality::QualityCompute::Full;
+            plan.method = datui::analysis::sampling::SampleMethod::EveryRow;
+            plan.compute = datui::analysis::data_quality::QualityCompute::Full;
         }
         let mut first = press(&mut app, KeyCode::Enter);
         if app.confirmation_modal.asks_full_scan() {
@@ -2432,7 +2439,7 @@ fn an_empty_scope_is_never_a_clean_report() {
         assert!(text.contains("No rows to check"), "full {full}: {text}");
         // Columns marks none of them clean either.
         app.analysis_modal
-            .show_quality_tab(datui::data_quality::QualityPage::Columns);
+            .show_quality_tab(datui::analysis::data_quality::QualityPage::Columns);
         let mut buffer = Buffer::empty(area);
         app.render(area, &mut buffer);
         let lines = common::buffer_lines(&buffer);
@@ -2445,9 +2452,9 @@ fn an_empty_scope_is_never_a_clean_report() {
             let before = &line[..line.find(&format!(" {column} ")).unwrap()];
             assert!(!before.contains(check), "full {full}: {line}");
         }
-        let report = datui::quality_report::build_report(&results);
-        for check in datui::quality_report::checks(&results, &report) {
-            use datui::quality_report::Outcome;
+        let report = datui::analysis::quality_report::build_report(&results);
+        for check in datui::analysis::quality_report::checks(&results, &report) {
+            use datui::analysis::quality_report::Outcome;
             assert!(
                 !matches!(check.outcome, Outcome::Passed | Outcome::Found { .. }),
                 "{} ran on no rows",
@@ -2459,8 +2466,8 @@ fn an_empty_scope_is_never_a_clean_report() {
 
 #[test]
 fn test_data_quality_scope_editor_runs_selected_view_rows() {
-    use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
-    use datui::data_quality::{QualityPage, QualityScope};
+    use datui::analysis::analysis_modal::{AnalysisFocus, AnalysisTool};
+    use datui::analysis::data_quality::{QualityPage, QualityScope};
 
     common::ensure_sample_data();
     let (tx, rx) = mpsc::channel();
@@ -2507,7 +2514,7 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
     let set_scope = |app: &mut App, text: &str| {
         let (from, to) = text.trim_start_matches("rows ").split_once("..").unwrap();
         let form = app.analysis_modal.sample_form.as_mut().unwrap();
-        form.kind = datui::sample_modal::RowsKind::Range;
+        form.kind = datui::analysis::sample_modal::RowsKind::Range;
         form.range_from.set_value(from);
         form.range_to.set_value(to);
     };
@@ -2552,21 +2559,21 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
     }
     assert_eq!(
         app.analysis_modal.setup_row(),
-        datui::analysis_modal::SetupRow::Grain
+        datui::analysis::analysis_modal::SetupRow::Grain
     );
     key(&mut app, KeyCode::Char(' '));
     key(&mut app, KeyCode::Down);
     key(&mut app, KeyCode::Enter);
     assert_ne!(
         app.analysis_modal.quality.plan.grain,
-        datui::data_quality::QualityGrain::Dataset
+        datui::analysis::data_quality::QualityGrain::Dataset
     );
     assert_eq!(app.analysis_modal.quality.page, QualityPage::Setup);
     assert!(app.analysis_modal.quality_plan_pending());
     key(&mut app, KeyCode::Esc);
     assert_eq!(
         app.analysis_modal.quality.plan.grain,
-        datui::data_quality::QualityGrain::Dataset
+        datui::analysis::data_quality::QualityGrain::Dataset
     );
     assert!(app.analysis_modal.quality.results.is_some());
     key(&mut app, KeyCode::Char('s'));
@@ -2594,8 +2601,8 @@ fn test_data_quality_scope_editor_runs_selected_view_rows() {
 
 #[test]
 fn test_data_quality_source_file_scope_uses_loaded_file_order() {
-    use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
-    use datui::data_quality::QualityScope;
+    use datui::analysis::analysis_modal::{AnalysisFocus, AnalysisTool};
+    use datui::analysis::data_quality::QualityScope;
 
     let dir = tempfile::tempdir().unwrap();
     write_parquet(dir.path(), "region=one", df!("id" => &[1i32, 2]).unwrap());
@@ -2660,12 +2667,12 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
     assert_eq!(sampled.evaluated_rows, 1);
     assert_eq!(
         sampled.precision,
-        datui::data_quality::QualityPrecision::Sampled
+        datui::analysis::data_quality::QualityPrecision::Sampled
     );
 
     let plan = &mut app.analysis_modal.quality.plan;
-    plan.method = datui::sampling::SampleMethod::EveryRow;
-    plan.compute = datui::data_quality::QualityCompute::Full;
+    plan.method = datui::analysis::sampling::SampleMethod::EveryRow;
+    plan.compute = datui::analysis::data_quality::QualityCompute::Full;
     app.event(AppEvent::AnalysisCompute(AnalysisTool::DataQuality));
     drain_events(&mut app, &rx);
     let full = app.analysis_modal.quality.results.as_ref().unwrap();
@@ -2675,10 +2682,10 @@ fn test_data_quality_source_file_scope_uses_loaded_file_order() {
     // By file, the segments are the shared sample's rows split by the file each
     // came from; a file's size is its footer's, not a guess from the sample.
     let plan = &mut app.analysis_modal.quality.plan;
-    plan.method = datui::sampling::SampleMethod::Spread;
-    plan.compute = datui::data_quality::QualityCompute::Sample;
+    plan.method = datui::analysis::sampling::SampleMethod::Spread;
+    plan.compute = datui::analysis::data_quality::QualityCompute::Sample;
     plan.dataset_rows = 3;
-    plan.grain = datui::data_quality::QualityGrain::File;
+    plan.grain = datui::analysis::data_quality::QualityGrain::File;
     app.event(AppEvent::AnalysisCompute(AnalysisTool::DataQuality));
     drain_events(&mut app, &rx);
     let by_file = app.analysis_modal.quality.results.as_ref().unwrap();

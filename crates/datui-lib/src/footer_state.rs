@@ -415,8 +415,8 @@ impl App {
                 draw.rows.rows() as u64,
                 matches!(
                     draw.sample.method,
-                    crate::sampling::SampleMethod::Spread
-                        | crate::sampling::SampleMethod::FirstRows
+                    crate::analysis::sampling::SampleMethod::Spread
+                        | crate::analysis::sampling::SampleMethod::FirstRows
                 )
                 .then_some(draw.sample.rows as u64),
             )];

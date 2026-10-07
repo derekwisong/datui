@@ -1522,7 +1522,9 @@ fn test_by_query_computed_group_key_sorted_by_result_column() {
 /// is through a dataset whose files genuinely disagree.
 #[test]
 fn absent_columns_and_type_conflicts_are_measured_from_the_footers() {
-    use crate::data_quality::{DataQualityPlan, ObservationKind, QualityCompute, QualityScope};
+    use crate::analysis::data_quality::{
+        DataQualityPlan, ObservationKind, QualityCompute, QualityScope,
+    };
     use crate::formats::schema_union::{DatasetSchema, SchemaOrigin, union_file_schemas};
     use polars::prelude::{DataType, IntoLazy, df};
 
@@ -1637,15 +1639,20 @@ fn absent_columns_and_type_conflicts_are_measured_from_the_footers() {
     let (lf, source) = state.data_quality_source_scan();
     let mut source = source.expect("every file is counted, so rows map to files");
     source.conflict_scan = state.quality_conflict_scan();
-    let lf = crate::data_quality::prepare_source_quality_scan(lf, Some(&source)).unwrap();
+    let lf = crate::analysis::data_quality::prepare_source_quality_scan(lf, Some(&source)).unwrap();
     let plan = DataQualityPlan {
         scope: QualityScope::WholeSource,
         compute: QualityCompute::Full,
         ..DataQualityPlan::default()
     };
-    let results =
-        crate::data_quality::compute_data_quality(&lf, Some(7), &plan, Some(&source), false)
-            .unwrap();
+    let results = crate::analysis::data_quality::compute_data_quality(
+        &lf,
+        Some(7),
+        &plan,
+        Some(&source),
+        false,
+    )
+    .unwrap();
 
     let absent = results
         .observations
@@ -1690,7 +1697,7 @@ fn absent_columns_and_type_conflicts_are_measured_from_the_footers() {
 
     // The same two checks at the budget that reads no values at all: the footers
     // were read when the dataset opened, so there is nothing left to pay for.
-    let metadata = crate::data_quality::compute_data_quality(
+    let metadata = crate::analysis::data_quality::compute_data_quality(
         &lf,
         Some(7),
         &DataQualityPlan {
@@ -1859,15 +1866,17 @@ fn quality_source_scope_ignores_current_query_and_evidence_matches_scope() {
     let (current, _) = state.data_quality_scan(false);
     let (source, context) = state.data_quality_source_scan();
     let source =
-        crate::data_quality::prepare_source_quality_scan(source, context.as_ref()).unwrap();
+        crate::analysis::data_quality::prepare_source_quality_scan(source, context.as_ref())
+            .unwrap();
     assert_eq!(current.collect().unwrap().height(), 2);
     assert_eq!(source.collect().unwrap().height(), 4);
     assert_eq!(state.quality_source_file_count(), 2);
     let (raw, mapping) = state.data_quality_source_scan();
-    let indexed = crate::data_quality::prepare_source_quality_scan(raw, mapping.as_ref()).unwrap();
-    let first_file = crate::data_quality::apply_quality_scope(
+    let indexed =
+        crate::analysis::data_quality::prepare_source_quality_scan(raw, mapping.as_ref()).unwrap();
+    let first_file = crate::analysis::data_quality::apply_quality_scope(
         indexed,
-        &crate::data_quality::QualityScope::SourceFiles(vec![1]),
+        &crate::analysis::data_quality::QualityScope::SourceFiles(vec![1]),
         mapping.as_ref(),
     )
     .unwrap()
@@ -1881,21 +1890,21 @@ fn quality_source_scope_ignores_current_query_and_evidence_matches_scope() {
 
     let evidence = state
         .quality_evidence_view(
-            &crate::data_quality::QualityScope::WholeSource,
+            &crate::analysis::data_quality::QualityScope::WholeSource,
             col("a").eq(lit(1)),
         )
         .unwrap();
     assert_eq!(evidence.visible_lf().collect().unwrap().height(), 1);
     let bounded = state
         .quality_evidence_view(
-            &crate::data_quality::QualityScope::FirstRows(1),
+            &crate::analysis::data_quality::QualityScope::FirstRows(1),
             col("a").eq(lit(4)),
         )
         .unwrap();
     assert_eq!(bounded.visible_lf().collect().unwrap().height(), 0);
     let file_evidence = state
         .quality_evidence_view(
-            &crate::data_quality::QualityScope::SourceFiles(vec![1]),
+            &crate::analysis::data_quality::QualityScope::SourceFiles(vec![1]),
             col("a").eq(lit(1)),
         )
         .unwrap();
@@ -1912,11 +1921,11 @@ fn source_time_roles_can_use_columns_hidden_by_current_query() {
     state.query("select a".to_string());
     assert!(
         state
-            .quality_temporal_columns(&crate::data_quality::QualityScope::CurrentView)
+            .quality_temporal_columns(&crate::analysis::data_quality::QualityScope::CurrentView)
             .is_empty()
     );
     assert_eq!(
-        state.quality_temporal_columns(&crate::data_quality::QualityScope::WholeSource),
+        state.quality_temporal_columns(&crate::analysis::data_quality::QualityScope::WholeSource),
         vec!["event"]
     );
 }

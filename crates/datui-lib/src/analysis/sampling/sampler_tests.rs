@@ -82,7 +82,7 @@ fn a_block_sample_says_where_its_rows_sat() {
         if rows < 2 * n as i64 {
             assert_eq!(
                 read.counted,
-                Some(crate::sampling::Counted::Totals(
+                Some(crate::analysis::sampling::Counted::Totals(
                     [(Some("0".to_string()), 10_000)].into()
                 ))
             );

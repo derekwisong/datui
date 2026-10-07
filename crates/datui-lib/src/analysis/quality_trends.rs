@@ -3,12 +3,12 @@
 //! segments a run counted. Built from the measurements a run kept: nothing here
 //! reads.
 
-use crate::data_quality::{
+use crate::analysis::data_quality::{
     DataQualityPlan, DataQualityResults, QualityComparison, QualityGrain, QualityMetric,
     QualityPrecision, QualityScope, SegmentQualityProfile, beyond_noise, parse_scope_time,
     segment_cmp,
 };
-use crate::quality_report::THIN_SEGMENT_ROWS;
+use crate::analysis::quality_report::THIN_SEGMENT_ROWS;
 use chrono::{Datelike, Duration, Months, NaiveDate, NaiveDateTime, Timelike, Weekday};
 use std::collections::HashMap;
 use std::ops::Range;
@@ -384,7 +384,7 @@ pub fn bar_change(line: &TrendRow, bar: usize, other: usize, exact: bool) -> Opt
     let now = (*line.bars.get(bar)?)?;
     let before = (*line.bars.get(other)?)?;
     let clear = !line.rows()
-        && (now - before).abs() * 100.0 >= crate::data_quality::MATERIAL_CHANGE_PP
+        && (now - before).abs() * 100.0 >= crate::analysis::data_quality::MATERIAL_CHANGE_PP
         && (exact
             || beyond_noise(
                 now,
@@ -644,7 +644,8 @@ pub fn expected_gaps(plan: &DataQualityPlan, results: &DataQualityResults) -> Op
         runs: Vec::new(),
         more_runs: 0,
     };
-    let weekdays = expected.weekdays && crate::data_quality::ExpectedWindows::weekdays_apply(every);
+    let weekdays =
+        expected.weekdays && crate::analysis::data_quality::ExpectedWindows::weekdays_apply(every);
     let mut start = from;
     let mut open: Option<GapRun> = None;
     while start < before {
@@ -742,8 +743,8 @@ fn window_count(from: NaiveDateTime, before: NaiveDateTime, every: &str) -> usiz
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_quality::fixtures::measure;
-    use crate::data_quality::{ExpectedWindows, QualityCompute, UnsampledSegment};
+    use crate::analysis::data_quality::fixtures::measure;
+    use crate::analysis::data_quality::{ExpectedWindows, QualityCompute, UnsampledSegment};
     use polars::prelude::{DataType, IntoLazy, LazyFrame, col, df};
 
     fn at(text: &str) -> NaiveDateTime {
@@ -762,7 +763,7 @@ mod tests {
         ] {
             let start_text = at(start).format("%Y-%m-%d %H:%M:%S").to_string();
             assert_eq!(
-                crate::data_quality::time_window_label("day", every, Some(&start_text)),
+                crate::analysis::data_quality::time_window_label("day", every, Some(&start_text)),
                 label
             );
             assert_eq!(window_start(label, every), Some(at(start)), "{label}");
@@ -999,7 +1000,8 @@ mod tests {
             from: Some("2024-01-01".to_string()),
             before: Some("2024-02-05".to_string()),
         });
-        let scoped = crate::data_quality::apply_quality_scope(frame, &plan.scope, None).unwrap();
+        let scoped =
+            crate::analysis::data_quality::apply_quality_scope(frame, &plan.scope, None).unwrap();
         let results = measure(&scoped, None, &plan);
         let Some(Gaps::Checked(check)) = expected_gaps(&plan, &results) else {
             panic!("checked");
@@ -1025,7 +1027,8 @@ mod tests {
             end: "2024-02-07".to_string(),
         };
         let scoped =
-            crate::data_quality::apply_quality_scope(weekdays(), &plan.scope, None).unwrap();
+            crate::analysis::data_quality::apply_quality_scope(weekdays(), &plan.scope, None)
+                .unwrap();
         let results = measure(&scoped, None, &plan);
         let Some(Gaps::Checked(check)) = expected_gaps(&plan, &results) else {
             panic!("checked");

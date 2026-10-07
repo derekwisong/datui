@@ -223,7 +223,7 @@ fn yes_reads_all_and_runs_the_full_scan() {
     yes(&mut app);
     assert_eq!(
         app.analysis_modal.sample.method,
-        crate::sampling::SampleMethod::EveryRow
+        crate::analysis::sampling::SampleMethod::EveryRow
     );
 
     let mut app = new_app();
@@ -232,7 +232,7 @@ fn yes_reads_all_and_runs_the_full_scan() {
     assert!(matches!(
         yes(&mut app),
         Some(AppEvent::AnalysisCompute(
-            analysis_modal::AnalysisTool::DataQuality
+            analysis::analysis_modal::AnalysisTool::DataQuality
         ))
     ));
     assert!(app.analysis_modal.computing.is_some());

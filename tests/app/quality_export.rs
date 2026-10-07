@@ -4,10 +4,10 @@
 //! source, which these tests delete first.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use datui::analysis_modal::{AnalysisFocus, AnalysisTool, SetupRow};
-use datui::data_quality::{QualityPage, QualityPrecision};
+use datui::analysis::analysis_modal::{AnalysisFocus, AnalysisTool, SetupRow};
+use datui::analysis::data_quality::{QualityPage, QualityPrecision};
+use datui::analysis::quality_export::{REPORT_FORMAT, REPORT_VERSION, ReportFile};
 use datui::output_file::Overwrite;
-use datui::quality_export::{REPORT_FORMAT, REPORT_VERSION, ReportFile};
 use datui::{App, AppEvent, JobKind, OpenOptions};
 use polars::prelude::*;
 use std::fs::File;
@@ -255,9 +255,9 @@ fn intent_after_a_run_reuses_the_rows_it_read() {
     let intent = results.intent.as_ref().unwrap();
     assert_eq!(intent.precision, QualityPrecision::Sampled);
     assert_eq!(intent.evaluated_rows, 1_000);
-    let report = datui::quality_report::build_report(&results);
-    let checks = datui::quality_report::checks(&results, &report);
-    let limits = datui::quality_report::coverage(
+    let report = datui::analysis::quality_report::build_report(&results);
+    let checks = datui::analysis::quality_report::checks(&results, &report);
+    let limits = datui::analysis::quality_report::coverage(
         &results,
         &checks,
         app.analysis_modal.quality_result_plan(),
@@ -278,11 +278,11 @@ fn the_report_exports_without_reading_the_source() {
     let path = dir.path().join("orders.parquet");
     write_orders(&path, 3_000);
     let (mut app, rx) = open_setup(path.clone(), 10_000);
-    app.analysis_modal.quality.plan.intent = datui::quality_intent::DeclaredIntent {
+    app.analysis_modal.quality.plan.intent = datui::analysis::quality_intent::DeclaredIntent {
         key: vec!["id".to_string()],
-        columns: vec![datui::quality_intent::ColumnIntent {
+        columns: vec![datui::analysis::quality_intent::ColumnIntent {
             allowed: vec!["open".to_string(), "closed".to_string()],
-            ..datui::quality_intent::ColumnIntent::new("status")
+            ..datui::analysis::quality_intent::ColumnIntent::new("status")
         }],
     };
     let next = press(&mut app, KeyCode::Enter);

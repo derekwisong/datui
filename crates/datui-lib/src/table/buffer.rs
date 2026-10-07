@@ -937,11 +937,11 @@ impl DataTableState {
     /// query or filters rather than the source.
     pub(crate) fn sampled_from(
         source: DataTableState,
-        sample: crate::sampling::Sample,
+        sample: crate::analysis::sampling::Sample,
         schema: &Schema,
-        rows: Arc<crate::table_sample::SampleRows>,
+        rows: Arc<crate::analysis::table_sample::SampleRows>,
         through: bool,
-        path: Option<crate::table_sample::DrawPath>,
+        path: Option<crate::analysis::table_sample::DrawPath>,
     ) -> Result<Self> {
         let mut view = source.sample_view(DataFrame::empty_with_schema(schema))?;
         let frame = scanned_frame(&view.original_lf)
@@ -999,7 +999,7 @@ impl DataTableState {
 
     /// The draw ended, having read what `drawn` says: the rows go into the order the
     /// source holds them, once.
-    pub(crate) fn sample_drawn(&mut self, drawn: crate::table_sample::Drawn) {
+    pub(crate) fn sample_drawn(&mut self, drawn: crate::analysis::table_sample::Drawn) {
         let Some(sampled) = self.sampled.as_mut() else {
             return;
         };
@@ -1025,7 +1025,9 @@ impl DataTableState {
             && self.view.sort_ascending
             && self.scan_is_the_root();
         let rows = frame.height();
-        self.each_frame(|lf| crate::table_sample::rebind(&mut lf.logical_plan, &old, &frame));
+        self.each_frame(|lf| {
+            crate::analysis::table_sample::rebind(&mut lf.logical_plan, &old, &frame)
+        });
         if let Some(sampled) = self.sampled.as_mut() {
             sampled.frame = frame;
         }

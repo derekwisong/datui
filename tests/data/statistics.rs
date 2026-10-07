@@ -1,7 +1,7 @@
 use crate::analyze;
 use color_eyre::Result;
-use datui::distribution_fit::Fitted;
-use datui::statistics::{ComputeOptions, DistributionType, compute_correlation_matrix};
+use datui::analysis::distribution_fit::Fitted;
+use datui::analysis::statistics::{ComputeOptions, DistributionType, compute_correlation_matrix};
 use polars::prelude::*;
 
 /// 30,000 rows, a null every seventh, of a long right tail: more than the 10,000 values
@@ -65,15 +65,16 @@ fn distribution_statistics_cover_every_value() -> Result<()> {
 /// Describe and Distribution read the same sample and give it one median.
 #[test]
 fn describe_and_distribution_agree_on_a_sample() -> Result<()> {
-    let sample = datui::sampling::Sample {
-        method: datui::sampling::SampleMethod::Spread,
+    let sample = datui::analysis::sampling::Sample {
+        method: datui::analysis::sampling::SampleMethod::Spread,
         rows: 20_000,
         seed: 1,
-        ..datui::sampling::Sample::default()
+        ..datui::analysis::sampling::Sample::default()
     };
     let lf = long_tail();
-    let describe = datui::statistics::compute_describe_from_lazy(&lf, None, &sample, true)?;
-    let distribution = datui::statistics::compute_statistics_for_sample(
+    let describe =
+        datui::analysis::statistics::compute_describe_from_lazy(&lf, None, &sample, true)?;
+    let distribution = datui::analysis::statistics::compute_statistics_for_sample(
         &lf,
         &sample,
         None,
@@ -127,7 +128,7 @@ fn correlation_covers_every_finite_pair() -> Result<()> {
 /// minutes. They finish, and the uniform they came from is the answer.
 #[test]
 fn distribution_of_a_wide_integer_range_finishes() -> Result<()> {
-    let mut rng = datui::distribution_fit::Rng::new(442);
+    let mut rng = datui::analysis::distribution_fit::Rng::new(442);
     let values: Vec<i64> = (0..2_000)
         .map(|_| (rng.next_u64() % 2_000_000) as i64)
         .collect();
@@ -171,11 +172,12 @@ fn quantiles_leave_nan_out() -> Result<()> {
         })
         .collect();
     let lf = df!("x" => values)?.lazy();
-    let every_row = datui::sampling::Sample {
-        method: datui::sampling::SampleMethod::EveryRow,
-        ..datui::sampling::Sample::default()
+    let every_row = datui::analysis::sampling::Sample {
+        method: datui::analysis::sampling::SampleMethod::EveryRow,
+        ..datui::analysis::sampling::Sample::default()
     };
-    let describe = datui::statistics::compute_describe_from_lazy(&lf, None, &every_row, true)?;
+    let describe =
+        datui::analysis::statistics::compute_describe_from_lazy(&lf, None, &every_row, true)?;
     let described = describe.column_statistics[0]
         .numeric_stats
         .as_ref()

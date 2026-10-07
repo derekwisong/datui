@@ -2305,8 +2305,8 @@ fn a_superseded_scan_does_not_continue_the_load() {
 /// screen, whatever the tool: every one of them is judged by its job.
 #[test]
 fn stale_analysis_answers_are_ignored() {
-    use crate::data_quality::{DataQualityResults, QualityPrecision};
-    use crate::statistics::AnalysisResults;
+    use crate::analysis::data_quality::{DataQualityResults, QualityPrecision};
+    use crate::analysis::statistics::AnalysisResults;
     use crate::{Answer, App, AppEvent, Job, Outcome};
 
     let (tx, _rx) = std::sync::mpsc::channel();
@@ -2323,7 +2323,7 @@ fn stale_analysis_answers_are_ignored() {
         Answer::Analysis(|modal, r| modal.describe_results = Some(r), results()),
         Answer::Analysis(|modal, r| modal.distribution_results = Some(r), results()),
         Answer::Analysis(
-            crate::analysis_modal::AnalysisModal::install_correlations,
+            crate::analysis::analysis_modal::AnalysisModal::install_correlations,
             results(),
         ),
         Answer::DataQuality {
@@ -2353,7 +2353,8 @@ fn stale_analysis_answers_are_ignored() {
         },
     ];
     app.overlay = crate::Overlay::Analysis;
-    app.analysis_modal.selected_tool = Some(crate::analysis_modal::AnalysisTool::DataQuality);
+    app.analysis_modal.selected_tool =
+        Some(crate::analysis::analysis_modal::AnalysisTool::DataQuality);
     let runs: Vec<_> = answers
         .iter()
         .map(|_| {

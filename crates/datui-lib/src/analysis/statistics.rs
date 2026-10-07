@@ -129,7 +129,10 @@ pub struct DistributionAnalysis {
     /// At most five thousand of the column's finite values, spread across it, sorted.
     pub sorted_sample_values: Vec<f64>,
     /// Every family's fit and test, or why it does not apply.
-    pub fits: Vec<(DistributionType, crate::distribution_fit::FitOutcome)>,
+    pub fits: Vec<(
+        DistributionType,
+        crate::analysis::distribution_fit::FitOutcome,
+    )>,
     /// Each fitted family's quantiles at the plotting positions of
     /// `sorted_sample_values`, for its Q-Q plot: computed with the fit, not per frame.
     pub qq: Vec<(DistributionType, Vec<f64>)>,
@@ -181,7 +184,10 @@ thread_local! {
 }
 
 impl DistributionAnalysis {
-    pub fn fit(&self, family: DistributionType) -> Option<&crate::distribution_fit::FitOutcome> {
+    pub fn fit(
+        &self,
+        family: DistributionType,
+    ) -> Option<&crate::analysis::distribution_fit::FitOutcome> {
         self.fits
             .iter()
             .find(|(fitted, _)| *fitted == family)
@@ -450,7 +456,7 @@ pub struct AnalysisResults {
     pub column_statistics: Vec<ColumnStatistics>,
     pub total_rows: usize,
     pub sample_size: Option<usize>,
-    /// Rows an equal-per-value sample kept of each value. See [`crate::sampling::PerValue`].
+    /// Rows an equal-per-value sample kept of each value. See [`crate::analysis::sampling::PerValue`].
     pub per_value: Option<usize>,
     pub correlation_matrix: Option<CorrelationMatrix>,
     pub distribution_analyses: Vec<DistributionAnalysis>,
@@ -505,19 +511,19 @@ fn get_value_str(df: &DataFrame, col_name: &str, row: usize) -> Option<String> {
     }
 }
 
-/// Statistics for a LazyFrame, over the rows a [`crate::sampling::Sample`] picks from
+/// Statistics for a LazyFrame, over the rows a [`crate::analysis::sampling::Sample`] picks from
 /// `lf`, which is already cut to the sample's scope. Describe for every column;
 /// numeric percentiles, skewness, kurtosis, distribution fits and the correlation
 /// matrix as `options` asks.
 pub fn compute_statistics_for_sample(
     lf: &LazyFrame,
-    sample: &crate::sampling::Sample,
+    sample: &crate::analysis::sampling::Sample,
     known_total: Option<usize>,
     options: ComputeOptions,
 ) -> Result<AnalysisResults> {
     let schema = lf.clone().collect_schema()?;
     let use_streaming = options.polars_streaming;
-    let rows = crate::sampling::read(lf, sample, known_total, use_streaming)?;
+    let rows = crate::analysis::sampling::read(lf, sample, known_total, use_streaming)?;
     let total_rows = rows.total_rows;
     let actual_sample_size = rows.sample_size;
     let per_value = rows.per_value.as_ref().map(|per_value| per_value.kept);
@@ -751,17 +757,17 @@ fn parse_describe_agg_row(agg_df: &DataFrame, schema: &Schema) -> Vec<ColumnStat
 }
 
 /// Describe statistics for a frame. With `sample_size`, a table with more rows than
-/// that is described from a sample (see [`crate::sampling::analysis_rows`]); without it, every row is
+/// that is described from a sample (see [`crate::analysis::sampling::analysis_rows`]); without it, every row is
 /// aggregated in one streaming pass, never held. `known_total` saves a count.
 pub fn compute_describe_from_lazy(
     lf: &LazyFrame,
     known_total: Option<usize>,
-    sample: &crate::sampling::Sample,
+    sample: &crate::analysis::sampling::Sample,
     polars_streaming: bool,
 ) -> Result<AnalysisResults> {
     let schema = lf.clone().collect_schema()?;
-    if sample.method != crate::sampling::SampleMethod::EveryRow {
-        let rows = crate::sampling::read(lf, sample, known_total, polars_streaming)?;
+    if sample.method != crate::analysis::sampling::SampleMethod::EveryRow {
+        let rows = crate::analysis::sampling::read(lf, sample, known_total, polars_streaming)?;
         let mut results = compute_describe_single_aggregation(
             &rows.df,
             &schema,
@@ -774,7 +780,7 @@ pub fn compute_describe_from_lazy(
     }
     let total_rows = match known_total {
         Some(total) => total,
-        None => crate::sampling::count_rows(lf, polars_streaming)?,
+        None => crate::analysis::sampling::count_rows(lf, polars_streaming)?,
     };
     let exprs = build_describe_aggregation_exprs(&schema);
     let agg_df = collect_lazy(lf.clone().select(exprs), polars_streaming).map_err(Report::from)?;
@@ -1042,7 +1048,10 @@ const FIT_SEED: u64 = 0x5eed_d157;
 struct ColumnFit {
     distribution_type: DistributionType,
     confidence: f64,
-    fits: Vec<(DistributionType, crate::distribution_fit::FitOutcome)>,
+    fits: Vec<(
+        DistributionType,
+        crate::analysis::distribution_fit::FitOutcome,
+    )>,
 }
 
 fn infer_distribution(values: &[f64], rows: usize) -> ColumnFit {
@@ -1072,8 +1081,8 @@ fn infer_distribution(values: &[f64], rows: usize) -> ColumnFit {
 
     // Counts are described by a count distribution when one holds.
     let counts = values.iter().all(|v| *v >= 0.0 && *v == v.floor());
-    let fits = crate::distribution_fit::test_all(values, FIT_SEED);
-    let distribution_type = crate::distribution_fit::select(&fits, counts);
+    let fits = crate::analysis::distribution_fit::test_all(values, FIT_SEED);
+    let distribution_type = crate::analysis::distribution_fit::select(&fits, counts);
     // The figure beside the name is that family's p-value; with no clear fit, the best
     // any family managed, so the table can say how far from fitting it was.
     let confidence = fits
@@ -1115,7 +1124,7 @@ fn approximate_shapiro_wilk(sorted: &[f64]) -> (Option<f64>, Option<f64>) {
 
     for (i, &value) in sorted.iter().enumerate() {
         let p = (i as f64 + 1.0 - 0.375) / (n as f64 + 0.25);
-        let expected_quantile = crate::distribution_fit::normal_quantile(p);
+        let expected_quantile = crate::analysis::distribution_fit::normal_quantile(p);
         let standardized_value = (value - mean) / std;
 
         sum_expected_sq += expected_quantile * expected_quantile;
@@ -1148,7 +1157,7 @@ fn shapiro_francia_pvalue(w: f64, n: usize) -> Option<f64> {
     let mu = -1.2725 + 1.0521 * (v - u);
     let sigma = 1.0308 - 0.26758 * (v + 2.0 / u);
     let z = ((1.0 - w).ln() - mu) / sigma;
-    Some((1.0 - crate::distribution_fit::normal_cdf(z)).clamp(0.0, 1.0))
+    Some((1.0 - crate::analysis::distribution_fit::normal_cdf(z)).clamp(0.0, 1.0))
 }
 
 /// One numeric column's distribution: its fits, normality, outliers and the sorted
@@ -1193,7 +1202,10 @@ fn distribution_analysis(
             let test = outcome.test()?;
             Some((
                 *family,
-                crate::distribution_fit::qq_quantiles(&test.fitted, sorted_sample_values.len()),
+                crate::analysis::distribution_fit::qq_quantiles(
+                    &test.fitted,
+                    sorted_sample_values.len(),
+                ),
             ))
         })
         .collect();
@@ -1672,7 +1684,7 @@ fn compute_correlation_p_value(correlation: f64, n: usize) -> f64 {
         return 0.0;
     }
     let df = (n - 2) as f64;
-    crate::distribution_fit::beta_inc(df / 2.0, 0.5, 1.0 - correlation * correlation)
+    crate::analysis::distribution_fit::beta_inc(df / 2.0, 0.5, 1.0 - correlation * correlation)
         .clamp(0.0, 1.0)
 }
 

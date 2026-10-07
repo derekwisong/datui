@@ -208,7 +208,7 @@ fn stop() -> Hint {
 
 /// The table's Sample form: what Enter does as the form stands, then the keys the
 /// focused row takes.
-fn sample_form_hints(form: &crate::sample_modal::SampleForm) -> Vec<Hint> {
+fn sample_form_hints(form: &crate::analysis::sample_modal::SampleForm) -> Vec<Hint> {
     let enter = if form.no_sample() {
         "Clear"
     } else if form.anyway {
@@ -319,7 +319,7 @@ pub fn enter_label(enter: crate::WhatEnter) -> &'static str {
 /// Footer keys for the analysis screen per view, tool and Data Quality page: the screen's
 /// only hint surface; a detail's bar describes the detail.
 fn analysis_control_keys(app: &crate::App) -> Vec<Hint> {
-    use crate::analysis_modal::{AnalysisTool, AnalysisView};
+    use crate::analysis::analysis_modal::{AnalysisTool, AnalysisView};
     let modal = &app.analysis_modal;
     let context = app.keys_context();
     let key = |keys| registry_hint(context, keys);
@@ -331,7 +331,7 @@ fn analysis_control_keys(app: &crate::App) -> Vec<Hint> {
     }
     // The Sample form owns the keys over whichever tool; its footer names the rest.
     if let Some(form) = &modal.sample_form {
-        let listing = modal.focus == crate::analysis_modal::AnalysisFocus::Sidebar;
+        let listing = modal.focus == crate::analysis::analysis_modal::AnalysisFocus::Sidebar;
         let sample = |keys| registry_hint(Context::Sample, keys);
         let sample_as = |keys, label| registry_hint_as(Context::Sample, None, keys, label);
         return match (form.inline, listing) {
@@ -354,7 +354,7 @@ fn analysis_control_keys(app: &crate::App) -> Vec<Hint> {
                 } else {
                     sample("← / →")
                 });
-                if form.field == crate::sample_modal::SampleField::Files
+                if form.field == crate::analysis::sample_modal::SampleField::Files
                     && form.context.files.len() > crate::widgets::sample_form::FILES_SHOWN
                 {
                     keys.push(sample("PgUp / PgDn"));
@@ -373,7 +373,7 @@ fn analysis_control_keys(app: &crate::App) -> Vec<Hint> {
     }
     // Only keys that act now, in chip order: primary first, Tab next, the shared sample
     // after, the way out last (the footer keeps the first three plus Esc).
-    let in_pane = modal.focus == crate::analysis_modal::AnalysisFocus::Main;
+    let in_pane = modal.focus == crate::analysis::analysis_modal::AnalysisFocus::Main;
     let esc = say(
         "Esc",
         if in_pane && modal.selected_tool.is_some() {
@@ -420,7 +420,7 @@ fn analysis_control_keys(app: &crate::App) -> Vec<Hint> {
     }
     keys.extend(rest);
     // On a sample: another one, or every row.
-    if modal.view == crate::analysis_modal::AnalysisView::Main
+    if modal.view == crate::analysis::analysis_modal::AnalysisView::Main
         && app
             .analysis_modal
             .current_results()
@@ -436,7 +436,7 @@ fn analysis_control_keys(app: &crate::App) -> Vec<Hint> {
 /// The Data Quality pages' keys. Whatever owns the keys right now — a run in
 /// flight, a popup, a list of choices, Setup — the bar says so.
 fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
-    use crate::data_quality::QualityPage;
+    use crate::analysis::data_quality::QualityPage;
     let modal = &app.analysis_modal;
     let dq = |group, keys| registry_hint_in(Context::DataQuality, Some(group), keys);
     let dq_as =
@@ -467,8 +467,10 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
                 let results = modal.quality.results.as_ref()?;
                 let rows = finding.evidence(results).ok()?;
                 Some(
-                    !matches!(rows, crate::quality_report::EvidenceRows::Files(_))
-                        && app.quality_rows_kept().is_some(),
+                    !matches!(
+                        rows,
+                        crate::analysis::quality_report::EvidenceRows::Files(_)
+                    ) && app.quality_rows_kept().is_some(),
                 )
             });
             match rows {
@@ -533,7 +535,7 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
     // The intent form over the list owns the keys: the rows, and what the focused
     // one takes.
     if let Some(form) = modal.quality.intent_form.as_ref() {
-        use crate::intent_modal::IntentField;
+        use crate::analysis::intent_modal::IntentField;
         let mut keys = vec![dq("Forms", "Enter"), dq("Forms", "Tab")];
         match form.field {
             IntentField::Key | IntentField::Required => keys.push(dq("Forms", "Space")),
@@ -567,7 +569,7 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
     }
     // The tool list has the cursor, the narrow terminal's picker included: its keys
     // are the list's, not the page's. Sample stays second, as on every tool's bar.
-    if modal.focus == crate::analysis_modal::AnalysisFocus::Sidebar {
+    if modal.focus == crate::analysis::analysis_modal::AnalysisFocus::Sidebar {
         return vec![
             dq_as("Report", "Enter", "Open"),
             dq_as("Report", "Tab", "Result"),
@@ -587,8 +589,9 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
     // change nothing, so they are not offered.
     let measured = modal.quality_result_plan();
     let segmented =
-        results.is_some() && measured.grain != crate::data_quality::QualityGrain::Dataset;
-    let trend = results.is_some_and(|results| crate::data_quality::shows_trend(measured, results));
+        results.is_some() && measured.grain != crate::analysis::data_quality::QualityGrain::Dataset;
+    let trend = results
+        .is_some_and(|results| crate::analysis::data_quality::shows_trend(measured, results));
     let mut own: Vec<Hint> = Vec::new();
     // An empty page says which plan setting fills it, and Enter opens that.
     if let Some(setup) = app.quality_page_setup() {
@@ -680,19 +683,19 @@ fn data_quality_control_keys(app: &crate::App) -> Vec<Hint> {
 
 /// The keys Trends adds when they act: a coarser window, staged in Setup, where
 /// segments came out thin or unsampled; the gaps, where windows are expected.
-fn trend_keys(modal: &crate::analysis_modal::AnalysisModal) -> Vec<Hint> {
+fn trend_keys(modal: &crate::analysis::analysis_modal::AnalysisModal) -> Vec<Hint> {
     let mut keys = Vec::new();
     let Some(results) = modal.quality.results.as_ref() else {
         return keys;
     };
     let plan = modal.quality_result_plan();
     if plan.coarser_grain().is_some() {
-        let (sampled, unsampled, thin) = crate::quality_trends::segment_coverage(results);
+        let (sampled, unsampled, thin) = crate::analysis::quality_trends::segment_coverage(results);
         if sampled && unsampled + thin > 0 {
             keys.push(registry_hint_in(Context::DataQuality, Some("Trends"), "w"));
         }
     }
-    if crate::quality_trends::expected_gaps(plan, results).is_some() {
+    if crate::analysis::quality_trends::expected_gaps(plan, results).is_some() {
         keys.push(registry_hint_in(Context::DataQuality, Some("Trends"), "g"));
     }
     keys
@@ -701,7 +704,7 @@ fn trend_keys(modal: &crate::analysis_modal::AnalysisModal) -> Vec<Hint> {
 /// Setup's keys: Run first (Enter is Run only here), the cursor row's keys, the way out
 /// last. While a cancelled read finishes, Run is not offered and Setup's line says why.
 fn setup_control_keys(app: &crate::App) -> Vec<Hint> {
-    use crate::analysis_modal::SetupRow;
+    use crate::analysis::analysis_modal::SetupRow;
     let modal = &app.analysis_modal;
     let key = |keys| registry_hint_in(Context::DataQuality, Some("Setup"), keys);
     let say = |keys, label| registry_hint_as(Context::DataQuality, Some("Setup"), keys, label);
@@ -725,7 +728,7 @@ fn setup_control_keys(app: &crate::App) -> Vec<Hint> {
         SetupRow::Expected
             if matches!(
                 modal.quality.plan.grain,
-                crate::data_quality::QualityGrain::TimeWindows { .. }
+                crate::analysis::data_quality::QualityGrain::TimeWindows { .. }
             ) =>
         {
             keys.push(say("Space", "Expected"));
@@ -848,7 +851,7 @@ fn value_counts_control_keys(app: &crate::App) -> Vec<Hint> {
         if !modal.shows_histogram()
             && !matches!(
                 modal.selected_kind(),
-                Some(crate::value_counts::LineKind::Other(_)) | None
+                Some(crate::analysis::value_counts::LineKind::Other(_)) | None
             )
         {
             keys.push(say("Enter", "Rows"));
@@ -989,8 +992,8 @@ mod tests {
     /// screen without a way out.
     #[test]
     fn every_data_quality_page_offers_a_way_out() {
-        use crate::analysis_modal::AnalysisTool;
-        use crate::data_quality::QualityPage;
+        use crate::analysis::analysis_modal::AnalysisTool;
+        use crate::analysis::data_quality::QualityPage;
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = crate::App::new(tx, crate::tests::test_runtime());
@@ -1025,7 +1028,7 @@ mod tests {
     /// chosen.
     #[test]
     fn the_analysis_bar_offers_only_keys_that_act() {
-        use crate::analysis_modal::{AnalysisFocus, AnalysisTool};
+        use crate::analysis::analysis_modal::{AnalysisFocus, AnalysisTool};
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = crate::App::new(tx, crate::tests::test_runtime());

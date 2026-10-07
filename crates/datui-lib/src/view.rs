@@ -254,7 +254,7 @@ pub struct SavedSample {
     /// How a stream's random sample was drawn (reservoir, or row by row with chance
     /// `rows / of`); redrawn this way, the seed gives the same rows whatever is counted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<crate::table_sample::DrawPath>,
+    pub path: Option<crate::analysis::table_sample::DrawPath>,
     /// The view a sample was drawn through (its query, filters, sort, types and reshape),
     /// replayed before drawing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -265,11 +265,11 @@ impl SavedSample {
     /// `sample` as a view keeps it, drawn `through` the view given, the way `path`
     /// says.
     pub fn of(
-        sample: &crate::sampling::Sample,
-        path: Option<crate::table_sample::DrawPath>,
+        sample: &crate::analysis::sampling::Sample,
+        path: Option<crate::analysis::table_sample::DrawPath>,
         through: Option<ViewSettings>,
     ) -> Self {
-        use crate::sampling::SampleMethod;
+        use crate::analysis::sampling::SampleMethod;
         let (method, per) = match &sample.method {
             SampleMethod::Spread => ("random", None),
             SampleMethod::PerPartition { column } => ("per value", Some(column.clone())),
@@ -288,8 +288,8 @@ impl SavedSample {
     }
 
     /// The sample this draws, or why it cannot be read.
-    pub fn sample(&self) -> Result<crate::sampling::Sample> {
-        use crate::sampling::SampleMethod;
+    pub fn sample(&self) -> Result<crate::analysis::sampling::Sample> {
+        use crate::analysis::sampling::SampleMethod;
         let method = match (self.method.as_str(), &self.per) {
             ("random", _) => SampleMethod::Spread,
             ("per value", Some(column)) => SampleMethod::PerPartition {
@@ -304,8 +304,8 @@ impl SavedSample {
                 ));
             }
         };
-        Ok(crate::sampling::Sample {
-            scope: crate::data_quality::QualityScope::parse_command(&self.scope)?,
+        Ok(crate::analysis::sampling::Sample {
+            scope: crate::analysis::data_quality::QualityScope::parse_command(&self.scope)?,
             method,
             rows: self.rows.max(1),
             seed: self.seed,

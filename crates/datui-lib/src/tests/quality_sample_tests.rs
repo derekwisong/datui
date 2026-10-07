@@ -1,4 +1,4 @@
-use crate::quality_memory::QualityCopyJob;
+use crate::analysis::quality_memory::QualityCopyJob;
 use crate::*;
 use std::sync::mpsc;
 
@@ -9,21 +9,21 @@ use std::sync::mpsc;
 fn the_grain_follows_an_equal_per_value_sample_once() {
     let (tx, _rx) = mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
-    let per_date = sampling::SampleMethod::PerPartition {
+    let per_date = analysis::sampling::SampleMethod::PerPartition {
         column: "date".into(),
     };
     app.analysis_modal.sample.method = per_date.clone();
     app.sync_quality_plan();
     assert_eq!(
         app.analysis_modal.quality.plan.grain,
-        data_quality::QualityGrain::Partition("date".into())
+        analysis::data_quality::QualityGrain::Partition("date".into())
     );
 
-    app.analysis_modal.quality.plan.grain = data_quality::QualityGrain::Dataset;
+    app.analysis_modal.quality.plan.grain = analysis::data_quality::QualityGrain::Dataset;
     app.sync_quality_plan();
     assert_eq!(
         app.analysis_modal.quality.plan.grain,
-        data_quality::QualityGrain::Dataset,
+        analysis::data_quality::QualityGrain::Dataset,
         "the same sample again leaves the chosen grain alone"
     );
 }
@@ -51,12 +51,12 @@ fn a_copy_that_does_not_read_as_the_source_is_let_go() {
             objects,
             root: root.path().to_path_buf(),
         },
-        &data_quality::QualityWatch::default(),
+        &analysis::data_quality::QualityWatch::default(),
         |objects, root| {
             crate::cloud::local_copy::LocalCopy::fetch(
                 root,
                 objects,
-                &sampling::ReadWatch::default(),
+                &analysis::sampling::ReadWatch::default(),
                 |_, write| write(b"abc"),
             )
         },
@@ -100,7 +100,7 @@ fn screen(app: &mut App) -> String {
 /// A Data Quality report on screen and a run under way in `stage`: its job, whose
 /// test decides how it ends.
 fn quality_run_under_way(
-    stage: data_quality::QualityPhase,
+    stage: analysis::data_quality::QualityPhase,
 ) -> (App, mpsc::Receiver<AppEvent>, jobs::Started) {
     let (tx, rx) = mpsc::channel();
     let mut app = App::new(tx, crate::tests::test_runtime());
@@ -116,30 +116,30 @@ fn quality_run_under_way(
     );
     app.overlay = crate::Overlay::Analysis;
     let modal = &mut app.analysis_modal;
-    modal.selected_tool = Some(analysis_modal::AnalysisTool::DataQuality);
-    modal.focus = analysis_modal::AnalysisFocus::Main;
-    let plan = data_quality::DataQualityPlan::default();
-    modal.quality.results = Some(data_quality::DataQualityResults::empty(
+    modal.selected_tool = Some(analysis::analysis_modal::AnalysisTool::DataQuality);
+    modal.focus = analysis::analysis_modal::AnalysisFocus::Main;
+    let plan = analysis::data_quality::DataQualityPlan::default();
+    modal.quality.results = Some(analysis::data_quality::DataQualityResults::empty(
         Some(3),
         df.schema(),
     ));
     modal.quality.last_plan = Some(plan.clone());
-    modal.set_quality_page(data_quality::QualityPage::Overview);
+    modal.set_quality_page(analysis::data_quality::QualityPage::Overview);
     modal.quality.plan.sample_seed = 7;
     let mut progress = AnalysisProgress::new(stage.stage.label());
     progress.reads_source = Some(stage.reads_source);
     progress.interruptible = Some(stage.interruptible);
     modal.computing = Some(progress);
     let run = Job::Analysis(crate::jobs::AnalysisRun {
-        watch: Some(data_quality::QualityWatch::default()),
+        watch: Some(analysis::data_quality::QualityWatch::default()),
         runs_out: false,
     });
     let worker = app.job_for_tests(run, Some("Profiling data quality..."));
     (app, rx, worker)
 }
 
-fn quality_stage(stage: data_quality::QualityStage) -> Progress {
-    Progress::QualityPhase(data_quality::QualityPhase {
+fn quality_stage(stage: analysis::data_quality::QualityStage) -> Progress {
+    Progress::QualityPhase(analysis::data_quality::QualityPhase {
         stage,
         reads_source: false,
         interruptible: false,
@@ -152,8 +152,8 @@ fn quality_stage(stage: data_quality::QualityStage) -> Progress {
 /// the stopped worker still sends are dropped.
 #[test]
 fn a_cancelled_run_says_so_until_its_worker_exits() {
-    let (mut app, rx, worker) = quality_run_under_way(data_quality::QualityPhase {
-        stage: data_quality::QualityStage::CountingRows,
+    let (mut app, rx, worker) = quality_run_under_way(analysis::data_quality::QualityPhase {
+        stage: analysis::data_quality::QualityStage::CountingRows,
         reads_source: true,
         interruptible: false,
     });
@@ -169,7 +169,7 @@ fn a_cancelled_run_says_so_until_its_worker_exits() {
     );
     assert_eq!(
         app.analysis_modal.quality.page,
-        data_quality::QualityPage::Setup
+        analysis::data_quality::QualityPage::Setup
     );
     assert!(app.flash_message().is_none(), "state, not a flash");
     let text = screen(&mut app);
@@ -178,7 +178,7 @@ fn a_cancelled_run_says_so_until_its_worker_exits() {
     // A stage the stopped worker still sends changes nothing.
     app.event(AppEvent::JobProgress {
         ticket: stopped,
-        progress: quality_stage(data_quality::QualityStage::ProfilingColumns),
+        progress: quality_stage(analysis::data_quality::QualityStage::ProfilingColumns),
     });
     assert!(app.analysis_modal.computing.is_none());
 
@@ -190,7 +190,7 @@ fn a_cancelled_run_says_so_until_its_worker_exits() {
     key(&mut app, KeyCode::Esc);
     assert_eq!(
         app.analysis_modal.quality.page,
-        data_quality::QualityPage::Overview
+        analysis::data_quality::QualityPage::Overview
     );
     assert!(key(&mut app, KeyCode::Char('r')).is_none());
     assert!(!app.is_busy());
@@ -210,7 +210,7 @@ fn a_cancelled_run_says_so_until_its_worker_exits() {
     assert!(matches!(
         key(&mut app, KeyCode::Enter),
         Some(AppEvent::AnalysisCompute(
-            crate::analysis_modal::AnalysisTool::DataQuality
+            crate::analysis::analysis_modal::AnalysisTool::DataQuality
         ))
     ));
 
@@ -221,7 +221,7 @@ fn a_cancelled_run_says_so_until_its_worker_exits() {
     );
     app.event(AppEvent::JobProgress {
         ticket: running.ticket(),
-        progress: quality_stage(data_quality::QualityStage::ProfilingColumns),
+        progress: quality_stage(analysis::data_quality::QualityStage::ProfilingColumns),
     });
     let progress = app.analysis_modal.computing.as_ref().unwrap();
     assert_eq!(progress.phase, "Profiling columns");
@@ -234,8 +234,8 @@ fn a_cancelled_run_says_so_until_its_worker_exits() {
 /// stopping rather than leave Run refused without a reason.
 #[test]
 fn a_run_that_stops_at_its_next_batch_is_not_called_a_finishing_read() {
-    let (mut app, rx, worker) = quality_run_under_way(data_quality::QualityPhase {
-        stage: data_quality::QualityStage::ProfilingColumns,
+    let (mut app, rx, worker) = quality_run_under_way(analysis::data_quality::QualityPhase {
+        stage: analysis::data_quality::QualityStage::ProfilingColumns,
         reads_source: true,
         interruptible: true,
     });
@@ -250,7 +250,7 @@ fn a_run_that_stops_at_its_next_batch_is_not_called_a_finishing_read() {
     assert_eq!(app.flash_message(), Some("Run cancelled"));
     assert_eq!(
         app.analysis_modal.quality.page,
-        data_quality::QualityPage::Setup
+        analysis::data_quality::QualityPage::Setup
     );
     assert!(app.cancelled_run_shown().is_none());
     let text = screen(&mut app);
@@ -285,8 +285,8 @@ fn a_run_that_stops_at_its_next_batch_is_not_called_a_finishing_read() {
 /// keyed by what chose them, since a finished read is not thrown away.
 #[test]
 fn a_stale_report_never_replaces_the_current_one() {
-    let (mut app, rx, worker) = quality_run_under_way(data_quality::QualityPhase {
-        stage: data_quality::QualityStage::ProfilingColumns,
+    let (mut app, rx, worker) = quality_run_under_way(analysis::data_quality::QualityPhase {
+        stage: analysis::data_quality::QualityStage::ProfilingColumns,
         reads_source: false,
         interruptible: false,
     });
@@ -307,12 +307,12 @@ fn a_stale_report_never_replaces_the_current_one() {
     let state = app.data_table_state.as_ref().unwrap();
     let (dataset_generation, view_generation) = (app.dataset_generation, state.len_generation());
     let measured = |seed: u64| {
-        let plan = data_quality::DataQualityPlan {
+        let plan = analysis::data_quality::DataQualityPlan {
             dataset_rows: 2,
             sample_seed: seed,
-            ..data_quality::DataQualityPlan::default()
+            ..analysis::data_quality::DataQualityPlan::default()
         };
-        let (results, rows) = data_quality::compute_data_quality_kept(
+        let (results, rows) = analysis::data_quality::compute_data_quality_kept(
             &polars::prelude::IntoLazy::lazy(df.clone()),
             None,
             &plan,
@@ -326,7 +326,7 @@ fn a_stale_report_never_replaces_the_current_one() {
             view_generation,
             sample: plan.sample(),
             rows: std::sync::Arc::new(rows.unwrap()),
-            source: crate::quality_export::SourceIdentity::default(),
+            source: crate::analysis::quality_export::SourceIdentity::default(),
         };
         (plan, results, kept)
     };
@@ -334,7 +334,7 @@ fn a_stale_report_never_replaces_the_current_one() {
     let (old_plan, old_results, old_rows) = measured(1);
     app.event(AppEvent::JobProgress {
         ticket: stale.ticket(),
-        progress: quality_stage(data_quality::QualityStage::Assembling),
+        progress: quality_stage(analysis::data_quality::QualityStage::Assembling),
     });
     let ended = stale.ticket();
     stale.end(Outcome::answered(Answer::DataQuality {
@@ -395,8 +395,8 @@ fn a_stale_report_never_replaces_the_current_one() {
 /// lines, and no cell outside them moves, at 80x24 and 60x20.
 #[test]
 fn stages_and_spinner_frames_do_not_move_the_layout() {
-    use data_quality::QualityStage;
-    let (mut app, _rx, _worker) = quality_run_under_way(data_quality::QualityPhase {
+    use analysis::data_quality::QualityStage;
+    let (mut app, _rx, _worker) = quality_run_under_way(analysis::data_quality::QualityPhase {
         stage: QualityStage::Preparing,
         reads_source: false,
         interruptible: false,
@@ -421,7 +421,7 @@ fn stages_and_spinner_frames_do_not_move_the_layout() {
             else {
                 continue;
             };
-            let watch = crate::sampling::ReadWatch::default();
+            let watch = crate::analysis::sampling::ReadWatch::default();
             if reads == Some(true) {
                 watch.saw(1_234_567 * frame as usize);
             }
@@ -477,8 +477,8 @@ fn stages_and_spinner_frames_do_not_move_the_layout() {
 /// Each waits, says why, and stays as it was; once the worker exits, each reads.
 #[test]
 fn nothing_reads_beside_a_cancelled_run_through_another_way_in() {
-    let (mut app, rx, worker) = quality_run_under_way(data_quality::QualityPhase {
-        stage: data_quality::QualityStage::CountingRows,
+    let (mut app, rx, worker) = quality_run_under_way(analysis::data_quality::QualityPhase {
+        stage: analysis::data_quality::QualityStage::CountingRows,
         reads_source: true,
         interruptible: false,
     });
@@ -487,7 +487,7 @@ fn nothing_reads_beside_a_cancelled_run_through_another_way_in() {
     key(&mut app, KeyCode::Esc);
     assert_eq!(
         app.analysis_modal.quality.page,
-        data_quality::QualityPage::Overview
+        analysis::data_quality::QualityPage::Overview
     );
     let refused = |app: &mut App, what: &str| {
         assert!(!app.is_busy(), "{what} started a read");
@@ -495,11 +495,11 @@ fn nothing_reads_beside_a_cancelled_run_through_another_way_in() {
         assert_eq!(app.flash_message(), Some(ANALYSIS_READ_WAITS), "{what}");
         app.flash = None;
     };
-    let duplicates = || analysis_modal::EvidenceRead {
-        rows: quality_report::EvidenceRows::Duplicates,
+    let duplicates = || analysis::analysis_modal::EvidenceRead {
+        rows: analysis::quality_report::EvidenceRows::Duplicates,
         label: "Data Quality / Duplicate rows".to_string(),
         sample: None,
-        scope: data_quality::QualityScope::CurrentView,
+        scope: analysis::data_quality::QualityScope::CurrentView,
         summary: Vec::new(),
     };
 
@@ -515,14 +515,14 @@ fn nothing_reads_beside_a_cancelled_run_through_another_way_in() {
     refused(&mut app, "v");
 
     // Another tool.
-    app.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
+    app.analysis_modal.focus = analysis::analysis_modal::AnalysisFocus::Sidebar;
     app.analysis_modal.sidebar_state.select(Some(0));
     app.analysis_modal.sample_run_for = Some(app.dataset_generation);
     assert!(key(&mut app, KeyCode::Enter).is_none());
     refused(&mut app, "Describe");
     // Its Sample form stays open, as filled.
     app.analysis_modal.sample_run_for = None;
-    app.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
+    app.analysis_modal.focus = analysis::analysis_modal::AnalysisFocus::Sidebar;
     assert!(key(&mut app, KeyCode::Enter).is_none());
     assert!(
         app.analysis_modal.sample_form.is_some(),
@@ -533,7 +533,7 @@ fn nothing_reads_beside_a_cancelled_run_through_another_way_in() {
     assert!(app.analysis_modal.sample_form.is_some());
     app.analysis_modal.sample_run_for = Some(app.dataset_generation);
     app.analysis_modal.sample_form = None;
-    app.analysis_modal.focus = analysis_modal::AnalysisFocus::Sidebar;
+    app.analysis_modal.focus = analysis::analysis_modal::AnalysisFocus::Sidebar;
 
     // The worker exits: each way in reads again.
     drop(worker);
@@ -544,7 +544,7 @@ fn nothing_reads_beside_a_cancelled_run_through_another_way_in() {
     assert!(matches!(
         key(&mut app, KeyCode::Enter),
         Some(AppEvent::AnalysisCompute(
-            crate::analysis_modal::AnalysisTool::Describe
+            crate::analysis::analysis_modal::AnalysisTool::Describe
         ))
     ));
 }

@@ -2,7 +2,10 @@
 
 use crate::feedback::Confirm;
 use crate::form::ListMove;
-use crate::{ANALYSIS_READ_WAITS, App, AppEvent, analysis_modal, sample_modal, sampling};
+use crate::{
+    ANALYSIS_READ_WAITS, App, AppEvent, analysis::analysis_modal, analysis::sample_modal,
+    analysis::sampling,
+};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 impl App {

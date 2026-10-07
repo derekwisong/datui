@@ -90,9 +90,9 @@ pub(crate) fn temporal_frame() -> DataFrame {
 #[test]
 fn describe_gives_dates_and_times_their_range_in_their_own_format() {
     let df = temporal_frame();
-    let every_row = crate::sampling::Sample {
-        method: crate::sampling::SampleMethod::EveryRow,
-        ..crate::sampling::Sample::default()
+    let every_row = crate::analysis::sampling::Sample {
+        method: crate::analysis::sampling::SampleMethod::EveryRow,
+        ..crate::analysis::sampling::Sample::default()
     };
     let lazy = compute_describe_from_lazy(&df.clone().lazy(), Some(6), &every_row, false)
         .unwrap()

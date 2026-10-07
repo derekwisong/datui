@@ -7,7 +7,7 @@
 use crate::common::next_event;
 use crate::fake_s3::{FakeS3, WireCount};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use datui::data_quality::{
+use datui::analysis::data_quality::{
     QualityComparison, QualityCompute, QualityGrain, QualityStage, TemporalRole,
     TemporalRoleAssignment,
 };
@@ -163,7 +163,7 @@ fn edit_and_run(
     app: &mut App,
     rx: &mpsc::Receiver<AppEvent>,
     s3: &FakeS3,
-    change: impl FnOnce(&mut datui::data_quality::DataQualityPlan),
+    change: impl FnOnce(&mut datui::analysis::data_quality::DataQualityPlan),
 ) -> (Vec<QualityStage>, WireCount) {
     let before = s3.wire.count();
     if !app.analysis_modal.quality.page.is_setup() {
@@ -299,7 +299,7 @@ fn a_full_scan_is_compared_again_without_a_request() {
     let (mut app, rx) = open_remote_with(&s3, copies_off(), None);
 
     let (reads, wire) = edit_and_run(&mut app, &rx, &s3, |plan| {
-        plan.method = datui::sampling::SampleMethod::EveryRow;
+        plan.method = datui::analysis::sampling::SampleMethod::EveryRow;
         plan.compute = QualityCompute::Full;
         plan.grain = QualityGrain::File;
     });
@@ -370,8 +370,8 @@ fn copies_off() -> AppConfig {
     config
 }
 
-fn full_scan(plan: &mut datui::data_quality::DataQualityPlan) {
-    plan.method = datui::sampling::SampleMethod::EveryRow;
+fn full_scan(plan: &mut datui::analysis::data_quality::DataQualityPlan) {
+    plan.method = datui::analysis::sampling::SampleMethod::EveryRow;
     plan.compute = QualityCompute::Full;
     plan.grain = window("1d");
 }
@@ -610,8 +610,8 @@ fn above_the_budget_a_full_scan_reads_the_source_in_passes() {
         press(&mut app, KeyCode::Enter);
         (app, rx)
     };
-    let full = |plan: &mut datui::data_quality::DataQualityPlan| {
-        plan.method = datui::sampling::SampleMethod::EveryRow;
+    let full = |plan: &mut datui::analysis::data_quality::DataQualityPlan| {
+        plan.method = datui::analysis::sampling::SampleMethod::EveryRow;
         plan.compute = QualityCompute::Full;
     };
     full(&mut app.analysis_modal.quality.plan);
@@ -820,7 +820,7 @@ fn one_remote_object_is_copied_once() {
     app.analysis_modal.sidebar_state.select(Some(3));
     press(&mut app, KeyCode::Enter);
     let (reads, wire) = edit_and_run(&mut app, &rx, &s3, |plan| {
-        plan.method = datui::sampling::SampleMethod::EveryRow;
+        plan.method = datui::analysis::sampling::SampleMethod::EveryRow;
         plan.compute = QualityCompute::Full;
     });
     assert_eq!(reads, [QualityStage::CopyingSource]);

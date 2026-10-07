@@ -2119,7 +2119,8 @@ mod tests {
         assert_eq!(source.frames(), frames);
         let lf = source.lazy();
         // The streaming engine where the build has it, as the app reads.
-        let streaming = |lf: LazyFrame| crate::statistics::collect_lazy(lf, true).unwrap();
+        let streaming =
+            |lf: LazyFrame| crate::analysis::statistics::collect_lazy(lf, true).unwrap();
         let n = streaming(lf.clone().select([len()]));
         assert_eq!(
             n.column("len").unwrap().u32().unwrap().get(0),

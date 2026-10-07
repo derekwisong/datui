@@ -1,8 +1,8 @@
 //! Column intent in Data Quality Setup: the list of the scope's columns with what
 //! each is declared to hold, and the form that declares it for one.
 
+use crate::analysis::intent_modal::{IntentField, IntentForm};
 use crate::glyphs;
-use crate::intent_modal::{IntentField, IntentForm};
 use crate::numfmt;
 use crate::render::layout::dialog_in;
 use crate::widgets::data_quality::{DataQualityWidgetConfig, rule_line};
@@ -200,7 +200,10 @@ pub fn render_form(
             label_width: LABEL_WIDTH,
         }
         .render(line(row), buf, ctx);
-        crate::pointer::record_field::<crate::intent_modal::IntentForm>(line(row), *field);
+        crate::pointer::record_field::<crate::analysis::intent_modal::IntentForm>(
+            line(row),
+            *field,
+        );
     }
     // What the focused row takes, or why Enter refused: the form's own line.
     let (status, warn) = match &form.error {

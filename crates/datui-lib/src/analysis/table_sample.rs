@@ -1,7 +1,7 @@
 //! The sample as a step of the view: drawn into memory a chunk at a time, while the
 //! table shows the rows kept so far.
 //!
-//! [`draw`] reads the rows [`crate::sampling`] would, but hands each chunk that is
+//! [`draw`] reads the rows [`crate::analysis::sampling`] would, but hands each chunk that is
 //! final when kept to [`SampleRows`] as it lands: a seeded run of one Parquet or IPC
 //! file, a batch of the head or of every row, and a batch's share of a Bernoulli
 //! sample when the total is known. A reservoir (an unknown total) and an equal per
@@ -17,8 +17,8 @@ use color_eyre::Result;
 use color_eyre::eyre::Report;
 use polars::prelude::*;
 
-use crate::sampling::{CANCELLED, ReadWatch, Sample, SampleMethod};
-use crate::sampling::{sample_rank, stream_batches};
+use crate::analysis::sampling::{CANCELLED, ReadWatch, Sample, SampleMethod};
+use crate::analysis::sampling::{sample_rank, stream_batches};
 
 /// The setting that caps a sample's memory, as every message about it names it.
 pub const MEMORY_SETTING: &str = "analysis.sample_memory_limit";
@@ -356,10 +356,10 @@ pub fn draw(
                 ..Drawn::default()
             }
         }
-        SampleMethod::Spread if crate::sampling::slices_reach_into_the_scan(lf) => {
+        SampleMethod::Spread if crate::analysis::sampling::slices_reach_into_the_scan(lf) => {
             let total = match known_total {
                 Some(total) => total,
-                None => crate::sampling::count_rows(lf, polars_streaming)?,
+                None => crate::analysis::sampling::count_rows(lf, polars_streaming)?,
             };
             if total <= n {
                 stream(lf, live, Some(total))?;
@@ -367,7 +367,7 @@ pub fn draw(
                 let on_run = |offset: usize, run: &DataFrame| {
                     live.keep(offset as u64, run.clone(), Some(n));
                 };
-                let read = crate::sampling::block_sample_live(
+                let read = crate::analysis::sampling::block_sample_live(
                     lf,
                     total,
                     n,
@@ -407,7 +407,7 @@ pub fn draw(
                 }
             }
             DrawPath::Reservoir => {
-                let read = crate::sampling::acquire(
+                let read = crate::analysis::sampling::acquire(
                     lf,
                     sample,
                     None,
@@ -425,7 +425,7 @@ pub fn draw(
             }
         },
         SampleMethod::PerPartition { .. } => {
-            let read = crate::sampling::acquire(
+            let read = crate::analysis::sampling::acquire(
                 lf,
                 sample,
                 known_total,

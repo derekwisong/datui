@@ -1,10 +1,10 @@
-use crate::data_quality::{
+use crate::analysis::data_quality::{
     DataQualityPlan, DataQualityResults, IntervalClock, IntervalFact, QUALITY_WINDOW_WIDTHS,
     QualityComparison, QualityCompute, QualityGrain, QualityMetric, QualityPage, TIME_FORMATS,
     TemporalRole, TemporalRoleAssignment, TimeInterpretation, TimeKind,
 };
-use crate::quality_report::{EvidenceRows, Finding, FindingsView, QualityReport};
-use crate::statistics::{AnalysisResults, DistributionType};
+use crate::analysis::quality_report::{EvidenceRows, Finding, FindingsView, QualityReport};
+use crate::analysis::statistics::{AnalysisResults, DistributionType};
 use ratatui::widgets::TableState;
 
 /// The rows of Data Quality Setup, top to bottom: the rows read, what the columns
@@ -133,9 +133,9 @@ pub struct EvidenceRead {
     /// The table's label once the rows are shown.
     pub label: String,
     /// Draw this sample again from its seed, rather than read the scope.
-    pub sample: Option<crate::sampling::Sample>,
+    pub sample: Option<crate::analysis::sampling::Sample>,
     /// The scope the rows are read from.
-    pub scope: crate::data_quality::QualityScope,
+    pub scope: crate::analysis::data_quality::QualityScope,
     /// What the read is, as the dialog says it: label, value.
     pub summary: Vec<(&'static str, String)>,
 }
@@ -190,10 +190,13 @@ impl ExpectedForm {
                 // Weekdays stated for days read as every window once the grain is
                 // weeks or months, as Setup and the check read it.
                 let every = match &plan.grain {
-                    crate::data_quality::QualityGrain::TimeWindows { every, .. } => every.as_str(),
+                    crate::analysis::data_quality::QualityGrain::TimeWindows { every, .. } => {
+                        every.as_str()
+                    }
                     _ => "",
                 };
-                if expected.weekdays && crate::data_quality::ExpectedWindows::weekdays_apply(every)
+                if expected.weekdays
+                    && crate::analysis::data_quality::ExpectedWindows::weekdays_apply(every)
                 {
                     ExpectedCadence::Weekdays
                 } else {
@@ -215,7 +218,7 @@ impl ExpectedForm {
     /// The choices the Windows row cycles through for windows `every` wide.
     pub fn cadences(every: &str) -> Vec<ExpectedCadence> {
         let mut cadences = vec![ExpectedCadence::None, ExpectedCadence::Every];
-        if crate::data_quality::ExpectedWindows::weekdays_apply(every) {
+        if crate::analysis::data_quality::ExpectedWindows::weekdays_apply(every) {
             cadences.push(ExpectedCadence::Weekdays);
         }
         cadences
@@ -226,7 +229,7 @@ impl ExpectedForm {
         match self.cadence {
             ExpectedCadence::None => "none: no window is a gap".to_string(),
             ExpectedCadence::Every => {
-                crate::data_quality::ExpectedWindows::default().cadence_label(every)
+                crate::analysis::data_quality::ExpectedWindows::default().cadence_label(every)
             }
             ExpectedCadence::Weekdays => "weekdays, Monday to Friday".to_string(),
         }
@@ -266,7 +269,9 @@ impl ExpectedForm {
     }
 
     /// What the editor states, or why it cannot be read.
-    pub fn expected(&self) -> Result<Option<crate::data_quality::ExpectedWindows>, String> {
+    pub fn expected(
+        &self,
+    ) -> Result<Option<crate::analysis::data_quality::ExpectedWindows>, String> {
         if self.cadence == ExpectedCadence::None {
             return Ok(None);
         }
@@ -274,7 +279,7 @@ impl ExpectedForm {
             let text = input.value().trim();
             (!text.is_empty()).then(|| text.to_string())
         };
-        let expected = crate::data_quality::ExpectedWindows {
+        let expected = crate::analysis::data_quality::ExpectedWindows {
             weekdays: self.cadence == ExpectedCadence::Weekdays,
             from: typed(&self.from),
             before: typed(&self.before),
@@ -380,7 +385,7 @@ pub struct AnalysisProgress {
     /// names its first stage.
     pub interruptible: Option<bool>,
     /// The sampler's count of rows seen, where the read can count them.
-    pub read: Option<crate::sampling::ReadWatch>,
+    pub read: Option<crate::analysis::sampling::ReadWatch>,
     /// What the run starts from, when it reuses something: said before it starts.
     pub reuse: Option<String>,
 }
@@ -449,7 +454,7 @@ pub struct AnalysisModal {
     pub correlation_columns: ColumnScroll,
     /// The rows every tool reads (one scope, method, size and seed), so tools compare
     /// like with like. Kept across opens; `s` edits it.
-    pub sample: crate::sampling::Sample,
+    pub sample: crate::analysis::sampling::Sample,
     /// The dataset the sample's scope was chosen for: a partition or file scope means
     /// nothing on another.
     pub sample_dataset: Option<u64>,
@@ -457,10 +462,10 @@ pub struct AnalysisModal {
     /// instead of asking with the Sample form.
     pub sample_run_for: Option<u64>,
     /// The Sample form, while it is open.
-    pub sample_form: Option<crate::sample_modal::SampleForm>,
+    pub sample_form: Option<crate::analysis::sample_modal::SampleForm>,
     /// The tools' own sample, set aside while the view has its own sample, which every
     /// tool then reads whole.
-    pub own_sample: Option<crate::sampling::Sample>,
+    pub own_sample: Option<crate::analysis::sampling::Sample>,
     pub table_state: TableState,              // For describe table
     pub distribution_table_state: TableState, // For distribution table
     pub correlation_table_state: TableState,  // For correlation matrix
@@ -478,7 +483,7 @@ pub struct AnalysisModal {
     pub selected_distribution: Option<usize>, // Selected row in distribution table
     pub selected_correlation: Option<(usize, usize)>, // Selected cell in correlation matrix (row, col)
     /// The coefficient the matrix and the pair detail show; both are computed.
-    pub correlation_method: crate::statistics::CorrelationMethod,
+    pub correlation_method: crate::analysis::statistics::CorrelationMethod,
     pub selected_theoretical_distribution: DistributionType, // Selected theoretical distribution for Q-Q plot
     pub distribution_selector_state: TableState,             // For distribution selector list
     pub histogram_scale: HistogramScale,
@@ -536,9 +541,9 @@ pub struct QualityState {
     /// The Expected editor, while it is open.
     pub expected_form: Option<ExpectedForm>,
     /// One column's declared intent, being edited over the Column intent list.
-    pub intent_form: Option<crate::intent_modal::IntentForm>,
+    pub intent_form: Option<crate::analysis::intent_modal::IntentForm>,
     /// The dialog that writes the report on screen to a file.
-    pub export: Option<crate::quality_export::ExportForm>,
+    pub export: Option<crate::analysis::quality_export::ExportForm>,
 }
 
 impl QualityState {
@@ -576,9 +581,9 @@ impl AnalysisModal {
     /// analysis_sample_rows`, where 0 means every row.
     pub fn with_sample_rows(rows: usize) -> Self {
         let mut modal = Self::default();
-        modal.sample.seed = crate::sample_modal::new_seed();
+        modal.sample.seed = crate::analysis::sample_modal::new_seed();
         if rows == 0 {
-            modal.sample.method = crate::sampling::SampleMethod::EveryRow;
+            modal.sample.method = crate::analysis::sampling::SampleMethod::EveryRow;
         } else {
             modal.sample.rows = rows;
         }
@@ -802,9 +807,9 @@ impl AnalysisModal {
     pub fn follow_view_sample(&mut self, sampled: bool) {
         match (sampled, self.own_sample.is_some()) {
             (true, false) => {
-                let every = crate::sampling::Sample {
-                    scope: crate::data_quality::QualityScope::CurrentView,
-                    method: crate::sampling::SampleMethod::EveryRow,
+                let every = crate::analysis::sampling::Sample {
+                    scope: crate::analysis::data_quality::QualityScope::CurrentView,
+                    method: crate::analysis::sampling::SampleMethod::EveryRow,
                     ..self.sample.clone()
                 };
                 self.own_sample = Some(std::mem::replace(&mut self.sample, every));
@@ -834,20 +839,24 @@ impl AnalysisModal {
             QualityPage::Columns | QualityPage::Detail => results.columns.len(),
             QualityPage::Segments => results.segments.len(),
             QualityPage::SegmentDetail => {
-                crate::data_quality::segment_changes(results, self.quality.segment_index).len()
+                crate::analysis::data_quality::segment_changes(results, self.quality.segment_index)
+                    .len()
             }
             // The trend table's lines; the width only changes how many bars.
             QualityPage::Trends => {
-                crate::quality_trends::trend_view(results, self.quality.metric, 1)
+                crate::analysis::quality_trends::trend_view(results, self.quality.metric, 1)
                     .lines
                     .len()
             }
             // At most one bar per segment: the width decides how many, and the page clamps
             // the cursor as it draws.
-            QualityPage::TrendDetail => crate::quality_trends::trend_slots(results).len(),
+            QualityPage::TrendDetail => crate::analysis::quality_trends::trend_slots(results).len(),
             QualityPage::Gaps => {
-                match crate::quality_trends::expected_gaps(self.quality_result_plan(), results) {
-                    Some(crate::quality_trends::Gaps::Checked(check)) => check.runs.len(),
+                match crate::analysis::quality_trends::expected_gaps(
+                    self.quality_result_plan(),
+                    results,
+                ) {
+                    Some(crate::analysis::quality_trends::Gaps::Checked(check)) => check.runs.len(),
                     _ => 0,
                 }
             }
@@ -890,7 +899,7 @@ impl AnalysisModal {
             count => format!("{} findings", crate::numfmt::group_chrome(count)),
         };
         let (title, choices, current) = if by_column {
-            let columns = crate::quality_report::column_choices(report, results);
+            let columns = crate::analysis::quality_report::column_choices(report, results);
             let width = columns
                 .iter()
                 .map(|(name, _)| crate::glyphs::display_width(name))
@@ -911,7 +920,7 @@ impl AnalysisModal {
             }));
             ("Findings by Column", choices, current)
         } else {
-            let checks = crate::quality_report::check_choices(report);
+            let checks = crate::analysis::quality_report::check_choices(report);
             let width = checks
                 .iter()
                 .map(|(name, _)| crate::glyphs::display_width(name))
@@ -1006,7 +1015,7 @@ impl AnalysisModal {
         self.quality
             .intent_form
             .as_ref()
-            .is_some_and(crate::intent_modal::IntentForm::typing)
+            .is_some_and(crate::analysis::intent_modal::IntentForm::typing)
     }
 
     /// Whether the Sample form's scope field owns typed characters, so Ctrl-C and `?`
@@ -1041,7 +1050,7 @@ impl AnalysisModal {
         let Some(results) = self.quality.results.as_ref() else {
             return;
         };
-        let view = crate::quality_trends::trend_view(results, self.quality.metric, 1);
+        let view = crate::analysis::quality_trends::trend_view(results, self.quality.metric, 1);
         let line = view
             .lines
             .get(self.quality.trend_line)
@@ -1050,7 +1059,7 @@ impl AnalysisModal {
         let Some(results) = self.quality.results.as_ref() else {
             return;
         };
-        let view = crate::quality_trends::trend_view(results, self.quality.metric, 1);
+        let view = crate::analysis::quality_trends::trend_view(results, self.quality.metric, 1);
         let found = line.and_then(|(measure, names)| {
             view.lines.iter().position(|candidate| {
                 candidate.measure == measure
@@ -1123,7 +1132,10 @@ impl AnalysisModal {
             .results
             .as_ref()
             .map(|results| {
-                crate::data_quality::segment_order(results, self.quality.segments_by_change)
+                crate::analysis::data_quality::segment_order(
+                    results,
+                    self.quality.segments_by_change,
+                )
             })
             .unwrap_or_default()
     }
@@ -1204,8 +1216,8 @@ impl AnalysisModal {
         let results = self.quality.results.as_ref()?;
         if !matches!(
             results.precision,
-            crate::data_quality::QualityPrecision::Exact
-                | crate::data_quality::QualityPrecision::Sampled
+            crate::analysis::data_quality::QualityPrecision::Exact
+                | crate::analysis::data_quality::QualityPrecision::Sampled
         ) {
             return None;
         }
@@ -1344,7 +1356,9 @@ impl AnalysisModal {
             }
             SetupRow::Values => {
                 // The draft's sample says which kind of read it is.
-                let read = if self.quality.plan.method == crate::sampling::SampleMethod::EveryRow {
+                let read = if self.quality.plan.method
+                    == crate::analysis::sampling::SampleMethod::EveryRow
+                {
                     QualityCompute::Full
                 } else {
                     QualityCompute::Sample
@@ -1669,7 +1683,7 @@ impl AnalysisModal {
             .as_ref()
             .and_then(|results| results.distribution_analyses.get(row))
             .map_or(0, |analysis| {
-                crate::distribution_fit::listing_order(&analysis.fits).len()
+                crate::analysis::distribution_fit::listing_order(&analysis.fits).len()
             })
     }
 
@@ -1721,7 +1735,7 @@ impl AnalysisModal {
             if let Some(dist_analysis) = results.distribution_analyses.get(dist_analysis_idx) {
                 // The order the selector lists them in.
                 let distribution_scores =
-                    crate::distribution_fit::listing_order(&dist_analysis.fits);
+                    crate::analysis::distribution_fit::listing_order(&dist_analysis.fits);
                 let valid_idx = idx.min(distribution_scores.len().saturating_sub(1));
                 if let Some(dist_type) = distribution_scores.get(valid_idx) {
                     self.selected_theoretical_distribution = *dist_type;
@@ -1749,7 +1763,7 @@ mod quality_scope_tests {
                 column: "day".to_string(),
                 every: "1d".to_string(),
             },
-            expected: Some(crate::data_quality::ExpectedWindows {
+            expected: Some(crate::analysis::data_quality::ExpectedWindows {
                 weekdays: true,
                 ..Default::default()
             }),
@@ -1837,7 +1851,7 @@ mod quality_scope_tests {
             .select_original(0);
         modal.choose_plan_picker();
         assert_eq!(modal.quality.plan.compute, QualityCompute::Sample);
-        modal.quality.plan.method = crate::sampling::SampleMethod::EveryRow;
+        modal.quality.plan.method = crate::analysis::sampling::SampleMethod::EveryRow;
         modal.open_plan_picker(SetupRow::Values, &context);
         modal.choose_plan_picker();
         assert_eq!(modal.quality.plan.compute, QualityCompute::Full);

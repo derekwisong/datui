@@ -1,8 +1,8 @@
 //! State of the Value Counts screen: which column, the counts read for the view,
 //! the order, the cursor, and the count in flight.
 
-use crate::sampling::ReadWatch;
-use crate::value_counts::{LineKind, Order, ValueCounts};
+use crate::analysis::sampling::ReadWatch;
+use crate::analysis::value_counts::{LineKind, Order, ValueCounts};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -212,12 +212,12 @@ mod tests {
     }
 
     fn counts(column: &str, values: &[i32]) -> ValueCounts {
-        crate::value_counts::Plan {
+        crate::analysis::value_counts::Plan {
             lf: DataFrame::new_infer_height(vec![Column::new(column.into(), values)])
                 .unwrap()
                 .lazy(),
             column: column.to_string(),
-            read: crate::value_counts::Read::Exact,
+            read: crate::analysis::value_counts::Read::Exact,
             known_total: None,
             streaming: false,
         }
@@ -264,12 +264,12 @@ mod tests {
         assert!(modal.shows_histogram());
         modal.toggle_view();
         assert!(modal.step(1));
-        let text = crate::value_counts::Plan {
+        let text = crate::analysis::value_counts::Plan {
             lf: DataFrame::new_infer_height(vec![Column::new("s".into(), ["a", "b"])])
                 .unwrap()
                 .lazy(),
             column: "s".to_string(),
-            read: crate::value_counts::Read::Exact,
+            read: crate::analysis::value_counts::Read::Exact,
             known_total: None,
             streaming: false,
         }

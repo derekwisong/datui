@@ -539,7 +539,8 @@ impl Search {
             aggregates.push(at.alias(format!("f{i}")));
         }
         let lf = lf.with_row_index(ROW, Some(offset)).select(aggregates);
-        let df = crate::statistics::collect_lazy(lf, self.rows.streaming).map_err(message)?;
+        let df =
+            crate::analysis::statistics::collect_lazy(lf, self.rows.streaming).map_err(message)?;
         let get = |name: &str| -> Option<u64> { df.column(name).ok()?.u64().ok()?.get(0) };
         let rows = get(ROWS).unwrap_or(0) as usize;
         let mut best: Option<(usize, usize)> = None;

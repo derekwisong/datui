@@ -1,5 +1,5 @@
 use super::*;
-use crate::data_quality::fixtures::measure;
+use crate::analysis::data_quality::fixtures::measure;
 
 fn fixture() -> LazyFrame {
     df!(
@@ -215,7 +215,7 @@ fn exact_observation_predicates_select_matching_rows() {
         (ObservationKind::NonFinite, "amount", 2),
         (ObservationKind::Constant, "constant", 4),
     ];
-    let none = crate::data_quality::fixtures::results_with(Vec::new(), Vec::new());
+    let none = crate::analysis::data_quality::fixtures::results_with(Vec::new(), Vec::new());
     for (kind, column, expected) in examples {
         let observation = QualityObservation {
             kind,
@@ -527,7 +527,7 @@ fn a_daily_sample_names_real_changes_and_counts_every_day() {
     let order = segment_order(&results, true);
     assert!(order[..3].contains(&100) && order[..3].contains(&150));
 
-    let view = crate::quality_trends::trend_view(&results, QualityMetric::NullRate, 20);
+    let view = crate::analysis::quality_trends::trend_view(&results, QualityMetric::NullRate, 20);
     let (rows, per_bar) = (view.lines, view.per_bar);
     assert_eq!(per_bar, 10);
     assert_eq!(rows[0].names, ["rows"]);
@@ -676,7 +676,7 @@ fn a_grain_change_cuts_the_kept_sample() {
             .collect::<Vec<_>>()
     };
     let whole = DataQualityPlan {
-        method: crate::sampling::SampleMethod::PerPartition {
+        method: crate::analysis::sampling::SampleMethod::PerPartition {
             column: "region".into(),
         },
         dataset_rows: 5,
@@ -757,7 +757,7 @@ fn segments_are_the_shared_sample_split() {
     );
 
     let equal = DataQualityPlan {
-        method: crate::sampling::SampleMethod::PerPartition {
+        method: crate::analysis::sampling::SampleMethod::PerPartition {
             column: "region".into(),
         },
         dataset_rows: 5,
@@ -2411,7 +2411,10 @@ fn a_run_reports_its_stages_and_stops_when_cancelled() {
     cancelled.cancel();
     let (results, kept) =
         compute_data_quality_watched(&fixture(), Some(4), &plan, None, false, None, &cancelled);
-    assert_eq!(results.unwrap_err().to_string(), crate::sampling::CANCELLED);
+    assert_eq!(
+        results.unwrap_err().to_string(),
+        crate::analysis::sampling::CANCELLED
+    );
     assert!(kept.is_none(), "stopped before its read, it read nothing");
 
     // Stopped after its read, the run still hands its rows back: they were paid for.
@@ -2843,7 +2846,7 @@ fn a_sample_says_where_its_segment_totals_come_from() {
     );
     assert_eq!(fresh_segment_count(&daily, true), SegmentCount::CountPass);
     let head = DataQualityPlan {
-        method: crate::sampling::SampleMethod::FirstRows,
+        method: crate::analysis::sampling::SampleMethod::FirstRows,
         ..daily.clone()
     };
     assert_eq!(fresh_segment_count(&head, false), SegmentCount::CountPass);
@@ -2890,21 +2893,27 @@ fn a_sample_says_where_its_segment_totals_come_from() {
 /// the partial rows never become a sample.
 #[test]
 fn a_stopped_stream_is_not_a_sample() {
-    let watch = crate::sampling::ReadWatch::default();
+    let watch = crate::analysis::sampling::ReadWatch::default();
     watch.stop();
-    let sample = crate::sampling::Sample {
+    let sample = crate::analysis::sampling::Sample {
         scope: QualityScope::CurrentView,
-        method: crate::sampling::SampleMethod::PerPartition {
+        method: crate::analysis::sampling::SampleMethod::PerPartition {
             column: "constant".to_string(),
         },
         rows: 1,
         seed: 7,
     };
-    let read = crate::sampling::read_rows_watched(&fixture(), &sample, None, false, Some(&watch));
+    let read = crate::analysis::sampling::read_rows_watched(
+        &fixture(),
+        &sample,
+        None,
+        false,
+        Some(&watch),
+    );
     let Err(error) = read else {
         panic!("a stopped read returned rows");
     };
-    assert_eq!(error.to_string(), crate::sampling::CANCELLED);
+    assert_eq!(error.to_string(), crate::analysis::sampling::CANCELLED);
 }
 
 /// A CSV of `rows` rows on disk: a source whose read takes many batches.
@@ -2958,7 +2967,10 @@ fn a_full_run_stops_inside_its_read() {
     );
     let (results, _) =
         compute_data_quality_watched(&lf, Some(ROWS), &plan, None, true, None, &watch);
-    assert_eq!(results.unwrap_err().to_string(), crate::sampling::CANCELLED);
+    assert_eq!(
+        results.unwrap_err().to_string(),
+        crate::analysis::sampling::CANCELLED
+    );
     let stages = stages.lock().unwrap().clone();
     let last = stages.last().unwrap();
     assert_eq!(last.stage, QualityStage::ProfilingColumns, "{stages:?}");
@@ -3197,7 +3209,7 @@ fn a_report_on_wide_text_is_weighed_by_the_text_it_holds() {
 /// reads nothing. A count pass of its own stops at the same limit.
 #[test]
 fn a_count_past_a_million_keys_gives_up_and_keeps_the_rows() {
-    let rows = crate::sampling::MAX_COUNTED_KEYS + 1;
+    let rows = crate::analysis::sampling::MAX_COUNTED_KEYS + 1;
     let df = df!("id" => (0..rows as i64).collect::<Vec<_>>()).unwrap();
     let read = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let counter = Arc::clone(&read);
@@ -3242,7 +3254,7 @@ fn a_count_past_a_million_keys_gives_up_and_keeps_the_rows() {
     // Rows kept without a count, a first-rows sample, count the grain in a pass
     // of their own, which gives up at the same limit.
     let head = DataQualityPlan {
-        method: crate::sampling::SampleMethod::FirstRows,
+        method: crate::analysis::sampling::SampleMethod::FirstRows,
         ..by_id
     };
     let (results, kept) = compute_data_quality_watched(&lf, None, &head, None, false, None, &watch);

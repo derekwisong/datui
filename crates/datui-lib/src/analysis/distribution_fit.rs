@@ -6,7 +6,7 @@
 //! probability of the model, and the largest is not the best: among unrejected
 //! families, the lowest AIC wins.
 
-use crate::statistics::DistributionType;
+use crate::analysis::statistics::DistributionType;
 
 /// Every family tested, in the order a tie is listed.
 pub const FAMILIES: [DistributionType; 14] = [

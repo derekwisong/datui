@@ -1,8 +1,8 @@
 //! A view's sample as its rows land: the rows on hand stand while nothing reorders
 //! them, and the frame ends as one chunk a column.
 
+use crate::analysis::table_sample::{Drawn, SampleRows};
 use crate::table::DataTableState;
-use crate::table_sample::{Drawn, SampleRows};
 use polars::prelude::*;
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ fn rows_on_hand_stand_until_a_sort_and_the_end_is_one_chunk() {
     let schema = chunk(0).schema().clone();
     let mut view = DataTableState::sampled_from(
         source,
-        crate::sampling::Sample::default(),
+        crate::analysis::sampling::Sample::default(),
         &schema,
         Arc::clone(&rows),
         false,

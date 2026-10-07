@@ -336,7 +336,7 @@ fn dates_copy_as_each_format_wrote_them() {
 #[test]
 fn a_bounded_table_copy_fails_in_the_words_a_whole_one_does() {
     let lf = df!("s" => ["a"]).unwrap().lazy().select([col("missing")]);
-    let whole = crate::statistics::collect_lazy(lf.clone(), true).unwrap_err();
+    let whole = crate::analysis::statistics::collect_lazy(lf.clone(), true).unwrap_err();
     let err = bounded_table_text(lf, CopyFormat::Tsv, true, 1 << 20).unwrap_err();
     assert_eq!(
         err,

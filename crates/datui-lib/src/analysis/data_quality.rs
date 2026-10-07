@@ -1,4 +1,4 @@
-use crate::statistics::collect_lazy;
+use crate::analysis::statistics::collect_lazy;
 use color_eyre::Result;
 use color_eyre::eyre::Report;
 use polars::chunked_array::cast::CastOptions;
@@ -911,7 +911,7 @@ pub struct CopyRead {
 /// stop checked between stages and between read batches.
 #[derive(Clone, Default)]
 pub struct QualityWatch {
-    read: crate::sampling::ReadWatch,
+    read: crate::analysis::sampling::ReadWatch,
     report: Option<Arc<dyn Fn(QualityPhase) + Send + Sync>>,
     /// The stage under way, and what the stages before it read.
     last: Arc<std::sync::Mutex<(Option<QualityPhase>, ObservedReads)>>,
@@ -945,7 +945,7 @@ impl QualityWatch {
     }
 
     /// The reads' side: the stop, and the rows the stage under way has seen.
-    pub fn read(&self) -> &crate::sampling::ReadWatch {
+    pub fn read(&self) -> &crate::analysis::sampling::ReadWatch {
         &self.read
     }
 
@@ -984,7 +984,9 @@ impl QualityWatch {
         lf.clone().map(
             move |df: DataFrame| {
                 if read.stopped() {
-                    return Err(PolarsError::ComputeError(crate::sampling::CANCELLED.into()));
+                    return Err(PolarsError::ComputeError(
+                        crate::analysis::sampling::CANCELLED.into(),
+                    ));
                 }
                 read.saw(df.height());
                 Ok(df)
@@ -1036,7 +1038,7 @@ impl QualityWatch {
     /// fails as a stopped sampler does.
     fn failed(&self, error: impl Into<Report>) -> Report {
         if self.cancelled() {
-            Report::msg(crate::sampling::CANCELLED)
+            Report::msg(crate::analysis::sampling::CANCELLED)
         } else {
             error.into()
         }
@@ -1048,7 +1050,7 @@ pub struct DataQualityPlan {
     pub scope: QualityScope,
     pub compute: QualityCompute,
     /// How a dataset-grain sample picks its rows, from the shared analysis sample.
-    pub method: crate::sampling::SampleMethod,
+    pub method: crate::analysis::sampling::SampleMethod,
     /// Rows a dataset-grain sample keeps: the shared analysis sample's size.
     pub dataset_rows: usize,
     pub sample_seed: u64,
@@ -1069,7 +1071,7 @@ pub struct DataQualityPlan {
     pub expected: Option<ExpectedWindows>,
     /// What the columns must hold, declared: the key and each column's rules. Read
     /// from the rows the run reads; it decides no rows, so it is the report's.
-    pub intent: crate::quality_intent::DeclaredIntent,
+    pub intent: crate::analysis::quality_intent::DeclaredIntent,
 }
 
 /// Which windows a study expects rows in, from Setup: every window of the grain or
@@ -1152,7 +1154,7 @@ impl Default for DataQualityPlan {
         Self {
             scope: QualityScope::CurrentView,
             compute: QualityCompute::Sample,
-            method: crate::sampling::SampleMethod::Spread,
+            method: crate::analysis::sampling::SampleMethod::Spread,
             dataset_rows: DEFAULT_SAMPLE_ROWS,
             sample_seed: 42_891,
             grain: QualityGrain::Dataset,
@@ -1164,7 +1166,7 @@ impl Default for DataQualityPlan {
             latency_threshold_seconds: None,
             time_formats: Vec::new(),
             expected: None,
-            intent: crate::quality_intent::DeclaredIntent::default(),
+            intent: crate::analysis::quality_intent::DeclaredIntent::default(),
         }
     }
 }
@@ -1188,8 +1190,8 @@ impl DataQualityPlan {
     }
 
     /// The shared analysis sample this plan carries, as the Sample form shows it.
-    pub fn sample(&self) -> crate::sampling::Sample {
-        crate::sampling::Sample {
+    pub fn sample(&self) -> crate::analysis::sampling::Sample {
+        crate::analysis::sampling::Sample {
             scope: self.scope.clone(),
             method: self.method.clone(),
             rows: self.dataset_rows,
@@ -1200,7 +1202,7 @@ impl DataQualityPlan {
     /// Take `sample` as this plan's rows: metadata-only stays so; else every row is a full
     /// read, fewer a sampled one. Equal rows per value of a column sets that column as
     /// the grain, only when the choice is new and no grain was set.
-    pub fn adopt_sample(&mut self, sample: &crate::sampling::Sample) {
+    pub fn adopt_sample(&mut self, sample: &crate::analysis::sampling::Sample) {
         if self.scope != sample.scope {
             self.baseline_segment = None;
         }
@@ -1208,13 +1210,13 @@ impl DataQualityPlan {
         self.sample_seed = sample.seed;
         self.dataset_rows = sample.rows;
         if self.compute != QualityCompute::Metadata {
-            self.compute = if sample.method == crate::sampling::SampleMethod::EveryRow {
+            self.compute = if sample.method == crate::analysis::sampling::SampleMethod::EveryRow {
                 QualityCompute::Full
             } else {
                 QualityCompute::Sample
             };
         }
-        if let crate::sampling::SampleMethod::PerPartition { column } = &sample.method
+        if let crate::analysis::sampling::SampleMethod::PerPartition { column } = &sample.method
             && self.method != sample.method
             && self.grain == QualityGrain::Dataset
         {
@@ -2018,7 +2020,7 @@ impl IntervalFact {
             Self::Zero => "Zero".to_string(),
             Self::OverThreshold => format!(
                 "Over {}",
-                crate::analysis_modal::threshold_label(profile.threshold_seconds)
+                crate::analysis::analysis_modal::threshold_label(profile.threshold_seconds)
             ),
         }
     }
@@ -2152,7 +2154,7 @@ pub struct DataQualityResults {
     /// How many source files' footers were compared, when the scope has files to
     /// compare. `None` means the checks that compare files could not run.
     pub source_files: Option<usize>,
-    /// Rows an equal-per-value sample kept of each value. See [`crate::sampling::PerValue`].
+    /// Rows an equal-per-value sample kept of each value. See [`crate::analysis::sampling::PerValue`].
     pub per_value: Option<usize>,
     /// How many of `source_files` had their footers read: fewer on a dataset too
     /// large to read every footer, where the file checks cover only those.
@@ -2167,12 +2169,12 @@ pub struct DataQualityResults {
     /// `segments`, which profile only what was read.
     pub unsampled_segments: Vec<UnsampledSegment>,
     /// What the declared column intent found; `None` when nothing was declared.
-    pub intent: Option<Box<crate::quality_intent::IntentResults>>,
+    pub intent: Option<Box<crate::analysis::quality_intent::IntentResults>>,
     /// What the rows were read from, as the run that measured them labeled it.
-    pub source: Option<Box<crate::quality_export::SourceIdentity>>,
+    pub source: Option<Box<crate::analysis::quality_export::SourceIdentity>>,
     /// The report and checks read from the rest, once built. Edits in place go
     /// through [`Self::edit`], which drops them.
-    pub(crate) derived: crate::quality_report::ReportCache,
+    pub(crate) derived: crate::analysis::quality_report::ReportCache,
 }
 
 /// A segment the scope has rows in and a sample drew none of.
@@ -2285,12 +2287,12 @@ impl DataQualityResults {
                     .map(|(value, _)| std::mem::size_of::<(String, usize)>() + value.len())
                     .sum::<usize>()
             };
-            std::mem::size_of::<crate::quality_intent::IntentResults>()
+            std::mem::size_of::<crate::analysis::quality_intent::IntentResults>()
                 + intent
                     .columns
                     .iter()
                     .map(|check| {
-                        std::mem::size_of::<crate::quality_intent::ColumnCheck>()
+                        std::mem::size_of::<crate::analysis::quality_intent::ColumnCheck>()
                             + check.lowest.as_ref().map_or(0, String::len)
                             + check.highest.as_ref().map_or(0, String::len)
                             + counted(&check.outside_examples)
@@ -2367,11 +2369,11 @@ pub struct QualitySample {
     positions: Vec<IdxSize>,
     precision: QualityPrecision,
     total_rows: Option<usize>,
-    per_value: Option<crate::sampling::PerValue>,
+    per_value: Option<crate::analysis::sampling::PerValue>,
     /// Rows of the whole scope by segment key, per grain and text-as-time format, keyed as
     /// `AnyValue::str_value` reads (`None` for null).
     counted: Vec<(SegmentKey, SegmentCounts)>,
-    /// Grains whose count stopped at [`crate::sampling::MAX_COUNTED_KEYS`], so a run
+    /// Grains whose count stopped at [`crate::analysis::sampling::MAX_COUNTED_KEYS`], so a run
     /// of one again says so rather than reading to find out.
     too_many: Vec<SegmentKey>,
 }
@@ -2541,8 +2543,8 @@ impl QualitySample {
     }
 
     /// `df`, cut from these rows, described as the sampler described them.
-    pub fn analysis_rows(&self, df: DataFrame) -> crate::sampling::AnalysisRows {
-        crate::sampling::AnalysisRows {
+    pub fn analysis_rows(&self, df: DataFrame) -> crate::analysis::sampling::AnalysisRows {
+        crate::analysis::sampling::AnalysisRows {
             sample_size: (self.precision == QualityPrecision::Sampled).then_some(df.height()),
             total_rows: self.total_rows.unwrap_or(df.height()),
             per_value: self.per_value.clone(),
@@ -2567,7 +2569,7 @@ pub fn sampler_counts_segments(plan: &DataQualityPlan) -> bool {
         (&plan.grain, &plan.method),
         (
             QualityGrain::Partition(column),
-            crate::sampling::SampleMethod::PerPartition { column: sampled },
+            crate::analysis::sampling::SampleMethod::PerPartition { column: sampled },
         ) if column == sampled
     )
 }
@@ -2583,8 +2585,10 @@ pub fn fresh_segment_count(plan: &DataQualityPlan, may_read_blocks: bool) -> Seg
         return SegmentCount::PerValue;
     }
     match plan.method {
-        crate::sampling::SampleMethod::FirstRows => SegmentCount::CountPass,
-        crate::sampling::SampleMethod::Spread if may_read_blocks => SegmentCount::CountPass,
+        crate::analysis::sampling::SampleMethod::FirstRows => SegmentCount::CountPass,
+        crate::analysis::sampling::SampleMethod::Spread if may_read_blocks => {
+            SegmentCount::CountPass
+        }
         _ => SegmentCount::InSamplePass,
     }
 }
@@ -2603,7 +2607,10 @@ fn segment_count_key(plan: &DataQualityPlan) -> Option<Expr> {
 
 /// Whether a sample's own counts are `plan`'s segment totals: the sampler counted
 /// them, and the sample kept what it counted.
-fn per_value_counts(plan: &DataQualityPlan, per_value: Option<&crate::sampling::PerValue>) -> bool {
+fn per_value_counts(
+    plan: &DataQualityPlan,
+    per_value: Option<&crate::analysis::sampling::PerValue>,
+) -> bool {
     sampler_counts_segments(plan) && per_value.is_some()
 }
 
@@ -2711,7 +2718,7 @@ fn profile_quality(
         results.footers_read = source.map(|source| source.footers_read);
         results.reads = Some(watch.observed());
         results.intent =
-            crate::quality_intent::IntentResults::unmeasured(plan, &schema).map(Box::new);
+            crate::analysis::quality_intent::IntentResults::unmeasured(plan, &schema).map(Box::new);
         return Ok(results);
     }
     let grain_column = match &plan.grain {
@@ -2752,7 +2759,7 @@ fn profile_quality(
             }
         };
         if total_rows == 0 && plan.scope != QualityScope::CurrentView {
-            return Err(crate::sampling::no_rows_error(&plan.scope));
+            return Err(crate::analysis::sampling::no_rows_error(&plan.scope));
         }
         return compute_full_quality(
             lf,
@@ -2776,7 +2783,7 @@ fn profile_quality(
             // First rows are one collect; other methods stream in batches or read seeded runs,
             // stopping between them (without the streaming engine, batches follow the whole
             // read).
-            let interruptible = plan.method != crate::sampling::SampleMethod::FirstRows
+            let interruptible = plan.method != crate::analysis::sampling::SampleMethod::FirstRows
                 && cfg!(feature = "streaming");
             watch.stage(QualityStage::ReadingSample, true, interruptible)?;
             read_quality_sample(lf, total_rows, plan, polars_streaming, watch)?
@@ -2791,7 +2798,7 @@ fn profile_quality(
     // Rows chosen by the sample that match nothing are a mistake to name, not an
     // empty report that reads as clean.
     if total_rows == Some(0) && plan.scope != QualityScope::CurrentView {
-        return Err(crate::sampling::no_rows_error(&plan.scope));
+        return Err(crate::analysis::sampling::no_rows_error(&plan.scope));
     }
     let profile_df = attach_source_file(profile_df, source)?;
     watch.stage(QualityStage::ProfilingColumns, false, false)?;
@@ -2803,7 +2810,7 @@ fn profile_quality(
     // Text read as time and the declared intent are counted over the rows in memory,
     // as the columns were.
     let mut formats = interpretation_exprs(plan, &collected_schema);
-    formats.extend(crate::quality_intent::intent_exprs(plan, &schema));
+    formats.extend(crate::analysis::quality_intent::intent_exprs(plan, &schema));
     let unparsed = if formats.is_empty() {
         DataFrame::default()
     } else {
@@ -2813,8 +2820,9 @@ fn profile_quality(
     let identity = profile_identity_lazy(&profile_lf, &schema, evaluated_rows, polars_streaming)?;
     // The declared key's repeats among the rows in memory: a repeat among distinct
     // sampled rows is a repeat in the data, and no repeat says nothing past them.
-    let repeats = crate::quality_intent::key_repeats(&profile_lf, plan, &schema, polars_streaming)?;
-    let intent = crate::quality_intent::IntentResults::from_counts(
+    let repeats =
+        crate::analysis::quality_intent::key_repeats(&profile_lf, plan, &schema, polars_streaming)?;
+    let intent = crate::analysis::quality_intent::IntentResults::from_counts(
         plan,
         &schema,
         &unparsed,
@@ -2836,7 +2844,7 @@ fn profile_quality(
     if let Some(intent) = &intent {
         observations.extend(intent.observations());
     }
-    crate::quality_intent::supersede(&mut observations, plan);
+    crate::analysis::quality_intent::supersede(&mut observations, plan);
     // The rows are in memory, so the detail can show a few of the values behind a
     // finding without reading anything again.
     let mut identity = identity;
@@ -2915,7 +2923,7 @@ fn read_quality_sample(
     polars_streaming: bool,
     watch: &QualityWatch,
 ) -> Result<QualitySample> {
-    let sample = crate::sampling::Sample {
+    let sample = crate::analysis::sampling::Sample {
         scope: QualityScope::CurrentView,
         method: plan.method.clone(),
         rows: plan.dataset_rows,
@@ -2926,7 +2934,7 @@ fn read_quality_sample(
     } else {
         segment_count_key(plan)
     };
-    let sampled = crate::sampling::acquire(
+    let sampled = crate::analysis::sampling::acquire(
         lf,
         &sample,
         total_rows,
@@ -2949,10 +2957,10 @@ fn read_quality_sample(
         too_many: Vec::new(),
     };
     match sampled.counted {
-        Some(crate::sampling::Counted::Totals(totals)) => {
+        Some(crate::analysis::sampling::Counted::Totals(totals)) => {
             kept.counted.push((segment_key(plan), totals));
         }
-        Some(crate::sampling::Counted::TooMany) => kept.too_many.push(segment_key(plan)),
+        Some(crate::analysis::sampling::Counted::TooMany) => kept.too_many.push(segment_key(plan)),
         None => {}
     }
     Ok(kept)
@@ -3001,7 +3009,7 @@ fn sampled_segment_totals(
     watch.stage(QualityStage::CountingSegments, true, polars_streaming)?;
     let counts = counted_segment_totals(&watch.watched(lf), plan, polars_streaming)
         .map_err(|error| watch.failed(error))?;
-    if counts.len() > crate::sampling::MAX_COUNTED_KEYS {
+    if counts.len() > crate::analysis::sampling::MAX_COUNTED_KEYS {
         kept.too_many.push(key);
         return Err(too_many_segments(plan));
     }
@@ -3013,7 +3021,7 @@ fn sampled_segment_totals(
 fn too_many_segments(plan: &DataQualityPlan) -> Report {
     Report::msg(format!(
         "More than {} segments {}; choose a coarser grain",
-        crate::numfmt::group_chrome(crate::sampling::MAX_COUNTED_KEYS),
+        crate::numfmt::group_chrome(crate::analysis::sampling::MAX_COUNTED_KEYS),
         plan.grain.label()
     ))
 }
@@ -3080,7 +3088,7 @@ fn compute_full_quality(
     let mut exprs = build_profile_exprs(schema);
     exprs.extend(interpretation_exprs(plan, &full_schema));
     // The declared intent's counts too: sums over the same rows, in the same pass.
-    exprs.extend(crate::quality_intent::intent_exprs(plan, schema));
+    exprs.extend(crate::analysis::quality_intent::intent_exprs(plan, schema));
     let aggregate = collect_lazy(lf.clone().select(exprs), polars_streaming)
         .map_err(|error| watch.failed(error))?;
     let mut columns = parse_profiles(&aggregate, schema, total_rows);
@@ -3110,9 +3118,9 @@ fn compute_full_quality(
         watch.scope_reads(keyed),
         polars_streaming,
     )?;
-    let repeats =
-        crate::quality_intent::key_repeats(lf, plan, schema, polars_streaming).map_err(failed)?;
-    let intent = crate::quality_intent::IntentResults::from_counts(
+    let repeats = crate::analysis::quality_intent::key_repeats(lf, plan, schema, polars_streaming)
+        .map_err(failed)?;
+    let intent = crate::analysis::quality_intent::IntentResults::from_counts(
         plan,
         schema,
         &aggregate,
@@ -3128,7 +3136,7 @@ fn compute_full_quality(
     if let Some(intent) = &intent {
         observations.extend(intent.observations());
     }
-    crate::quality_intent::supersede(&mut observations, plan);
+    crate::analysis::quality_intent::supersede(&mut observations, plan);
     // Only a run already reading every value pays for conflicting values, as its access
     // plan promised; files are read one by one so a cancel stops between them.
     if let Some(source) = source {
@@ -3472,8 +3480,8 @@ fn duplicate_examples(
 fn example_text(value: &AnyValue<'_>) -> String {
     match value {
         AnyValue::Null => "null".to_string(),
-        AnyValue::String(text) => crate::quality_report::quoted(text, 24),
-        AnyValue::StringOwned(text) => crate::quality_report::quoted(text, 24),
+        AnyValue::String(text) => crate::analysis::quality_report::quoted(text, 24),
+        AnyValue::StringOwned(text) => crate::analysis::quality_report::quoted(text, 24),
         other => {
             let text = crate::exact::str_value(other).to_string();
             if crate::glyphs::display_width(&text) > 24 {
@@ -3523,7 +3531,7 @@ fn finding_examples(
             collect_lazy(lf.clone().select([values]), polars_streaming).map_err(Report::from)?;
         let mut values = Vec::new();
         for value in (0..found.height()).filter_map(|row| string_value_at(&found, "values", row)) {
-            let value = crate::quality_report::quoted(&value, 24);
+            let value = crate::analysis::quality_report::quoted(&value, 24);
             if !values.contains(&value) {
                 values.push(value);
             }
@@ -5416,7 +5424,7 @@ pub fn add_signal_observations(
     watch.stage(QualityStage::CheckingSignal, true, true)?;
     let reports = audio
         .signal_report(&|| watch.cancelled())?
-        .ok_or_else(|| Report::msg(crate::sampling::CANCELLED))?;
+        .ok_or_else(|| Report::msg(crate::analysis::sampling::CANCELLED))?;
     results
         .observations
         .extend(signal_observations(&reports, audio.header().sample_rate));

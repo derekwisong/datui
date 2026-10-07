@@ -77,7 +77,10 @@ pub(crate) enum Confirm {
     DeleteView(String),
     ForgetPlace(std::path::PathBuf),
     /// Overwrite the file the report's export asked about.
-    QualityExport(std::path::PathBuf, crate::quality_export::ReportFormat),
+    QualityExport(
+        std::path::PathBuf,
+        crate::analysis::quality_export::ReportFormat,
+    ),
     ChartExport(Box<crate::chart_export::ChartExportRequest>),
     Export(Box<crate::ExportRequest>),
     Copy(crate::clipboard::CopyFormat, bool),

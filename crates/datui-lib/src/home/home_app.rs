@@ -453,7 +453,8 @@ impl App {
         state.visible_rows = visible;
         let began = std::time::Instant::now();
         let request = state.prepare_async_collect(None)?;
-        let df = crate::statistics::collect_lazy(request.lf, request.polars_streaming).ok()?;
+        let df =
+            crate::analysis::statistics::collect_lazy(request.lf, request.polars_streaming).ok()?;
         let result = request.plan.fit(df);
         let rows = crate::home::home_preview::PreviewRows::from_frame(result.rows());
         state.measurements().read_page(began.elapsed(), Some(1));

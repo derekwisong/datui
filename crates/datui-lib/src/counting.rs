@@ -698,7 +698,7 @@ impl App {
                 continue;
             }
             self.spawn_job(Job::UnfitCount { dataset, version }, None, move |_| {
-                let counted = crate::statistics::collect_lazy(
+                let counted = crate::analysis::statistics::collect_lazy(
                     crate::formats::column_types::unfit_frame(source, &typed),
                     streaming,
                 )

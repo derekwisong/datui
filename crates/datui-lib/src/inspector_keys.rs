@@ -886,7 +886,7 @@ impl App {
             Job::InspectRow { frame, row: index },
             wait.then_some(Self::READING_FIELDS),
             move |_| {
-                let read = crate::statistics::collect_lazy(lf, streaming)
+                let read = crate::analysis::statistics::collect_lazy(lf, streaming)
                     .map_err(|e| crate::error_display::user_message_from_polars(&e))?;
                 if read.height() != 1 {
                     return Err("the row is no longer in the view".to_string());

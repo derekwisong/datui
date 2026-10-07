@@ -1,14 +1,14 @@
 //! `S` at the table: the sample form and the keys that act while a sample is drawn.
 
-use crate::analysis_modal::AnalysisProgress;
+use crate::analysis::analysis_modal::AnalysisProgress;
+use crate::analysis::sample_modal::SampleForm;
+use crate::analysis::table_sample::{Limit, MemoryCheck};
 use crate::form::FormKey;
 use crate::jobs::Job;
-use crate::sample_modal::SampleForm;
 use crate::table::DataTableState;
-use crate::table_sample::{Limit, MemoryCheck};
 use crate::{
-    App, AppEvent, InputMode, Overlay, analysis_modal, data_quality, form, sample_keys,
-    sample_modal, sampling,
+    App, AppEvent, InputMode, Overlay, analysis::analysis_modal, analysis::data_quality,
+    analysis::sample_keys, analysis::sample_modal, analysis::sampling, form,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use polars::datatypes::DataType;
@@ -40,7 +40,7 @@ impl App {
                     0 => sampling::DEFAULT_SAMPLE_ROWS,
                     rows => rows,
                 },
-                seed: crate::sample_modal::new_seed(),
+                seed: crate::analysis::sample_modal::new_seed(),
                 ..sampling::Sample::default()
             },
         };
@@ -86,7 +86,7 @@ impl App {
     fn sample_form_edit(
         &mut self,
         event: &KeyEvent,
-    ) -> form::FormKey<crate::sample_modal::SampleField> {
+    ) -> form::FormKey<crate::analysis::sample_modal::SampleField> {
         let Some(form) = self.sample.form.as_mut() else {
             return form::FormKey::Other;
         };
@@ -97,7 +97,7 @@ impl App {
                 form.adjust(*delta > 0);
                 form.edited();
             }
-            form::FormKey::Text(crate::sample_modal::SampleField::Files)
+            form::FormKey::Text(crate::analysis::sample_modal::SampleField::Files)
                 if matches!(event.code, KeyCode::PageDown | KeyCode::PageUp) =>
             {
                 form.file_offset = if event.code == KeyCode::PageDown {
@@ -153,7 +153,7 @@ impl App {
     /// steps it reads through.
     pub(crate) fn sample_path_key(
         source: &DataTableState,
-        scope: &crate::data_quality::QualityScope,
+        scope: &crate::analysis::data_quality::QualityScope,
     ) -> String {
         let settings = crate::view::ViewSettings {
             sample: None,

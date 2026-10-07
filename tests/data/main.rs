@@ -17,9 +17,9 @@ fn analyze(
     lf: &polars::prelude::LazyFrame,
     rows: Option<usize>,
     seed: u64,
-    options: datui::statistics::ComputeOptions,
-) -> color_eyre::Result<datui::statistics::AnalysisResults> {
-    use datui::sampling::{Sample, SampleMethod};
+    options: datui::analysis::statistics::ComputeOptions,
+) -> color_eyre::Result<datui::analysis::statistics::AnalysisResults> {
+    use datui::analysis::sampling::{Sample, SampleMethod};
     let sample = Sample {
         method: if rows.is_some() {
             SampleMethod::Spread
@@ -30,5 +30,5 @@ fn analyze(
         seed,
         ..Sample::default()
     };
-    datui::statistics::compute_statistics_for_sample(lf, &sample, None, options)
+    datui::analysis::statistics::compute_statistics_for_sample(lf, &sample, None, options)
 }

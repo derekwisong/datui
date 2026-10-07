@@ -8,6 +8,7 @@ use polars::prelude::*;
 use ratatui::widgets::TableState;
 
 use crate::OpenOptions;
+use crate::analysis::statistics::collect_lazy;
 use crate::cloud::local_copy::RemoteObject;
 use crate::filter_modal::FilterStatement;
 use crate::formats::readers::csv::Decompressed;
@@ -20,7 +21,6 @@ use crate::query::{ParsedQuery, parse_query_over};
 use crate::sql_plan::{
     count_subquery_values_once, leftover_subquery_value_columns, ordered_by, stable_order,
 };
-use crate::statistics::collect_lazy;
 use crate::widgets::column_paging::{ColumnMove, CursorMove, OnScreen, Room};
 use crate::widgets::column_widths::{ColumnWidths, WidthChoice};
 
@@ -310,21 +310,21 @@ pub struct DataTableState {
 pub struct Sampled {
     /// The view the sample was drawn from, restored when the sample is cleared.
     source: Box<DataTableState>,
-    sample: crate::sampling::Sample,
-    rows: Arc<crate::table_sample::SampleRows>,
+    sample: crate::analysis::sampling::Sample,
+    rows: Arc<crate::analysis::table_sample::SampleRows>,
     /// The frame the view's plans scan: the chunks taken so far, on their buffers.
     frame: Arc<DataFrame>,
     /// Drawn through the view's query or filters (which it then stands for), not the
     /// source.
     through: bool,
     /// What the draw read, once it ended; `None` while it runs.
-    drawn: Option<crate::table_sample::Drawn>,
+    drawn: Option<crate::analysis::table_sample::Drawn>,
     /// How a random sample of a stream is drawn, which a view keeps.
-    path: Option<crate::table_sample::DrawPath>,
+    path: Option<crate::analysis::table_sample::DrawPath>,
 }
 
 impl Sampled {
-    pub fn sample(&self) -> &crate::sampling::Sample {
+    pub fn sample(&self) -> &crate::analysis::sampling::Sample {
         &self.sample
     }
 
@@ -339,7 +339,7 @@ impl Sampled {
     }
 
     /// Whether these are the rows `rows` holds: the sample a draw fills.
-    pub(crate) fn holds(&self, rows: &Arc<crate::table_sample::SampleRows>) -> bool {
+    pub(crate) fn holds(&self, rows: &Arc<crate::analysis::table_sample::SampleRows>) -> bool {
         Arc::ptr_eq(&self.rows, rows)
     }
 
@@ -349,7 +349,7 @@ impl Sampled {
     }
 
     /// How a random sample of a stream is drawn: what draws the same rows again.
-    pub fn path(&self) -> Option<crate::table_sample::DrawPath> {
+    pub fn path(&self) -> Option<crate::analysis::table_sample::DrawPath> {
         self.path
     }
 

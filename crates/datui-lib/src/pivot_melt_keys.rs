@@ -98,7 +98,7 @@ impl App {
                     };
                     // One more than the preview takes says whether there is more.
                     let head_of = |lf: polars::prelude::LazyFrame| {
-                        crate::statistics::collect_lazy(
+                        crate::analysis::statistics::collect_lazy(
                             lf.slice(0, PREVIEW_INPUT_ROWS as u32 + 1),
                             streaming,
                         )

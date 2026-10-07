@@ -2,7 +2,7 @@
 //! the query, read by Analysis, charts and export, and checked against memory.
 
 use super::*;
-use datui::sampling::SampleMethod;
+use datui::analysis::sampling::SampleMethod;
 use std::sync::Arc;
 
 /// A Parquet file of `rows` rows: `id` in order, `group` one of four, `value`.
@@ -133,7 +133,7 @@ fn a_query_runs_over_the_sample_and_clearing_it_keeps_the_query() {
     key(&mut app, KeyCode::Char('S'));
     let form = app.sample.form.as_mut().unwrap();
     while form.draft.method != SampleMethod::EveryRow {
-        form.field = datui::sample_modal::SampleField::Method;
+        form.field = datui::analysis::sample_modal::SampleField::Method;
         form.adjust(true);
     }
     key(&mut app, KeyCode::Enter);
@@ -149,7 +149,7 @@ fn a_query_runs_over_the_sample_and_clearing_it_keeps_the_query() {
 /// its seed.
 #[test]
 fn analysis_and_charts_read_the_views_sample() {
-    use datui::analysis_modal::AnalysisTool;
+    use datui::analysis::analysis_modal::AnalysisTool;
     let (mut app, rx, tx) = open(parquet("table_sample_tools.parquet", 10_000));
     draw(&mut app, "300");
     pump_until_idle(&mut app, &rx, &tx);
@@ -335,8 +335,8 @@ fn an_exported_chart_carries_its_recipe_unless_omitted() {
 /// same rows whether the count had come in for the first draw or not.
 #[test]
 fn the_same_seed_draws_the_same_rows_before_and_after_the_count() {
+    use datui::analysis::table_sample::DrawPath;
     use datui::filter_modal::FilterOperator;
-    use datui::table_sample::DrawPath;
     let (mut app, rx, tx) = open(parquet("table_sample_path.parquet", 20_000));
     // A filter streams the rows, and its count is not in yet when the sample is
     // drawn: a reservoir.
@@ -367,7 +367,7 @@ fn the_same_seed_draws_the_same_rows_before_and_after_the_count() {
     key(&mut app, KeyCode::Char('S'));
     let form = app.sample.form.as_mut().unwrap();
     while form.draft.method != SampleMethod::EveryRow {
-        form.field = datui::sample_modal::SampleField::Method;
+        form.field = datui::analysis::sample_modal::SampleField::Method;
         form.adjust(true);
     }
     key(&mut app, KeyCode::Enter);
@@ -426,7 +426,7 @@ fn a_pivot_is_refused_never_dropped() {
     key(&mut app, KeyCode::Char('S'));
     let form = app.sample.form.as_mut().unwrap();
     while form.draft.method != SampleMethod::EveryRow {
-        form.field = datui::sample_modal::SampleField::Method;
+        form.field = datui::analysis::sample_modal::SampleField::Method;
         form.adjust(true);
     }
     key(&mut app, KeyCode::Enter);
@@ -443,7 +443,7 @@ fn a_pivot_is_refused_never_dropped() {
     key(&mut app, KeyCode::Char('S'));
     let form = app.sample.form.as_mut().unwrap();
     form.draft.method = SampleMethod::Spread;
-    form.kind = datui::sample_modal::RowsKind::Source;
+    form.kind = datui::analysis::sample_modal::RowsKind::Source;
     form.size.set_value("50");
     key(&mut app, KeyCode::Enter);
     assert!(!app.sample_drawing(), "nothing drawn under the pivot");
@@ -463,7 +463,7 @@ fn a_redraw_that_fails_keeps_the_sample_it_would_replace() {
     // A time range of a column that holds no times cannot be read.
     key(&mut app, KeyCode::Char('S'));
     let form = app.sample.form.as_mut().unwrap();
-    form.kind = datui::sample_modal::RowsKind::Time;
+    form.kind = datui::analysis::sample_modal::RowsKind::Time;
     form.context.time_columns = vec!["id".to_string()];
     form.time_column = 0;
     form.time_from.set_value("2024-01-01");

@@ -3,7 +3,10 @@
 
 use crate::form::ListMove;
 use crate::jobs::{Answer, Job};
-use crate::{App, AppEvent, Overlay, clipboard, copy_modal, value_counts, value_counts_modal};
+use crate::{
+    App, AppEvent, Overlay, analysis::value_counts, analysis::value_counts_modal, clipboard,
+    copy_modal,
+};
 use crossterm::event::{KeyCode, KeyEvent};
 use std::sync::Arc;
 
@@ -73,7 +76,7 @@ impl App {
             known_total: state.num_rows_if_valid(),
             streaming: state.polars_streaming(),
         };
-        let watch = crate::sampling::ReadWatch::default();
+        let watch = crate::analysis::sampling::ReadWatch::default();
         self.value_counts.failed = None;
         self.value_counts.computing = Some(value_counts_modal::Computing {
             column,

@@ -181,7 +181,7 @@ impl LenCount {
                 .map(Counted::from)
                 .map_err(|e| log::warn!(target: "datui", "row count failed: {e:#}")),
             None => {
-                match crate::statistics::collect_lazy(
+                match crate::analysis::statistics::collect_lazy(
                     crate::table::row_count_lf(&self.lf),
                     self.streaming,
                 ) {

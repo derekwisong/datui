@@ -76,7 +76,10 @@ fn evidence_rows_hold_the_download_they_scan() {
     drop(download);
 
     let view = state
-        .quality_evidence_view(&crate::data_quality::QualityScope::WholeSource, lit(true))
+        .quality_evidence_view(
+            &crate::analysis::data_quality::QualityScope::WholeSource,
+            lit(true),
+        )
         .unwrap();
     assert!(view.scans_a_download());
     drop(state);
@@ -116,7 +119,10 @@ fn evidence_rows_hold_the_decompressed_file_they_scan() {
     assert!(path.starts_with(scratch.path()));
 
     let view = state
-        .quality_evidence_view(&crate::data_quality::QualityScope::WholeSource, lit(true))
+        .quality_evidence_view(
+            &crate::analysis::data_quality::QualityScope::WholeSource,
+            lit(true),
+        )
         .unwrap();
     assert!(view.scans_a_temp_file());
     drop(state);
@@ -1482,7 +1488,9 @@ fn a_window_passes_over_empty_files() {
 /// closure. The remote route above shares none of this code.
 #[test]
 fn a_local_dataset_reads_the_values_a_type_conflict_hides() {
-    use crate::data_quality::{DataQualityPlan, ObservationKind, QualityCompute, QualityScope};
+    use crate::analysis::data_quality::{
+        DataQualityPlan, ObservationKind, QualityCompute, QualityScope,
+    };
     use crate::formats::schema_union::{DatasetSchema, SchemaOrigin, union_file_schemas};
     use polars::prelude::{DataType, ParquetWriter, df};
 
@@ -1547,15 +1555,20 @@ fn a_local_dataset_reads_the_values_a_type_conflict_hides() {
     let (lf, source) = state.data_quality_source_scan();
     let mut source = source.expect("every file is counted");
     source.conflict_scan = state.quality_conflict_scan();
-    let lf = crate::data_quality::prepare_source_quality_scan(lf, Some(&source)).unwrap();
+    let lf = crate::analysis::data_quality::prepare_source_quality_scan(lf, Some(&source)).unwrap();
     let plan = DataQualityPlan {
         scope: QualityScope::WholeSource,
         compute: QualityCompute::Full,
         ..DataQualityPlan::default()
     };
-    let results =
-        crate::data_quality::compute_data_quality(&lf, Some(5), &plan, Some(&source), false)
-            .unwrap();
+    let results = crate::analysis::data_quality::compute_data_quality(
+        &lf,
+        Some(5),
+        &plan,
+        Some(&source),
+        false,
+    )
+    .unwrap();
     let conflict = results
         .observations
         .iter()
@@ -2276,12 +2289,12 @@ fn analysis_describe_stubs_binary_columns_without_reading_blobs() {
     let state = DataTableState::new(lf, None, None, None, None, true).unwrap();
 
     let analysis_lf = state.view.lf.clone().select(state.binary_stub_exprs());
-    let results = crate::statistics::compute_describe_from_lazy(
+    let results = crate::analysis::statistics::compute_describe_from_lazy(
         &analysis_lf,
         Some(3),
-        &crate::sampling::Sample {
-            method: crate::sampling::SampleMethod::EveryRow,
-            ..crate::sampling::Sample::default()
+        &crate::analysis::sampling::Sample {
+            method: crate::analysis::sampling::SampleMethod::EveryRow,
+            ..crate::analysis::sampling::Sample::default()
         },
         false,
     )

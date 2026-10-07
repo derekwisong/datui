@@ -26,12 +26,12 @@ mod common;
 mod fake_s3;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use datui::analysis_modal::{AnalysisFocus, AnalysisTool};
-use datui::data_quality::{
+use datui::analysis::analysis_modal::{AnalysisFocus, AnalysisTool};
+use datui::analysis::data_quality::{
     QualityComparison, QualityCompute, QualityGrain, QualityPage, QualityScope, TemporalRole,
     TemporalRoleAssignment,
 };
-use datui::sampling::{Sample, SampleMethod};
+use datui::analysis::sampling::{Sample, SampleMethod};
 use datui::{App, AppConfig, AppEvent, OpenOptions};
 use polars::prelude::*;
 use std::collections::BTreeMap;

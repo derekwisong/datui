@@ -109,8 +109,6 @@ impl PlanChoice {
 /// A Setup row's choices, or the findings list's narrowing, open as a list.
 #[derive(Debug, Clone)]
 pub struct PlanPicker {
-    /// The Setup row the choices set; `None` for the findings list's.
-    pub row: Option<SetupRow>,
     pub title: String,
     pub choices: Vec<PlanChoice>,
     pub state: crate::widgets::ui::PickerState,
@@ -574,10 +572,6 @@ pub enum HistogramScale {
 }
 
 impl AnalysisModal {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// A modal whose shared sample starts at the configured size: `[performance]
     /// analysis_sample_rows`, where 0 means every row.
     pub fn with_sample_rows(rows: usize) -> Self {
@@ -824,11 +818,6 @@ impl AnalysisModal {
         }
     }
 
-    /// Another sample: a new seed for the shared sample.
-    pub fn recalculate(&mut self) {
-        self.sample.seed = crate::sample_modal::new_seed();
-    }
-
     pub fn quality_row_count(&self) -> usize {
         let Some(results) = self.quality.results.as_ref() else {
             return 0;
@@ -946,7 +935,6 @@ impl AnalysisModal {
         let mut state = crate::widgets::ui::PickerState::new(labels);
         state.select_original(current);
         self.quality.picker = Some(PlanPicker {
-            row: None,
             title: title.to_string(),
             choices,
             state,
@@ -1418,10 +1406,10 @@ impl AnalysisModal {
     pub fn open_plan_picker(&mut self, row: SetupRow, context: &PlanContext) {
         let choices = self.plan_choices(row, context);
         self.quality.plan_field = row.index();
-        self.show_picker(row, row.label().to_string(), choices);
+        self.show_picker(row.label().to_string(), choices);
     }
 
-    fn show_picker(&mut self, row: SetupRow, title: String, choices: Vec<(String, PlanChoice)>) {
+    fn show_picker(&mut self, title: String, choices: Vec<(String, PlanChoice)>) {
         if choices.is_empty() {
             return;
         }
@@ -1433,7 +1421,6 @@ impl AnalysisModal {
         let mut state = crate::widgets::ui::PickerState::new(labels);
         state.select_original(current);
         self.quality.picker = Some(PlanPicker {
-            row: Some(row),
             title,
             choices,
             state,
@@ -1486,7 +1473,7 @@ impl AnalysisModal {
                 PlanChoice::Format(column.to_string(), None),
             ));
         }
-        self.show_picker(SetupRow::TextAsTime, format!("Read {column} As"), choices);
+        self.show_picker(format!("Read {column} As"), choices);
     }
 
     /// Take the picker's selection into the plan and close it. Returns a text column
@@ -1550,7 +1537,6 @@ impl AnalysisModal {
         let mut state = crate::widgets::ui::PickerState::new(labels);
         state.select_original(next);
         self.quality.picker = Some(PlanPicker {
-            row: Some(row),
             title: row.label().to_string(),
             choices,
             state,
@@ -1787,7 +1773,7 @@ mod quality_scope_tests {
     /// or month of any date column (hours only where there are times), then chunks.
     #[test]
     fn grain_choices_come_from_the_data() {
-        let mut modal = AnalysisModal::new();
+        let mut modal = AnalysisModal::default();
         let context = PlanContext {
             partitions: vec!["year".to_string()],
             time_columns: vec![("date".to_string(), false), ("stamp".to_string(), true)],
@@ -1838,7 +1824,7 @@ mod quality_scope_tests {
     /// shared sample says.
     #[test]
     fn a_read_is_the_samples_kind() {
-        let mut modal = AnalysisModal::new();
+        let mut modal = AnalysisModal::default();
         let context = PlanContext::default();
         modal.quality.plan.compute = QualityCompute::Metadata;
         modal.open_plan_picker(SetupRow::Values, &context);
@@ -1867,7 +1853,7 @@ mod quality_scope_tests {
     /// again takes back a time window that needed it.
     #[test]
     fn text_is_read_as_time_through_a_chosen_format() {
-        let mut modal = AnalysisModal::new();
+        let mut modal = AnalysisModal::default();
         let context = PlanContext {
             text_columns: vec![(
                 "created".to_string(),

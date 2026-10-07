@@ -114,8 +114,6 @@ impl PivotAggregation {
         Self::Count,
     ];
 
-    pub const STRING_ONLY: [Self; 2] = [Self::First, Self::Last];
-
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Last => "last",

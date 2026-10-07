@@ -89,11 +89,6 @@ impl Ticket {
     pub fn kind(self) -> JobKind {
         self.kind
     }
-
-    /// The generation it started on.
-    pub fn generation(self) -> u64 {
-        self.generation
-    }
 }
 
 /// A background operation. Its fields are what the app needs of it; the record

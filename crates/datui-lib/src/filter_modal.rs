@@ -143,10 +143,6 @@ impl LogicalOperator {
             LogicalOperator::Or => LogicalOperator::And,
         }
     }
-
-    pub fn iterator() -> impl Iterator<Item = LogicalOperator> {
-        [LogicalOperator::And, LogicalOperator::Or].iter().copied()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -252,10 +248,6 @@ pub struct FilterModal {
 }
 
 impl FilterModal {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// The operators column choice `i` takes: by its type, and only a find's over
     /// any column shown.
     pub fn operators_for(&self, i: usize) -> Vec<FilterOperator> {
@@ -299,18 +291,6 @@ impl FilterModal {
 
     pub fn on_add_row(&self) -> bool {
         self.cursor >= self.statements.len()
-    }
-
-    pub fn move_cursor_up(&mut self) {
-        self.cursor = if self.cursor == 0 {
-            self.row_count() - 1
-        } else {
-            self.cursor - 1
-        };
-    }
-
-    pub fn move_cursor_down(&mut self) {
-        self.cursor = (self.cursor + 1) % self.row_count();
     }
 
     /// The column picker's choices: every column, then [`ANY_COLUMN_LABEL`], which
@@ -510,9 +490,10 @@ mod tests {
     use super::*;
 
     fn modal() -> FilterModal {
-        let mut m = FilterModal::new();
-        m.available_columns = vec!["salary".into(), "department".into(), "name".into()];
-        m
+        FilterModal {
+            available_columns: vec!["salary".into(), "department".into(), "name".into()],
+            ..Default::default()
+        }
     }
 
     fn theme() -> crate::config::Theme {
@@ -773,7 +754,7 @@ mod tests {
 
     #[test]
     fn an_editor_with_no_columns_never_opens() {
-        let mut m = FilterModal::new();
+        let mut m = FilterModal::default();
         m.open_editor(&theme(), 10);
         assert!(m.editor.is_none());
     }

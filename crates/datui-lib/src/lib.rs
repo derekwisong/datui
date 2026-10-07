@@ -2170,11 +2170,6 @@ impl App {
         }
     }
 
-    pub fn send_event(&mut self, event: AppEvent) -> Result<()> {
-        self.events.send(event)?;
-        Ok(())
-    }
-
     /// Whether a spinner is on screen, so the run loop turns it and redraws.
     pub fn something_is_spinning(&self) -> bool {
         self.is_busy()

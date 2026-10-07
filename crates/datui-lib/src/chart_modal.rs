@@ -52,17 +52,6 @@ impl Mark {
         }
     }
 
-    /// The Vega-Lite mark that draws it.
-    pub fn vega_lite(self) -> &'static str {
-        match self {
-            Self::Line | Self::Kde => "line",
-            Self::Scatter => "point",
-            Self::Bar | Self::Histogram => "bar",
-            Self::Box => "boxplot",
-            Self::Heatmap => "rect",
-        }
-    }
-
     /// Line and scatter: X against one or more Y columns.
     pub fn is_xy(self) -> bool {
         matches!(self, Self::Line | Self::Scatter)
@@ -112,18 +101,6 @@ impl TimeUnit {
             Self::Month => Some("1mo"),
             Self::Quarter => Some("1q"),
             Self::Year => Some("1y"),
-        }
-    }
-
-    /// The Vega-Lite `timeUnit`.
-    pub fn vega_lite(self) -> Option<&'static str> {
-        match self {
-            Self::None => None,
-            Self::Day => Some("yearmonthdate"),
-            Self::Week => Some("yearweek"),
-            Self::Month => Some("yearmonth"),
-            Self::Quarter => Some("yearquarter"),
-            Self::Year => Some("year"),
         }
     }
 }
@@ -193,21 +170,6 @@ impl Aggregate {
         match self {
             Self::Quantile => format!("p{quantile}"),
             other => other.label().to_string(),
-        }
-    }
-
-    /// The Vega-Lite aggregate. A quantile is one only at the quartiles and the
-    /// median; first and last have none, and are left out.
-    pub fn vega_lite(self, quantile: u8) -> Option<&'static str> {
-        match self {
-            Self::None | Self::First | Self::Last => None,
-            Self::Quantile => match quantile {
-                25 => Some("q1"),
-                50 => Some("median"),
-                75 => Some("q3"),
-                _ => None,
-            },
-            other => Some(other.label()),
         }
     }
 
@@ -334,38 +296,6 @@ pub struct Encoding {
 pub struct ChartSpec {
     pub mark: Mark,
     pub encoding: Encoding,
-}
-
-impl ChartSpec {
-    /// The spec as a Vega-Lite fragment: `mark` and the three encodings.
-    pub fn to_vega_lite(&self) -> serde_json::Value {
-        let mut x = serde_json::Map::new();
-        if let Some(field) = &self.encoding.x.field {
-            x.insert("field".into(), field.clone().into());
-        }
-        if let Some(unit) = self.encoding.x.time_unit.vega_lite() {
-            x.insert("timeUnit".into(), unit.into());
-        }
-        let mut y = serde_json::Map::new();
-        if let Some(field) = self.encoding.y.field.first() {
-            y.insert("field".into(), field.clone().into());
-        }
-        if let Some(aggregate) = self
-            .encoding
-            .y
-            .aggregate
-            .vega_lite(self.encoding.y.quantile())
-        {
-            y.insert("aggregate".into(), aggregate.into());
-        }
-        let mut encoding = serde_json::Map::new();
-        encoding.insert("x".into(), x.into());
-        encoding.insert("y".into(), y.into());
-        if let Some(field) = &self.encoding.color.field {
-            encoding.insert("color".into(), serde_json::json!({ "field": field }));
-        }
-        serde_json::json!({ "mark": self.mark.vega_lite(), "encoding": encoding })
-    }
 }
 
 /// Series a color splits a chart into, at most: one per palette color
@@ -772,15 +702,6 @@ impl ChartModal {
     }
 
     // ----- What applies -----
-
-    fn is_temporal(&self, column: &str) -> bool {
-        self.temporal_candidates.iter().any(|c| c == column)
-    }
-
-    /// Whether X is a date or a time, which a line can bucket.
-    pub fn x_is_temporal(&self) -> bool {
-        self.x().is_some_and(|x| self.is_temporal(x))
-    }
 
     /// Whether X is a date or a datetime, which a time bucket truncates; a time of
     /// day is not.
@@ -1931,21 +1852,9 @@ mod tests {
     }
 
     #[test]
-    fn the_spec_reads_as_vega_lite() {
+    fn the_spec_saves_its_time_unit_and_aggregate() {
         let mut modal = open_on(Some(("date", &DataType::Date)));
         modal.step(ChartFocus::TimeUnit, 3);
-        modal.spec.encoding.color.field = Some("carrier".to_string());
-        assert_eq!(
-            modal.spec.to_vega_lite(),
-            serde_json::json!({
-                "mark": "line",
-                "encoding": {
-                    "x": {"field": "date", "timeUnit": "yearmonth"},
-                    "y": {"field": "delay", "aggregate": "mean"},
-                    "color": {"field": "carrier"},
-                }
-            })
-        );
         let saved = serde_json::to_value(&modal.spec).unwrap();
         assert_eq!(saved["encoding"]["x"]["timeUnit"], "month");
         assert_eq!(saved["encoding"]["y"]["aggregate"], "mean");
@@ -1983,12 +1892,10 @@ mod tests {
         modal.step(ChartFocus::Aggregate, 1);
         assert_eq!(modal.aggregate(), Aggregate::Sum);
         assert!(modal.spec.encoding.y.field.is_empty());
-        assert_eq!(Aggregate::Distinct.vega_lite(90), Some("distinct"));
     }
 
     /// A quantile's percentile is the line under Aggregate: ←/→ step it, the title
-    /// says `p95 by month`, and Vega-Lite names the quartiles. Stdev, quantile,
-    /// first and last take no cumulative.
+    /// says `p95 by month`. Stdev, quantile, first and last take no cumulative.
     #[test]
     fn a_quantile_steps_its_percentile() {
         let mut modal = open_on(Some(("date", &DataType::Date)));
@@ -2008,10 +1915,6 @@ mod tests {
         modal.step(ChartFocus::Quantile, 1);
         modal.step(ChartFocus::Quantile, 1);
         assert_eq!(modal.spec.encoding.y.quantile(), 1, "wraps");
-        assert_eq!(Aggregate::Quantile.vega_lite(25), Some("q1"));
-        assert_eq!(Aggregate::Quantile.vega_lite(75), Some("q3"));
-        assert_eq!(Aggregate::Quantile.vega_lite(90), None);
-        assert_eq!(Aggregate::Last.vega_lite(90), None);
         for aggregate in [
             Aggregate::Stdev,
             Aggregate::Quantile,

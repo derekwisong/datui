@@ -146,12 +146,6 @@ impl EventPump {
         self.held.iter()
     }
 
-    /// Held keys wait on an idle app: the loop should not wait on the terminal, since
-    /// each iteration replays one.
-    pub fn replaying(&self) -> bool {
-        !self.held.is_empty() && !self.app.is_busy()
-    }
-
     /// A key from the terminal, classified by `classify`: handled now, held behind
     /// earlier keys, held as another key, or dropped. Returns whether the app changed.
     pub fn terminal_key(&mut self, key: KeyEvent) -> Result<bool> {

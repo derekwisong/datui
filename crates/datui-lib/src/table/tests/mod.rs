@@ -1261,18 +1261,6 @@ fn a_trimmed_fill_lets_go_of_the_rows_it_drops() {
     assert_eq!(compactions(), before, "the install copies nothing");
     assert!(state.buffered_end() - state.buffered_start() <= budget_rows);
     assert_view_rows(&state, &source);
-
-    // Synchronous: the same fill collected on the spot from an eager source, which
-    // stays held by the frame itself; the buffer's copy does not. A binary column
-    // is drawn as a stub there, so it is left out.
-    let source = source.drop("bytes").unwrap();
-    let mut state = trimming_state(source.clone().lazy());
-    state.num_rows = N;
-    state.num_rows_valid = true;
-    state.start_row = 300;
-    state.load_buffer(0, N);
-    assert!(state.error.is_none());
-    assert_view_rows(&state, &source);
 }
 
 #[test]

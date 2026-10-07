@@ -365,7 +365,7 @@ fn nothing_moves_when_the_footer_lands() {
 
     let facts = crate::readers::of(crate::FileFormat::Parquet).facts;
     gate.answer.send(FileFacts::read(&file, facts)).unwrap();
-    super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !reading(a));
+    super::chart_prepare_tests::pump(&mut app, &rx, &tx, |a| !reading(a) && !a.is_busy());
     let landed = screen(&mut app);
     assert_eq!(row_of(&landed, "Resources"), bar, "{landed}");
     assert!(landed.contains("3 rows in 1 row group"), "{landed}");

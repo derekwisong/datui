@@ -118,6 +118,15 @@ pub fn drain_events(app: &mut App, rx: &Receiver<AppEvent>) {
     }
 }
 
+/// Read the rows the table's view needs, as the app does after a change: a job,
+/// handled here with everything it chains to.
+#[allow(dead_code)]
+#[track_caller]
+pub fn read_rows(app: &mut App, rx: &Receiver<AppEvent>) {
+    app.spawn_async_collect(App::LOADING_BUFFER);
+    drain_events(app, rx);
+}
+
 /// Open `paths` and handle the load chain, background results included, until the
 /// table, its row count and its footers are in. A crash is handled and ends the wait.
 #[allow(dead_code)]

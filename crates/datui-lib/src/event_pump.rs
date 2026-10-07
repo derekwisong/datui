@@ -624,17 +624,11 @@ impl EventPump {
 
             if redraw {
                 draw(app)?;
-                // A count waiting for the rows to be on screen starts now.
+                // The rows the frame found it needs are read, and a count waiting for
+                // them to be on screen starts.
                 app.frame_painted();
                 first_rows.painted(app);
                 pacer.drew(now);
-                // The frame sets the visible row count; a change asks for a collect.
-                if let Some(state) = &mut app.data_table_state
-                    && state.needs_recollect
-                {
-                    state.needs_recollect = false;
-                    app.spawn_async_collect(App::LOADING_BUFFER);
-                }
                 // And it marks the rows it drew without knowing them. Asked now, not
                 // on the next pass: with nothing else arriving there may not be one.
                 app.request_what_the_frame_needs();

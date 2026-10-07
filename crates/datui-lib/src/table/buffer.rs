@@ -644,213 +644,47 @@ impl DataTableState {
         }
     }
 
+    /// Read the rows the view needs here and now, as a job reads them for the app
+    /// ([`Self::prepare_async_collect`], then [`Self::apply_async_collect`]): what tests
+    /// drive. In the app rows are never read on the thread that reads keys.
+    #[cfg(test)]
     pub fn collect(&mut self) {
         if self.defer_collect {
             return;
         }
-        // Update proximity threshold based on visible rows
-        if self.visible_rows > 0 {
-            self.proximity_threshold = self.proximity();
-        }
-
-        // Run len() only when lf has changed (query, filter, sort, pivot, melt, reset, drill).
         if !self.num_rows_valid {
-            self.num_rows = match collect_lazy(row_count_lf(&self.lf), self.polars_streaming) {
+            // A count that fails means the frame itself is broken: say so rather than
+            // draw it as empty.
+            match collect_lazy(row_count_lf(&self.lf), self.polars_streaming) {
                 Ok(df) => {
-                    // The frame counts, so there is nothing wrong with it: retire a
-                    // failure left by the frame this one replaced. `load_buffer` ends
-                    // the same way, but the zero-row path below returns before it.
                     self.error = None;
-                    match df.get(0) {
-                        Some(col) => match col.first() {
-                            Some(AnyValue::UInt64(len)) => *len as usize,
-                            _ => 0,
-                        },
+                    let n = match df.get(0).as_deref().and_then(|row| row.first()) {
+                        Some(AnyValue::UInt64(len)) => *len as usize,
                         _ => 0,
-                    }
+                    };
+                    self.set_num_rows(n);
                 }
-                // A count that fails means the frame itself is broken — a sort or a
-                // column order naming a column the query removed, say. Zero rows is the
-                // wrong thing to report: it blanks the table and returns below, before
-                // `load_buffer`, the only other place that records a failure. The caller
-                // is then told nothing, so a broken frame reads as an empty one. Say what
-                // went wrong instead.
                 Err(e) => {
                     self.error = Some(e);
-                    0
+                    self.set_num_rows(0);
                 }
-            };
-            self.num_rows_valid = true;
-            self.remember_pristine_count();
-        }
-
-        if self.num_rows > 0 {
-            let max_start = self.num_rows.saturating_sub(1);
-            if self.start_row > max_start {
-                self.start_row = max_start;
             }
-        } else {
-            self.start_row = 0;
-            self.drop_buffer();
-            self.df = None;
-            self.locked_df = None;
+        }
+        let Some(request) = self.prepare_async_collect(None) else {
             return;
+        };
+        match collect_lazy(request.lf, request.polars_streaming) {
+            Ok(df) => self.apply_async_collect(request.plan.fit(df)),
+            Err(e) => self.error = Some(e),
         }
+    }
 
-        // Proximity-based buffer logic
-        let view_start = self.start_row;
-        let view_end = self.start_row + self.visible_rows.min(self.num_rows - self.start_row);
-
-        // Check if current view is within buffered range
-        let within_buffer = view_start >= self.buffered_start_row
-            && view_end <= self.buffered_end_row
-            && self.buffered_end_row > 0;
-
-        // Buffer grows incrementally: initial load and each expansion add only a few pages (lookahead + lookback).
-        // fit_window caps at max_buffered_rows and slides the window when at cap.
-
-        if within_buffer {
-            let dist_to_start = view_start.saturating_sub(self.buffered_start_row);
-            let dist_to_end = self.buffered_end_row.saturating_sub(view_end);
-
-            let needs_expansion_back =
-                dist_to_start <= self.proximity_threshold && self.buffered_start_row > 0;
-            let needs_expansion_forward =
-                dist_to_end <= self.proximity_threshold && self.buffered_end_row < self.num_rows;
-
-            if !needs_expansion_back && !needs_expansion_forward {
-                // Column scroll only: reuse cached full buffer and re-slice into locked/scroll columns.
-                let expected_len = self
-                    .buffered_end_row
-                    .saturating_sub(self.buffered_start_row);
-                if self
-                    .buffered_df
-                    .as_ref()
-                    .is_some_and(|b| b.height() == expected_len)
-                {
-                    self.slice_buffer_into_display();
-                    if self.table_state.selected().is_none() {
-                        self.table_state.select(Some(0));
-                    }
-                    return;
-                }
-                self.load_buffer(self.buffered_start_row, self.buffered_end_row);
-                if self.table_state.selected().is_none() {
-                    self.table_state.select(Some(0));
-                }
-                return;
-            }
-
-            let mut new_buffer_start = if needs_expansion_back {
-                view_start.saturating_sub(self.reach_rows(self.pages_lookback))
-            } else {
-                self.buffered_start_row
-            };
-
-            let mut new_buffer_end = if needs_expansion_forward {
-                (view_end + self.reach_rows(self.pages_lookahead)).min(self.num_rows)
-            } else {
-                self.buffered_end_row
-            };
-
-            self.fit_window(
-                view_start,
-                view_end,
-                &mut new_buffer_start,
-                &mut new_buffer_end,
-            );
-            if self.holds_buffer(new_buffer_start, new_buffer_end) {
-                // Fitting the expansion gave back the row group already held.
-                self.slice_buffer_into_display();
-                if self.table_state.selected().is_none() {
-                    self.table_state.select(Some(0));
-                }
-                return;
-            }
-            self.load_buffer(new_buffer_start, new_buffer_end);
-        } else {
-            // Outside buffer: either extend the previous buffer (so it grows) or load a fresh small window.
-            // Only extend when the view is "close" to the existing buffer (e.g. user paged down a bit).
-            // A big jump (e.g. jump to end) should load just a window around the new view, not extend
-            // the buffer across the whole dataset.
-            let mut new_buffer_start;
-            let mut new_buffer_end;
-
-            let had_buffer = self.buffered_end_row > 0;
-            let scrolled_past_end = had_buffer && view_start >= self.buffered_end_row;
-            let scrolled_past_start = had_buffer && view_end <= self.buffered_start_row;
-
-            let extend_forward_ok = scrolled_past_end
-                && (view_start - self.buffered_end_row) <= self.reach_rows(self.pages_lookahead);
-            let extend_backward_ok = scrolled_past_start
-                && (self.buffered_start_row - view_end) <= self.reach_rows(self.pages_lookback);
-
-            if extend_forward_ok {
-                // View is just a few pages past buffer end; extend forward.
-                new_buffer_start = self.buffered_start_row;
-                new_buffer_end =
-                    (view_end + self.reach_rows(self.pages_lookahead)).min(self.num_rows);
-            } else if extend_backward_ok {
-                // View is just a few pages before buffer start; extend backward.
-                new_buffer_start = view_start.saturating_sub(self.reach_rows(self.pages_lookback));
-                new_buffer_end = self.buffered_end_row;
-            } else if scrolled_past_end || scrolled_past_start {
-                // Big jump (e.g. jump to end or jump to start): load a fresh window around the view.
-                new_buffer_start = view_start.saturating_sub(self.reach_rows(self.pages_lookback));
-                new_buffer_end =
-                    (view_end + self.reach_rows(self.pages_lookahead)).min(self.num_rows);
-                let min_initial_len = self.min_buffer_len();
-                let current_len = new_buffer_end.saturating_sub(new_buffer_start);
-                if current_len < min_initial_len {
-                    let need = min_initial_len.saturating_sub(current_len);
-                    let can_extend_end = self.num_rows.saturating_sub(new_buffer_end);
-                    let can_extend_start = new_buffer_start;
-                    if can_extend_end >= need {
-                        new_buffer_end = (new_buffer_end + need).min(self.num_rows);
-                    } else if can_extend_start >= need {
-                        new_buffer_start = new_buffer_start.saturating_sub(need);
-                    } else {
-                        new_buffer_end = (new_buffer_end + can_extend_end).min(self.num_rows);
-                        new_buffer_start =
-                            new_buffer_start.saturating_sub(need.saturating_sub(can_extend_end));
-                    }
-                }
-            } else {
-                // No buffer yet or big jump: load a fresh small window (view ± a few pages).
-                new_buffer_start = view_start.saturating_sub(self.reach_rows(self.pages_lookback));
-                new_buffer_end =
-                    (view_end + self.reach_rows(self.pages_lookahead)).min(self.num_rows);
-
-                // Ensure at least (1 + lookahead + lookback) pages so buffer size is consistent (e.g. 364 at 52 visible).
-                let min_initial_len = self.min_buffer_len();
-                let current_len = new_buffer_end.saturating_sub(new_buffer_start);
-                if current_len < min_initial_len {
-                    let need = min_initial_len.saturating_sub(current_len);
-                    let can_extend_end = self.num_rows.saturating_sub(new_buffer_end);
-                    let can_extend_start = new_buffer_start;
-                    if can_extend_end >= need {
-                        new_buffer_end = (new_buffer_end + need).min(self.num_rows);
-                    } else if can_extend_start >= need {
-                        new_buffer_start = new_buffer_start.saturating_sub(need);
-                    } else {
-                        new_buffer_end = (new_buffer_end + can_extend_end).min(self.num_rows);
-                        new_buffer_start =
-                            new_buffer_start.saturating_sub(need.saturating_sub(can_extend_end));
-                    }
-                }
-            }
-
-            self.fit_window(
-                view_start,
-                view_end,
-                &mut new_buffer_start,
-                &mut new_buffer_end,
-            );
-            self.load_buffer(new_buffer_start, new_buffer_end);
-        }
-
-        if self.table_state.selected().is_none() {
-            self.table_state.select(Some(0));
+    /// In the app a mutation asks for its rows: the event loop reads them on a job
+    /// after the next frame. Under [`Self::deferred`] the caller reads them itself.
+    #[cfg(not(test))]
+    pub(super) fn collect(&mut self) {
+        if !self.defer_collect {
+            self.needs_recollect = true;
         }
     }
 
@@ -913,6 +747,15 @@ impl DataTableState {
                 self.locked_df = None;
                 return None;
             }
+        }
+
+        // No column shown: there are no rows to read, and a read of none would come
+        // back empty and ask again.
+        if self.column_order.is_empty() {
+            self.drop_buffer();
+            self.df = None;
+            self.locked_df = None;
+            return None;
         }
 
         let view_start = self.start_row;
@@ -1578,89 +1421,9 @@ impl DataTableState {
         }
     }
 
-    pub(super) fn load_buffer(&mut self, buffer_start: usize, buffer_end: usize) {
-        let buffer_size = buffer_end.saturating_sub(buffer_start);
-        if buffer_size == 0 {
-            return;
-        }
-
-        let use_streaming = self.polars_streaming;
-        let lf = match self.buffer_lf(buffer_start, buffer_size) {
-            Ok(lf) => lf,
-            Err(e) => {
-                self.error = Some(e);
-                return;
-            }
-        };
-        let full_df = match collect_lazy(lf, use_streaming) {
-            Ok(df) => df,
-            Err(e) => {
-                self.error = Some(e);
-                return;
-            }
-        };
-
-        // Stitched and cut as a background fill is, here on the spot, with the old
-        // rows let go first: the plan has taken any it stitches on to.
-        let plan = self.fill_plan(buffer_start, buffer_end, self.num_rows, self.num_rows_valid);
-        self.release_display_buffer();
-        let fitted = plan.fit(full_df);
-        if fitted.bytes_per_row.is_some() {
-            self.observed_bytes_per_row = fitted.bytes_per_row;
-        }
-        let full_df = fitted.df;
-        let effective_buffer_start = fitted.start;
-        let effective_buffer_end = fitted.start + full_df.height();
-
-        if self.locked_columns_count > 0 {
-            let locked_names: Vec<&str> = self
-                .column_order
-                .iter()
-                .take(self.locked_columns_count)
-                .map(|s| s.as_str())
-                .collect();
-            let locked_df = match full_df.select(locked_names) {
-                Ok(df) => df,
-                Err(e) => {
-                    self.error = Some(e);
-                    return;
-                }
-            };
-            self.locked_df = Some(locked_df);
-        } else {
-            self.locked_df = None;
-        }
-
-        let scroll_names: Vec<&str> = self
-            .column_order
-            .iter()
-            .skip(self.frozen_shown() + self.termcol_index)
-            .map(|s| s.as_str())
-            .collect();
-        if scroll_names.is_empty() {
-            self.df = None;
-        } else {
-            let scroll_df = match full_df.select(scroll_names) {
-                Ok(df) => df,
-                Err(e) => {
-                    self.error = Some(e);
-                    return;
-                }
-            };
-            self.df = Some(scroll_df);
-        }
-        if self.error.is_some() {
-            self.error = None;
-        }
-        self.buffered_start_row = effective_buffer_start;
-        self.buffered_end_row = effective_buffer_end;
-        self.buffered_df = Some(full_df);
-    }
-
-    /// Let go of the buffer being replaced and the display frames cut from it. A
-    /// synchronous load does so before its cut, so the cut's copy is not made while
-    /// the old rows are still held; a stitch has already taken the rows it keeps.
-    /// The view's rows come next, so a relearn asked for takes effect.
+    /// Let go of the buffer being replaced and the display frames cut from it; a stitch
+    /// has already taken the rows it keeps. The view's rows come next, so a relearn
+    /// asked for takes effect.
     fn release_display_buffer(&mut self) {
         self.widths.rows_arrived();
         self.buffered_df = None;

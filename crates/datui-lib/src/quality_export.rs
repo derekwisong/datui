@@ -11,6 +11,7 @@ use crate::data_quality::{
     ColumnQualityProfile, DataQualityPlan, DataQualityResults, QualityPrecision, interval_label,
 };
 use crate::quality_report::{Outcome, Severity, build_report, checks, coverage, describe, verdict};
+use crate::sampling::SampleMethod;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -221,16 +222,21 @@ fn utc(time: chrono::NaiveDateTime) -> String {
     time.format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
-fn gaps_json(plan: &DataQualityPlan, results: &DataQualityResults) -> Option<GapsJson> {
-    use crate::quality_trends::{GapKind, Gaps};
-    let gaps = crate::quality_trends::expected_gaps(plan, results)?;
-    let crate::data_quality::QualityGrain::TimeWindows { column, every } = &plan.grain else {
-        return None;
-    };
-    let kind = |kind: GapKind| match kind {
+/// A gap run's kind as the JSON names it.
+fn gap_kind(kind: crate::quality_trends::GapKind) -> &'static str {
+    use crate::quality_trends::GapKind;
+    match kind {
         GapKind::Empty => "empty",
         GapKind::Unsampled => "not_sampled",
         GapKind::OutOfScope => "out_of_scope",
+    }
+}
+
+fn gaps_json(plan: &DataQualityPlan, results: &DataQualityResults) -> Option<GapsJson> {
+    use crate::quality_trends::Gaps;
+    let gaps = crate::quality_trends::expected_gaps(plan, results)?;
+    let crate::data_quality::QualityGrain::TimeWindows { column, every } = &plan.grain else {
+        return None;
     };
     let mut json = GapsJson {
         status: String::new(),
@@ -275,7 +281,7 @@ fn gaps_json(plan: &DataQualityPlan, results: &DataQualityResults) -> Option<Gap
                 .runs
                 .iter()
                 .map(|run| GapRunJson {
-                    kind: kind(run.kind).to_string(),
+                    kind: gap_kind(run.kind).to_string(),
                     first: utc(run.first),
                     last: utc(run.last),
                     span: crate::quality_trends::calendar_span(run.first, run.last, every),
@@ -802,7 +808,13 @@ fn cell(text: &str) -> String {
 
 /// The report for people: what was measured on, the verdict and how far it reaches,
 /// the findings with their numbers and evidence, and the setup to run it again.
-pub fn to_markdown(file: &ReportFile) -> String {
+/// `file` is the report `results` and `plan` make; what it holds as text is read
+/// from them, typed.
+pub fn to_markdown(
+    file: &ReportFile,
+    results: &DataQualityResults,
+    plan: &DataQualityPlan,
+) -> String {
     let mut out = String::new();
     let mut line = |text: String| {
         out.push_str(&text);
@@ -839,22 +851,17 @@ pub fn to_markdown(file: &ReportFile) -> String {
             line(format!("- View: {}", source.view.join("; ")));
         }
     }
-    let run = &file.run;
-    let rows = match (run.precision.as_str(), run.total_rows) {
-        ("metadata", _) => "file metadata only, no values read".to_string(),
-        ("exact", _) => format!(
-            "all {} rows, exact",
-            crate::numfmt::group_chrome(run.evaluated_rows)
-        ),
-        (_, Some(total)) => format!(
-            "{} of {} rows, sampled",
-            crate::numfmt::group_chrome(run.evaluated_rows),
-            crate::numfmt::group_chrome(total)
-        ),
-        (_, None) => format!(
-            "{} rows, sampled",
-            crate::numfmt::group_chrome(run.evaluated_rows)
-        ),
+    let count = crate::numfmt::group_chrome;
+    let evaluated = results.evaluated_rows;
+    let rows = match (results.precision, results.total_rows) {
+        (QualityPrecision::Metadata, _) => "file metadata only, no values read".to_string(),
+        (QualityPrecision::Exact, _) => format!("all {} rows, exact", count(evaluated)),
+        (QualityPrecision::Sampled | QualityPrecision::Estimated, Some(total)) => {
+            format!("{} of {} rows, sampled", count(evaluated), count(total))
+        }
+        (QualityPrecision::Sampled | QualityPrecision::Estimated, None) => {
+            format!("{} rows, sampled", count(evaluated))
+        }
     };
     line(format!("- Measured: {rows}"));
     line(format!(
@@ -979,54 +986,62 @@ pub fn to_markdown(file: &ReportFile) -> String {
         line(String::new());
     }
 
-    if let Some(gaps) = &file.gaps {
+    if let Some(gaps) = crate::quality_trends::expected_gaps(plan, results)
+        && let crate::data_quality::QualityGrain::TimeWindows { column, every } = &plan.grain
+    {
+        use crate::quality_trends::Gaps;
         line("## Gaps".to_string());
         line(String::new());
-        let expected = format!("Expected {} by {}", gaps.cadence, gaps.column);
-        match gaps.status.as_str() {
-            "no_values" => line(format!("{expected}: file metadata only counts no windows")),
-            "no_windows" => line(format!("{expected}: no window found and no range stated")),
-            "too_many" => line(format!(
+        let cadence = plan
+            .expected_windows()
+            .map(|expected| expected.cadence_label(every))
+            .unwrap_or_default();
+        let expected = format!("Expected {cadence} by {column}");
+        match gaps {
+            Gaps::NoValues => line(format!("{expected}: file metadata only counts no windows")),
+            Gaps::NoWindows => line(format!("{expected}: no window found and no range stated")),
+            Gaps::TooMany { windows } => line(format!(
                 "{expected}: {} windows in range, more than are checked",
-                crate::numfmt::group_chrome(gaps.windows_in_range.unwrap_or(0))
+                count(windows)
             )),
-            _ => {
-                let count = |value: Option<usize>| crate::numfmt::group_chrome(value.unwrap_or(0));
+            Gaps::Checked(check) => {
                 let mut facts = vec![
-                    format!("{} with rows", count(gaps.with_rows)),
-                    format!("{} empty", count(gaps.empty)),
-                    format!("{} not sampled", count(gaps.not_sampled)),
-                    format!("{} out of scope", count(gaps.out_of_scope)),
+                    format!("{} with rows", count(check.with_rows)),
+                    format!("{} empty", count(check.empty)),
+                    format!("{} not sampled", count(check.unsampled)),
+                    format!("{} out of scope", count(check.out_of_scope)),
                 ];
-                if gaps.weekend.unwrap_or(0) > 0 {
+                if check.weekend > 0 {
                     facts.push(format!(
                         "{} weekend windows not expected",
-                        count(gaps.weekend)
+                        count(check.weekend)
                     ));
                 }
                 line(format!(
                     "{expected}, {} to before {}: {} windows; {}",
-                    gaps.from.as_deref().unwrap_or(""),
-                    gaps.before.as_deref().unwrap_or(""),
-                    count(gaps.expected),
+                    utc(check.from),
+                    utc(check.before),
+                    count(check.expected),
                     facts.join(", ")
                 ));
-                if !gaps.runs.is_empty() {
+                if !check.runs.is_empty() {
                     line(String::new());
                     line("| Windows | Gap | Count | Rows |".to_string());
                     line("|---|---|---|---|".to_string());
-                    for run in &gaps.runs {
+                    for run in &check.runs {
                         line(format!(
                             "| {} | {} | {} | {} |",
-                            cell(&run.span),
-                            run.kind.replace('_', " "),
+                            cell(&crate::quality_trends::calendar_span(
+                                run.first, run.last, every
+                            )),
+                            gap_kind(run.kind).replace('_', " "),
                             run.windows,
                             run.rows.map_or("-".to_string(), |rows| rows.to_string())
                         ));
                     }
-                    if gaps.more_runs > 0 {
+                    if check.more_runs > 0 {
                         line(String::new());
-                        line(format!("{} more runs not listed", gaps.more_runs));
+                        line(format!("{} more runs not listed", check.more_runs));
                     }
                 }
             }
@@ -1053,21 +1068,22 @@ pub fn to_markdown(file: &ReportFile) -> String {
         (
             "Sample",
             // Every row takes no size and no seed, and the first rows no seed.
-            match setup.sample.method.as_str() {
-                "Every row" => setup.sample.method.clone(),
-                "First rows" => format!(
-                    "First rows, {} rows",
-                    crate::numfmt::group_chrome(setup.sample.rows)
+            match &plan.method {
+                SampleMethod::EveryRow => plan.method.label(),
+                SampleMethod::FirstRows => {
+                    format!("{}, {} rows", plan.method.label(), count(plan.dataset_rows))
+                }
+                SampleMethod::PerPartition { .. } => format!(
+                    "{}, {} rows per value, seed {}",
+                    plan.method.label(),
+                    count(plan.dataset_rows),
+                    plan.sample_seed
                 ),
-                method if method.starts_with("Equal per ") => format!(
-                    "{method}, {} rows per value, seed {}",
-                    crate::numfmt::group_chrome(setup.sample.rows),
-                    setup.sample.seed
-                ),
-                method => format!(
-                    "{method}, {} rows, seed {}",
-                    crate::numfmt::group_chrome(setup.sample.rows),
-                    setup.sample.seed
+                SampleMethod::Spread => format!(
+                    "{}, {} rows, seed {}",
+                    plan.method.label(),
+                    count(plan.dataset_rows),
+                    plan.sample_seed
                 ),
             },
         ),
@@ -1117,9 +1133,9 @@ pub fn to_markdown(file: &ReportFile) -> String {
                     from: expected.from.clone(),
                     before: expected.before.clone(),
                 };
-                let every = match file.gaps.as_ref() {
-                    Some(gaps) => gaps.every.as_str(),
-                    None => "",
+                let every = match &plan.grain {
+                    crate::data_quality::QualityGrain::TimeWindows { every, .. } => every.as_str(),
+                    _ => "",
                 };
                 format!(
                     "{}, {}",
@@ -1175,7 +1191,7 @@ pub fn render(
     let file = report_file(results, plan, exported_at);
     match format {
         ReportFormat::Json => to_json(&file),
-        ReportFormat::Markdown => Ok(to_markdown(&file)),
+        ReportFormat::Markdown => Ok(to_markdown(&file, results, plan)),
     }
 }
 
@@ -1443,7 +1459,7 @@ mod tests {
             ]
         );
 
-        let markdown = to_markdown(&file);
+        let markdown = to_markdown(&file, &results, &plan);
         for expected in [
             "## Gaps",
             "Expected every day by day, 2024-01-01T00:00:00Z to before 2024-01-12T00:00:00Z: 11 windows; 8 with rows, 3 empty, 0 not sampled, 0 out of scope",
@@ -1463,7 +1479,7 @@ mod tests {
         };
         let file = report_file(&results, &unstated, "2026-09-30T00:00:00Z");
         assert!(file.gaps.is_none() && file.setup.expected.is_none());
-        assert!(!to_markdown(&file).contains("## Gaps"));
+        assert!(!to_markdown(&file, &results, &unstated).contains("## Gaps"));
     }
 
     #[test]

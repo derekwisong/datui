@@ -4982,123 +4982,165 @@ fn text_expr(column: Expr, dtype: &DataType) -> Expr {
     }
 }
 
+/// One count the profile pass takes of each column it applies to: the alias suffix
+/// it is read back by, its expression, and the profile field it fills. The pass and
+/// the reader both go through [`MEASURES`], so a name cannot drift between them.
+struct Measure {
+    name: &'static str,
+    applies: fn(&DataType) -> bool,
+    expr: fn(Expr, &DataType) -> Expr,
+    field: fn(&mut ColumnQualityProfile) -> &mut Option<usize>,
+}
+
+fn is_text(dtype: &DataType) -> bool {
+    matches!(dtype, DataType::String | DataType::Categorical(..))
+}
+
+fn has_length(dtype: &DataType) -> bool {
+    is_text(dtype) || matches!(dtype, DataType::List(_))
+}
+
+/// Text that parses as `reading`, nulls not counted.
+fn parse_count(column: Expr, dtype: &DataType, reading: TextReading) -> Expr {
+    let text = text_expr(column, dtype);
+    parses_as(text.clone(), reading)
+        .and(text.is_not_null())
+        .sum()
+}
+
+/// A text value's length in characters, a list's in items.
+fn length(column: Expr, dtype: &DataType) -> Expr {
+    if matches!(dtype, DataType::List(_)) {
+        column.list().len()
+    } else {
+        text_expr(column, dtype).str().len_chars()
+    }
+}
+
+const MEASURES: [Measure; 13] = [
+    Measure {
+        name: "distinct",
+        applies: |_| true,
+        expr: |column, _| column.clone().filter(column.is_not_null()).n_unique(),
+        field: |profile| &mut profile.distinct_count,
+    },
+    Measure {
+        name: "empty",
+        applies: is_text,
+        expr: |column, dtype| text_expr(column, dtype).eq(lit("")).sum(),
+        field: |profile| &mut profile.empty_count,
+    },
+    Measure {
+        name: "whitespace",
+        applies: is_text,
+        expr: |column, dtype| {
+            let text = text_expr(column, dtype);
+            text.clone()
+                .str()
+                .strip_chars(lit(LiteralValue::untyped_null()))
+                .eq(lit(""))
+                .and(text.neq(lit("")))
+                .sum()
+        },
+        field: |profile| &mut profile.whitespace_count,
+    },
+    Measure {
+        name: "parse_int",
+        applies: is_text,
+        // Polars' cast is not strict: text that is not a whole number becomes null.
+        expr: |column, dtype| {
+            let text = text_expr(column, dtype);
+            text.clone()
+                .cast(DataType::Int64)
+                .is_not_null()
+                .and(text.is_not_null())
+                .sum()
+        },
+        field: |profile| &mut profile.integer_parse_count,
+    },
+    Measure {
+        name: "leading_zero",
+        applies: is_text,
+        expr: |column, dtype| {
+            let text = text_expr(column, dtype);
+            text.clone()
+                .str()
+                .starts_with(lit("0"))
+                .and(text.clone().str().len_chars().gt(lit(1u32)))
+                .and(text.cast(DataType::Int64).is_not_null())
+                .sum()
+        },
+        field: |profile| &mut profile.leading_zero_count,
+    },
+    Measure {
+        name: "parse_decimal",
+        applies: is_text,
+        expr: |column, dtype| parse_count(column, dtype, TextReading::Decimal),
+        field: |profile| &mut profile.decimal_parse_count,
+    },
+    Measure {
+        name: "parse_date",
+        applies: is_text,
+        expr: |column, dtype| parse_count(column, dtype, TextReading::Date),
+        field: |profile| &mut profile.date_parse_count,
+    },
+    Measure {
+        name: "parse_datetime",
+        applies: is_text,
+        expr: |column, dtype| parse_count(column, dtype, TextReading::Datetime),
+        field: |profile| &mut profile.datetime_parse_count,
+    },
+    Measure {
+        name: "min_length",
+        applies: has_length,
+        expr: |column, dtype| length(column, dtype).min(),
+        field: |profile| &mut profile.min_length,
+    },
+    Measure {
+        name: "max_length",
+        applies: has_length,
+        expr: |column, dtype| length(column, dtype).max(),
+        field: |profile| &mut profile.max_length,
+    },
+    Measure {
+        name: "nan",
+        applies: DataType::is_float,
+        expr: |column, _| column.cast(DataType::Float64).is_nan().sum(),
+        field: |profile| &mut profile.nan_count,
+    },
+    Measure {
+        name: "pos_inf",
+        applies: DataType::is_float,
+        expr: |column, _| column.cast(DataType::Float64).eq(lit(f64::INFINITY)).sum(),
+        field: |profile| &mut profile.positive_infinity_count,
+    },
+    Measure {
+        name: "neg_inf",
+        applies: DataType::is_float,
+        expr: |column, _| {
+            column
+                .cast(DataType::Float64)
+                .eq(lit(f64::NEG_INFINITY))
+                .sum()
+        },
+        field: |profile| &mut profile.negative_infinity_count,
+    },
+];
+
+/// Every column's null count, range and [`MEASURES`], each aliased
+/// `{column}::{measure}` for [`parse_profiles_at`].
 fn build_profile_exprs(schema: &Schema) -> Vec<Expr> {
     let mut exprs = Vec::new();
     for (name, dtype) in schema.iter() {
         let column = col(name.as_str());
-        let prefix = format!("{}::", name);
-        exprs.push(column.clone().null_count().alias(format!("{prefix}null")));
-        exprs.push(
-            column
-                .clone()
-                .filter(column.clone().is_not_null())
-                .n_unique()
-                .alias(format!("{prefix}distinct")),
-        );
-
+        let alias = |measure: &str| format!("{name}::{measure}");
+        exprs.push(column.clone().null_count().alias(alias("null")));
         if supports_range(dtype) {
-            exprs.push(column.clone().min().alias(format!("{prefix}min")));
-            exprs.push(column.clone().max().alias(format!("{prefix}max")));
+            exprs.push(column.clone().min().alias(alias("min")));
+            exprs.push(column.clone().max().alias(alias("max")));
         }
-
-        if matches!(dtype, DataType::String | DataType::Categorical(..)) {
-            let text = text_expr(column.clone(), dtype);
-            let trimmed = text
-                .clone()
-                .str()
-                .strip_chars(lit(LiteralValue::untyped_null()));
-            exprs.push(
-                text.clone()
-                    .eq(lit(""))
-                    .sum()
-                    .alias(format!("{prefix}empty")),
-            );
-            exprs.push(
-                trimmed
-                    .eq(lit(""))
-                    .and(text.clone().neq(lit("")))
-                    .sum()
-                    .alias(format!("{prefix}whitespace")),
-            );
-            exprs.push(
-                text.clone()
-                    .cast(DataType::Int64)
-                    .is_not_null()
-                    .and(text.clone().is_not_null())
-                    .sum()
-                    .alias(format!("{prefix}parse_int")),
-            );
-            exprs.push(
-                text.clone()
-                    .str()
-                    .starts_with(lit("0"))
-                    .and(text.clone().str().len_chars().gt(lit(1u32)))
-                    .and(text.clone().cast(DataType::Int64).is_not_null())
-                    .sum()
-                    .alias(format!("{prefix}leading_zero")),
-            );
-            for (reading, name) in [
-                (TextReading::Decimal, "parse_decimal"),
-                (TextReading::Date, "parse_date"),
-                (TextReading::Datetime, "parse_datetime"),
-            ] {
-                exprs.push(
-                    parses_as(text.clone(), reading)
-                        .and(text.clone().is_not_null())
-                        .sum()
-                        .alias(format!("{prefix}{name}")),
-                );
-            }
-            exprs.push(
-                text.clone()
-                    .str()
-                    .len_chars()
-                    .min()
-                    .alias(format!("{prefix}min_length")),
-            );
-            exprs.push(
-                text.str()
-                    .len_chars()
-                    .max()
-                    .alias(format!("{prefix}max_length")),
-            );
-        }
-
-        if matches!(dtype, DataType::List(_)) {
-            exprs.push(
-                column
-                    .clone()
-                    .list()
-                    .len()
-                    .min()
-                    .alias(format!("{prefix}min_length")),
-            );
-            exprs.push(
-                column
-                    .clone()
-                    .list()
-                    .len()
-                    .max()
-                    .alias(format!("{prefix}max_length")),
-            );
-        }
-
-        if dtype.is_float() {
-            let float = column.cast(DataType::Float64);
-            exprs.push(float.clone().is_nan().sum().alias(format!("{prefix}nan")));
-            exprs.push(
-                float
-                    .clone()
-                    .eq(lit(f64::INFINITY))
-                    .sum()
-                    .alias(format!("{prefix}pos_inf")),
-            );
-            exprs.push(
-                float
-                    .eq(lit(f64::NEG_INFINITY))
-                    .sum()
-                    .alias(format!("{prefix}neg_inf")),
-            );
+        for measure in MEASURES.iter().filter(|measure| (measure.applies)(dtype)) {
+            exprs.push((measure.expr)(column.clone(), dtype).alias(alias(measure.name)));
         }
     }
     exprs
@@ -5184,54 +5226,16 @@ fn parse_profiles_at(
     schema
         .iter()
         .map(|(name, dtype)| {
-            let prefix = format!("{}::", name);
-            ColumnQualityProfile {
-                name: name.to_string(),
-                dtype: dtype.clone(),
-                evaluated_rows,
-                null_count: usize_value_at(aggregate, &format!("{prefix}null"), row),
-                empty_count: optional_usize_at(aggregate, &format!("{prefix}empty"), row),
-                whitespace_count: optional_usize_at(aggregate, &format!("{prefix}whitespace"), row),
-                nan_count: optional_usize_at(aggregate, &format!("{prefix}nan"), row),
-                positive_infinity_count: optional_usize_at(
-                    aggregate,
-                    &format!("{prefix}pos_inf"),
-                    row,
-                ),
-                negative_infinity_count: optional_usize_at(
-                    aggregate,
-                    &format!("{prefix}neg_inf"),
-                    row,
-                ),
-                distinct_count: optional_usize_at(aggregate, &format!("{prefix}distinct"), row),
-                min: string_value_at(aggregate, &format!("{prefix}min"), row),
-                max: string_value_at(aggregate, &format!("{prefix}max"), row),
-                integer_parse_count: optional_usize_at(
-                    aggregate,
-                    &format!("{prefix}parse_int"),
-                    row,
-                ),
-                decimal_parse_count: optional_usize_at(
-                    aggregate,
-                    &format!("{prefix}parse_decimal"),
-                    row,
-                ),
-                date_parse_count: optional_usize_at(aggregate, &format!("{prefix}parse_date"), row),
-                datetime_parse_count: optional_usize_at(
-                    aggregate,
-                    &format!("{prefix}parse_datetime"),
-                    row,
-                ),
-                leading_zero_count: optional_usize_at(
-                    aggregate,
-                    &format!("{prefix}leading_zero"),
-                    row,
-                ),
-                dominant_value: None,
-                dominant_count: None,
-                min_length: optional_usize_at(aggregate, &format!("{prefix}min_length"), row),
-                max_length: optional_usize_at(aggregate, &format!("{prefix}max_length"), row),
+            let alias = |measure: &str| format!("{name}::{measure}");
+            let mut profile = ColumnQualityProfile::unmeasured(name, dtype.clone(), evaluated_rows);
+            profile.null_count = usize_value_at(aggregate, &alias("null"), row);
+            profile.min = string_value_at(aggregate, &alias("min"), row);
+            profile.max = string_value_at(aggregate, &alias("max"), row);
+            for measure in &MEASURES {
+                *(measure.field)(&mut profile) =
+                    optional_usize_at(aggregate, &alias(measure.name), row);
             }
+            profile
         })
         .collect()
 }

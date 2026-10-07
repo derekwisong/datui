@@ -9,8 +9,8 @@ use std::sync::{Arc, OnceLock};
 use color_eyre::Result;
 use resvg::{tiny_skia, usvg};
 
-use crate::chart_data::{self, BarData, segments};
-use crate::chart_plot::{Axis, Drawn, Plot, PlotData};
+use crate::chart_data::{BarData, segments};
+use crate::chart_plot::{Axis, Plot, PlotData};
 use crate::widgets::axes::{AxisSpec, TickSet};
 
 const FONT_REGULAR: &[u8] = include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf");
@@ -1110,32 +1110,15 @@ pub fn svg(figure: &Figure, options: &ExportOptions) -> Result<String> {
     ))
 }
 
-/// The names a legend lists, with each one's color index.
-fn legend_names(figure: &Figure) -> Vec<String> {
-    match &*figure.plot.data {
-        PlotData::Lines(_) => figure.plot.drawn().map(|s| s.name.to_string()).collect(),
-        PlotData::Bars(data) => data.groups.clone(),
-        PlotData::Histogram(data) => data.groups.iter().map(|g| g.name.clone()).collect(),
-        PlotData::Kde(data) => data.series.iter().map(|s| s.name.clone()).collect(),
-        PlotData::Box(_) | PlotData::Heatmap(_) | PlotData::XRange(_) => Vec::new(),
-    }
-}
-
-/// Where Other is among the figure's series: last, when it has one.
-fn other_at(figure: &Figure) -> Option<usize> {
-    match &*figure.plot.data {
-        PlotData::Lines(_) => figure.plot.drawn().position(|s| s.other),
-        PlotData::Bars(data) => chart_data::other_at(data.other, data.groups.len()),
-        PlotData::Histogram(data) => chart_data::other_at(data.other, data.groups.len()),
-        PlotData::Kde(data) => chart_data::other_at(data.other, data.series.len()),
-        PlotData::Box(_) | PlotData::Heatmap(_) | PlotData::XRange(_) => None,
-    }
-}
-
 /// The plot in `frame`: axes, grid, marks, and the legend.
 fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame: Area) {
-    let names = legend_names(figure);
-    c.other = other_at(figure);
+    let names: Vec<String> = figure
+        .plot
+        .legend()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    c.other = figure.plot.other_at();
     let is_lines = matches!(
         (&*figure.plot.data, figure.plot.scatter),
         (PlotData::Lines(_), false) | (PlotData::Kde(_), _)
@@ -1168,108 +1151,44 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
         y_from_zero,
         ..
     } = &figure.plot;
-    match &*figure.plot.data {
-        PlotData::Lines(_) => {
-            // Numbered as drawn: a series with no points takes no color.
-            let series: Vec<Drawn> = figure.plot.drawn().collect();
-            let all = series.iter().flat_map(|s| s.points.iter());
-            let (x_lo, x_hi) = all
-                .clone()
-                .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
-                    (a.min(p.0), b.max(p.0))
-                });
-            let (y_lo, y_hi) = all.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
-                (a.min(p.1), b.max(p.1))
-            });
-            let (mut y_lo, mut y_hi) = (y_lo, y_hi);
-            if options.y_from_zero.unwrap_or(*y_from_zero) {
-                y_lo = y_lo.min(0.0);
-                y_hi = y_hi.max(0.0);
-            }
-            let (sx, sy, plot) = axes(
-                c,
-                frame,
-                span(x_lo, x_hi),
-                span(y_lo, y_hi),
-                x,
-                y,
-                figure.grid,
-            );
-            let width = options.line_width.pt() * c.pt;
-            let radius = options.point_size.pt() * c.pt;
-            let opacity = options
-                .point_opacity
-                .of(series.iter().map(|s| s.points.len()).sum());
-            let mut ends = Vec::new();
-            // Other first, under the series drawn over it.
-            let mut order: Vec<(usize, _)> = series.iter().enumerate().collect();
-            order.sort_by_key(|(_, s)| !s.other);
-            for (i, &Drawn { points, breaks, .. }) in order {
-                let color = c.color(i);
-                if *scatter {
-                    for &(px, py) in points {
-                        c.dot(sx.at(px), sy.at(py), radius, color, opacity);
+    let data = &*figure.plot.data;
+    match data {
+        PlotData::Lines(_) | PlotData::Kde(_) | PlotData::Histogram(_) => {
+            let ((x_lo, x_hi), (y_lo, y_hi)) = match data {
+                PlotData::Kde(data) => (span(data.x_min, data.x_max), (0.0, data.y_max)),
+                PlotData::Histogram(data) => (
+                    span(data.x_min, data.x_max),
+                    (
+                        0.0,
+                        if data.max_count > 0.0 {
+                            data.max_count
+                        } else {
+                            1.0
+                        },
+                    ),
+                ),
+                PlotData::Lines(lines) => {
+                    let [x_lo, x_hi, mut y_lo, mut y_hi] = lines.shown_bounds(y.log).unwrap_or([
+                        f64::INFINITY,
+                        f64::NEG_INFINITY,
+                        f64::INFINITY,
+                        f64::NEG_INFINITY,
+                    ]);
+                    if options.y_from_zero.unwrap_or(*y_from_zero) {
+                        y_lo = y_lo.min(0.0);
+                        y_hi = y_hi.max(0.0);
                     }
-                } else {
-                    for run in segments(points, breaks) {
-                        let pts: Vec<(f64, f64)> =
-                            run.iter().map(|&(px, py)| (sx.at(px), sy.at(py))).collect();
-                        c.polyline(&pts, color, width);
-                    }
+                    (span(x_lo, x_hi), span(y_lo, y_hi))
                 }
-                if let Some(&(px, py)) = points.last() {
-                    ends.push((sy.at(py), sx.at(px), i));
-                }
-            }
-            if legend == LegendPlace::LineEnds {
-                line_end_labels(c, &names, ends, plot);
-            }
-        }
-        PlotData::Kde(data) => {
-            let (sx, sy, plot) = axes(
-                c,
-                frame,
-                span(data.x_min, data.x_max),
-                (0.0, data.y_max),
-                x,
-                y,
-                figure.grid,
-            );
-            let mut ends = Vec::new();
-            for i in chart_data::drawing_order(data.series.len(), c.other) {
-                let pts: Vec<(f64, f64)> = data.series[i]
-                    .points
-                    .iter()
-                    .map(|&(px, py)| (sx.at(px), sy.at(py)))
-                    .collect();
-                if let Some(&(px, py)) = pts.last() {
-                    ends.push((py, px, i));
-                }
-                c.polyline(&pts, c.color(i), 1.5 * c.pt);
-            }
-            if legend == LegendPlace::LineEnds {
-                line_end_labels(c, &names, ends, plot);
-            }
-        }
-        PlotData::Histogram(data) => {
-            let max = if data.max_count > 0.0 {
-                data.max_count
-            } else {
-                1.0
+                _ => unreachable!("one of the three kinds matched above"),
             };
-            let (sx, sy, _) = axes(
-                c,
-                frame,
-                span(data.x_min, data.x_max),
-                (0.0, max),
-                x,
-                y,
-                figure.grid,
-            );
-            let n = data.bins.len().max(1);
-            let bin = (data.x_max - data.x_min) / n as f64;
-            if data.groups.is_empty() {
+            let (sx, sy, plot) = axes(c, frame, (x_lo, x_hi), (y_lo, y_hi), x, y, figure.grid);
+            if let PlotData::Histogram(data) = data
+                && data.groups.is_empty()
+            {
                 // Filled bars, a hairline of the background between them.
+                let n = data.bins.len().max(1);
+                let bin = (data.x_max - data.x_min) / n as f64;
                 let gap = 1.0 * c.pt;
                 for (i, b) in data.bins.iter().enumerate() {
                     let x0 = sx.at(data.x_min + i as f64 * bin);
@@ -1284,16 +1203,38 @@ fn draw_plot(c: &mut Canvas<'_>, figure: &Figure, options: &ExportOptions, frame
                         1.0,
                     );
                 }
-            } else {
-                // Groups overlaid as step outlines: filled bars would hide each other.
-                let steps = data.step_outlines();
-                for g in chart_data::drawing_order(steps.len(), c.other) {
-                    let pts: Vec<(f64, f64)> = steps[g]
-                        .iter()
-                        .map(|&(x, y)| (sx.at(x), sy.at(y)))
-                        .collect();
-                    c.polyline(&pts, c.color(g), 1.5 * c.pt);
+            }
+            let curves = figure.plot.curves();
+            let (width, dots) = match data {
+                PlotData::Lines(_) => (options.line_width.pt() * c.pt, *scatter),
+                _ => (1.5 * c.pt, false),
+            };
+            let radius = options.point_size.pt() * c.pt;
+            let opacity = options
+                .point_opacity
+                .of(curves.iter().map(|curve| curve.points.len()).sum());
+            let mut ends = Vec::new();
+            for curve in &curves {
+                let color = c.color(curve.slot);
+                let to_page = |&(px, py): &(f64, f64)| (sx.at(px), sy.at(py));
+                if dots {
+                    for point in curve.points.iter() {
+                        let (px, py) = to_page(point);
+                        c.dot(px, py, radius, color, opacity);
+                    }
+                } else {
+                    for run in segments(&curve.points, curve.breaks) {
+                        let pts: Vec<(f64, f64)> = run.iter().map(to_page).collect();
+                        c.polyline(&pts, color, width);
+                    }
                 }
+                if let Some(end) = curve.points.last() {
+                    let (px, py) = to_page(end);
+                    ends.push((py, px, curve.slot));
+                }
+            }
+            if legend == LegendPlace::LineEnds {
+                line_end_labels(c, &names, ends, plot);
             }
         }
         PlotData::Box(data) => {

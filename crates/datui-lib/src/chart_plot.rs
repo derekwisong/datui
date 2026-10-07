@@ -248,6 +248,89 @@ impl Plot<'_> {
         };
         lines.into_iter().flat_map(|lines| lines.drawn(self.y.log))
     }
+    /// The plot's curves, Other first so the rest are drawn over it: a line or
+    /// scatter chart's series with points, the density curves, or a histogram's
+    /// groups as the outlines of their bars.
+    pub fn curves(&self) -> Vec<Curve<'_>> {
+        let curves: Vec<Curve<'_>> = match &*self.data {
+            PlotData::Lines(_) => self
+                .drawn()
+                .enumerate()
+                .map(|(slot, s)| Curve {
+                    index: s.index,
+                    slot,
+                    points: Cow::Borrowed(s.points),
+                    breaks: s.breaks,
+                    other: s.other,
+                })
+                .collect(),
+            PlotData::Kde(data) => data
+                .series
+                .iter()
+                .enumerate()
+                .map(|(i, s)| Curve {
+                    index: i,
+                    slot: i,
+                    points: Cow::Borrowed(&s.points),
+                    breaks: &[],
+                    other: data.other && i + 1 == data.series.len(),
+                })
+                .collect(),
+            PlotData::Histogram(data) if !data.groups.is_empty() => data
+                .step_outlines()
+                .into_iter()
+                .enumerate()
+                .map(|(i, points)| Curve {
+                    index: i,
+                    slot: i,
+                    points: Cow::Owned(points),
+                    breaks: &[],
+                    other: data.other && i + 1 == data.groups.len(),
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let other = curves.iter().position(|c| c.other);
+        let mut curves: Vec<Option<Curve<'_>>> = curves.into_iter().map(Some).collect();
+        chart_data::drawing_order(curves.len(), other)
+            .filter_map(|i| curves[i].take())
+            .collect()
+    }
+
+    /// The names a legend lists, in order: a series, a color group or a curve each.
+    pub fn legend(&self) -> Vec<&str> {
+        match &*self.data {
+            PlotData::Lines(_) => self.drawn().map(|s| s.name).collect(),
+            PlotData::Bars(data) => data.groups.iter().map(String::as_str).collect(),
+            PlotData::Histogram(data) => data.groups.iter().map(|g| g.name.as_str()).collect(),
+            PlotData::Kde(data) => data.series.iter().map(|s| s.name.as_str()).collect(),
+            PlotData::Box(_) | PlotData::Heatmap(_) | PlotData::XRange(_) => Vec::new(),
+        }
+    }
+
+    /// Where Other is in the legend: last, when it has one.
+    pub fn other_at(&self) -> Option<usize> {
+        match &*self.data {
+            PlotData::Lines(_) => self.drawn().position(|s| s.other),
+            PlotData::Bars(data) => chart_data::other_at(data.other, data.groups.len()),
+            _ => self.curves().iter().find(|c| c.other).map(|c| c.slot),
+        }
+    }
+}
+
+/// A line a plot draws through its data, as every device draws it.
+#[derive(Debug, Clone)]
+pub struct Curve<'a> {
+    /// Its place among every series, which colors it on screen: an empty series
+    /// before it keeps its color too.
+    pub index: usize,
+    /// Its place in the legend, which names and colors it in a file.
+    pub slot: usize,
+    pub points: Cow<'a, [(f64, f64)]>,
+    /// Where it starts again after a gap.
+    pub breaks: &'a [usize],
+    /// Other: every value of a color without a series of its own, drawn under the rest.
+    pub other: bool,
 }
 
 /// What a plot is drawn from beside its data: the panel's options, the spec, and

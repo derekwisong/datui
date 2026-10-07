@@ -11,12 +11,12 @@ use ratatui::{
 
 use crate::chart_data::{
     AxisNumbers, BarData, BoxPlotData, HeatmapData, HistogramData, KdeData, XAxisTemporalKind,
-    drawing_order, other_at, segments,
+    other_at, segments,
 };
 use crate::chart_modal::{
     Aggregate, ChartFocus, ChartModal, Cumulative, Mark, PickerFor, ShelfUse, TimeUnit,
 };
-use crate::chart_plot::{Axis, LinesData, Plot, PlotData};
+use crate::chart_plot::{Axis, Curve, LinesData, Plot, PlotData};
 use crate::config::Theme;
 use crate::glyphs::Glyphs;
 use crate::pointer::Hit;
@@ -755,12 +755,14 @@ fn render_plot(
                 grid: modal.grid,
                 legend: modal.show_legend,
             };
-            render_histogram_chart(area, buf, &look, theme, data, (x, y), g)
+            render_histogram_chart(area, buf, &look, theme, (data, &plot.curves()), (x, y), g)
         }
         PlotData::Box(data) => {
             render_box_plot_chart(area, buf, modal, theme, data, (&x.title, y), g)
         }
-        PlotData::Kde(data) => render_kde_chart(area, buf, modal, theme, data, (x, y), g),
+        PlotData::Kde(data) => {
+            render_kde_chart(area, buf, modal, theme, (data, &plot.curves()), (x, y), g)
+        }
         PlotData::Heatmap(data) => {
             render_heatmap_chart(area, buf, theme, data, (x, y), text_secondary, g)
         }
@@ -1104,21 +1106,8 @@ fn render_xy_chart(
 
     // A series is drawn as its runs between gaps, so a line never bridges a missing
     // value. Other first, so the series drawn over it keep their colors.
-    let datasets: Vec<Dataset> = drawn
-        .iter()
-        .filter(|s| Some(s.index) == other_at)
-        .chain(drawn.iter().filter(|s| Some(s.index) != other_at))
-        .flat_map(|s| {
-            let style = series_style(theme, s.index, other_at);
-            segments(s.points, s.breaks).into_iter().map(move |run| {
-                Dataset::default()
-                    .marker(marker)
-                    .graph_type(graph_type)
-                    .style(style)
-                    .data(run)
-            })
-        })
-        .collect();
+    let curves = plot.curves();
+    let datasets = curve_datasets(&curves, theme, marker, graph_type);
 
     let y_min_bounds = if plot.y_from_zero {
         0.0_f64.min(all_y_min)
@@ -1281,6 +1270,31 @@ fn legend<'a>(show: bool, entries: impl Iterator<Item = (&'a str, Style)>) -> Op
     (show && entries.len() > 1).then_some(Legend { entries })
 }
 
+/// A dataset per run of each curve, in the order they come: Other first, so the
+/// series drawn over it keep their colors.
+fn curve_datasets<'a>(
+    curves: &'a [Curve<'_>],
+    theme: &Theme,
+    marker: ratatui::symbols::Marker,
+    graph_type: GraphType,
+) -> Vec<Dataset<'a>> {
+    curves
+        .iter()
+        .flat_map(|curve| {
+            let style = series_style(theme, curve.index, curve.other.then_some(curve.index));
+            segments(&curve.points, curve.breaks)
+                .into_iter()
+                .map(move |run| {
+                    Dataset::default()
+                        .marker(marker)
+                        .graph_type(graph_type)
+                        .style(style)
+                        .data(run)
+                })
+        })
+        .collect()
+}
+
 /// The style series `i` draws in: its palette color, or `dimmed` for Other, the
 /// rows of every value without a series of its own.
 fn series_style(theme: &Theme, i: usize, other_at: Option<usize>) -> Style {
@@ -1328,7 +1342,7 @@ pub fn render_histogram(
         buf,
         &look,
         theme,
-        data,
+        (data, &[]),
         (&x, &y),
         crate::glyphs::get(),
     );
@@ -1339,7 +1353,7 @@ fn render_histogram_chart(
     buf: &mut ratatui::buffer::Buffer,
     look: &HistogramLook,
     theme: &Theme,
-    data: &HistogramData,
+    (data, curves): (&HistogramData, &[Curve<'_>]),
     (x, y): (&Axis, &Axis),
     g: &Glyphs,
 ) {
@@ -1378,17 +1392,8 @@ fn render_histogram_chart(
         look.grid,
     );
     if !data.groups.is_empty() {
-        let steps = data.step_outlines();
-        let other = other_at(data.other, steps.len());
-        let datasets: Vec<Dataset> = drawing_order(steps.len(), other)
-            .map(|i| {
-                Dataset::default()
-                    .graph_type(GraphType::Line)
-                    .marker(marker)
-                    .style(series_style(theme, i, other))
-                    .data(&steps[i])
-            })
-            .collect();
+        let other = other_at(data.other, data.groups.len());
+        let datasets = curve_datasets(curves, theme, marker, GraphType::Line);
         axes.legend = legend(
             look.legend,
             data.groups
@@ -1441,7 +1446,7 @@ fn render_kde_chart(
     buf: &mut ratatui::buffer::Buffer,
     modal: &ChartModal,
     theme: &Theme,
-    data: &KdeData,
+    (data, curves): (&KdeData, &[Curve<'_>]),
     (x, y): (&Axis, &Axis),
     g: &Glyphs,
 ) {
@@ -1455,15 +1460,7 @@ fn render_kde_chart(
     }
 
     let other = other_at(data.other, data.series.len());
-    let datasets: Vec<Dataset> = drawing_order(data.series.len(), other)
-        .map(|i| {
-            Dataset::default()
-                .graph_type(GraphType::Line)
-                .marker(g.plot.line)
-                .style(series_style(theme, i, other))
-                .data(&data.series[i].points)
-        })
-        .collect();
+    let datasets = curve_datasets(curves, theme, g.plot.line, GraphType::Line);
 
     let mut axes = plot_axes(
         theme,

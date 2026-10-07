@@ -41,8 +41,7 @@ pub(crate) fn results_with(
     columns: Vec<ColumnQualityProfile>,
     observations: Vec<QualityObservation>,
 ) -> DataQualityResults {
-    let mut results =
-        DataQualityResults::empty(Some(100), &DataQualityPlan::default(), &Schema::default());
+    let mut results = DataQualityResults::empty(Some(100), &Schema::default());
     results.evaluated_rows = 100;
     results.precision = QualityPrecision::Exact;
     results.columns = columns;

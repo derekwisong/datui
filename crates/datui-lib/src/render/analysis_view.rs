@@ -226,7 +226,6 @@ fn render_body(
                 results: modal.quality.results.as_ref(),
                 from_cache: modal.quality.from_cache,
                 metric: modal.quality.metric,
-                column_index: modal.quality.column_index,
                 segment_index: modal.quality.segment_index,
                 interval_index: modal.quality.interval_index,
                 trend_line: modal.quality.trend_line,

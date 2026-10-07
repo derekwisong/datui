@@ -136,7 +136,6 @@ pub struct DataQualityWidgetConfig<'a> {
     pub results: Option<&'a DataQualityResults>,
     pub from_cache: bool,
     pub metric: QualityMetric,
-    pub column_index: usize,
     pub segment_index: usize,
     /// The interval a detail shows.
     pub interval_index: usize,
@@ -326,10 +325,10 @@ fn measured_on(plan: &DataQualityPlan, results: &DataQualityResults) -> String {
     match (results.precision, results.total_rows) {
         (QualityPrecision::Metadata, _) => format!("file metadata only, no values read{scope}"),
         (QualityPrecision::Exact, _) => sample.outcome(results.evaluated_rows, None, None),
-        (QualityPrecision::Sampled | QualityPrecision::Estimated, Some(total)) => {
+        (QualityPrecision::Sampled, Some(total)) => {
             sample.outcome(total, Some(results.evaluated_rows), results.per_value)
         }
-        (QualityPrecision::Sampled | QualityPrecision::Estimated, None) => format!(
+        (QualityPrecision::Sampled, None) => format!(
             "sample of {} rows{scope}",
             numfmt::group_chrome(results.evaluated_rows)
         ),
@@ -3536,10 +3535,7 @@ fn render_gaps(
     };
     let unit = trend_unit(&plan.grain);
     let every = check.every.as_str();
-    let sampled = matches!(
-        results.precision,
-        QualityPrecision::Sampled | QualityPrecision::Estimated
-    );
+    let sampled = matches!(results.precision, QualityPrecision::Sampled);
     let mut notes = vec![format!(
         "{}, {}: {} of {} {}",
         check.column,

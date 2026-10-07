@@ -856,10 +856,10 @@ pub fn to_markdown(
     let rows = match (results.precision, results.total_rows) {
         (QualityPrecision::Metadata, _) => "file metadata only, no values read".to_string(),
         (QualityPrecision::Exact, _) => format!("all {} rows, exact", count(evaluated)),
-        (QualityPrecision::Sampled | QualityPrecision::Estimated, Some(total)) => {
+        (QualityPrecision::Sampled, Some(total)) => {
             format!("{} of {} rows, sampled", count(evaluated), count(total))
         }
-        (QualityPrecision::Sampled | QualityPrecision::Estimated, None) => {
+        (QualityPrecision::Sampled, None) => {
             format!("{} rows, sampled", count(evaluated))
         }
     };

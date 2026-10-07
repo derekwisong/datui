@@ -121,7 +121,6 @@ fn quality_run_under_way(
     let plan = data_quality::DataQualityPlan::default();
     modal.quality.results = Some(data_quality::DataQualityResults::empty(
         Some(3),
-        &plan,
         df.schema(),
     ));
     modal.quality.last_plan = Some(plan.clone());

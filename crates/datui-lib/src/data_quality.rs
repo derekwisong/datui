@@ -1421,27 +1421,6 @@ impl DataQualityPlan {
             _ => None,
         }
     }
-
-    pub fn set_row_chunks(&mut self) {
-        self.grain = QualityGrain::RowChunks(DEFAULT_CHUNK_ROWS);
-    }
-
-    pub fn compact_summary(&self) -> String {
-        format!(
-            "scope {} -> grain {} -> compute {} -> compare {}",
-            self.scope.label(),
-            self.grain.label(),
-            match self.compute {
-                QualityCompute::Sample => format!(
-                    "{} rows {}",
-                    self.dataset_rows,
-                    self.method.label().to_lowercase()
-                ),
-                other => other.label().to_string(),
-            },
-            self.comparison_label()
-        )
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1449,7 +1428,6 @@ pub enum QualityPrecision {
     Metadata,
     Sampled,
     Exact,
-    Estimated,
 }
 
 impl QualityPrecision {
@@ -1458,7 +1436,6 @@ impl QualityPrecision {
             Self::Metadata => "metadata",
             Self::Sampled => "sampled",
             Self::Exact => "exact",
-            Self::Estimated => "estimated",
         }
     }
 }
@@ -1597,10 +1574,6 @@ impl ColumnQualityProfile {
             min_length: None,
             max_length: None,
         }
-    }
-
-    pub fn null_rate(&self) -> f64 {
-        rate(self.null_count, self.evaluated_rows)
     }
 
     pub fn non_null_rows(&self) -> usize {
@@ -1792,7 +1765,6 @@ pub struct IdentityProfile {
     pub extra_rows: usize,
     pub rows_involved: usize,
     pub evaluated_rows: usize,
-    pub precision: QualityPrecision,
     /// The most copied groups, from the rows the run kept. Empty after a full scan,
     /// which keeps no rows.
     pub examples: Vec<DuplicateExample>,
@@ -1821,7 +1793,6 @@ pub struct CategoryVariantGroup {
     pub normalized: String,
     pub variants: Vec<(String, usize)>,
     pub rows_involved: usize,
-    pub complete: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -2206,7 +2177,6 @@ pub struct DataQualityResults {
     pub total_rows: Option<usize>,
     pub evaluated_rows: usize,
     pub precision: QualityPrecision,
-    pub sample_seed: u64,
     pub columns: Vec<ColumnQualityProfile>,
     pub observations: Vec<QualityObservation>,
     pub segments: Vec<SegmentQualityProfile>,
@@ -2386,12 +2356,11 @@ impl DataQualityResults {
         );
     }
 
-    pub fn empty(total_rows: Option<usize>, plan: &DataQualityPlan, schema: &Schema) -> Self {
+    pub fn empty(total_rows: Option<usize>, schema: &Schema) -> Self {
         Self {
             total_rows,
             evaluated_rows: 0,
             precision: QualityPrecision::Metadata,
-            sample_seed: plan.sample_seed,
             columns: schema
                 .iter()
                 .map(|(name, dtype)| ColumnQualityProfile::unmeasured(name, dtype.clone(), 0))
@@ -2550,13 +2519,6 @@ pub fn window_nests(fine: &str, coarse: &str) -> bool {
 }
 
 impl QualitySample {
-    /// Whether `plan`'s segments need a count this sample does not hold: a partition
-    /// or time-window grain on a sample, counted neither while sampling nor by an
-    /// earlier run, nor summed from a finer count.
-    pub fn needs_segment_count(&self, plan: &DataQualityPlan) -> bool {
-        self.segment_count(plan).reads()
-    }
-
     /// Where a run of `plan` over these rows gets its segment totals.
     pub fn segment_count(&self, plan: &DataQualityPlan) -> SegmentCount {
         if self.precision != QualityPrecision::Sampled || !segments_need_count(plan) {
@@ -2691,7 +2653,8 @@ fn per_value_counts(plan: &DataQualityPlan, per_value: Option<&crate::sampling::
     sampler_counts_segments(plan) && per_value.is_some()
 }
 
-pub fn compute_data_quality(
+#[cfg(test)]
+pub(crate) fn compute_data_quality(
     lf: &LazyFrame,
     total_rows: Option<usize>,
     plan: &DataQualityPlan,
@@ -2704,7 +2667,8 @@ pub fn compute_data_quality(
 
 /// [`compute_data_quality`], cutting `kept` instead of reading when it serves the
 /// plan, and returning the sample a sampled run read so the next run can do the same.
-pub fn compute_data_quality_kept(
+#[cfg(test)]
+pub(crate) fn compute_data_quality_kept(
     lf: &LazyFrame,
     total_rows: Option<usize>,
     plan: &DataQualityPlan,
@@ -2724,8 +2688,9 @@ pub fn compute_data_quality_kept(
     results.map(|results| (results, kept))
 }
 
-/// [`compute_data_quality_kept`], naming each stage to `watch` as it enters it and
-/// stopping between stages, or inside a streamed read, once `watch` is cancelled.
+/// The data quality of `lf` by `plan`, cutting `kept` instead of reading when it
+/// serves the plan. Names each stage to `watch` as it enters it and stops between
+/// stages, or inside a streamed read, once `watch` is cancelled.
 ///
 /// The sample a sampled run read comes back whether or not the run finished: a run
 /// stopped after its read has still paid for it, and the next run can cut it.
@@ -2786,7 +2751,7 @@ fn profile_quality(
     // compute budget, including the one that reads no values at all.
     if plan.compute == QualityCompute::Metadata {
         watch.stage(QualityStage::Assembling, false, false)?;
-        let mut results = DataQualityResults::empty(total_rows, plan, &schema);
+        let mut results = DataQualityResults::empty(total_rows, &schema);
         if let Some(source) = source {
             results.observations = drift_observations(source, None, polars_streaming, watch);
         }
@@ -2897,13 +2862,7 @@ fn profile_quality(
         collect_lazy(profile_lf.clone().select(formats), polars_streaming).map_err(Report::from)?
     };
     watch.stage(QualityStage::CheckingDuplicates, false, false)?;
-    let identity = profile_identity_lazy(
-        &profile_lf,
-        &schema,
-        evaluated_rows,
-        precision,
-        polars_streaming,
-    )?;
+    let identity = profile_identity_lazy(&profile_lf, &schema, evaluated_rows, polars_streaming)?;
     // The declared key's repeats among the rows in memory: a repeat among distinct
     // sampled rows is a repeat in the data, and no repeat says nothing past them.
     let repeats = crate::quality_intent::key_repeats(&profile_lf, plan, &schema, polars_streaming)?;
@@ -2979,7 +2938,6 @@ fn profile_quality(
         total_rows,
         evaluated_rows,
         precision,
-        sample_seed: plan.sample_seed,
         columns,
         observations,
         segments,
@@ -3189,14 +3147,8 @@ fn compute_full_quality(
         watch.scope_reads(true),
         polars_streaming,
     )?;
-    let identity = profile_identity_lazy(
-        lf,
-        schema,
-        total_rows,
-        QualityPrecision::Exact,
-        polars_streaming,
-    )
-    .map_err(failed)?;
+    let identity =
+        profile_identity_lazy(lf, schema, total_rows, polars_streaming).map_err(failed)?;
     let texts = schema
         .iter_values()
         .any(|dtype| matches!(dtype, DataType::String | DataType::Categorical(..)));
@@ -3281,7 +3233,6 @@ fn compute_full_quality(
         total_rows: Some(total_rows),
         evaluated_rows: total_rows,
         precision: QualityPrecision::Exact,
-        sample_seed: plan.sample_seed,
         columns,
         observations,
         segments,
@@ -3443,11 +3394,10 @@ fn profile_category_variants_lazy(
             .agg([len().alias(count_name)])
             .with_columns([variant_count])
             .filter(col(variant_count_name).gt(lit(1u32)))
-            .limit(1_001);
+            .limit(1_000);
         let groups = collect_lazy(query, polars_streaming).map_err(Report::from)?;
-        let complete = groups.height() <= 1_000;
         let mut by_normalized = BTreeMap::<String, Vec<(String, usize)>>::new();
-        for row in 0..groups.height().min(1_000) {
+        for row in 0..groups.height() {
             let Some(normalized) = string_value_at(&groups, normalized_name, row) else {
                 continue;
             };
@@ -3470,7 +3420,6 @@ fn profile_category_variants_lazy(
                 normalized,
                 variants,
                 rows_involved,
-                complete,
             });
             if result.len() >= 100 {
                 return Ok(result);
@@ -3484,7 +3433,6 @@ fn profile_identity_lazy(
     lf: &LazyFrame,
     schema: &Schema,
     total_rows: usize,
-    precision: QualityPrecision,
     polars_streaming: bool,
 ) -> Result<IdentityProfile> {
     let keys = schema
@@ -3508,7 +3456,6 @@ fn profile_identity_lazy(
         extra_rows: usize_value(&summary, "extra_rows"),
         rows_involved: usize_value(&summary, "rows_involved"),
         evaluated_rows: total_rows,
-        precision,
         examples: Vec::new(),
     })
 }

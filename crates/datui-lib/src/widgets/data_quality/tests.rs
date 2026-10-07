@@ -84,7 +84,6 @@ impl Screen {
             results: Some(&self.results),
             from_cache: false,
             metric: QualityMetric::NullRate,
-            column_index: 0,
             segment_index: 0,
             interval_index: 0,
             trend_line: 0,

@@ -417,8 +417,6 @@ fn measured(app: &App) -> String {
     let mut results = app.analysis_modal.quality.results.clone().unwrap();
     results.reads = None;
     results.source = None;
-    // Each app draws its own seed; a full scan samples nothing with it.
-    results.sample_seed = 0;
     format!("{results:?}")
 }
 

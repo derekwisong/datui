@@ -1672,7 +1672,7 @@ pub fn coverage(
             Outcome::Passed | Outcome::Found { .. } => match check.basis {
                 QualityPrecision::Exact => coverage.exact += 1,
                 QualityPrecision::Metadata => coverage.metadata += 1,
-                QualityPrecision::Sampled | QualityPrecision::Estimated => coverage.sampled += 1,
+                QualityPrecision::Sampled => coverage.sampled += 1,
             },
         }
     }
@@ -1725,11 +1725,7 @@ pub fn coverage(
     }
 
     let segments = &results.segments;
-    if matches!(
-        results.precision,
-        QualityPrecision::Sampled | QualityPrecision::Estimated
-    ) && segments.len() > 1
-    {
+    if matches!(results.precision, QualityPrecision::Sampled) && segments.len() > 1 {
         let thin = segments
             .iter()
             .filter(|segment| segment.evaluated_rows < THIN_SEGMENT_ROWS)
@@ -2637,7 +2633,6 @@ mod tests {
                 extra_rows: 0,
                 rows_involved: 0,
                 evaluated_rows: results.evaluated_rows,
-                precision: results.precision,
                 examples: Vec::new(),
             });
             results
@@ -2959,7 +2954,6 @@ mod tests {
             extra_rows: 3,
             rows_involved: 5,
             evaluated_rows: 100,
-            precision: QualityPrecision::Exact,
             examples: vec![crate::data_quality::DuplicateExample {
                 copies: 3,
                 values: vec!["7".to_string()],

@@ -789,17 +789,6 @@ fn metadata_mode_does_not_evaluate_values() {
 }
 
 #[test]
-fn compact_summary_keeps_plan_dimensions_visible() {
-    let mut plan = DataQualityPlan::default();
-    plan.set_row_chunks();
-    plan.comparison = QualityComparison::Previous;
-    assert_eq!(
-        plan.compact_summary(),
-        "scope current view -> grain in chunks of 1,000,000 rows -> compute 10000 rows random -> compare previous"
-    );
-}
-
-#[test]
 fn source_projection_preserves_rows_without_binary_payloads() {
     let source = QualitySourceContext {
         file_names: vec!["one.parquet".to_string()],
@@ -1363,7 +1352,7 @@ fn a_sample_is_read_at_its_full_size() {
 #[test]
 fn an_empty_page_names_the_setting_that_fills_it() {
     let mut plan = DataQualityPlan::default();
-    let results = DataQualityResults::empty(Some(10), &plan, &Schema::default());
+    let results = DataQualityResults::empty(Some(10), &Schema::default());
     let setup = |page, plan: &DataQualityPlan, dates| page_setup(page, plan, Some(&results), dates);
     assert_eq!(
         setup(QualityPage::Segments, &plan, false),

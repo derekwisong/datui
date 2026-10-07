@@ -133,10 +133,7 @@ impl TrendView<'_> {
 /// none of and the segments it drew few of: what [`TrendView::coverage`] counts,
 /// without building the view.
 pub fn segment_coverage(results: &DataQualityResults) -> (bool, usize, usize) {
-    let sampled = matches!(
-        results.precision,
-        QualityPrecision::Sampled | QualityPrecision::Estimated
-    );
+    let sampled = matches!(results.precision, QualityPrecision::Sampled);
     let thin = if sampled {
         results
             .segments
@@ -161,10 +158,7 @@ pub fn trend_view(
     bars: usize,
 ) -> TrendView<'_> {
     let slots = trend_slots(results);
-    let sampled = matches!(
-        results.precision,
-        QualityPrecision::Sampled | QualityPrecision::Estimated
-    );
+    let sampled = matches!(results.precision, QualityPrecision::Sampled);
     if slots.is_empty() || bars == 0 {
         return TrendView {
             slots,

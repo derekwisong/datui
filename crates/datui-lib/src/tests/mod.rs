@@ -2317,7 +2317,6 @@ fn stale_analysis_answers_are_ignored() {
                 total_rows: Some(999_999),
                 evaluated_rows: 1,
                 precision: QualityPrecision::Sampled,
-                sample_seed: 1,
                 columns: vec![],
                 observations: vec![],
                 segments: vec![],

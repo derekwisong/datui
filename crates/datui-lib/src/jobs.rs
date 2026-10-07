@@ -1527,6 +1527,8 @@ mod tests {
         let look = jobs.start(Job::LookAtDirectory { load, path }, None);
         let named = jobs.start(Job::OpenNamed(load), None);
         let facts = jobs.start(Job::FileFacts { dataset: 1 }, None);
+        let footers = jobs.start(Job::FootersJoin { dataset: 1 }, None);
+        let journal = jobs.start(Job::JournalDetail { dataset: 1 }, None);
         assert!(!jobs.would_strand());
         assert!(jobs.try_advance());
         assert!(!jobs.is_current(rows.ticket()));
@@ -1536,6 +1538,10 @@ mod tests {
             jobs.is_current(facts.ticket()),
             "file facts follow the dataset"
         );
+        // The footer pass outlives every collect of its dataset, which bumps the
+        // generation; its answer is judged by the dataset alone. So is a journal's.
+        assert!(jobs.is_current(footers.ticket()));
+        assert!(jobs.is_current(journal.ticket()));
     }
 
     /// Progress is sent with the job's ticket; what runs after the answer runs after

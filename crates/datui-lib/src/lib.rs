@@ -3547,7 +3547,8 @@ impl App {
     /// size probe behind a download can take fifteen seconds, and the answer to
     /// "actually, never mind" is the home screen, not the exit.
     pub fn awaiting_open_confirmation(&self) -> bool {
-        self.confirmation_modal.active && self.loading.asking()
+        self.confirmation_modal.active
+            && matches!(self.confirmation_modal.asking, Some(Confirm::Download))
     }
 
     /// Enter on the confirmation's Yes, or on either choice of one whose No acts too.

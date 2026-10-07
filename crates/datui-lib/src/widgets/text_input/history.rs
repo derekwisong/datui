@@ -65,6 +65,7 @@ impl InputHistory {
         self.id.is_some()
     }
 
+    #[cfg(test)]
     pub fn entries(&self) -> &[String] {
         &self.entries
     }

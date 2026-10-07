@@ -51,19 +51,6 @@ pub fn looks_like(head: &[u8]) -> bool {
     head.starts_with(MAGIC)
 }
 
-/// Whether the file at `path` is a SQLite database, by its first bytes.
-pub fn is_sqlite_file(path: &Path) -> bool {
-    use std::io::Read;
-    let mut head = [0u8; 16];
-    std::fs::File::open(path)
-        .and_then(|mut f| f.read_exact(&mut head))
-        .is_ok()
-        && looks_like(&head)
-}
-
-/// The path of a table inside a database, and the way back: see [`crate::members`].
-pub use crate::members::{place as table_place, split as table_path};
-
 /// Whether a table is SQLite's own: the schema, `sqlite_sequence`, the statistics
 /// tables, or the shadow tables a virtual table keeps its data in.
 #[cfg(feature = "sqlite")]

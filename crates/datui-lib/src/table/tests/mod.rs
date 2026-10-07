@@ -128,9 +128,9 @@ fn evidence_rows_hold_the_decompressed_file_they_scan() {
 /// Scrolling sideways must not count the rows.
 ///
 /// A staged open shows a screen before the count is known, and the count on a
-/// cloud hive is a metadata read per object. `scroll_right` runs on the thread
-/// that draws and reads keys — `App::handle`'s `RIGHT_KEYS` arm calls it
-/// directly — so a count taken there is a freeze no keystroke can interrupt.
+/// cloud hive is a metadata read per object. Column scrolling runs on the thread
+/// that draws and reads keys, so a count taken there is a freeze no keystroke can
+/// interrupt.
 /// The busy-key classifier admits Left/Right on the stated premise that column
 /// scroll never collects, which is what this holds.
 #[test]

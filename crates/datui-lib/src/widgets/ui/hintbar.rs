@@ -155,12 +155,13 @@ impl HintBar {
     }
 
     /// The columns the bar will actually use in a row of `width`.
+    #[cfg(test)]
     pub fn width_in(&self, width: u16) -> u16 {
         self.used(&self.kept(width, false))
     }
 
-    /// [`Self::width_in`] for a bar drawn with [`Self::render_flush`]: the last
-    /// chip's trailing gap is not counted.
+    /// The columns a bar drawn with [`Self::render_flush`] uses in a row of `width`:
+    /// the last chip's trailing gap is not counted.
     pub fn flush_width_in(&self, width: u16) -> u16 {
         self.used(&self.kept(width, true)).saturating_sub(GAP)
     }
@@ -173,6 +174,7 @@ impl HintBar {
 
     /// Where each chip [`Widget::render`] draws in `area` lands, key and label without
     /// the gap after it, with its key: what a click on the bar presses.
+    #[cfg(test)]
     pub fn chips_in(&self, area: Rect) -> Vec<(Rect, &str)> {
         self.chips(area, false)
     }

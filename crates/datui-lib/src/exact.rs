@@ -572,34 +572,6 @@ pub fn escaped_bytes(bytes: &[u8]) -> String {
     out
 }
 
-/// Bytes as hex-dump lines, `width` bytes to a line: offset, hex, then the
-/// printable ASCII with a dot for the rest.
-pub fn hex_lines(bytes: &[u8], width: usize) -> Vec<String> {
-    let width = width.max(1);
-    bytes
-        .chunks(width)
-        .enumerate()
-        .map(|(i, chunk)| {
-            let mut line = format!("{:08x} ", i * width);
-            for b in chunk {
-                let _ = write!(line, " {b:02x}");
-            }
-            for _ in chunk.len()..width {
-                line.push_str("   ");
-            }
-            line.push_str("  ");
-            line.extend(chunk.iter().map(|&b| {
-                if (0x20..0x7f).contains(&b) {
-                    b as char
-                } else {
-                    '.'
-                }
-            }));
-            line
-        })
-        .collect()
-}
-
 /// Whether one-line text holds a character [`marked`] in a cell. Bytes first:
 /// C1 controls start with 0xc2, U+061C with 0xd8, the other direction controls
 /// with 0xe2.
@@ -894,12 +866,8 @@ mod tests {
     }
 
     #[test]
-    fn bytes_escape_and_dump() {
+    fn bytes_escape() {
         assert_eq!(escaped_bytes(b"ab\x00\xff\""), r#"b"ab\x00\xff\"""#);
-        let lines = hex_lines(b"Hello, world!\x00\x01", 8);
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], "00000000  48 65 6c 6c 6f 2c 20 77  Hello, w");
-        assert_eq!(lines[1], "00000008  6f 72 6c 64 21 00 01     orld!..");
     }
 
     #[test]

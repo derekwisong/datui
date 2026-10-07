@@ -221,6 +221,7 @@ impl TextArea {
     }
 
     /// Delete the active selection, if any.
+    #[cfg(test)]
     pub fn delete_selection(&mut self) -> bool {
         match self.selection() {
             Some((start, end)) => self.replace_range(start, end, ""),
@@ -435,6 +436,7 @@ impl TextArea {
                 let target = (row + n).min(self.lines.len() - 1);
                 (target, col.min(self.line_len(target)))
             }
+            #[cfg(test)]
             CursorMove::Jump(r, c) => self.clamp_position((r, c)),
         })
     }

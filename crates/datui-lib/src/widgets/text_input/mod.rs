@@ -112,6 +112,7 @@ impl TextInput {
     }
 
     /// Whether the field holds one line or many.
+    #[cfg(test)]
     pub fn mode(&self) -> TextInputMode {
         self.mode
     }
@@ -126,6 +127,7 @@ impl TextInput {
     }
 
     /// Set the text colour.
+    #[cfg(test)]
     pub fn with_text_color(mut self, color: Color) -> Self {
         self.text_color = Some(color);
         self.apply_styles();
@@ -133,6 +135,7 @@ impl TextInput {
     }
 
     /// Set the background colour of the input area.
+    #[cfg(test)]
     pub fn with_background(mut self, color: Color) -> Self {
         self.background_color = Some(color);
         self.apply_styles();
@@ -274,6 +277,7 @@ impl TextInput {
     }
 
     /// Move the cursor to a character offset into [`TextInput::value`].
+    #[cfg(test)]
     pub fn set_cursor(&mut self, cursor: usize) {
         let (row, col) = self.line_col_of(cursor);
         self.textarea.set_cursor(row, col);
@@ -290,6 +294,7 @@ impl TextInput {
     }
 
     /// Move the cursor to a line and column, clamped into the text.
+    #[cfg(test)]
     pub fn set_cursor_line_col(&mut self, line: usize, col: usize) {
         self.textarea.set_cursor(line, col);
     }
@@ -329,16 +334,19 @@ impl TextInput {
     }
 
     /// Scroll position of the last render, as `(row, column)`.
+    #[cfg(test)]
     pub fn scroll_offsets(&self) -> (usize, usize) {
         self.textarea.scroll_offsets()
     }
 
     /// The history entries loaded so far. Empty until something loads them.
+    #[cfg(test)]
     pub fn history_entries(&self) -> &[String] {
         self.history.entries()
     }
 
     /// Load the history from the cache if it has not been loaded yet.
+    #[cfg(test)]
     pub fn load_history(&mut self, cache: &CacheManager) -> Result<()> {
         self.history.ensure_loaded(cache)
     }
@@ -478,6 +486,7 @@ impl TextInput {
     }
 
     /// Split a character offset into the value into a line and column.
+    #[cfg(test)]
     fn line_col_of(&self, cursor: usize) -> (usize, usize) {
         let mut remaining = cursor;
         for (row, line) in self.textarea.lines().iter().enumerate() {

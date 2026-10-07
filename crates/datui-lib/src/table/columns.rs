@@ -126,11 +126,13 @@ impl DataTableState {
         self.slide_table(-(self.visible_rows as i64))
     }
 
-    pub fn scroll_right(&mut self) {
+    #[cfg(test)]
+    pub(crate) fn scroll_right(&mut self) {
         self.scroll_columns(ColumnMove::StepRight);
     }
 
-    pub fn scroll_left(&mut self) {
+    #[cfg(test)]
+    pub(crate) fn scroll_left(&mut self) {
         self.scroll_columns(ColumnMove::StepLeft);
     }
 
@@ -352,7 +354,9 @@ impl DataTableState {
             return Some(back);
         }
         let needs_widths = match mv {
-            ColumnMove::StepLeft | ColumnMove::StepRight | ColumnMove::First => false,
+            #[cfg(test)]
+            ColumnMove::StepLeft | ColumnMove::StepRight => false,
+            ColumnMove::First => false,
             // Back to a column at or left of the first shown needs no width.
             ColumnMove::Keep(column) => column > self.termcol_index,
             _ => true,

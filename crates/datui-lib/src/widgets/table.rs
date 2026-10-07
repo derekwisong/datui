@@ -451,6 +451,7 @@ impl DataTable {
 
     /// The sort columns and directions for the header marks; the stateful render fills
     /// these itself, the builder is for direct `render_dataframe` callers like tests.
+    #[cfg(test)]
     pub fn with_sort(mut self, columns: Vec<String>, descending: Vec<bool>) -> Self {
         debug_assert_eq!(columns.len(), descending.len());
         self.sort_columns = columns;

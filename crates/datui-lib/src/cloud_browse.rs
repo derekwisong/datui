@@ -32,26 +32,6 @@ pub struct Provider {
     pub endpoint: Option<String>,
 }
 
-impl Provider {
-    /// Beside the section title: the account the buckets belong to, when nameable.
-    pub fn detail(&self) -> Option<String> {
-        match (&self.project, &self.profile) {
-            (Some(project), _) => Some(format!("project: {project}")),
-            (None, Some(profile)) => Some(format!("profile: {profile}")),
-            (None, None) => None,
-        }
-    }
-
-    /// Whether this provider can enumerate its buckets. Not an error otherwise: a GCS
-    /// provider without a project, or a one-bucket S3 credential, still opens URLs.
-    pub fn can_list_buckets(&self) -> bool {
-        match self.kind {
-            ProviderKind::Gcs => self.project.is_some(),
-            ProviderKind::S3 | ProviderKind::Azure => true,
-        }
-    }
-}
-
 /// Everything discovery may look at, in one place so a test can supply it;
 /// [`Environment::current`] is the real one.
 pub struct Environment<'a> {

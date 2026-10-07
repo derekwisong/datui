@@ -5,6 +5,7 @@ use rusqlite::Connection;
 
 use super::*;
 use crate::filter_modal::{FilterOperator, FilterStatement, LogicalOperator};
+use crate::members::{place as table_place, split as table_path};
 
 /// A database at `dir/name` built by `sql`.
 fn database(dir: &Path, name: &str, sql: &str) -> PathBuf {
@@ -82,7 +83,7 @@ fn declared_types_follow_sqlite_s_affinity_rules() {
 fn the_magic_and_paths_inside_a_database() {
     let dir = temp();
     let db = database(dir.path(), "app.db", "CREATE TABLE t (a);");
-    assert!(is_sqlite_file(&db));
+    assert!(looks_like(&std::fs::read(&db).unwrap()));
     assert!(looks_like(b"SQLite format 3\0\x10\x00"));
     assert!(!looks_like(b"SQLite format 2\0"));
     assert_eq!(

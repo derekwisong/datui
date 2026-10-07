@@ -31,16 +31,6 @@ pub struct OnScreen {
 }
 
 impl OnScreen {
-    /// The widest label this table can have: the bar reserves it, so moving the
-    /// cursor moves nothing on the bar as the numbers change.
-    pub fn widest_label(&self, compact: bool) -> String {
-        Self {
-            cursor: self.total,
-            ..*self
-        }
-        .label(compact)
-    }
-
     /// `col 43 of 300`, or `col 43/300` where the bar is short of room.
     pub fn label(&self, compact: bool) -> String {
         if compact {
@@ -55,9 +45,11 @@ impl OnScreen {
 /// are moves here so that one typed behind a page waiting on a draw lands after it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColumnMove {
-    /// One column left.
+    /// One column left: tests step the view; the app moves the cursor instead.
+    #[cfg(test)]
     StepLeft,
     /// One column right.
+    #[cfg(test)]
     StepRight,
     /// The first scrolling column.
     First,
@@ -152,7 +144,9 @@ pub fn plan(
     };
     let current = current.min(last);
     match mv {
+        #[cfg(test)]
         ColumnMove::StepLeft => Some(current.saturating_sub(1)),
+        #[cfg(test)]
         ColumnMove::StepRight => Some((current + 1).min(last)),
         ColumnMove::First => Some(0),
         ColumnMove::PageLeft if current == 0 => Some(0),
@@ -214,7 +208,6 @@ mod tests {
         };
         assert_eq!(on.label(false), "col 43 of 300");
         assert_eq!(on.label(true), "col 43/300");
-        assert_eq!(on.widest_label(true), "col 300/300");
     }
 
     #[test]

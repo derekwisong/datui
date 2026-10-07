@@ -92,6 +92,7 @@ impl TextArea {
     }
 
     /// An editor holding `text`, with the cursor at the end of it.
+    #[cfg(test)]
     pub fn from_text(text: &str) -> Self {
         let mut ta = Self::new();
         ta.set_text(text);
@@ -142,6 +143,7 @@ impl TextArea {
     }
 
     /// True when the buffer holds no characters at all.
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.lines.len() == 1 && self.lines[0].is_empty()
     }
@@ -153,6 +155,7 @@ impl TextArea {
 
     /// Move the cursor to an absolute position, clamped into the buffer. This
     /// cancels any selection.
+    #[cfg(test)]
     pub fn set_cursor(&mut self, row: usize, col: usize) {
         self.selection_anchor = None;
         self.cursor = self.clamp_position((row, col));
@@ -173,6 +176,7 @@ impl TextArea {
     }
 
     /// Begin a selection anchored at the cursor.
+    #[cfg(test)]
     pub fn start_selection(&mut self) {
         self.selection_anchor = Some(self.cursor);
     }
@@ -190,6 +194,7 @@ impl TextArea {
     }
 
     /// Text held by the yank buffer, as left by the last copy, cut or kill.
+    #[cfg(test)]
     pub fn yanked_text(&self) -> &str {
         &self.yank
     }
@@ -212,6 +217,7 @@ impl TextArea {
     }
 
     /// Width of a tab stop, in columns. Tab keys insert this many spaces.
+    #[cfg(test)]
     pub fn set_tab_len(&mut self, len: usize) {
         self.tab_len = len.max(1);
     }

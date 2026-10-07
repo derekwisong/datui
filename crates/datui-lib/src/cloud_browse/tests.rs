@@ -645,20 +645,15 @@ fn gcloud_default_credentials_are_enough_to_list_gcs() {
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].kind, ProviderKind::Gcs);
     assert_eq!(found[0].project.as_deref(), Some("example-project"));
-    assert!(found[0].can_list_buckets());
     assert_eq!(found[0].note, "gcloud");
-    assert_eq!(
-        found[0].detail().as_deref(),
-        Some("project: example-project")
-    );
 }
 
 #[test]
-fn an_aws_profile_is_the_detail_for_s3() {
+fn an_aws_profile_is_found_for_s3() {
     let (vars, files, home) = env_of(&[("AWS_PROFILE", "research")], &[], Some("/home/u"));
     let env = environment!(vars, files, home);
     let found = detect(&CloudConfig::default(), &env);
-    assert_eq!(found[0].detail().as_deref(), Some("profile: research"));
+    assert_eq!(found[0].profile.as_deref(), Some("research"));
 }
 
 #[test]
@@ -674,7 +669,6 @@ fn gcs_without_a_project_is_shown_but_cannot_enumerate() {
     let found = detect(&CloudConfig::default(), &env);
     assert_eq!(found.len(), 1);
     assert!(found[0].project.is_none());
-    assert!(!found[0].can_list_buckets());
 }
 
 #[test]
@@ -868,7 +862,6 @@ fn the_project_comes_from_the_credentials_file_when_nothing_else_says() {
     let env = environment!(vars, files, home, adc);
     let found = detect(&CloudConfig::default(), &env);
     assert_eq!(found[0].project.as_deref(), Some("example-project"));
-    assert!(found[0].can_list_buckets());
 }
 
 #[test]

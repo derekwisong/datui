@@ -1,24 +1,16 @@
 //! The system clipboard, reached two ways, and the shapes a copy takes.
 //!
-//! **native** talks to the display server through arboard. On Wayland the copy
-//! is owned by this process, so it survives only as long as datui runs unless a
-//! clipboard manager persists it. For tabular copies the native path offers two
-//! flavors at once — `text/html` (a real `<table>`) beside plain text — so a
-//! paste into a spreadsheet or an email lands as a table while a paste into a
-//! terminal stays TSV.
+//! **native**: the display server via arboard. On Wayland the copy lives only while
+//! datui runs, unless a clipboard manager keeps it. Tabular copies offer `text/html` (a
+//! real table) beside plain text, so spreadsheets and email paste a table and terminals
+//! paste TSV.
 //!
-//! **osc52** prints an `OSC 52` escape sequence for the terminal to act on,
-//! which is what works over SSH with no display server in sight. The sequence
-//! must go straight to stdout: the ratatui buffer is sanitized
-//! ([`crate::sanitize`]), and an escape drawn as cell text is an escape
-//! stripped. Terminals cap how much OSC 52 they accept, so the payload is
-//! capped here first, with the limit in the config where a generous terminal's
-//! user can raise it. The cap is known before a copy is built: a table copy to
-//! the terminal is read in batches and stops at the first byte over it, and no
-//! HTML flavor is built for a destination that cannot offer one.
+//! **osc52**: an `OSC 52` escape for the terminal, which works over SSH. Written straight
+//! to stdout (the ratatui buffer is sanitized by [`crate::sanitize`]). Terminals cap
+//! OSC 52, so payloads are capped first (configurable); table copies are read in batches
+//! up to the cap, without an HTML flavor.
 //!
-//! **auto** is native where it initializes and osc52 everywhere else, decided
-//! once per run at the first copy.
+//! **auto**: native where it initializes, else osc52, decided at the first copy.
 
 use polars::prelude::*;
 use std::io::Write as _;
@@ -145,10 +137,8 @@ pub fn base64_len(bytes: usize) -> usize {
     bytes.div_ceil(3).saturating_mul(4)
 }
 
-/// The escape sequence that asks the terminal to set the system clipboard,
-/// or why it was not built. Split from [`Osc52::write`] so a test can read
-/// the bytes without owning stdout. The size is checked before anything is
-/// encoded.
+/// The OSC 52 sequence setting the clipboard, or why not; separate from
+/// [`Osc52::write`] so tests can read the bytes. Size is checked before encoding.
 pub fn osc52_sequence(text: &str, limit: usize) -> Result<String, String> {
     use base64::Engine as _;
     let encoded = base64_len(text.len());
@@ -220,10 +210,8 @@ impl CopyFormat {
     }
 }
 
-/// A DataFrame as delimited text, quoted the way spreadsheets parse a paste:
-/// only fields holding the delimiter, a quote or a newline are quoted, which
-/// is `QuoteStyle::Necessary`, the writer's default. Raw values, like export;
-/// a null is an empty field, never the UI's `∅`.
+/// A DataFrame as delimited text quoted as spreadsheets parse pastes
+/// (`QuoteStyle::Necessary`). Raw values as in export; null is empty, never `∅`.
 pub fn delimited(df: &DataFrame, separator: u8, header: bool) -> Result<String, String> {
     let mut out = Vec::new();
     let mut df = crate::nested_json::frame_as_json(df).map_err(|e| e.to_string())?;
@@ -241,10 +229,8 @@ pub fn delimited(df: &DataFrame, separator: u8, header: bool) -> Result<String, 
     Ok(text)
 }
 
-/// A DataFrame as a Markdown table. Always with the header: the delimiter row
-/// under it is what makes Markdown read the block as a table at all. Numeric
-/// columns declare right alignment, pipes are escaped, and embedded newlines
-/// flatten to spaces — a Markdown cell has no way to hold one.
+/// A DataFrame as a Markdown table, always with a header (the delimiter row makes it a
+/// table). Numbers right-aligned, pipes escaped, newlines flattened to spaces.
 pub fn markdown(df: &DataFrame) -> Result<String, String> {
     let mut layout = MarkdownLayout::new(df);
     layout.measure(df)?;
@@ -416,11 +402,8 @@ pub fn html_table(df: &DataFrame, header: bool) -> Result<String, String> {
     Ok(out)
 }
 
-/// The payload for a tabular copy: the chosen format as text, with the HTML
-/// flavor beside a TSV or CSV copy when `html` asks for it (the destination can
-/// offer it). A Markdown copy is the Markdown itself — pasting rich HTML where
-/// Markdown was asked for would defeat the choice. List and struct cells are
-/// JSON in every format, as in a CSV export.
+/// A tabular copy's payload: the chosen format as text, plus HTML beside TSV or CSV when
+/// `html` asks. Markdown stays Markdown. Lists and structs are JSON, as in CSV export.
 pub fn tabular_payload(
     df: &DataFrame,
     format: CopyFormat,
@@ -444,14 +427,10 @@ pub fn tabular_payload(
 /// is at most this many rows.
 const BOUNDED_BATCH_ROWS: usize = 1024;
 
-/// The text of a table copy and its row count, read from `lf` a batch at a time
-/// and given up at the first batch that takes it past `limit` bytes of base64:
-/// a copy the terminal will not take is never read or written whole. Text only;
-/// a capped destination offers no HTML flavor.
-///
-/// What the query does upstream of its last rows (a sort, a join) still takes
-/// its own memory; a Markdown copy keeps its rows until the widths are known,
-/// which the cap bounds as it does the text.
+/// A table copy's text and row count, read from `lf` in batches and abandoned at the
+/// first batch past `limit` base64 bytes, so a copy the terminal refuses is never built
+/// whole. Text only. Upstream operations (sorts, joins) still take their memory;
+/// Markdown holds rows until widths are known, bounded by the cap.
 pub fn bounded_table_text(
     lf: LazyFrame,
     format: CopyFormat,

@@ -5638,6 +5638,16 @@ impl App {
         message: &str,
         panicked: bool,
     ) {
+        // Where there is one line for the reason, a panic's message (an internal error
+        // with the log's path under it) gives way to the log.
+        let could_not = |what: &str| {
+            if panicked {
+                format!("Could not {what}; see the log")
+            } else {
+                format!("Could not {what}: {message}")
+            }
+        };
+        // The jobs judged by something of their own rather than by being current.
         match job {
             // Judged by the open, as its answers are: one put down or replaced is not the
             // open the user is waiting on.
@@ -5645,10 +5655,12 @@ impl App {
                 if let loading::Step::Failed(failed) = self.loading.failed(*load, message) {
                     self.load_failed(failed);
                 }
+                return;
             }
             // A pass that failed could not read them: the dataset stops waiting.
             Job::FootersJoin { dataset } => {
                 self.footers_joined(*dataset, None);
+                return;
             }
             Job::ChartPrepare(prep) => {
                 let message = if panicked {
@@ -5657,41 +5669,12 @@ impl App {
                     message.to_string()
                 };
                 self.chart_prepared(*prep.clone(), current, Err(message));
+                return;
             }
-            Job::Classify(_) => {
-                if current {
-                    self.home.status = None;
-                    self.error_modal.show(message.to_string());
-                }
+            Job::Rows(_) | Job::OwedRows { .. } => {
+                return self.rows_failed(current, waited, message, None);
             }
-            Job::Rows(_) | Job::OwedRows { .. } => self.rows_failed(current, waited, message, None),
-            Job::Analysis(_) | Job::SampleRows => {
-                if current {
-                    self.analysis_modal.computing = None;
-                    self.error_modal.show(message.to_string());
-                }
-            }
-            Job::SampleDraw(_) => self.sample_draw_failed(job, current, message),
-            // The form stays up with its spec, to be fixed.
-            Job::Pivot | Job::Copy => {
-                if current {
-                    self.error_modal.show(message.to_string());
-                }
-            }
-            // The dialog is still up, the reason on its status line under the path.
-            Job::QualityReport => {
-                if current {
-                    match self.analysis_modal.quality.export.as_mut() {
-                        Some(form) => form.error = Some(message.to_string()),
-                        None => self.error_modal.show(message.to_string()),
-                    }
-                }
-            }
-            Job::ViewPivot(_) => {
-                if current {
-                    self.view_pivot_failed(message);
-                }
-            }
+            Job::SampleDraw(_) => return self.sample_draw_failed(job, current, message),
             // The preview says why in its own pane; the log has a panic's details.
             Job::ReshapePreview { epoch, token } => {
                 let message = if panicked {
@@ -5700,29 +5683,7 @@ impl App {
                     message.to_string()
                 };
                 self.reshape_preview_ended(*epoch, *token, None, Err(message));
-            }
-            Job::DrillRow => {
-                // The grouped view stays as it was. A flash has one line, and a panic's
-                // message is an internal error with the log's path under it: the log
-                // has the details.
-                if current {
-                    self.flash_note(if panicked {
-                        "Could not drill in; see the log".to_string()
-                    } else {
-                        format!("Could not drill in: {message}")
-                    });
-                }
-            }
-            Job::InspectJson { token } => {
-                let modal = &mut self.inspector_modal;
-                if current && let Some(wait) = modal.json_wait.take_if(|w| w.token == *token) {
-                    modal.not_json = Some((wait.frame, wait.row, wait.path));
-                    self.flash_note(if panicked {
-                        "Could not read the JSON; see the log".to_string()
-                    } else {
-                        sentence(message)
-                    });
-                }
+                return;
             }
             Job::InspectPretty { token } => {
                 let modal = &mut self.inspector_modal;
@@ -5734,6 +5695,7 @@ impl App {
                         place: place.clone(),
                     });
                 }
+                return;
             }
             Job::InspectUnpack { token } => {
                 let modal = &mut self.inspector_modal;
@@ -5745,71 +5707,102 @@ impl App {
                         place: place.clone(),
                     });
                 }
+                return;
             }
-            Job::OpenValue => {
-                if current {
+            Job::Find(_) => return self.find_failed(current, message),
+            // Judged by the dataset, as its answer is; the panel has one line for it.
+            Job::FileFacts { dataset } => {
+                let why = if panicked {
+                    "could not read; see the log".to_string()
+                } else {
+                    message.to_string()
+                };
+                self.file_facts_landed(*dataset, FileFacts::Failed(why));
+                return;
+            }
+            // The note is left unsaid; the log has why.
+            Job::UnfitCount { .. } => {
+                log::warn!(target: "datui", "counting values that did not fit their type failed: {message}");
+                return;
+            }
+            // The Info tab keeps what the open read.
+            Job::JournalDetail { .. } => return,
+            Job::Export if !current => {
+                self.export_modal.close();
+                self.export_counts = None;
+                return;
+            }
+            _ => {}
+        }
+        // The rest act only for the job still current.
+        if !current {
+            return;
+        }
+        match job {
+            Job::Classify(_) => {
+                self.home.status = None;
+                self.error_modal.show(message.to_string());
+            }
+            Job::Analysis(_) | Job::SampleRows => {
+                self.analysis_modal.computing = None;
+                self.error_modal.show(message.to_string());
+            }
+            // The form stays up with its spec, to be fixed.
+            Job::Pivot | Job::Copy | Job::HexOpen { .. } => {
+                self.error_modal.show(message.to_string());
+            }
+            // The dialog is still up, the reason on its status line under the path.
+            Job::QualityReport => match self.analysis_modal.quality.export.as_mut() {
+                Some(form) => form.error = Some(message.to_string()),
+                None => self.error_modal.show(message.to_string()),
+            },
+            Job::ViewPivot(_) => self.view_pivot_failed(message),
+            // The grouped view stays as it was.
+            Job::DrillRow => self.flash_note(could_not("drill in")),
+            Job::InspectJson { token } => {
+                let modal = &mut self.inspector_modal;
+                if let Some(wait) = modal.json_wait.take_if(|w| w.token == *token) {
+                    modal.not_json = Some((wait.frame, wait.row, wait.path));
                     self.flash_note(if panicked {
-                        "Could not open the value; see the log".to_string()
+                        "Could not read the JSON; see the log".to_string()
                     } else {
-                        format!("Could not open the value: {message}")
+                        sentence(message)
                     });
                 }
             }
+            Job::OpenValue => self.flash_note(could_not("open the value")),
             Job::InspectRow { frame, row } => {
-                if current {
-                    let asked = self
-                        .inspector_modal
-                        .read
-                        .as_ref()
-                        .is_some_and(|read| read.key() == (*frame, *row));
-                    if asked {
-                        // The pane has room for the reason; a panic's is the log's.
-                        let message = if panicked {
-                            "Could not read the field; see the log".to_string()
-                        } else {
-                            format!("Could not read the field: {message}")
-                        };
-                        self.inspector_modal.read = Some(inspector_modal::FieldRead::Failed {
-                            frame: *frame,
-                            row: *row,
-                            message,
-                        });
-                    }
+                let asked = self
+                    .inspector_modal
+                    .read
+                    .as_ref()
+                    .is_some_and(|read| read.key() == (*frame, *row));
+                if asked {
+                    self.inspector_modal.read = Some(inspector_modal::FieldRead::Failed {
+                        frame: *frame,
+                        row: *row,
+                        message: could_not("read the field"),
+                    });
                 }
             }
             // The form comes back as it was, the reason on its status line, to fix
             // the path and press Enter again.
             Job::Export => {
-                if current {
-                    self.export_progress = None;
-                    self.export_modal.resume();
-                    self.export_modal.path_error = Some(message.to_string());
-                    self.input_mode = InputMode::Export;
-                } else {
-                    self.export_modal.close();
-                    self.export_counts = None;
-                }
+                self.export_progress = None;
+                self.export_modal.resume();
+                self.export_modal.path_error = Some(message.to_string());
+                self.input_mode = InputMode::Export;
             }
             Job::ChartExport { path, format } => {
-                if current {
-                    self.finish_chart_export(path, *format, Err(message.to_string()));
-                }
-            }
-            Job::Find(_) => self.find_failed(current, message),
-            Job::HexOpen { .. } => {
-                if current {
-                    self.error_modal.show(message.to_string());
-                }
+                self.finish_chart_export(path, *format, Err(message.to_string()));
             }
             Job::HexFind(_) => {
-                if current {
-                    self.status_message = None;
-                    self.flash_note(message.to_string());
-                }
+                self.status_message = None;
+                self.flash_note(message.to_string());
             }
+            // Said on the screen, in place of the counts.
             Job::ValueCounts => {
-                // Said on the screen, in place of the counts.
-                if current && let Some(computing) = self.value_counts.computing.take() {
+                if let Some(computing) = self.value_counts.computing.take() {
                     let why = if panicked {
                         "could not count; see the log".to_string()
                     } else {
@@ -5818,23 +5811,7 @@ impl App {
                     self.value_counts.failed = Some((computing.column, why));
                 }
             }
-            // Judged by the dataset, as its answer is.
-            Job::FileFacts { dataset } => {
-                // The panel has one line for it, and a panic's message is an internal
-                // error with the log's path under it.
-                let why = if panicked {
-                    "could not read; see the log".to_string()
-                } else {
-                    message.to_string()
-                };
-                self.file_facts_landed(*dataset, FileFacts::Failed(why));
-            }
-            // The note is left unsaid; the log has why.
-            Job::UnfitCount { .. } => {
-                log::warn!(target: "datui", "counting values that did not fit their type failed: {message}");
-            }
-            // The Info tab keeps what the open read.
-            Job::JournalDetail { .. } => {}
+            _ => {}
         }
     }
 

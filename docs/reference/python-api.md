@@ -41,17 +41,19 @@ variables or from the config's one Azure connection.
 `polars.LazyFrame`: the applied query, filters, sort, drill-down, reshape and
 column order, over every matching row. It is a plan, not the rows datui
 showed: collecting it runs the plan again with Python's Polars, rereading
-files that must still exist.
+files that must still exist. A Polars that cannot read the plans this wheel
+writes, such as 2.0, gets the view's rows instead, collected at quit, with a
+`UserWarning`.
 
 ### Errors
 
 | Raised | When |
 |---|---|
 | `TypeError` | `data` is not a frame, path or list of paths; a keyword is not an option |
-| `ValueError` | An empty list of paths; an option value the flag or key would refuse (`format="cvs"`, `max_buffered="512"`, an unknown `config` key); a frame plan this wheel's Polars cannot read, naming the Polars release it is built for |
+| `ValueError` | An empty list of paths; an option value the flag or key would refuse (`format="cvs"`, `max_buffered="512"`, an unknown `config` key); a LazyFrame plan this wheel's Polars cannot read, naming the Polars release it is built for |
 | `FileNotFoundError` | A path that does not exist. A glob is not checked |
 | `PermissionError` | A path that cannot be read |
-| `RuntimeError` | No terminal (a notebook, piped output); the terminal UI failing; a captured view over a file datui downloaded or decompressed into a temporary file, which is removed at quit; a captured view your Polars cannot read |
+| `RuntimeError` | No terminal (a notebook, piped output); the terminal UI failing; a captured view over a file datui downloaded or decompressed into a temporary file, which is removed at quit; a captured view your Polars can read neither as a plan nor as rows |
 
 ## datui.DatuiOptions
 

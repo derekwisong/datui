@@ -1,23 +1,16 @@
 //! Text read as it stands: a row per line, in a `line` column.
 //!
-//! One pass records where each line starts ([`LineIndex`]); a line is then read from a
-//! map of the file where it is shown, so only the rows a view reaches are decoded.
-//! Every line is a row, blank ones included, and each row carries its place in the
-//! file ([`crate::row_index::INDEX`]), so `#` numbers it as `less -N` does through any
-//! sort or filter. A `\r\n` ending is a line ending; bytes that are not UTF-8 are shown
-//! as `�` and counted in a note. Control characters stay in the value: the screen
-//! escapes them when it draws ([`crate::sanitize`]).
+//! One pass records line starts ([`LineIndex`]); lines are read from a map where shown,
+//! so only rows a view reaches are decoded. Every line is a row, blank ones included,
+//! carrying its file position ([`crate::row_index::INDEX`]) so `#` numbers it like
+//! `less -N` through sorts and filters. `\r\n` ends a line; invalid UTF-8 shows as `�`
+//! and is noted; control characters stay and are escaped at draw ([`crate::sanitize`]).
 //!
-//! A large file shows its first rows once its first [`FIRST_BYTES`] are indexed; the
-//! rest is indexed behind them ([`Lines::index_more`]), and the frame's height moves
-//! as it goes (`bound`).
+//! A large file shows rows once its first [`FIRST_BYTES`] are indexed, the rest indexed
+//! behind ([`Lines::index_more`]) as the frame's height (`bound`) grows. A followed
+//! file's lines are counted by the watcher ([`crate::follow`]).
 //!
-//! A followed file's lines are counted by the watcher ([`crate::follow`]), which moves
-//! the frame's height (`bound`); the index reads on from its last whole line when a
-//! row past it is asked for.
-//!
-//! [`guess`] says what text no format's signature claims is: JSON, CSV or TSV only on
-//! real evidence, lines otherwise.
+//! [`guess`] says what unclaimed text is: JSON, CSV or TSV only on evidence, else lines.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -421,10 +414,8 @@ impl Lines {
                 if mapped.index.whole(mapped.bytes.as_slice()) {
                     return true;
                 }
-                // A file cut short meanwhile is not read past its end, and the lines
-                // so far are not taken for all of them. Checked before every step: a
-                // truncation inside one step can still fault the map (SIGBUS), which
-                // only a copy of the file would rule out.
+                // Never read past a file cut short meanwhile, nor take the lines so far as all.
+                // Checked every step; a truncation within one can still fault the map (SIGBUS).
                 if mapped.bytes.still_whole().is_err() {
                     self.shrank
                         .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -751,13 +742,11 @@ pub(crate) fn notes(lines: &Lines, format_guessed: bool) -> Vec<crate::notes::No
 /// Complete records looked at for a field count.
 const MOST_RECORDS: usize = 50;
 
-/// What text no format's signature claims is, from its first bytes `head`; `whole`
-/// when they are all there is, so a last line without a newline is complete. `None`
-/// for bytes that are not text, which a local file shows in the hex view.
-///
-/// JSON only when the bytes parse as JSON so far; NDJSON when the first line is an
-/// object. CSV or TSV only when several complete records have one field count, two or
-/// more, with quotes where CSV allows them. Anything else is lines.
+/// What unclaimed text is, from its first bytes `head` (`whole` when that is everything,
+/// so an unterminated last line is complete); `None` for non-text (hex view locally).
+/// JSON only if it parses so far; NDJSON if the first line is an object; CSV or TSV only
+/// if several complete records share a field count of two or more (CSV quoting
+/// allowed); otherwise lines.
 pub fn guess(head: &[u8], whole: bool) -> Option<FileFormat> {
     let text = head.strip_prefix(b"\xef\xbb\xbf").unwrap_or(head);
     if !is_text(text, whole) {

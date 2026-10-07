@@ -1,18 +1,10 @@
-//! A file written whole or not at all.
-//!
-//! [`OutputFile`] writes to a private temporary file beside the destination and
-//! moves it into place in [`OutputFile::commit`]. Until then the destination is
-//! untouched: a failure while serializing, finishing an encoder or flushing
-//! leaves the old file's bytes and permissions as they were, and a new export
-//! leaves no partial file. Dropping an uncommitted `OutputFile`, including in a
-//! panic, removes the temporary file.
-//!
-//! The file is synced before the rename, since some write errors (a network
-//! filesystem's quota, a disk's I/O error) are reported only then. The rename
-//! itself is not, so a power cut just after it can still lose the new file.
-//!
-//! Every file datui writes for the user goes through here: data exports, the
-//! Data Quality report and chart images.
+//! A file written whole or not at all. [`OutputFile`] writes a private temp file beside
+//! the destination and moves it into place in [`OutputFile::commit`]; until then a
+//! failure leaves the old file (bytes and permissions) untouched and a new export
+//! leaves nothing; dropping uncommitted (even in a panic) removes the temp file. The file
+//! is synced before the rename (some errors surface only then); the rename is not, so a
+//! power cut right after can lose it. Every user-facing file goes through here: exports,
+//! the Data Quality report, chart images.
 
 use std::fs::{self, File};
 use std::io;
@@ -122,17 +114,11 @@ impl OutputFile {
         self.temp.path()
     }
 
-    /// Sync the written file and move it into place. The caller has finished
-    /// every encoder and flushed every buffer over [`Self::file`]; an error
-    /// from those must stop it before it gets here.
-    ///
-    /// A replaced file's permission bits carry over on Unix; a new file gets the
-    /// mode a plain create would (0666 less the umask). Ownership, ACLs, extended
-    /// attributes and hard links of a replaced file do not carry over: the
-    /// destination is a new file. Under [`Overwrite::Forbid`] a file that
-    /// appeared meanwhile fails the commit with `AlreadyExists`, atomically where
-    /// the filesystem has a no-replace rename or hard links (see
-    /// `Self::persist_new`).
+    /// Sync the file and move it into place; the caller has finished every encoder and
+    /// flush over [`Self::file`]. A replaced file's permission bits carry over on Unix (a new
+    /// one gets 0666 less umask); ownership, ACLs, xattrs and hard links do not. Under
+    /// [`Overwrite::Forbid`] a file appearing meanwhile fails with `AlreadyExists`,
+    /// atomically where supported (see `Self::persist_new`).
     pub fn commit(self) -> io::Result<()> {
         let Self {
             temp,
@@ -154,11 +140,9 @@ impl OutputFile {
         }
     }
 
-    /// Persist without replacing anything. Linux and macOS rename with
-    /// `RENAME_NOREPLACE`, falling back to a hard link; Windows moves without
-    /// `MOVEFILE_REPLACE_EXISTING`. All of these are atomic. A filesystem with
-    /// neither (FAT, some network mounts) gets a check and a plain rename: a
-    /// file created in the instant between the two is replaced.
+    /// Persist without replacing: `RENAME_NOREPLACE` on Linux and macOS (falling back to a
+    /// hard link), no `MOVEFILE_REPLACE_EXISTING` on Windows, all atomic. Filesystems with
+    /// neither (FAT, some network mounts) check then rename, racing a file created between.
     fn persist_new(temp: tempfile::NamedTempFile, target: &Path) -> io::Result<()> {
         match temp.persist_noclobber(target) {
             Ok(_) => Ok(()),

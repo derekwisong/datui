@@ -61,31 +61,16 @@ pub struct OpenOptions {
     pub row_start_index: usize,
     /// When true, use hive load path for directory/glob; single file uses normal load.
     pub hive: bool,
-    /// Data files in the directory being opened that this read passes over, by format and
-    /// count.
-    ///
-    /// A directory of more than one format is read as the commonest of them — a thousand
-    /// CSVs and one stray JSON is a directory of CSVs — and this is what the stray was,
-    /// so the dataset can say what it left out rather than the directory being refused
-    /// over it. Empty for every other open, which is all of them but one.
+    /// Data files in the opened directory this read passes over, by format and count: a
+    /// mixed directory reads as its commonest format, and the dataset says what it left
+    /// out. Empty for every other open.
     pub left_out: Vec<(FileFormat, usize)>,
-    /// Set when the directory being opened is a lake table and this read is of its plain
-    /// files: `"Delta"`, `"Iceberg"` or `"Hudi"`.
-    ///
-    /// The files are not the table. A delete leaves its rows on disk, an update leaves
-    /// the version it replaced, and compaction leaves both sides — so this read counts
-    /// rows no query of the table would return. datui does it anyway, because the
-    /// alternative was a directory the user could see and could not read at all, and
-    /// every other engine at least lets you look. What makes it honest rather than wrong
-    /// is that it is never silent: a note and a chip in the footer say so, and both
-    /// are load-bearing.
+    /// Set (`"Delta"`, `"Iceberg"` or `"Hudi"`) when a lake table's plain files are read.
+    /// They are not the table (deleted rows, old versions and compaction leftovers count),
+    /// so a note and a footer chip always say so.
     pub read_as_plain_files_of: Option<&'static str>,
-    /// How the directory's own files differed, when they did.
-    ///
-    /// Only for the formats with no footer. A Parquet dataset's footers are read
-    /// anyway, and say this per column and per file in far more detail — which columns,
-    /// in how many files, and where — so saying it twice would be one vague note above
-    /// several exact ones.
+    /// How the directory's files differed, for footerless formats only (Parquet footers
+    /// give the exact per-column version).
     pub files_disagree: crate::schema_union::Disagreement,
     /// When true (default), infer Hive/partitioned Parquet schema from one file for faster "Reading schema". When false, use Polars collect_schema().
     pub single_spine_schema: bool,
@@ -344,12 +329,10 @@ impl OpenOptions {
         self.parse_strings.is_none() && self.parse_dates
     }
 
-    /// The S3 settings every cloud path uses: the environment over the `[cloud]`
-    /// config. `run()` folds this into the config the `App` keeps,
-    /// so opening, sizing, downloading, discovery and listing all see one answer and a
-    /// bucket that is listed is reached the way it will be opened. The environment is
-    /// read here, not when the options are built, so a caller that starts from
-    /// `OpenOptions::default()` — the Python bindings do — still honours it.
+    /// The S3 settings every cloud path uses: environment over `[cloud]` config. `run()`
+    /// folds this into the App's config so opening, sizing, downloading, discovery and
+    /// listing agree. The environment is read here, so `OpenOptions::default()` callers
+    /// (Python) honor it too.
     pub fn effective_cloud(
         &self,
         cloud: &crate::config::CloudConfig,
@@ -465,12 +448,9 @@ impl From<&cli::Args> for OpenOptions {
     }
 }
 
-/// What a read of a directory found out about itself on the way through.
-///
-/// Filled by the pass that actually picks the files and the reader, and carried back on
-/// the options so the dataset can say it in the Notes. Everything here is about what
-/// datui *did*, not about what the data is — the footer notes are the other half, and
-/// they are written later, by whatever read the footers.
+/// What a directory read found about itself, filled by the pass that picks files and
+/// reader and carried back for the Notes: what datui did, not what the data is (the
+/// footer notes, written later, are that).
 #[derive(Debug, Clone, Default)]
 pub struct ReadReport {
     /// Data files in the directory this read passed over, by format and count. A

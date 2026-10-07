@@ -2561,10 +2561,7 @@ impl App {
             }
             InputMode::Chart => {
                 if self.chart_export_modal.active {
-                    // Every row is a choice or a text field.
-                    self.chart_export_modal
-                        .choice(self.chart_export_modal.focus)
-                        .is_none()
+                    self.chart_export_modal.focus.is_text()
                 } else {
                     // The open column Picker narrows by typing, so it types.
                     self.chart_modal.picker.is_some()

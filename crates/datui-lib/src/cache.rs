@@ -135,7 +135,7 @@ impl CacheManager {
 
     /// Apply `update` to a history file with the read-modify-write under an exclusive
     /// lock: atomic writes prevent corruption but not lost updates from instances
-    /// opening datasets at once. The lock is awaited up to [`LOCK_TIMEOUT`], far past
+    /// opening datasets at once. The lock is awaited up to `LOCK_TIMEOUT`, far past
     /// realistic contention, then the update is dropped: history never delays what the
     /// user asked for.
     pub fn update_history_file<F>(&self, history_id: &str, update: F) -> Result<HistoryUpdate>

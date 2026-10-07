@@ -1132,6 +1132,12 @@ pub fn ascii() -> &'static Glyphs {
     &ASCII
 }
 
+/// Text written with `·` between its parts, in the glyph set's middot: `-` on an ASCII
+/// terminal. A `·` in a UI string is this template, drawn through here.
+pub fn dotted(text: &str) -> String {
+    text.replace('·', get().middot)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

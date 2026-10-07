@@ -3,7 +3,7 @@
 
 use crate::quality_export::ExportForm;
 use crate::render::layout::centered_rect;
-use crate::widgets::data_quality::{DataQualityWidgetConfig, dotted, fit};
+use crate::widgets::data_quality::{DataQualityWidgetConfig, fit};
 use crate::widgets::ui::{FormRow, FormValue, Surface};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -48,10 +48,13 @@ pub fn render(
     .render(line(1), buf, ctx);
     let (status, warn) = match &form.error {
         Some(error) => (error.clone(), true),
-        None => (format!("{} · no read", form.format.holds()), false),
+        None => (
+            crate::glyphs::dotted(&format!("{} · no read", form.format.holds())),
+            false,
+        ),
     };
     Paragraph::new(Line::styled(
-        fit(&dotted(&status), content.width as usize),
+        fit(&crate::glyphs::dotted(&status), content.width as usize),
         Style::default().fg(if warn { ctx.warning } else { ctx.dimmed }),
     ))
     .render(line(content.height - 1), buf);

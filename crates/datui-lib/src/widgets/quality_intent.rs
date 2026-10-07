@@ -5,7 +5,7 @@ use crate::glyphs;
 use crate::intent_modal::{IntentField, IntentForm};
 use crate::numfmt;
 use crate::render::layout::centered_rect;
-use crate::widgets::data_quality::{DataQualityWidgetConfig, dotted, fit, rule_line};
+use crate::widgets::data_quality::{DataQualityWidgetConfig, fit, rule_line};
 use crate::widgets::ui::{FormRow, FormValue, Surface};
 use polars::prelude::DataType;
 use ratatui::buffer::Buffer;
@@ -204,20 +204,20 @@ pub fn render_form(
                 IntentField::Key => "Key column: together the key names one row".to_string(),
                 IntentField::Required => "Every row has a value".to_string(),
                 IntentField::ReadAs if form.time.is_some() => {
-                    "Read by Text as time · change in Setup".to_string()
+                    crate::glyphs::dotted("Read by Text as time · change in Setup")
                 }
                 IntentField::ReadAs => "Text that does not read is counted".to_string(),
                 IntentField::Allowed => "Comma-separated · \"a, b\" holds a comma".to_string(),
-                IntentField::Minimum | IntentField::Maximum => format!(
+                IntentField::Minimum | IntentField::Maximum => crate::glyphs::dotted(&format!(
                     "{} · empty for no bound",
                     upper_first(form.value_kind().bound_hint())
-                ),
+                )),
             },
             false,
         ),
     };
     Paragraph::new(Line::styled(
-        fit(&dotted(&status), content.width as usize),
+        fit(&crate::glyphs::dotted(&status), content.width as usize),
         Style::default().fg(if warn { ctx.warning } else { ctx.dimmed }),
     ))
     .render(line(content.height - 1), buf);

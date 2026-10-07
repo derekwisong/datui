@@ -1016,7 +1016,7 @@ impl App {
             generation,
             root: root.clone(),
             scanned: 0,
-            limited: Some("partial · failed".to_string()),
+            limited: Some(crate::glyphs::dotted("partial · failed")),
         });
         // A detached thread for the same reason the probes use one: the walk touches
         // a filesystem, and nothing that touches a filesystem may run where a stall
@@ -1049,7 +1049,7 @@ impl App {
                     generation,
                     root,
                     scanned: outcome.scanned,
-                    limited: outcome.note().map(str::to_string),
+                    limited: outcome.note().map(crate::glyphs::dotted),
                 });
             })
         });

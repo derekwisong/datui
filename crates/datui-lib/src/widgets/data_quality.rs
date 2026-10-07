@@ -430,7 +430,7 @@ fn render_setup(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buff
     lines.push(SetupLine::Row(SetupRow::Intervals));
     lines.push(SetupLine::Row(SetupRow::Intent));
     for (note, warn) in column_notes(plan, schema) {
-        for line in crate::widgets::info::wrap_to(&dotted(&note), width.saturating_sub(2)) {
+        for line in crate::widgets::info::wrap_to(&glyphs::dotted(&note), width.saturating_sub(2)) {
             lines.push(SetupLine::Note(line, warn));
         }
     }
@@ -448,14 +448,14 @@ fn render_setup(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mut Buff
     lines.push(SetupLine::Rule("Read", view.kept.map(|kept| kept.label())));
     let read_start = lines.len();
     for note in read_lines(config) {
-        for line in crate::widgets::info::wrap_to(&dotted(&note), width.saturating_sub(2)) {
+        for line in crate::widgets::info::wrap_to(&glyphs::dotted(&note), width.saturating_sub(2)) {
             lines.push(SetupLine::Note(line, false));
         }
     }
 
     // The status line keeps the bottom row: why Run waits, or that it would
     // replace the report on screen.
-    let status = setup_status(config).map(|(text, warn)| (dotted(&text), warn));
+    let status = setup_status(config).map(|(text, warn)| (glyphs::dotted(&text), warn));
     let body_height = area.height.saturating_sub(1) as usize;
     // Scrolled only as far as the focused row needs; the read summary, last, is
     // what gives way, and says how much of it is off screen.
@@ -679,7 +679,7 @@ fn column_notes(plan: &DataQualityPlan, schema: &Schema) -> Vec<(String, bool)> 
     }
     for column in unread {
         notes.push((
-            format!("{column}: text, no format · set Text as time"),
+            crate::glyphs::dotted(&format!("{column}: text, no format · set Text as time")),
             true,
         ));
     }
@@ -687,19 +687,19 @@ fn column_notes(plan: &DataQualityPlan, schema: &Schema) -> Vec<(String, bool)> 
     let unpaired = plan.unpaired_roles();
     if plan.temporal_roles.len() == 1 {
         notes.push((
-            "1 role, no interval · add one under Time roles".to_string(),
+            crate::glyphs::dotted("1 role, no interval · add one under Time roles"),
             true,
         ));
     } else if !unpaired.is_empty() {
         notes.push((
-            format!(
+            crate::glyphs::dotted(&format!(
                 "In no interval: {} · set Intervals",
                 unpaired
                     .iter()
                     .map(|role| role.label())
                     .collect::<Vec<_>>()
                     .join(", ")
-            ),
+            )),
             true,
         ));
     }
@@ -747,7 +747,9 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
     let state = config.state;
     let mut lines = Vec::new();
     if view.unchanged {
-        lines.push("Report on screen: this setup · no read".to_string());
+        lines.push(crate::glyphs::dotted(
+            "Report on screen: this setup · no read",
+        ));
         return lines;
     }
     if view.relabel_only {
@@ -764,7 +766,7 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
         return lines;
     }
     if view.cached {
-        lines.push("Session cache: this setup · no read".to_string());
+        lines.push(crate::glyphs::dotted("Session cache: this setup · no read"));
         return lines;
     }
     let scope_rows = planned_scope_rows(state, plan);
@@ -787,26 +789,32 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
             }
         }
         QualityCompute::Sample if view.reuses_sample => {
-            lines.push("Rows: from an earlier run · no source read".to_string());
+            lines.push(crate::glyphs::dotted(
+                "Rows: from an earlier run · no source read",
+            ));
         }
         QualityCompute::Sample => lines.push(match &plan.method {
             crate::sampling::SampleMethod::FirstRows => {
                 format!("First {n} rows of the scope")
             }
-            crate::sampling::SampleMethod::PerPartition { column } => {
-                format!("1 pass over every eligible row · {n} kept per {column}")
-            }
+            crate::sampling::SampleMethod::PerPartition { column } => crate::glyphs::dotted(
+                &format!("1 pass over every eligible row · {n} kept per {column}"),
+            ),
             _ if scope_rows.is_some_and(|rows| rows <= plan.dataset_rows) => {
-                "Every row · scope no larger than the sample".to_string()
+                crate::glyphs::dotted("Every row · scope no larger than the sample")
             }
-            _ if view.reads_blocks => {
-                format!("Seeded runs of the file · about {n} rows, no full pass")
-            }
-            _ => format!("1 streaming pass over every eligible row · seeded {n} kept"),
+            _ if view.reads_blocks => crate::glyphs::dotted(&format!(
+                "Seeded runs of the file · about {n} rows, no full pass"
+            )),
+            _ => crate::glyphs::dotted(&format!(
+                "1 streaming pass over every eligible row · seeded {n} kept"
+            )),
         }),
     }
     if plan.compute == QualityCompute::Sample && !view.reuses_sample && view.released {
-        lines.push("Released since last read · read again".to_string());
+        lines.push(crate::glyphs::dotted(
+            "Released since last read · read again",
+        ));
     }
     let exact = scope_rows.is_some_and(|rows| rows <= plan.dataset_rows);
     if plan.compute == QualityCompute::Sample && !exact {
@@ -817,34 +825,38 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
             _ => "",
         };
         match &view.segment_count {
-            SegmentCount::CountPass => {
-                lines.push(format!("+1 count of {column} · exact segment totals, kept"))
-            }
+            SegmentCount::CountPass => lines.push(crate::glyphs::dotted(&format!(
+                "+1 count of {column} · exact segment totals, kept"
+            ))),
             SegmentCount::InSamplePass => lines.push(format!(
                 "Segment totals: exact, counted by {column} in that pass"
             )),
-            SegmentCount::Retained => {
-                lines.push("Segment totals: from an earlier count · no read".to_string())
-            }
+            SegmentCount::Retained => lines.push(crate::glyphs::dotted(
+                "Segment totals: from an earlier count · no read",
+            )),
             SegmentCount::RolledUp(finer) => lines.push(format!(
                 "Segment totals: summed from earlier {} counts",
                 window_cadence(finer)
             )),
-            SegmentCount::TooMany => lines.push(format!(
+            SegmentCount::TooMany => lines.push(crate::glyphs::dotted(&format!(
                 "Too many segments {} to count · choose a coarser grain",
                 plan.grain.label()
-            )),
+            ))),
             SegmentCount::NotNeeded | SegmentCount::PerValue => {}
         }
     }
     if plan.compute == QualityCompute::Sample {
-        lines.push("Measured in memory · no further reads".to_string());
+        lines.push(crate::glyphs::dotted(
+            "Measured in memory · no further reads",
+        ));
     }
     lines.extend(intent_read_lines(plan, exact));
     // Gaps come from the segment counts the run already takes, never a read of
     // their own.
     if plan.expected_windows().is_some() && plan.compute != QualityCompute::Metadata {
-        lines.push("Expected windows: from the segment counts · no read".to_string());
+        lines.push(crate::glyphs::dotted(
+            "Expected windows: from the segment counts · no read",
+        ));
     }
     let rows = planned_rows(state, plan)
         .map(numfmt::group_chrome)
@@ -884,33 +896,36 @@ fn read_lines(config: &DataQualityWidgetConfig<'_>) -> Vec<String> {
 /// local copy fetched first, or over one fetched earlier, and why no copy where none.
 fn copy_lines(view: &SetupView<'_>, passes: usize) -> Vec<String> {
     let bytes = crate::numfmt::bytes;
-    let over_source =
-        format!("Every eligible row · up to {passes} passes over the source, 1 per check");
+    let over_source = crate::glyphs::dotted(&format!(
+        "Every eligible row · up to {passes} passes over the source, 1 per check"
+    ));
     match view.copy {
-        CopyPlan::NotApplicable => vec![format!(
+        CopyPlan::NotApplicable => vec![crate::glyphs::dotted(&format!(
             "Every eligible row · up to {passes} passes over the scope, 1 per check"
-        )],
+        ))],
         CopyPlan::Fetch {
             bytes: size,
             objects,
         } => {
             let mut lines = vec![
-                format!(
+                crate::glyphs::dotted(&format!(
                     "1 fetch of {} ({size}) to a local copy · up to {passes} passes over it",
                     objects_label(objects),
                     size = bytes(size)
-                ),
-                "Local copy kept for later full scans · d releases".to_string(),
+                )),
+                crate::glyphs::dotted("Local copy kept for later full scans · d releases"),
             ];
             if view.copy_released {
-                lines.push("Released since last copy · fetched again".to_string());
+                lines.push(crate::glyphs::dotted(
+                    "Released since last copy · fetched again",
+                ));
             }
             lines
         }
-        CopyPlan::Kept { bytes: size, .. } => vec![format!(
+        CopyPlan::Kept { bytes: size, .. } => vec![crate::glyphs::dotted(&format!(
             "Every eligible row · up to {passes} passes over the local copy ({}) · no source read",
             bytes(size)
-        )],
+        ))],
         CopyPlan::Passes(why) => vec![
             over_source,
             match why {
@@ -979,18 +994,24 @@ fn intent_read_lines(plan: &DataQualityPlan, every_row: bool) -> Vec<String> {
     match plan.compute {
         QualityCompute::Metadata => vec!["Column intent: not checked, needs values".to_string()],
         QualityCompute::Full if key => {
-            vec!["Column intent: in the profile pass · key adds 1 pass".to_string()]
+            vec![crate::glyphs::dotted(
+                "Column intent: in the profile pass · key adds 1 pass",
+            )]
         }
         QualityCompute::Full => {
-            vec!["Column intent: in the profile pass · no extra pass".to_string()]
+            vec![crate::glyphs::dotted(
+                "Column intent: in the profile pass · no extra pass",
+            )]
         }
         QualityCompute::Sample => {
-            let mut lines = vec!["Column intent: on the rows read · no extra read".to_string()];
+            let mut lines = vec![crate::glyphs::dotted(
+                "Column intent: on the rows read · no extra read",
+            )];
             if key && !every_row {
-                lines.push(format!(
+                lines.push(crate::glyphs::dotted(&format!(
                     "Key: repeats among the {} sampled rows only · Every row checks all",
                     numfmt::group_chrome(plan.dataset_rows)
-                ));
+                )));
             }
             lines
         }
@@ -1048,7 +1069,10 @@ fn setup_status(config: &DataQualityWidgetConfig<'_>) -> Option<(String, bool)> 
         return Some((note.to_string(), true));
     }
     if view.edited {
-        return Some(("Edited · Enter runs, Esc discards".to_string(), false));
+        return Some((
+            crate::glyphs::dotted("Edited · Enter runs, Esc discards"),
+            false,
+        ));
     }
     None
 }
@@ -1125,7 +1149,7 @@ fn render_overview(
         } else {
             "No columns to check"
         };
-        Paragraph::new(dotted(message))
+        Paragraph::new(glyphs::dotted(message))
             .wrap(Wrap { trim: true })
             .style(Style::default().fg(config.theme.get("dimmed")))
             .render(list, buf);
@@ -1166,7 +1190,7 @@ fn render_overview(
     }
     normalize_selection(table_state, shown.len());
     if shown.is_empty() {
-        Paragraph::new(dotted("No findings match · Esc shows all"))
+        Paragraph::new(glyphs::dotted("No findings match · Esc shows all"))
             .wrap(Wrap { trim: true })
             .style(Style::default().fg(config.theme.get("dimmed")))
             .render(list, buf);
@@ -1653,12 +1677,6 @@ fn check_lines(
 /// stays as it is, since evidence finds a segment's rows by it.
 fn segment_text(label: &str) -> String {
     label.replace('∅', glyphs::get().null)
-}
-
-/// Text written with `·` between its parts, in the glyph set's middot: `-` on an
-/// ASCII terminal.
-pub(crate) fn dotted(text: &str) -> String {
-    text.replace('·', glyphs::get().middot)
 }
 
 pub(crate) fn fit(text: &str, width: usize) -> String {
@@ -2513,7 +2531,7 @@ fn render_intervals(
         } else {
             "No time roles · Time roles in Setup (e)"
         };
-        Paragraph::new(dotted(message))
+        Paragraph::new(glyphs::dotted(message))
             .wrap(Wrap { trim: true })
             .style(Style::default().fg(theme.get("text_primary")))
             .render(
@@ -2847,7 +2865,7 @@ fn render_interval_pairs(
     .render(title, buf);
     if candidates.is_empty() {
         Paragraph::new(Span::styled(
-            dotted("Needs 2 time roles · Time roles in Setup (e)"),
+            glyphs::dotted("Needs 2 time roles · Time roles in Setup (e)"),
             dimmed,
         ))
         .wrap(Wrap { trim: true })
@@ -3211,7 +3229,7 @@ fn render_trend_detail(
     let (name_width, bars) = trend_layout(results, area.width);
     let view = trend_view(results, config.metric, bars);
     let (Some(line), false) = (view.lines.get(config.trend_line), view.bars.is_empty()) else {
-        Paragraph::new(dotted("No bars · Esc Trends"))
+        Paragraph::new(glyphs::dotted("No bars · Esc Trends"))
             .style(Style::default().fg(theme.get("text_primary")))
             .render(area, buf);
         return;
@@ -4169,10 +4187,10 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
         row(
             "Value reads",
             match copy {
-                CopyPlan::Fetch { bytes, .. } => format!(
+                CopyPlan::Fetch { bytes, .. } => crate::glyphs::dotted(&format!(
                     "{}, fetched once · passes read the copy",
                     format_bytes(bytes)
-                ),
+                )),
                 CopyPlan::Kept { bytes, .. } => {
                     format!(
                         "none: every pass reads the local copy ({})",
@@ -4205,17 +4223,19 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
                 reads if plan.compute == QualityCompute::Full => {
                     format!("{reads} extra one-column file reads")
                 }
-                reads => format!("not read · full scan adds {reads} one-column file reads"),
+                reads => crate::glyphs::dotted(&format!(
+                    "not read · full scan adds {reads} one-column file reads"
+                )),
             },
         ),
         row("Remote writes", "none".to_string()),
         row(
             "Local file writes",
             match copy {
-                CopyPlan::Fetch { bytes, .. } => format!(
+                CopyPlan::Fetch { bytes, .. } => crate::glyphs::dotted(&format!(
                     "{} copy in the cache directory · kept until d, reopen or exit",
                     format_bytes(bytes)
-                ),
+                )),
                 _ => "none".to_string(),
             },
         ),
@@ -4254,7 +4274,7 @@ fn render_access_plan(config: &DataQualityWidgetConfig<'_>, area: Rect, buf: &mu
         ),
     ];
     let rows = rows.map(|row| FieldRow {
-        value: dotted(&row.value),
+        value: glyphs::dotted(&row.value),
         ..row
     });
     let width = 72.min(area.width.saturating_sub(2));
@@ -4314,7 +4334,7 @@ fn passes_label(config: &DataQualityWidgetConfig<'_>) -> String {
 }
 
 fn render_run_prompt(area: Rect, theme: &Theme, buf: &mut Buffer) {
-    Paragraph::new(dotted("No report · e Setup, then Enter"))
+    Paragraph::new(glyphs::dotted("No report · e Setup, then Enter"))
         .alignment(Alignment::Center)
         .style(Style::default().fg(theme.get("text_primary")))
         .render(area, buf);

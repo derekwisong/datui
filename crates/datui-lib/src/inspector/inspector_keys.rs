@@ -35,7 +35,7 @@ impl App {
         self.open_overlay(Overlay::Inspect);
     }
 
-    pub(crate) fn close_inspector(&mut self) {
+    pub(super) fn close_inspector(&mut self) {
         self.close_overlay();
     }
 
@@ -50,7 +50,7 @@ impl App {
 
     /// The focused value's pane: as last drawn if still focused, else built for the key
     /// (without the table's preview, which only a frame knows).
-    pub(crate) fn inspector_pane(&self) -> Option<crate::widgets::inspector::Pane> {
+    pub(super) fn inspector_pane(&self) -> Option<crate::widgets::inspector::Pane> {
         let modal = &self.inspector_modal;
         if modal.drill.is_some() {
             return modal.pane.as_ref().map(|(_, pane)| pane.clone());
@@ -213,14 +213,14 @@ impl App {
 
     /// `e` in the inspector: the focused value's next view, if it has several. A number
     /// has one, so a text field's view is unchanged.
-    pub(crate) fn inspector_view(&mut self) {
+    pub(super) fn inspector_view(&mut self) {
         if let Some(view) = self.inspector_pane().and_then(|pane| pane.next_view()) {
             self.inspector_modal.choose_view(view);
         }
     }
 
     /// `w`: word wrap or hard wrap, for every value until it is pressed again.
-    pub(crate) fn inspector_wrap(&mut self) {
+    pub(super) fn inspector_wrap(&mut self) {
         let modal = &mut self.inspector_modal;
         modal.wrap = match modal.wrap {
             inspector_reader::Wrap::Word => inspector_reader::Wrap::Hard,

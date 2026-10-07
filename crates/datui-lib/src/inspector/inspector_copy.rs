@@ -11,7 +11,7 @@ impl App {
     /// indented JSON, decoded text, or base64 bytes), through the copy dialog's
     /// clipboard path. Over a capped destination's limit it is refused unformatted; a
     /// large one is written off this thread.
-    pub(crate) fn copy_inspected_field(&mut self) {
+    pub(super) fn copy_inspected_field(&mut self) {
         use copy_modal::thousands;
         let Some(state) = self.data_table_state.as_ref() else {
             return;
@@ -52,7 +52,7 @@ impl App {
 
     /// `Y` in the inspector: the whole row as one exact JSON object. Unread fields are
     /// left out, and the flash counts them.
-    pub(crate) fn copy_inspected_row(&mut self) {
+    pub(super) fn copy_inspected_row(&mut self) {
         use copy_modal::thousands;
         let Some(state) = self.data_table_state.as_ref() else {
             return;
@@ -111,7 +111,7 @@ impl App {
 
     /// `o` in the inspector: the value written to its own file, in its shown view, for
     /// another program; see [`external_open`].
-    pub(crate) fn open_inspected_value(&mut self) {
+    pub(super) fn open_inspected_value(&mut self) {
         let Some(state) = self.data_table_state.as_ref() else {
             return;
         };
@@ -208,7 +208,7 @@ impl App {
     /// Open `node` as a level below: a list or struct at once, text as its JSON, parsed
     /// here when short and on a worker when long. `path` is remembered if it does not
     /// parse.
-    pub(crate) fn inspector_open(
+    pub(super) fn inspector_open(
         &mut self,
         frame: u64,
         row: usize,
@@ -260,7 +260,7 @@ impl App {
 
     /// `y` inside a drill: the focused item's exact value, objects and arrays as
     /// indented JSON.
-    pub(crate) fn copy_drilled_item(&mut self) {
+    pub(super) fn copy_drilled_item(&mut self) {
         use inspector_drill::Node;
         let Some(drill) = self.inspector_modal.drill.as_ref() else {
             return;

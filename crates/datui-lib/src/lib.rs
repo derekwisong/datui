@@ -4903,8 +4903,10 @@ impl App {
             Job::UnfitCount { .. } => {
                 log::warn!(target: "datui", "counting values that did not fit their type failed: {message}");
             }
-            // The Info tab keeps what the open read.
-            Job::JournalDetail { .. } => {}
+            // The Info tab keeps what the open read; the log says why it has no more.
+            Job::JournalDetail { .. } => {
+                log::warn!(target: "datui", "reading the journal's detail failed: {message}");
+            }
             // Stopped: whoever stopped it says what becomes of the reads waiting on the
             // lines.
             Job::IndexLines { .. } => {}

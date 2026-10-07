@@ -64,7 +64,8 @@ hand.
 [ruff](https://docs.astral.sh/ruff/) on the Python scripts (`ruff.toml`),
 [shellcheck](https://www.shellcheck.net) on the shell scripts and
 [typos](https://github.com/crate-ci/typos) on everything (`_typos.toml` holds
-the words spelled on purpose), each only when installed. Then:
+the words spelled on purpose), each only when installed; CI installs all three, at
+the versions in `scripts/requirements-lint.txt` and `.github/tool-versions`. Then:
 
 | Changed | Also |
 |---|---|

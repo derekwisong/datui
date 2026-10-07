@@ -383,7 +383,7 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
 
     /// A file that is not ELF names itself, in the one shape.
@@ -402,185 +402,9 @@ pub(crate) mod tests {
         );
     }
 
-    /// name, type, flags, addr, offset, size, link, info, align, entsize.
-    type SectionHeader = (u32, u32, u64, u64, u64, u64, u32, u32, u64, u64);
-
-    /// A tiny 64-bit little-endian ELF executable: `.text` (AX), `.rodata` (A),
-    /// `.data` (WA), `.bss` (WA, no bits), `.symtab`, `.strtab`, `.shstrtab`, and
-    /// symbols in each, one of them a mangled Rust name.
-    pub(crate) fn tiny() -> Vec<u8> {
-        let shstr = b"\0.text\0.rodata\0.data\0.bss\0.symtab\0.strtab\0.shstrtab\0";
-        let name_at = |n: &[u8]| {
-            shstr
-                .windows(n.len())
-                .position(|w| w == n)
-                .expect("a section name") as u32
-        };
-        let strtab =
-            b"\0main\0TABLE\0counter\0buffer\0_ZN4core3fmt5write17h0123456789abcdefE\0weak_hook\0";
-        let str_at = |n: &[u8]| {
-            strtab
-                .windows(n.len())
-                .position(|w| w == n)
-                .expect("a symbol name") as u32
-        };
-        // (name, value, size, info, shndx)
-        let syms: Vec<(u32, u64, u64, u8, u16)> = vec![
-            (0, 0, 0, 0, 0),
-            (str_at(b"main\0"), 0x1000, 64, 0x12, 1),
-            (str_at(b"TABLE\0"), 0x2000, 256, 0x11, 2),
-            (str_at(b"counter\0"), 0x3000, 4, 0x11, 3),
-            (str_at(b"buffer\0"), 0x3010, 1024, 0x01, 4),
-            (
-                str_at(b"_ZN4core3fmt5write17h0123456789abcdefE\0"),
-                0x1040,
-                128,
-                0x12,
-                1,
-            ),
-            (str_at(b"weak_hook\0"), 0x10c0, 8, 0x22, 1),
-        ];
-        let mut symtab = Vec::new();
-        for (name, value, size, info, shndx) in &syms {
-            symtab.extend(name.to_le_bytes());
-            symtab.push(*info);
-            symtab.push(0);
-            symtab.extend(shndx.to_le_bytes());
-            symtab.extend(value.to_le_bytes());
-            symtab.extend(size.to_le_bytes());
-        }
-        let text = vec![0xc3u8; 0xc8];
-        let rodata = vec![1u8; 256];
-        let data = vec![2u8; 16];
-        // Section contents after the 64-byte header.
-        let mut body = Vec::new();
-        let mut place = |bytes: &[u8]| {
-            let at = 64 + body.len() as u64;
-            body.extend_from_slice(bytes);
-            while body.len() % 8 != 0 {
-                body.push(0);
-            }
-            at
-        };
-        let text_at = place(&text);
-        let rodata_at = place(&rodata);
-        let data_at = place(&data);
-        let symtab_at = place(&symtab);
-        let strtab_at = place(strtab);
-        let shstr_at = place(shstr);
-        let shoff = 64 + body.len() as u64;
-        let sections: Vec<SectionHeader> = vec![
-            (0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
-            (
-                name_at(b".text\0"),
-                1,
-                0x6,
-                0x1000,
-                text_at,
-                text.len() as u64,
-                0,
-                0,
-                16,
-                0,
-            ),
-            (
-                name_at(b".rodata\0"),
-                1,
-                0x2,
-                0x2000,
-                rodata_at,
-                256,
-                0,
-                0,
-                8,
-                0,
-            ),
-            (name_at(b".data\0"), 1, 0x3, 0x3000, data_at, 16, 0, 0, 8, 0),
-            (
-                name_at(b".bss\0"),
-                8,
-                0x3,
-                0x3010,
-                data_at + 16,
-                1024,
-                0,
-                0,
-                8,
-                0,
-            ),
-            (
-                name_at(b".symtab\0"),
-                2,
-                0,
-                0,
-                symtab_at,
-                symtab.len() as u64,
-                6,
-                1,
-                8,
-                24,
-            ),
-            (
-                name_at(b".strtab\0"),
-                3,
-                0,
-                0,
-                strtab_at,
-                strtab.len() as u64,
-                0,
-                0,
-                1,
-                0,
-            ),
-            (
-                name_at(b".shstrtab\0"),
-                3,
-                0,
-                0,
-                shstr_at,
-                shstr.len() as u64,
-                0,
-                0,
-                1,
-                0,
-            ),
-        ];
-        let mut out = Vec::new();
-        out.extend(MAGIC);
-        out.extend([2, 1, 1, 0]);
-        out.extend([0u8; 8]);
-        out.extend(2u16.to_le_bytes()); // ET_EXEC
-        out.extend(62u16.to_le_bytes()); // x86-64
-        out.extend(1u32.to_le_bytes());
-        out.extend(0x1000u64.to_le_bytes()); // entry
-        out.extend(0u64.to_le_bytes()); // phoff
-        out.extend(shoff.to_le_bytes());
-        out.extend(0u32.to_le_bytes());
-        out.extend(64u16.to_le_bytes());
-        out.extend(56u16.to_le_bytes());
-        out.extend(0u16.to_le_bytes());
-        out.extend(64u16.to_le_bytes());
-        out.extend((sections.len() as u16).to_le_bytes());
-        out.extend(7u16.to_le_bytes()); // shstrndx
-        out.extend(body);
-        for (name, kind, flags, addr, offset, size, link, info, align, entsize) in sections {
-            out.extend(name.to_le_bytes());
-            out.extend(kind.to_le_bytes());
-            out.extend(flags.to_le_bytes());
-            out.extend(addr.to_le_bytes());
-            out.extend(offset.to_le_bytes());
-            out.extend(size.to_le_bytes());
-            out.extend(link.to_le_bytes());
-            out.extend(info.to_le_bytes());
-            out.extend(align.to_le_bytes());
-            out.extend(entsize.to_le_bytes());
-        }
-        out
-    }
-
     #[test]
     fn symbols_with_their_section_and_region() {
-        let elf = read(&tiny()).unwrap();
+        let elf = read(&crate::tests::fixtures::elf()).unwrap();
         let s = &elf.symbols;
         let text = |c: &str| -> Vec<Option<String>> {
             s.column(c)
@@ -632,7 +456,7 @@ pub(crate) mod tests {
     fn garbage_is_refused() {
         assert!(read(b"\x7fELF\x02\x01\x01").is_err());
         assert!(read(b"MZ").is_err());
-        let mut cut = tiny();
+        let mut cut = crate::tests::fixtures::elf();
         cut.truncate(cut.len() - 100);
         assert!(read(&cut).is_err());
     }

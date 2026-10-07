@@ -43,9 +43,9 @@ pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
 
 const HEAD: [u8; 2] = [0xA3, 0x95];
 /// The type id of `FMT`, the record that defines the others.
-const FMT: u8 = 0x80;
+pub(crate) const FMT: u8 = 0x80;
 /// An `FMT` record's length: header, type, length, name, format, labels.
-const FMT_LEN: usize = 89;
+pub(crate) const FMT_LEN: usize = 89;
 
 /// Whether `head`, the first bytes of a file, begins a DataFlash log: an `FMT` record
 /// that defines `FMT` itself.
@@ -145,7 +145,7 @@ fn text(bytes: &[u8]) -> String {
 }
 
 /// The size a format's characters add up to, `None` for one datui does not know.
-fn format_size(format: &str) -> Option<usize> {
+pub(crate) fn format_size(format: &str) -> Option<usize> {
     format.bytes().try_fold(0usize, |n, c| {
         let (_, width, count, _) = format_char(c)?;
         n.checked_add(width * count)
@@ -588,7 +588,7 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
 
     /// A file that is not a DataFlash log names itself, in the one shape.
@@ -604,86 +604,9 @@ pub(crate) mod tests {
         );
     }
 
-    fn fmt(id: u8, name: &str, format: &str, labels: &str) -> Vec<u8> {
-        let length = if id == FMT {
-            FMT_LEN
-        } else {
-            format_size(format).unwrap() + 3
-        };
-        let mut r = vec![0xA3, 0x95, FMT, id, length as u8];
-        let pad = |s: &str, n: usize| {
-            let mut b = s.as_bytes().to_vec();
-            b.resize(n, 0);
-            b
-        };
-        r.extend(pad(name, 4));
-        r.extend(pad(format, 16));
-        r.extend(pad(labels, 64));
-        r
-    }
-
-    /// A small log: FMT, the unit tables, two message types interleaved, a scaled
-    /// field, units, damage, and a record cut off at the end.
-    pub(crate) fn tiny() -> Vec<u8> {
-        let mut log = fmt(FMT, "FMT", "BBnNZ", "Type,Length,Name,Format,Columns");
-        log.extend(fmt(129, "UNIT", "QbZ", "TimeUS,Id,Label"));
-        log.extend(fmt(130, "MULT", "Qbd", "TimeUS,Id,Mult"));
-        log.extend(fmt(131, "FMTU", "QBNN", "TimeUS,FmtType,UnitIds,MultIds"));
-        log.extend(fmt(140, "ATT", "QccH", "TimeUS,Roll,Pitch,Yaw"));
-        log.extend(fmt(141, "BARO", "QfiL", "TimeUS,Alt,Press,Lat"));
-        let unit = |id: u8, label: &str| {
-            let mut r = vec![0xA3, 0x95, 129];
-            r.extend(0u64.to_le_bytes());
-            r.push(id);
-            let mut l = label.as_bytes().to_vec();
-            l.resize(64, 0);
-            r.extend(l);
-            r
-        };
-        log.extend(unit(b'd', "deg"));
-        log.extend(unit(b'm', "m"));
-        log.extend(unit(b'P', "Pa"));
-        let mut mult = vec![0xA3, 0x95, 130];
-        mult.extend(0u64.to_le_bytes());
-        mult.push(b'2');
-        mult.extend(100.0f64.to_le_bytes());
-        log.extend(mult);
-        let fmtu = |ty: u8, units: &str, mults: &str| {
-            let mut r = vec![0xA3, 0x95, 131];
-            r.extend(0u64.to_le_bytes());
-            r.push(ty);
-            for s in [units, mults] {
-                let mut b = s.as_bytes().to_vec();
-                b.resize(16, 0);
-                r.extend(b);
-            }
-            r
-        };
-        log.extend(fmtu(141, "-mPd", "-02?"));
-        for i in 0..3u64 {
-            let mut att = vec![0xA3, 0x95, 140];
-            att.extend((1000 + i * 10).to_le_bytes());
-            att.extend((150i16 + i as i16).to_le_bytes());
-            att.extend((-250i16).to_le_bytes());
-            att.extend(9000u16.to_le_bytes());
-            log.extend(att);
-            let mut baro = vec![0xA3, 0x95, 141];
-            baro.extend((1005 + i * 10).to_le_bytes());
-            baro.extend((12.5f32 + i as f32).to_le_bytes());
-            baro.extend(101_325i32.to_le_bytes());
-            baro.extend(473_977_418i32.to_le_bytes());
-            log.extend(baro);
-            if i == 1 {
-                log.extend([0x00, 0xA3, 0x11]);
-            }
-        }
-        log.extend([0xA3, 0x95, 140, 1, 2]);
-        log
-    }
-
     #[test]
     fn types_records_units_and_damage() {
-        let data = tiny();
+        let data = crate::tests::fixtures::dataflash();
         assert!(looks_like(&data));
         let index = index(&data).unwrap();
         let names: Vec<String> = index.names().into_iter().map(|(n, _)| n).collect();
@@ -724,7 +647,7 @@ pub(crate) mod tests {
 
     #[test]
     fn scaled_characters() {
-        let data = tiny();
+        let data = crate::tests::fixtures::dataflash();
         let index = index(&data).unwrap();
         let (columns, _) = columns(&index, &index.types[&140]);
         let records = Arc::new(
@@ -746,7 +669,12 @@ pub(crate) mod tests {
     #[test]
     fn garbage_is_bounded() {
         assert!(index(b"nope").is_err());
-        let mut data = fmt(FMT, "FMT", "BBnNZ", "Type,Length,Name,Format,Columns");
+        let mut data = crate::tests::fixtures::dataflash_fmt(
+            FMT,
+            "FMT",
+            "BBnNZ",
+            "Type,Length,Name,Format,Columns",
+        );
         data.extend([0xA3, 0x95, 0x80, 7, 200]);
         data.extend([0xA3; 50]);
         let index = index(&data).unwrap();

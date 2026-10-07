@@ -47,7 +47,7 @@ pub(crate) const READER: crate::readers::Reader = crate::readers::Reader {
 pub const MAGIC: &[u8; 7] = b"ULog\x01\x12\x35";
 
 /// The sync marker a writer puts between messages, to find the next one after damage.
-const SYNC: [u8; 8] = [0x2F, 0x73, 0x13, 0x20, 0x25, 0x0C, 0xBB, 0x12];
+pub(crate) const SYNC: [u8; 8] = [0x2F, 0x73, 0x13, 0x20, 0x25, 0x0C, 0xBB, 0x12];
 
 /// Columns one topic may make, nested types and arrays of them flattened.
 pub const MAX_COLUMNS: usize = 4096;
@@ -838,7 +838,7 @@ fn scan(input: crate::readers::ScanIn<'_>) -> Result<crate::scan::Scan> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
 
     /// A file that is not a ULog names itself, in the one shape.
@@ -853,78 +853,9 @@ pub(crate) mod tests {
         );
     }
 
-    fn message(kind: u8, payload: &[u8]) -> Vec<u8> {
-        let mut out = (payload.len() as u16).to_le_bytes().to_vec();
-        out.push(kind);
-        out.extend(payload);
-        out
-    }
-
-    /// A small log: a nested format, two instances of one topic, a parameter, a
-    /// logged message, damage and a sync marker, a message cut short by trailing
-    /// padding, and data cut off at the end.
-    pub(crate) fn tiny() -> Vec<u8> {
-        let mut log = MAGIC.to_vec();
-        log.push(1);
-        log.extend(1_000u64.to_le_bytes());
-        log.extend(message(b'F', b"vec3:float x;float y;float z;"));
-        log.extend(message(
-            b'F',
-            b"sensor:uint64_t timestamp;uint8_t id;vec3 v;char[4] tag;int16_t[2] raw;uint8_t[3] _padding0;",
-        ));
-        log.extend(message(b'F', b"status:uint64_t timestamp;bool armed;"));
-        let mut info = vec![b"char[6] sys_name".len() as u8];
-        info.extend(b"char[6] sys_name");
-        info.extend(b"PX4\0\0\0");
-        log.extend(message(b'I', &info));
-        let mut param = vec![b"float MPC_XY_VEL".len() as u8];
-        param.extend(b"float MPC_XY_VEL");
-        param.extend(2.5f32.to_le_bytes());
-        log.extend(message(b'P', &param));
-        for (multi, id, name) in [(0u8, 1u16, "sensor"), (1, 2, "sensor"), (0, 3, "status")] {
-            let mut a = vec![multi];
-            a.extend(id.to_le_bytes());
-            a.extend(name.as_bytes());
-            log.extend(message(b'A', &a));
-        }
-        let sensor = |id: u16, t: u64, x: f32, pad: bool| {
-            let mut d = id.to_le_bytes().to_vec();
-            d.extend(t.to_le_bytes());
-            d.push(id as u8);
-            for v in [x, x * 2.0, x * 3.0] {
-                d.extend(v.to_le_bytes());
-            }
-            d.extend(b"ab\0\0");
-            d.extend(7i16.to_le_bytes());
-            d.extend((-7i16).to_le_bytes());
-            if pad {
-                d.extend([0u8; 3]);
-            }
-            message(b'D', &d)
-        };
-        log.extend(sensor(1, 100, 1.0, true));
-        log.extend(sensor(2, 110, 5.0, false));
-        let mut l = vec![b'4'];
-        l.extend(120u64.to_le_bytes());
-        l.extend(b"low battery");
-        log.extend(message(b'L', &l));
-        // Damage, then a sync marker.
-        log.extend([0xEE; 7]);
-        log.extend(message(b'S', &SYNC));
-        log.extend(sensor(1, 200, 2.0, false));
-        let mut s = 3u16.to_le_bytes().to_vec();
-        s.extend(150u64.to_le_bytes());
-        s.push(1);
-        log.extend(message(b'D', &s));
-        // A message cut off by the end of the file.
-        let cut = sensor(1, 300, 3.0, false);
-        log.extend(&cut[..cut.len() - 4]);
-        log
-    }
-
     #[test]
     fn topics_instances_and_text() {
-        let index = index(&tiny()).unwrap();
+        let index = index(&crate::tests::fixtures::ulog()).unwrap();
         let names: Vec<&str> = index.names.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["sensor.0", "sensor.1", "status"]);
         let sensor = &index.topics[&1];
@@ -943,7 +874,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_topic_decodes() {
-        let data = tiny();
+        let data = crate::tests::fixtures::ulog();
         let index = index(&data).unwrap();
         let topic = &index.topics[&1];
         let records = Arc::new(

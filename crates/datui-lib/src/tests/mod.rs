@@ -4,6 +4,8 @@ use std::sync::Once;
 
 static INIT: Once = Once::new();
 
+pub(crate) mod fixtures;
+
 #[cfg(feature = "cloud")]
 mod cloud_recent_facts {
     use crate::dataset_files::DatasetFile;

@@ -40,7 +40,7 @@ impl MainViewContent {
         } else {
             MainViewContent::from_app_state(
                 app.analysis_modal.active,
-                app.overlay == crate::Overlay::Chart,
+                app.overlay.shows(&crate::Overlay::Chart),
             )
         }
     }
@@ -906,7 +906,7 @@ fn value_counts_control_keys(app: &crate::App) -> Vec<Hint> {
 fn chart_hints(app: &crate::App) -> Vec<Hint> {
     let in_group = |group, keys| registry_hint_in(Context::Chart, Some(group), keys);
     let say = |group, keys, label| registry_hint_as(Context::Chart, Some(group), keys, label);
-    if app.chart.export_modal.active {
+    if app.overlay == crate::Overlay::ChartExport {
         return ["Enter", "Tab", "Esc"]
             .into_iter()
             .map(|keys| in_group("Export dialog", keys))

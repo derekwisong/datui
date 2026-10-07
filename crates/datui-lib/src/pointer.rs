@@ -694,9 +694,7 @@ impl App {
     /// modal.
     fn chart_has_the_keys(&self) -> bool {
         self.overlay == Overlay::Chart
-            && self.chart.modal.active
             && self.chart.modal.picker.is_none()
-            && !self.chart.export_modal.active
             && !self.help_visible()
             && !self.error_modal.active
             && !self.confirmation_modal.active

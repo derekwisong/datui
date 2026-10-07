@@ -103,7 +103,6 @@ pub struct ExportDefaults {
 }
 
 pub struct ChartExportModal {
-    pub active: bool,
     pub focus: ChartExportFocus,
     pub format: ChartExportFormat,
     pub style: ExportStyle,
@@ -149,7 +148,6 @@ impl ChartExportModal {
         history_limit: usize,
         defaults: ExportDefaults,
     ) {
-        self.active = true;
         self.focus = ChartExportFocus::PathInput;
         self.error = None;
         let input = || TextInput::new().with_theme(theme);
@@ -300,27 +298,15 @@ impl ChartExportModal {
     /// Reopen after an overwrite declined or a failed write: the form as it was,
     /// focus on the path.
     pub fn reopen_with_path(&mut self, path: &Path, format: ChartExportFormat) {
-        self.active = true;
         self.focus = ChartExportFocus::PathInput;
         self.format = format;
         self.path_input.set_value(path.display().to_string());
     }
 
     pub fn close(&mut self) {
-        self.active = false;
         self.focus = ChartExportFocus::PathInput;
         self.path_input.clear();
         self.error = None;
-    }
-
-    /// Hide behind a child confirmation without discarding the form; `resume`
-    /// brings it back exactly as typed. `close` is the discard.
-    pub fn suspend(&mut self) {
-        self.active = false;
-    }
-
-    pub fn resume(&mut self) {
-        self.active = true;
     }
 
     /// ←/→ on a choice.
@@ -436,7 +422,6 @@ impl Default for ChartExportModal {
         let mut height_input = TextInput::new();
         height_input.set_value(h.to_string());
         Self {
-            active: false,
             focus: ChartExportFocus::PathInput,
             format: ChartExportFormat::Png,
             style: ExportStyle::Light,

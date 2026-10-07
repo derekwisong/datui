@@ -172,7 +172,7 @@ fn leaving_the_dataset_abandons_an_export_write() {
     });
     app.event(&AppEvent::JobEnded(ticket));
     assert!(!app.error_modal.active);
-    assert!(!app.chart.export_modal.active);
+    assert_ne!(app.overlay, Overlay::ChartExport);
     assert!(!app.is_busy());
 }
 
@@ -264,7 +264,6 @@ fn a_failed_preparation_is_remembered_not_retried() {
 
     // With that selection on screen, nothing more is wanted.
     app.overlay = Overlay::Chart;
-    app.chart.modal.active = true;
     histogram_modal(&mut app.chart.modal, "a");
     assert_eq!(ChartRequest::from_modal(&app.chart.modal), Some(request));
     assert!(!app.chart_request_pending(), "not asked for again");
@@ -279,7 +278,6 @@ fn moving_on_cancels_the_preparation_in_flight() {
     let mut app = App::new(tx, crate::tests::test_runtime());
     let a = histogram_request("a");
     app.overlay = Overlay::Chart;
-    app.chart.modal.active = true;
     histogram_modal(&mut app.chart.modal, "a");
     let started = start_prep(&mut app, &a, None);
 

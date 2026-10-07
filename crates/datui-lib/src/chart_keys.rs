@@ -29,7 +29,7 @@ impl App {
         if !event.is_press() {
             return None;
         }
-        if self.chart.export_modal.active {
+        if self.overlay == Overlay::ChartExport {
             return self.chart_export_key(event);
         }
 
@@ -74,9 +74,7 @@ impl App {
         // focused row as Space does, since there is nothing left to submit.
         match crate::form::key(&mut self.chart.modal, event) {
             FormKey::Cancel => {
-                self.chart.modal.close();
-                self.reset_chart_state();
-                self.overlay = Overlay::None;
+                self.close_overlay();
                 return None;
             }
             FormKey::Submit | FormKey::Act(_) => {
@@ -193,12 +191,13 @@ impl App {
                 y_from_zero: self.chart.modal.y_starts_at_zero,
             },
         );
+        self.open_overlay(Overlay::ChartExport);
     }
 
     /// Keys in the chart's export dialog.
     fn chart_export_key(&mut self, event: &KeyEvent) -> Option<AppEvent> {
         match crate::form::key(&mut self.chart.export_modal, event) {
-            FormKey::Cancel => self.chart.export_modal.close(),
+            FormKey::Cancel => self.close_overlay(),
             FormKey::Submit => return self.submit_chart_export(),
             FormKey::Step(field, delta) => self.chart.export_modal.step(field, delta),
             FormKey::Text(field) => {
@@ -300,7 +299,7 @@ impl App {
         if request.path.exists() {
             // Suspended, not closed: declining returns to the filled form with the
             // typed path intact.
-            self.chart.export_modal.suspend();
+            self.step_back();
             self.confirmation_modal.show_destructive(
                 format!("File already exists:\n{path_display}\n\nOverwrite it?"),
                 "Overwrite",
@@ -308,7 +307,7 @@ impl App {
             );
             return None;
         }
-        self.chart.export_modal.suspend();
+        self.step_back();
         Some(AppEvent::ChartExport(request))
     }
 

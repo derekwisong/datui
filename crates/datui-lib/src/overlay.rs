@@ -36,6 +36,8 @@ pub enum Overlay {
     PickTable,
     Info,
     Chart,
+    /// The chart's export dialog, over the chart.
+    ChartExport,
     /// Value Counts: how often each value of one column occurs in the view.
     ValueCounts,
     /// The hex view: a file's bytes.
@@ -51,6 +53,7 @@ impl Overlay {
             Overlay::Export { returns_to }
             | Overlay::Retype { returns_to }
             | Overlay::Combine { returns_to } => *returns_to,
+            Overlay::ChartExport => Overlay::Chart,
             _ => Overlay::None,
         }
     }
@@ -63,6 +66,7 @@ impl Overlay {
                 Overlay::Export { returns_to }
                 | Overlay::Retype { returns_to }
                 | Overlay::Combine { returns_to } => returns_to.shows(overlay),
+                Overlay::ChartExport => *overlay == Overlay::Chart,
                 _ => false,
             }
     }
@@ -95,6 +99,11 @@ impl App {
                 self.column_forms.combine = None;
             }
             Overlay::Sample => self.sample.form = None,
+            Overlay::Chart => {
+                self.chart.modal.close();
+                self.reset_chart_state();
+            }
+            Overlay::ChartExport => self.chart.export_modal.close(),
             _ => {}
         }
         self.step_back();

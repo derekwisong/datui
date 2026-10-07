@@ -180,14 +180,13 @@ fn a_declined_overwrite_returns_to_its_form() {
             .show("?".into(), Confirm::Export(Box::new(export_request())));
         decline(&mut app);
         assert!(matches!(app.overlay, Overlay::Export { .. }));
-        assert!(matches!(app.overlay, Overlay::Export { .. }));
 
         let mut app = new_app();
-        app.chart.export_modal.suspend();
+        app.overlay = Overlay::Chart;
         app.confirmation_modal
             .show("?".into(), Confirm::ChartExport(Box::new(chart_request())));
         decline(&mut app);
-        assert!(app.chart.export_modal.active);
+        assert_eq!(app.overlay, Overlay::ChartExport);
     }
 }
 

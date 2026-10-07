@@ -1848,9 +1848,7 @@ impl App {
         // What `t` does on this screen: pause or resume at the table; over a surface
         // that keeps the rows it was opened on, read the new ones.
         let refreshes = self.overlay == Overlay::ValueCounts
-            || (self.overlay == Overlay::Chart
-                && self.chart.modal.picker.is_none()
-                && !self.chart.export_modal.active)
+            || (self.overlay == Overlay::Chart && self.chart.modal.picker.is_none())
             || (self.analysis_modal.active && self.analysis_modal.current_results().is_some());
         let key = if self.in_normal_table_view() {
             Some(match follow.standing {
@@ -2296,14 +2294,9 @@ impl App {
                         .pivot_melt_modal
                         .is_text_row(self.pivot_melt_modal.focus)
             }
-            Overlay::Chart => {
-                if self.chart.export_modal.active {
-                    self.chart.export_modal.focus.is_text()
-                } else {
-                    // The open column Picker narrows by typing, so it types.
-                    self.chart.modal.picker.is_some()
-                }
-            }
+            Overlay::ChartExport => self.chart.export_modal.focus.is_text(),
+            // The open column Picker narrows by typing, so it types.
+            Overlay::Chart => self.chart.modal.picker.is_some(),
             Overlay::Info | Overlay::ValueCounts => false,
             // The prompt types, and so does the spec picker's filter.
             Overlay::Hex => self
@@ -3298,7 +3291,7 @@ impl App {
             Overlay::PickTable => Context::TablePicker,
             Overlay::Sample => Context::Sample,
             Overlay::Info => Context::Info,
-            Overlay::Chart => Context::Chart,
+            Overlay::Chart | Overlay::ChartExport => Context::Chart,
             Overlay::Hex => Context::Hex,
             Overlay::ValueCounts => Context::ValueCounts,
         }
@@ -3387,7 +3380,7 @@ impl App {
     /// were.
     fn declined(&mut self) -> Option<AppEvent> {
         match self.confirmation_modal.take() {
-            Some(Confirm::ChartExport(_)) => self.chart.export_modal.resume(),
+            Some(Confirm::ChartExport(_)) => self.open_overlay(Overlay::ChartExport),
             Some(Confirm::Export(_)) => self.open_over(|returns_to| Overlay::Export { returns_to }),
             // Backing out of a download, or a large read, goes home: `enter_home` puts
             // the open down.
@@ -3663,7 +3656,7 @@ impl App {
             Overlay::Copy => return self.copy_key(event),
             Overlay::PivotMelt => return self.pivot_melt_key(event),
             Overlay::Info => return self.info_key(event),
-            Overlay::Chart => return self.chart_key(event),
+            Overlay::Chart | Overlay::ChartExport => return self.chart_key(event),
         }
 
         if self.analysis_modal.active {

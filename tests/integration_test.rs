@@ -320,12 +320,12 @@ fn test_chart_open_and_esc_back() {
     let key_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
     app.event(&AppEvent::Key(key_c));
     assert_eq!(app.overlay, Overlay::Chart);
-    assert!(app.chart.modal.active);
+    assert!(app.overlay.shows(&Overlay::Chart));
 
     let key_esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
     app.event(&AppEvent::Key(key_esc));
     assert!(app.at_table());
-    assert!(!app.chart.modal.active);
+    assert!(!app.overlay.shows(&Overlay::Chart));
 }
 
 #[test]
@@ -614,7 +614,7 @@ fn test_chart_export_path_expands_tilde() {
         KeyCode::Char('e'),
         KeyModifiers::NONE,
     )));
-    assert!(app.chart.export_modal.active);
+    assert_eq!(app.overlay, Overlay::ChartExport);
     app.chart
         .export_modal
         .path_input
@@ -853,8 +853,9 @@ fn test_chart_export_waits_for_the_current_selection_not_a_failed_one() {
         path.exists(),
         "the export completed from the valid selection"
     );
-    assert!(
-        !app.chart.export_modal.active,
+    assert_ne!(
+        app.overlay,
+        Overlay::ChartExport,
         "no error reopened the modal"
     );
     assert!(app.chart_data_ready());
@@ -869,10 +870,10 @@ fn test_chart_export_with_a_blank_path_says_why() {
     app.event(&AppEvent::Resize(80, 24));
     pump_until_chart_ready(&mut app, &rx, &tx);
     press(&mut app, KeyCode::Char('e'));
-    assert!(app.chart.export_modal.active);
+    assert_eq!(app.overlay, Overlay::ChartExport);
     assert!(app.chart.export_modal.path_input.value().is_empty());
     assert!(press(&mut app, KeyCode::Enter).is_none());
-    assert!(app.chart.export_modal.active, "the dialog stays");
+    assert_eq!(app.overlay, Overlay::ChartExport, "the dialog stays");
     assert_eq!(
         app.chart.export_modal.error.as_deref(),
         Some("Enter a file path.")
@@ -903,7 +904,11 @@ fn test_chart_footer_offers_export_only_when_there_is_a_chart() {
     let empty = footer(&mut app);
     assert!(!empty.contains("Export"), "{empty}");
     assert!(press(&mut app, KeyCode::Char('e')).is_none());
-    assert!(!app.chart.export_modal.active, "and e does nothing there");
+    assert_ne!(
+        app.overlay,
+        Overlay::ChartExport,
+        "and e does nothing there"
+    );
 }
 
 /// The help over the `:` command line at 80x24 sits above the footer's prompt: its
@@ -961,8 +966,9 @@ fn test_chart_export_waits_for_prepared_data_and_writes_in_background() {
         std::fs::read(&path).unwrap().starts_with(b"%PDF-"),
         "the export was written once its data arrived"
     );
-    assert!(
-        !app.chart.export_modal.active,
+    assert_ne!(
+        app.overlay,
+        Overlay::ChartExport,
         "the export modal closes on success"
     );
 }
@@ -993,7 +999,7 @@ fn test_chart_export_replaces_only_what_was_agreed() {
         run_to_idle(&mut app, &rx, &tx, AppEvent::ChartExport(request.clone()));
         // The form comes back with the reason on its status line, not a modal.
         assert_eq!(app.error_message(), None, "{name}");
-        assert!(app.chart.export_modal.active, "{name}");
+        assert_eq!(app.overlay, Overlay::ChartExport, "{name}");
         assert!(
             app.chart
                 .export_modal
@@ -1004,7 +1010,7 @@ fn test_chart_export_replaces_only_what_was_agreed() {
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs", "{name}");
         press(&mut app, KeyCode::Esc);
-        assert!(!app.chart.export_modal.active);
+        assert_ne!(app.overlay, Overlay::ChartExport);
 
         let replace = ChartExportRequest {
             overwrite: Overwrite::Replace,
@@ -1329,7 +1335,7 @@ fn chart_export_dialog_presets_and_legend() {
     pump_until_chart_ready(&mut app, &rx, &tx);
 
     press(&mut app, KeyCode::Char('e'));
-    assert!(app.chart.export_modal.active);
+    assert_eq!(app.overlay, Overlay::ChartExport);
     assert_eq!(
         app.chart.export_modal.legend,
         LegendPlace::Off,

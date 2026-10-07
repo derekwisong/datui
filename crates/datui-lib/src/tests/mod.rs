@@ -1818,7 +1818,6 @@ fn a_parked_end_does_not_put_its_message_on_the_chart_view() {
     assert!(footer_text(&mut app).contains("Counting rows"), "parked");
 
     app.overlay = crate::Overlay::Chart;
-    app.chart.modal.active = true;
 
     let bar = footer_text(&mut app);
     assert!(
@@ -2626,7 +2625,7 @@ fn a_failure_leaves_other_work_alone() {
         .supersede(|job| matches!(job, Job::ChartExport { .. }));
     fail(&mut app, older);
     untouched(&app, "an older chart export");
-    assert!(!app.chart.export_modal.active);
+    assert_ne!(app.overlay, crate::Overlay::ChartExport);
 
     // An open is no longer waited on once the user has gone home from it.
     let load = app.open_for_tests("gone.csv");

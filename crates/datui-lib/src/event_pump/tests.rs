@@ -1306,7 +1306,6 @@ fn ctrl_c_quits_from_the_sort_and_chart_search_boxes() {
 
     let (mut p2, _d) = loaded_pump();
     p2.app.overlay = Overlay::Chart;
-    p2.app.chart.modal.active = true;
     p2.app.chart.modal.open(
         crate::chart_modal::ChartColumns {
             numeric: &["a".to_string(), "b".to_string()],
@@ -1927,7 +1926,6 @@ fn ctrl_c_quits_from_chart_mode_while_busy() {
     for c in ['c', 'q'] {
         let mut p = pump();
         p.app.overlay = Overlay::Chart;
-        p.app.chart.modal.active = true;
         p.app.busy = true;
         assert!(matches!(
             p.app.handle(&AppEvent::Key(ctrl(c))),

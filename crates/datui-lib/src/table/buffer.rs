@@ -22,12 +22,10 @@ pub struct CollectRequest {
     pub plan: FillPlan,
 }
 
-/// What the worker that reads a fill needs to make it the buffer: the rows on hand it
-/// runs on from or up to, the view, and the caps, as they were when it was planned.
-///
-/// A trim copies the rows it keeps when a slice would keep the fill allocated behind
-/// them (see [`trim_rows`]): up to the byte budget, too long for the UI thread (#483).
-/// The worker does it, and `apply_async_collect` installs what it hands back as it is.
+/// What the fill-reading worker needs to make it the buffer: the adjoining rows on
+/// hand, the view and the caps, as planned. A trim that would copy (see
+/// [`trim_rows`]) runs here, off the UI thread; `apply_async_collect` installs the
+/// result as is.
 pub struct FillPlan {
     buffer_start: usize,
     buffer_end: usize,
@@ -46,9 +44,8 @@ pub struct FillPlan {
 }
 
 impl FillPlan {
-    /// Make the buffer of `df`, the rows read for the planned range: stitched on to
-    /// the rows on hand when it runs on from them or up to them, then cut to the caps
-    /// around the view.
+    /// Make the buffer from `df`, the planned range: stitched to adjoining rows on hand,
+    /// then cut to the caps around the view.
     pub fn fit(mut self, df: DataFrame) -> CollectResult {
         let returned = df.height();
         let bytes_per_row = (returned > 0).then(|| (df.estimated_size() / returned).max(1));
@@ -85,14 +82,10 @@ impl FillPlan {
         }
     }
 
-    /// Cut `df`, spanning `[start, start + df.height())`, to the row cap and the byte
-    /// budget. The rows kept are centered on the view rather than taken from the head:
-    /// a jump near the end of the dataset would otherwise drop exactly the rows the
-    /// view needs. Returns the rows kept and their first row.
-    ///
-    /// The budget bounds the rows held between collects, not the collect itself: the
-    /// fill, the operators upstream of it and an eager source frame all take memory of
-    /// their own.
+    /// Cut `df` (rows `[start, start + df.height())`) to the row cap and byte budget,
+    /// centered on the view (a head cut would drop a late jump's rows). Returns the kept
+    /// rows and their first row. The budget bounds rows held between collects, not the
+    /// collect.
     fn cut_to_caps(&self, df: DataFrame, start: usize, seam: Option<usize>) -> (DataFrame, usize) {
         let total = df.height();
         if total == 0 {
@@ -154,10 +147,9 @@ impl CollectResult {
 /// A string's in-memory width when nothing says otherwise: the view plus a short value.
 pub(super) const STRING_BYTES_GUESS: usize = 40;
 
-/// Bytes a row of `columns` takes in memory, estimated from the schema: the width of
-/// each fixed-size type; for a string the footer's average in `column_bytes` (or a
-/// guess) plus its view; for a nested column the footer's average, else a guess.
-/// Binary columns are buffered as a stub (see `binary_stub_exprs`).
+/// Estimated in-memory bytes per row of `columns`: fixed widths, strings by the footer
+/// average in `column_bytes` (or a guess) plus their view, nested by footer average or
+/// guess. Binary columns are buffered as a stub (`binary_stub_exprs`).
 pub(super) fn estimate_bytes_per_row(
     schema: &Schema,
     columns: &[String],
@@ -192,14 +184,10 @@ pub(super) fn estimate_bytes_per_row(
         .max(1)
 }
 
-/// The rows `[offset, offset + len)` of `df`, copied when a slice of them would keep
-/// much more allocated than they are. A `seam` inside them, where a stitch joined two
-/// fills, stays a chunk boundary (see [`compact_rows`]).
-///
-/// A slice keeps every chunk it touches. A fill read in many chunks (a Parquet or CSV
-/// scan) lets the rest go with a slice alone; one read in a single chunk, a stitched
-/// union or a string column sharing its parent's data would keep the whole fill. A
-/// chunk that is itself a slice of more is not seen through.
+/// Rows `[offset, offset + len)` of `df`, copied when a slice would keep much more
+/// allocated (a single-chunk fill, a stitched union, shared string data), keeping a
+/// `seam` as a chunk boundary (see [`compact_rows`]). A chunk that is itself a slice is
+/// not seen through.
 pub(super) fn trim_rows(
     df: DataFrame,
     offset: usize,
@@ -236,19 +224,11 @@ pub(super) fn backing_rows(df: &DataFrame, offset: usize, len: usize) -> usize {
         .unwrap_or(len)
 }
 
-/// The rows `[offset, offset + len)` of `df` in storage of their own: one chunk a
-/// column, or two when `seam` falls inside them, so a later cut down to one side of a
-/// stitch (`holds_buffer`) is a slice that lets the other side go.
-///
-/// A slice keeps the whole of its parent allocated, and neither `rechunk` (a lone chunk
-/// is left as it is) nor `take` (a string column keeps its parent's data buffers) is
-/// sure to let go of it. Polars' builders with `ShareStrategy::Never` copy every
-/// physical type, nested children and string bytes included. A constant column stays
-/// one value: built out, it would be a copy of the value per row.
-///
-/// Each column of `df` is let go of once it is copied, so the copy costs about one
-/// column's kept rows over `df` rather than all of them. On the collect worker the
-/// rows on screen are still held meanwhile (#483).
+/// Rows `[offset, offset + len)` in their own storage: one chunk per column, two when
+/// `seam` falls inside, so a later cut to one side lets the other go. Neither `rechunk`
+/// nor `take` reliably releases the parent; builders with `ShareStrategy::Never` copy
+/// everything. Constant columns stay one value. Each source column is released once
+/// copied, bounding the extra memory to about one column.
 pub(super) fn compact_rows(
     df: DataFrame,
     offset: usize,
@@ -391,9 +371,8 @@ pub(super) fn files_holding(offsets: &[usize], start: usize, len: usize) -> Opti
     Some((file_of(start), file_of(end - 1).min(files - 1)))
 }
 
-/// Rows `[start, start + len)` of `lf` as `all_columns`. With `files` counted, a scan
-/// of only the files holding them, so a window deep in a remote dataset does not read
-/// every file before it. With `records`, the rows read straight from the source.
+/// Rows `[start, start + len)` of `lf` as `all_columns`: with counted `files`, a scan of
+/// only the files holding them; with `records`, read straight from the source.
 pub(super) fn window_of(
     lf: &LazyFrame,
     files: Option<&RemoteFiles>,
@@ -460,9 +439,8 @@ pub(crate) fn sees_every_row_first(lf: &LazyFrame) -> bool {
     })
 }
 
-/// Whether a window of `lf` reads every row before it: a filter, which has to test
-/// them to know which row is the window's first, or a scan with no row index to skip
-/// by, such as a CSV. Parquet and IPC skip to a window.
+/// Whether a window of `lf` reads every row before it: a filter (to find the first
+/// match) or a scan with no row index to skip by (CSV). Parquet and IPC skip.
 pub(crate) fn reads_up_to_a_window(lf: &LazyFrame) -> bool {
     use polars::lazy::dsl::{DslPlan, FileScanDsl};
     lf.logical_plan.into_iter().any(|node| match node {
@@ -511,13 +489,10 @@ impl ViewRows {
     }
 }
 
-/// Snap `[start, end)` outward to the row groups it touches, given where each group
-/// starts (`offsets`, with the total last).
-///
-/// Polars fetches a row group whole for any slice that touches it, so the groups the
-/// view `[view_start, view_end)` lies in are always taken whole: paging inside them then
-/// costs nothing. The other groups the window reaches into are added while the result
-/// stays within `cap` rows (0 for no cap), the ones ahead of the view first.
+/// Snap `[start, end)` outward to whole row groups (`offsets`, total last). The groups
+/// the view lies in are always whole (Polars fetches whole groups, so paging inside is
+/// free); others the window reaches are added within `cap` rows (0: none), ahead of the
+/// view first.
 pub(super) fn align_to_row_groups(
     offsets: &[usize],
     view_start: usize,
@@ -590,10 +565,8 @@ impl DataTableState {
         !within_buffer
     }
 
-    /// Update scroll position. If the view is within the buffer, re-slices display.
-    /// If outside the buffer, sets the position but the caller must trigger a collect
-    /// (synchronous or async) to load the new buffer range.
-    /// Returns true if a collect is needed (view is outside the current buffer).
+    /// Scroll by `rows`: within the buffer, re-slice the display; outside it, set the
+    /// position and return true so the caller collects.
     pub fn slide_table(&mut self, rows: i64) -> bool {
         if rows < 0 && self.view.start_row == 0 {
             return false;
@@ -610,10 +583,8 @@ impl DataTableState {
             }
             let unclamped = (self.view.start_row as i64 + rows) as usize;
             if rows > 0 {
-                // Clamp forward scroll to keep at least visible_rows of data in view.
-                // Without this, holding PageDown at the bottom pushes start_row past
-                // num_rows, which makes scroll_would_trigger_collect fire repeatedly
-                // and can leave busy stuck if the resulting collect is a no-op.
+                // Keep a screen of data in view: otherwise held PageDown at the bottom pushes past
+                // `num_rows`, repeatedly asking for no-op collects.
                 unclamped.min(self.view.num_rows.saturating_sub(self.visible_rows))
             } else {
                 unclamped
@@ -644,9 +615,7 @@ impl DataTableState {
         }
     }
 
-    /// Read the rows the view needs here and now, as a job reads them for the app
-    /// ([`Self::prepare_async_collect`], then [`Self::apply_async_collect`]): what tests
-    /// drive. In the app rows are never read on the thread that reads keys.
+    /// Read the view's rows synchronously, as a job does for the app; for tests only.
     #[cfg(test)]
     pub fn collect(&mut self) {
         if self.defer_collect {
@@ -688,11 +657,9 @@ impl DataTableState {
         }
     }
 
-    /// Column expressions for every column in `column_order`, with binary columns replaced by a
-    /// stub literal ([`binary_stub`]) so their blobs are never read. Used both for the display
-    /// buffer (keeps scroll/jump collects fast) and for analysis (describe/distribution/
-    /// correlation), where reading multi-GB blobs across partitions would otherwise exhaust
-    /// memory and freeze the process. The full bytes stay available through `lf` for export.
+    /// Expressions for every column in `column_order`, binary columns replaced by a stub
+    /// ([`binary_stub`]) so blobs are never read, for the display buffer and analysis
+    /// (multi-GB blobs would exhaust memory). `lf` keeps the bytes for export.
     pub(crate) fn binary_stub_exprs(&self) -> Vec<Expr> {
         self.view
             .column_order
@@ -707,11 +674,9 @@ impl DataTableState {
             .collect()
     }
 
-    /// Plan an async collect without blocking: clamp the start row, then a
-    /// `CollectRequest` when the rows on screen need a new buffer load, or `None` when
-    /// the buffer already holds them (the display slices are updated then).
-    /// `num_rows_override`, when given, is the row count first; without a count the
-    /// plan uses [`Self::num_rows_bound`], so the first rows need not wait for one.
+    /// Plan an async collect without blocking: clamp the start row, then a `CollectRequest`
+    /// if the rows on screen need a new buffer, or `None` (display slices updated). Without
+    /// `num_rows_override`, [`Self::num_rows_bound`] lets the first rows skip the count.
     pub fn prepare_async_collect(
         &mut self,
         num_rows_override: Option<usize>,
@@ -725,10 +690,8 @@ impl DataTableState {
             self.view.num_rows_valid = true;
         }
 
-        // `bound` is the exact total when known, or `usize::MAX` while the background
-        // `len()` is still running. Using it instead of `self.view.num_rows` lets us plan a
-        // top-of-data window for first paint without waiting for the count. See
-        // `num_rows_bound`.
+        // `bound` is the total, or `usize::MAX` while `len()` runs, planning a top-of-data
+        // window without waiting. See `num_rows_bound`.
         let count_known = self.view.num_rows_valid;
         let bound = self.num_rows_bound();
 
@@ -853,9 +816,8 @@ impl DataTableState {
             }
         };
 
-        // When the count isn't known yet, `num_rows` is provisional (the planned end of
-        // this buffer). `apply_async_collect` keeps `num_rows_valid` false so the
-        // background `len()` corrects it, unless the short read reveals the true end.
+        // Unknown count: `num_rows` is provisional (this buffer's end); the background `len()`
+        // corrects it unless a short read reveals the end.
         let num_rows = if count_known {
             self.view.num_rows
         } else {
@@ -925,16 +887,13 @@ impl DataTableState {
             && !indexing
             && self.indexing().is_none()
         {
-            // Short read: the slice ran off the end, so we now know the exact total
-            // without waiting for the background len() count. A slice deep in the
-            // frame that found nothing may lie past the data entirely; only the count
-            // can say where it ends.
+            // A short read that began inside the data gives the exact total; an empty slice deep
+            // in the frame may lie past the data, so only the count can say.
             self.view.num_rows = buffer_start + returned_rows;
             self.view.num_rows_valid = true;
         } else if !self.view.num_rows_valid {
-            // Full buffer with the count still unresolved: render with a provisional
-            // total (at least this buffer's end) and leave num_rows_valid false so the
-            // in-flight background len() corrects it via count_landed().
+            // A full buffer with the count pending: a provisional total (at least this buffer's
+            // end), corrected by `count_landed()`.
             self.view.num_rows = self.view.num_rows.max(buffer_end);
         }
         // else: the background len() already resolved the exact count between this
@@ -945,14 +904,9 @@ impl DataTableState {
         if bytes_per_row.is_some() {
             self.view.observed_bytes_per_row = bytes_per_row;
         }
-        // A fill that does not hold the view's first row was planned for rows since
-        // replaced (a synchronous collect re-planned while it was out, or the view
-        // jumped past what the cut kept): installing it would draw rows under the wrong
-        // numbers. Keep what is held and plan again. A fill that holds the first row
-        // but not the whole view (the terminal grew while it was out) is kept, and the
-        // rest fetched; a downloaded row group is too costly to throw away for a resize.
-        // A read that came back short ends the data, so a view past it is shown by the
-        // rows kept up to that end, and only by them: a cut may have dropped the end.
+        // A fill without the view's first row was planned for replaced rows: keep what is held
+        // and replan. One holding the first row but not the whole view (a resize) is kept and
+        // the rest fetched. After a short read, a view past the end shows only rows up to it.
         let end = start + df.height();
         let view_end = self.view.start_row + self.visible_rows.max(1);
         let reaches_end = end >= buffer_start + returned_rows;
@@ -983,15 +937,9 @@ impl DataTableState {
             && (start == self.view.buffered_end_row || start + rows == self.view.buffered_start_row)
     }
 
-    /// Invalidate num_rows cache when lf is mutated. Takes a fresh `len_generation` so any
-    /// in-flight background count for the previous `lf` is recognized as stale. Also drops
-    /// the cheap Parquet-footer count source: once `lf` carries a filter/query/group, the
-    /// row count no longer equals the sum of file footers.
-    ///
-    /// A view of `sample`, drawn from `source` into `rows`, whose rows have the
-    /// columns of `schema`. It starts empty and takes rows with
-    /// [`Self::sample_grew`]. `through` when the sample was drawn from the view's
-    /// query or filters, rather than the source under them.
+    /// A view of `sample`, drawn from `source` into `rows`, with `schema`'s columns. It
+    /// starts empty and grows via [`Self::sample_grew`]. `through`: drawn from the view's
+    /// query or filters rather than the source.
     pub(crate) fn sampled_from(
         source: DataTableState,
         sample: crate::sampling::Sample,
@@ -1037,11 +985,9 @@ impl DataTableState {
         }
     }
 
-    /// Take the chunks the draw kept since the last call: every frame reads them, so
-    /// the query, filters and sort run over them too. `None` when there were none;
-    /// otherwise whether the rows on hand still stand. The view stays where it is,
-    /// and the rows on hand stand while nothing reorders them, since the new rows
-    /// come after them.
+    /// Take the chunks drawn since the last call into every frame (so query, filters and
+    /// sort run over them). `None` if none; otherwise whether the rows on hand still stand
+    /// (they do while nothing reorders, since new rows come after).
     pub(crate) fn sample_grew(&mut self) -> Option<bool> {
         let sampled = self.sampled.as_ref()?;
         let chunks = sampled.rows.take_new();
@@ -1101,9 +1047,8 @@ impl DataTableState {
         rows_stand
     }
 
-    /// Bytes a row of a sample of this view takes: of the source's columns when it
-    /// is drawn from the source, of the view's when from the view, every column of
-    /// either, shown or not.
+    /// Bytes per row of a sample of this view: every column of the source (from source) or
+    /// the view, shown or not.
     pub(crate) fn sample_row_bytes(&self, from_source: bool) -> usize {
         let schema = if from_source {
             &self.original_schema
@@ -1122,14 +1067,8 @@ impl DataTableState {
         estimate_bytes_per_row(schema, &columns, &self.column_bytes)
     }
 
-    /// The frame for buffer rows `[start, start + len)`, columns in display order. For a
-    /// remote dataset whose files are counted, a scan of only the files holding them.
-    /// How many of the dataset's files a page at `start` would read.
-    ///
-    /// A windowed remote scan reads only the files holding those rows; everything else
-    /// hands the whole scan to Polars, which reads what it decides to and does not say.
-    /// `None` is that second case — not zero, which would claim a page came from
-    /// nowhere.
+    /// How many files a page at `start` would read: only for a windowed remote scan;
+    /// `None` (not zero) when Polars reads the whole scan as it decides.
     pub fn files_a_page_reads(&self, start: usize, len: usize) -> Option<usize> {
         let offsets = self.files_window().and_then(|f| f.offsets.as_ref())?;
         let (first, last) = files_holding(offsets, start, len)?;
@@ -1146,17 +1085,15 @@ impl DataTableState {
         self.window_lf(start, len, all_columns)
     }
 
-    /// Whether the frame's rows carry their place in the source, for `#`: a dataset's
-    /// rows that know their file, or lines, while the frame is still the scan's. A
-    /// query's rows, a reshape's and a group's stand for no row of the source.
+    /// Whether rows carry their source position for `#`: file-traced rows or lines while
+    /// the frame is the scan's (query, reshape and group rows do not).
     pub(crate) fn carries_source_rows(&self) -> bool {
         self.view.drift_column_present
             || (self.scan_is_the_root() && (self.source_rows_at_open || self.view.view_numbered))
     }
 
-    /// What `#` shows for `rows` rows from `start`: each row's place in the source
-    /// where the rows carry it, else its place in the view, counted from
-    /// `row_start_index`. A pristine view's places are the source's either way.
+    /// What `#` shows for `rows` rows from `start`: source positions where carried, else
+    /// view positions from `row_start_index` (the same when pristine).
     pub fn row_numbers_from(&self, start: usize, rows: usize) -> Vec<usize> {
         let view = |i: usize| start + i + self.row_start_index;
         let places = self
@@ -1236,9 +1173,8 @@ impl DataTableState {
         }
     }
 
-    /// Put the cursor on view row `row`, centered, for a find that matched there.
-    /// Returns true if a collect is needed. A row past a provisional total is one the
-    /// find read, so the total reaches it until the count lands.
+    /// Center the cursor on view row `row`, where a find matched; true if a collect is
+    /// needed. A row past a provisional total extends it until the count lands.
     pub(crate) fn go_to_found_row(&mut self, row: usize) -> bool {
         if !self.view.num_rows_valid && self.view.num_rows <= row {
             self.view.num_rows = row + 1;
@@ -1263,11 +1199,8 @@ impl DataTableState {
         })
     }
 
-    /// Best available in-memory width estimate for one logical row.
-    ///
-    /// Data Quality uses this only for a preflight estimate and labels the result as
-    /// approximate. Buffer planning uses the same source so the two surfaces do not
-    /// disagree about the shape of the current view.
+    /// The best in-memory width estimate per row, shared by buffer planning and Data
+    /// Quality's (approximate) preflight so they agree.
     pub fn estimated_row_bytes(&self) -> usize {
         self.bytes_per_row()
     }
@@ -1289,9 +1222,8 @@ impl DataTableState {
         }
     }
 
-    /// Rows the `max_buffered_mb` budget allows a buffer, never fewer than a screen;
-    /// 0 for no budget. Planning to this, rather than trimming the collected frame to
-    /// it, keeps a wide window from being materialized only to be cut down.
+    /// Rows the `max_buffered_mb` budget allows, at least a screen; 0 for none. Planned to,
+    /// so a wide window is never materialized only to be cut.
     pub(super) fn byte_cap_rows(&self) -> usize {
         if self.max_buffered_mb == 0 {
             return 0;
@@ -1300,10 +1232,9 @@ impl DataTableState {
         (max_bytes / self.bytes_per_row()).max(self.visible_rows.max(1))
     }
 
-    /// True while the buffer is planned as a remote window: a scan of an object store
-    /// that nothing has been applied to. A query, filter, sort or reshape reads the
-    /// object through a predicate, and `slice(0, N)` then stops at the first N matches,
-    /// so the page-based window costs a row group where the remote one would read forty.
+    /// Whether the buffer is a remote window: a pristine object-store scan. With anything
+    /// applied, `slice(0, N)` stops at N matches, so page windows cost a row group, not
+    /// forty.
     pub(super) fn remote_window(&self) -> bool {
         self.remote_source && self.is_pristine()
     }
@@ -1314,14 +1245,10 @@ impl DataTableState {
         self.remote_files.as_ref().filter(|_| self.is_pristine())
     }
 
-    /// Rows the buffer reaches past the view in one direction: `pages` of it for a local
-    /// file, a remote scan with something applied to it (see `remote_window`), or a
-    /// remote dataset of many files; half the window for a pristine remote object
-    /// (`fit_window` trims the two halves plus the view back to the cap).
-    ///
-    /// Many files are read a few at a time instead: what a read costs there is the
-    /// files it opens, not its rows, and a wide window over a dataset of small files
-    /// (a day of blocks in 2009 is a few rows) is hundreds of downloads.
+    /// Rows the buffer reaches past the view one way: `pages` of it locally, for remote
+    /// scans with something applied, or many-file datasets (where cost is files opened, so
+    /// a few at a time); half the window for a pristine remote object (`fit_window` trims
+    /// to the cap).
     fn reach_rows(&self, pages: usize) -> usize {
         if !self.remote_window() || self.remote_files.is_some() {
             return pages * self.visible_rows.max(1);
@@ -1346,9 +1273,8 @@ impl DataTableState {
         self.view.start_row == self.view.num_rows.saturating_sub(self.visible_rows)
     }
 
-    /// Fit a planned buffer `[buffer_start, buffer_end)` to the caps: `max_buffered_rows`
-    /// and the byte budget around the view, then for a remote object whose footer is
-    /// known the row groups the view lies in, cut back to the caps inside them.
+    /// Fit `[buffer_start, buffer_end)` to the caps around the view, then for a remote
+    /// object with a known footer to the view's row groups, cut back to the caps inside.
     fn fit_window(
         &self,
         view_start: usize,
@@ -1387,9 +1313,8 @@ impl DataTableState {
             *buffer_end,
             cap,
         );
-        // The caps hold inside a group too: a group over them is read one window at
-        // a time, the window kept inside the group so it never pulls the next one
-        // before the view reaches it.
+        // Caps hold inside a group: an oversized group is read a window at a time, never
+        // pulling the next group early.
         if cap > 0 {
             let (floor, ceil) = (*buffer_start, *buffer_end);
             shrink_around_view(
@@ -1428,9 +1353,8 @@ impl DataTableState {
         }
     }
 
-    /// Let go of the buffer being replaced and the display frames cut from it; a stitch
-    /// has already taken the rows it keeps. The view's rows come next, so a relearn
-    /// asked for takes effect.
+    /// Release the replaced buffer and its display frames (a stitch already took what it
+    /// keeps); a requested relearn applies to the next rows.
     fn release_display_buffer(&mut self) {
         self.widths.rows_arrived();
         self.view.buffered_df = None;
@@ -1476,10 +1400,8 @@ impl DataTableState {
         }
     }
 
-    /// Whether the view is inside the buffer and within a page of one of its ends, with
-    /// more data past that end: where a collect would grow the buffer, if one ran. A
-    /// scroll that stays inside the buffer runs none, so the growing waited until the
-    /// view had left it — and the page was blank while it happened.
+    /// Whether the view is inside the buffer within a page of an end with more data past
+    /// it: where to grow the buffer ahead, before an in-buffer scroll leaves it blank.
     pub fn wants_to_load_ahead(&self) -> bool {
         if self.visible_rows == 0
             || self.view.buffered_df.is_none()
@@ -1499,9 +1421,8 @@ impl DataTableState {
         behind || ahead
     }
 
-    /// How close the view comes to an end of the buffer before the buffer grows past
-    /// it: half the reach ahead, and never under a page. A page was the whole margin, and
-    /// a cloud fetch takes longer than the next PageDown does to cross it.
+    /// How near an end the view comes before the buffer grows: half the reach, at least a
+    /// page (a cloud fetch outlasts a PageDown).
     fn proximity(&self) -> usize {
         (self.reach_rows(self.pages_lookahead) / 2).max(self.visible_rows)
     }
@@ -1526,10 +1447,8 @@ impl DataTableState {
             && end <= self.view.buffered_end_row
     }
 
-    /// The first row to draw: the view's own once its rows are on hand, and until then
-    /// the last page that was drawn whole. The view moves the moment a key asks, before
-    /// its rows are fetched, and drawn from there it was half a page of rows over half a
-    /// page of nothing until the fetch landed.
+    /// The first row to draw: the view's own once its rows are on hand, else the last page
+    /// drawn whole, so a pending fetch never shows half a page of nothing.
     pub(crate) fn start_to_draw(&mut self) -> usize {
         if self.page_on_hand(self.view.start_row) {
             self.view.drawn_start = self.view.start_row;

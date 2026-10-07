@@ -3971,7 +3971,6 @@ impl App {
                 if let Some(event) = Self::route_named_without_looking(&paths, &options) {
                     return Some(event);
                 }
-                let (paths, options) = (paths, options);
                 let formats = self.formats.clone();
                 // The open's first phase. Unleased: an answer for an open the user left is thrown
                 // away by the loader, not waited for.
@@ -3997,11 +3996,9 @@ impl App {
                 });
                 None
             }
-            AppEvent::LookThenOpenDirectory(dir, options) => {
+            AppEvent::LookThenOpenDirectory(looking, options) => {
                 // Named on the wait so the first frame says which directory is being looked at;
                 // Ctrl+C and Ctrl+O keep working during it.
-                let looking = dir;
-                let options = options;
                 self.put_down_load_in_flight();
                 let load = self.loading.look_at_directory(looking.clone());
                 // A newer look replaces an older one.
@@ -4055,10 +4052,12 @@ impl App {
                 });
                 None
             }
-            AppEvent::ClassifyThenOpen { path, jump } => {
+            AppEvent::ClassifyThenOpen {
+                path: looking,
+                jump,
+            } => {
                 // A second Enter supersedes the first (home keys act while busy): the newer look
                 // is the one waited for, and refusing would let a dead share block every look.
-                let looking = path;
                 self.jobs.supersede(|job| matches!(job, Job::Classify(_)));
                 let look = Job::Classify(jobs::Classify {
                     path: looking.clone(),
@@ -4133,15 +4132,8 @@ impl App {
             }
             AppEvent::ApplyView(order, locked, filters, columns, descending) => {
                 if let Some(state) = &mut self.data_table_state {
-                    let change = state.deferred(|s| {
-                        s.apply_view(
-                            order.clone(),
-                            locked,
-                            filters.clone(),
-                            columns.clone(),
-                            descending.clone(),
-                        )
-                    });
+                    let change = state
+                        .deferred(|s| s.apply_view(order, locked, filters, columns, descending));
                     self.spawn_async_collect(match change {
                         crate::table::ViewChange { sort: true, .. } => "Sorting...",
                         crate::table::ViewChange { filters: true, .. } => "Filtering...",
@@ -4153,7 +4145,7 @@ impl App {
             AppEvent::ColumnOrder(order, locked_count) => {
                 if let Some(state) = &mut self.data_table_state {
                     state.deferred(|s| {
-                        s.set_column_order(order.clone());
+                        s.set_column_order(order);
                         s.set_locked_columns(locked_count);
                     });
                     self.spawn_async_collect(Self::LOADING_BUFFER);
@@ -4199,7 +4191,6 @@ impl App {
                 // memory, nothing read.
                 let results = self.analysis_modal.quality.results.clone()?;
                 let plan = self.analysis_modal.quality_result_plan().clone();
-                let (path, format, overwrite) = (path, format, overwrite);
                 self.spawn_job(
                     Job::QualityReport,
                     Some("Writing the report..."),
@@ -4249,7 +4240,6 @@ impl App {
                 };
                 self.export_progress = Some(ExportProgress::new(&request.path, phase));
                 let writing = Self::export_write_phase(&request);
-                let request = request.clone();
                 self.spawn_job(Job::Export, Some("Exporting..."), move |worker| {
                     let report = worker.reporter();
                     let written = move |bytes| {
@@ -4287,7 +4277,6 @@ impl App {
                 if let Some(state) = &self.data_table_state {
                     let lf = state.visible_lf();
                     let streaming = state.polars_streaming();
-                    let (format, header) = (format, header);
                     self.spawn_job(Job::Copy, Some("Collecting data for copy..."), move |_| {
                         // A capped destination's copy is read in batches and abandoned at the cap; others
                         // are collected whole.

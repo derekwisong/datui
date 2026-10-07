@@ -1294,7 +1294,6 @@ dependencies = [
 name = "datui-pyo3"
 version = "0.4.3-dev"
 dependencies = [
- "color-eyre",
  "datui-lib",
  "polars",
  "polars-plan",

@@ -48,7 +48,9 @@ fn inputs_digest(root: &Path) -> String {
 }
 
 fn is_current(dir: &Path, digest: &str) -> bool {
-    std::fs::read_to_string(dir.join(".generated")).is_ok_and(|stamp| stamp.trim() == digest)
+    // The digest is the first line; the files the generator wrote follow it.
+    std::fs::read_to_string(dir.join(".generated"))
+        .is_ok_and(|stamp| stamp.lines().next().map(str::trim) == Some(digest))
 }
 
 /// Makes sure `tests/sample-data` was generated from the generator and pins in this

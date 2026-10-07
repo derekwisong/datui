@@ -111,7 +111,7 @@ that are too large to commit. `./scripts/dev/test.sh setup`
 [uv](https://github.com/astral-sh/uv) when it is installed and `python -m venv`
 otherwise. It is safe to re-run; `--force` regenerates even current fixtures.
 
-The generator writes `tests/sample-data/.generated`, a SHA-256 of
+The generator writes `tests/sample-data/.generated`, which starts with a SHA-256 of
 `scripts/generate_sample_data.py` and `scripts/requirements-fixtures.txt`. When
 a test starts and that stamp is missing or holds another digest, the test
 harness regenerates the fixtures, so pulling a generator change needs no manual
@@ -131,8 +131,10 @@ To regenerate by hand:
 
 The generator writes into a scratch directory beside the output and then
 renames each file into place, so a test process that has the old file mapped
-keeps reading it. On Windows a rename over a file another process has open
-fails, so generate while no tests run there. `--out DIR` writes somewhere
+keeps reading it. The stamp lists the files it wrote after the digest; a file
+the last run listed and this one no longer writes is removed, and nothing else
+is. On Windows a rename over a file another process has open fails, so
+generate while no tests run there. `--out DIR` writes somewhere
 else, and `--if-stale` does nothing when the stamp is current. It exits with an
 error if any of its packages is missing.
 

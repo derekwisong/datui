@@ -73,19 +73,41 @@ def inputs_digest():
     return digest.hexdigest()
 
 
+def read_stamp(out):
+    """The stamp in `out`: its digest, and the files the run that wrote it generated
+    (none for a stamp from before it listed them). (None, []) when there is none."""
+    try:
+        lines = (out / STAMP).read_text().splitlines()
+    except OSError:
+        return None, []
+    return (lines[0].strip() if lines else None), [line for line in lines[1:] if line]
+
+
 def install(scratch, out):
     """Move every generated file into `out`, each by an atomic rename. A test process
     that has the old file mapped keeps its inode; rewriting in place would SIGBUS it.
-    The stamp goes last, so a stamped directory is complete."""
+    Then remove the files the last run listed and this one no longer generates, and
+    nothing else. The stamp goes last, so a stamped directory is complete."""
+    written = []
     for path in sorted(scratch.rglob("*")):
         if path.is_dir():
             continue
-        target = out / path.relative_to(scratch)
+        relative = path.relative_to(scratch).as_posix()
+        target = out / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         os.replace(path, target)
-    # Renamed in too, so a reader never sees half a stamp.
+        written.append(relative)
+    _, before = read_stamp(out)
+    for relative in sorted(set(before) - set(written)):
+        # Only a plain relative path the stamp could have listed: never outside `out`.
+        if relative.startswith("/") or ".." in Path(relative).parts:
+            continue
+        with contextlib.suppress(FileNotFoundError):
+            (out / relative).unlink()
+    # Renamed in too, so a reader never sees half a stamp. The digest is the first
+    # line, which the test harness compares.
     stamp = scratch / STAMP
-    stamp.write_text(inputs_digest() + "\n")
+    stamp.write_text("\n".join([inputs_digest(), *written]) + "\n")
     os.replace(stamp, out / STAMP)
 
 
@@ -1896,8 +1918,7 @@ def main():
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     with locked(out.parent / f".{out.name}.lock"):
-        stamp = out / STAMP
-        if args.if_stale and stamp.is_file() and stamp.read_text().strip() == inputs_digest():
+        if args.if_stale and read_stamp(out)[0] == inputs_digest():
             print(f"{out} is up to date.")
             return
         # A sibling, so the renames into `out` stay on one filesystem.

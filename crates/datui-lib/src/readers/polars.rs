@@ -9,7 +9,21 @@ use crate::error_display::FileError;
 use crate::export_modal::ExportFormat;
 use crate::python_script::{self as py, Python};
 use crate::scan::Scan;
-use crate::table::DataTableState;
+use std::fs::File;
+use std::path::{Path, PathBuf};
+
+use arrow::array::types::{
+    Date32Type, Date64Type, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type, Int64Type,
+    TimestampMillisecondType, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+};
+use arrow::array::{Array, AsArray};
+use arrow::record_batch::RecordBatch;
+use orc_rust::ArrowReaderBuilder;
+use polars::prelude::*;
+
+use super::Read;
+use crate::unfinished::Writer;
+use crate::{OpenOptions, ParseStringsTarget};
 
 /// A prefix of CSV in an object store, read with the flags the user gave as they are
 /// for a local file.
@@ -45,14 +59,14 @@ fn bucket_csv(input: super::BucketIn<'_>) -> Result<polars::prelude::LazyFrame> 
         )
         .into());
     }
-    let nv = DataTableState::build_null_values_with(options, None, || {
-        DataTableState::csv_schema_for_null_values(reader(), options)
+    let nv = super::csv::build_null_values_with(options, None, || {
+        super::csv::csv_schema_for_null_values(reader(), options)
     })?;
     // No `--infer-types` here: its sample would be a second read of the bucket. Nor
     // Polars' `try_parse_dates`, which fails the whole read on a value it cannot parse,
     // even one like those it inferred the type from. Timestamps stay text, and so do
     // padded numbers: `--skip-initial-space` only takes their padding off.
-    let lf = DataTableState::configure_csv_reader(reader(), options, nv.as_ref())
+    let lf = super::csv::configure_csv_reader(reader(), options, nv.as_ref())
         .finish()
         .and_then(|lf| crate::csv_dialect::name_columns(lf, None))
         .and_then(|lf| {
@@ -60,11 +74,11 @@ fn bucket_csv(input: super::BucketIn<'_>) -> Result<polars::prelude::LazyFrame> 
                 return Ok(lf);
             }
             crate::csv_dialect::skip_initial_space(lf, |column| {
-                DataTableState::csv_null_values_for(options, column)
+                super::csv::csv_null_values_for(options, column)
             })
         })
         .map_err(failed)?;
-    DataTableState::apply_skip_tail_rows_csv(lf, options)
+    super::csv::apply_skip_tail_rows_csv(lf, options)
         .map_err(|e| crate::error_display::in_file(named, e))
 }
 
@@ -121,58 +135,48 @@ fn said(e: &polars::prelude::PolarsError) -> String {
 
 /// The frame of a state a Polars reader built, with what the read did to its rows for
 /// Copy as Python.
-fn frame(state: DataTableState, input: ScanIn<'_>) -> Result<Scan> {
-    input.report.read_python = state.read_python().to_vec();
-    input.report.read_notes = state.read_notes().to_vec();
-    input.report.typing = state.typing().clone();
-    if let (Some(units), Some(read)) = (state.read_units(), input.report.delimited.as_mut()) {
-        let mut merged = (**read).clone();
-        merged.units = units.to_vec();
-        *read = std::sync::Arc::new(merged);
+fn frame(read: Read, input: ScanIn<'_>) -> Result<Scan> {
+    input.report.read_python = read.python;
+    input.report.read_notes = read.notes;
+    input.report.typing = read.typing;
+    if let (Some(units), Some(delimited)) = (read.units, input.report.delimited.as_mut()) {
+        let mut merged = (**delimited).clone();
+        merged.units = units;
+        *delimited = std::sync::Arc::new(merged);
     }
-    Ok(state.into_lf().into())
+    Ok(read.lf.into())
 }
 
 /// A JSON reader's frame. JSON is read into memory whole, so its sample costs no read
 /// of the file.
-fn json_frame(state: DataTableState, input: ScanIn<'_>) -> Result<Scan> {
-    DataTableState::apply_parse_dates_to_json_lazyframe(
-        state.into_lf(),
-        input.options,
-        &mut input.report.read_python,
-    )
-    .map(Scan::from)
+fn json_frame(lf: LazyFrame, input: ScanIn<'_>) -> Result<Scan> {
+    apply_parse_dates_to_json_lazyframe(lf, input.options, &mut input.report.read_python)
+        .map(Scan::from)
 }
 
 fn scan_parquet(input: ScanIn<'_>) -> Result<Scan> {
-    let state = match input.paths {
-        [one] => DataTableState::from_parquet(one, input.options)?,
-        many => DataTableState::from_parquet_paths(many, input.options)?,
-    };
-    frame(state, input)
+    frame(each(input.paths, parquet)?.into(), input)
 }
 
 fn scan_csv(input: ScanIn<'_>) -> Result<Scan> {
-    let state = match input.paths {
-        [one] => DataTableState::from_csv(one, input.options)?,
-        many => DataTableState::from_csv_paths(many, input.options)?,
+    let read = match input.paths {
+        [one] => super::csv::read_delimited(one, b',', input.options, &Writer::default())?,
+        many => super::csv::from_csv_paths(many, input.options)?,
     };
-    frame(state, input)
+    frame(read, input)
 }
 
 /// TSV and PSV: one file, with the descriptor's separator.
 fn scan_delimited(input: ScanIn<'_>) -> Result<Scan> {
     let separator = input.format.separator().unwrap_or(b',');
-    let state = DataTableState::from_delimited(input.path(), separator, input.options)?;
-    frame(state, input)
+    let read =
+        super::csv::read_delimited(input.path(), separator, input.options, &Writer::default())?;
+    frame(read, input)
 }
 
 fn scan_json(input: ScanIn<'_>) -> Result<Scan> {
-    let state = match input.paths {
-        [one] => DataTableState::from_json(one, input.options)?,
-        many => DataTableState::from_json_paths(many, input.options)?,
-    };
-    json_frame(state, input)
+    let lf = each(input.paths, |p| json(p, JsonFormat::Json))?;
+    json_frame(lf, input)
 }
 
 /// NDJSON, read whole; followed, scanned, so the frame reads more of it as it grows.
@@ -187,11 +191,8 @@ fn scan_json_lines(input: ScanIn<'_>) -> Result<Scan> {
         )
         .map(Scan::from);
     }
-    let state = match input.paths {
-        [one] => DataTableState::from_json_lines(one, input.options)?,
-        many => DataTableState::from_json_lines_paths(many, input.options)?,
-    };
-    json_frame(state, input)
+    let lf = each(input.paths, |p| json(p, JsonFormat::JsonLines))?;
+    json_frame(lf, input)
 }
 
 /// Arrow IPC files are scanned where they are; streams, which have no footer, are
@@ -202,44 +203,36 @@ fn scan_arrow(input: ScanIn<'_>) -> Result<Scan> {
     if crate::ipc_stream::starts_with_stream(paths) {
         return Ok(Scan::Streams(paths.to_vec()));
     }
-    let state = match paths {
-        [one] => DataTableState::from_ipc(one, input.options)?,
+    let lf = match paths {
+        [one] => ipc(one)?,
         // Polars reads every IPC file's footer for the schema, and fails on a stream
         // among them: only then is each file looked at.
-        many => match DataTableState::from_ipc_paths(many, input.options) {
-            Ok(state) => state,
+        many => match each(many, ipc) {
+            Ok(lf) => lf,
             Err(_) if crate::ipc_stream::any_stream(many) => {
                 return Ok(Scan::Streams(many.to_vec()));
             }
             Err(e) => return Err(e),
         },
     };
-    frame(state, input)
+    frame(lf.into(), input)
 }
 
 fn scan_avro(input: ScanIn<'_>) -> Result<Scan> {
-    let state = match input.paths {
-        [one] => DataTableState::from_avro(one, input.options)?,
-        many => DataTableState::from_avro_paths(many, input.options)?,
-    };
-    frame(state, input)
+    frame(each(input.paths, avro)?.into(), input)
 }
 
 fn scan_orc(input: ScanIn<'_>) -> Result<Scan> {
-    let state = match input.paths {
-        [one] => DataTableState::from_orc(one, input.options)?,
-        many => DataTableState::from_orc_paths(many, input.options)?,
-    };
-    frame(state, input)
+    frame(each(input.paths, orc)?.into(), input)
 }
 
 fn scan_excel(input: ScanIn<'_>) -> Result<Scan> {
-    let (state, detail) = DataTableState::from_excel_with_detail(input.path(), input.options)?;
+    let (lf, detail) = crate::excel::read(input.path(), input.options)?;
     input.report.opened = Some(std::sync::Arc::new(crate::members::Opened {
         detail: Some(std::sync::Arc::new(detail)),
         ..Default::default()
     }));
-    frame(state, input)
+    frame(lf.into(), input)
 }
 
 pub(crate) const PARQUET: Reader = Reader {
@@ -440,6 +433,337 @@ pub(crate) const EXCEL: Reader = Reader {
     tables: Some(crate::excel::sheets),
     ..BASE
 };
+
+/// One frame of `paths`, each read by `read`, stacked in order.
+fn each(paths: &[PathBuf], read: impl Fn(&Path) -> Result<LazyFrame>) -> Result<LazyFrame> {
+    match paths {
+        [] => Err(color_eyre::eyre::eyre!("No paths provided")),
+        [one] => read(one),
+        many => {
+            let frames = many.iter().map(|p| read(p)).collect::<Result<Vec<_>>>()?;
+            Ok(concat(frames.as_slice(), Default::default())?)
+        }
+    }
+}
+
+pub(super) fn parquet(path: &Path) -> Result<LazyFrame> {
+    let args = ScanArgsParquet {
+        glob: crate::source::expands_as_glob(path),
+        ..Default::default()
+    };
+    Ok(LazyFrame::scan_parquet(
+        PlRefPath::try_from_path(path)?,
+        args,
+    )?)
+}
+
+/// An Arrow IPC / Feather v2 file, scanned.
+pub(super) fn ipc(path: &Path) -> Result<LazyFrame> {
+    let args = UnifiedScanArgs {
+        glob: crate::source::expands_as_glob(path),
+        ..Default::default()
+    };
+    Ok(LazyFrame::scan_ipc(
+        PlRefPath::try_from_path(path)?,
+        Default::default(),
+        args,
+    )?)
+}
+
+/// An Avro file, read whole.
+pub(super) fn avro(path: &Path) -> Result<LazyFrame> {
+    let file = File::open(path)?;
+    Ok(polars::io::avro::AvroReader::new(file).finish()?.lazy())
+}
+
+/// An ORC file, read whole through orc-rust's Arrow batches; see
+/// `docs/formats/columnar-and-json.md`.
+pub(super) fn orc(path: &Path) -> Result<LazyFrame> {
+    let file = File::open(path)?;
+    let reader = ArrowReaderBuilder::try_new(file)
+        .map_err(|e| color_eyre::eyre::eyre!("ORC: {}", e))?
+        .build();
+    let batches: Vec<RecordBatch> = reader
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| color_eyre::eyre::eyre!("ORC: {}", e))?;
+    Ok(arrow_record_batches_to_dataframe(&batches)?.lazy())
+}
+
+/// A JSON or NDJSON file, read whole.
+fn json(path: &Path, format: JsonFormat) -> Result<LazyFrame> {
+    let file = File::open(path)?;
+    Ok(JsonReader::new(file)
+        .with_json_format(format)
+        .finish()?
+        .lazy())
+}
+
+/// Load multiple Parquet files and concatenate them into one LazyFrame (same schema assumed).
+/// How the files of one dataset are stacked into one table.
+///
+/// `diagonal`, so a file written before a column existed brings the rest of its
+/// rows instead of refusing the whole directory; the column reads null for it, and
+/// the Notes say which files have it. `to_supertypes`, because a CSV column is
+/// typed by inference per file — one `N/A` makes `amount` a String in one file and
+/// an Int64 in the next — and without widening, name agreement is not enough to
+/// stack them.
+///
+/// Both are opt-ins everywhere else: DuckDB's `union_by_name`, pyarrow's
+/// `unify_schemas`, Spark's `mergeSchema`. They are the default here because a
+/// library that unions silently becomes wrong analysis downstream, while datui
+/// says what it did in the Notes and keeps `Enter` on the row conservative — a
+/// directory whose files are not one table is gone inside, not unioned, and this is
+/// what the `(all files)` row behind it reads with.
+///
+/// **Only for the formats that rule can judge**, which is CSV and NDJSON here, and
+/// Parquet through `lenient_scan` elsewhere. Arrow, Avro, ORC and `.json` keep
+/// their columns nowhere cheap to reach, so nothing looks at them before the open
+/// and nothing could say what a union of them had done — a silent union with no
+/// gate in front of it and no note behind it is the pairing this whole change
+/// exists to remove, not something to spread further.
+///
+/// Identical schemas stack exactly as before: diagonal over one schema is vertical,
+/// and nothing is widened where nothing differs. Arrow streams converted beside IPC
+/// files read in place stack with it too: the streams and the files are one
+/// directory's table, read two ways (`App::scan_arrow_parts`).
+pub(crate) fn union_of_files() -> polars::prelude::UnionArgs {
+    polars::prelude::UnionArgs {
+        diagonal: true,
+        to_supertypes: true,
+        ..Default::default()
+    }
+}
+
+/// Convert Arrow (arrow crate 57) RecordBatches to Polars DataFrame by value (ORC uses
+/// arrow 57; Polars uses polars-arrow, so we cannot use Series::from_arrow).
+fn arrow_record_batches_to_dataframe(batches: &[RecordBatch]) -> Result<DataFrame> {
+    if batches.is_empty() {
+        return Ok(DataFrame::empty());
+    }
+    let mut all_dfs = Vec::with_capacity(batches.len());
+    for batch in batches {
+        let n_cols = batch.num_columns();
+        let schema = batch.schema();
+        let mut series_vec = Vec::with_capacity(n_cols);
+        for (i, col) in batch.columns().iter().enumerate() {
+            let name = schema.field(i).name().as_str();
+            let s = arrow_array_to_polars_series(name, col)?;
+            series_vec.push(s.into());
+        }
+        let df = DataFrame::new_infer_height(series_vec)?;
+        all_dfs.push(df);
+    }
+    let mut out = all_dfs.remove(0);
+    for df in all_dfs {
+        out = out.vstack(&df)?;
+    }
+    Ok(out)
+}
+
+fn arrow_array_to_polars_series(name: &str, array: &dyn Array) -> Result<Series> {
+    use arrow::datatypes::DataType as ArrowDataType;
+    let len = array.len();
+    match array.data_type() {
+        ArrowDataType::Int8 => {
+            let a = array
+                .as_primitive_opt::<Int8Type>()
+                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Int8 array"))?;
+            let v: Vec<Option<i8>> = (0..len)
+                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                .collect();
+            Ok(Series::new(name.into(), v))
+        }
+        ArrowDataType::Int16 => {
+            let a = array
+                .as_primitive_opt::<Int16Type>()
+                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Int16 array"))?;
+            let v: Vec<Option<i16>> = (0..len)
+                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                .collect();
+            Ok(Series::new(name.into(), v))
+        }
+        ArrowDataType::Int32 => {
+            let a = array
+                .as_primitive_opt::<Int32Type>()
+                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Int32 array"))?;
+            let v: Vec<Option<i32>> = (0..len)
+                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                .collect();
+            Ok(Series::new(name.into(), v))
+        }
+        ArrowDataType::Int64 => {
+            let a = array
+                .as_primitive_opt::<Int64Type>()
+                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Int64 array"))?;
+            let v: Vec<Option<i64>> = (0..len)
+                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                .collect();
+            Ok(Series::new(name.into(), v))
+        }
+        ArrowDataType::UInt8 => {
+            let a = array
+                .as_primitive_opt::<UInt8Type>()
+                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected UInt8 array"))?;
+            let v: Vec<Option<i64>> = (0..len)
+                .map(|i| {
+                    if a.is_null(i) {
+                        None
+                    } else {
+                        Some(a.value(i) as i64)
+                    }
+                })
+                .collect();
+            Ok(Series::new(name.into(), v).cast(&DataType::UInt8)?)
+        }
+        ArrowDataType::UInt16 => {
+            let a = array
+                .as_primitive_opt::<UInt16Type>()
+                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected UInt16 array"))?;
+            let v: Vec<Option<i64>> = (0..len)
+                .map(|i| {
+                    if a.is_null(i) {
+                        None
+                    } else {
+                        Some(a.value(i) as i64)
+                    }
+                })
+                .collect();
+            Ok(Series::new(name.into(), v).cast(&DataType::UInt16)?)
+        }
+        ArrowDataType::UInt32 => {
+            let a = array
+                .as_primitive_opt::<UInt32Type>()
+                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected UInt32 array"))?;
+            let v: Vec<Option<u32>> = (0..len)
+                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                .collect();
+            Ok(Series::new(name.into(), v))
+        }
+        ArrowDataType::UInt64 => {
+            let a = array
+                .as_primitive_opt::<UInt64Type>()
+                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected UInt64 array"))?;
+            let v: Vec<Option<u64>> = (0..len)
+                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                .collect();
+            Ok(Series::new(name.into(), v))
+        }
+        ArrowDataType::Float32 => {
+            let a = array
+                .as_primitive_opt::<Float32Type>()
+                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Float32 array"))?;
+            let v: Vec<Option<f32>> = (0..len)
+                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                .collect();
+            Ok(Series::new(name.into(), v))
+        }
+        ArrowDataType::Float64 => {
+            let a = array
+                .as_primitive_opt::<Float64Type>()
+                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Float64 array"))?;
+            let v: Vec<Option<f64>> = (0..len)
+                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                .collect();
+            Ok(Series::new(name.into(), v))
+        }
+        ArrowDataType::Boolean => {
+            let a = array
+                .as_boolean_opt()
+                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Boolean array"))?;
+            let v: Vec<Option<bool>> = (0..len)
+                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                .collect();
+            Ok(Series::new(name.into(), v))
+        }
+        ArrowDataType::Utf8 => {
+            let a = array
+                .as_string_opt::<i32>()
+                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Utf8 array"))?;
+            let v: Vec<Option<String>> = (0..len)
+                .map(|i| {
+                    if a.is_null(i) {
+                        None
+                    } else {
+                        Some(a.value(i).to_string())
+                    }
+                })
+                .collect();
+            Ok(Series::new(name.into(), v))
+        }
+        ArrowDataType::LargeUtf8 => {
+            let a = array
+                .as_string_opt::<i64>()
+                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected LargeUtf8 array"))?;
+            let v: Vec<Option<String>> = (0..len)
+                .map(|i| {
+                    if a.is_null(i) {
+                        None
+                    } else {
+                        Some(a.value(i).to_string())
+                    }
+                })
+                .collect();
+            Ok(Series::new(name.into(), v))
+        }
+        ArrowDataType::Date32 => {
+            let a = array
+                .as_primitive_opt::<Date32Type>()
+                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Date32 array"))?;
+            let v: Vec<Option<i32>> = (0..len)
+                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                .collect();
+            Ok(Series::new(name.into(), v))
+        }
+        ArrowDataType::Date64 => {
+            let a = array
+                .as_primitive_opt::<Date64Type>()
+                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Date64 array"))?;
+            let v: Vec<Option<i64>> = (0..len)
+                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                .collect();
+            Ok(Series::new(name.into(), v))
+        }
+        ArrowDataType::Timestamp(_, _) => {
+            let a = array
+                .as_primitive_opt::<TimestampMillisecondType>()
+                .ok_or_else(|| color_eyre::eyre::eyre!("ORC: expected Timestamp array"))?;
+            let v: Vec<Option<i64>> = (0..len)
+                .map(|i| if a.is_null(i) { None } else { Some(a.value(i)) })
+                .collect();
+            Ok(Series::new(name.into(), v))
+        }
+        other => Err(color_eyre::eyre::eyre!(
+            "ORC: unsupported column type {:?} for column '{}'",
+            other,
+            name
+        )),
+    }
+}
+
+/// Dates and timestamps a JSON file holds as strings, typed the way a CSV's are.
+/// JSON already says which values are numbers, so a string only ever becomes a
+/// date, datetime or time, and one that is none of those is left as it was read.
+pub(crate) fn apply_parse_dates_to_json_lazyframe(
+    lf: LazyFrame,
+    options: &OpenOptions,
+    read: &mut Vec<String>,
+) -> Result<LazyFrame> {
+    if !options.parse_dates {
+        return Ok(lf);
+    }
+    super::csv::type_string_columns(
+        lf,
+        &ParseStringsTarget::All,
+        options.parse_strings_sample_rows,
+        super::csv::StringTypes {
+            dates: true,
+            numbers: false,
+        },
+        read,
+        &[],
+        &mut Vec::new(),
+    )
+}
 
 #[cfg(test)]
 mod reader_errors {

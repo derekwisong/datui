@@ -640,10 +640,9 @@ pub fn column_schema_of(
             // reader looks before settling a type both change what comes back, and a
             // sample that used its own answers would describe a file nobody opened.
             let options = as_read.open_options(format);
-            let header =
-                crate::table::DataTableState::csv_header_names_of(&options, path, None).ok()?;
-            let reader = crate::table::DataTableState::configure_csv_reader(
-                crate::table::DataTableState::csv_reader_of(path).ok()?,
+            let header = crate::readers::csv::csv_header_names_of(&options, path, None).ok()?;
+            let reader = crate::readers::csv::configure_csv_reader(
+                crate::readers::csv::csv_reader_of(path).ok()?,
                 &options,
                 None,
             );
@@ -1960,7 +1959,7 @@ pub fn with_partition_columns(
     for name in partition_columns {
         merged.with_column(
             name.clone().into(),
-            crate::table::partition_dtype(name, file_schema, values),
+            crate::readers::hive::partition_dtype(name, file_schema, values),
         );
     }
     for (name, dtype) in file_schema.iter() {

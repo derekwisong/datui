@@ -11385,8 +11385,6 @@ fn a_load_chosen_at_home_fails_at_home() {
 /// The one-file schema types partition columns the way a full scan does.
 #[test]
 fn test_hive_partition_types_match_full_scan() {
-    use datui::table::DataTableState;
-
     let dir = tempfile::tempdir().unwrap();
     for sub in [
         "region=eu/year=2020/day=2020-01-01",
@@ -11400,7 +11398,7 @@ fn test_hive_partition_types_match_full_scan() {
             .unwrap();
     }
 
-    let (fast, parts) = DataTableState::schema_from_one_hive_parquet(dir.path()).unwrap();
+    let (fast, parts) = datui::readers::hive::schema_from_one_hive_parquet(dir.path()).unwrap();
     assert_eq!(parts, ["region", "year", "day"]);
     let mut full = LazyFrame::scan_parquet(
         PlRefPath::try_from_path(dir.path()).unwrap(),
@@ -11416,7 +11414,7 @@ fn test_hive_partition_types_match_full_scan() {
     }
     assert_eq!(fast.get("year"), Some(&DataType::Int64));
 
-    let lf = DataTableState::scan_parquet_hive_with_schema(dir.path(), fast).unwrap();
+    let lf = datui::readers::hive::scan_parquet_hive_with_schema(dir.path(), fast).unwrap();
     let df = lf.filter(col("year").gt(lit(2020))).collect().unwrap();
     assert_eq!(df.height(), 2);
 }

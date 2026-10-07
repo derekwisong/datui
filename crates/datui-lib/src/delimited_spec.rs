@@ -348,7 +348,7 @@ pub fn read_facts(
         let compression = options
             .compression
             .or_else(|| crate::CompressionFormat::from_extension(file));
-        let source = crate::table::DataTableState::text_source(file, compression)
+        let source = crate::readers::csv::text_source(file, compression)
             .map_err(|e| crate::error_display::in_file(file, e.into()))?;
         read.delimited()
             .facts(source, separator, &options.header_join)
@@ -459,11 +459,10 @@ pub fn check(
         out.push_str(&format!("units: {}\n", units.join(", ")));
     }
     let separator = options.separator_or(b',');
-    let state = crate::table::DataTableState::from_delimited(file, separator, &options)
+    let read = crate::readers::csv::read_delimited(file, separator, &options, &Default::default())
         .map_err(|e| fail(&out, &crate::error_display::in_file(file, e)))?;
-    let df = state
-        .lf()
-        .clone()
+    let df = read
+        .lf
         .limit(rows as IdxSize)
         .collect()
         .map_err(|e| fail(&out, &crate::error_display::in_file(file, e.into())))?;

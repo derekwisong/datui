@@ -1973,7 +1973,7 @@ fn files_nest(sampled: &[Vec<String>]) -> bool {
 /// Silence is optimism, as it is for an unreadable footer: too few files, a format whose
 /// schema costs a whole read, or a file that would not parse all leave the directory as
 /// its names suggested. That is only safe because the read behind it unions by name and
-/// widens types rather than failing — see `DataTableState::union_of_files`.
+/// widens types rather than failing — see `crate::readers::polars::union_of_files`.
 fn judge_by_names(entry: &mut Entry, as_read: &crate::schema_union::ReadAs) {
     if entry.kind != EntryKind::MultiFile {
         return;

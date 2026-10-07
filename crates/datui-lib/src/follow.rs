@@ -199,7 +199,7 @@ pub(crate) fn scan_lines(
     };
     let spool = options.spool.as_ref().map(|handle| handle.spool().clone());
     let lf = lines::LinesScan::open(path, infer, true, spool)?.lazy()?;
-    crate::table::DataTableState::apply_parse_dates_to_json_lazyframe(lf, options, read_python)
+    crate::readers::polars::apply_parse_dates_to_json_lazyframe(lf, options, read_python)
 }
 
 /// `lf`, the scan of `path` read as `format`, bounded to the rows of the file's complete

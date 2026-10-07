@@ -21,6 +21,18 @@ struct Fill {
 }
 
 impl DataTableState {
+    /// `path` read as CSV, as an open reads one.
+    fn from_csv(path: &Path, options: &OpenOptions) -> Result<Self> {
+        Self::from_delimited(path, b',', options)
+    }
+
+    /// `path` read as delimited text split on `delimiter`, as an open reads one.
+    fn from_delimited(path: &Path, delimiter: u8, options: &OpenOptions) -> Result<Self> {
+        let read =
+            crate::readers::csv::read_delimited(path, delimiter, options, &Default::default())?;
+        Self::from_read(read, options)
+    }
+
     /// Hand `fill` over as the collect worker does: fit as planned from what is
     /// held and shown now, then installed.
     fn land(&mut self, fill: Fill) {
@@ -32,158 +44,6 @@ impl DataTableState {
         );
         self.apply_async_collect(plan.fit(fill.df));
     }
-}
-
-fn names(df: &DataFrame) -> Vec<String> {
-    df.get_column_names()
-        .iter()
-        .map(|name| name.to_string())
-        .collect()
-}
-
-fn mixed_strings() -> LazyFrame {
-    df!(
-        "id" => &[1i64, 2, 3, 4],
-        "amount" => &[" 10 ", "20", "", " 40"],
-        "day" => &["2024-01-01", "2024-01-02", " ", "2024-01-04"],
-        "at" => &["2024-01-01T10:00:00Z", "2024-01-01T11:00:00Z", "", "2024-01-01T12:00:00Z"],
-        "score" => &[0.5f64, 1.5, 2.5, 3.5],
-        "word" => &["a", " b", "c ", ""],
-        "empty" => &[None::<&str>, None, None, None],
-    )
-    .unwrap()
-    .lazy()
-}
-
-/// String inference reads only the columns it types, and reads them exactly as
-/// the whole-frame sample it replaced did: trimmed, blanks null, same rows.
-#[test]
-fn the_inference_sample_holds_only_its_targets() {
-    let targets: Vec<String> = ["amount", "day", "at", "word", "empty"]
-        .map(String::from)
-        .to_vec();
-    let sample = DataTableState::string_inference_sample(mixed_strings(), &targets, 3).unwrap();
-    assert_eq!(names(&sample), ["amount", "day", "at", "word", "empty"]);
-    assert_eq!(sample.height(), 3);
-
-    // The sample as it was taken before: every column, the targets normalized.
-    let blank = lit(PlSmallStr::from_static(""));
-    let wide = mixed_strings()
-        .limit(3)
-        .with_columns(
-            targets
-                .iter()
-                .map(|c| {
-                    col(c.as_str())
-                        .str()
-                        .strip_chars(lit(PlSmallStr::from_static(" \t\n\r")))
-                })
-                .collect::<Vec<_>>(),
-        )
-        .with_columns(
-            targets
-                .iter()
-                .map(|c| {
-                    when(col(c.as_str()).eq(blank.clone()))
-                        .then(Null {}.lit())
-                        .otherwise(col(c.as_str()))
-                        .alias(c.as_str())
-                })
-                .collect::<Vec<_>>(),
-        )
-        .collect()
-        .unwrap();
-    assert_eq!(wide.width(), 7);
-    assert!(sample.equals_missing(&wide.select(targets.iter().map(String::as_str)).unwrap()));
-
-    let one = DataTableState::string_inference_sample(mixed_strings(), &["day".to_string()], 1_000)
-        .unwrap();
-    assert_eq!(names(&one), ["day"]);
-    assert_eq!(one.height(), 4);
-}
-
-/// The frame string inference returns keeps every column in its place, and types
-/// the targets as before: numbers, dates, timestamps, text left as text, an
-/// all-null column left alone.
-#[test]
-fn string_inference_keeps_the_whole_frame() {
-    let utc = DataType::Datetime(TimeUnit::Microseconds, Some(TimeZone::UTC));
-    let typed = |target: &ParseStringsTarget, types: StringTypes| {
-        DataTableState::type_string_columns(
-            mixed_strings(),
-            target,
-            1_000,
-            types,
-            &mut Vec::new(),
-            &[],
-            &mut Vec::new(),
-        )
-        .unwrap()
-        .collect()
-        .unwrap()
-    };
-    let all = StringTypes {
-        dates: true,
-        numbers: true,
-    };
-
-    let df = typed(&ParseStringsTarget::All, all);
-    let schema = df.schema();
-    let order = names(&df);
-    assert_eq!(
-        order,
-        ["id", "amount", "day", "at", "score", "word", "empty"]
-    );
-    assert_eq!(schema.get("id"), Some(&DataType::Int64));
-    assert_eq!(schema.get("amount"), Some(&DataType::Int64));
-    assert_eq!(schema.get("day"), Some(&DataType::Date));
-    assert_eq!(schema.get("at"), Some(&utc));
-    assert_eq!(schema.get("score"), Some(&DataType::Float64));
-    assert_eq!(schema.get("word"), Some(&DataType::String));
-    assert_eq!(schema.get("empty"), Some(&DataType::String));
-    let amount: Vec<Option<i64>> = df.column("amount").unwrap().i64().unwrap().iter().collect();
-    assert_eq!(amount, [Some(10), Some(20), None, Some(40)]);
-    assert_eq!(df.column("day").unwrap().null_count(), 1);
-    assert_eq!(df.column("at").unwrap().null_count(), 1);
-    let word: Vec<Option<&str>> = df.column("word").unwrap().str().unwrap().iter().collect();
-    assert_eq!(word, [Some("a"), Some("b"), Some("c"), Some("")]);
-    let score: Vec<Option<f64>> = df.column("score").unwrap().f64().unwrap().iter().collect();
-    assert_eq!(score, [Some(0.5), Some(1.5), Some(2.5), Some(3.5)]);
-
-    // Named columns: only those that are text are typed; the rest are as read.
-    let some = typed(
-        &ParseStringsTarget::Columns(vec!["day".into(), "id".into(), "missing".into()]),
-        all,
-    );
-    assert_eq!(names(&some), order);
-    assert_eq!(some.schema().get("day"), Some(&DataType::Date));
-    assert_eq!(some.schema().get("amount"), Some(&DataType::String));
-    assert_eq!(
-        some.column("amount").unwrap().str().unwrap().get(0),
-        Some(" 10 ")
-    );
-
-    // Nothing to type: the frame comes back as it was.
-    let none = typed(&ParseStringsTarget::Columns(vec!["id".into()]), all);
-    assert!(none.equals_missing(&mixed_strings().collect().unwrap()));
-
-    // JSON: dates only. Numbers in strings stay text, untrimmed.
-    let json = DataTableState::apply_parse_dates_to_json_lazyframe(
-        mixed_strings(),
-        &crate::OpenOptions::default(),
-        &mut Vec::new(),
-    )
-    .unwrap()
-    .collect()
-    .unwrap();
-    assert_eq!(names(&json), order);
-    assert_eq!(json.schema().get("day"), Some(&DataType::Date));
-    assert_eq!(json.schema().get("at"), Some(&utc));
-    assert_eq!(json.schema().get("amount"), Some(&DataType::String));
-    assert_eq!(
-        json.column("word").unwrap().str().unwrap().get(1),
-        Some(" b")
-    );
 }
 
 /// Data Quality's evidence rows read the downloaded file the dataset scans, so
@@ -894,87 +754,6 @@ fn test_from_csv_gzipped() {
     assert_eq!(state.schema.len(), 6); // id, integer_col, float_col, string_col, boolean_col, date_col
 }
 
-#[test]
-fn test_from_parquet() {
-    // Ensure sample data is generated before running test
-    let path = crate::tests::sample_data_dir().join("people.parquet");
-    let state = DataTableState::from_parquet(&path, &OpenOptions::default()).unwrap();
-    assert!(!state.schema.is_empty());
-}
-
-#[test]
-fn test_from_ipc() {
-    use polars::prelude::IpcWriter;
-    use std::io::BufWriter;
-    let mut df = df!(
-        "x" => &[1_i32, 2, 3],
-        "y" => &["a", "b", "c"]
-    )
-    .unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("datui_test_ipc.arrow");
-    let file = std::fs::File::create(&path).unwrap();
-    let mut writer = BufWriter::new(file);
-    IpcWriter::new(&mut writer).finish(&mut df).unwrap();
-    drop(writer);
-    let state = DataTableState::from_ipc(&path, &OpenOptions::default()).unwrap();
-    assert_eq!(state.schema.len(), 2);
-    assert!(state.schema.contains("x"));
-    assert!(state.schema.contains("y"));
-}
-
-#[test]
-fn test_from_avro() {
-    use polars::io::avro::AvroWriter;
-    use std::io::BufWriter;
-    let mut df = df!(
-        "id" => &[1_i32, 2, 3],
-        "name" => &["alice", "bob", "carol"]
-    )
-    .unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("datui_test_avro.avro");
-    let file = std::fs::File::create(&path).unwrap();
-    let mut writer = BufWriter::new(file);
-    AvroWriter::new(&mut writer).finish(&mut df).unwrap();
-    drop(writer);
-    let state = DataTableState::from_avro(&path, &OpenOptions::default()).unwrap();
-    assert_eq!(state.schema.len(), 2);
-    assert!(state.schema.contains("id"));
-    assert!(state.schema.contains("name"));
-}
-
-#[test]
-fn test_from_orc() {
-    use arrow::array::{Int64Array, StringArray};
-    use arrow::datatypes::{DataType, Field, Schema};
-    use arrow::record_batch::RecordBatch;
-    use orc_rust::ArrowWriterBuilder;
-    use std::io::BufWriter;
-    use std::sync::Arc;
-
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("name", DataType::Utf8, false),
-    ]));
-    let id_array = Arc::new(Int64Array::from(vec![1_i64, 2, 3]));
-    let name_array = Arc::new(StringArray::from(vec!["a", "b", "c"]));
-    let batch = RecordBatch::try_new(schema.clone(), vec![id_array, name_array]).unwrap();
-
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("datui_test_orc.orc");
-    let file = std::fs::File::create(&path).unwrap();
-    let writer = BufWriter::new(file);
-    let mut orc_writer = ArrowWriterBuilder::new(writer, schema).try_build().unwrap();
-    orc_writer.write(&batch).unwrap();
-    orc_writer.close().unwrap();
-
-    let state = DataTableState::from_orc(&path, &OpenOptions::default()).unwrap();
-    assert_eq!(state.schema.len(), 2);
-    assert!(state.schema.contains("id"));
-    assert!(state.schema.contains("name"));
-}
-
 /// `--delimiter` reaches the in-memory readers of every compression, and the
 /// one-row read that per-column null values are built from (#290), including
 /// for a file that is only readable once decompressed.
@@ -984,12 +763,14 @@ fn test_delimiter_reaches_every_csv_reader() {
     let dir = tempfile::tempdir().unwrap();
     let body = b"id|name\n1|NA\n2|x\n";
     let bz = dir.path().join("t.csv.bz2");
-    let mut enc =
-        bzip2::write::BzEncoder::new(File::create(&bz).unwrap(), bzip2::Compression::best());
+    let mut enc = bzip2::write::BzEncoder::new(
+        std::fs::File::create(&bz).unwrap(),
+        bzip2::Compression::best(),
+    );
     enc.write_all(body).unwrap();
     enc.finish().unwrap();
     let xz = dir.path().join("t.csv.xz");
-    let mut enc = xz2::write::XzEncoder::new(File::create(&xz).unwrap(), 6);
+    let mut enc = xz2::write::XzEncoder::new(std::fs::File::create(&xz).unwrap(), 6);
     enc.write_all(body).unwrap();
     enc.finish().unwrap();
     let plain = dir.path().join("t.csv");
@@ -6388,7 +6169,7 @@ fn a_page_with_one_long_value_is_not_blank() {
 fn long_url_frame() -> DataFrame {
     let url = format!("https://example.com/{}", "long-segment/".repeat(15));
     let n = 80usize;
-    let start = NaiveDate::from_ymd_opt(2024, 1, 1)
+    let start = chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
         .unwrap()
         .and_hms_opt(0, 0, 0)
         .unwrap();

@@ -173,7 +173,7 @@ pub mod table_sample;
 // Public so the fuzz targets in `fuzz/` can reach `parse_query`. The parser is
 // hand-written and runs on whatever the user types, so it is fuzzed directly.
 pub mod query;
-mod readers;
+pub mod readers;
 mod render;
 pub mod sanitize;
 mod scan;
@@ -1695,7 +1695,7 @@ impl App {
         if partitions.is_empty()
             && let Some(dir) = self.path.as_ref().filter(|path| path.is_dir())
         {
-            partitions = DataTableState::discover_hive_partition_columns(dir)
+            partitions = crate::readers::hive::discover_hive_partition_columns(dir)
                 .into_iter()
                 .filter(|column| schema.get(column).is_some())
                 .collect();
@@ -2957,7 +2957,7 @@ impl App {
         // and small next to opening the dataset.
         if let Some(dir) = self.path.as_ref().filter(|path| path.is_dir()) {
             if partition_columns.is_empty() {
-                partition_columns = DataTableState::discover_hive_partition_columns(dir)
+                partition_columns = crate::readers::hive::discover_hive_partition_columns(dir)
                     .into_iter()
                     .filter(|column| state.schema().get(column).is_some())
                     .collect();
@@ -9339,7 +9339,10 @@ impl App {
             .format
             .and_then(FileFormat::separator)
             .unwrap_or(b',');
-        DataTableState::from_delimited_for_open(path, separator, options, writer)
+        DataTableState::from_read(
+            crate::readers::csv::read_delimited(path, separator, options, writer)?,
+            options,
+        )
     }
 
     /// Polars' view of one source's S3 settings, for `scan_parquet`.
@@ -10118,9 +10121,13 @@ impl App {
                         .or_else(|| CompressionFormat::from_extension(&file))
                         .ok_or_else(|| format!("{} is not compressed", path.display()))?;
                     let temp_dir = options.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
-                    let copy =
-                        DataTableState::decompress_to_copy(&file, compression, &temp_dir, &writer)
-                            .map_err(failed)?;
+                    let copy = crate::readers::csv::decompress_to_copy(
+                        &file,
+                        compression,
+                        &temp_dir,
+                        &writer,
+                    )
+                    .map_err(failed)?;
                     Ok(Answer::Load(Box::new(LoadAnswer::DecompressedRecords {
                         copy,
                         path,
@@ -10180,9 +10187,10 @@ impl App {
                     let lines = options.delimited.is_none()
                         && options.format.is_some_and(FileFormat::is_lines);
                     let (state, opened) = if lines {
-                        let (state, opened) =
-                            DataTableState::from_lines_decompressed(&file, &options, &writer)
+                        let (read, opened) =
+                            crate::readers::csv::from_lines_decompressed(&file, &options, &writer)
                                 .map_err(failed)?;
+                        let state = DataTableState::from_read(read, &options).map_err(failed)?;
                         (state, Some(opened))
                     } else {
                         let state = Self::decompressed_delimited_state(&file, &options, &writer)
@@ -10670,7 +10678,7 @@ impl App {
             .map_err(color_eyre::eyre::Report::from)?;
         let partition_columns =
             match path.filter(|p| options.hive && (p.is_dir() || source::expands_as_glob(p))) {
-                Some(p) => DataTableState::discover_hive_partition_columns(p)
+                Some(p) => crate::readers::hive::discover_hive_partition_columns(p)
                     .into_iter()
                     .filter(|c| schema.contains(c.as_str()))
                     .collect::<Vec<_>>(),
@@ -11110,7 +11118,7 @@ impl App {
     /// The inputs of an Arrow read as one table, in order: each IPC file scanned where
     /// it is, in a bucket or on disk, and each run of streams as its rows of
     /// `converted`, the IPC file they were converted to. Stacked as the files of a
-    /// directory are ([`DataTableState::union_of_files`]).
+    /// directory are ([`crate::readers::polars::union_of_files`]).
     fn scan_arrow_parts(
         cloud: &crate::config::CloudConfig,
         converted: Option<&PathBuf>,
@@ -11190,7 +11198,7 @@ impl App {
             1 => Ok(frames.remove(0)),
             _ => Ok(polars::prelude::concat(
                 frames.as_slice(),
-                DataTableState::union_of_files(),
+                crate::readers::polars::union_of_files(),
             )?),
         }
     }
@@ -11741,7 +11749,7 @@ impl App {
                 if use_parquet_hive {
                     // Only build the LazyFrame here; schema and partition discovery are the
                     // schema phase's ("Reading schema").
-                    return DataTableState::scan_parquet_hive(path).map(Scan::from);
+                    return crate::readers::hive::scan_parquet_hive(path).map(Scan::from);
                 }
                 return Err(color_eyre::eyre::eyre!(
                     "With --hive use a directory or a glob pattern for Parquet (e.g. path/to/dir or path/**/*.parquet)"

@@ -1030,7 +1030,9 @@ fn a_failed_read_names_the_file_opened_not_its_temp_copy() {
         temp_dir: Some(scratch.path().to_path_buf()),
         ..OpenOptions::default()
     };
-    let state = DataTableState::from_csv(&gz, &options).unwrap();
+    let read =
+        crate::readers::csv::read_delimited(&gz, b',', &options, &Default::default()).unwrap();
+    let state = DataTableState::from_read(read, &options).unwrap();
     let copy = state.temp_files()[0].to_path_buf();
     assert!(copy.starts_with(scratch.path()));
 
